@@ -153,6 +153,24 @@ app.get("/api/mvp/feedback", (_req, res) => {
   });
 });
 
+let researchPlanSchedulerTimer: ReturnType<typeof setInterval> | undefined;
+const researchPlanSchedulerInFlightDueKeys = new Set<string>();
+
+const defaultJsonBodyParser = express.json({ limit: "1mb" });
+app.use((req, res, next) => {
+  if (req.method === "POST" && req.path === "/api/mvp/feedback") {
+    readSmallJsonBody(req, res, next);
+    return;
+  }
+  if (req.method === "POST" && /^\/api\/planner\/[^/]+\/capture\/youtube-transcript$/u.test(req.path)) {
+    readSmallJsonBody(req, res, next);
+    return;
+  }
+  defaultJsonBodyParser(req, res, next);
+});
+
+app.use(productionWriteGuard);
+
 app.post("/api/mvp/feedback", (req, res) => {
   initDb();
   const body = req.body ?? {};
@@ -214,20 +232,6 @@ app.post("/api/mvp/feedback", (req, res) => {
     external_action_executed: false
   });
 });
-
-let researchPlanSchedulerTimer: ReturnType<typeof setInterval> | undefined;
-const researchPlanSchedulerInFlightDueKeys = new Set<string>();
-
-const defaultJsonBodyParser = express.json({ limit: "1mb" });
-app.use((req, res, next) => {
-  if (req.method === "POST" && /^\/api\/planner\/[^/]+\/capture\/youtube-transcript$/u.test(req.path)) {
-    readSmallJsonBody(req, res, next);
-    return;
-  }
-  defaultJsonBodyParser(req, res, next);
-});
-
-app.use(productionWriteGuard);
 
 app.get("/api/dashboard", (_req, res) => {
   if (dbBackend !== "postgres") initDb();
