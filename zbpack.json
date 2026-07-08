@@ -1,0 +1,5 @@
+{
+  "app_dir": "/",
+  "build_command": "npm run build",
+  "start_command": "npm run start:server"
+}

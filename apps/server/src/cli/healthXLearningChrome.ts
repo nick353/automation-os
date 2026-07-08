@@ -1,0 +1,5 @@
+import { getXLearningChromeHealth } from "../browser/xLearningHealth.js";
+
+const result = await getXLearningChromeHealth();
+console.log(JSON.stringify(result, null, 2));
+if (!result.ok) process.exitCode = 1;

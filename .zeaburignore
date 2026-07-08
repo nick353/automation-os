@@ -1,0 +1,36 @@
+# Dependencies and build output
+node_modules/
+dist/
+apps/**/dist/
+
+# Local runtime state, proof artifacts, and generated output
+data/
+artifacts/
+output/
+logs/
+test-results/
+work/
+.playwright-mcp/
+.playwright-cli/
+
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Databases, backups, and logs
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.backup
+*.backup-*
+*.bak
+*.log
+
+# OS/editor noise
+.DS_Store

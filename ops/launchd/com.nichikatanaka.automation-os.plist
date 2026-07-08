@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.nichikatanaka.automation-os</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/nichikatanaka/Library/Application Support/Automation OS/start-automation-os-server.sh</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/nichikatanaka/Documents/Codex/automation-os</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>Crashed</key>
+    <true/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/nichikatanaka/Documents/Codex/automation-os/data/logs/automation-os-launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/nichikatanaka/Documents/Codex/automation-os/data/logs/automation-os-launchd.err.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>AUTOMATION_OS_PORT</key>
+    <string>8787</string>
+    <key>AUTOMATION_OS_REPO_ROOT</key>
+    <string>/Users/nichikatanaka/Documents/Codex/automation-os</string>
+    <key>AUTOMATION_OS_SKIP_BUILD_CHECK</key>
+    <string>1</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+</dict>
+</plist>
