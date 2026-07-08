@@ -1040,6 +1040,11 @@ label textarea {
   margin-bottom: 12px;
 }
 
+.feedback-summary.compact {
+  grid-template-columns: repeat(3, minmax(0, max-content));
+  align-items: center;
+}
+
 .feedback-summary > *,
 .status-grid > div {
   border: 1px solid #e8e8e8;
@@ -1055,6 +1060,31 @@ label textarea {
 .status-grid span {
   display: block;
   overflow-wrap: anywhere;
+}
+
+.feedback-triaged {
+  margin-top: 12px;
+  display: grid;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid #ececec;
+}
+
+.feedback-triaged-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid #ececec;
+  border-radius: 8px;
+  background: #fcfcfc;
+  font-size: 12px;
+}
+
+.feedback-triaged-item span:first-child {
+  font-weight: 700;
+  color: #202020;
 }
 
 .status-grid {

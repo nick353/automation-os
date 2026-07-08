@@ -96,6 +96,24 @@ type MvpState = {
   audit_events?: any[];
   redaction_readback?: any;
   production_readiness_readback?: any;
+  feedbacks?: Array<{
+    id: string;
+    feedback_id: string;
+    status: string;
+    route: string;
+    page_title: string;
+    comment: string;
+    artifact_uri: string;
+    has_screenshot: boolean;
+    viewport: Record<string, unknown>;
+    workflow_context: Record<string, unknown>;
+    category: string;
+    severity: string;
+    fix_target: string;
+    captured_at: string;
+    created_at: string;
+    payload: Record<string, unknown>;
+  }>;
 };
 
 type RegisteredAutomationReadback = {
@@ -625,6 +643,7 @@ function App() {
   const [approvalRows, setApprovalRows] = useState(seedApprovalItems);
   const [createdTemplates, setCreatedTemplates] = useState<string[]>([]);
   const [mvpState, setMvpState] = useState<MvpState>({});
+  const [feedbackReadback, setFeedbackReadback] = useState<MvpState["feedbacks"]>([]);
   React.useEffect(() => {
     readMvpState()
       .then((state) => {
@@ -635,6 +654,15 @@ function App() {
       })
       .catch(() => setReceipt("Local Agent は待機中です。MVP API未接続のためローカル表示です。"));
   }, []);
+  React.useEffect(() => {
+    fetch("/api/mvp/feedback", { cache: "no-store" })
+      .then(async (response) => {
+        const json = await response.json().catch(() => ({}));
+        if (!response.ok || json.ok === false) throw new Error("feedback_readback_failed");
+        setFeedbackReadback(Array.isArray(json.feedbacks) ? json.feedbacks : []);
+      })
+      .catch(() => setFeedbackReadback([]));
+  }, []);
   const page = useMemo(() => renderPage(route, {
     setReceipt,
     automationRows,
@@ -644,8 +672,9 @@ function App() {
     createdTemplates,
     setCreatedTemplates,
     mvpState,
-    setMvpState
-  }), [route, automationRows, approvalRows, createdTemplates, mvpState]);
+    setMvpState,
+    feedbackReadback
+  }), [route, automationRows, approvalRows, createdTemplates, mvpState, feedbackReadback]);
 
   return (
     <div className="app">
@@ -784,6 +813,18 @@ function ProjectScopeNotice({ projectId }: { projectId: string }) {
 }
 
 function feedbackItemsFromState(state: MvpState) {
+  const directFeedbacks = (state.feedbacks ?? []).map((item) => ({
+    id: item.feedback_id ?? item.id,
+    status: item.status ?? "open",
+    project_id: item.workflow_context?.project_id ?? item.payload?.project_id ?? null,
+    route: item.route ?? "unknown",
+    comment: item.comment ?? item.payload?.comment ?? "",
+    target: item.fix_target ?? "unknown",
+    hasScreenshot: item.has_screenshot === true,
+    artifact: item.artifact_uri ?? "-",
+    created_at: item.created_at ?? ""
+  }));
+  if (directFeedbacks.length) return directFeedbacks;
   return (state.proofs ?? [])
     .filter((item) => item.kind === "ui_feedback")
     .map((item) => ({
@@ -816,22 +857,41 @@ function humanNextStepForFeedback(comment: string, route: string) {
   return "再現操作をChrome QAへ追加する";
 }
 
-function FeedbackFixQueue({ state, setReceipt }: { state: MvpState; setReceipt: (value: string) => void }) {
-  const feedback = feedbackItemsFromState(state);
+function FeedbackFixQueue({ feedbacks, state, setReceipt, setMvpState }: { feedbacks: MvpState["feedbacks"]; state: MvpState; setReceipt: (value: string) => void; setMvpState: React.Dispatch<React.SetStateAction<MvpState>> }) {
+  const feedback = feedbackItemsFromState({ ...state, feedbacks });
   const allOpenItems = feedback.filter((item) => item.status === "open");
   const allTriagedItems = feedback.filter((item) => item.status === "triaged");
   const openItems = allOpenItems.slice(0, 10);
   const triagedItems = allTriagedItems.slice(0, 3);
+  const updateFeedbackStatus = async (feedbackId: string, status: "open" | "triaged") => {
+    try {
+      const response = await fetch(`/api/mvp/feedback/${encodeURIComponent(feedbackId)}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ status })
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || result.ok === false) throw new Error(result.exactBlocker || result.error || "feedback_update_failed");
+      const refreshed = await readMvpState();
+      setMvpState(refreshed);
+      setReceipt(`Feedback ${feedbackId} を ${status} に更新しました。`);
+    } catch (error) {
+      setReceipt(error instanceof Error ? error.message : "Feedback の更新に失敗しました。");
+    }
+  };
   const rows = openItems.length ? openItems.map((item) => [
     item.id,
     classifyFeedback(item.comment, item.route),
     item.route,
     item.hasScreenshot ? "あり" : "なし",
     humanNextStepForFeedback(item.comment, item.route),
-    <Button onClick={() => {
-      setReceipt(`Feedback ${item.id}: ${classifyFeedback(item.comment, item.route)} / ${humanNextStepForFeedback(item.comment, item.route)}`);
-      if (item.route.startsWith("#/")) go(item.route);
-    }}>対象を開く</Button>
+    <div className="row-actions">
+      <Button onClick={() => {
+        setReceipt(`Feedback ${item.id}: ${classifyFeedback(item.comment, item.route)} / ${humanNextStepForFeedback(item.comment, item.route)}`);
+        if (item.route.startsWith("#/")) go(item.route);
+      }}>対象を開く</Button>
+      <Button variant="primary" onClick={() => updateFeedbackStatus(item.id, "triaged")}>triaged にする</Button>
+    </div>
   ]) : [["open feedbackなし", "-", "-", "-", "現在のreadbackでは未処理feedbackはありません", <StatusBadge status="approved" label="完了" />]];
   return (
     <Panel title="Feedback修正キュー">
@@ -841,6 +901,18 @@ function FeedbackFixQueue({ state, setReceipt }: { state: MvpState; setReceipt: 
         <span>表示 {openItems.length}件 / 押しても分からない系を最優先</span>
       </div>
       <DataTable headers={["ID", "分類", "画面", "スクショ", "次の修正", "操作"]} rows={rows} />
+      {triagedItems.length > 0 && (
+        <div className="feedback-triaged">
+          <strong>最近 triaged</strong>
+          {triagedItems.map((item) => (
+            <div key={item.id} className="feedback-triaged-item">
+              <span>{item.id}</span>
+              <span>{item.comment}</span>
+              <Button onClick={() => updateFeedbackStatus(item.id, "open")}>open に戻す</Button>
+            </div>
+          ))}
+        </div>
+      )}
       <p className="muted">この一覧はMVP stateの feedback proof readback です。スクショ本体やsecretは表示しません。</p>
     </Panel>
   );
@@ -856,6 +928,7 @@ type AppModel = {
   setCreatedTemplates: React.Dispatch<React.SetStateAction<string[]>>;
   mvpState: MvpState;
   setMvpState: React.Dispatch<React.SetStateAction<MvpState>>;
+  feedbackReadback: MvpState["feedbacks"];
 };
 
 function renderPage(route: string, model: AppModel) {
@@ -1031,11 +1104,14 @@ function FeedbackWidget({ route, setReceipt, setMvpState }: { route: string; set
 }
 
 function HomePage({ model }: { model: AppModel }) {
-  const { setReceipt, automationRows, mvpState } = model;
+  const { setReceipt, automationRows, mvpState, feedbackReadback } = model;
   const projectAAutomations = automationRows.filter((row) => (row.project_id ?? "project-a") === "project-a");
   const waitingApprovals = (mvpState.approvals ?? []).filter((approval) => approval.status === "waiting");
   const blockedRuns = (mvpState.runs ?? []).filter((run) => run.status === "blocked");
   const queuedRuns = (mvpState.runs ?? []).filter((run) => run.status === "queued");
+  const feedbackRows = feedbackItemsFromState({ ...mvpState, feedbacks: feedbackReadback });
+  const openFeedbackCount = feedbackRows.filter((item) => item.status === "open").length;
+  const triagedFeedbackCount = feedbackRows.filter((item) => item.status === "triaged").length;
   const worker = mvpState.worker;
   const workerSummary = workerStatusSummary(worker);
   const projectCards = [
@@ -1092,6 +1168,7 @@ function HomePage({ model }: { model: AppModel }) {
             <Button variant="primary" onClick={() => go("#/approvals")}>承認キューを開く</Button>
           </div>
         </Panel>
+        <FeedbackFixQueue feedbacks={feedbackReadback} state={mvpState} setReceipt={setReceipt} setMvpState={model.setMvpState} />
       </div>
       <Panel title="進捗一覧">
         <DataTable headers={["対象", "状態", "Schedule", "Lane", "停止条件", "証跡"]} rows={projectAAutomations.map((item) => [
@@ -1102,6 +1179,13 @@ function HomePage({ model }: { model: AppModel }) {
           item.status === "enabled" ? "外部操作前に承認停止" : item.last,
           "API / artifact readback"
         ])} />
+      </Panel>
+      <Panel title="Feedbackサマリ">
+        <div className="feedback-summary compact">
+          <strong>open {openFeedbackCount}件</strong>
+          <span>triaged {triagedFeedbackCount}件</span>
+          <span>送信後は Home からすぐ triage できます</span>
+        </div>
       </Panel>
     </section>
   );
