@@ -673,7 +673,8 @@ function App() {
     setCreatedTemplates,
     mvpState,
     setMvpState,
-    feedbackReadback
+    feedbackReadback,
+    setFeedbackReadback
   }), [route, automationRows, approvalRows, createdTemplates, mvpState, feedbackReadback]);
 
   return (
@@ -857,7 +858,7 @@ function humanNextStepForFeedback(comment: string, route: string) {
   return "再現操作をChrome QAへ追加する";
 }
 
-function FeedbackFixQueue({ feedbacks, state, setReceipt, setMvpState }: { feedbacks: MvpState["feedbacks"]; state: MvpState; setReceipt: (value: string) => void; setMvpState: React.Dispatch<React.SetStateAction<MvpState>> }) {
+function FeedbackFixQueue({ feedbacks, state, setReceipt, setFeedbackReadback }: { feedbacks: MvpState["feedbacks"]; state: MvpState; setReceipt: (value: string) => void; setFeedbackReadback: React.Dispatch<React.SetStateAction<MvpState["feedbacks"]>> }) {
   const feedback = feedbackItemsFromState({ ...state, feedbacks });
   const allOpenItems = feedback.filter((item) => item.status === "open");
   const allTriagedItems = feedback.filter((item) => item.status === "triaged");
@@ -872,8 +873,12 @@ function FeedbackFixQueue({ feedbacks, state, setReceipt, setMvpState }: { feedb
       });
       const result = await response.json().catch(() => ({}));
       if (!response.ok || result.ok === false) throw new Error(result.exactBlocker || result.error || "feedback_update_failed");
-      const refreshed = await readMvpState();
-      setMvpState(refreshed);
+      const refreshed = await fetch("/api/mvp/feedback", { cache: "no-store" }).then(async (response) => {
+        const json = await response.json().catch(() => ({}));
+        if (!response.ok || json.ok === false) throw new Error("feedback_readback_failed");
+        return Array.isArray(json.feedbacks) ? json.feedbacks : [];
+      });
+      setFeedbackReadback(refreshed);
       setReceipt(`Feedback ${feedbackId} を ${status} に更新しました。`);
     } catch (error) {
       setReceipt(error instanceof Error ? error.message : "Feedback の更新に失敗しました。");
@@ -929,6 +934,7 @@ type AppModel = {
   mvpState: MvpState;
   setMvpState: React.Dispatch<React.SetStateAction<MvpState>>;
   feedbackReadback: MvpState["feedbacks"];
+  setFeedbackReadback: React.Dispatch<React.SetStateAction<MvpState["feedbacks"]>>;
 };
 
 function renderPage(route: string, model: AppModel) {
@@ -1168,7 +1174,7 @@ function HomePage({ model }: { model: AppModel }) {
             <Button variant="primary" onClick={() => go("#/approvals")}>承認キューを開く</Button>
           </div>
         </Panel>
-        <FeedbackFixQueue feedbacks={feedbackReadback} state={mvpState} setReceipt={setReceipt} setMvpState={model.setMvpState} />
+        <FeedbackFixQueue feedbacks={feedbackReadback} state={mvpState} setReceipt={setReceipt} setFeedbackReadback={model.setFeedbackReadback} />
       </div>
       <Panel title="進捗一覧">
         <DataTable headers={["対象", "状態", "Schedule", "Lane", "停止条件", "証跡"]} rows={projectAAutomations.map((item) => [
