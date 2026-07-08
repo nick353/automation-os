@@ -177,6 +177,29 @@ CREATE TABLE IF NOT EXISTS bridge_executions (
   metadata_json TEXT NOT NULL DEFAULT '{}'
 );
 
+CREATE TABLE IF NOT EXISTS mvp_feedback (
+  id TEXT PRIMARY KEY,
+  feedback_id TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL,
+  route TEXT NOT NULL,
+  page_title TEXT NOT NULL,
+  comment TEXT NOT NULL,
+  artifact_uri TEXT NOT NULL,
+  has_screenshot INTEGER NOT NULL DEFAULT 0,
+  viewport_json TEXT NOT NULL DEFAULT '{}',
+  workflow_context_json TEXT NOT NULL DEFAULT '{}',
+  category TEXT NOT NULL,
+  severity TEXT NOT NULL,
+  fix_target TEXT NOT NULL,
+  captured_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  payload_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS mvp_feedback_status_idx ON mvp_feedback(status);
+CREATE INDEX IF NOT EXISTS mvp_feedback_route_idx ON mvp_feedback(route);
+CREATE INDEX IF NOT EXISTS mvp_feedback_created_at_idx ON mvp_feedback(created_at DESC);
+
 CREATE TABLE IF NOT EXISTS knowledge_notes (
   id TEXT PRIMARY KEY,
   note_type TEXT NOT NULL,

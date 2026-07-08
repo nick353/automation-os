@@ -104,6 +104,117 @@ app.get("/api/health", (_req, res) => {
   });
 });
 
+app.get("/api/mvp/feedback", (_req, res) => {
+  initDb();
+  const rows = querySql<{
+    id: string;
+    feedback_id: string;
+    status: string;
+    route: string;
+    page_title: string;
+    comment: string;
+    artifact_uri: string;
+    has_screenshot: number;
+    viewport_json: string;
+    workflow_context_json: string;
+    category: string;
+    severity: string;
+    fix_target: string;
+    captured_at: string;
+    created_at: string;
+    payload_json: string;
+  }>(
+    "SELECT * FROM mvp_feedback ORDER BY created_at DESC LIMIT 500"
+  );
+  const feedbacks = rows.map((row) => ({
+    id: row.id,
+    feedback_id: row.feedback_id,
+    status: row.status,
+    route: row.route,
+    page_title: row.page_title,
+    comment: row.comment,
+    artifact_uri: row.artifact_uri,
+    has_screenshot: row.has_screenshot === 1,
+    viewport: safeJsonParse<Record<string, unknown>>(row.viewport_json, {}),
+    workflow_context: safeJsonParse<Record<string, unknown>>(row.workflow_context_json, {}),
+    category: row.category,
+    severity: row.severity,
+    fix_target: row.fix_target,
+    captured_at: row.captured_at,
+    created_at: row.created_at,
+    payload: safeJsonParse<Record<string, unknown>>(row.payload_json, {})
+  }));
+  res.json({
+    ok: true,
+    feedbacks,
+    count: feedbacks.length,
+    open_count: feedbacks.filter((item) => item.status === "open").length,
+    triaged: feedbacks.filter((item) => item.status === "triaged").length
+  });
+});
+
+app.post("/api/mvp/feedback", (req, res) => {
+  initDb();
+  const body = req.body ?? {};
+  const comment = typeof body.comment === "string" ? body.comment.trim() : "";
+  if (!comment) {
+    res.status(400).json({ ok: false, error: "feedback_comment_required", exactBlocker: "feedback_comment_required" });
+    return;
+  }
+  const route = typeof body.route === "string" ? body.route : "#/";
+  const pageTitle = typeof body.page_title === "string" ? body.page_title : "Automation OS";
+  const artifactUri = typeof body.capture?.artifact_uri === "string"
+    ? body.capture.artifact_uri
+    : typeof body.capture?.url === "string"
+      ? body.capture.url
+      : `${route}#feedback`;
+  const screenshotDataUrl = typeof body.screenshot_data_url === "string" ? body.screenshot_data_url : null;
+  const feedbackId = makeId("feedback");
+  const createdAt = nowIso();
+  const payload = {
+    route,
+    page_title: pageTitle,
+    comment,
+    artifact_uri: artifactUri,
+    has_screenshot: Boolean(screenshotDataUrl),
+    viewport: body.capture?.viewport ?? null,
+    workflow_context: body.workflow_context ?? null,
+    category: typeof body.category === "string" ? body.category : "bug",
+    severity: typeof body.severity === "string" ? body.severity : "medium",
+    fix_target: typeof body.fix_target === "string" ? body.fix_target : "ui",
+    sensitive_content_confirmed: Boolean(body.sensitive_content_confirmed)
+  };
+  const feedback = {
+    id: feedbackId,
+    feedback_id: feedbackId,
+    status: "open",
+    route,
+    page_title: pageTitle,
+    comment,
+    artifact_uri: artifactUri,
+    has_screenshot: screenshotDataUrl ? 1 : 0,
+    viewport_json: JSON.stringify(body.capture?.viewport ?? {}),
+    workflow_context_json: JSON.stringify(body.workflow_context ?? {}),
+    category: payload.category,
+    severity: payload.severity,
+    fix_target: payload.fix_target,
+    captured_at: typeof body.capture?.captured_at === "string" ? body.capture.captured_at : createdAt,
+    created_at: createdAt,
+    payload_json: JSON.stringify(payload)
+  };
+  insert("mvp_feedback", feedback);
+  res.status(201).json({
+    ok: true,
+    feedback: {
+      ...feedback,
+      has_screenshot: screenshotDataUrl ? true : false
+    },
+    state: getDashboard(),
+    inbox_forward: { status: "local", sink: "mvp_feedback" },
+    external_action_executed: false
+  });
+});
+
 let researchPlanSchedulerTimer: ReturnType<typeof setInterval> | undefined;
 const researchPlanSchedulerInFlightDueKeys = new Set<string>();
 
@@ -1494,7 +1605,16 @@ function isReadOnlyPlanningEndpoint(req: Parameters<RequestHandler>[0]) {
   return req.method === "POST" && (
     req.path === "/api/create/plan"
     || req.path === "/api/capability-router/plan"
+    || req.path === "/api/mvp/feedback"
   );
+}
+
+function safeJsonParse<T>(value: string, fallback: T): T {
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return fallback;
+  }
 }
 
 function isCreateSessionEndpoint(req: Parameters<RequestHandler>[0]) {
