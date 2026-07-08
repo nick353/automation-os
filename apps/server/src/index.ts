@@ -233,6 +233,35 @@ app.post("/api/mvp/feedback", (req, res) => {
   });
 });
 
+app.patch("/api/mvp/feedback/:feedbackId", (req, res) => {
+  initDb();
+  const feedbackId = typeof req.params.feedbackId === "string" ? req.params.feedbackId.trim() : "";
+  const status = typeof req.body?.status === "string" ? req.body.status.trim() : "";
+  if (!feedbackId) {
+    res.status(400).json({ ok: false, error: "feedback_id_required", exactBlocker: "feedback_id_required" });
+    return;
+  }
+  if (!["open", "triaged"].includes(status)) {
+    res.status(400).json({ ok: false, error: "feedback_status_invalid", exactBlocker: "feedback_status_invalid" });
+    return;
+  }
+  const existingRows = querySql<{ id: string; feedback_id: string; status: string }>(
+    `SELECT id, feedback_id, status FROM mvp_feedback WHERE feedback_id = ${sqlValue(feedbackId)} LIMIT 1`
+  );
+  const existing = existingRows[0];
+  if (!existing) {
+    res.status(404).json({ ok: false, error: "feedback_not_found", exactBlocker: "feedback_not_found" });
+    return;
+  }
+  execSql(`UPDATE mvp_feedback SET status = ${sqlValue(status)} WHERE feedback_id = ${sqlValue(feedbackId)};`);
+  res.json({
+    ok: true,
+    feedback_id: feedbackId,
+    status,
+    updated_at: nowIso()
+  });
+});
+
 app.get("/api/dashboard", (_req, res) => {
   if (dbBackend !== "postgres") initDb();
   res.json(getDashboard());
@@ -1606,10 +1635,13 @@ function isStateChangingMethod(method: string) {
 }
 
 function isReadOnlyPlanningEndpoint(req: Parameters<RequestHandler>[0]) {
-  return req.method === "POST" && (
-    req.path === "/api/create/plan"
-    || req.path === "/api/capability-router/plan"
-    || req.path === "/api/mvp/feedback"
+  return (
+    (req.method === "POST" && (
+      req.path === "/api/create/plan"
+      || req.path === "/api/capability-router/plan"
+      || req.path === "/api/mvp/feedback"
+    ))
+    || (req.method === "PATCH" && /^\/api\/mvp\/feedback\/[^/]+$/u.test(req.path))
   );
 }
 
