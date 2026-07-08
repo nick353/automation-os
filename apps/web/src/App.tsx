@@ -1,5879 +1,2654 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import {
   Activity,
-  Archive,
   AlertTriangle,
-  Ban,
+  Archive,
   Bot,
+  CalendarClock,
+  Camera,
   Check,
-  ChevronDown,
   ChevronRight,
+  Circle,
+  ClipboardCheck,
+  Clock,
+  Cpu,
   Database,
-  Eye,
-  FileCheck,
+  Download,
+  Edit3,
   FileText,
-  Globe,
-  Image,
+  FolderKanban,
+  Gauge,
+  Home,
+  KeyRound,
   Layers3,
-  Loader2,
-  MessageCircle,
+  LayoutTemplate,
+  Lock,
+  MessageSquare,
+  MoreHorizontal,
+  Network,
   Pause,
-  Pencil,
   Play,
+  PlugZap,
   Plus,
-  Save,
-  Send,
-  RefreshCcw,
+  RefreshCw,
+  Search,
+  Settings,
   ShieldCheck,
   Sparkles,
+  Trash2,
+  Video,
+  Wifi,
   X
 } from "lucide-react";
-import { isSecretStorageOnlyMessage, resolveCreateMessageCommand } from "./createMessageSecrets.js";
+import "./styles.css";
 
-type Row = Record<string, any>;
-type View = "Dashboard" | "Create" | "Schedule" | "Runs" | "Skills" | "Sources" | "Lanes" | "Approvals";
+type Status = "running" | "waiting" | "approved" | "blocked" | "enabled" | "disabled" | "draft";
+
+const projects = ["プロジェクトA", "プロジェクトB", "プロジェクトC", "プロジェクトD"];
+const projectSlugs = ["project-a", "project-b", "project-c", "project-d"];
+const projectLabels = Object.fromEntries(projectSlugs.map((slug, index) => [slug, projects[index]]));
+const projectCapabilities = Object.fromEntries(projectSlugs.map((slug) => [slug, {
+  api_readback_available: true,
+  external_action_disabled: true,
+  registered_automation_scope: slug === "project-a" ? "connected" : "project-a-only",
+  data_scope: slug === "project-a" ? "mvp_state_readback" : "placeholder_only"
+}]));
+const subTabLabels = [
+  ["定期実行", "automations"],
+  ["保存情報", "memory"],
+  ["Lane", "lanes"],
+  ["パフォーマンス", "performance"],
+  ["接続・権限・セキュリティ", "security"],
+  ["成果物 / KPI", "artifacts"]
+];
+
+function redactSensitiveText(value: string) {
+  return String(value || "")
+    .replace(/\bauthorization\s*[:=]\s*bearer\s+[A-Za-z0-9._-]{8,}/gi, "[redacted]")
+    .replace(/(?:authorization|bearer|password|passwd|secret|token|access[_-]?token|refresh[_-]?token|session[_-]?token|api[_-]?key|private[_-]?key|security[_-]?code|database[_-]?url|otp|recovery[_-]?code)\s*[:=]\s*[^\s,;]+/gi, "[redacted]")
+    .replace(/\bbearer\s+[A-Za-z0-9._-]{8,}/gi, "[redacted]")
+    .replace(/\b(?:sk-|xox|ghp_|eyJ)[A-Za-z0-9._-]{8,}/g, "[redacted]")
+    .replace(/\bpostgres(?:ql)?:\/\/[^\s,;]+/gi, "[redacted]")
+    .replace(/BEGIN PRIVATE KEY[\s\S]*?END PRIVATE KEY/g, "[redacted]");
+}
+
+const seedAutomations = [
+  { id: "sns-post", project_id: "project-a", automation_type: "sns-post", name: "SNS投稿", desc: "X / LinkedIn / Instagram に投稿", schedule: "09:00", lane: "Lane 1", last: "今日 08:58", status: "enabled" as Status },
+  { id: "feedback", project_id: "project-a", automation_type: "feedback", name: "フィードバック", desc: "プロダクトのフィードバック収集", schedule: "10:00", lane: "Lane 1", last: "昨日 10:02", status: "enabled" as Status },
+  { id: "dm-reply", project_id: "project-a", automation_type: "dm-reply", name: "DM返信", desc: "各SNSのDMに自動返信", schedule: "11:00", lane: "Lane 2", last: "承認待ち", status: "waiting" as Status },
+  { id: "ads", project_id: "project-a", automation_type: "ads", name: "広告投稿", desc: "広告アカウントへ投稿・告知", schedule: "13:00", lane: "Lane 2", last: "未実行", status: "draft" as Status }
+];
+
+type AutomationRow = typeof seedAutomations[number];
+type MvpState = {
+  updated_at?: string;
+  worker?: { id: string; status: string; heartbeat_at: string | null; queue_depth: number; last_run_id: string | null; heartbeat_age_seconds?: number | null; heartbeat_fresh?: boolean; readback_status?: string; exact_blocker?: string | null; next_action?: string; external_action_executed?: boolean };
+  persistence?: any;
+  projects?: any[];
+  automations?: any[];
+  schedules?: any[];
+  runs?: any[];
+  proofs?: any[];
+  approvals?: any[];
+  project_memory?: any[];
+  account_refs?: any[];
+  builder_specs?: any[];
+  audit_events?: any[];
+  redaction_readback?: any;
+  production_readiness_readback?: any;
+};
+
+type RegisteredAutomationReadback = {
+  ok?: boolean;
+  read_only?: boolean;
+  exact_boundary?: string;
+  safety_boundary?: string;
+  source_ref?: string | null;
+  preflight_source_ref?: string | null;
+  latest_proof_source_ref?: string | null;
+  inventory_run_id?: string;
+  preflight_run_id?: string;
+  latest_proof_run_id?: string;
+  automation_count?: number;
+  automations?: any[];
+};
+
+function workerStatusSummary(worker: MvpState["worker"]) {
+  if (!worker) {
+    return {
+      fresh: false,
+      label: "unknown",
+      blocker: "mac_worker_state_missing",
+      nextAction: "MVP stateを再読込してworker状態を確認してください。",
+      display: "worker=unknown / blocker=mac_worker_state_missing"
+    };
+  }
+  const blocker = worker.exact_blocker ?? (worker.heartbeat_fresh === false
+    ? worker.readback_status === "heartbeat_missing" ? "mac_worker_heartbeat_missing" : "mac_worker_heartbeat_stale"
+    : null);
+  const nextAction = worker.next_action ?? (blocker
+    ? "Mac worker laneを起動してheartbeat/readbackを更新してください。"
+    : "worker heartbeatはfreshです。各workflowのauth/readback境界を取るまでqueued jobは処理しません。");
+  return {
+    fresh: worker.heartbeat_fresh === true,
+    label: worker.readback_status ?? "unknown",
+    blocker,
+    nextAction,
+    display: blocker ? `blocker=${blocker} / 次: ${nextAction}` : `heartbeat=${worker.readback_status ?? "unknown"} / 次: ${nextAction}`
+  };
+}
+
+type ProductionRollupResult = {
+  id: string;
+  capability: string;
+  actual_status: "confirmed" | "blocked-runtime-verification";
+  artifact: string;
+  blocker: string | null;
+  resume_condition: string | null;
+};
+
+type AutomationPlan = {
+  kind: string;
+  title: string;
+  schedule: string;
+  cadence: string;
+  targetLabel: string;
+  steps: string[];
+  questions: string[];
+  safetyNote: string;
+  approvalPolicy: string;
+};
+
+type PlannerReadback = {
+  ok: boolean;
+  planner_adapter: string;
+  planner_mode: string;
+  planner_model_ref: string | null;
+  planner_schema_version: string;
+  project_id: string;
+  automation_type: string;
+  plan: AutomationPlan;
+  exact_blocker: string | null;
+};
+
 type ChatMessage = {
   id: string;
   role: "assistant" | "user";
   text: string;
 };
 
-type CreatePlannerDecision = "ask_more" | "save_plan" | "demo_first" | "ready_to_start" | "ready_to_schedule";
+function nextChatId(prefix: string) {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
 
-type CreatePlannerPlan = {
-  source?: "local_codex" | "openai" | "local_fallback";
-  intent?: "answer_question" | "plan_workflow";
-  exactBlocker?: string;
-  model?: string;
-  title: string;
-  reply: string;
-  command: string;
-  visibleSteps: string[];
-  backendChecks: string[];
-  answered?: string[];
-  openQuestions?: string[];
-  nextAction?: string;
-  executionDecision?: CreatePlannerDecision;
-  confidence?: "low" | "medium" | "high";
-};
+function actionStamp() {
+  return `${new Date().toLocaleTimeString("ja-JP", { hour12: false })}.${String(Date.now()).slice(-3)}`;
+}
 
-type CreatePlannerJobReadback = {
-  id: string;
-  status: "queued" | "running" | "completed" | "blocked";
-  result?: CreatePlannerPlan;
-  exactBlocker?: string;
-  updatedAt?: string;
-};
+function detectSchedule(text: string) {
+  const hourMatch = text.match(/(\d{1,2})\s*時/);
+  const hour = hourMatch ? Math.max(0, Math.min(23, Number(hourMatch[1]))) : text.includes("夕方") ? 18 : text.includes("夜") ? 20 : 9;
+  const cadence = text.includes("毎週") ? "weekly" : text.includes("毎月") ? "monthly" : "daily";
+  return { schedule: `${String(hour).padStart(2, "0")}:00`, cadence };
+}
 
-type CreateDraft = {
-  command: string;
-  title: string;
-  reply: string;
-  visibleSteps: string[];
-  backendChecks: string[];
-  answered: string[];
-  openQuestions: string[];
-  nextAction: string;
-  executionDecision: CreatePlannerDecision;
-  confidence: "low" | "medium" | "high";
-  plannerSource?: "local_codex" | "openai" | "local_fallback";
-  intent?: "answer_question" | "plan_workflow";
-  plannerModel?: string;
-  plannerBlocker?: string;
-  plannerJobId?: string;
-  plannerJobStatus?: CreatePlannerJobReadback["status"];
-};
-
-type CreateDraftSession = {
-  version: 1;
-  messages: ChatMessage[];
-  draft: CreateDraft;
-  researchSources: Record<ResearchSourceKey, boolean>;
-  command: string;
-};
-
-type ActionReceiptTone = "ok" | "blocked" | "running" | "info";
-
-type ActionReceipt = {
-  id: string;
-  tone: ActionReceiptTone;
-  title: string;
-  detail: string;
-  nextAction: string;
-  view?: View;
-  runId?: string;
-  planId?: string;
-  checkId?: string;
-  workflowId?: string;
-  createdAt: string;
-};
-
-type SecretSummary = {
-  id: string;
-  kind: string;
-  label: string;
-  maskedValue: string;
-  updatedAt: string;
-};
-
-type ResearchSourceKey = "web" | "x" | "reddit" | "youtube" | "mcp" | "api";
-
-type ResearchSourcePlan = {
-  key: ResearchSourceKey;
-  label: string;
-  enabled: boolean;
-  mode: string;
-  boundary: string;
-  metadata: Row;
-};
-
-type ResearchPlan = {
-  id: string;
-  title: string;
-  status: string;
-  command: string;
-  sources: ResearchSourcePlan[];
-  visibleFlow: string[];
-  sourceOfTruth: string[];
-  proofBoundary: string[];
-  approvalBoundary: string[];
-  metadata: Row;
-  demoCheckId: string | null;
-  runId: string | null;
-  createdAt: string;
-  updatedAt: string;
-};
-
-type PlannerCaptureResponse = {
-  ok: boolean;
-  status: string;
-  plan?: ResearchPlan;
-  proof?: Row;
-  capture?: Row;
-  runId?: string;
-  run?: Row;
-  error?: string;
-  summary?: string;
-};
-
-type Dashboard = {
-  runs: Row[];
-  actionableRuns?: Row[];
-  steps: Row[];
-  lanes: Row[];
-  approvals: Row[];
-  approvalInbox?: Row[];
-  externalPreflightChecklist?: Row[];
-  proofs: Row[];
-  childRuns: Row[];
-  workerEvents: Row[];
-  advisorEvents: Row[];
-  systemChecks: Row[];
-  bridgeActionCatalog: Row[];
-  bridgeActions: Row[];
-  bridgeExecutions: Row[];
-  knowledgeNotes: Row[];
-  researchPlans: ResearchPlan[];
-  nextActions: Row[];
-  assetSummary: Row[];
-  assets: Row[];
-  skills: Row[];
-  registeredWorkflows: Row[];
-  secrets: SecretSummary[];
-  obsidian?: Row;
-  resumeContract?: Row;
-  codexCapabilities?: Row;
-  codexParityLedger?: Row;
-  codexAutomationMigrationLedger?: Row;
-  capabilityRouter?: CapabilityRouterSnapshot;
-  browserHealth?: Row;
-  localWorker?: Row;
-  schedulerStatus?: Row;
-  deployment?: Row;
-  productionGuard?: Row;
-};
-
-type CapabilityRoute = {
-  id: string;
-  label: string;
-  status: "ready" | "partial" | "missing";
-  lane: string;
-  nextAction: string;
-  evidence: string[];
-  signals: string[];
-};
-
-type CapabilityGap = {
-  id: string;
-  label: string;
-  priority: "high" | "medium" | "low";
-  status: "not_connected" | "partly_connected" | "manual_only" | "legacy_lane";
-  why: string;
-  nextAction: string;
-  action?: {
-    kind: "create";
-    label: string;
-    view: "Create" | "Sources" | "Runs";
-    command?: string;
-    routeId?: string;
+function buildAutomationPlan(prompt: string, selectedPlatforms: string[]): AutomationPlan {
+  const lower = prompt.toLowerCase();
+  const { schedule, cadence } = detectSchedule(prompt);
+  const wantsLine = prompt.includes("LINE") || prompt.includes("Line") || prompt.includes("ライン") || lower.includes("line");
+  const wantsNotify = prompt.includes("通知") || prompt.includes("知らせ") || prompt.includes("送って") || prompt.includes("連絡") || lower.includes("notify") || lower.includes("alert") || lower.includes("webhook") || lower.includes("slack");
+  const wantsNews = prompt.includes("最新") || prompt.includes("ニュース") || prompt.includes("探して") || prompt.includes("調べ") || prompt.includes("まとめ") || lower.includes("google") || lower.includes("web") || lower.includes("news");
+  const wantsAi = prompt.includes("AI") || lower.includes("ai");
+  if (lower.includes("gmail") || prompt.includes("メール") || prompt.includes("問い合わせ") || prompt.includes("返信")) {
+    return {
+      kind: "メール返信",
+      title: "メール返信 自動化プラン",
+      schedule,
+      cadence,
+      targetLabel: "Gmail / 問い合わせ",
+      steps: ["受信条件と対象ラベルを確認", "返信案を作成", "個人情報とsecret混入を検査", "送信前に承認で停止", "承認後の実行Laneを割り当て", "送信結果と証跡を保存", "失敗時の再試行条件を記録"],
+      questions: ["対象にするメールラベルや送信元条件", "返信してよい範囲と必ず止める条件"],
+      safetyNote: "メール送信は承認まで実行しません。",
+      approvalPolicy: "required_before_external_send"
+    };
+  }
+  if (wantsLine || wantsNotify) {
+    const topic = wantsNews ? (wantsAi ? "AI最新情報" : "指定トピックの最新情報") : "通知";
+    const sourceStep = wantsNews ? "Google/Webから最新情報候補を収集" : "指定された情報源または内部データを取得";
+    return {
+      kind: "情報収集・通知",
+      title: `${topic} LINE通知 自動化プラン`,
+      schedule,
+      cadence,
+      targetLabel: wantsLine ? "LINE通知" : "外部通知",
+      steps: ["通知条件と情報源を確認", sourceStep, "重複・古い情報・信頼性の低い情報を除外", "重要ポイントを短く要約", "通知文の下書きを作成", "LINE/Webhook/外部通知送信前に承認で停止", "readbackと証跡を保存"],
+      questions: ["通知先の接続先または承認済みsecret lane", "毎回承認するか、下書き保存だけにするか"],
+      safetyNote: "LINE/Webhook/外部通知は承認まで実行しません。",
+      approvalPolicy: "required_before_external_notification"
+    };
+  }
+  if (prompt.includes("調査") || prompt.includes("リサーチ") || lower.includes("research")) {
+    return {
+      kind: "リサーチ",
+      title: "リサーチ 自動化プラン",
+      schedule,
+      cadence,
+      targetLabel: "Web / Drive",
+      steps: ["調査対象と禁止範囲を確認", "参照元を収集", "要点と引用元を整理", "レポート下書きを作成", "人間レビューで停止", "承認後に成果物へ保存", "失敗時の再試行条件を記録"],
+      questions: ["調査対象の範囲", "保存先とレビュー条件"],
+      safetyNote: "外部投稿や送信は含めず、成果物保存前に確認します。",
+      approvalPolicy: "required_before_external_publish"
+    };
+  }
+  const targetLabel = selectedPlatforms.length ? selectedPlatforms.join(" / ") : "SNS";
+  return {
+    kind: "SNS投稿",
+    title: `${targetLabel}投稿 自動化プラン`,
+    schedule,
+    cadence,
+    targetLabel,
+    steps: ["素材の取得元を確認", "投稿文と画像候補を作成", `${targetLabel} の下書きに変換`, "外部投稿前に承認で停止", "承認後の実行Laneを割り当て", "実行結果とURLを保存", "失敗時の再試行条件を記録"],
+    questions: ["投稿先アカウント", "投稿前の承認条件"],
+    safetyNote: "外部投稿は承認まで実行しません。",
+    approvalPolicy: "required_before_external_post"
   };
+}
+
+function automationSlugForKind(kind: string) {
+  if (kind === "メール返信") return "gmail-reply";
+  if (kind === "リサーチ") return "research-report";
+  if (kind === "情報収集・通知") return "research-notification";
+  if (kind === "Daily AI") return "daily-ai";
+  if (kind === "NisenPrints") return "nisenprints";
+  if (kind === "Codex Job Manager") return "codex-job-manager";
+  if (kind === "回答のみ") return "answer-only";
+  return "sns-post";
+}
+
+async function requestChatPlan(prompt: string, selectedPlatforms: string[]): Promise<PlannerReadback> {
+  const fallbackPlan = buildAutomationPlan(prompt, selectedPlatforms);
+  try {
+    const response = await fetch("/api/mvp/chat/plan", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prompt, selected_platforms: selectedPlatforms })
+    });
+    if (!response.ok) throw new Error("planner_api_failed");
+    return await response.json();
+  } catch {
+    return {
+      ok: true,
+      planner_adapter: "client_fallback_deterministic",
+      planner_mode: "api_unavailable_fallback",
+      planner_model_ref: null,
+      planner_schema_version: "client-fallback-v1",
+      project_id: projectSlugFromPrompt(prompt),
+      automation_type: automationSlugForKind(fallbackPlan.kind),
+      plan: fallbackPlan,
+      exact_blocker: "chat_planner_api_unavailable_fallback_client"
+    };
+  }
+}
+
+const productionRollup: {
+  run_id: string;
+  overall_status: string;
+  goal_complete: boolean;
+  confirmed_count: number;
+  blocked_count: number;
+  results: ProductionRollupResult[];
+} = {
+  run_id: "20260702022000",
+  overall_status: "in_progress_blocked_runtime_verification",
+  goal_complete: false,
+  confirmed_count: 4,
+  blocked_count: 6,
+  results: [
+    { id: "P001", capability: "registered_automation_inventory", actual_status: "confirmed", artifact: "artifacts/registered-automation-inventory/20260702010000/inventory.json", blocker: null, resume_condition: null },
+    { id: "P002", capability: "daily_backup_mac_execution", actual_status: "confirmed", artifact: "artifacts/registered-automation-runs/20260702011000/daily-backup-readback.json", blocker: null, resume_condition: null },
+    { id: "P003", capability: "external_automation_read_only_preflight", actual_status: "confirmed", artifact: "artifacts/registered-automation-preflight/20260702012000/preflight.json", blocker: null, resume_condition: null },
+    { id: "P004", capability: "production_migration_contract", actual_status: "confirmed", artifact: "artifacts/production-migration-contract/20260702013000/verification.json", blocker: null, resume_condition: null },
+    { id: "P005", capability: "real_auth_login_org_isolation", actual_status: "blocked-runtime-verification", artifact: "artifacts/auth-readback-verification/20260702017000/auth-readback-verification.json", blocker: "real browser/API/DB/audit auth readbacks and checksums missing", resume_condition: "Fill auth-readback-template in real mode after provider login/logout/session/revoke/UserA-vs-UserB isolation/audit evidence." },
+    { id: "P006", capability: "real_secret_vault_local_mac_boundary", actual_status: "blocked-runtime-verification", artifact: "artifacts/secret-vault-readback-verification/20260702018000/secret-vault-readback-verification.json", blocker: "real vault operation/redaction artifacts and checksums missing", resume_condition: "Fill secret-vault-readback-template in real mode with opaque reference register/use/revoke/expire and redaction proof." },
+    { id: "P007", capability: "production_deploy_and_rollback", actual_status: "blocked-runtime-verification", artifact: "artifacts/production-deploy-smoke/20260702016000/deploy-smoke.json", blocker: "production URL remote health/smoke and rollback proof missing", resume_condition: "Set AUTOMATION_OS_PRODUCTION_URL, deploy to target, verify remote health/readiness/browser smoke and rollback proof." },
+    { id: "P008", capability: "real_external_action_sandbox", actual_status: "blocked-runtime-verification", artifact: "artifacts/external-action-sandbox-verification/20260702019000/external-action-sandbox-verification.json", blocker: "real-mode approval receipt/provider readback/cleanup/audit/checksums missing", resume_condition: "Fill external-action-sandbox-template in real mode for a sandbox/test account only." },
+    { id: "P009", capability: "production_like_external_measurement", actual_status: "blocked-runtime-verification", artifact: "artifacts/p009-prodlike-external-measurement-gate/20260702020000/p009-prodlike-external-measurement-gate.json", blocker: "P008 sandbox, structured production-like run submission, and real readback package not ready", resume_condition: "Confirm P008, submit structured production-like run, and provide checksum-backed real readback package." },
+    { id: "P010", capability: "ten_m_readiness", actual_status: "blocked-runtime-verification", artifact: "artifacts/p010-10m-readiness-gate/20260702021000/p010-10m-readiness-gate.json", blocker: "P009, real final measured evidence bundle, and manager acceptance/claim allowance not ready", resume_condition: "Confirm P009, provide real final measured evidence bundle, and obtain manager acceptance with claim allowance." }
+  ]
 };
 
-type CapabilityRouterSnapshot = {
-  generatedAt: string;
-  command: string;
-  primaryAction: string;
-  recommendedRoutes: CapabilityRoute[];
-  gapBacklog: CapabilityGap[];
-  counts: Row;
-};
-
-type RunDetail = {
-  run: Row;
-  steps: Row[];
-  proofs: Row[];
-  children: Row[];
-  workerEvents: Row[];
-};
-
-type ProofView = Row & {
-  status: "ok" | "blocked" | "not_found";
-  preview_kind?: "json" | "text" | "image" | "unsupported";
-  preview?: string;
-  blocked_reason?: string;
-  mime_type?: string;
-  image?: {
-    mime_type?: string;
-    width?: number;
-    height?: number;
-    base64_included?: boolean;
-  };
-};
-
-type RunDispositionKind = "actionable" | "running" | "completed" | "archive";
-type RunArchiveReason = "history_only" | "receipt_only" | "demo" | null;
-type RunDisposition = {
-  kind: RunDispositionKind;
-  archiveReason: RunArchiveReason;
-};
-
-type RefreshOptions = {
-  background?: boolean;
-  staleNotice?: boolean;
-};
-
-const emptyDashboard: Dashboard = {
-  runs: [],
-  actionableRuns: [],
-  steps: [],
-  lanes: [],
-  approvals: [],
-  approvalInbox: [],
-  externalPreflightChecklist: [],
-  proofs: [],
-  childRuns: [],
-  workerEvents: [],
-  advisorEvents: [],
-  systemChecks: [],
-  bridgeActionCatalog: [],
-  bridgeActions: [],
-  bridgeExecutions: [],
-  knowledgeNotes: [],
-  researchPlans: [],
-  nextActions: [],
-  assetSummary: [],
-  assets: [],
-  skills: [],
-  registeredWorkflows: [],
-  secrets: [],
-  obsidian: {},
-  resumeContract: {},
-  codexCapabilities: {},
-  codexParityLedger: { items: [] },
-  codexAutomationMigrationLedger: { items: [], summary: {} },
-  capabilityRouter: {
-    generatedAt: "",
-    command: "",
-    primaryAction: "",
-    recommendedRoutes: [],
-    gapBacklog: [],
-    counts: {}
+const currentProductionReadiness = {
+  run_id: "20260702263000",
+  production_ready: false,
+  goal_complete: false,
+  confirmed_count: 69,
+  blocked_runtime_count: 6,
+  next_required_runtime_stage: "P005_real_login_auth",
+  next_runtime_evidence_workspace: "artifacts/runtime-evidence-collection/20260702063000-p005",
+  next_runtime_verifier_command: "AUTH_READBACK_INPUT=artifacts/runtime-evidence-collection/20260702063000-p005/auth-readback.json AUTH_READBACK_RUN_ID=<run-id> npm run verify:auth-readback",
+  next_runtime_secret_scan_command: "npm run scan:runtime-evidence-collection-secrets",
+  next_stage_gate_artifact: "artifacts/p005-p010-next-stage-gate/20260702226000-p092-next-stage-gate/next-stage-gate.json",
+  next_stage_gate_command: "P005_P010_NEXT_STAGE_GATE_RUN_ID=20260702226000-p092-next-stage-gate npm run verify:p005-p010-next-stage-gate",
+  p005_real_auth_operator_handoff_artifact: "artifacts/p005-real-auth-operator-handoff/20260702232000-p093-p005-auth-handoff/operator-handoff.json",
+  p005_real_auth_operator_handoff_command: "P005_REAL_AUTH_OPERATOR_HANDOFF_RUN_ID=20260702232000-p093-p005-auth-handoff npm run verify:p005-real-auth-operator-handoff",
+  p005_runtime_evidence_submission_workspace_artifact: "artifacts/p005-runtime-evidence-submission-workspace/20260702237000-p094-p005-submission-workspace/submission-workspace.json",
+  p005_runtime_evidence_submission_workspace_command: "P005_RUNTIME_EVIDENCE_SUBMISSION_WORKSPACE_RUN_ID=20260702237000-p094-p005-submission-workspace npm run verify:p005-runtime-evidence-submission-workspace",
+  p005_auth_readback_readiness_gap_report_artifact: "artifacts/p005-auth-readback-readiness-gap-report/20260702242000-p095-p005-auth-gap/gap-report.json",
+  p005_auth_readback_readiness_gap_report_command: "P005_AUTH_READBACK_READINESS_GAP_RUN_ID=20260702242000-p095-p005-auth-gap npm run verify:p005-auth-readback-readiness-gap-report",
+  p005_auth_readback_promotion_plan_artifact: "artifacts/p005-auth-readback-promotion-plan/20260702247000-p096-p005-auth-promotion-plan/promotion-plan.json",
+  p005_auth_readback_promotion_plan_command: "P005_AUTH_READBACK_PROMOTION_PLAN_RUN_ID=20260702247000-p096-p005-auth-promotion-plan npm run verify:p005-auth-readback-promotion-plan",
+  p005_auth_readback_promotion_safety_snapshot_artifact: "artifacts/p005-auth-readback-promotion-safety-snapshot/20260702252000-p097-p005-auth-promotion-safety-snapshot/safety-snapshot.json",
+  p005_auth_readback_promotion_safety_snapshot_command: "P005_AUTH_READBACK_PROMOTION_SAFETY_SNAPSHOT_RUN_ID=20260702252000-p097-p005-auth-promotion-safety-snapshot npm run verify:p005-auth-readback-promotion-safety-snapshot",
+  p005_auth_readback_promotion_contract_artifact: "artifacts/p005-auth-readback-promotion-contract/20260702257000-p098-p005-auth-promotion-contract/promotion-contract.json",
+  p005_auth_readback_promotion_contract_command: "P005_AUTH_READBACK_PROMOTION_CONTRACT_RUN_ID=20260702257000-p098-p005-auth-promotion-contract npm run verify:p005-auth-readback-promotion-contract",
+  p005_auth_readback_artifact_acceptance_gate_artifact: "artifacts/p005-auth-readback-artifact-acceptance-gate/20260702262000-p099-p005-auth-artifact-acceptance-gate/acceptance-gate.json",
+  p005_auth_readback_artifact_acceptance_gate_command: "P005_AUTH_READBACK_ARTIFACT_ACCEPTANCE_GATE_RUN_ID=20260702262000-p099-p005-auth-artifact-acceptance-gate npm run verify:p005-auth-readback-artifact-acceptance-gate",
+  local_readiness_verifier_command: "PRODUCTION_READINESS_LOCAL_RUN_ID=20260702266000 npm run verify:production-readiness-local",
+  registered_automation_model_policy_command: "npm run verify:registered-automation-model-policy",
+  registered_automation_inventory_current_command: "REGISTERED_AUTOMATION_INVENTORY_RUN_ID=20260702050000 npm run inventory:registered-automations",
+  registered_automation_preflight_current_command: "REGISTERED_AUTOMATION_INVENTORY_RUN_ID=20260702050000 REGISTERED_AUTOMATION_PREFLIGHT_RUN_ID=20260702051000 npm run preflight:registered-automations",
+  registered_automation_execution_matrix_command: "npm run verify:registered-automation-execution-matrix",
+  external_automation_unblock_packet_command: "npm run verify:external-automation-unblock-packet",
+  production_runtime_unblock_packet_command: "npm run verify:production-runtime-unblock-packet",
+  runtime_evidence_collection_all_command: "npm run verify:runtime-evidence-collection-all",
+  runtime_evidence_collection_all_secret_scan_command: "npm run scan:runtime-evidence-collection-all-secrets",
+  production_promotion_audit_command: "npm run verify:production-promotion-audit",
+  runtime_evidence_submission_packet_command: "npm run verify:runtime-evidence-submission-packet",
+  registered_automation_drift_guard_command: "npm run verify:registered-automation-drift-guard",
+  full_objective_completion_audit_command: "npm run verify:full-objective-completion-audit",
+  real_runtime_evidence_intake_gate_command: "npm run verify:real-runtime-evidence-intake-gate",
+  runtime_evidence_checksum_staging_command: "npm run verify:runtime-evidence-checksum-staging",
+  runtime_evidence_promotion_pipeline_command: "npm run verify:runtime-evidence-promotion-pipeline",
+  p005_real_auth_capture_packet_command: "npm run verify:p005-real-auth-capture-packet",
+  p006_secret_vault_capture_packet_command: "npm run verify:p006-secret-vault-capture-packet",
+  p007_production_deploy_capture_packet_command: "npm run verify:p007-production-deploy-capture-packet",
+  p008_external_action_capture_packet_command: "npm run verify:p008-external-action-capture-packet",
+  p009_prodlike_capture_packet_command: "npm run verify:p009-prodlike-capture-packet",
+  p010_10m_capture_packet_command: "npm run verify:p010-10m-capture-packet",
+  p005_p010_operator_packet_command: "npm run verify:p005-p010-operator-packet",
+  p005_p010_redacted_hygiene_gate_command: "npm run verify:p005-p010-redacted-hygiene",
+  p005_p010_stage_promotion_queue_command: "npm run verify:p005-p010-promotion-queue",
+  p005_real_auth_first_stage_packet_command: "npm run verify:p005-real-auth-first-stage-packet",
+  p006_secret_vault_first_stage_packet_command: "npm run verify:p006-secret-vault-first-stage-packet",
+  p007_production_deploy_first_stage_packet_command: "npm run verify:p007-production-deploy-first-stage-packet",
+  p008_external_action_first_stage_packet_command: "npm run verify:p008-external-action-first-stage-packet",
+  p009_prodlike_first_stage_packet_command: "npm run verify:p009-prodlike-first-stage-packet",
+  p010_10m_first_stage_packet_command: "npm run verify:p010-10m-first-stage-packet",
+  p005_real_auth_operator_packet_command: "npm run verify:p005-real-auth-operator-packet",
+  p005_real_auth_artifact_intake_command: "npm run verify:p005-real-auth-artifact-intake",
+  p006_secret_vault_operator_packet_command: "npm run verify:p006-secret-vault-operator-packet",
+  p006_secret_vault_artifact_intake_command: "npm run verify:p006-secret-vault-artifact-intake",
+  p007_production_deploy_operator_packet_command: "npm run verify:p007-production-deploy-operator-packet",
+  p007_production_deploy_artifact_intake_command: "npm run verify:p007-production-deploy-artifact-intake",
+  p008_external_action_operator_packet_command: "npm run verify:p008-external-action-operator-packet",
+  p008_external_action_artifact_intake_command: "npm run verify:p008-external-action-artifact-intake",
+  p009_prodlike_operator_packet_command: "npm run verify:p009-prodlike-operator-packet",
+  p009_prodlike_artifact_intake_command: "npm run verify:p009-prodlike-artifact-intake",
+  p010_10m_operator_packet_command: "npm run verify:p010-10m-operator-packet",
+  p010_10m_artifact_intake_command: "npm run verify:p010-10m-artifact-intake",
+  p077_operator_packet_suite_command: "npm run verify:p005-p010-operator-packet-suite",
+  p085_artifact_intake_suite_command: "npm run verify:p005-p010-artifact-intake-suite",
+  p086_runtime_artifact_blocker_index_command: "npm run verify:p005-p010-runtime-artifact-blocker-index",
+  p087_real_auth_submission_preflight_command: "npm run verify:p005-real-auth-submission-preflight",
+  p088_auth_readback_submission_manifest_command: "npm run verify:p005-auth-readback-submission-manifest",
+  p089_auth_readback_manifest_alignment_command: "AUTH_READBACK_INPUT=artifacts/runtime-evidence-collection/20260702063000-p005/auth-readback.json AUTH_READBACK_RUN_ID=20260702206000-p005-manifest npm run verify:auth-readback",
+  p090_auth_readback_prepromotion_packet_command: "P005_AUTH_READBACK_PREPROMOTION_RUN_ID=20260702212000-p090-p005-auth-prepromotion npm run verify:p005-auth-readback-prepromotion-packet",
+  p091_p006_p010_readback_prepromotion_packet_command: "P006_P010_READBACK_PREPROMOTION_RUN_ID=20260702220000-p091-p006-p010-prepromotion npm run verify:p006-p010-readback-prepromotion-packet",
+  p092_next_stage_gate_command: "P005_P010_NEXT_STAGE_GATE_RUN_ID=20260702226000-p092-next-stage-gate npm run verify:p005-p010-next-stage-gate",
+  p093_real_auth_operator_handoff_command: "P005_REAL_AUTH_OPERATOR_HANDOFF_RUN_ID=20260702232000-p093-p005-auth-handoff npm run verify:p005-real-auth-operator-handoff",
+  p094_runtime_evidence_submission_workspace_command: "P005_RUNTIME_EVIDENCE_SUBMISSION_WORKSPACE_RUN_ID=20260702237000-p094-p005-submission-workspace npm run verify:p005-runtime-evidence-submission-workspace",
+  p095_auth_readback_readiness_gap_report_command: "P005_AUTH_READBACK_READINESS_GAP_RUN_ID=20260702242000-p095-p005-auth-gap npm run verify:p005-auth-readback-readiness-gap-report",
+  p096_auth_readback_promotion_plan_command: "P005_AUTH_READBACK_PROMOTION_PLAN_RUN_ID=20260702247000-p096-p005-auth-promotion-plan npm run verify:p005-auth-readback-promotion-plan",
+  p097_auth_readback_promotion_safety_snapshot_command: "P005_AUTH_READBACK_PROMOTION_SAFETY_SNAPSHOT_RUN_ID=20260702252000-p097-p005-auth-promotion-safety-snapshot npm run verify:p005-auth-readback-promotion-safety-snapshot",
+  p098_auth_readback_promotion_contract_command: "P005_AUTH_READBACK_PROMOTION_CONTRACT_RUN_ID=20260702257000-p098-p005-auth-promotion-contract npm run verify:p005-auth-readback-promotion-contract",
+  user_usable_today: {
+    automation_creation_and_local_mvp: "confirmed-by-earlier-M001-M009-track",
+    registered_daily_backup_local_run: "confirmed",
+    production_saas_runtime: "not_confirmed"
   },
-  browserHealth: {},
-  deployment: {},
-  productionGuard: {}
+  blocked_runtime_capabilities: [
+    "real_login_auth",
+    "real_secret_vault",
+    "production_deploy_and_rollback",
+    "external_action_sandbox",
+    "production_like_measurement",
+    "ten_m_readiness"
+  ],
+  hard_stops_not_crossed: [
+    "production deploy",
+    "real login credential entry",
+    "real secret vault mutation",
+    "external posting/sending/deleting",
+    "payment_purchase_checkout",
+    "captcha_otp_security_code_identity",
+    "production customer data"
+  ]
 };
 
-const createDraftSessionStorageKey = "automation-os:create-draft-session:v1";
-const operatorWriteTokenStorageKey = "automation-os:operator-write-token:v1";
-
-const primaryNav: Array<[View, string, React.ComponentType<{ size?: number }>]> = [
-  ["Dashboard", "今", Activity],
-  ["Create", "作る", MessageCircle],
-  ["Schedule", "定期", RefreshCcw],
-  ["Approvals", "確認", ShieldCheck],
-  ["Runs", "履歴", Play]
-];
-
-const advancedNav: Array<[View, string, React.ComponentType<{ size?: number }>]> = [
-  ["Skills", "スキル", Sparkles],
-  ["Sources", "データ", Database],
-  ["Lanes", "レーン", Layers3]
-];
-
-const hashViews: Record<string, View> = {
-  "#home": "Dashboard",
-  "#create": "Create",
-  "#schedule": "Schedule",
-  "#runs": "Runs",
-  "#approvals": "Approvals",
-  "#skills": "Skills",
-  "#data": "Sources",
-  "#sources": "Sources",
-  "#lanes": "Lanes"
-};
-
-const viewHashes: Record<View, string> = {
-  Dashboard: "#home",
-  Create: "#create",
-  Schedule: "#schedule",
-  Runs: "#runs",
-  Approvals: "#approvals",
-  Skills: "#skills",
-  Sources: "#sources",
-  Lanes: "#lanes"
-};
-
-function initialView() {
-  if (typeof window === "undefined") return "Dashboard";
-  return hashViews[window.location.hash] ?? "Dashboard";
-}
-
-function isDashboard(value: unknown): value is Dashboard {
-  if (!value || typeof value !== "object") return false;
-  const candidate = value as Partial<Dashboard>;
-  return Array.isArray(candidate.runs)
-    && (candidate.actionableRuns === undefined || Array.isArray(candidate.actionableRuns))
-    && Array.isArray(candidate.steps)
-    && Array.isArray(candidate.lanes)
-    && Array.isArray(candidate.approvals)
-    && (candidate.approvalInbox === undefined || Array.isArray(candidate.approvalInbox))
-    && (candidate.externalPreflightChecklist === undefined || Array.isArray(candidate.externalPreflightChecklist))
-    && Array.isArray(candidate.proofs)
-    && Array.isArray(candidate.childRuns ?? [])
-    && Array.isArray(candidate.workerEvents)
-    && Array.isArray(candidate.advisorEvents)
-    && Array.isArray(candidate.systemChecks ?? [])
-    && Array.isArray(candidate.bridgeActionCatalog ?? [])
-    && Array.isArray(candidate.bridgeActions ?? [])
-    && Array.isArray(candidate.bridgeExecutions ?? [])
-    && Array.isArray(candidate.knowledgeNotes ?? [])
-    && Array.isArray(candidate.researchPlans ?? [])
-    && Array.isArray(candidate.nextActions ?? [])
-    && Array.isArray(candidate.assetSummary)
-    && Array.isArray(candidate.assets)
-    && Array.isArray(candidate.skills)
-    && Array.isArray(candidate.secrets);
-}
-
-const actionableRunStatuses = new Set(["blocked", "partial", "waiting_approval", "approval_required"]);
-const runningRunStatuses = new Set(["queued", "running", "in_progress", "started"]);
-const completedRunStatuses = new Set(["complete", "completed"]);
-
-function isTrueLike(value: unknown) {
-  return value === true || value === "true" || value === 1 || value === "1";
-}
-
-function classifyRun(run?: Row): RunDisposition {
-  if (!run) return { kind: "archive", archiveReason: "history_only" };
-  const meta = asJson<Row>(run.metadata_json, {});
-  if (isTrueLike(run.resume_suppressed) || isTrueLike(meta.resume_suppressed)) {
-    return { kind: "archive", archiveReason: "history_only" };
-  }
-  if (isTrueLike(run.demo) || isTrueLike(meta.demo) || isTrueLike(meta.seeded_demo)) {
-    return { kind: "archive", archiveReason: "demo" };
-  }
-  if (
-    run.worker_mode === "receipt_only"
-    || run.execution_mode === "receipt_only"
-    || isTrueLike(run.receipt_only)
-    || meta.worker_mode === "receipt_only"
-    || meta.execution_mode === "receipt_only"
-    || isTrueLike(meta.receipt_only)
-  ) {
-    return { kind: "archive", archiveReason: "receipt_only" };
-  }
-  const status = String(run.status ?? "");
-  if (actionableRunStatuses.has(status)) return { kind: "actionable", archiveReason: null };
-  if (runningRunStatuses.has(status)) return { kind: "running", archiveReason: null };
-  if (completedRunStatuses.has(status)) return { kind: "completed", archiveReason: null };
-  return { kind: "archive", archiveReason: "history_only" };
-}
-
-function runDispositionRank(run: Row) {
-  const disposition = classifyRun(run);
-  if (disposition.kind === "actionable") return 0;
-  if (disposition.kind === "running") return 1;
-  if (disposition.kind === "completed") return 2;
-  return 3;
-}
-
-function resolveSelectedRunId(current: string | null, runs: Row[], actionableRuns: Row[] = []): string | null {
-  if (!runs.length) return null;
-  if (current && runs.some((run) => run.id === current)) return current;
-  const latestRunId = [...actionableRuns].sort((a, b) => runDispositionRank(a) - runDispositionRank(b))[0]?.id;
-  return typeof latestRunId === "string" ? latestRunId : null;
-}
-
-function newerRunSnapshot(detailRun?: Row, dashboardRun?: Row) {
-  if (!detailRun) return dashboardRun;
-  if (!dashboardRun) return detailRun;
-  const detailTime = Date.parse(String(detailRun.updated_at ?? detailRun.created_at ?? ""));
-  const dashboardTime = Date.parse(String(dashboardRun.updated_at ?? dashboardRun.created_at ?? ""));
-  if (Number.isFinite(detailTime) && Number.isFinite(dashboardTime) && dashboardTime > detailTime) {
-    return dashboardRun;
-  }
-  if (String(detailRun.status ?? "") !== String(dashboardRun.status ?? "") && Number.isFinite(dashboardTime) && !Number.isFinite(detailTime)) {
-    return dashboardRun;
-  }
-  return detailRun;
-}
-
-function isRunDetail(value: unknown): value is RunDetail {
-  if (!value || typeof value !== "object") return false;
-  const candidate = value as Partial<RunDetail>;
-  return Boolean(candidate.run && typeof candidate.run === "object")
-    && Array.isArray(candidate.steps)
-    && Array.isArray(candidate.proofs)
-    && Array.isArray(candidate.children ?? [])
-    && Array.isArray(candidate.workerEvents);
-}
-
-const nisenPrintsQuickStarts = [
-  {
-    key: "nisenprints_etsy_sync",
-    command: "NisenPrints Etsy Sync current listings 正本同期",
-    beginnerLabel: "Etsy同期",
-    beginnerDescription: "公開中の商品リストと手元の管理表をそろえます。",
-    visibleSteps: ["Etsyの公開リストを確認", "手元の管理表を同期", "古い行が戻らないか確認"]
-  },
-  {
-    key: "nisenprints_printify_recovery",
-    command: "NisenPrints Printify recovery 途中復旧",
-    beginnerLabel: "Printify復旧",
-    beginnerDescription: "止まった商品を同じ続きから再開します。",
-    visibleSteps: ["同じ商品を見つける", "未完了の段階から再開する", "Printifyの状態を確認する"]
-  },
-  {
-    key: "nisenprints_full_publish_run",
-    command: "NisenPrints Full Publish 新規公開 最後まで",
-    beginnerLabel: "新規公開",
-    beginnerDescription: "新しい商品を作って公開確認まで進めます。",
-    visibleSteps: ["商品素材を作る", "Etsyに公開する", "公開リンクを確認する"]
-  }
-];
-
-const createSuggestions = [
-  "毎朝の確認作業を自動化したい",
-  "申請や予約の状況を見て次の対応を決めたい",
-  "メモや資料から手順を整理したい"
-];
-
-const initialCreatePrompt = "毎日の作業を相談しながら自動化したい";
-const researchSourceKeys: ResearchSourceKey[] = ["web", "x", "reddit", "youtube", "mcp", "api"];
-const researchSourceLabels: Record<ResearchSourceKey, string> = {
-  web: "Web",
-  x: "X",
-  reddit: "Reddit",
-  youtube: "YouTube",
-  mcp: "連携先",
-  api: "公式連携"
-};
-const initialResearchSources: Record<ResearchSourceKey, boolean> = {
-  web: true,
-  x: true,
-  reddit: true,
-  youtube: true,
-  mcp: false,
-  api: false
-};
-
-function normalizeVisibleSteps(value: unknown, fallback: string[] = ["目的を確認", "状態を見る", "開始"]) {
-  const steps = Array.isArray(value)
-    ? value.flatMap((entry) => typeof entry === "string" && entry.trim() ? [entry.trim().slice(0, 120)] : [])
-    : [];
-  return steps.length ? steps.slice(0, 12) : fallback;
-}
-
-function sameVisibleSteps(left: string[], right: string[]) {
-  if (left.length !== right.length) return false;
-  return left.every((step, index) => step === right[index]);
-}
-
-function sameResearchSources(sources: ResearchSourcePlan[], selection: Record<ResearchSourceKey, boolean>) {
-  return researchSourceKeys.every((key) => sources.find((source) => source.key === key)?.enabled === selection[key]);
-}
-
-const initialCreateMessages: ChatMessage[] = [
-  {
-    id: "assistant-welcome",
-    role: "assistant",
-    text: "やりたいことをそのまま送ってください。"
-  }
-];
-
-function normalizeCreateMessageForDedupe(value: string) {
-  return value
-    .replace(/\s+/gu, " ")
-    .trim();
-}
-
-function compactCreateMessages(messages: ChatMessage[]) {
-  let previousRole: ChatMessage["role"] | null = null;
-  let previousAssistantReply = "";
-  return messages.flatMap((message): ChatMessage[] => {
-    if (message.role !== "assistant") {
-      previousRole = "user";
-      previousAssistantReply = "";
-      return [message];
-    }
-    const normalized = normalizeCreateMessageForDedupe(message.text);
-    if (normalized && previousRole === "assistant" && previousAssistantReply === normalized) return [];
-    previousRole = "assistant";
-    previousAssistantReply = normalized;
-    return [message];
-  });
-}
-
-function asJson<T = any>(value: unknown, fallback: T): T {
-  if (typeof value !== "string") return (value ?? fallback) as T;
-  try {
-    return JSON.parse(value) as T;
-  } catch {
-    return fallback;
-  }
-}
-
-function compactId(id?: string) {
-  if (!id) return "none";
-  return id.length > 18 ? `${id.slice(0, 12)}...${id.slice(-5)}` : id;
-}
-
-function formatBytes(value: number) {
-  if (!Number.isFinite(value) || value <= 0) return "0 B";
-  if (value < 1024) return `${value} B`;
-  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
-  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-const statusLabels: Record<string, string> = {
-  active: "使用中",
-  approved: "承認済み",
-  blocked: "停止",
-  blocked_by_executor: "外部操作待ち",
-  cancelled: "取り消し",
-  connected: "準備OK",
-  completed: "完了",
-  complete: "完了",
-  covered: "対応済み",
-  covered_local: "ローカル対応",
-  failed: "失敗",
-  gap: "未対応",
-  good: "正常",
-  idle: "待機中",
-  ok: "OK",
-  not_connected: "未接続",
-  partial: "確認が必要",
-  pending: "保留中",
-  approval_required: "課金確認",
-  queued: "待機中",
-  ready: "準備完了",
-  registered_runner_pending: "準備中",
-  rejected: "却下",
-  running: "実行中",
-  skipped: "スキップ",
-  waiting_approval: "承認待ち"
-};
-
-const workerModeLabels: Record<string, string> = {
-  execute_codex: "Codex read-only実行",
-  execute_child_codex: "別のAI作業",
-  execute_playwright: "画面確認",
-  execute_daily_ai_registered: "Daily AI実行",
-  execute_nisenprints_registered: "NisenPrints実行",
-  execute_prompt_transfer_registered: "転記実行",
-  execute_sns_multi_poster_registered: "SNS投稿実行",
-  execute_x_authenticated_browser_lane_registered: "X確認実行",
-  human_input_required_with_evidence: "人間入力待ち",
-  proof_only_external_write_boundary: "証跡確認",
-  receipt_only: "証拠のみ",
-  external_execution: "外部実行",
-  local_worker: "Mac worker",
-  local: "ローカル"
-};
-
-const resourceLabels: Record<string, string> = {
-  browser_lane: "ブラウザ",
-  commerce_publish: "公開作業",
-  local: "ローカル",
-  none: "なし",
-  social_publish: "投稿作業"
-};
-
-const proofTypeLabels: Record<string, string> = {
-  actual_execution_or_manual_verification: "実行確認",
-  cleanup_proof: "片付け確認",
-  codex_readonly_blocked: "Codex read-only停止",
-  codex_readonly_execution: "Codex read-only完了",
-  child_codex_blocked: "別のAI作業停止",
-  child_codex_result: "別のAI作業結果",
-  direct_engagement: "反応確認",
-  direct_publish: "投稿確認",
-  etsy_current_sync: "Etsy同期",
-  etsy_current_listings_snapshot: "Etsy一覧確認",
-  etsy_listing_discovered: "Etsyリスト確認",
-  local_queue_synced: "ローカル同期",
-  pinterest_pin_verified: "Pinterest確認",
-  printify_product_same_id: "Printify同一商品",
-  printify_status_checked: "Printify状態確認",
-  resume_stage_verified: "再開位置確認",
-  same_product_id_verified: "同一商品確認",
-  screenshot: "スクリーンショット",
-  stale_rows_pruned: "古い行の整理",
-  worker_receipt: "処理記録"
-};
-
-const eventTypeLabels: Record<string, string> = {
-  approval_required: "課金確認が必要",
-  command_received: "依頼を受信",
-  command_run_created: "実行作成",
-  run_completed: "実行完了",
-  run_created: "実行作成",
-  run_started: "実行開始",
-  step_completed: "手順完了",
-  step_started: "手順開始",
-  worker_completed: "処理完了",
-  worker_blocked: "処理停止",
-  worker_started: "処理開始"
-};
-
-const sourceTypeLabels: Record<string, string> = {
-  agents_skills: "Agentスキル",
-  codex_automations: "Automation",
-  codex_sessions: "セッション",
-  codex_skills: "Codexスキル",
-  doc: "ドキュメント",
-  docs: "ドキュメント",
-  directory: "フォルダ",
-  file: "ファイル",
-  memory: "メモリ",
-  missing: "未検出",
-  plugin_cache: "プラグイン",
-  prompt: "指示文",
-  skill: "スキル"
-};
-
-function displayStatus(value?: string) {
-  if (!value) return "不明";
-  return statusLabels[value] ?? "状態不明";
-}
-
-function capabilityStatusLabel(value?: string) {
-  if (value === "ready") return "使える";
-  if (value === "partial") return "一部OK";
-  if (value === "missing") return "未接続";
-  return "確認";
-}
-
-function gapPriorityLabel(value?: string) {
-  if (value === "high") return "高";
-  if (value === "medium") return "中";
-  if (value === "low") return "低";
-  return "確認";
-}
-
-function displayWorkerMode(value?: string) {
-  if (!value) return "不明";
-  return workerModeLabels[value] ?? "実行方式不明";
-}
-
-function displayResource(value?: string) {
-  if (!value) return "ローカル";
-  if (value.startsWith("bridge:")) return "外部操作";
-  if (value.startsWith("collision:")) return "同時実行の確認";
-  return resourceLabels[value] ?? "作業対象";
-}
-
-function displayProofType(value?: string) {
-  if (!value) return "確認記録";
-  return proofTypeLabels[value] ?? "確認記録";
-}
-
-function proofKindLabel(proofView?: ProofView | null) {
-  if (!proofView) return "保存記録";
-  if (proofView.preview_kind === "image") return "画面・画像";
-  if (proofView.preview_kind === "json") return "構造化された記録";
-  if (proofView.preview_kind === "text") return "テキスト記録";
-  return "保存記録";
-}
-
-function proofConfirmationText(proof: Row, proofView?: ProofView | null) {
-  const type = String(proof.proof_type ?? "");
-  if (/cleanup|片付け/i.test(type)) {
-    return "実行後に余計な処理やブラウザを残していないか確認する記録です。";
-  }
-  if (/publish|pin|submit|send|direct|external/i.test(type)) {
-    return "外部側で実際に反映されたかを確認する記録です。";
-  }
-  if (/queue|sync|list|status|readable|visible_source|source_snapshot/i.test(type)) {
-    return "正本として見た一覧・状態・内容を確認する記録です。";
-  }
-  if (proofView?.preview_kind === "image" || /screenshot|screen|image/i.test(type)) {
-    return "画面の見た目をあとから確認するための記録です。";
-  }
-  if (proofView?.preview_kind === "json") {
-    return "機械的な結果を人間が確認できる形で保存した記録です。";
-  }
-  if (proofView?.preview_kind === "text") {
-    return "実行時に見た内容や結果をテキストで確認する記録です。";
-  }
-  return "この履歴が何を確認したかをあとから追えるようにする保存記録です。";
-}
-
-function proofPreviewSummary(proofView?: ProofView | null) {
-  if (!proofView) return "読み込み前";
-  if (proofView.status === "blocked") return "安全条件に合う範囲だけ表示します。";
-  if (proofView.preview_kind === "image") return "画像本文は表示せず、保存形式と寸法を確認します。";
-  if (proofView.preview_kind === "json") return "長い内容や機密になり得る値は省略・伏せ字にします。";
-  if (proofView.preview_kind === "text") return "保存されたテキストの先頭だけを表示します。";
-  return "この形式は内容表示の対象外です。";
-}
-
-function displayEventType(value?: string) {
-  if (!value) return "処理ログ";
-  return eventTypeLabels[value] ?? "処理ログ";
-}
-
-function displaySourceType(value?: string) {
-  if (!value) return "データ";
-  return sourceTypeLabels[value] ?? "データ";
-}
-
-function sourceTypeHelp(value?: string) {
-  const map: Record<string, string> = {
-    agents_skills: "再利用できる手順",
-    codex_automations: "登録済みの自動化",
-    codex_sessions: "過去の実行記録",
-    codex_skills: "Codexで使える手順",
-    doc: "読み込んだ資料",
-    docs: "読み込んだ資料",
-    memory: "前回までの学習メモ",
-    plugin_cache: "追加できる機能",
-    prompt: "実行に使う指示文",
-    skill: "再利用できる手順"
-  };
-  return map[value ?? ""] ?? "必要なとき裏側で参照します";
-}
-
-function displayLaneRole(value?: string) {
-  if (!value) return "待機レーン";
-  if (/browser|chrome|playwright/i.test(value)) return "ブラウザ確認";
-  if (/worker|executor|run/i.test(value)) return "実行";
-  if (/review|verify|check/i.test(value)) return "確認";
-  return displayVisibleSummary(value);
-}
-
-function displayLaneName(lane: Row) {
-  const role = displayLaneRole(String(lane.role ?? ""));
-  if (lane.status === "active") return `${role}レーン`;
-  if (lane.status === "idle") return "待機レーン";
-  return `${role}レーン`;
-}
-
-function displayLaneConnection(lane: Row) {
-  if (lane.playwright_configured) return "Playwright専用";
-  return lane.connection_configured ? "専用接続あり" : "接続未設定";
-}
-
-function displayLaneBrowserMode(lane: Row) {
-  if (lane.playwright_configured) return "専用プロファイル";
-  if (lane.profile_strategy === "cdp_profile_lane") return "専用レーン";
-  if (lane.browser_use_configured) return "一時セッション";
-  return "未設定";
-}
-
-function displayLaneRunName(lane: Row) {
-  const runName = displayVisibleSummary(lane.run_name);
-  if (runName) return runName;
-  if (lane.run_id) return `実行 ${compactId(String(lane.run_id))}`;
-  return "実行なし";
-}
-
-const attentionLaneStatuses = new Set(["active", "blocked"]);
-const attentionLaneHealthValues = new Set(["collision", "approval_required", "failed", "error", "unhealthy", "blocked"]);
-
-function laneNeedsAttention(lane: Row) {
-  const status = String(lane.status ?? "").trim().toLowerCase();
-  const health = String(lane.health ?? "").trim().toLowerCase();
-  if (attentionLaneStatuses.has(status)) return true;
-  if (!status || status === "idle") return false;
-  return attentionLaneHealthValues.has(health);
-}
-
-function displayProfileStrategy(value?: string) {
-  if (value === "cdp_profile_lane") return "専用環境";
-  if (value === "unique_session") return "一時セッション";
-  if (!value) return "未設定";
-  return displayVisibleSummary(value);
-}
-
-function displayLaneVisibility(value?: string) {
-  if (value === "visible") return "表示中";
-  if (value === "hidden") return "非表示";
-  if (!value) return "未設定";
-  return displayVisibleSummary(value);
-}
-
-function isErrorNotice(value: string) {
-  return /failed|error|required|失敗|エラー|できません|読み込めません|入力してください/.test(value);
-}
-
-function userError(value?: string) {
-  const map: Record<string, string> = {
-    api_not_found: "APIが見つかりません",
-    approval_already_decided: "この承認はすでに処理済みです",
-    approval_not_found: "承認リクエストが見つかりません",
-    bridge_action_not_found: "Bridge操作が見つかりません",
-    bridge_approval_not_approved: "先に承認してください",
-    bridge_approval_required: "課金・購入・支払い・決済の確認が必要です",
-    bridge_execute_not_required: "この操作は実行ボタンから使えます",
-    bridge_executor_not_connected: "外部操作Bridgeはまだ接続されていません",
-    browser_target_must_be_local: "検証対象はローカルURLだけにしてください",
-    command_required: "やりたい作業を入力してください",
-    dashboard_failed: "状態を読み込めませんでした",
-    request_failed: "操作に失敗しました",
-    obsidian_custom_export_requires_approval: "Obsidianの出力先変更には承認が必要です",
-    production_write_locked: "本番では操作を停止しています",
-    production_write_token_required: "本番操作には認証が必要です",
-    run_detail_failed: "選んだ履歴を読み込めませんでした",
-    run_failed: "実行できませんでした",
-    run_not_found: "あとで見る履歴が見つかりません",
-    secret_save_failed: "認証情報を保存できませんでした",
-    unknown_error: "不明なエラーです"
-  };
-  if (!value) return "操作に失敗しました";
-  return map[value] ?? "操作に失敗しました";
-}
-
-function errorCodeFromApiBody(value: unknown) {
-  if (!value || typeof value !== "object") return undefined;
-  const error = (value as { error?: unknown }).error;
-  return typeof error === "string" ? error : undefined;
-}
-
-async function readApiJson<T = Row>(response: Response, fallbackError = "request_failed"): Promise<T> {
-  let text = "";
-  try {
-    text = await response.text();
-  } catch {
-    throw new Error(userError(fallbackError));
-  }
-
-  if (!text.trim()) {
-    throw new Error(userError(fallbackError));
-  }
-
-  let body: unknown;
-  try {
-    body = JSON.parse(text);
-  } catch {
-    throw new Error(userError(fallbackError));
-  }
-
-  if (!response.ok) {
-    throw new Error(userError(errorCodeFromApiBody(body) ?? fallbackError));
-  }
-
-  return body as T;
-}
-
-async function fetchApiJson<T = Row>(input: RequestInfo | URL, init: RequestInit | undefined, fallbackError: string): Promise<T> {
-  let response: Response;
-  try {
-    const token = readStoredOperatorWriteToken();
-    const headers = new Headers(init?.headers ?? {});
-    if (token) headers.set("x-automation-os-token", token);
-    response = await fetch(input, { ...init, headers });
-  } catch {
-    throw new Error(userError(fallbackError));
-  }
-  return readApiJson<T>(response, fallbackError);
-}
-
-function displayTaskName(value?: string) {
-  if (!value) return "自動化";
-  const publicName = displayPublicAutomationName(value);
-  if (publicName) return publicName;
-  if (/qa visible flow|receipt[- ]only/i.test(value)) return "確認作業";
-  if (/etsy sync|current listings|正本同期/i.test(value)) return "Etsy同期";
-  if (/printify|recovery|復旧/i.test(value)) return "Printify復旧";
-  if (/full publish|新規公開|最後まで/i.test(value)) return "新規公開";
-  if (/approve command run/i.test(value)) return "確認";
-  if (/chrome_authenticated_action/.test(value)) return "ログイン済みChrome操作";
-  if (/gmail_drive_calendar_action/.test(value)) return "Gmail/Drive/Calendar操作";
-  if (/supabase_shopify_external_action/.test(value)) return "外部システム変更";
-  return displayCreatePlanText(value);
-}
-
-function displayPublicAutomationName(value?: string) {
-  const text = String(value ?? "");
-  if (!text.trim()) return "";
-  if (/post[- ]application|follow[- ]up|応募後/i.test(text)) return "応募後";
-  if (/daily[-_ ]?ai|daily ai/i.test(text)) return "Daily AI";
-  if (/job[-_ ]?application|job application|submit queue|応募/i.test(text)) return "応募";
-  if (/nisenprints|etsy|printify|pinterest|新規公開/i.test(text)) return "NisenPrints";
-  if (/sns[-_ ]?multi[-_ ]?poster|sns multi poster|\bSNS\b/i.test(text)) return "SNS";
-  if (/x[-_ ]?authenticated[-_ ]?browser[-_ ]?lane|x authenticated browser lane|\bX\b/i.test(text)) return "X";
-  if (/prompt[-_ ]?transfer|ukiyoe|転記/i.test(text)) return "転記";
-  if (/automation os|morning|research[-_ ]?plan|朝|毎朝/i.test(text)) return "朝チェック";
-  return "";
-}
-
-function displayApprovalTitle(value?: string) {
-  if (!value) return "承認が必要です";
-  const cleaned = value
-    .replace(/^Bridge approval[:：]?\s*/i, "")
-    .replace(/実行の承認[:：]?\s*/g, "")
-    .replace(/approve command run[:：]?\s*/gi, "")
-    .replace(/trusted-bridge|外部操作Bridge/gi, "")
-    .trim();
-  if (!cleaned) return "確認";
-  const publicName = displayPublicAutomationName(cleaned);
-  if (publicName) return `確認: ${publicName}`;
-  const taskName = displayTaskName(cleaned);
-  const visibleTask = taskName === value ? displayCreatePlanText(cleaned) : taskName;
-  return visibleTask ? `確認: ${visibleTask}` : "確認";
-}
-
-function displayStepTime(step: Row) {
-  const value = step.completed_at ?? step.started_at;
-  if (value) return String(value).slice(11, 19);
-  if (step.status === "pending" || step.status === "waiting_approval") return "未開始";
-  return "時刻なし";
-}
-
-function displayApprovalSubtitle(approval: Row) {
-  if (approval.requested_by === "trusted-bridge") {
-    return "まだ動かしていません";
-  }
-  return "確認が必要です";
-}
-
-function displayRunCardStatus(disposition: RunDisposition) {
-  if (disposition.kind === "actionable") return "確認";
-  if (disposition.kind === "running") return "進行中";
-  if (disposition.kind === "completed") return "完了";
-  if (disposition.archiveReason === "demo") return "サンプル";
-  if (disposition.archiveReason === "receipt_only") return "保存";
-  return "古い";
-}
-
-function displayVisibleSummary(value?: string) {
-  return String(value ?? "")
-    .replace(/NisenPrints Etsy Sync current listings 正本同期/gi, "Etsy同期")
-    .replace(/NisenPrints Printify recovery 途中復旧/gi, "Printify復旧")
-    .replace(/NisenPrints Full Publish 新規公開 最後まで/gi, "新規公開")
-    .replace(/\s+は/g, "は")
-    .trim();
-}
-
-function displayCreatePlanText(value?: string) {
-  return displayVisibleSummary(value)
-    .replace(/専用ブラウザ\/CDP\/Google profileで見える範囲をread-only確認/gi, "専用ブラウザで見える範囲を確認")
-    .replace(/X\/YouTube\/Redditは専用ブラウザ\/CDP\/Google profileで見える内容を優先/gi, "X、YouTube、Redditは専用ブラウザで見える範囲を確認")
-    .replace(/公式Show transcript\/公開字幕をブラウザで読む/gi, "公式の字幕や台本をブラウザで読む")
-    .replace(/YouTube台本は公式Show transcript\/公開字幕をブラウザで読む/gi, "YouTubeの台本は公式の字幕や台本をブラウザで読む")
-    .replace(/Data API captions\.downloadは認可が必要なため初期実装では使わない/gi, "初期設定では使いません")
-    .replace(/Data API captions\.downloadは認可が必要なので初期実装では使わない/gi, "初期設定では使いません")
-    .replace(/API課金前提にせず、見えている画面を正本候補にする/gi, "画面で見える内容を確認元の候補にします")
-    .replace(/公式API契約と認可条件を確認してから使う/gi, "公式の利用条件を確認してから使います")
-    .replace(/課金・認可・外部書き込みは承認境界へ分離する/gi, "お金や許可が必要な操作は、始める前に確認します")
-    .replace(/Browser Use/gi, "画面確認")
-    .replace(/CDP\/Google profile/gi, "専用ブラウザ")
-    .replace(/Google profile/gi, "ブラウザ設定")
-    .replace(/\bCDP\b/g, "専用ブラウザ")
-    .replace(/Show transcript/gi, "字幕や台本")
-    .replace(/Data API captions\.download/gi, "初期設定では使わない字幕取得")
-    .replace(/source-of-truth/gi, "確認元")
-    .replace(/read-only inventory/gi, "見るだけの一覧")
-    .replace(/read-only proof/gi, "見るだけの確認記録")
-    .replace(/read-only/gi, "見るだけ")
-    .replace(/receipt-only/gi, "記録だけ")
-    .replace(/proof boundary/gi, "確認記録の条件")
-    .replace(/run\/proof\/artifact\/DB\/readback/gi, "実行結果と保存記録の確認")
-    .replace(/openai_\d+/gi, "AI計画に接続できませんでした")
-    .replace(/openai_api_key_missing/gi, "AI計画の接続が未設定です")
-    .replace(/codex_planner_[a-z0-9_]+/gi, "ローカル計画に接続できませんでした")
-    .replace(/local_planner_[a-z0-9_]+/gi, "簡易計画で整理しています")
-    .replace(/\bproof\b/gi, "確認記録")
-    .replace(/\brun\b/gi, "実行履歴")
-    .replace(/\bartifacts?\b/gi, "保存記録")
-    .replace(/\breadback\b/gi, "読み直し確認")
-    .replace(/\bDB\b/g, "保存データ")
-    .replace(/正本/g, "確認元");
-}
-
-function displayChatMessage(message: ChatMessage) {
-  const text = message.role === "assistant" ? displayCreatePlanText(message.text) : locallyRedactSecrets(message.text);
-  return redactDisplayPaths(text);
-}
-
-function displayBridgeReceiptSummary(value?: string) {
-  const summary = redactDisplayPaths(displayVisibleSummary(value));
-  if (!summary) return "結果を記録しました";
-  if (/Browser Use CLI|open\/state\/screenshot|state\/screenshot|screenshot/i.test(summary)) {
-    return "画面確認が完了し、保存記録を残しました";
-  }
-  if (/\[redacted-(?:path|file-uri)\]|data\/artifacts\/|screenshotPath|statePath|logPath/i.test(summary)) {
-    return "確認結果と保存記録を残しました";
-  }
-  return summary;
-}
-
-function redactDisplayPaths(value?: string) {
-  return String(value ?? "")
-    .replace(/file:(?:\\\/){3}Users(?:\\\/)[^\n\r"'<>]+/g, "[redacted-file-uri]")
-    .replace(/file:(?:\/\/\/|\/\/|(?:\\\/){2,3})Users\/[^\n\r"'<>]+/g, "[redacted-file-uri]")
-    .replace(/\/Users\/[^\n\r"'<>]+/g, "[redacted-path]")
-    .replace(/(?:\/private)?\/tmp\/[^\n\r"'<>]+/g, "[redacted-path]")
-    .replace(/(?:^|[\s"'(])Documents\/New project\/[^\n\r"'<>]+/g, (match) => {
-      const prefix = match.match(/^[\s"'(]/)?.[0] ?? "";
-      return `${prefix}[redacted-path]`;
-    })
-    .replace(/(?:^|[\s"'(])data\/artifacts(?:\/[^\n\r"'<>]+)?/g, (match) => {
-      const prefix = match.match(/^[\s"'(]/)?.[0] ?? "";
-      return `${prefix}[redacted-artifact]`;
-    })
-    .replace(/(?:^|[\s"'(])artifacts(?:\/[^\n\r"'<>]+)?/g, (match) => {
-      const prefix = match.match(/^[\s"'(]/)?.[0] ?? "";
-      return `${prefix}[redacted-artifact]`;
-    })
-    .replace(/(?:^|[\s"'(])output\/playwright(?:\/[^\n\r"'<>]+)?/g, (match) => {
-      const prefix = match.match(/^[\s"'(]/)?.[0] ?? "";
-      return `${prefix}[redacted-artifact]`;
-    })
-    .replace(/(?:^|[\s"'(])\.playwright-cli(?:\/[^\n\r"'<>]+)?/g, (match) => {
-      const prefix = match.match(/^[\s"'(]/)?.[0] ?? "";
-      return `${prefix}[redacted-artifact]`;
-    })
-    .replace(/https?:\/\/[^\s"'<>]+/g, "[redacted-url]");
-}
-
-type BrowserUseResult = {
-  check: Row;
-  meta: Row;
-  connection: Row;
-  cleanup: Row;
-  profileIsolation: Row;
-  target: string;
-  session: string;
-  screenshotPath: string;
-  statePath: string;
-  logPath: string;
-};
-
-function toBrowserUseResult(check: Row): BrowserUseResult | null {
-  const meta = asJson<Row>(check.metadata_json, {});
-  const publicResult = asJson<Row>(meta.browser_use_result, {});
-  const nestedMeta = asJson<Row>(meta.metadata, {});
-  const driver = String(publicResult.driver ?? nestedMeta.driver ?? meta.driver ?? "");
-  if (driver !== "browser_use_cli") return null;
-
-  const connection = asJson<Row>(nestedMeta.connectionStrategy ?? meta.connectionStrategy, {});
-  const cleanup = asJson<Row>(nestedMeta.cleanup ?? meta.cleanup, {});
-  const profileIsolation = asJson<Row>(nestedMeta.profileIsolation ?? meta.profileIsolation, {});
-  return {
-    check,
-    meta: { ...meta, ...nestedMeta },
-    connection: Object.keys(connection).length ? connection : { mode: publicResult.connectionMode },
-    cleanup: Object.keys(cleanup).length ? cleanup : { status: publicResult.cleanupStatus },
-    profileIsolation,
-    target: String(check.target_url ?? nestedMeta.targetUrl ?? meta.targetUrl ?? "--"),
-    session: String(connection.session ?? nestedMeta.session ?? meta.session ?? "--"),
-    screenshotPath: Number(publicResult.evidenceCount ?? 0) > 0 ? "saved" : String(nestedMeta.screenshotPath ?? meta.screenshotPath ?? ""),
-    statePath: Number(publicResult.evidenceCount ?? 0) > 1 ? "saved" : String(nestedMeta.statePath ?? meta.statePath ?? ""),
-    logPath: Number(publicResult.evidenceCount ?? 0) > 2 ? "saved" : String(nestedMeta.logPath ?? meta.logPath ?? "")
-  };
-}
-
-function browserUseResultLine(result: BrowserUseResult) {
-  if (result.check.status === "ok") return "画面確認が完了しました。";
-  if (result.check.status === "blocked") return "確認が必要です。";
-  return "結果を記録しました。";
-}
-
-function displayBrowserUseLane(result: BrowserUseResult) {
-  if (result.connection.mode === "cdp_profile_lane") return "専用レーン";
-  if (result.connection.mode === "unique_session") return "一時セッション";
-  return "セッション";
-}
-
-function displayCleanupStatus(cleanup: Row) {
-  if (cleanup.status === "ok") return "片付け済み";
-  if (cleanup.reason === "browser_use_cli_missing") return "実行できませんでした";
-  if (cleanup.reason === "cdp_profile_lane_preserved") return "専用レーンを保持";
-  if (cleanup.status === "skipped") return "スキップ";
-  if (cleanup.status === "blocked") return "片付け未完了";
-  return "不明";
-}
-
-function displayShortDateTime(value?: string) {
-  if (!value) return "未実行";
-  return String(value).slice(0, 16).replace("T", " ");
-}
-
-function displayObsidianReason(value?: string) {
-  const map: Record<string, string> = {
-    api_state_change: "アプリ操作後の自動同期",
-    bridge_action: "手動更新",
-    cli_manual_export: "CLI手動実行",
-    codex_stop_hook: "Codex終了時の自動同期",
-    periodic: "定期同期"
-  };
-  if (!value) return "理由なし";
-  if (value.endsWith("_skipped_export_in_flight")) return "同期中のためスキップ";
-  return map[value] ?? value;
-}
-
-function displayGeneratedFileCheck(check: Row) {
-  if (!check || typeof check !== "object" || check.checkedAt == null) return "生成ファイル確認: 未確認";
-  const ok = check.ok === true;
-  const total = Number(check.total ?? 0);
-  const missing = Array.isArray(check.missing) ? check.missing.length : 0;
-  const nonGenerated = Array.isArray(check.nonGenerated) ? check.nonGenerated.length : 0;
-  if (ok) return `生成ファイル確認: OK ${total}件`;
-  return `生成ファイル確認: 要確認 missing ${missing} / nonGenerated ${nonGenerated}`;
-}
-
-function displayGeneratedFileCheckPublic(check: Row) {
-  if (!check || typeof check !== "object" || check.checkedAt == null) return "未確認";
-  return check.ok === true ? "OK" : "要確認";
-}
-
-function publicEvidenceCopy(count: number) {
-  if (count <= 0) return "保存記録はまだありません";
-  return `${count}件の保存記録を内部に保存済み`;
-}
-
-function postNotice(message: string, body: Row) {
-  const suffix = body.imported ?? body.ingested;
-  const nestedRun = body.run && typeof body.run === "object" ? body.run : {};
-  const nextAction = typeof body.nextAction === "string" ? body.nextAction : "";
-  if (typeof suffix === "number") return `${message}: ${suffix}件`;
-  if (body.counts && typeof body.counts === "object") return `${message}: skills=${body.counts.skills ?? 0}, plugins=${body.counts.plugins ?? 0}`;
-  if (Array.isArray(body.notes)) return `${message}: ${body.notes.length}件`;
-  if (typeof body.removed === "number") return `${message}: ${body.removed}件`;
-  if (typeof body.summary === "string") return `${message}: ${displayBridgeReceiptSummary(body.summary)}`;
-  if (typeof body.targetUrl === "string") return `${message}: ${body.targetUrl}`;
-  if (typeof body.outputDir === "string") return `${message}: ${body.outputDir}`;
-  if (nextAction) return `${message}: ${nextAction}`;
-  if (typeof nestedRun.status === "string") return `${message}: ${displayStatus(nestedRun.status)}`;
-  if (typeof body.status === "string") return `${message}: ${displayStatus(body.status)}`;
-  return message;
-}
-
-function extractResponseRunId(body: Row) {
-  if (typeof body.runId === "string" && body.runId.trim()) return body.runId;
-  const nestedRun = body.run && typeof body.run === "object" ? body.run : {};
-  return typeof nestedRun.runId === "string" && nestedRun.runId.trim() ? nestedRun.runId : null;
-}
-
-function extractResponsePlanId(body: Row) {
-  if (typeof body.planId === "string" && body.planId.trim()) return body.planId;
-  const nestedPlan = body.plan && typeof body.plan === "object" ? body.plan : {};
-  return typeof nestedPlan.id === "string" && nestedPlan.id.trim() ? nestedPlan.id : null;
-}
-
-function extractResponseCheckId(body: Row) {
-  if (typeof body.checkId === "string" && body.checkId.trim()) return body.checkId;
-  if (typeof body.demoCheckId === "string" && body.demoCheckId.trim()) return body.demoCheckId;
-  const systemCheck = body.systemCheck && typeof body.systemCheck === "object" ? body.systemCheck : {};
-  return typeof systemCheck.id === "string" && systemCheck.id.trim() ? systemCheck.id : null;
-}
-
-function extractResponseWorkflowId(body: Row) {
-  if (typeof body.workflowId === "string" && body.workflowId.trim()) return body.workflowId;
-  const workflow = body.workflow && typeof body.workflow === "object" ? body.workflow : {};
-  return typeof workflow.id === "string" && workflow.id.trim() ? workflow.id : null;
-}
-
-function secretLabels(secrets: SecretSummary[]) {
-  return secrets.map((secret) => secret.label).filter(Boolean);
-}
-
-function savedSecretLine(secrets: SecretSummary[], kind: string) {
-  const secret = secrets.find((entry) => entry.kind === kind);
-  return secret ? `前回保存した${secret.label}があるので、必要ならこれを使いますね。値は画面には表示しません。` : "";
-}
-
-function savedSecretNotice(secrets: SecretSummary[]) {
-  const labels = secretLabels(secrets);
-  return labels.length ? `${labels.join("、")}を保存しました。次回からは保存済みのキーとして使います。値は画面には表示しません。` : "";
-}
-
-function locallyRedactSecrets(value: string) {
-  return value
-    .replace(/\bsk-[A-Za-z0-9_-]{20,}\b/g, "[保存済み: APIキー]")
-    .replace(/\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\b/g, "[保存済み: APIキー]")
-    .replace(/\b((?:api[_-]?key|token|secret|access[_-]?token)\s*[:=]\s*)([A-Za-z0-9_.-]{32,})\b/gi, "$1[保存済み: APIキー]")
-    .replace(/((?:APIキー|apiキー|キー|トークン)\s*(?:[:=：]|は|が|を)?\s*)([A-Za-z0-9_.-]{32,})\b/g, "$1[保存済み: APIキー]");
-}
-
-function mayContainSecret(value: string) {
-  return /\bpostgres(?:ql)?:\/\/[^\s"'<>]+/i.test(value)
-    || /\bsk-[A-Za-z0-9_-]{20,}\b/.test(value)
-    || /\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\b/.test(value)
-    || /\b(?:api[_-]?key|token|secret|access[_-]?token)\s*[:=]\s*[A-Za-z0-9_.-]{32,}\b/i.test(value)
-    || /(?:APIキー|apiキー|キー|トークン)\s*(?:[:=：]|は|が|を)?\s*[A-Za-z0-9_.-]{32,}\b/.test(value);
-}
-
-function conversationUserText(messages: ChatMessage[], nextText: string) {
-  return [
-    ...messages.filter((message) => message.role === "user").map((message) => message.text),
-    nextText
-  ].join("\n");
-}
-
-function detectedConversationFacts(text: string) {
-  const lower = text.toLowerCase();
-  return {
-    cadence: /毎朝|毎日|毎週|定期|schedule|daily|weekly|朝|夜|\b\d{1,2}\s*時|\b\d{1,2}:\d{2}\b/.test(lower),
-    retry: /失敗|止ま|再開|再試行|リトライ|retry|blocked|error|エラー|\d+\s*分後/.test(lower),
-    permission: /投稿まで|送信まで|応募まで|公開まで|進めて|自動で|止めたい|条件|許可|していい|してよい/.test(lower),
-    proof: /url|スクショ|画面|db|保存|証拠|証跡|ログ|readback|確認記録/.test(lower),
-    source: /正本|source|queue|キュー|sheet|sheets|db|url|画面|ファイル|daily ai|nisenprints|x|youtube|etsy|printify/.test(lower)
-  };
-}
-
-function conversationQuestionPlan(text: string) {
-  const facts = detectedConversationFacts(text);
-  return [
-    facts.cadence && facts.retry ? null : "いつ動かし、失敗したら何分後に再確認しますか？",
-    facts.permission ? null : "どこまで自動で進めてよく、どこで止めたいですか？",
-    facts.proof && facts.source ? null : "正本にする画面・URL・DB・保存ファイルと、完了証拠はどれにしますか？"
-  ].filter((question): question is string => Boolean(question));
-}
-
-function conversationAnsweredLabels(text: string) {
-  const facts = detectedConversationFacts(text);
-  return [
-    facts.cadence ? "実行タイミング" : null,
-    facts.retry ? "失敗時の扱い" : null,
-    facts.permission ? "自動で進める範囲" : null,
-    facts.source ? "正本候補" : null,
-    facts.proof ? "完了証拠" : null
-  ].filter((label): label is string => Boolean(label));
-}
-
-function automationAdvice(value: string, secrets: SecretSummary[] = [], history: ChatMessage[] = []): CreateDraft {
-  const text = value.trim();
-  const lower = text.toLowerCase();
-  if (isQuestionOnlyPrompt(text)) {
-    return answerOnlyAdvice(text, secrets, history);
-  }
-  if (/printify|publishing|固着|商品id|product_id|product id/.test(lower)) {
-    const keyLine = savedSecretLine(secrets, "printify");
-    return {
-      command: "NisenPrints Printify recovery 途中復旧",
-      title: "Printifyの途中停止を同じ商品で復旧する",
-      reply: `${keyLine ? `${keyLine} ` : ""}その場合は、同じ商品IDを使って再開するのが良いです。ユーザーには「同じ商品を確認」「復旧開始」「結果確認」だけを見せ、APIのis_locked確認や再Publish判断はバックエンド側で扱います。`,
-      visibleSteps: ["同じ商品を確認", "止まった場所から再開", "Etsy公開状態を確認"],
-      backendChecks: ["manifestのproduct_idを正本にする", "Printify API/UIの状態を照合", "重複商品を作らないガード"],
-      answered: ["正本候補", "失敗時の扱い"],
-      openQuestions: ["どこまで自動で進めてよく、どこで止めたいですか？"],
-      nextAction: "保存して同じ商品を確認し、止まった場所から再開します。",
-      executionDecision: "save_plan" as CreatePlannerDecision,
-      confidence: "medium" as const,
-      plannerSource: "local_fallback" as const
-    };
-  }
-  if (/etsy|listing|リスティング|正本|公開リスト/.test(lower)) {
-    const keyLine = savedSecretLine(secrets, "etsy");
-    return {
-      command: "NisenPrints Etsy Sync current listings 正本同期",
-      title: "Etsyの現在公開リストを正本にする",
-      reply: `${keyLine ? `${keyLine} ` : ""}それなら、Etsy側の現在公開リストを正として読み、ローカルの古いqueue/listingsを戻さない形が安全です。見せる画面は「同期する」「結果を見る」だけにして、古い行の退避や検証は裏側に回します。`,
-      visibleSteps: ["Etsyの公開リストを確認", "ローカル管理データを同期", "古い行が復活しないか確認"],
-      backendChecks: ["Etsy snapshot と queue/listings のID集合を比較", "stale rowsを退避", "同期後にテストと画面確認"],
-      answered: ["正本候補", "完了証拠"],
-      openQuestions: ["いつ動かし、失敗したら何分後に再確認しますか？"],
-      nextAction: "保存してEtsyの公開リストを読み、同期結果を確認します。",
-      executionDecision: "save_plan" as CreatePlannerDecision,
-      confidence: "medium" as const,
-      plannerSource: "local_fallback" as const
-    };
-  }
-  if (/obsidian|wiki|vault/.test(lower)) {
-    return {
-      command: "Obsidian Wiki ingest compile lint automation",
-      title: "Obsidianを知識ベースとして使う",
-      reply: "Obsidianは、実行ログや学びをAIが読みやすいMarkdownにして、次の自動化作成に活かす場所として使うのが合っています。画面には「知識を使う」だけを出し、取り込み・リンク・lintは詳細に隠します。",
-      visibleSteps: ["使うメモを選ぶ", "手順に変換", "不足や矛盾を確認"],
-      backendChecks: ["Markdownへ正規化", "関連ページのリンク確認", "古い情報や矛盾のlint"],
-      answered: ["正本候補"],
-      openQuestions: ["いつ動かし、失敗したら何分後に再確認しますか？", "完了証拠はどれにしますか？"],
-      nextAction: "使うメモを選び、手順化の実演から始めます。",
-      executionDecision: "ask_more" as CreatePlannerDecision,
-      confidence: "medium" as const,
-      plannerSource: "local_fallback" as const
-    };
-  }
-  const planning = deepPlanningAdvice(text || initialCreatePrompt, secrets, history);
-  return {
-    command: planning.command,
-    title: planning.title,
-    reply: planning.reply,
-    visibleSteps: planning.visibleSteps,
-    backendChecks: planning.backendChecks,
-    answered: planning.answered,
-    openQuestions: planning.openQuestions,
-    nextAction: planning.nextAction,
-    executionDecision: planning.executionDecision,
-    confidence: planning.confidence,
-    plannerSource: "local_fallback" as const
-  };
-}
-
-function isQuestionOnlyPrompt(text: string) {
-  const lower = text.toLowerCase();
-  return /(\?|？|できること|どこまで|何ができる|説明して|教えて|書き出して|全て|一覧|違います|今の状況|what can|tell me|explain)/.test(lower)
-    && !/作って|作成|実行|開始|保存|投稿|公開|応募|送信|定期|予約|自動化|workflow|automation/.test(lower);
-}
-
-function answerOnlyAdvice(value: string, secrets: SecretSummary[] = [], history: ChatMessage[] = []): CreateDraft {
-  const text = value.trim();
-  const lower = text.toLowerCase();
-  const secretHint = secrets.length ? "保存済みの認証情報は必要な場面だけ使います。値は画面には出しません。\n\n" : "";
-  if (/保存だけ|保存して|secret|認証情報|key|token|パスワード|password/.test(lower)) {
-    return {
-      command: text,
-      title: "認証情報だけを安全に保存する",
-      reply: `${secretHint}はい。認証情報は保存だけにして、実行や送信には進めません。次の一手は、保存したキーを使う場面が来たときに、その都度確認して進めることです。`,
-      visibleSteps: ["認証情報を保存", "値を画面に出さない", "必要な場面でだけ使う"],
-      backendChecks: ["secretを平文で残さない", "保存と実行を分ける", "画面にはマスクだけ出す"],
-      answered: ["認証情報の保存", "実行しない境界"],
-      openQuestions: [],
-      nextAction: "保存は完了です。必要になったら、その時点で使うかどうかを確認します。",
-      executionDecision: "ready_to_start",
-      confidence: "high" as const,
-      plannerSource: "local_fallback" as const,
-      intent: "answer_question" as const
-    };
-  }
-  const summary = /できること|何ができる|どこまで|一覧/.test(lower)
-    ? "このチャットは、相談を受けて、必要なら保存・実演・開始・定期化までを分けて扱えます。"
-    : "今の質問には、作成よりも説明が合っています。";
-  return {
-    command: text,
-    title: "このチャットでできることを説明する",
-    reply: `${secretHint}${summary}\n\n・質問への回答\n・保存前の計画づくり\n・実演前の確認\n・開始前の停止条件整理\n・履歴や失敗理由の読み直し\n\n必要なら次に、今の画面で押せるものや、まだ足りない確認項目を順番に並べます。`,
-    visibleSteps: [],
-    backendChecks: ["質問には答えだけ返す", "計画カードは出しすぎない", "必要時だけ保存や開始に進む"],
-    answered: ["質問への回答", "保存前の整理"],
-    openQuestions: [],
-    nextAction: "続けて、見たい画面や確認したい操作を1つだけ教えてください。",
-    executionDecision: "ready_to_start",
-    confidence: "high" as const,
-    plannerSource: "local_fallback" as const,
-    intent: "answer_question" as const
-  };
-}
-
-function deepPlanningAdvice(text: string, secrets: SecretSummary[] = [], history: ChatMessage[] = []) {
-  const conversationText = conversationUserText(history, text);
-  const lower = conversationText.toLowerCase();
-  const isScheduled = /毎朝|毎日|毎週|定期|schedule|daily|weekly|朝|夜/.test(lower);
-  const isSubmit = /応募|申請|送信|submit|apply|フォーム|予約/.test(lower);
-  const publishNegated = /投稿やSNSの話ではありません|SNSの話ではありません|投稿.*ではありません|公開.*ではありません|投稿はしない|投稿しない|公開はしない|公開しない|postしない|publishしない|no post|do not post/i.test(conversationText);
-  const isPublish = !publishNegated && /投稿|公開|publish|post|sns|x|twitter|instagram|threads|pinterest|etsy/.test(lower);
-  const isResearch = /調査|確認|比較|探し|探す|research|watch|チェック|監視/.test(lower);
-  const isDiagnosticReview = /失敗を見て|失敗.*原因|ロック原因|lock原因|修正方針|検証を提案|原因なら|提案して/.test(conversationText)
-    && !/開始したい|実行したい|応募したい|送信したい|投稿したい|公開したい|保存したい/.test(conversationText);
-  const hasExternalAction = isSubmit || isPublish;
-  const savedSecretPrefix = secrets.length ? "保存済みの認証情報は、必要な場面だけ使います。値は画面には出しません。\n\n" : "";
-  const summary = isDiagnosticReview
-    ? "これは、実行を始めずに状態と原因を読み、次の検証だけを整理する相談です。"
-    : hasExternalAction
-    ? "これは「状況確認 → 判断 → 必要なら外部操作」までを1本にする自動化です。"
-    : isResearch
-      ? "これは「情報を集める → 判断する → 証拠を残す」ための自動化です。"
-      : "これは、いま手でやっている作業を小さな手順に分けて自動化する相談です。";
-  const cadenceStep = isScheduled ? "実行タイミングと失敗時の再開条件を決める" : "手動開始から実演して、定期化するか決める";
-  const boundaryStep = hasExternalAction && !isDiagnosticReview ? "送信・投稿の直前に課金だけ止める境界を置く" : "読み取りと保存だけで安全に確認する";
-  const proofStep = isResearch ? "見たURL・画面・保存結果を証跡として残す" : "実行結果・画面・後片付けを証跡として残す";
-  const openQuestions = isDiagnosticReview ? [] : conversationQuestionPlan(conversationText);
-  const answered = conversationAnsweredLabels(conversationText);
-  const visibleSteps = [
-    "目的と完了条件を確認",
-    "正本になる画面やデータを読む",
-    cadenceStep,
-    boundaryStep,
-    proofStep,
-    "小さく実行して結果を確認"
-  ];
-  const backendChecks = [
-    "source-of-truthを固定して古い履歴を混ぜない",
-    "重い処理はバックグラウンドrunとして開始する",
-    "run_idごとにURL・画面・ログ・cleanup証跡を残す",
-    "失敗時はexact blockerを保存して同じ場所から再開する"
-  ];
-  const nextAction = isScheduled
-    ? "まずは「保存」で計画を残し、「見る」で画面を確認してから、問題なければ定期化します。"
-    : "まずは「保存」で計画を残し、「見る」で実演してから、問題なければ開始します。";
-  const questionBlock = openQuestions.length
-    ? ["確認したいこと", ...openQuestions.map((question) => `・${question}`)].join("\n")
-    : ["確認できたこと", ...answered.map((label) => `・${label}`), "この内容で一度小さく試せます。"].join("\n");
-  const reply = [
-    `${savedSecretPrefix}${answered.length >= 3 ? "だいぶ具体化できました。" : "いいです。"}${summary}`,
-    questionBlock,
-    ["進め方", visibleSteps.join(" → ")].join("\n"),
-    ["次の一手", nextAction].join("\n")
-  ].join("\n\n");
-  return {
-    command: text,
-    title: isScheduled ? "定期実行を相談しながら設計する" : "相談内容を実行できる手順に分解する",
-    reply,
-    visibleSteps,
-    backendChecks,
-    answered,
-    openQuestions,
-    nextAction,
-    executionDecision: openQuestions.length > 1 ? "ask_more" as const : openQuestions.length === 1 ? "save_plan" as const : isScheduled ? "ready_to_schedule" as const : "demo_first" as const,
-    confidence: openQuestions.length ? "medium" as const : "high" as const
-  };
-}
-
-function savedSecretAdvice(): CreateDraft {
-  return {
-    command: "",
-    title: "認証情報を保存しました",
-    reply: "保存できました。次に作りたい自動化をそのまま教えてください。保存済みキーは必要な場面だけ使い、値は画面には出しません。",
-    visibleSteps: ["やりたい自動化を入力", "必要な場面で保存済みキーを使う", "開始前に内容を確認"],
-    backendChecks: ["保存済みキーを必要な場面だけ使う", "値を画面に表示しない", "自動化本文と認証情報を分ける"],
-    answered: ["認証情報"],
-    openQuestions: ["何を自動化したいですか？"],
-    nextAction: "次のメッセージで目的を聞き、計画を作ります。",
-    executionDecision: "ask_more" as CreatePlannerDecision,
-    confidence: "medium" as const,
-    plannerSource: "local_fallback" as const,
-    intent: "answer_question" as const
-  };
-}
-
-function readCreateDraftSession(): CreateDraftSession | null {
-  try {
-    const raw = window.localStorage.getItem(createDraftSessionStorageKey);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<CreateDraftSession>;
-    if (parsed.version !== 1 || !isCreateDraft(parsed.draft) || !Array.isArray(parsed.messages)) return null;
-    const messages = compactCreateMessages(parsed.messages
-      .filter((message): message is ChatMessage => isChatMessage(message))
-      .slice(-24));
-    if (messages.length === 0) return null;
-    return {
-      version: 1,
-      messages,
-      draft: parsed.draft,
-      researchSources: isResearchSourceSelection(parsed.researchSources) ? parsed.researchSources : initialResearchSources,
-      command: typeof parsed.command === "string" ? parsed.command : parsed.draft.command
-    };
-  } catch {
-    return null;
-  }
-}
-
-function writeCreateDraftSession(session: CreateDraftSession) {
-  try {
-    window.localStorage.setItem(createDraftSessionStorageKey, JSON.stringify(session));
-  } catch {
-    // Draft persistence is convenience-only. The planner and run APIs remain authoritative.
-  }
-}
-
-function clearCreateDraftSession() {
-  try {
-    window.localStorage.removeItem(createDraftSessionStorageKey);
-  } catch {
-    // Ignore storage failures; reset should still update in-memory state.
-  }
-}
-
-function readStoredOperatorWriteToken() {
-  try {
-    return window.localStorage.getItem(operatorWriteTokenStorageKey)?.trim() ?? "";
-  } catch {
-    return "";
-  }
-}
-
-function writeStoredOperatorWriteToken(value: string) {
-  try {
-    window.localStorage.setItem(operatorWriteTokenStorageKey, value.trim());
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function clearStoredOperatorWriteToken() {
-  try {
-    window.localStorage.removeItem(operatorWriteTokenStorageKey);
-  } catch {
-    // Ignore storage failures; token can be overwritten later.
-  }
-}
-
-async function readServerCreateDraftSession(): Promise<CreateDraftSession | null> {
-  try {
-    const body = await fetchApiJson<{ session?: Row | null }>("/api/create/session", undefined, "create_session_failed");
-    const session = body.session;
-    if (!session || !isCreateDraft(session.draft) || !Array.isArray(session.messages)) return null;
-    const messages = compactCreateMessages(session.messages
-      .flatMap((message, index): ChatMessage[] => {
-        if (!message || typeof message !== "object") return [];
-        const item = message as Row;
-        const role = item.role === "assistant" ? "assistant" : item.role === "user" ? "user" : null;
-        if (!role || typeof item.text !== "string") return [];
-        return [{
-          id: typeof item.id === "string" ? item.id : `server-create-${index}`,
-          role,
-          text: item.text
-        }];
-      })
-      .slice(-24));
-    if (messages.length === 0) return null;
-    return {
-      version: 1,
-      messages,
-      draft: session.draft,
-      researchSources: isResearchSourceSelection(session.researchSources) ? session.researchSources : initialResearchSources,
-      command: typeof session.command === "string" ? session.command : session.draft.command
-    };
-  } catch {
-    return null;
-  }
-}
-
-function writeServerCreateDraftSession(session: CreateDraftSession) {
-  void fetchApiJson("/api/create/session", {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      messages: session.messages,
-      draft: session.draft,
-      researchSources: session.researchSources,
-      command: session.command
-    })
-  }, "create_session_save_failed").catch(() => undefined);
-}
-
-function isChatMessage(value: unknown): value is ChatMessage {
-  const message = value as Partial<ChatMessage>;
-  return typeof message?.id === "string"
-    && (message.role === "assistant" || message.role === "user")
-    && typeof message.text === "string";
-}
-
-function isCreateDraft(value: unknown): value is CreateDraft {
-  const draft = value as Partial<CreateDraft>;
-  return typeof draft?.command === "string"
-    && typeof draft.title === "string"
-    && typeof draft.reply === "string"
-    && Array.isArray(draft.visibleSteps)
-    && Array.isArray(draft.backendChecks)
-    && Array.isArray(draft.answered)
-    && Array.isArray(draft.openQuestions)
-    && typeof draft.nextAction === "string";
-}
-
-function isResearchSourceSelection(value: unknown): value is Record<ResearchSourceKey, boolean> {
-  const selection = value as Partial<Record<ResearchSourceKey, boolean>>;
-  return researchSourceKeys.every((key) => typeof selection?.[key] === "boolean");
-}
-
-function previewResearchPlan(command: string, sources: Record<ResearchSourceKey, boolean>): ResearchPlan {
-  const enabledLabels = researchSourceKeys.filter((key) => sources[key]).map((key) => researchSourceLabels[key]);
-  const sourcePlans: ResearchSourcePlan[] = researchSourceKeys.map((key) => ({
-    key,
-    label: researchSourceLabels[key],
-    enabled: sources[key],
-    mode:
-      key === "youtube"
-        ? "公式の字幕や台本をブラウザで読む"
-        : key === "x"
-          ? "専用ブラウザで見える範囲を確認"
-          : key === "reddit"
-            ? "ブラウザで公開スレッドを見るだけ確認"
-            : key === "mcp"
-              ? "使える連携先を一覧で確認"
-              : key === "api"
-                ? "公式の利用条件を確認してから使います"
-                : "公開Webをブラウザで読む",
-    boundary:
-      key === "youtube"
-        ? "初期設定では使いません"
-        : key === "x" || key === "reddit"
-          ? "画面で見える内容を確認元の候補にします"
-          : key === "api" || key === "mcp"
-            ? "お金や許可が必要な操作は、始める前に確認します"
-            : "公開ページの表示内容とURLをsource-of-truthにする",
-    metadata: {}
+function toAutomationRows(items: any[]): AutomationRow[] {
+  return items.map((item) => ({
+    id: String(item.id),
+    project_id: String(item.project_id ?? "project-a"),
+    automation_type: String(item.automation_type ?? item.id ?? "sns-post"),
+    name: String(item.name),
+    desc: String(item.desc ?? item.goal ?? ""),
+    schedule: String(item.schedule ?? item.next_run_at ?? "未設定"),
+    lane: String(item.lane ?? "Lane 1"),
+    last: String(item.last ?? "未実行"),
+    status: (["running", "waiting", "approved", "blocked", "enabled", "disabled", "draft"].includes(item.status) ? item.status : "draft") as Status
   }));
+}
+
+async function readMvpState() {
+  const response = await fetch("/api/mvp/state", { cache: "no-store" });
+  if (!response.ok) throw new Error("mvp_state_unavailable");
+  return response.json();
+}
+
+function buildFeedbackCapture(route: string) {
   return {
-    id: "preview",
-    title: command.trim().slice(0, 72) || "相談プラン",
-    status: "draft",
-    command: command.trim() || initialCreatePrompt,
-    sources: sourcePlans,
-    visibleFlow: [
-      "目的を確認",
-      enabledLabels.length ? `${enabledLabels.join(" / ")} を見て確認` : "計画だけを確認",
-      "完了の見分け方を決める",
-      "課金・購入・支払い・決済だけ停止",
-      "開始"
-    ],
-    sourceOfTruth: [
-      "公開ページ、公式UI、保存済みローカルartifact、Automation OS DB",
-      "X、YouTube、Redditは専用ブラウザで見える範囲を確認",
-      "YouTubeの台本は公式の字幕や台本をブラウザで読む"
-    ],
-    proofBoundary: [
-      "research_plan_snapshotは開始前計画証跡であり完了証跡ではない",
-      "完了にはrun/proof/artifact/DB/readbackの別証跡が必要",
-      "demoはローカルAutomation OS画面のBrowser Use checkのみ"
-    ],
-    approvalBoundary: [
-      "課金・購入・支払い・決済だけhard stopにする",
-      "送信、投稿、削除、応募、保存、外部書き込みは証跡を残して実行する",
-      "字幕取得の特別なAPIは初期設定では使いません",
-      "MCP/APIで課金、購入、支払い、決済が必要な場合だけ既存approval flowへ分離"
-    ],
-    metadata: { snapshotRole: "pre_start_plan_evidence_not_completion_proof" },
-    demoCheckId: null,
-    runId: null,
-    createdAt: "",
-    updatedAt: ""
+    route,
+    url: location.href,
+    title: document.title,
+    viewport: { width: window.innerWidth, height: window.innerHeight, device_pixel_ratio: window.devicePixelRatio || 1 },
+    user_agent: navigator.userAgent,
+    screen_text: redactSensitiveText(document.body.innerText || "").slice(0, 8000)
   };
 }
 
-export default function App() {
-  const [restoredCreateSession] = useState(() => readCreateDraftSession());
-  const [serverCreateSessionChecked, setServerCreateSessionChecked] = useState(Boolean(restoredCreateSession));
-  const [dashboard, setDashboard] = useState<Dashboard>(emptyDashboard);
-  const [loading, setLoading] = useState(true);
-  const [busyKey, setBusyKey] = useState<string | null>(null);
-  const [activeView, setActiveViewState] = useState<View>(initialView);
-  const [command, setCommand] = useState("");
-  const [createInput, setCreateInput] = useState("");
-  const [createMessages, setCreateMessages] = useState<ChatMessage[]>(() => restoredCreateSession?.messages ?? initialCreateMessages);
-  const [createDraft, setCreateDraft] = useState(() => restoredCreateSession?.draft ?? automationAdvice(initialCreatePrompt));
-  const [researchSources, setResearchSources] = useState<Record<ResearchSourceKey, boolean>>(() => restoredCreateSession?.researchSources ?? initialResearchSources);
-  const [activeResearchPlan, setActiveResearchPlan] = useState<ResearchPlan | null>(null);
-  const [sourceCaptureResults, setSourceCaptureResults] = useState<Partial<Record<ResearchSourceKey, PlannerCaptureResponse>>>({});
-  const [capabilityPlan, setCapabilityPlan] = useState<CapabilityRouterSnapshot | null>(null);
-  const [createPlanDirty, setCreatePlanDirty] = useState(false);
-  const [notice, setNotice] = useState("");
-  const [operatorWriteTokenReady, setOperatorWriteTokenReady] = useState(() => Boolean(readStoredOperatorWriteToken()));
-  const [actionReceipt, setActionReceipt] = useState<ActionReceipt | null>(null);
-  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
-  const [selectedRunDetail, setSelectedRunDetail] = useState<RunDetail | null>(null);
-  const [selectedProof, setSelectedProof] = useState<Row | null>(null);
-  const [selectedProofView, setSelectedProofView] = useState<ProofView | null>(null);
-  const [proofViewLoading, setProofViewLoading] = useState(false);
-  const [selectedSkill, setSelectedSkill] = useState<Row | null>(null);
-  const quickActionsDetailsRef = useRef<HTMLDetailsElement | null>(null);
-  const visibleCreateSteps = normalizeVisibleSteps(createDraft.visibleSteps);
-  const previewCreatePlan = previewResearchPlan(createDraft.command, researchSources);
-  const createResearchPlan = {
-    ...previewCreatePlan,
-    ...(activeResearchPlan ?? {}),
-    sources: previewCreatePlan.sources,
-    visibleFlow: visibleCreateSteps
-  };
-
-  function recordActionReceipt(input: Omit<ActionReceipt, "id" | "createdAt">) {
-    setActionReceipt({
-      ...input,
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      createdAt: new Date().toISOString()
+async function captureAppScreenshot(): Promise<{ dataUrl: string | null; error: string | null }> {
+  const width = Math.min(window.innerWidth || 1200, 1200);
+  const height = Math.min(window.innerHeight || 900, 900);
+  try {
+    const html2canvas = (await import("html2canvas")).default;
+    const canvas = await html2canvas(document.body, {
+      backgroundColor: "#ffffff",
+      width,
+      height,
+      windowWidth: window.innerWidth,
+      windowHeight: window.innerHeight,
+      scrollX: 0,
+      scrollY: 0,
+      ignoreElements: (element) => element.classList.contains("feedback-launcher") || element.classList.contains("feedback-panel")
     });
+    return { dataUrl: canvas.toDataURL("image/jpeg", 0.62), error: null };
+  } catch {
+    // Fall through to a no-dependency SVG capture so feedback still works if canvas rendering fails.
   }
-
-  function closeQuickActionMenu() {
-    if (quickActionsDetailsRef.current) quickActionsDetailsRef.current.open = false;
-  }
-
-  function saveOperatorWriteToken(value: string) {
-    const trimmed = value.trim();
-    if (!trimmed) {
-      setNotice("操作tokenを入力してください。");
-      return false;
-    }
-    if (!writeStoredOperatorWriteToken(trimmed)) {
-      setNotice("このブラウザに操作tokenを保存できませんでした。");
-      return false;
-    }
-    setOperatorWriteTokenReady(true);
-    setNotice("このブラウザに操作tokenを保存しました。");
-    return true;
-  }
-
-  function clearOperatorWriteToken() {
-    clearStoredOperatorWriteToken();
-    setOperatorWriteTokenReady(false);
-    setNotice("このブラウザの操作tokenを削除しました。");
-  }
-
-  async function refresh(announce = true, options: RefreshOptions = {}) {
-    if (!options.background) setLoading(true);
+  try {
+    const clone = document.documentElement.cloneNode(true) as HTMLElement;
+    clone.querySelectorAll(".feedback-launcher,.feedback-panel").forEach((node) => node.remove());
+    clone.querySelectorAll("script").forEach((node) => node.remove());
+    const serialized = new XMLSerializer().serializeToString(clone);
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><foreignObject width="100%" height="100%">${serialized}</foreignObject></svg>`;
+    const blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
+    const objectUrl = URL.createObjectURL(blob);
     try {
-      const body = await fetchApiJson<unknown>("/api/dashboard", undefined, "dashboard_failed");
-      if (!isDashboard(body)) throw new Error(userError("dashboard_failed"));
-      setDashboard(body);
-      setSelectedRunId((current) => resolveSelectedRunId(current, body.runs, body.actionableRuns ?? []));
-      if (announce) setNotice("最新の状態に更新しました");
-    } catch (error) {
-      setNotice(options.staleNotice ? "最新状態を取得できませんでした。前回データを表示中です。" : error instanceof Error ? error.message : "状態を読み込めませんでした");
+      const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error("feedback_screenshot_render_failed"));
+        img.src = objectUrl;
+      });
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("feedback_canvas_unavailable");
+      context.fillStyle = "#fff";
+      context.fillRect(0, 0, width, height);
+      context.drawImage(image, 0, 0, width, height);
+      return { dataUrl: canvas.toDataURL("image/jpeg", 0.62), error: null };
     } finally {
-      if (!options.background) setLoading(false);
+      URL.revokeObjectURL(objectUrl);
     }
+  } catch (error) {
+    return { dataUrl: null, error: error instanceof Error ? error.message : "feedback_screenshot_failed" };
   }
-
-  async function post(path: string, message: string, options: { view?: View; key?: string } = {}) {
-    const key = options.key ?? path;
-    closeQuickActionMenu();
-    setBusyKey(key);
-    try {
-      const body = await fetchApiJson<Row>(path, { method: "POST" }, "request_failed");
-      const approvalRequired = body.status === "approval_required"
-        || body.status === "waiting_approval"
-        || body.run?.status === "waiting_approval";
-      const blocked = body.ok === false || body.status === "blocked";
-      const responseRunId = extractResponseRunId(body);
-      if (responseRunId) setSelectedRunId(responseRunId);
-      if (body.id && path.includes("/skills/")) setSelectedSkill(body);
-      if (blocked) {
-        const detail = body.exactBlocker ? "詳細は診断に保存しました。" : postNotice("停止", body);
-        recordActionReceipt({
-          tone: "blocked",
-          title: "操作は停止しました",
-          detail,
-          nextAction: responseRunId ? "履歴で理由と保存記録を確認してください。" : "診断または詳細で理由を確認してください。",
-          view: responseRunId ? "Runs" : options.view,
-          runId: responseRunId ?? undefined,
-          planId: extractResponsePlanId(body) ?? undefined,
-          checkId: extractResponseCheckId(body) ?? undefined,
-          workflowId: extractResponseWorkflowId(body) ?? undefined
-        });
-        setNotice(body.exactBlocker ? "操作は停止しました。詳細は診断に保存しました。" : `操作は停止しました。${detail}`);
-        void refresh(false, { background: true, staleNotice: true });
-        return;
-      }
-      if (approvalRequired) {
-        setActiveView("Approvals", false);
-      } else if (options.view) {
-        setActiveView(options.view, false);
-      }
-      const detail = postNotice(message, body);
-      recordActionReceipt({
-        tone: approvalRequired ? "blocked" : responseRunId ? "running" : "ok",
-        title: approvalRequired ? "確認が必要です" : message,
-        detail,
-        nextAction: approvalRequired
-          ? "承認画面で内容を確認してください。"
-          : responseRunId
-            ? typeof body.nextAction === "string" && body.nextAction.trim()
-              ? body.nextAction
-              : "履歴でキュー状態と保存記録を確認できます。"
-            : "画面の最新状態を読み直しました。",
-        view: approvalRequired ? "Approvals" : options.view,
-        runId: approvalRequired ? undefined : responseRunId ?? undefined,
-        planId: extractResponsePlanId(body) ?? undefined,
-        checkId: extractResponseCheckId(body) ?? undefined,
-        workflowId: extractResponseWorkflowId(body) ?? undefined
-      });
-      setNotice(approvalRequired ? `${detail}。承認画面で内容を確認してください。` : detail);
-      void refresh(false, { background: true, staleNotice: true });
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "操作に失敗しました");
-    } finally {
-      setBusyKey(null);
-    }
-  }
-
-  async function runSchedulerOnce() {
-    setBusyKey("scheduler-run-once");
-    try {
-      const body = await fetchApiJson<Row>("/api/registered-workflows/scheduler/run-once", { method: "POST" }, "request_failed");
-      const started = Number(body.started ?? 0);
-      const blocked = Number(body.blocked ?? 0);
-      const runIds = Array.isArray(body.runIds) ? body.runIds.filter((id): id is string => typeof id === "string") : [];
-      if (runIds[0]) setSelectedRunId(runIds[0]);
-      if (started > 0) {
-        setActiveView("Runs", false);
-        setNotice(blocked > 0 ? `${started}件開始しました。確認が必要な予定が${blocked}件あります。` : `${started}件開始しました。履歴で進行状況を確認できます。`);
-        recordActionReceipt({
-          tone: "running",
-          title: "定期確認を開始しました",
-          detail: blocked > 0 ? `${started}件開始、${blocked}件は確認が必要です。` : `${started}件開始しました。`,
-          nextAction: "履歴で進行状況を確認できます。",
-          view: "Runs",
-          runId: runIds[0]
-        });
-      } else if (blocked > 0) {
-        setNotice(`確認が必要な予定が${blocked}件あります。履歴と詳細に理由を保存しました。`);
-        recordActionReceipt({
-          tone: "blocked",
-          title: "確認が必要な予定があります",
-          detail: `${blocked}件の予定が停止理由を保存しました。`,
-          nextAction: "履歴と詳細で理由を確認してください。",
-          view: "Runs",
-          runId: runIds[0]
-        });
-      } else {
-        setNotice("今すぐ動かせる予定はありません。各行の再生ボタンなら個別に一回実行できます。");
-        recordActionReceipt({
-          tone: "info",
-          title: "今すぐ動かせる予定はありません",
-          detail: "定期の実行タイミングに該当するものはありませんでした。",
-          nextAction: "各行の再生ボタンなら個別に一回実行できます。",
-          view: "Schedule"
-        });
-      }
-      void refresh(false, { background: true, staleNotice: true });
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "操作に失敗しました");
-    } finally {
-      setBusyKey(null);
-    }
-  }
-
-  async function updateRegisteredSchedule(id: string, schedule: { frequency: string; time: string; days?: string[] }) {
-    const key = `registered-schedule-${id}`;
-    setBusyKey(key);
-    try {
-      const body = await fetchApiJson<Row>(`/api/registered-workflows/${encodeURIComponent(id)}/schedule`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(schedule)
-      }, "request_failed");
-      const scheduleLabel = schedule.frequency === "weekly" ? `毎週 ${schedule.time}` : `毎日 ${schedule.time}`;
-      setNotice(`予定を保存しました（${scheduleLabel}）`);
-      recordActionReceipt({
-        tone: "ok",
-        title: "予定を保存しました",
-        detail: scheduleLabel,
-        nextAction: "次回の定期確認からこの予定を使います。",
-        view: "Schedule",
-        workflowId: extractResponseWorkflowId(body) ?? id
-      });
-      void refresh(false, { background: true, staleNotice: true });
-      return true;
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "操作に失敗しました");
-      return false;
-    } finally {
-      setBusyKey(null);
-    }
-  }
-
-  async function saveAndSanitizeMessage(text: string, optimisticText = locallyRedactSecrets(text)) {
-    if (!mayContainSecret(text)) {
-      return { sanitizedText: optimisticText, storedSecrets: [] };
-    }
-    const body = await fetchApiJson<Row>("/api/secrets/from-message", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text })
-    }, "secret_save_failed");
-    const sanitizedText = typeof body.sanitizedText === "string" ? body.sanitizedText : optimisticText;
-    return {
-      sanitizedText: locallyRedactSecrets(sanitizedText),
-      storedSecrets: Array.isArray(body.stored) ? body.stored as SecretSummary[] : []
-    };
-  }
-
-  async function startRun(nextCommand: string, key = "start") {
-    const rawCommand = nextCommand.trim();
-    if (!rawCommand) {
-      setNotice("やりたい作業を入力してください");
-      return;
-    }
-    setBusyKey(key);
-    setCommand(locallyRedactSecrets(rawCommand));
-    try {
-      const { sanitizedText, storedSecrets } = await saveAndSanitizeMessage(rawCommand);
-      const safeCommand = sanitizedText.trim();
-      if (!safeCommand) throw new Error("やりたい作業を入力してください");
-      setCommand(safeCommand);
-      const body = await fetchApiJson<Row>("/api/runs/start", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ command: safeCommand })
-      }, "run_failed");
-      setSelectedRunId(body.runId);
-      const status = body.run?.status ?? "queued";
-      const secretNotice = savedSecretNotice(storedSecrets);
-      recordActionReceipt({
-        tone: status === "blocked" ? "blocked" : "running",
-        title: "実行を開始しました",
-        detail: `${secretNotice ? `${secretNotice} ` : ""}${displayStatus(status)}`.trim(),
-        nextAction: status === "waiting_approval" ? "承認画面で内容を確認してください。" : "履歴で進行状況と保存記録を確認できます。",
-        view: status === "waiting_approval" ? "Approvals" : "Runs",
-        runId: typeof body.runId === "string" ? body.runId : undefined
-      });
-      setNotice(`${secretNotice ? `${secretNotice} ` : ""}実行を開始しました（${displayStatus(status)}）`);
-      setActiveView(status === "waiting_approval" ? "Approvals" : "Runs", false);
-      void refresh(false, { background: true, staleNotice: true });
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "実行できませんでした");
-    } finally {
-      setBusyKey(null);
-    }
-  }
-
-  async function startCommand() {
-    await startRun(command, "start");
-  }
-
-  function currentCreateSessionPayload() {
-    const messages = compactCreateMessages(createMessages);
-    return {
-      messages: messages.map((message) => ({ role: message.role, text: message.text })),
-      draft: createDraft,
-      researchSources,
-      command: createDraft.command.trim()
-    };
-  }
-
-  async function saveResearchPlanForDraft(key = "research-plan-save", draft = createDraft) {
-    const rawCommand = draft.command.trim() || initialCreatePrompt;
-    const visibleFlow = normalizeVisibleSteps(draft.visibleSteps);
-    setBusyKey(key);
-    try {
-      const body = await fetchApiJson<{ plan?: ResearchPlan }>("/api/planner/research-plan", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ command: rawCommand, title: draft.title, sources: researchSources, visibleFlow })
-      }, "research_plan_failed");
-      if (!body.plan) throw new Error("調査計画を作成できませんでした");
-      setActiveResearchPlan(body.plan);
-      setCreatePlanDirty(false);
-      recordActionReceipt({
-        tone: "ok",
-        title: "計画を保存しました",
-        detail: "開始前の計画だけを保存しました。履歴は作らず、完了確認にもなりません。",
-        nextAction: "次は「見る」で画面確認、または「開始」で実行を作れます。",
-        view: "Create",
-        planId: body.plan.id
-      });
-      setNotice("開始前の計画だけを保存しました。履歴は作らず、完了確認にもなりません。");
-      void refresh(false, { background: true, staleNotice: true });
-      return body.plan;
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "調査計画を保存できませんでした");
-      return null;
-    } finally {
-      setBusyKey(null);
-    }
-  }
-
-  async function saveCreatePlan() {
-    const pendingInput = createInput.trim();
-    if (!pendingInput) return saveResearchPlanForDraft();
-    const draft = await sendCreateMessage(pendingInput);
-    if (!draft) return null;
-    return saveResearchPlanForDraft("research-plan-save", draft);
-  }
-
-  async function refreshCapabilityPlan(commandText: string) {
-    const body = await fetchApiJson<CapabilityRouterSnapshot>("/api/capability-router/plan", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ command: commandText })
-    }, "capability_router_failed");
-    setCapabilityPlan(body);
-    return body;
-  }
-
-  async function refreshCreatePlanner(nextMessages: ChatMessage[], currentDraft: string): Promise<CreateDraft> {
-    const requestBody = {
-      messages: nextMessages.map((message) => ({ role: message.role, text: message.text })),
-      currentDraft
-    };
-    const body = await fetchApiJson<{ ok?: boolean; plan?: CreatePlannerPlan }>("/api/create/plan", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(requestBody)
-    }, "create_planner_failed");
-    if (!body.plan) throw new Error("計画を作れませんでした");
-    if (shouldQueueCreatePlannerJob(body.plan)) {
-      try {
-        const queued = await fetchApiJson<{ ok?: boolean; plan?: CreatePlannerPlan; job?: CreatePlannerJobReadback }>("/api/create/plan/jobs", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(requestBody)
-        }, "create_planner_job_enqueue_failed");
-        if (queued.plan && queued.job) {
-          return createDraftFromPlannerPlan({
-            ...queued.plan,
-            reply: `${queued.plan.reply}\n\nMac workerで詳しい計画を作っています。結果が戻ったらこの下書きを更新します。`,
-            exactBlocker: "mac_worker_planner_waiting"
-          }, queued.job);
-        }
-      } catch {
-        return createDraftFromPlannerPlan(body.plan, {
-          id: "",
-          status: "blocked",
-          exactBlocker: "create_planner_job_enqueue_failed"
-        });
-      }
-    }
-    return createDraftFromPlannerPlan(body.plan);
-  }
-
-  function createDraftFromPlannerPlan(plan: CreatePlannerPlan, job?: Partial<CreatePlannerJobReadback>): CreateDraft {
-    return {
-      command: plan.command,
-      title: plan.title,
-      reply: plan.reply,
-      visibleSteps: normalizeVisibleSteps(plan.visibleSteps),
-      backendChecks: Array.isArray(plan.backendChecks) ? plan.backendChecks : [],
-      answered: Array.isArray(plan.answered) ? plan.answered : [],
-      openQuestions: Array.isArray(plan.openQuestions) ? plan.openQuestions : [],
-      nextAction: plan.nextAction ?? "",
-      executionDecision: plan.executionDecision ?? "ask_more",
-      confidence: plan.confidence ?? "medium",
-      plannerSource: plan.source ?? "local_fallback",
-      intent: plan.intent === "answer_question" ? "answer_question" as const : "plan_workflow" as const,
-      plannerModel: plan.model ?? "",
-      plannerBlocker: job?.exactBlocker ?? plan.exactBlocker ?? "",
-      plannerJobId: job?.id,
-      plannerJobStatus: job?.status
-    };
-  }
-
-  function shouldQueueCreatePlannerJob(plan: CreatePlannerPlan) {
-    if (plan.intent === "answer_question") return false;
-    return plan.source === "local_fallback" && plan.exactBlocker === "openai_api_key_missing";
-  }
-
-  async function ensureResearchPlan(key: string) {
-    const visibleFlow = normalizeVisibleSteps(createDraft.visibleSteps);
-    const rawCommand = createDraft.command.trim() || command.trim() || initialCreatePrompt;
-    if (
-      activeResearchPlan
-      && !createPlanDirty
-      && activeResearchPlan.command.trim() === rawCommand
-      && sameVisibleSteps(activeResearchPlan.visibleFlow, visibleFlow)
-      && sameResearchSources(activeResearchPlan.sources, researchSources)
-    ) {
-      return activeResearchPlan;
-    }
-    return saveResearchPlanForDraft(key);
-  }
-
-  function updateVisibleSteps(steps: string[]) {
-    const visibleSteps = normalizeVisibleSteps(steps);
-    setCreateDraft((draft) => ({ ...draft, visibleSteps }));
-    setActiveResearchPlan(null);
-    setSourceCaptureResults({});
-    setCreatePlanDirty(true);
-  }
-
-  function toggleResearchSource(key: ResearchSourceKey) {
-    setResearchSources((current) => ({ ...current, [key]: !current[key] }));
-    setActiveResearchPlan(null);
-    setSourceCaptureResults((current) => ({ ...current, [key]: undefined }));
-    setCreatePlanDirty(true);
-  }
-
-  async function ensureStartedResearchPlan(key: string) {
-    const plan = await ensureResearchPlan(key);
-    if (!plan) return null;
-    if (plan.status === "started" && plan.runId) return plan;
-    const body = await fetchApiJson<Row>(`/api/planner/${encodeURIComponent(plan.id)}/start`, { method: "POST" }, "research_plan_start_failed");
-    const startedPlan = body.plan as ResearchPlan | undefined;
-    if (!startedPlan?.runId) throw new Error("調査計画を開始できませんでした");
-    setActiveResearchPlan(startedPlan);
-    if (body.runId) setSelectedRunId(body.runId);
-    return startedPlan;
-  }
-
-  async function captureResearchSource(sourceKey: ResearchSourceKey, url: string) {
-    if (!isVisibleCaptureSource(sourceKey)) {
-      setNotice(`${researchSourceLabels[sourceKey]}はまだ実演接続していません`);
-      return;
-    }
-    const trimmedUrl = url.trim();
-    if (!trimmedUrl) {
-      setNotice(`${researchSourceLabels[sourceKey]}のURLを入力してください`);
-      return;
-    }
-    const key = `research-plan-capture-${sourceKey}`;
-    setBusyKey(key);
-    try {
-      const plan = await ensureStartedResearchPlan(key);
-      if (!plan) return;
-      const endpoint = sourceKey === "youtube" ? "youtube-transcript" : "web-url";
-      const body = await fetchApiJson<PlannerCaptureResponse>(`/api/planner/${encodeURIComponent(plan.id)}/capture/${endpoint}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: trimmedUrl })
-      }, `${sourceKey}_capture_failed`);
-      if (body.plan) setActiveResearchPlan(body.plan);
-      if (body.runId) setSelectedRunId(body.runId);
-      setSourceCaptureResults((current) => ({ ...current, [sourceKey]: body }));
-      const capture = body.capture ?? {};
-      const blocker = capture.exactBlocker ? " 停止理由を内部記録に保存しました。" : "";
-      const blockedNotice = sourceKey === "youtube"
-        ? "YouTubeの台本を取得できませんでした。"
-        : `${researchSourceLabels[sourceKey]}は${displayStatus(body.status)}です。`;
-      recordActionReceipt({
-        tone: body.ok ? "ok" : "blocked",
-        title: body.ok ? `${researchSourceLabels[sourceKey]}の確認記録を保存しました` : `${researchSourceLabels[sourceKey]}の確認は停止しました`,
-        detail: body.ok ? "確認結果を保存しました。" : `${blockedNotice}${blocker}`,
-        nextAction: body.ok ? "保存記録を見てから、必要なら開始できます。" : "詳細で理由を確認し、別の確認元かURLを試してください。",
-        view: body.runId ? "Runs" : "Create",
-        runId: body.runId,
-        planId: plan.id,
-        checkId: extractResponseCheckId(body) ?? undefined
-      });
-      setNotice(body.ok ? `${researchSourceLabels[sourceKey]}の確認記録を保存しました。` : `${blockedNotice}${blocker}`);
-      void refresh(false, { background: true, staleNotice: true });
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : `${researchSourceLabels[sourceKey]}の実演に失敗しました`);
-    } finally {
-      setBusyKey(null);
-    }
-  }
-
-  async function demoResearchPlan() {
-    const plan = await ensureResearchPlan("research-plan-demo");
-    if (!plan) return;
-    setBusyKey("research-plan-demo");
-    try {
-      const body = await fetchApiJson<{
-        ok?: boolean;
-        status?: string;
-        exactBlocker?: string;
-        plan?: ResearchPlan;
-        systemCheck?: Row;
-        externalOperation?: boolean;
-      }>(`/api/planner/${encodeURIComponent(plan.id)}/demo`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ targetUrl: "http://127.0.0.1:5173/#create" })
-      }, "research_plan_demo_failed");
-      if (body.plan) setActiveResearchPlan(body.plan);
-      if (body.ok === false || body.status === "blocked") {
-        recordActionReceipt({
-          tone: "blocked",
-          title: "実演確認は停止しました",
-          detail: "詳細は診断に保存しました。",
-          nextAction: "診断で理由を確認して、計画か確認元を直してください。",
-          view: "Create",
-          planId: plan.id,
-          checkId: extractResponseCheckId(body) ?? undefined
-        });
-        setNotice("実演確認は停止しました。詳細は診断に保存しました。");
-        void refresh(false, { background: true, staleNotice: true });
-        return;
-      }
-      recordActionReceipt({
-        tone: "ok",
-        title: "実演確認を保存しました",
-        detail: body.externalOperation === false
-          ? "対象はローカル画面だけで、外部サイト操作は行っていません。"
-          : "外部送信・公開・削除は行っていません。",
-        nextAction: "問題なければ「開始」で実行を作れます。",
-        view: "Create",
-        planId: body.plan?.id ?? plan.id,
-        checkId: extractResponseCheckId(body) ?? undefined
-      });
-      setNotice(
-        body.externalOperation === false
-          ? "実演確認を保存しました。対象はローカル画面だけで、外部サイト操作は行っていません。"
-          : "実演確認を保存しました。外部送信・公開・削除は行っていません。"
-      );
-      void refresh(false, { background: true, staleNotice: true });
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "実演確認に失敗しました");
-    } finally {
-      setBusyKey(null);
-    }
-  }
-
-  async function startResearchPlan() {
-    const plan = await ensureResearchPlan("research-plan-start");
-    if (!plan) return;
-    setBusyKey("research-plan-start");
-    try {
-      const body = await fetchApiJson<Row>(`/api/planner/${encodeURIComponent(plan.id)}/start`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ createSession: currentCreateSessionPayload() })
-      }, "research_plan_start_failed");
-      if (body.plan) setActiveResearchPlan(body.plan as ResearchPlan);
-      if (body.ok === false || body.status === "blocked" || typeof body.runId !== "string") {
-        recordActionReceipt({
-          tone: "blocked",
-          title: "ローカル実行は作成されませんでした",
-          detail: "詳細は診断に保存しました。",
-          nextAction: "診断で理由を確認してから、計画を保存し直してください。",
-          view: "Create",
-          planId: extractResponsePlanId(body) ?? plan.id
-        });
-        setNotice("ローカル実行は作成されませんでした。詳細は診断に保存しました。");
-        void refresh(false, { background: true, staleNotice: true });
-        return;
-      }
-      if (body.runId) setSelectedRunId(body.runId);
-      const status = body.run?.status ?? "queued";
-      recordActionReceipt({
-        tone: status === "blocked" ? "blocked" : "running",
-        title: "ローカル実行を作成しました",
-        detail: `${displayStatus(status)}。外部送信は行っていません。`,
-        nextAction: status === "waiting_approval" ? "承認画面で内容を確認してください。" : "履歴で進行状況と保存記録を確認できます。",
-        view: status === "waiting_approval" ? "Approvals" : "Runs",
-        runId: body.runId,
-        planId: extractResponsePlanId(body) ?? plan.id
-      });
-      setNotice(`ローカル実行を作成しました（${displayStatus(status)}）。外部送信は行っていません。開始前の計画は、完了記録とは別に扱います。`);
-      setActiveView(status === "waiting_approval" ? "Approvals" : "Runs", false);
-      void refresh(false, { background: true, staleNotice: true });
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "調査計画から開始できませんでした");
-    } finally {
-      setBusyKey(null);
-    }
-  }
-
-  async function regularizeResearchPlan() {
-    const plan = await ensureResearchPlan("research-plan-regularize");
-    if (!plan) return;
-    setBusyKey("research-plan-regularize");
-    try {
-      const body = await fetchApiJson<{ plan?: ResearchPlan; workflow?: Row }>(
-        `/api/planner/${encodeURIComponent(plan.id)}/regularize`,
-        { method: "POST" },
-        "research_plan_regularize_failed"
-      );
-      if (body.plan) setActiveResearchPlan(body.plan);
-      const schedule = asJson<Row>(body.workflow?.schedule_json, {});
-      recordActionReceipt({
-        tone: "ok",
-        title: "定期実行に登録しました",
-        detail: String(schedule.label ?? "毎日 09:00"),
-        nextAction: "定期画面と履歴で次回の実行を確認できます。",
-        view: "Schedule",
-        planId: body.plan?.id ?? plan.id,
-        workflowId: extractResponseWorkflowId(body) ?? undefined
-      });
-      setNotice(`定期実行に登録しました（${String(schedule.label ?? "毎日 09:00")}）。あとで見る履歴と確認記録で確認できます。`);
-      void refresh(false, { background: true, staleNotice: true });
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "定期実行に登録できませんでした");
-    } finally {
-      setBusyKey(null);
-    }
-  }
-
-  function resetCreateComposer() {
-    clearCreateDraftSession();
-    setCreateInput("");
-    setCreateMessages(initialCreateMessages);
-    setCreateDraft(automationAdvice(initialCreatePrompt, dashboard.secrets));
-    setCapabilityPlan(null);
-    setResearchSources(initialResearchSources);
-    setActiveResearchPlan(null);
-    setCreatePlanDirty(false);
-    setCommand("");
-    recordActionReceipt({
-      tone: "info",
-      title: "新しい相談を開始しました",
-      detail: "前の下書きはこのブラウザから消しました。",
-      nextAction: "やりたいことを入力すると、計画を作り直します。",
-      view: "Create"
-    });
-    setNotice("新しい相談を開始しました");
-  }
-
-  async function sendCreateMessage(value = createInput) {
-    const text = value.trim();
-    if (!text) return null;
-    const optimisticText = locallyRedactSecrets(text);
-    setBusyKey("secret-save");
-    setCreateInput("");
-    let displayText = optimisticText;
-    let storedSecrets: SecretSummary[] = [];
-    try {
-      const result = await saveAndSanitizeMessage(text, optimisticText);
-      displayText = result.sanitizedText;
-      storedSecrets = result.storedSecrets;
-    } catch {
-      displayText = optimisticText;
-    }
-    const mergedSecrets = storedSecrets.length
-      ? [...storedSecrets, ...dashboard.secrets.filter((secret) => !storedSecrets.some((stored) => stored.id === secret.id))]
-      : dashboard.secrets;
-    const secretOnlyMessage = isSecretStorageOnlyMessage(displayText, storedSecrets);
-    const nextUserMessage: ChatMessage = { id: `user-${Date.now()}`, role: "user", text: displayText };
-    const historyForPlanner = [...createMessages, nextUserMessage];
-    let advice = secretOnlyMessage ? savedSecretAdvice() : automationAdvice(displayText, mergedSecrets, createMessages);
-    if (!secretOnlyMessage) {
-      try {
-        advice = await refreshCreatePlanner(historyForPlanner, createDraft.command);
-      } catch {
-        advice = automationAdvice(displayText, mergedSecrets, createMessages);
-      }
-    }
-    let nextCapabilityPlan: CapabilityRouterSnapshot | null = null;
-    if (!secretOnlyMessage) {
-      try {
-        nextCapabilityPlan = await refreshCapabilityPlan(displayText);
-      } catch {
-        nextCapabilityPlan = null;
-      }
-    }
-    setCreateDraft(advice);
-    setActiveResearchPlan(null);
-    setCreatePlanDirty(false);
-    if (storedSecrets.length) setCommand(resolveCreateMessageCommand(displayText, storedSecrets, ""));
-    const routeNote = nextCapabilityPlan?.recommendedRoutes?.length
-      ? ` 使えそうな道具: ${nextCapabilityPlan.recommendedRoutes.slice(0, 3).map((route) => route.label).join("、")}`
-      : "";
-    const plannerNote = advice.intent === "answer_question"
-      ? ""
-      : advice.plannerSource === "local_fallback"
-      ? `\n\n確認状態\n・planner: 簡易計画${advice.plannerBlocker ? `（${displayCreatePlanText(advice.plannerBlocker)}）` : ""}\n・次に保存/実演/開始で実データを読んで確認します。`
-      : advice.plannerSource
-        ? `\n\n確認状態\n・planner: ${advice.plannerSource === "openai" ? "AI計画" : "ローカル計画"}${advice.plannerModel ? `（${advice.plannerModel}）` : ""}${routeNote ? `\n・${routeNote.trim()}` : ""}`
-        : "";
-    const routeGapNote = !nextCapabilityPlan?.recommendedRoutes?.length && nextCapabilityPlan?.gapBacklog?.length
-      ? `\n・未接続: ${nextCapabilityPlan.gapBacklog.slice(0, 2).map((gap) => gap.label).join("、")}`
-      : "";
-    const reply = `${advice.reply}${plannerNote}${routeGapNote}`;
-    const now = Date.now();
-    setCreateMessages((messages) => compactCreateMessages([
-      ...messages,
-      nextUserMessage,
-      ...(storedSecrets.length
-        ? [
-            {
-              id: `assistant-secret-${now}`,
-              role: "assistant" as const,
-              text: `${secretLabels(storedSecrets).join("、")}を保存しました。次回からは「前回このキーがあるので、これを使いますね」と確認して進めます。値は画面には出しません。`
-            }
-          ]
-        : []),
-      { id: `assistant-${now}`, role: "assistant", text: reply }
-    ]));
-    if (storedSecrets.length) refresh(false);
-    setBusyKey((current) => current === "secret-save" ? null : current);
-    return advice;
-  }
-
-  async function continueRunInCreate(run: Row) {
-    const runId = String(run.id);
-    const detail = selectedRunDetail?.run?.id === runId ? selectedRunDetail : null;
-    const meta = asJson<Row>(run.metadata_json, {});
-    const proofGate = meta.proof_gate ?? {};
-    const prompt = buildRunContinuationPrompt(run, meta, {
-      proofCount: detail?.proofs.length ?? dashboard.proofs.filter((proof) => proof.run_id === runId).length,
-      stepCount: detail?.steps.length ?? dashboard.steps.filter((step) => step.run_id === runId).length,
-      eventCount: detail?.workerEvents.length ?? dashboard.workerEvents.filter((event) => event.run_id === runId).length,
-      missingLabels: missingProofLabels(proofGate)
-    });
-    const userMessage: ChatMessage = { id: `user-run-${Date.now()}`, role: "user", text: prompt };
-    const historyForPlanner = [...createMessages, userMessage];
-    setBusyKey("create-run-continuation");
-    setCreateInput("");
-    setActiveView("Create", false);
-    try {
-      const advice = await refreshCreatePlanner(historyForPlanner, createDraft.command);
-      setCreateDraft(advice);
-      setActiveResearchPlan(null);
-      setCreatePlanDirty(false);
-      const now = Date.now();
-      setCreateMessages((messages) => compactCreateMessages([
-        ...messages,
-        userMessage,
-        { id: `assistant-run-${now}`, role: "assistant", text: advice.reply }
-      ]));
-      recordActionReceipt({
-        tone: "info",
-        title: "実行結果を読み込んで計画を更新しました",
-        detail: `${displayTaskName(run.name)} の結論、不足、次の一手を作る画面へ反映しました。`,
-        nextAction: advice.nextAction || "作る画面で次の手順を確認してください。",
-        view: "Create",
-        runId
-      });
-      setNotice("実行結果を作る画面に読み込み、次の一手を更新しました。");
-      try {
-        const nextCapabilityPlan = await refreshCapabilityPlan(advice.command);
-        setCapabilityPlan(nextCapabilityPlan);
-      } catch {
-        setCapabilityPlan(null);
-      }
-    } catch {
-      setCreateInput(prompt);
-      recordActionReceipt({
-        tone: "info",
-        title: "作るで続き相談を始めます",
-        detail: `${displayTaskName(run.name)} の続きを相談欄に用意しました。`,
-        nextAction: "作る画面で送信して、次の手順を整理してください。",
-        view: "Create",
-        runId
-      });
-      setNotice("続き相談を入力欄に用意しました。送信すると計画を更新します。");
-    } finally {
-      setBusyKey((current) => current === "create-run-continuation" ? null : current);
-    }
-  }
-
-  function handleCapabilityGapAction(gap: CapabilityGap) {
-    const action = gap.action;
-    if (!action) return;
-    setActiveView(action.view, false);
-    if (action.kind === "create" && action.command) {
-      void sendCreateMessage(action.command);
-    }
-  }
-
-  function handleNextAction(action: Row) {
-    const view = String(action.view ?? "Dashboard") as View;
-    setActiveView(view, false);
-    if (view === "Create" && typeof action.command === "string" && action.command.trim()) {
-      void sendCreateMessage(action.command);
-    }
-  }
-
-  useEffect(() => {
-    if (!busyKey) refresh(false);
-    const timer = window.setInterval(() => {
-      if (busyKey) return;
-      fetchApiJson<unknown>("/api/dashboard", undefined, "dashboard_failed")
-        .then((body) => {
-          if (isDashboard(body)) {
-            setDashboard(body);
-            setSelectedRunId((current) => resolveSelectedRunId(current, body.runs, body.actionableRuns ?? []));
-          }
-        })
-        .catch(() => undefined);
-    }, 30000);
-    return () => window.clearInterval(timer);
-  }, [busyKey]);
-
-  useEffect(() => {
-    if (restoredCreateSession) return;
-    let cancelled = false;
-    let hydrationTimer: number | undefined;
-    readServerCreateDraftSession()
-      .then((session) => {
-        if (cancelled) return;
-        if (session) {
-          setCreateMessages(session.messages);
-          setCreateDraft(session.draft);
-          setResearchSources(session.researchSources);
-          setCommand(session.command);
-          setCreatePlanDirty(false);
-          hydrationTimer = window.setTimeout(() => {
-            if (!cancelled) setServerCreateSessionChecked(true);
-          }, 0);
-          return;
-        }
-        setServerCreateSessionChecked(true);
-      }).catch(() => {
-        if (!cancelled) setServerCreateSessionChecked(true);
-      });
-    return () => {
-      cancelled = true;
-      if (hydrationTimer !== undefined) window.clearTimeout(hydrationTimer);
-    };
-  }, [restoredCreateSession]);
-
-  useEffect(() => {
-    function syncViewFromHash() {
-      const view = hashViews[window.location.hash] ?? "Dashboard";
-      const viewChanged = activeView !== view;
-      setActiveViewState(view);
-      clearTransientViewFeedback(viewChanged);
-    }
-    window.addEventListener("hashchange", syncViewFromHash);
-    window.addEventListener("popstate", syncViewFromHash);
-    return () => {
-      window.removeEventListener("hashchange", syncViewFromHash);
-      window.removeEventListener("popstate", syncViewFromHash);
-    };
-  }, [activeView, notice, actionReceipt]);
-
-  useEffect(() => {
-    const session = {
-      version: 1,
-      messages: compactCreateMessages(createMessages),
-      draft: createDraft,
-      researchSources,
-      command
-    } satisfies CreateDraftSession;
-    writeCreateDraftSession(session);
-    if (serverCreateSessionChecked) writeServerCreateDraftSession(session);
-  }, [command, createDraft, createMessages, researchSources, serverCreateSessionChecked]);
-
-  useEffect(() => {
-    const jobId = createDraft.plannerJobId;
-    if (!jobId || createDraft.plannerJobStatus === "completed" || createDraft.plannerJobStatus === "blocked") return;
-    let cancelled = false;
-    const poll = async () => {
-      try {
-        const body = await fetchApiJson<{ ok?: boolean; job?: CreatePlannerJobReadback; plan?: CreatePlannerPlan }>(
-          `/api/create/plan/jobs/${encodeURIComponent(jobId)}`,
-          undefined,
-          "create_planner_job_readback_failed"
-        );
-        if (cancelled || !body.job) return;
-        if (body.job.status === "completed" && (body.job.result ?? body.plan)) {
-          const result = body.job.result ?? body.plan as CreatePlannerPlan;
-          const nextDraft = createDraftFromPlannerPlan(result, body.job);
-          setCreateDraft(nextDraft);
-          setCreatePlanDirty(false);
-          setCreateMessages((messages) => compactCreateMessages([
-            ...messages,
-            {
-              id: `assistant-planner-job-${body.job?.id}-${Date.now()}`,
-              role: "assistant",
-              text: `${nextDraft.reply}\n\n確認状態\n・planner: Mac worker（Codex）\n・job: 完了`
-            }
-          ]));
-          return;
-        }
-        if (body.job.status === "blocked") {
-          setCreateDraft((draft) => ({
-            ...draft,
-            plannerJobStatus: "blocked",
-            plannerBlocker: body.job?.exactBlocker ?? "mac_worker_planner_blocked"
-          }));
-          return;
-        }
-        setCreateDraft((draft) => ({
-          ...draft,
-          plannerJobStatus: body.job?.status ?? draft.plannerJobStatus,
-          plannerBlocker: body.job?.status === "running" ? "mac_worker_planner_running" : "mac_worker_planner_waiting"
-        }));
-      } catch {
-        if (!cancelled) {
-          setCreateDraft((draft) => ({ ...draft, plannerBlocker: "create_planner_job_readback_failed" }));
-        }
-      }
-    };
-    void poll();
-    const timer = window.setInterval(() => {
-      void poll();
-    }, 3000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [createDraft.plannerJobId, createDraft.plannerJobStatus]);
-
-  useEffect(() => {
-    if (activeView !== "Runs") setSelectedProof(null);
-  }, [activeView]);
-
-  useEffect(() => {
-    if (!selectedProof) {
-      setSelectedProofView(null);
-      setProofViewLoading(false);
-      return;
-    }
-    const viewerUrl = typeof selectedProof.viewer_url === "string"
-      ? selectedProof.viewer_url
-      : selectedProof.id
-        ? `/api/proofs/${encodeURIComponent(String(selectedProof.id))}/view`
-        : "";
-    if (!viewerUrl) {
-      setSelectedProofView({ status: "blocked", blocked_reason: "viewer_unavailable" });
-      return;
-    }
-    let cancelled = false;
-    setProofViewLoading(true);
-    setSelectedProofView(null);
-    fetchApiJson<ProofView>(viewerUrl, undefined, "proof_view_failed")
-      .then((body) => {
-        if (!cancelled) setSelectedProofView(body);
-      })
-      .catch(() => {
-        if (!cancelled) setSelectedProofView({ status: "blocked", blocked_reason: "preview_unavailable" });
-      })
-      .finally(() => {
-        if (!cancelled) setProofViewLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedProof]);
-
-  useEffect(() => {
-    if (!selectedRunId) {
-      setSelectedRunDetail(null);
-      return;
-    }
-    let cancelled = false;
-    setSelectedRunDetail(null);
-    fetchApiJson<unknown>(`/api/runs/${encodeURIComponent(selectedRunId)}`, undefined, "run_detail_failed")
-      .then((body) => {
-        if (!isRunDetail(body)) throw new Error(userError("run_detail_failed"));
-        if (!cancelled) setSelectedRunDetail(body);
-      })
-      .catch(() => {
-        if (!cancelled) setSelectedRunDetail(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedRunId]);
-
-  const status = useMemo(() => {
-    const pending = dashboard.approvals.filter((approval) => approval.status === "pending").length;
-    const partial = dashboard.runs.filter((run) => run.status === "partial").length;
-    return { pending, partial };
-  }, [dashboard]);
-
-  const dashboardActionableRuns = dashboard.actionableRuns ?? [];
-  const dashboardSelectedRun = selectedRunId
-    ? dashboard.runs.find((run) => run.id === selectedRunId)
-    : dashboardActionableRuns[0];
-  const selectedRunDetailRun = selectedRunDetail?.run?.id === selectedRunId ? selectedRunDetail.run : undefined;
-  const selectedRun = newerRunSnapshot(selectedRunDetailRun, dashboardSelectedRun);
-  const currentRun = selectedRun;
-  const currentRunMeta = asJson<Row>(currentRun?.metadata_json, {});
-  const detailForCurrentRun = selectedRunDetail?.run?.id === currentRun?.id ? selectedRunDetail : null;
-  const runSteps = detailForCurrentRun ? detailForCurrentRun.steps : currentRun ? dashboard.steps.filter((step) => step.run_id === currentRun.id) : [];
-  const runProofs = detailForCurrentRun ? detailForCurrentRun.proofs : currentRun ? dashboard.proofs.filter((proof) => proof.run_id === currentRun.id) : [];
-  const runChildren = detailForCurrentRun
-    ? detailForCurrentRun.children
-    : currentRun
-      ? dashboard.childRuns.filter((child) => child.parent_run_id === currentRun.id)
-      : [];
-  const runEvents = detailForCurrentRun
-    ? detailForCurrentRun.workerEvents
-    : currentRun
-      ? dashboard.workerEvents.filter((event) => event.run_id === currentRun.id)
-      : [];
-
-  function clearTransientViewFeedback(viewChanged: boolean) {
-    if (!viewChanged) return;
-    const noticeToClear = notice;
-    const receiptIdToClear = actionReceipt?.id ?? "";
-    if (noticeToClear && !isErrorNotice(noticeToClear)) {
-      setNotice((current) => current === noticeToClear ? "" : current);
-    }
-    if (receiptIdToClear) {
-      setActionReceipt((current) => (
-        current?.id === receiptIdToClear
-          && (current.tone === "ok" || current.tone === "info")
-          && !current.runId
-          ? null
-          : current
-      ));
-    }
-  }
-
-  function setActiveView(view: View, resetNotice = false) {
-    const viewChanged = activeView !== view;
-    if (viewChanged) closeQuickActionMenu();
-    setActiveViewState(view);
-    if (resetNotice) {
-      setNotice("最新の状態に更新しました");
-    } else {
-      clearTransientViewFeedback(viewChanged);
-    }
-    if (typeof window !== "undefined" && window.location.hash !== viewHashes[view]) {
-      window.history.pushState(null, "", viewHashes[view]);
-    }
-  }
-
-  const drawerProof = activeView === "Runs" ? selectedProof : null;
-  const drawerSkill = activeView === "Skills" ? selectedSkill : null;
-
-  return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand" aria-label="Automation OS">
-          <div className="brand-mark" title="Automation OS">A</div>
-        </div>
-        <div className={loading ? "online muted" : "online"} title={loading ? "同期中" : "OK"} role="status" aria-live="polite">
-          <span className="status-dot" aria-hidden="true" />
-          <span className="sr-only">{loading ? "同期中" : "OK"}</span>
-        </div>
-        <nav className="primary-nav">
-          {primaryNav.map(([label, text, Icon]) => (
-            <button
-              className={label === activeView ? "nav-item active" : "nav-item"}
-              key={label}
-              title={text}
-              aria-label={text}
-              aria-current={label === activeView ? "page" : undefined}
-              disabled={label === "Create" && busyKey === "secret-save"}
-              onClick={() => {
-                setActiveView(label);
-              }}
-            >
-              <Icon size={18} aria-hidden="true" />
-              <span className="nav-item-label">{text}</span>
-            </button>
-          ))}
-        </nav>
-        <details className="advanced-nav">
-          <summary title="診断" aria-label="診断">
-            <Database size={16} />
-            <span className="sr-only">診断</span>
-          </summary>
-          <nav>
-            {advancedNav.map(([label, text, Icon]) => (
-              <button className={label === activeView ? "nav-item active" : "nav-item"} key={label} onClick={() => setActiveView(label)}>
-                <Icon size={17} />
-                <span>{text}</span>
-              </button>
-            ))}
-          </nav>
-        </details>
-        <div className="system-card">
-          <Metric label="承認待ち" value={String(status.pending)} warn={status.pending > 0} />
-          <Metric label="確認が必要" value={String(status.partial)} warn={status.partial > 0} />
-        </div>
-      </aside>
-
-      <main>
-        <header className="topbar">
-          <div className="command-area">
-            <div className="command">
-              <input value={command} onChange={(event) => setCommand(event.target.value)} placeholder="すぐ開始する短い指示" aria-label="すぐ開始する短い指示" />
-              <button title="実行" onClick={startCommand} disabled={busyKey === "start" || busyKey === "secret-save"}>
-                {busyKey === "start" ? <Loader2 size={18} className="spin" /> : <Play size={18} />}
-              </button>
-            </div>
-          </div>
-          <div className="quick-actions">
-            <button className="icon-action" onClick={() => refresh()} disabled={loading} title="更新" aria-label="更新"><RefreshCcw size={16} /></button>
-            <details className="advanced-actions icon-only-details" ref={quickActionsDetailsRef}>
-              <summary title="診断" aria-label="診断">
-                <Database size={16} />
-                <span className="sr-only">診断</span>
-              </summary>
-              <div>
-                <button onClick={() => post("/api/runs/demo-daily-ai", "デモを作成しました", { view: "Dashboard", key: "demo" })} disabled={busyKey === "demo"}><FileCheck size={16} /> デモ</button>
-                <button onClick={() => post("/api/import/codex-assets", "データを取り込みました", { view: "Sources", key: "import" })} disabled={busyKey === "import"}><Archive size={16} /> 取り込み</button>
-                <button onClick={() => post("/api/advisor/research-ingest", "調査メモを取り込みました", { view: "Sources", key: "research" })} disabled={busyKey === "research"}><Bot size={16} /> 調査</button>
-                <button onClick={() => post("/api/bridge/actions/obsidian_export/run", "Obsidianを更新しました", { view: "Sources", key: "obsidian" })} disabled={busyKey === "obsidian"}><FileText size={16} /> Obsidian</button>
-                <button onClick={() => post("/api/bridge/actions/codex_inventory/run", "Codex機能を確認しました", { view: "Sources", key: "capabilities" })} disabled={busyKey === "capabilities"}><Sparkles size={16} /> 機能確認</button>
-                <button onClick={() => post("/api/browser/health", "ブラウザ検証の状態を確認しました", { view: "Sources", key: "browser-health" })} disabled={busyKey === "browser-health"}><Eye size={16} /> ブラウザ</button>
-                <button onClick={() => post("/api/bridge/actions/local_browser_check/run", "画面を開いて確認しました", { view: "Sources", key: "browser-check" })} disabled={busyKey === "browser-check"}><Eye size={16} /> 開いて確認</button>
-                <button onClick={() => post("/api/bridge/actions/browser_use_local_check/run", "Playwrightで確認しました", { view: "Sources", key: "browser-use-check" })} disabled={busyKey === "browser-use-check"}><Eye size={16} /> Playwright</button>
-                <button onClick={() => post("/api/knowledge/refresh", "知識メモを更新しました", { view: "Sources", key: "knowledge" })} disabled={busyKey === "knowledge"}><Database size={16} /> 知識更新</button>
-              </div>
-            </details>
-          </div>
-        </header>
-
-        {(loading || notice) && (
-          <div className={isErrorNotice(notice) ? "notice error" : "notice"}>
-            {loading ? "同期しています..." : notice}
-          </div>
-        )}
-        {actionReceipt && (
-          <ActionReceiptBanner
-            receipt={actionReceipt}
-            onView={(view) => setActiveView(view)}
-            onSelectRun={(runId) => {
-              setSelectedRunId(runId);
-              setActiveView("Runs");
-            }}
-            onDismiss={() => setActionReceipt(null)}
-          />
-        )}
-
-        {activeView === "Dashboard" && (
-          <DashboardView
-            dashboard={dashboard}
-            currentRun={currentRun}
-            currentRunMeta={currentRunMeta}
-            runSteps={runSteps}
-            runProofs={runProofs}
-            runEvents={runEvents}
-            onView={setActiveView}
-            onNextAction={handleNextAction}
-            onSelectRun={(run) => {
-              setSelectedRunId(run.id);
-              setActiveView("Runs");
-            }}
-            onSelectProof={setSelectedProof}
-            onStartNisenPrints={(quickStart) => startRun(quickStart.command, quickStart.key)}
-            onRefreshObsidian={() => post("/api/bridge/actions/obsidian_export/run", "Obsidianを更新しました", { view: "Sources", key: "bridge-obsidian_export" })}
-            busyKey={busyKey}
-          />
-        )}
-
-        {activeView === "Create" && (
-          <CreateView
-            messages={createMessages}
-            input={createInput}
-            draft={createDraft}
-            researchSources={researchSources}
-            researchPlan={createResearchPlan}
-            sourceCaptureResults={sourceCaptureResults}
-            capabilityPlan={capabilityPlan ?? dashboard.capabilityRouter ?? emptyDashboard.capabilityRouter}
-            busyKey={busyKey}
-            onInput={setCreateInput}
-            onSend={sendCreateMessage}
-            onSuggestion={sendCreateMessage}
-            onSourceToggle={toggleResearchSource}
-            onVisibleStepsChange={updateVisibleSteps}
-            onSavePlan={saveCreatePlan}
-            onDemoPlan={demoResearchPlan}
-            onCaptureSource={captureResearchSource}
-            onStart={startResearchPlan}
-            onRegularize={regularizeResearchPlan}
-            onReset={resetCreateComposer}
-            secrets={dashboard.secrets}
-          />
-        )}
-
-        {activeView === "Runs" && (
-          <RunsView
-            runs={dashboard.runs}
-            actionableRuns={dashboardActionableRuns}
-            selectedRun={currentRun}
-            steps={runSteps}
-            proofs={runProofs}
-            children={runChildren}
-            events={runEvents}
-            localWorker={dashboard.localWorker ?? {}}
-            onSelectRun={setSelectedRunId}
-            onSelectProof={setSelectedProof}
-            onRefreshRun={(run) => {
-              setSelectedRunId(String(run.id));
-              setNotice("履歴を更新しています。");
-              recordActionReceipt({
-                tone: "info",
-                title: "履歴を更新しています",
-                detail: `${displayTaskName(run.name)} の最新状態を読み直します。`,
-                nextAction: "更新後に結論、理由、保存記録を確認してください。",
-                view: "Runs",
-                runId: String(run.id)
-              });
-              void refresh(false, { background: true, staleNotice: true });
-            }}
-            onOpenApprovals={() => {
-              setActiveView("Approvals", false);
-              recordActionReceipt({
-                tone: "info",
-                title: "承認画面を開きました",
-                detail: "確認が必要な内容を一覧で見られます。",
-                nextAction: "内容を確認して、進めるか止めるかを選んでください。",
-                view: "Approvals"
-              });
-            }}
-            onContinueInCreate={(run) => {
-              void continueRunInCreate(run);
-            }}
-          />
-        )}
-
-        {activeView === "Schedule" && (
-          <ScheduleView
-            registeredWorkflows={dashboard.registeredWorkflows}
-            schedulerStatus={dashboard.schedulerStatus ?? {}}
-            onSchedulerRunOnce={runSchedulerOnce}
-            onOpenRun={(id) => {
-              setSelectedRunId(id);
-              setActiveView("Runs", false);
-              setNotice("履歴を開きました。保存記録と次の一手を確認できます。");
-              recordActionReceipt({
-                tone: "info",
-                title: "履歴を開きました",
-                detail: "定期の行から前回の実行を開きました。",
-                nextAction: "詳細で結論、理由、保存記録を確認してください。",
-                view: "Runs",
-                runId: id
-              });
-            }}
-            onRegisteredStart={(id) => post(`/api/registered-workflows/${encodeURIComponent(id)}/start`, "キューに入れました", { view: "Runs", key: `registered-${id}` })}
-            onRegisteredToggle={(workflow) => {
-              const paused = isPausedRegisteredWorkflow(workflow);
-              return post(`/api/registered-workflows/${encodeURIComponent(String(workflow.id))}/${paused ? "resume" : "pause"}`, paused ? "再開しました" : "停止しました", { key: `registered-toggle-${workflow.id}` });
-            }}
-            onRegisteredSchedule={updateRegisteredSchedule}
-            busyKey={busyKey}
-            productionGuard={dashboard.productionGuard ?? {}}
-            operatorWriteTokenReady={operatorWriteTokenReady}
-            onSaveOperatorWriteToken={saveOperatorWriteToken}
-            onClearOperatorWriteToken={clearOperatorWriteToken}
-          />
-        )}
-
-        {activeView === "Approvals" && (
-          <ApprovalsView approvals={dashboard.approvalInbox ?? dashboard.approvals} onDecision={post} busyKey={busyKey} />
-        )}
-
-        {activeView === "Lanes" && <LanesView lanes={dashboard.lanes} />}
-
-        {activeView === "Sources" && (
-          <SourcesView
-            summary={dashboard.assetSummary}
-            assets={dashboard.assets}
-            events={dashboard.advisorEvents}
-            checks={dashboard.systemChecks}
-            bridgeCatalog={dashboard.bridgeActionCatalog}
-            bridgeActions={dashboard.bridgeActions}
-            bridgeExecutions={dashboard.bridgeExecutions}
-            knowledgeNotes={dashboard.knowledgeNotes}
-            researchPlans={dashboard.researchPlans}
-            obsidian={dashboard.obsidian ?? {}}
-            codexCapabilities={dashboard.codexCapabilities ?? {}}
-            codexParityLedger={dashboard.codexParityLedger ?? { items: [] }}
-            codexAutomationMigrationLedger={dashboard.codexAutomationMigrationLedger ?? { items: [], summary: {} }}
-            capabilityRouter={dashboard.capabilityRouter ?? emptyDashboard.capabilityRouter}
-            browserHealth={dashboard.browserHealth ?? {}}
-            localWorker={dashboard.localWorker ?? {}}
-            onImport={() => post("/api/import/codex-assets", "読み込んだ情報を更新しました", { view: "Sources", key: "import" })}
-            onBridgeAction={(id) => post(`/api/bridge/actions/${id}/run`, "安全操作を受け付けました", { view: "Sources", key: `bridge-${id}` })}
-            onGapAction={handleCapabilityGapAction}
-            busyKey={busyKey}
-          />
-        )}
-
-        {activeView === "Skills" && (
-          <SkillsView
-            runs={dashboard.runs}
-            skills={dashboard.skills}
-            selectedSkill={selectedSkill ?? dashboard.skills[0]}
-            onSelectSkill={setSelectedSkill}
-            onCreate={post}
-            busyKey={busyKey}
-          />
-        )}
-
-        {(drawerProof || drawerSkill) && (
-          <DetailDrawer
-            proof={drawerProof}
-            proofView={selectedProofView}
-            proofViewLoading={proofViewLoading}
-            skill={drawerSkill}
-            onClose={() => {
-              setSelectedProof(null);
-              setSelectedProofView(null);
-              setSelectedSkill(null);
-            }}
-          />
-        )}
-      </main>
-    </div>
-  );
 }
 
-function ActionReceiptBanner({
-  receipt,
-  onView,
-  onSelectRun,
-  onDismiss
-}: {
-  receipt: ActionReceipt;
-  onView: (view: View) => void;
-  onSelectRun: (runId: string) => void;
-  onDismiss: () => void;
-}) {
-  const icon = receipt.tone === "blocked"
-    ? <AlertTriangle size={16} />
-    : receipt.tone === "running"
-      ? <Play size={16} />
-      : receipt.tone === "ok"
-        ? <Check size={16} />
-        : <FileCheck size={16} />;
-  const chips = [
-    receipt.runId ? `履歴 ${compactId(receipt.runId)}` : "",
-    receipt.planId ? `計画 ${compactId(receipt.planId)}` : "",
-    receipt.checkId ? `確認 ${compactId(receipt.checkId)}` : "",
-    receipt.workflowId ? `定期 ${compactId(receipt.workflowId)}` : ""
-  ].filter(Boolean);
-  return (
-    <section className={`action-receipt ${receipt.tone}`} aria-label="直前の操作記録">
-      <div className="action-receipt-main">
-        <span className="action-receipt-icon" aria-hidden="true">{icon}</span>
-        <div>
-          <strong>{receipt.title}</strong>
-          <small>{receipt.detail}</small>
-          <small>{receipt.nextAction}</small>
-        </div>
-      </div>
-      {chips.length > 0 && (
-        <div className="action-receipt-chips">
-          {chips.map((chip) => <span key={chip}>{chip}</span>)}
-        </div>
-      )}
-      <div className="action-receipt-actions">
-        {receipt.runId && (
-          <button type="button" onClick={() => onSelectRun(receipt.runId ?? "")}>
-            履歴を見る
-          </button>
-        )}
-        {receipt.view && !receipt.runId && (
-          <button type="button" onClick={() => onView(receipt.view ?? "Dashboard")}>
-            開く
-          </button>
-        )}
-      </div>
-      <button type="button" className="action-receipt-dismiss" onClick={onDismiss} aria-label="直前の操作記録を閉じる" title="閉じる">
-        <X size={14} aria-hidden="true" />
-      </button>
-    </section>
-  );
+function captureAppScreenshotWithTimeout(timeoutMs = 3500): Promise<{ dataUrl: string | null; error: string | null }> {
+  return Promise.race([
+    captureAppScreenshot(),
+    new Promise<{ dataUrl: string | null; error: string | null }>((resolve) => {
+      window.setTimeout(() => resolve({ dataUrl: null, error: "feedback_screenshot_timeout" }), timeoutMs);
+    })
+  ]);
 }
 
-function DashboardView(props: {
-  dashboard: Dashboard;
-  currentRun?: Row;
-  currentRunMeta: Row;
-  runSteps: Row[];
-  runProofs: Row[];
-  runEvents: Row[];
-  onView: (view: View) => void;
-  onNextAction: (action: Row) => void;
-  onSelectRun: (run: Row) => void;
-  onSelectProof: (proof: Row) => void;
-  onStartNisenPrints: (quickStart: (typeof nisenPrintsQuickStarts)[number]) => void;
-  onRefreshObsidian: () => Promise<void>;
-  busyKey: string | null;
-}) {
-  const hasCurrentRun = Boolean(props.currentRun);
-  const scheduled = props.dashboard.registeredWorkflows ?? [];
-  return (
-    <>
-      <section className={`grid dashboard-main-grid ${hasCurrentRun ? "" : "dashboard-main-grid--idle"}`}>
-        <Panel title="今" action="" actionLabel="履歴" onAction={() => props.onView("Runs")}>
-          <RunSummary
-            run={props.currentRun}
-            meta={props.currentRunMeta}
-            localWorker={props.dashboard.localWorker ?? {}}
-            emptyText="なし"
-            onOpen={() => props.currentRun && props.onSelectRun(props.currentRun)}
-          />
-        </Panel>
-        <Panel title="定期" action="" actionLabel="定期" onAction={() => props.onView("Schedule")}>
-          <MiniSchedule workflows={scheduled} />
-        </Panel>
-        <Panel title="確認" action="" actionLabel="確認" onAction={() => props.onView("Approvals")}>
-          <ApprovalQueue approvals={(props.dashboard.approvalInbox ?? props.dashboard.approvals).slice(0, 5)} />
-        </Panel>
-        <Panel title="Mac worker" action="" actionLabel="診断" onAction={() => props.onView("Sources")}>
-          <LocalWorkerStatus worker={props.dashboard.localWorker ?? {}} />
-        </Panel>
-        <Panel title="本番" action="" actionLabel="診断" onAction={() => props.onView("Sources")}>
-          <DeploymentReadbackStatus deployment={props.dashboard.deployment ?? {}} />
-        </Panel>
-        {hasCurrentRun && (
-          <Panel title="流れ" action="" actionLabel="履歴" onAction={() => props.onView("Runs")}>
-            <Timeline
-              steps={props.runSteps}
-              emptyText="なし"
-            />
-          </Panel>
-        )}
-      </section>
-
-      <details className="dashboard-more">
-        <summary title="操作" aria-label="操作">
-          <Sparkles size={16} />
-          <span className="sr-only">操作</span>
-        </summary>
-        <NextActionsPanel actions={props.dashboard.nextActions} onAction={props.onNextAction} />
-        <section className="quick-start-band compact">
-          <div className="quick-start-head">
-            <h2>NisenPrints</h2>
-          </div>
-          <div className="quick-start-grid">
-            {nisenPrintsQuickStarts.map((quickStart) => (
-              <article className="quick-start-card" key={quickStart.key}>
-                <strong>{quickStart.beginnerLabel}</strong>
-                <button
-                  type="button"
-                  className="quick-start-start"
-                  onClick={() => props.onStartNisenPrints(quickStart)}
-                  disabled={props.busyKey === quickStart.key}
-                >
-                  {props.busyKey === quickStart.key ? <Loader2 size={16} className="spin" /> : <Play size={16} />}
-                  開始
-                </button>
-              </article>
-            ))}
-          </div>
-        </section>
-      </details>
-
-      <details className="advanced-section">
-        <summary title="診断" aria-label="診断">
-          <Database size={16} />
-          <span className="sr-only">診断</span>
-        </summary>
-        <ResumeContractCard contract={props.dashboard.resumeContract ?? {}} />
-        <ObsidianSyncCard
-          obsidian={props.dashboard.obsidian ?? {}}
-          variant="compact"
-          onOpenSources={() => props.onView("Sources")}
-          onRefresh={props.onRefreshObsidian}
-          busy={props.busyKey === "bridge-obsidian_export"}
-        />
-        <div className="advanced-grid">
-          <button onClick={() => props.onView("Lanes")}>
-            <Layers3 size={18} />
-            <span>並列レーン</span>
-            <strong>{props.dashboard.lanes.length}</strong>
-          </button>
-          <button onClick={() => props.onView("Runs")}>
-            <FileCheck size={18} />
-            <span>確認記録</span>
-            <strong>{props.dashboard.proofs.length}</strong>
-          </button>
-          <button onClick={() => props.onView("Sources")}>
-            <Bot size={18} />
-            <span>調査メモ</span>
-            <strong>{props.dashboard.advisorEvents.length}</strong>
-          </button>
-          <button onClick={() => props.onView("Runs")}>
-            <Activity size={18} />
-            <span>処理ログ</span>
-            <strong>{props.dashboard.workerEvents.length}</strong>
-          </button>
-        </div>
-      </details>
-    </>
-  );
-}
-
-function DeploymentReadbackStatus({ deployment }: { deployment: Row }) {
-  const commit = String(deployment.commit ?? "");
-  const commitLabel = commit ? commit.slice(0, 7) : "未確認";
-  const commitSource = String(deployment.commitSource ?? "unknown");
-  const plannerProvider = String(deployment.plannerProvider ?? "auto");
-  const aiRuntime = asJson<Row>(deployment.aiRuntime, {});
-  const openAiApiReady = Boolean(aiRuntime.openAiApiReady);
-  const codexBinConfigured = Boolean(aiRuntime.codexBinConfigured);
-  const codexPlannerSelected = Boolean(aiRuntime.codexPlannerSelected);
-  const plannerExecutionMode = String(aiRuntime.plannerExecutionMode ?? "");
-  const subscriptionPlannerReady = Boolean(aiRuntime.subscriptionPlannerReady);
-  const plannerModeLabel = plannerExecutionMode === "hosted_openai_api"
-    ? "API"
-    : subscriptionPlannerReady
-      ? "Mac worker"
-      : codexPlannerSelected
-        ? "Codex"
-        : "未接続";
-  const assets = asJson<Row>(deployment.assets, {});
-  const jsAsset = String(assets.js ?? "");
-  const cssAsset = String(assets.css ?? "");
-  const assetsReady = Boolean(assets.indexFound && jsAsset && cssAsset);
-  const assetLabel = assetsReady ? "配信中" : "未確認";
-  return (
-    <div className={`deployment-status deployment-status--${assetsReady ? "ready" : "unknown"}`}>
-      <div className="deployment-main">
-        <span>commit</span>
-        <strong>{commitLabel}</strong>
-      </div>
-      <p>{assetsReady ? "本番のAPIと画面アセットを確認できます。" : "本番アセットはまだ確認できていません。"}</p>
-      <small>取得元: {commitSource}</small>
-      <small>planner: {plannerProvider}</small>
-      <small>計画: {plannerModeLabel} / OpenAI API: {openAiApiReady ? "キー設定済み" : "使わない"} / Codex bin: {codexBinConfigured ? "明示設定" : "既定"}</small>
-      <small>assets: {assetLabel}</small>
-    </div>
-  );
-}
-
-function LocalWorkerStatus({ worker }: { worker: Row }) {
-  const status = String(worker.status ?? "missing");
-  const label = String(worker.label ?? "未接続");
-  const detail = String(worker.detail ?? "Mac workerはまだ確認できていません。");
-  const nextAction = String(worker.nextAction ?? "Macで worker loop を起動してください。");
-  const updatedAt = typeof worker.updatedAt === "string" ? worker.updatedAt.slice(5, 16).replace("T", " ") : "未確認";
-  const processed = Number(worker.processed ?? 0);
-  return (
-    <div className={`local-worker-status local-worker-status--${status}`}>
-      <div className="local-worker-main">
-        <span>{label}</span>
-        <strong>{processed}件</strong>
-      </div>
-      <p>{detail}</p>
-      <small>{compactWorkerSetupGuidance(nextAction)}</small>
-      <small>最終確認: {updatedAt}</small>
-    </div>
-  );
-}
-
-function MiniSchedule({ workflows }: { workflows: Row[] }) {
-  const active = workflows.filter(isActiveRegisteredWorkflow);
-  const paused = workflows.filter(isPausedRegisteredWorkflow);
-  const needsCheck = active.filter((workflow) => Boolean(workflow.needs_check));
-  const morningWorkflow = active.find(isMorningCheckWorkflow);
-  const morningSummary = morningWorkflow ? displayMorningWorkflowSummary(morningWorkflow) : null;
-  return (
-    <div className="mini-schedule compact" aria-label={`予定 ${active.length}件、確認 ${needsCheck.length}件、停止 ${paused.length}件${morningSummary ? `、朝 ${morningSummary}` : ""}`}>
-      <div title="予定">
-        <strong>{active.length}</strong>
-        <span>稼働中</span>
-      </div>
-      <div title="確認が必要">
-        <strong>{needsCheck.length}</strong>
-        <span>要確認</span>
-      </div>
-      {morningSummary && (
-        <div className="mini-schedule-focus" title="朝チェック">
-          <strong>{morningSummary}</strong>
-          <span>朝チェック</span>
-        </div>
-      )}
-      {active.length === 0 && <span className="sr-only">予定はありません</span>}
-    </div>
-  );
-}
-
-function ResumeContractCard({ contract }: { contract: Row }) {
-  const readFirst = Array.isArray(contract.readFirst) ? contract.readFirst.slice(0, 3) : [];
-  const projects = Array.isArray(contract.projects) ? contract.projects : [];
-  return (
-    <section className="resume-contract-band">
-      <div className="resume-contract-copy">
-        <div className="resume-contract-icon"><FileCheck size={18} /></div>
-        <div>
-          <h2>作業再開の準備</h2>
-          <p>前回の続きがあるときは、必要な運用情報を裏側で確認してから進めます。</p>
-        </div>
-      </div>
-      <details className="internal-details resume-contract-details icon-only-details">
-        <summary title="診断" aria-label="診断">
-          <Database size={16} />
-          <span className="sr-only">診断</span>
-        </summary>
-        <small>対象プロジェクト: {projects.length}件</small>
-        <small>最新の内部記録はバックエンドで確認します。</small>
-        <div className="resume-contract-list">
-          {readFirst.map((entry: Row) => (
-            <span key={`${entry.kind}-${entry.label}`}>{String(entry.label ?? "read first")}</span>
-          ))}
-        </div>
-      </details>
-    </section>
-  );
-}
-
-function NextActionsPanel({ actions, onAction }: { actions: Row[]; onAction: (action: Row) => void }) {
-  const visible = actions.length
-    ? actions
-    : [
-        {
-          id: "ready",
-          title: "準備できています",
-          summary: "新規作成から相談するか、NisenPrintsの操作を選べます。",
-          buttonLabel: "新規作成へ",
-          view: "Create",
-          severity: "normal"
-        }
-      ];
-  return (
-    <section className="next-actions-band">
-      <div className="quick-start-head">
-        <div>
-          <h2>次にやること</h2>
-          <span>今押せるものだけを表示しています。</span>
-        </div>
-      </div>
-      <div className="next-action-list">
-        {visible.map((action) => (
-          <button className={`next-action-card ${action.severity === "attention" ? "attention" : ""}`} key={action.id} onClick={() => onAction(action)}>
-            <div>
-              <strong>{action.title}</strong>
-              <p>{action.summary}</p>
-            </div>
-            <span>{action.buttonLabel}<ChevronRight size={15} /></span>
-          </button>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function ObsidianSyncCard({
-  obsidian,
-  variant,
-  onRefresh,
-  onOpenSources,
-  busy,
-  diagnostics = false
-}: {
-  obsidian: Row;
-  variant: "compact" | "detail";
-  onRefresh?: () => void;
-  onOpenSources?: () => void;
-  busy?: boolean;
-  diagnostics?: boolean;
-}) {
-  const generatedFileCheck = asJson<Row>(obsidian.generatedFileCheck, obsidian.generatedFileCheck ?? {});
-  const generatedFileCheckFailed = generatedFileCheck.checkedAt != null && generatedFileCheck.ok === false;
-  const disabled = obsidian.enabled === false;
-  const ok = obsidian.ok === true && !generatedFileCheckFailed;
-  const failed = obsidian.ok === false || generatedFileCheckFailed;
-  const statusText = disabled ? "自動同期OFF" : ok ? "同期済み" : failed ? "要確認" : "待機中";
-  const statusClass = disabled ? "off" : ok ? "ok" : failed ? "failed" : "pending";
-  const lastTime = displayShortDateTime(obsidian.lastSuccessAt ?? obsidian.lastAttemptAt);
-  const reasonText = displayObsidianReason(typeof obsidian.reason === "string" ? obsidian.reason : undefined);
-  const generatedFileCheckText = displayGeneratedFileCheck(generatedFileCheck);
-  const publicGeneratedFileCheckText = displayGeneratedFileCheckPublic(generatedFileCheck);
-  const compact = variant === "compact";
-  const visibleCopy = failed
-    ? `作業ノートの更新で確認が必要です。${obsidian.lastError ? "詳細で理由を確認できます。" : "もう一度更新できます。"}`
-    : disabled
-      ? "作業ノートの自動更新は停止中です。必要なときだけ手動で更新できます。"
-      : ok
-        ? compact ? `作業ノートは最新です。最終更新: ${lastTime}` : `作業ノートは最新です。最終同期: ${lastTime}`
-        : "作業ノートはまだ更新待ちです。必要なら手動で更新できます。";
-  const totalGenerated = Number(obsidian.files?.length ?? 0)
-    + Number(obsidian.missionFiles?.length ?? 0)
-    + Number(obsidian.secondBrainFiles?.length ?? 0)
-    + Number(obsidian.dashboardFiles?.length ?? 0)
-    + Number(obsidian.orientationFiles?.length ?? 0)
-    + Number(obsidian.templateFiles?.length ?? 0);
-
-  return (
-    <article className={`obsidian-sync-card ${variant}`}>
-      <div className="obsidian-sync-main">
-        <div className={`obsidian-sync-icon ${statusClass}`}>
-          {busy ? <Loader2 size={18} className="spin" /> : ok ? <Check size={18} /> : failed ? <AlertTriangle size={18} /> : <FileText size={18} />}
-        </div>
-        <div>
-          <div className="obsidian-sync-title">
-            <strong>作業ノート</strong>
-            <span className={`pill ${failed ? "blocked" : ok ? "complete" : "pending"}`}>{statusText}</span>
-          </div>
-          <p>{visibleCopy}</p>
-          {variant === "detail" && <small>{ok ? `${totalGenerated}件` : publicGeneratedFileCheckText}</small>}
-        </div>
-      </div>
-      <div className="obsidian-sync-actions">
-        {variant === "detail" && (
-          <button className="text-button compact" onClick={onRefresh} disabled={busy}>
-            {busy ? <Loader2 size={14} className="spin" /> : <RefreshCcw size={14} />}
-            手動更新
-          </button>
-        )}
-        {variant === "compact" && (
-          <button className="text-button compact" onClick={onOpenSources}>
-            詳細を見る
-            <ChevronRight size={14} />
-          </button>
-        )}
-      </div>
-      {diagnostics && <details className="internal-details obsidian-sync-details">
-        <summary>開発者向け診断</summary>
-        <small>lastAttemptAt: {displayShortDateTime(obsidian.lastAttemptAt)}</small>
-        <small>lastSuccessAt: {displayShortDateTime(obsidian.lastSuccessAt)}</small>
-        <small>generatedFileCheck: {generatedFileCheckText}</small>
-        <small>外部操作の完了判断には使いません。</small>
-        <small>reason: {reasonText}</small>
-        {obsidian.lastError && <small>lastError: {String(obsidian.lastError)}</small>}
-        <small>generatedFileCheck.checkedAt: {displayShortDateTime(generatedFileCheck.checkedAt)}</small>
-        <small>generatedFileCheck.ok: {String(generatedFileCheck.ok ?? "--")}</small>
-        <small>generatedFileCheck.total: {String(generatedFileCheck.total ?? "--")}</small>
-        <small>generatedFileCheck.missing: {String(generatedFileCheck.missing?.length ?? 0)}</small>
-        <small>generatedFileCheck.nonGenerated: {String(generatedFileCheck.nonGenerated?.length ?? 0)}</small>
-      </details>}
-    </article>
-  );
-}
-
-function researchPlannerStages(plan: ResearchPlan, captures: Partial<Record<ResearchSourceKey, PlannerCaptureResponse>>) {
-  const enabled = plan.sources.filter((source) => source.enabled);
-  const captureValues = Object.values(captures).filter(Boolean);
-  const hasProof = captureValues.some((capture) => capture?.ok);
-  const hasBlocker = captureValues.some((capture) => capture?.status === "blocked" || capture?.status === "rejected");
-  const saved = plan.id !== "preview";
-  const demoDone = Boolean(plan.demoCheckId);
-  const started = plan.status === "started" || Boolean(plan.runId);
-  return [
-    { key: "consult", label: "相談", detail: plan.command ? "入力済み" : "未入力", state: plan.command ? "done" : "current" },
-    { key: "save", label: "保存", detail: saved ? "実行なしで保存済み" : "まだ実行しない", state: saved ? "done" : "current" },
-    { key: "demo", label: "実演", detail: demoDone ? "ローカル確認済み" : "外部送信なし", state: demoDone ? "done" : saved ? "current" : "pending" },
-    { key: "sources", label: "ソース", detail: `${enabled.length}件ON`, state: enabled.length ? "done" : "pending" },
-    { key: "proof", label: "確認記録", detail: hasProof ? "確認済み" : hasBlocker ? "確認が必要" : "記録だけでは未完了", state: hasProof ? "done" : hasBlocker ? "blocked" : "pending" },
-    { key: "run", label: "一回実行", detail: started ? "開始済み" : "未開始", state: started ? "done" : "pending" }
-  ];
-}
-
-function sourceProofState(source: ResearchSourcePlan, capture?: PlannerCaptureResponse): { label: string; tone: string } {
-  if (!source.enabled) return { label: "OFF", tone: "idle" };
-  if (capture?.ok) return { label: "確認済み", tone: "ok" };
-  if (capture?.status === "blocked") return { label: "確認が必要", tone: "blocked" };
-  if (capture?.status === "rejected") return { label: "確認が必要", tone: "failed" };
-  if (source.key === "web" || source.key === "youtube") return { label: "未確認", tone: "partial" };
-  return { label: "未接続", tone: "not_connected" };
-}
-
-function sourceNextConnection(source: ResearchSourcePlan): string {
-  if (!source.enabled) return "必要ならONにする";
-  if (source.key === "web") return "次: URLから確認記録を保存";
-  if (source.key === "youtube") return "次: 公式の台本を確認";
-  if (source.key === "x") return "次: 専用ブラウザで見るだけ確認";
-  if (source.key === "reddit") return "次: 公開スレッドを確認";
-  if (source.key === "mcp") return "次: 使える機能を一覧で確認";
-  return "次: API契約と認可を確認";
-}
-
-function captureResultLines(capture?: PlannerCaptureResponse): string[] {
-  if (!capture) return [];
-  const result = capture.capture ?? {};
-  const artifactPath = result.manifestFile ?? result.artifactDir ?? result.files?.manifest ?? capture.proof?.uri ?? result.ingest?.path;
-  const savedInternally = Boolean(result.exactBlocker || artifactPath || capture.proof?.id);
-  const youtubeBlocked = capture.status === "blocked" && result.exactBlocker && String(result.exactBlocker).startsWith("youtube_transcript_");
-  return [
-    `状態: ${displayStatus(capture.status)}`,
-    savedInternally ? "内部記録に保存済み" : undefined,
-    youtubeBlocked ? "次: 別の取得方法か動画候補の確認へ進めます" : undefined,
-    result.summary ? displayBridgeReceiptSummary(String(result.summary)) : undefined
-  ].filter((line): line is string => Boolean(line));
-}
-
-function isActiveRegisteredWorkflow(workflow: Row) {
-  return String(workflow.status ?? "").toLowerCase() === "active";
-}
-
-function isPausedRegisteredWorkflow(workflow: Row) {
-  return String(workflow.status ?? "").toLowerCase() === "paused";
-}
-
-function isManagedRegisteredWorkflow(workflow: Row) {
-  return isActiveRegisteredWorkflow(workflow) || isPausedRegisteredWorkflow(workflow);
-}
-
-function displayWorkflowName(workflow: Row) {
-  const explicit = workflow.public_name ?? workflow.beginnerLabel ?? workflow.beginner_label ?? workflow.label;
-  if (typeof explicit === "string" && explicit.trim()) return displayVisibleSummary(explicit.trim());
-  const name = `${String(workflow.id ?? "")} ${String(workflow.name ?? "")}`;
-  const publicName = displayPublicAutomationName(name);
-  if (publicName) return publicName;
-  return "定期実行";
-}
-
-function isMorningCheckWorkflow(workflow: Row) {
-  const id = String(workflow.id ?? "");
-  const scheduleLabel = String(workflow.schedule_label ?? "");
-  const publicText = [
-    id,
-    workflow.public_name,
-    workflow.beginnerLabel,
-    workflow.beginner_label,
-    workflow.label,
-    scheduleLabel
-  ].map((value) => String(value ?? "")).join(" ");
-  if (/daily-ai-research-publish-run|morning|朝|毎朝/i.test(publicText)) return true;
-  return /^research-plan-/.test(id) && /\b09:00\b/.test(scheduleLabel);
-}
-
-function displayMorningWorkflowSummary(workflow: Row) {
-  if (Boolean(workflow.needs_check)) return "確認";
-  const label = displayWorkflowSchedule(workflow);
-  return label.match(/\b\d{2}:\d{2}\b/)?.[0] ?? "確認";
-}
-
-function displayWorkflowSchedule(workflow: Row) {
-  if (typeof workflow.schedule_label === "string" && workflow.schedule_label.trim()) return workflow.schedule_label;
-  const schedule = asJson<Row>(workflow.schedule_json, {});
-  if (typeof schedule.label === "string" && schedule.label.trim()) return schedule.label;
-  const rrule = typeof schedule.rrule === "string" ? schedule.rrule : "";
-  const hour = Number(rrule.match(/BYHOUR=(\d{1,2})/)?.[1] ?? NaN);
-  const minute = Number(rrule.match(/BYMINUTE=(\d{1,2})/)?.[1] ?? 0);
-  if (!Number.isInteger(hour) || hour < 0 || hour > 23 || !Number.isInteger(minute) || minute < 0 || minute > 59) {
-    return "登録済み";
-  }
-  const time = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
-  return /FREQ=WEEKLY/.test(rrule) && !/BYDAY=SU,MO,TU,WE,TH,FR,SA/.test(rrule) ? `毎週 ${time}` : `毎日 ${time}`;
-}
-
-function displayWorkflowScheduleShort(workflow: Row) {
-  const label = displayWorkflowSchedule(workflow);
-  return label.match(/\b\d{2}:\d{2}\b/)?.[0] ?? label;
-}
-
-function displayWorkflowCheckLabel(workflow: Row) {
-  if (typeof workflow.check_label === "string" && workflow.check_label.trim()) return workflow.check_label.trim().slice(0, 4);
-  if (Boolean(workflow.needs_check)) return "確認";
-  return "OK";
-}
-
-function displayWorkflowTrustLabel(workflow: Row) {
-  if (typeof workflow.trust_label === "string" && workflow.trust_label.trim()) return workflow.trust_label.trim().slice(0, 4);
-  return "未確認";
-}
-
-function displayWorkflowFreshnessLabel(workflow: Row) {
-  if (typeof workflow.freshness_label === "string" && workflow.freshness_label.trim()) return workflow.freshness_label.trim().slice(0, 2);
-  return "未";
-}
-
-function displayWorkflowSafetyLabel(workflow: Row) {
-  if (typeof workflow.safety_label === "string" && workflow.safety_label.trim()) return workflow.safety_label.trim().slice(0, 2);
-  return "確認";
-}
-
-function displayWorkflowBoundaryLabel(workflow: Row) {
-  if (typeof workflow.boundary_label === "string" && workflow.boundary_label.trim()) {
-    return workflow.boundary_label.trim().replace(/前停止$/, "").slice(0, 4);
-  }
-  return "外部";
-}
-
-function displayWorkflowStateTitle(workflow: Row) {
-  if (isPausedRegisteredWorkflow(workflow)) return "停止中";
-  if (typeof workflow.check_label === "string" && workflow.check_label.trim()) return workflow.check_label.trim();
-  if (Boolean(workflow.needs_check)) return "確認が必要";
-  return "OK";
-}
-
-function displayWorkflowTrustTitle(workflow: Row) {
-  return `信頼度: ${displayWorkflowTrustLabel(workflow)}`;
-}
-
-function displayWorkflowFreshnessTitle(workflow: Row) {
-  return `鮮度: ${displayWorkflowFreshnessLabel(workflow)}`;
-}
-
-function displayWorkflowSafetyTitle(workflow: Row) {
-  return `安全: ${displayWorkflowSafetyLabel(workflow)}`;
-}
-
-function displayWorkflowBoundaryTitle(workflow: Row) {
-  if (typeof workflow.boundary_label === "string" && workflow.boundary_label.trim()) return workflow.boundary_label.trim();
-  return "実行可・課金停止";
-}
-
-function displayWorkflowMetaSummary(workflow: Row) {
-  const parts = [
-    `信頼度: ${displayWorkflowTrustLabel(workflow)}`,
-    `鮮度: ${displayWorkflowFreshnessLabel(workflow)}`,
-    displayWorkflowBoundaryTitle(workflow).replace(/前停止$/, "")
-  ];
-  return parts.filter(Boolean).join(" / ");
-}
-
-function displayWorkflowLastActionSummary(workflow: Row) {
-  const action = typeof workflow.last_action_label === "string" && workflow.last_action_label.trim()
-    ? workflow.last_action_label.trim()
-    : "まだ実行なし";
-  const result = typeof workflow.last_result_label === "string" && workflow.last_result_label.trim()
-    ? workflow.last_result_label.trim()
-    : "待機中";
-  const next = typeof workflow.next_action_label === "string" && workflow.next_action_label.trim()
-    ? workflow.next_action_label.trim()
-    : "再生で一回実行";
-  return `${action}: ${result} / 次: ${next}`;
-}
-
-function workflowLastRunId(workflow: Row) {
-  return typeof workflow.last_run_id === "string" && workflow.last_run_id.trim()
-    ? workflow.last_run_id.trim()
-    : null;
-}
-
-function createDecisionLabel(decision?: CreatePlannerDecision) {
-  if (decision === "ready_to_schedule") return "定期化候補";
-  if (decision === "ready_to_start") return "開始候補";
-  if (decision === "demo_first") return "実演候補";
-  if (decision === "save_plan") return "保存候補";
-  return "質問あり";
-}
-
-function createPlannerJobStatusLabel(status: CreatePlannerJobReadback["status"]) {
-  if (status === "completed") return "Mac worker完了";
-  if (status === "running") return "Mac worker処理中";
-  if (status === "blocked") return "Mac worker停止";
-  return "Mac worker待ち";
-}
-
-function createPlannerImmediateLabel(draft: CreateDraft) {
-  if (draft.plannerSource === "openai") return `即時: OpenAI API${draft.plannerModel ? ` / ${draft.plannerModel}` : ""}`;
-  if (draft.plannerSource === "local_codex") return "即時: Mac worker / Codex CLI";
-  return "即時: 簡易計画";
-}
-
-function createPlannerLlmLabel(draft: CreateDraft) {
-  if (draft.plannerSource === "openai") return "LLM: OpenAI API";
-  if (draft.plannerSource === "local_codex") return "LLM: Mac worker / Codex CLI";
-  if (draft.plannerJobStatus) return `LLM: ${createPlannerJobStatusLabel(draft.plannerJobStatus)}`;
-  if (draft.plannerBlocker === "mac_worker_planner_waiting" || draft.plannerBlocker === "openai_api_key_missing") return "LLM: Mac worker待機中";
-  return "LLM: 未接続";
-}
-
-function createDecisionTone(decision?: CreatePlannerDecision) {
-  if (decision === "ready_to_schedule" || decision === "ready_to_start" || decision === "demo_first") return "ready";
-  if (decision === "save_plan") return "partial";
-  return "blocked";
-}
-
-function workflowCheckTone(workflow: Row) {
-  if (isPausedRegisteredWorkflow(workflow)) return "partial";
-  const kind = String(workflow.check_kind ?? "");
-  if (kind === "boundary") return "boundary";
-  if (kind === "billing") return "approval";
-  if (Boolean(workflow.needs_check)) return "blocked";
-  return "ok";
-}
-
-function workflowTrustTone(workflow: Row) {
-  const kind = String(workflow.trust_kind ?? "");
-  if (kind === "high") return "ok";
-  if (kind === "medium") return "boundary";
-  if (kind === "low") return "blocked";
-  return "partial";
-}
-
-function workflowFreshnessTone(workflow: Row) {
-  const kind = String(workflow.freshness_kind ?? "");
-  if (kind === "fresh") return "ok";
-  if (kind === "recent") return "boundary";
-  if (kind === "stale") return "blocked";
-  return "partial";
-}
-
-function workflowSafetyTone(workflow: Row) {
-  const kind = String(workflow.safety_kind ?? "");
-  if (kind === "proof_only") return "ok";
-  if (kind === "billing_only") return "boundary";
-  return "partial";
-}
-
-const scheduleDayOptions = [
-  { value: "MO", label: "月" },
-  { value: "TU", label: "火" },
-  { value: "WE", label: "水" },
-  { value: "TH", label: "木" },
-  { value: "FR", label: "金" },
-  { value: "SA", label: "土" },
-  { value: "SU", label: "日" }
+const lanes = [
+  { name: "Lane 1", port: 9331, profile: "Startup-A", account: "startup.a@gmail.com", task: "Instagram投稿", queue: 2, lock: "ロック中", status: "running" as Status },
+  { name: "Lane 2", port: 9332, profile: "Startup-A-SNS", account: "startup.sns@gmail.com", task: "X投稿", queue: 4, lock: "ロック中", status: "blocked" as Status },
+  { name: "Lane 3", port: 9333, profile: "Research", account: "未割り当て", task: "なし", queue: 0, lock: "ロックなし", status: "enabled" as Status }
 ];
 
-function scheduleDraftFromWorkflow(workflow: Row) {
-  const label = displayWorkflowSchedule(workflow);
+const seedApprovalItems = [
+  { kind: "SNS投稿", project: "プロジェクトA", lane: "Lane 1", content: "Instagram ストーリー投稿の下書き", risk: "通常", due: "15分後", status: "waiting" as Status },
+  { kind: "DM返信", project: "プロジェクトA", lane: "Lane 2", content: "価格問い合わせへの返信案", risk: "高", due: "今日", status: "waiting" as Status },
+  { kind: "Runway生成", project: "プロジェクトB", lane: "Local", content: "商品画像から15秒動画を生成", risk: "高", due: "明日", status: "blocked" as Status },
+  { kind: "Gmail返信", project: "プロジェクトC", lane: "Lane 3", content: "商談候補日の返信案", risk: "通常", due: "2日後", status: "waiting" as Status }
+];
+
+const templates = [
+  ["SNS毎日投稿", "SNS運用", "Instagram / X / LinkedIn", "Lane 1", "承認必須"],
+  ["Instagramストーリー投稿", "SNS運用", "Instagram", "Lane 1", "初回承認"],
+  ["DM返信", "カスタマーサポート", "Instagram / Facebook", "Lane 2", "承認必須"],
+  ["Gmail返信", "メール", "Gmail", "Lane 3", "承認必須"],
+  ["競合リサーチ", "リサーチ", "Google / Sheets", "Lane 3", "自動許可"],
+  ["Runway広告動画生成", "Creative / Runway", "Runway MCP", "Local", "承認必須"]
+];
+
+const plugins = [
+  ["Runway MCP", "MCP Server", "Codex Bridge", "mock未接続", "8", "readiness"],
+  ["Google Drive", "App Integration", "Direct MCP", "mock未接続", "4", "readiness"],
+  ["Gmail", "App Integration", "Direct MCP", "mock未接続", "3", "readiness"],
+  ["Slack", "MCP Server", "Direct MCP", "要再認証", "5", "一部利用不可"],
+  ["Browser Use", "Codex Plugin", "Codex Bridge", "mock未接続", "6", "readiness"],
+  ["Figma", "Codex Plugin", "未設定", "未認証", "2", "未検証"]
+];
+
+function useRoute() {
+  const [route, setRoute] = useState(location.hash || "#/projects/project-a/artifacts");
+  React.useEffect(() => {
+    const onHash = () => {
+      const nextRoute = location.hash || "#/projects/project-a/artifacts";
+      const slug = projectSlugs.find((projectSlug) => nextRoute.includes(`/projects/${projectSlug}`));
+      if (slug) rememberProject(slug);
+      setRoute(nextRoute);
+    };
+    addEventListener("hashchange", onHash);
+    onHash();
+    return () => removeEventListener("hashchange", onHash);
+  }, []);
+  return route;
+}
+
+function projectSlugFromRoute(route: string) {
+  return projectSlugs.find((slug) => route.includes(`/projects/${slug}`)) ?? "project-a";
+}
+
+function automationIdFromRoute(route: string) {
+  const match = route.match(/\/automations\/([^/]+)\/edit/);
+  return match ? decodeURIComponent(match[1]) : "sns-post";
+}
+
+function rememberProject(slug: string) {
+  window.sessionStorage.setItem("automation-os-active-project", slug);
+}
+
+function rememberedProject() {
+  const saved = window.sessionStorage.getItem("automation-os-active-project");
+  return projectSlugs.includes(saved ?? "") ? saved! : "project-a";
+}
+
+function projectSlugFromPrompt(prompt: string) {
+  const normalized = prompt.toLowerCase().replace(/\s+/g, "");
+  const match = normalized.match(/(?:project|プロジェクト)-?([abcdａｂｃｄ])/);
+  if (!match) return rememberedProject();
+  const letter = match[1].normalize("NFKC");
+  const index = ["a", "b", "c", "d"].indexOf(letter);
+  return index >= 0 ? projectSlugs[index] : rememberedProject();
+}
+
+function go(hash: string) {
+  location.hash = hash.replace(/^#/, "");
+}
+
+function StatusBadge({ status, label }: { status: Status; label?: string }) {
+  return <span className={`badge ${status}`}>{label ?? statusLabel(status)}</span>;
+}
+
+function statusLabel(status: Status) {
   return {
-    frequency: label.startsWith("毎週") ? "weekly" : "daily",
-    time: label.match(/\b\d{2}:\d{2}\b/)?.[0] ?? "09:00",
-    days: [scheduleDayOptions.find((day) => label.includes(day.label))?.value ?? "MO"]
-  };
+    running: "実行中",
+    waiting: "承認待ち",
+    approved: "承認済み",
+    blocked: "要確認",
+    enabled: "有効",
+    disabled: "停止中",
+    draft: "下書き"
+  }[status];
 }
 
-function isVisibleCaptureSource(key: ResearchSourceKey): key is "web" | "youtube" {
-  return key === "web" || key === "youtube";
+function Button({ children, icon, variant = "secondary", onClick, disabled = false }: { children: React.ReactNode; icon?: React.ReactNode; variant?: "primary" | "secondary" | "danger"; onClick?: () => void; disabled?: boolean }) {
+  return <button type="button" className={`btn ${variant}`} onClick={onClick} disabled={disabled}>{icon}{children}</button>;
 }
 
-function detectedYouTubeUrlFromRoute(route?: CapabilityRoute): string | null {
-  if (!route || route.id !== "youtube_transcript_capture") return null;
-  for (const signal of route.signals) {
-    try {
-      const url = new URL(signal);
-      if (/(^|\.)youtube\.com$|(^|\.)youtu\.be$/i.test(url.hostname)) return url.href;
-    } catch {
-      // Router signals can include non-URL hints for other routes.
-    }
-  }
-  return null;
+function IconButton({ children, onClick, label }: { children: React.ReactNode; onClick?: () => void; label: string }) {
+  return <button type="button" className="icon-btn" aria-label={label} title={label} onClick={onClick}>{children}</button>;
 }
 
-function researchPlanSourceProofSummary(plan: ResearchPlan): Array<{ key: string; label: string; tone: string }> {
-  const latestCaptures = asJson<Record<string, Row>>(plan.metadata?.latestCaptures, {});
-  return plan.sources
-    .filter((source) => source.enabled)
-    .map((source) => {
-      const capture = latestCaptures[source.key];
-      if (capture?.proofState === "proof_saved") return { key: source.key, label: `${source.label}: 済`, tone: "complete" };
-      if (capture?.exactBlocker) return { key: source.key, label: `${source.label}: 確認`, tone: "blocked" };
-      if (source.key === "web" || source.key === "youtube") return { key: source.key, label: `${source.label}: 待ち`, tone: "partial" };
-      return { key: source.key, label: `${source.label}: 未接続`, tone: "idle" };
-    });
-}
+function App() {
+  const route = useRoute();
+  const [receipt, setReceipt] = useState("Local Agent は待機中です。");
+  const [automationRows, setAutomationRows] = useState<AutomationRow[]>(seedAutomations);
+  const [approvalRows, setApprovalRows] = useState(seedApprovalItems);
+  const [createdTemplates, setCreatedTemplates] = useState<string[]>([]);
+  const [mvpState, setMvpState] = useState<MvpState>({});
+  React.useEffect(() => {
+    readMvpState()
+      .then((state) => {
+        setMvpState(state);
+        setAutomationRows(toAutomationRows(state.automations ?? []));
+        const worker = state.worker?.status ? `worker=${state.worker.status}` : "worker=unknown";
+        setReceipt(`MVP state readback 済みです。${worker} / runs=${state.runs?.length ?? 0}`);
+      })
+      .catch(() => setReceipt("Local Agent は待機中です。MVP API未接続のためローカル表示です。"));
+  }, []);
+  const page = useMemo(() => renderPage(route, {
+    setReceipt,
+    automationRows,
+    setAutomationRows,
+    approvalRows,
+    setApprovalRows,
+    createdTemplates,
+    setCreatedTemplates,
+    mvpState,
+    setMvpState
+  }), [route, automationRows, approvalRows, createdTemplates, mvpState]);
 
-type CreateActionKey = "save" | "demo" | "start" | "schedule";
-
-function createDecisionGuidance(
-  decision: CreatePlannerDecision | undefined,
-  state: { openQuestions: string[]; demoFinished: boolean; started: boolean }
-) {
-  if (state.started) {
-    return {
-      title: "開始済みです",
-      detail: "次は履歴で進行状況と保存記録を確認します。",
-      recommended: null as CreateActionKey | null,
-      reasons: {} as Partial<Record<CreateActionKey, string>>
-    };
-  }
-  if (decision === "ask_more") {
-    return {
-      title: "まだ聞きたいことがあります",
-      detail: state.openQuestions[0] ?? "不足している条件を確認してから進めます。",
-      recommended: "save" as CreateActionKey,
-      reasons: {
-        demo: "未確認の条件が残っています。",
-        start: "先に質問へ答えるか、計画だけ保存してください。",
-        schedule: "定期化の前に条件確認が必要です。"
-      }
-    };
-  }
-  if (decision === "save_plan") {
-    return {
-      title: "まず保存できます",
-      detail: "計画を残してから、画面確認か実行に進めます。",
-      recommended: "save" as CreateActionKey,
-      reasons: {
-        start: "保存してから開始すると、止まった時に戻りやすくなります。",
-        schedule: "定期化の前に一度保存と実演をしてください。"
-      }
-    };
-  }
-  if (decision === "ready_to_schedule") {
-    return {
-      title: state.demoFinished ? "定期化できます" : "定期化の前に一度見ます",
-      detail: state.demoFinished ? "実演済みなので、予定として登録できます。" : "まず画面で実演して、問題なければ定期化します。",
-      recommended: (state.demoFinished ? "schedule" : "demo") as CreateActionKey,
-      reasons: state.demoFinished ? {} : { schedule: "見るで実演してから定期化します。" }
-    };
-  }
-  if (decision === "ready_to_start") {
-    return {
-      title: "開始できます",
-      detail: "条件はそろっています。履歴と保存記録を残しながら開始できます。",
-      recommended: "start" as CreateActionKey,
-      reasons: {} as Partial<Record<CreateActionKey, string>>
-    };
-  }
-  return {
-    title: "一度見てから進めます",
-    detail: "まず画面で実演して、証跡を残してから開始します。",
-    recommended: "demo" as CreateActionKey,
-    reasons: {
-      start: state.demoFinished ? "" : "見るで実演してから開始します。",
-      schedule: "定期化の前に実演が必要です。"
-    }
-  };
-}
-
-function ResearchPlanList({ plans }: { plans: ResearchPlan[] }) {
   return (
-    <div className="research-plan-list">
-      {plans.map((plan) => (
-        <article key={plan.id}>
-          <div>
-            <span className={`pill ${plan.status}`}>{displayStatus(plan.status)}</span>
-            <strong>{plan.title}</strong>
-          </div>
-          <div className="research-plan-proof-summary">
-            {researchPlanSourceProofSummary(plan).map((item) => (
-              <span className={`pill ${item.tone}`} key={`${plan.id}-${item.key}`}>{item.label}</span>
-            ))}
-          </div>
-          <details className="internal-details">
-            <summary>中身</summary>
-            <ol>
-              {plan.visibleFlow.slice(0, 5).map((step, index) => (
-                <li key={`${plan.id}-${index}`}>{step}</li>
-              ))}
-            </ol>
-            <small>詳細は内部記録に保存済みです。</small>
-          </details>
-        </article>
-      ))}
-      {plans.length === 0 && <Empty text="まだありません。" />}
+    <div className="app">
+      <Sidebar route={route} />
+      <main className="main">
+        <TopHeader receipt={receipt} setReceipt={setReceipt} />
+        {page}
+      </main>
+      <FeedbackWidget route={route} setReceipt={setReceipt} setMvpState={setMvpState} />
     </div>
   );
 }
 
-function CreateView(props: {
-  messages: ChatMessage[];
-  input: string;
-  draft: CreateDraft;
-  researchSources: Record<ResearchSourceKey, boolean>;
-  researchPlan: ResearchPlan;
-  sourceCaptureResults: Partial<Record<ResearchSourceKey, PlannerCaptureResponse>>;
-  capabilityPlan?: CapabilityRouterSnapshot;
-  busyKey: string | null;
-  onInput: (value: string) => void;
-  onSend: () => Promise<CreateDraft | null>;
-  onSuggestion: (value: string) => Promise<CreateDraft | null>;
-  onSourceToggle: (key: ResearchSourceKey) => void;
-  onVisibleStepsChange: (steps: string[]) => void;
-  onSavePlan: () => Promise<ResearchPlan | null>;
-  onDemoPlan: () => Promise<void>;
-  onCaptureSource: (sourceKey: ResearchSourceKey, url: string) => Promise<void>;
-  onStart: () => Promise<void>;
-  onRegularize: () => Promise<void>;
-  onReset: () => void;
-  secrets: SecretSummary[];
-}) {
-  const createMessageBusy = props.busyKey === "secret-save";
-  const createActionBusy =
-    createMessageBusy
-    || props.busyKey === "research-plan-save"
-    || props.busyKey === "research-plan-demo"
-    || props.busyKey === "research-plan-start"
-    || props.busyKey === "research-plan-regularize"
-    || props.busyKey?.startsWith("research-plan-capture-");
-  const plan = props.researchPlan;
-  const capabilityRoutes = props.capabilityPlan?.recommendedRoutes ?? [];
-  const detectedYouTubeUrl = detectedYouTubeUrlFromRoute(capabilityRoutes.find((route) => route.id === "youtube_transcript_capture"));
-  const visibleSteps = normalizeVisibleSteps(props.draft.visibleSteps, plan.visibleFlow);
-  const answerOnly = props.draft.intent === "answer_question";
-  const [selectedStepIndex, setSelectedStepIndex] = useState<number | null>(null);
-  const [editingStepIndex, setEditingStepIndex] = useState<number | null>(null);
-  const [editingStepText, setEditingStepText] = useState("");
-  const [sourceUrls, setSourceUrls] = useState<Partial<Record<ResearchSourceKey, string>>>({});
-  const demoFinished = plan.status === "demoed" || Boolean(plan.demoCheckId);
-  const started = plan.status === "started" || Boolean(plan.runId);
-  const decisionGuidance = createDecisionGuidance(props.draft.executionDecision, {
-    openQuestions: props.draft.openQuestions ?? [],
-    demoFinished,
-    started
-  });
-  const stageItems = researchPlannerStages(plan, props.sourceCaptureResults);
-  const createActionCards = [
-    {
-      key: "save",
-      tone: "safe",
-      icon: props.busyKey === "research-plan-save" ? <Loader2 size={16} className="spin" /> : <FileCheck size={16} />,
-      title: "保存",
-      buttonLabel: "保存",
-      actionLabel: "保存",
-      disabled: createActionBusy || !props.draft.command.trim(),
-      reason: decisionGuidance.reasons.save,
-      onClick: props.onSavePlan
-    },
-    {
-      key: "demo",
-      tone: "observe",
-      icon: props.busyKey === "research-plan-demo" ? <Loader2 size={16} className="spin" /> : <Eye size={16} />,
-      title: "見る",
-      buttonLabel: "見る",
-      actionLabel: "ローカルで実演",
-      disabled: createActionBusy || !props.draft.command.trim() || props.draft.executionDecision === "ask_more",
-      reason: decisionGuidance.reasons.demo,
-      onClick: props.onDemoPlan
-    },
-    {
-      key: "start",
-      tone: "run",
-      icon: props.busyKey === "research-plan-start" ? <Loader2 size={16} className="spin" /> : <Play size={16} />,
-      title: "開始",
-      buttonLabel: "開始",
-      actionLabel: "実行",
-      disabled: createActionBusy || !props.draft.command.trim() || props.draft.executionDecision === "ask_more" || props.draft.executionDecision === "save_plan" || (props.draft.executionDecision === "demo_first" && !demoFinished),
-      reason: decisionGuidance.reasons.start,
-      onClick: props.onStart
-    }
-  ];
-  const scheduleAction = {
-    key: "schedule" as const,
-    tone: "schedule",
-    icon: props.busyKey === "research-plan-regularize" ? <Loader2 size={16} className="spin" /> : <RefreshCcw size={16} />,
-    title: "定期",
-    buttonLabel: "定期にする",
-    actionLabel: "定期実行にする",
-    disabled: createActionBusy || !props.draft.command.trim() || !demoFinished,
-    reason: decisionGuidance.reasons.schedule,
-    onClick: props.onRegularize
-  };
-  const visibleActionCards = props.draft.executionDecision === "ready_to_schedule" || demoFinished
-    ? [...createActionCards, scheduleAction]
-    : createActionCards;
-
-  function selectStep(index: number) {
-    setSelectedStepIndex(index);
-  }
-
-  function addStepAfter(index: number) {
-    const nextSteps = [
-      ...visibleSteps.slice(0, index + 1),
-      "新しい操作",
-      ...visibleSteps.slice(index + 1)
-    ];
-    props.onVisibleStepsChange(nextSteps);
-    setSelectedStepIndex(index + 1);
-    setEditingStepIndex(index + 1);
-    setEditingStepText("新しい操作");
-  }
-
-  function startEditStep(index: number) {
-    setSelectedStepIndex(index);
-    setEditingStepIndex(index);
-    setEditingStepText(visibleSteps[index] ?? "");
-  }
-
-  function commitStepEdit() {
-    if (editingStepIndex == null) return;
-    const nextValue = editingStepText.trim();
-    if (nextValue) {
-      props.onVisibleStepsChange(visibleSteps.map((step, index) => index === editingStepIndex ? nextValue : step));
-    }
-    setEditingStepIndex(null);
-    setEditingStepText("");
-  }
-
-  function updateSourceUrl(sourceKey: ResearchSourceKey, value: string) {
-    setSourceUrls((current) => ({ ...current, [sourceKey]: value }));
-  }
-
+function Sidebar({ route }: { route: string }) {
+  const nav = [
+    ["ホーム", "#/", Home],
+    ["チャット", "#/chat", MessageSquare],
+    ["プロジェクト", "#/projects/project-a/automations", FolderKanban],
+    ["実行履歴", "#/runs", Activity],
+    ["承認", "#/approvals", ClipboardCheck],
+    ["テンプレート", "#/templates", LayoutTemplate],
+    ["プラグイン / MCP", "#/plugins", PlugZap],
+    ["本番状態", "#/production/status", ShieldCheck],
+    ["PC状態", "#/system/pc-status", Cpu]
+  ] as const;
   return (
-    <section className="create-view">
-      <article className="chat-panel">
-        <div className="chat-head">
-          <div>
-            <h2>作る</h2>
-          </div>
-          <button className="text-button compact" onClick={props.onReset} disabled={createActionBusy}>
-            <RefreshCcw size={15} />
-            新しい相談
-          </button>
-        </div>
-        {props.secrets.length > 0 && (
-          <div className="sr-only">
-            保存済みの認証情報があります
-          </div>
-        )}
-        <div className="chat-thread" aria-live="polite">
-          {props.messages.map((message) => (
-            <div className={`chat-message ${message.role}`} key={message.id}>
-              <div>{displayChatMessage(message)}</div>
-            </div>
-          ))}
-        </div>
-        <div className="suggestion-row">
-          {createSuggestions.map((suggestion) => (
-            <button key={suggestion} disabled={createActionBusy} onClick={() => props.onSuggestion(suggestion)}>{suggestion}</button>
-          ))}
-        </div>
-        <div className="chat-composer">
-          <textarea
-            value={props.input}
-            onChange={(event) => props.onInput(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-                event.preventDefault();
-                void props.onSend();
-              }
-            }}
-            placeholder="例: 毎朝の確認作業を、相談しながら計画したい"
-            aria-label="相談して計画する内容"
-            disabled={createActionBusy}
-          />
-          <button title="送信" aria-label="相談を送信" disabled={createActionBusy || !props.input.trim()} onClick={() => void props.onSend()}>
-            {createMessageBusy ? <Loader2 size={17} className="spin" /> : <Send size={17} />}
-          </button>
-        </div>
-      </article>
-
-      <aside className="create-plan">
-        <div>
-          <h2>{props.draft.title}</h2>
-        </div>
-        <section className={`conversation-brief ${answerOnly ? "answer-only" : ""}`}>
-          <div>
-            <strong>{answerOnly ? "回答" : "相談の整理"}</strong>
-            {!answerOnly && <span className={`pill ${createDecisionTone(props.draft.executionDecision)}`}>{createDecisionLabel(props.draft.executionDecision)}</span>}
-          </div>
-          {!answerOnly && <div className="planner-state-row" aria-label="計画の確認状態">
-            <span>{createPlannerImmediateLabel(props.draft)}</span>
-            <span>{createPlannerLlmLabel(props.draft)}</span>
-            <span>{props.draft.confidence === "high" ? "確信 高" : props.draft.confidence === "low" ? "確信 低" : "確信 中"}</span>
-          </div>}
-          <div className="brief-columns">
-            <div>
-              <span>{answerOnly ? "できること" : "確認できたこと"}</span>
-              {(props.draft.answered?.length ? props.draft.answered : ["まだ整理中"]).map((item) => (
-                <small key={item}>{item}</small>
-              ))}
-            </div>
-            {!answerOnly && <div>
-              <span>未確認</span>
-              {(props.draft.openQuestions?.length ? props.draft.openQuestions : ["追加質問はありません"]).map((item) => (
-                <small key={item}>{item}</small>
-              ))}
-            </div>}
-          </div>
-          <p>{props.draft.nextAction || "次のメッセージで計画を更新します。"}</p>
-        </section>
-        {!answerOnly && <section className="decision-guidance" aria-label="おすすめの次の操作">
-          <div>
-            <strong>{decisionGuidance.title}</strong>
-            <span>{decisionGuidance.detail}</span>
-          </div>
-        </section>}
-        {!answerOnly && <div className="visible-plan">
-          <strong>流れ</strong>
-          <div className="visible-flow" aria-label="画面に見せる流れ">
-            {visibleSteps.map((step, index) => (
-              <div className="visible-flow-item" key={`${step}-${index}`}>
-                <div className={`visible-step ${selectedStepIndex === index ? "selected" : ""}`}>
-                  {editingStepIndex === index ? (
-                    <input
-                      value={editingStepText}
-                      autoFocus
-                      onChange={(event) => setEditingStepText(event.target.value)}
-                      onBlur={commitStepEdit}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") commitStepEdit();
-                        if (event.key === "Escape") {
-                          setEditingStepIndex(null);
-                          setEditingStepText("");
-                        }
-                      }}
-                      disabled={createActionBusy}
-                      aria-label="フロー項目を編集"
-                    />
-                  ) : (
-                    <button type="button" onClick={() => selectStep(index)} disabled={createActionBusy}>
-                      {step}
-                    </button>
-                  )}
-                  {selectedStepIndex === index && editingStepIndex !== index && (
-                    <div className="visible-step-tools" aria-label="フロー項目の操作">
-                      <button type="button" title="編集" onClick={() => startEditStep(index)} disabled={createActionBusy}>
-                        <Pencil size={14} />
-                      </button>
-                      <button type="button" title="直後に追加" onClick={() => addStepAfter(index)} disabled={createActionBusy}>
-                        <Plus size={15} />
-                      </button>
-                    </div>
-                  )}
-                </div>
-                {index < visibleSteps.length - 1 && (
-                  <div className="visible-flow-arrow" aria-hidden="true">
-                    <ChevronDown size={18} />
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>}
-        {started && (
-          <div className="run-proof-note">
-            <Check size={15} />
-            <span>開始済み</span>
-          </div>
-        )}
-        {capabilityRoutes.length > 0 && (
-          <section className="capability-suggestions">
-            <div>
-              <strong>使えそうな道具</strong>
-            </div>
-            <div className="capability-suggestion-list">
-              {capabilityRoutes.slice(0, 3).map((route) => (
-                <article key={route.id}>
-                  <span className={`pill ${route.status}`}>{capabilityStatusLabel(route.status)}</span>
-                  <strong>{route.label}</strong>
-                  <small>{route.nextAction}</small>
-                  {route.id === "youtube_transcript_capture" && detectedYouTubeUrl && (
-                    <button
-                      type="button"
-                      onClick={() => void props.onCaptureSource("youtube", detectedYouTubeUrl)}
-                      disabled={createActionBusy || !props.draft.command.trim()}
-                    >
-                      {props.busyKey === "research-plan-capture-youtube" ? <Loader2 size={15} className="spin" /> : <FileText size={15} />}
-                      台本を取得
-                    </button>
-                  )}
-                </article>
-              ))}
-            </div>
-          </section>
-        )}
-        {!answerOnly && <div className="research-plan-actions">
-          {visibleActionCards.map((action) => (
-            <article className={`plan-action-card ${action.tone} ${decisionGuidance.recommended === action.key ? "recommended" : ""}`} key={action.key}>
-              <div>
-                <strong>{action.title}</strong>
-                {decisionGuidance.recommended === action.key && <small>おすすめ</small>}
-                {action.reason && <small>{action.reason}</small>}
-              </div>
-              <button
-                className={decisionGuidance.recommended === action.key || action.key === "start" ? "primary-action" : ""}
-                disabled={action.disabled}
-                onClick={() => void action.onClick()}
-                title={action.actionLabel ?? action.buttonLabel}
-                aria-label={action.actionLabel ?? action.buttonLabel}
-              >
-                {action.icon}
-                {action.buttonLabel}
-              </button>
-            </article>
-          ))}
-        </div>}
-        <details className="create-advanced-settings">
-          <summary>詳細</summary>
-          <div className="research-source-toggle">
-            <strong>確認に使う場所</strong>
-            <div>
-              {researchSourceKeys.map((key) => (
-                <button
-                  className={props.researchSources[key] ? "active" : ""}
-                  key={key}
-                  type="button"
-                  onClick={() => props.onSourceToggle(key)}
-                  disabled={createActionBusy}
-                >
-                  {researchSourceLabels[key]}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="research-source-list">
-            {plan.sources.map((source) => (
-              <article className={source.enabled ? "research-source-row enabled" : "research-source-row"} key={source.key}>
-                <div className="source-row-head">
-                  <div>
-                    <strong>{source.label}</strong>
-                    <span>{source.enabled ? displayCreatePlanText(source.mode) : "OFF"}</span>
-                  </div>
-                  <span className={`pill ${sourceProofState(source, props.sourceCaptureResults[source.key]).tone}`}>
-                    {sourceProofState(source, props.sourceCaptureResults[source.key]).label}
-                  </span>
-                </div>
-                <small>{source.enabled ? displayCreatePlanText(source.boundary) : "この計画では使いません"}</small>
-                <small>{sourceNextConnection(source)}</small>
-                {source.enabled && isVisibleCaptureSource(source.key) && (
-                  <div className="source-capture-controls">
-                    <input
-                      value={sourceUrls[source.key] ?? ""}
-                      onChange={(event) => updateSourceUrl(source.key, event.target.value)}
-                      placeholder={source.key === "youtube" ? "https://www.youtube.com/watch?v=..." : "https://example.com/article"}
-                      aria-label={`${source.label}の実演URL`}
-                      disabled={createActionBusy}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => void props.onCaptureSource(source.key, sourceUrls[source.key] ?? "")}
-                      disabled={createActionBusy || !props.draft.command.trim()}
-                    >
-                      {props.busyKey === `research-plan-capture-${source.key}` ? <Loader2 size={15} className="spin" /> : <Eye size={15} />}
-                      {source.key === "youtube" ? "台本を実演" : "Webを取得"}
-                    </button>
-                  </div>
-                )}
-                {source.enabled && props.sourceCaptureResults[source.key] && (
-                  <div className="source-capture-result">
-                    {captureResultLines(props.sourceCaptureResults[source.key]).map((line) => (
-                      <small key={line}>{line}</small>
-                    ))}
-                  </div>
-                )}
-              </article>
-            ))}
-          </div>
-        </details>
-        <details className="create-diagnostics icon-only-details">
-          <summary title="診断" aria-label="診断">
-            <Database size={16} />
-            <span className="sr-only">診断</span>
-          </summary>
-          <div className="planner-stage-strip" aria-label="提案の進行状態">
-            {stageItems.map((stage) => (
-              <div className={`planner-stage ${stage.state}`} key={stage.key}>
-                <span>{stage.label}</span>
-                <small>{stage.detail}</small>
-              </div>
-            ))}
-          </div>
-          <section className="execution-boundary" aria-label="実行前の境界">
-            <div>
-              <ShieldCheck size={16} />
-              <span>保存と実演は実行ではありません</span>
-            </div>
-            <small>保存は開始前の計画だけ、実演はローカル画面の確認だけです。完了には、実行結果と保存記録の確認が別に必要です。</small>
-            <small>記録だけの状態では、外部操作や手動確認が終わったとは扱いません。</small>
-          </section>
-          <div className="backend-plan">
-            <strong>内部確認</strong>
-            <small>確認元・確認記録・承認条件は内部に保存し、画面には実行の流れだけを表示します。</small>
-            <small>{props.draft.backendChecks.length}件の確認項目を内部に保存します。</small>
-          </div>
-        </details>
-      </aside>
-    </section>
-  );
-}
-
-function RunsView(props: {
-  runs: Row[];
-  actionableRuns: Row[];
-  selectedRun?: Row;
-  steps: Row[];
-  proofs: Row[];
-  children: Row[];
-  events: Row[];
-  localWorker: Row;
-  onSelectRun: (id: string) => void;
-  onSelectProof: (proof: Row) => void;
-  onRefreshRun: (run: Row) => void;
-  onOpenApprovals: () => void;
-  onContinueInCreate: (run: Row) => void;
-}) {
-  const meta = asJson<Row>(props.selectedRun?.metadata_json, {});
-  const actionableIds = new Set(props.actionableRuns.map((run) => run.id).filter((id): id is string => typeof id === "string"));
-  const runGroups = props.runs.reduce<{ actionable: Row[]; running: Row[]; completed: Row[]; archive: Row[] }>((groups, run) => {
-    if (actionableIds.has(String(run.id))) return groups;
-    const disposition = classifyRun(run);
-    const group = disposition.kind === "actionable" ? "actionable" : disposition.kind;
-    groups[group].push(run);
-    return groups;
-  }, { actionable: props.actionableRuns, running: [], completed: [], archive: [] });
-  const renderRunCard = (run: Row) => {
-    const disposition = classifyRun(run);
-    return (
-      <button className={run.id === props.selectedRun?.id ? "run-card selected" : "run-card"} key={run.id} onClick={() => props.onSelectRun(run.id)}>
-        <span className={`status-dot ${run.status}`} />
-        <div>
-          <strong>{displayTaskName(run.name)}</strong>
-          <small>{displayRunCardStatus(disposition)}</small>
-        </div>
-        <ChevronRight size={15} />
-      </button>
-    );
-  };
-  return (
-    <section className="view-grid runs-view">
-      <Panel title="履歴" action={`${props.runs.length}件`}>
-        <div className="run-list">
-          {runGroups.actionable.length > 0 && (
-            <div className="run-group">
-              <h3>確認が必要</h3>
-              {runGroups.actionable.map(renderRunCard)}
-            </div>
-          )}
-          {runGroups.running.length > 0 && (
-            <div className="run-group">
-              <h3>進行中</h3>
-              {runGroups.running.map(renderRunCard)}
-            </div>
-          )}
-          {runGroups.completed.length > 0 && (
-            <div className="run-group">
-              <h3>完了</h3>
-              {runGroups.completed.map(renderRunCard)}
-            </div>
-          )}
-          {runGroups.archive.length > 0 && (
-            <details className="run-group archive-runs">
-              <summary>古い履歴 <span>{runGroups.archive.length}</span></summary>
-              {runGroups.archive.map(renderRunCard)}
-            </details>
-          )}
-          {props.runs.length === 0 && <Empty text="なし" />}
-        </div>
-      </Panel>
-
-      <Panel title="詳細" action={props.selectedRun ? displayRunCardStatus(classifyRun(props.selectedRun)) : "なし"}>
-        {!props.selectedRun ? (
-          <Empty text="履歴から実行を選んでください。" />
-        ) : (
-          <>
-            <RunSummary
-              run={props.selectedRun}
-              meta={meta}
-              proofCount={props.proofs.length}
-              stepCount={props.steps.length}
-              eventCount={props.events.length}
-              workerEvents={props.events}
-              localWorker={props.localWorker}
-              firstProof={props.proofs[0]}
-              onRefresh={() => props.onRefreshRun(props.selectedRun as Row)}
-              onOpenProof={props.proofs[0] ? () => props.onSelectProof(props.proofs[0]) : undefined}
-              onOpenApprovals={props.onOpenApprovals}
-              onContinueInCreate={() => props.onContinueInCreate(props.selectedRun as Row)}
-            />
-            <div className="detail-section">
-              <h3>手順</h3>
-              <Timeline steps={props.steps} />
-            </div>
-            <details className="internal-details">
-              <summary title="詳細" aria-label="詳細">詳細</summary>
-              <div className="detail-section">
-                <h3>保存</h3>
-                <ReceiptTable proofs={props.proofs} onSelect={props.onSelectProof} />
-              </div>
-              <div className="detail-section">
-                <h3>記録</h3>
-                <WorkerEvents events={props.events} />
-              </div>
-              <ChildCodexRuns children={props.children} />
-            </details>
-          </>
-        )}
-      </Panel>
-    </section>
-  );
-}
-
-function ScheduleView({
-  registeredWorkflows,
-  schedulerStatus,
-  onSchedulerRunOnce,
-  onOpenRun,
-  onRegisteredStart,
-  onRegisteredToggle,
-  onRegisteredSchedule,
-  busyKey,
-  productionGuard,
-  operatorWriteTokenReady,
-  onSaveOperatorWriteToken,
-  onClearOperatorWriteToken
-}: {
-  registeredWorkflows: Row[];
-  schedulerStatus: Row;
-  onSchedulerRunOnce: () => void;
-  onOpenRun: (id: string) => void;
-  onRegisteredStart: (id: string) => void;
-  onRegisteredToggle: (workflow: Row) => void;
-  onRegisteredSchedule: (id: string, schedule: { frequency: string; time: string; days?: string[] }) => Promise<boolean>;
-  busyKey: string | null;
-  productionGuard: Row;
-  operatorWriteTokenReady: boolean;
-  onSaveOperatorWriteToken: (value: string) => boolean;
-  onClearOperatorWriteToken: () => void;
-}) {
-  const managedWorkflows = registeredWorkflows.filter(isManagedRegisteredWorkflow).sort((a, b) => Number(Boolean(b.needs_check)) - Number(Boolean(a.needs_check)));
-  const [editingId, setEditingId] = useState("");
-  const [draft, setDraft] = useState({ frequency: "daily", time: "09:00", days: ["MO"] });
-  const [operatorTokenInput, setOperatorTokenInput] = useState("");
-  const writeLocked = productionGuard.required === true && productionGuard.mode === "locked";
-  const writeTokenMissing = productionGuard.required === true && productionGuard.mode === "token_required" && !operatorWriteTokenReady;
-  const writeDisabled = writeLocked || writeTokenMissing;
-  const lockTitle = "Zeaburに実行用tokenが未設定です";
-  const tokenTitle = "このブラウザに操作tokenを保存してください";
-  const schedulerDisabled = schedulerStatus.enabled === false;
-  return (
-    <section className="schedule-view">
-      <div className="simple-head">
-        <h2>定期</h2>
-        <div className="simple-head-actions">
-          <button className="icon-action" disabled={writeDisabled || busyKey === "scheduler-run-once"} onClick={onSchedulerRunOnce} title={writeLocked ? lockTitle : writeTokenMissing ? tokenTitle : "今すぐ確認"} aria-label="今すぐ確認">
-            {busyKey === "scheduler-run-once" ? <Loader2 size={16} className="spin" /> : <RefreshCcw size={16} />}
-          </button>
-        </div>
-      </div>
-      {schedulerDisabled && (
-        <div className="schedule-lock warning-line" role="status">
-          <AlertTriangle size={16} />
-          <span>{String(schedulerStatus.detail ?? "時刻ベースの自動確認は停止しています。各行の再生ボタンで一回実行できます。")}</span>
-        </div>
-      )}
-      {writeLocked && (
-        <div className="schedule-lock warning-line" role="status">
-          <AlertTriangle size={16} />
-          <span>本番の実行ボタンは停止中です。Zeaburに実行用tokenを設定すると、ここから本番の保存先へ入り、Mac側で処理されます。</span>
-        </div>
-      )}
-      {writeTokenMissing && (
-        <form className="schedule-token-panel warning-line" role="status" onSubmit={(event) => {
-          event.preventDefault();
-          if (onSaveOperatorWriteToken(operatorTokenInput)) setOperatorTokenInput("");
-        }}>
-          <AlertTriangle size={16} />
-          <span>このブラウザに操作tokenを保存すると、再生ボタンから本番の保存先へ送れます。</span>
-          <input
-            type="password"
-            value={operatorTokenInput}
-            onChange={(event) => setOperatorTokenInput(event.target.value)}
-            placeholder="操作token"
-            autoComplete="off"
-            aria-label="操作token"
-          />
-          <button className="text-button primary" type="submit">保存</button>
-        </form>
-      )}
-      {productionGuard.required === true && productionGuard.mode === "token_required" && operatorWriteTokenReady && (
-        <div className="schedule-token-panel ready-line" role="status">
-          <Check size={16} />
-          <span>このブラウザは操作できます。</span>
-          <button className="text-button" type="button" onClick={onClearOperatorWriteToken}>削除</button>
-        </div>
-      )}
-      <div className="schedule-list">
-        {managedWorkflows.map((workflow) => {
-          const needsCheck = Boolean(workflow.needs_check);
-          const paused = isPausedRegisteredWorkflow(workflow);
-          const editing = editingId === String(workflow.id);
-          const scheduleBusy = busyKey === `registered-schedule-${workflow.id}`;
-          const lastRunId = workflowLastRunId(workflow);
-          return (
-            <article className="schedule-row" key={workflow.id} data-check={needsCheck ? "needed" : "ok"}>
-              <span className={`schedule-check-chip ${workflowCheckTone(workflow)}`} title={displayWorkflowStateTitle(workflow)} aria-label={displayWorkflowStateTitle(workflow)}>
-                {displayWorkflowCheckLabel(workflow)}
-              </span>
-              <div className="schedule-row-main">
-                <strong>{displayWorkflowName(workflow)}</strong>
-                <small>{displayWorkflowMetaSummary(workflow)}</small>
-                {lastRunId ? (
-                  <button className="schedule-row-result schedule-row-result-link" type="button" onClick={() => onOpenRun(lastRunId)} title="履歴で見る" aria-label={`${displayWorkflowName(workflow)}の前回の履歴を見る`}>
-                    <span>{displayWorkflowLastActionSummary(workflow)}</span>
-                    <ChevronRight size={13} />
-                  </button>
-                ) : (
-                  <small className="schedule-row-result">{displayWorkflowLastActionSummary(workflow)}</small>
-                )}
-              </div>
-              <span className="schedule-time" title={displayWorkflowSchedule(workflow)} aria-hidden="true">{displayWorkflowScheduleShort(workflow)}</span>
-              <span className="sr-only">{displayWorkflowSchedule(workflow)}</span>
-              <div className="schedule-row-actions" role="group" aria-label={`${displayWorkflowName(workflow)}の操作`}>
-                <button className="icon-action" disabled={writeDisabled || scheduleBusy} onClick={() => {
-                  setEditingId(editing ? "" : String(workflow.id));
-                  setDraft(scheduleDraftFromWorkflow(workflow));
-                }} title={writeLocked ? lockTitle : writeTokenMissing ? tokenTitle : "変更"} aria-label={`${displayWorkflowName(workflow)}の予定を変更`}>
-                  {scheduleBusy ? <Loader2 size={16} className="spin" /> : <Pencil size={16} />}
-                </button>
-                <button className="icon-action" disabled={writeDisabled || busyKey === `registered-toggle-${workflow.id}`} onClick={() => onRegisteredToggle(workflow)} title={writeLocked ? lockTitle : writeTokenMissing ? tokenTitle : paused ? "再開" : "停止"} aria-label={`${displayWorkflowName(workflow)}を${paused ? "再開" : "停止"}`}>
-                  {busyKey === `registered-toggle-${workflow.id}` ? <Loader2 size={16} className="spin" /> : paused ? <Play size={16} /> : <Pause size={16} />}
-                </button>
-                <button className="icon-action" disabled={writeDisabled || busyKey === `registered-${workflow.id}`} onClick={() => onRegisteredStart(String(workflow.id))} title={writeLocked ? lockTitle : writeTokenMissing ? tokenTitle : "一回実行"} aria-label={`${displayWorkflowName(workflow)}を一回実行`}>
-                  {busyKey === `registered-${workflow.id}` ? <Loader2 size={16} className="spin" /> : <Play size={16} />}
-                </button>
-              </div>
-              {editing && (
-                <form className="schedule-edit" onSubmit={(event) => {
-                  event.preventDefault();
-                  void onRegisteredSchedule(String(workflow.id), {
-                    frequency: draft.frequency,
-                    time: draft.time,
-                    ...(draft.frequency === "weekly" ? { days: draft.days } : {})
-                  }).then((ok) => {
-                    if (ok) setEditingId("");
-                  });
-                }}>
-                  <select value={draft.frequency} onChange={(event) => setDraft((current) => ({ ...current, frequency: event.target.value }))} aria-label="頻度">
-                    <option value="daily">毎日</option>
-                    <option value="weekly">毎週</option>
-                  </select>
-                  <input type="time" value={draft.time} onChange={(event) => setDraft((current) => ({ ...current, time: event.target.value }))} aria-label="時刻" />
-                  {draft.frequency === "weekly" && (
-                    <select value={draft.days[0] ?? "MO"} onChange={(event) => setDraft((current) => ({ ...current, days: [event.target.value] }))} aria-label="曜日">
-                      {scheduleDayOptions.map((day) => <option key={day.value} value={day.value}>{day.label}</option>)}
-                    </select>
-                  )}
-                  <button className="icon-action" disabled={writeDisabled || scheduleBusy} type="submit" title={writeLocked ? lockTitle : writeTokenMissing ? tokenTitle : "保存"} aria-label={`${displayWorkflowName(workflow)}の予定を保存`}>
-                    {scheduleBusy ? <Loader2 size={16} className="spin" /> : <Save size={16} />}
-                  </button>
-                  <button className="icon-action" disabled={scheduleBusy} type="button" onClick={() => setEditingId("")} title="閉じる" aria-label="閉じる">
-                    <X size={16} />
-                  </button>
-                </form>
-              )}
-            </article>
-          );
-        })}
-        {managedWorkflows.length === 0 && <Empty text="まだありません。" />}
-      </div>
-    </section>
-  );
-}
-
-function ApprovalsView({ approvals, onDecision, busyKey }: { approvals: Row[]; onDecision: (path: string, msg: string, options?: { view?: View; key?: string }) => Promise<void>; busyKey: string | null }) {
-  return (
-    <Panel title="確認" action={`${approvals.filter((approval) => approval.status === "pending").length}件`}>
-      <ApprovalQueue approvals={approvals} onDecision={onDecision} busyKey={busyKey} full />
-    </Panel>
-  );
-}
-
-function LanesView({ lanes }: { lanes: Row[] }) {
-  const active = lanes.filter((lane) => lane.status === "active").length;
-  const attentionLanes = lanes.filter(laneNeedsAttention);
-  const configured = lanes.filter((lane) => lane.playwright_configured || lane.connection_configured || lane.browser_use_configured).length;
-  return (
-    <Panel title="同時実行レーン" action={`${lanes.length}件`}>
-      <div className="source-summary single">
-        <div>
-          <strong>{active}</strong>
-          <span>使用中</span>
-          <small>現在タスクを持つレーン</small>
-        </div>
-        <div>
-          <strong>{attentionLanes.length}</strong>
-          <span>要確認</span>
-          <small>停止・実行中・健全性の確認</small>
-        </div>
-        <div>
-          <strong>{configured}</strong>
-          <span>接続設定</span>
-          <small>ブラウザ接続設定あり</small>
-        </div>
-      </div>
-      <LaneFocusList lanes={attentionLanes} />
-      <details className="lane-audit-details">
-        <summary>監査詳細</summary>
-        <LaneMatrix lanes={lanes} />
-      </details>
-    </Panel>
-  );
-}
-
-function SourcesView({
-  summary,
-  assets,
-  events,
-  checks,
-  bridgeCatalog,
-  bridgeActions,
-  bridgeExecutions,
-  knowledgeNotes,
-  researchPlans,
-  obsidian,
-  codexCapabilities,
-  codexParityLedger,
-  codexAutomationMigrationLedger,
-  capabilityRouter,
-  browserHealth,
-  localWorker,
-  onImport,
-  onBridgeAction,
-  onGapAction,
-  busyKey
-}: {
-  summary: Row[];
-  assets: Row[];
-  events: Row[];
-  checks: Row[];
-  bridgeCatalog: Row[];
-  bridgeActions: Row[];
-  bridgeExecutions: Row[];
-  knowledgeNotes: Row[];
-  researchPlans: ResearchPlan[];
-  obsidian: Row;
-  codexCapabilities: Row;
-  codexParityLedger: Row;
-  codexAutomationMigrationLedger: Row;
-  capabilityRouter?: CapabilityRouterSnapshot;
-  browserHealth: Row;
-  localWorker: Row;
-  onImport: () => void;
-  onBridgeAction: (id: string) => void;
-  onGapAction: (gap: CapabilityGap) => void;
-  busyKey: string | null;
-}) {
-  const capabilitySummary = asJson<Row>(codexCapabilities.summary, {});
-  const playwright = asJson<Row>(browserHealth.playwrightCli, {});
-  const browserUse = asJson<Row>(browserHealth.browserUseCli, {});
-  const browserBridge = asJson<Row>(browserHealth.codexBrowserBridge, {});
-  const latestCheck = checks[0];
-  const latestBrowserUseResult = useMemo(() => checks.map(toBrowserUseResult).find(Boolean) ?? null, [checks]);
-  const parityItems = Array.isArray(codexParityLedger.items) ? codexParityLedger.items : [];
-  const migrationSummary = asJson<Row>(codexAutomationMigrationLedger.summary, {});
-  return (
-    <section className="grid bottom-grid sources-view">
-      <LocalWorkerSetupPanel worker={localWorker} />
-      <ObsidianSyncCard
-        obsidian={obsidian}
-        variant="detail"
-        onRefresh={() => onBridgeAction("obsidian_export")}
-        busy={busyKey === "bridge-obsidian_export"}
-      />
-      <CapabilityBacklogPanel router={capabilityRouter ?? emptyDashboard.capabilityRouter} onGapAction={onGapAction} />
-      <AutomationMigrationLedgerPanel summary={migrationSummary} generatedAt={String(codexAutomationMigrationLedger.generatedAt ?? "")} />
-      <details className="sources-more">
-        <summary>詳細</summary>
-        <div className="grid bottom-grid sources-detail-grid">
-          <CodexParityLedgerPanel items={parityItems} generatedAt={String(codexParityLedger.generatedAt ?? "")} />
-          <Panel title="読み込み" action="更新" onAction={onImport}>
-            <AssetInventory summary={summary} assets={assets} />
-          </Panel>
-          <Panel title="道具" action={browserUse.available ? "OK" : "確認"}>
-            <div className="source-summary single">
-              <div>
-                <strong>{capabilitySummary.plugins ?? "--"}</strong>
-                <span>拡張</span>
-              </div>
-              <div>
-                <strong>{playwright.available ? "OK" : "--"}</strong>
-                <span>画面</span>
-              </div>
-              <div>
-                <strong>{browserUse.available ? "OK" : "--"}</strong>
-                <span>自動確認</span>
-              </div>
-              <div>
-                <strong>{browserBridge.status === "requires_bridge" ? "確認" : browserBridge.status ?? "--"}</strong>
-                <span>共有画面</span>
-              </div>
-              <div>
-                <strong>{latestCheck ? displayStatus(latestCheck.status) : "--"}</strong>
-                <span>前回</span>
-              </div>
-            </div>
-            {latestCheck && (
-              <div className="check-result">
-                <strong>{displayBridgeReceiptSummary(latestCheck.summary)}</strong>
-                <small>{displayStatus(latestCheck.status)} · {displayShortDateTime(latestCheck.created_at)}</small>
-                <small>詳細は内部記録に保存済みです。</small>
-              </div>
-            )}
-          </Panel>
-          <BrowserUseResultPanel result={latestBrowserUseResult} />
-          <Panel title="計画" action={`${researchPlans.length}件`}>
-            <ResearchPlanList plans={researchPlans} />
-          </Panel>
-          <Panel title="メモ" action={`${events.length}件`}>
-            <ResearchTable events={events} />
-          </Panel>
-          <Panel title="操作" action={`${bridgeCatalog.length}件`}>
-            <BridgeActionList actions={bridgeCatalog} receipts={bridgeActions} onRun={onBridgeAction} busyKey={busyKey} />
-          </Panel>
-          <Panel title="外部" action={`${bridgeExecutions.length}件`}>
-            <BridgeExecutionList executions={bridgeExecutions} />
-          </Panel>
-          <Panel title="保存" action={`${knowledgeNotes.length}件`}>
-            <KnowledgeNotes notes={knowledgeNotes} />
-          </Panel>
-        </div>
-      </details>
-    </section>
-  );
-}
-
-function LocalWorkerSetupPanel({ worker }: { worker: Row }) {
-  const status = String(worker.status ?? "missing");
-  const label = String(worker.label ?? "未接続");
-  const nextAction = String(worker.nextAction ?? "Macに本番PostgreSQL接続を保存してから stored worker proof を実行してください。");
-  const processed = Number(worker.processed ?? 0);
-  const guidance = compactWorkerSetupGuidance(nextAction);
-  const isConnected = status === "ok" || status === "running" || status === "idle";
-  const heartbeatLabel = status === "missing" ? "heartbeat 未確認" : "heartbeat 確認済み";
-  return (
-    <Panel title="Mac worker" action={heartbeatLabel}>
-      <div className="worker-setup-panel">
-        {isConnected ? (
-          <div className="worker-ready-summary">
-            <strong>{status === "running" ? "処理中です" : "待機中です"}</strong>
-            <p>{guidance}</p>
-          </div>
-        ) : (
-          <div className="worker-setup-steps">
-            <div className="worker-setup-step">
-              <span>1</span>
-              <strong>接続情報を保存</strong>
-              <small>本番PostgreSQLの接続を保存します。</small>
-            </div>
-            <div className="worker-setup-step">
-              <span>2</span>
-              <strong>接続を確認</strong>
-              <small>保存済み接続で疎通proofを実行します。</small>
-            </div>
-            <div className="worker-setup-step">
-              <span>3</span>
-              <strong>待機を開始</strong>
-              <small>登録済み実行をMacで拾える状態にします。</small>
-            </div>
-          </div>
-        )}
-        <div className="worker-status-grid" aria-label="Mac worker status">
-          <span>状態</span>
-          <strong>{label}</strong>
-          <span>処理数</span>
-          <strong>{processed}</strong>
-        </div>
-        <small>{status === "missing" ? "本番Mac workerのheartbeatを待っています。" : "Dashboardが最後のheartbeatを読んでいます。"}</small>
-      </div>
-    </Panel>
-  );
-}
-
-function compactWorkerSetupGuidance(value: string) {
-  const cleaned = value
-    .replace(/npm run worker:production-proof:stored/gu, "接続 proof")
-    .replace(/npm run worker:loop:stored/gu, "worker loop")
-    .replace(/\s+/gu, " ")
-    .trim();
-  return cleaned || "接続情報を保存し、proof後にworkerを起動してください。";
-}
-
-function CapabilityBacklogPanel({ router, onGapAction }: { router?: CapabilityRouterSnapshot; onGapAction?: (gap: CapabilityGap) => void }) {
-  const routes = router?.recommendedRoutes ?? [];
-  const gaps = router?.gapBacklog ?? [];
-  return (
-    <Panel title="活用候補" action={`${gaps.length}件`}>
-      <div className="capability-router-panel">
-        {router?.primaryAction && (
-          <div className="capability-primary">
-            <strong>次に使う候補</strong>
-            <small>{router.primaryAction}</small>
-          </div>
-        )}
-        <div className="capability-suggestion-list">
-          {routes.slice(0, 3).map((route) => (
-            <article key={route.id}>
-              <span className={`pill ${route.status}`}>{capabilityStatusLabel(route.status)}</span>
-              <strong>{route.label}</strong>
-              <small>{route.nextAction}</small>
-            </article>
-          ))}
-          {routes.length === 0 && <Empty text="使える候補を確認中です。" />}
-        </div>
-        <details className="internal-details">
-          <summary>まだつなぐもの</summary>
-          <div className="capability-gap-list">
-            {gaps.slice(0, 8).map((gap) => (
-              <article key={gap.id}>
-                <span className={`pill ${gap.priority}`}>{gapPriorityLabel(gap.priority)}</span>
-                <strong>{gap.label}</strong>
-                <small>{gap.nextAction}</small>
-                {gap.action && onGapAction && (
-                  <button type="button" onClick={() => onGapAction(gap)}>
-                    <Plus size={15} />
-                    {gap.action.label}
-                  </button>
-                )}
-              </article>
-            ))}
-          </div>
-        </details>
-      </div>
-    </Panel>
-  );
-}
-
-function CodexParityLedgerPanel({ items, generatedAt }: { items: Row[]; generatedAt: string }) {
-  return (
-    <Panel title="Codex App互換台帳" action={`${items.length}項目`}>
-      <div className="parity-ledger">
-        <div className="parity-ledger-head">
-          <div>
-            <strong>対応状況</strong>
-            <small>Codex Appでできることを、表示・実行境界・証跡で確認します。</small>
-          </div>
-          <small>{generatedAt ? `更新 ${displayShortDateTime(generatedAt)}` : "未生成"}</small>
-        </div>
-        <div className="parity-ledger-list">
-          {items.map((item) => (
-            <article className="parity-ledger-row" key={String(item.capability)}>
-              <div>
-                <span className={`pill ${item.status}`}>{displayStatus(String(item.status))}</span>
-                <strong>{String(item.capability)}</strong>
-                <small>{String(item.currentSurface)}</small>
-              </div>
-              <div className="parity-ledger-facts">
-                <div>
-                  <span>実行</span>
-                  <small>{item.executionBoundary ? "実行条件を確認済み" : "確認待ち"}</small>
-                </div>
-                <div>
-                  <span>証跡</span>
-                  <small>{item.latestProof ? "内部証跡あり" : "証跡待ち"}</small>
-                </div>
-                <div>
-                  <span>次の追加</span>
-                  <small>{item.nextSafeAddition ? "次の改善候補あり" : "未設定"}</small>
-                </div>
-              </div>
-            </article>
-          ))}
-          {items.length === 0 && <Empty text="Codex App互換台帳はまだ生成されていません。" />}
-        </div>
-      </div>
-    </Panel>
-  );
-}
-
-function AutomationMigrationLedgerPanel({ summary, generatedAt }: { summary: Row; generatedAt: string }) {
-  const total = Number(summary.total ?? 0);
-  const migrated = Number(summary.migrated ?? 0);
-  const scheduled = Number(summary.scheduledConfirmed ?? 0);
-  const actual = Number(summary.actualConfirmed ?? 0);
-  const confirmed = Number(summary.proofConfirmed ?? 0);
-  const blocked = Number(summary.blocked ?? 0);
-  return (
-    <Panel title="移行状況" action={`${total}件`}>
-      <div className="source-summary single">
-        <div>
-          <strong>{migrated}</strong>
-          <span>移行済み</span>
-          <small>登録済みの定期として扱えます</small>
-        </div>
-        <div>
-          <strong>{scheduled}</strong>
-          <span>予定確認</span>
-          <small>予定からの実行を確認済み</small>
-        </div>
-        <div>
-          <strong>{actual}</strong>
-          <span>実行確認</span>
-          <small>最新の実行が完了済み</small>
-        </div>
-        <div>
-          <strong>{confirmed}</strong>
-          <span>確認済み</span>
-          <small>完了確認まで揃っています</small>
-        </div>
-        <div>
-          <strong>{blocked}</strong>
-          <span>要確認</span>
-          <small>次の確認が必要です</small>
-        </div>
-      </div>
-      <small>{generatedAt ? `更新 ${displayShortDateTime(generatedAt)}` : "未生成"}</small>
-    </Panel>
-  );
-}
-
-function BrowserUseResultPanel({ result }: { result: BrowserUseResult | null }) {
-  if (!result) {
-    return (
-      <Panel title="画面確認" action="未実行">
-        <Empty text="まだありません。" />
-      </Panel>
-    );
-  }
-
-  const laneLabel = displayBrowserUseLane(result);
-  const cleanupLabel = displayCleanupStatus(result.cleanup);
-  const evidenceCount = [result.screenshotPath, result.statePath, result.logPath].filter(Boolean).length;
-  return (
-    <Panel title="画面確認" action={displayStatus(result.check.status)}>
-      <div className="browser-use-result">
-        <div className="browser-use-result-head">
-          <div>
-            <span className={`pill ${result.check.status}`}>{displayStatus(result.check.status)}</span>
-            <strong>{browserUseResultLine(result)}</strong>
-            <small>{displayBridgeReceiptSummary(result.check.summary)} · {displayShortDateTime(result.check.created_at)}</small>
-          </div>
-          <Bot size={22} />
-        </div>
-        <div className="browser-use-result-grid">
-          <div>
-            <span>結果</span>
-            <strong>{displayStatus(result.check.status)}</strong>
-            <small>ローカル画面を確認しました</small>
-          </div>
-          <div>
-            <span>保存</span>
-            <strong>{evidenceCount}件</strong>
-            <small>{publicEvidenceCopy(evidenceCount)}</small>
-          </div>
-          <div>
-            <span>ブラウザ</span>
-            <strong>{laneLabel}</strong>
-            <small>接続情報は内部記録に保存済み</small>
-          </div>
-          <div>
-            <span>片付け</span>
-            <strong>{cleanupLabel}</strong>
-            <small>片付け状態を記録済み</small>
-          </div>
-        </div>
-      </div>
-    </Panel>
-  );
-}
-
-function SkillsView(props: {
-  runs: Row[];
-  skills: Row[];
-  selectedSkill?: Row;
-  onSelectSkill: (skill: Row) => void;
-  onCreate: (path: string, msg: string, options?: { view?: View; key?: string }) => Promise<void>;
-  busyKey: string | null;
-}) {
-  const latestRun = props.runs[0];
-  return (
-    <section className="view-grid skills-view">
-      <Panel title="スキル作成" action="最新実行から作成">
-        <div className="skill-box">
-          <div className="skill-copy">
-            <Sparkles size={18} />
-            <div>
-              <strong>{latestRun?.name ?? "実行履歴がありません"}</strong>
-              <small>確認済みの実行から、再利用できるスキル下書きを作れます。</small>
-            </div>
-          </div>
-          <button disabled={!latestRun || props.busyKey === "skill"} onClick={() => latestRun && props.onCreate(`/api/skills/from-run/${latestRun.id}`, "スキル下書きを作成しました", { view: "Skills", key: "skill" })}>
-            {props.busyKey === "skill" ? <Loader2 size={15} className="spin" /> : <Sparkles size={15} />} 下書き作成
-          </button>
-        </div>
-      </Panel>
-      <Panel title="スキル下書き" action={`${props.skills.length}件`}>
-        <div className="compact-list">
-          {props.skills.map((skill) => (
-            <button className="list-row button-row" key={skill.id} onClick={() => props.onSelectSkill(skill)}>
-              <FileText size={17} />
-              <div>
-                <strong>{skill.name}</strong>
-                <small>{compactId(skill.run_id)} · {skill.created_at?.slice(0, 19)}</small>
-              </div>
-              <Eye size={15} />
-            </button>
-          ))}
-          {props.skills.length === 0 && <Empty text="スキル下書きはまだありません。" />}
-        </div>
-        {props.selectedSkill && <MarkdownPreview markdown={props.selectedSkill.draft_markdown ?? props.selectedSkill.markdown} />}
-      </Panel>
-    </section>
-  );
-}
-
-function RunSummary({
-  run,
-  meta,
-  proofCount = 0,
-  stepCount = 0,
-  eventCount = 0,
-  workerEvents = [],
-  localWorker = {},
-  firstProof,
-  onOpen,
-  onRefresh,
-  onOpenProof,
-  onOpenApprovals,
-  onContinueInCreate,
-  emptyText = "実行は選択されていません。"
-}: {
-  run?: Row;
-  meta: Row;
-  proofCount?: number;
-  stepCount?: number;
-  eventCount?: number;
-  workerEvents?: Row[];
-  localWorker?: Row;
-  firstProof?: Row;
-  onOpen?: () => void;
-  onRefresh?: () => void;
-  onOpenProof?: () => void;
-  onOpenApprovals?: () => void;
-  onContinueInCreate?: () => void;
-  emptyText?: string;
-}) {
-  if (!run) return <Empty text={emptyText} />;
-  const proofGate = meta.proof_gate ?? {};
-  const researchPlanSnapshot = asJson<Row>(meta.research_plan_snapshot, {});
-  const hasResearchPlanSnapshot = typeof researchPlanSnapshot.id === "string";
-  const contract = meta.run_contract_summary ?? meta.run_contract;
-  const contractProgress = contract?.progress ?? {};
-  const progressDone = Number(contractProgress.done);
-  const progressTotal = Number(contractProgress.total);
-  const hasProgress = Number.isFinite(progressDone) && Number.isFinite(progressTotal) && progressTotal > 0;
-  const contractDone = hasProgress ? `${progressDone} / ${progressTotal}` : contractProgress.ok || proofGate.ok ? "完了" : "確認待ち";
-  const progressPercent = hasProgress ? Math.round(Math.max(0, Math.min(100, (progressDone / progressTotal) * 100))) : proofGate.ok ? 100 : 0;
-  const missingVisibleSteps: string[] = Array.isArray(contract?.missingVisibleSteps) ? contract.missingVisibleSteps.map(String) : [];
-  const nextVisibleStep = typeof contract?.nextVisibleStep === "string" ? contract.nextVisibleStep : "";
-  const displayNextStep = nextVisibleStep || (proofGate.ok ? "完了" : "確認待ち");
-  const remainingSummary = missingVisibleSteps.length > 0 ? `残り ${missingVisibleSteps.length}件` : "残りなし";
-  const disposition = classifyRun(run);
-  const humanReport = buildRunHumanReport(run, meta, { proofCount, stepCount, eventCount, nextStep: displayNextStep });
-  const followUpActions = buildRunFollowUpActions(run, meta, { proofCount, firstProof });
-  const createOrigin = buildCreateOriginSummary(meta);
-  const workerResult = buildWorkerResultSummary(workerEvents);
-  const queuedWorkerBody = buildQueuedWorkerBody(localWorker);
-  const decisionBanner = (() => {
-    if (disposition.kind === "actionable") {
-      return { tone: "actionable", title: "確認", body: `次: ${displayNextStep}` };
-    }
-    if (disposition.kind === "running") {
-      return { tone: "actionable", title: "進行中", body: workerResult ? "Mac worker処理中" : queuedWorkerBody };
-    }
-    if (disposition.archiveReason === "receipt_only") {
-      return { tone: "archive", title: "保存", body: "完了ではありません" };
-    }
-    if (disposition.archiveReason === "demo") {
-      return { tone: "archive", title: "サンプル", body: "操作不要" };
-    }
-    if (disposition.kind === "archive") {
-      return { tone: "archive", title: "古い履歴", body: "操作不要" };
-    }
-    return { tone: "completed", title: "完了", body: "操作不要" };
-  })();
-  return (
-    <div className="run-summary">
-      <div>
-        <span className={`pill ${run.status}`}>{displayStatus(run.status)}</span>
-        <h2>{displayTaskName(run.name)}</h2>
-        <div className={`decision-banner ${decisionBanner.tone}`}>
-          <strong>{decisionBanner.title}</strong>
-          <span>{decisionBanner.body}</span>
-        </div>
-      </div>
-      {contract && (
-        <div className="run-focus">
-          <div>
-            <span>次の1ステップ</span>
-            <strong>{displayNextStep}</strong>
-            <small>{remainingSummary}</small>
-          </div>
-          <div className="run-progress" aria-label={`進捗 ${contractDone}`}>
-            <span><i style={{ width: `${progressPercent}%` }} /></span>
-            <em>{contractDone}</em>
-          </div>
-        </div>
-      )}
-      <div className="run-human-report" aria-label="実行レポート">
-        <ReportItem label="結論" value={humanReport.conclusion} />
-        <ReportItem label="見たもの" value={humanReport.seen} />
-        <ReportItem label="実行したこと" value={humanReport.did} />
-        <ReportItem label="止まった理由" value={humanReport.blocker} />
-        <ReportItem label="証跡" value={humanReport.proof} />
-        <ReportItem label="次の一手" value={humanReport.next} />
-      </div>
-      {createOrigin && (
-        <section className="run-create-origin" aria-label="作るから渡された相談">
-          <div>
-            <span>作るで相談した内容</span>
-            <strong>{createOrigin.title}</strong>
-            <small>{createOrigin.questionCount > 0 ? `${createOrigin.questionCount}件のやりとりから作成` : "保存済み相談から作成"}</small>
-          </div>
-          <div>
-            <span>workerが最初に見ること</span>
-            <strong>{createOrigin.nextAction}</strong>
-            {createOrigin.visibleSteps.length > 0 && (
-              <ol>
-                {createOrigin.visibleSteps.map((step, index) => (
-                  <li key={`${step}-${index}`}>{step}</li>
-                ))}
-              </ol>
-            )}
-          </div>
-        </section>
-      )}
-      {workerResult && (
-        <section className={`run-worker-result ${workerResult.tone}`} aria-label="Mac workerの処理結果">
-          <div>
-            <span>Mac workerの処理結果</span>
-            <strong>{workerResult.title}</strong>
-            <small>{workerResult.detail}</small>
-          </div>
-          <div>
-            <span>次に見ること</span>
-            <strong>{workerResult.nextAction}</strong>
-            <small>{workerResult.when}</small>
-          </div>
-        </section>
-      )}
-      {followUpActions.length > 0 && (
-        <div className="run-follow-up-actions" aria-label="次にできる操作">
-          {followUpActions.map((action) => {
-            const Icon = action.icon;
-            const handler = action.kind === "refresh"
-              ? onRefresh
-              : action.kind === "proof"
-                ? onOpenProof
-                : action.kind === "approval"
-                  ? onOpenApprovals
-                  : onContinueInCreate;
-            return (
-              <button className={action.primary ? "text-button primary" : "text-button"} type="button" key={action.kind} onClick={handler} disabled={!handler}>
-                <Icon size={15} />
-                {action.label}
-              </button>
-            );
-          })}
-        </div>
-      )}
-      {missingVisibleSteps.length > 0 && (
-        <details className="remaining-steps">
-          <summary>残り一覧</summary>
-          <ol>
-            {missingVisibleSteps.map((step, index) => (
-              <li key={`${step}-${index}`}>{step}</li>
-            ))}
-          </ol>
-        </details>
-      )}
-      {disposition.archiveReason === "receipt_only" && (
-        <div className="warning-line">
-          <AlertTriangle size={16} />
-          <span>保存のみ</span>
-        </div>
-      )}
-      <details className="internal-details run-meta-details">
-        <summary>状態</summary>
-        <div className="summary-grid">
-          <Metric label="開始" value={run.created_at?.slice(0, 16) ?? "不明"} />
-          {contract ? (
-            <>
-              <Metric label="モード" value={contract.beginnerLabel ?? contract.mode ?? "NisenPrints"} />
-              <Metric label="完了" value={contractDone} warn={!proofGate.ok} />
-            </>
-          ) : (
-            <>
-              <Metric label="実行方式" value={displayWorkerMode(meta.worker_mode)} warn={meta.worker_mode === "receipt_only"} />
-              <Metric label="確認" value={proofGate.ok ? "完了" : "途中"} warn={!proofGate.ok} />
-              <Metric label="次" value={proofGate.ok ? "完了" : "確認待ち"} warn={!proofGate.ok} />
-            </>
-          )}
-        </div>
-      </details>
-      {hasResearchPlanSnapshot && (
-        <details className="internal-details remaining-steps research-plan-snapshot">
-          <summary title="診断" aria-label="診断">
-            <Database size={16} />
-            <span className="sr-only">診断</span>
-          </summary>
-          <small>開始前計画: {String(researchPlanSnapshot.title ?? researchPlanSnapshot.command ?? researchPlanSnapshot.id)}</small>
-          <small>この計画は完了証跡ではありません。完了判断は内部のDBと証跡で行います。</small>
-          {Array.isArray(researchPlanSnapshot.visibleFlow) && (
-            <ol>
-              {researchPlanSnapshot.visibleFlow.map((item, index) => (
-                <li key={`${item}-${index}`}>{String(item)}</li>
-              ))}
-            </ol>
-          )}
-        </details>
-      )}
-      {onOpen && <button className="text-button" onClick={onOpen}>詳細を見る <ChevronRight size={15} /></button>}
-    </div>
-  );
-}
-
-function buildQueuedWorkerBody(worker: Row) {
-  const status = String(worker.status ?? "");
-  const processed = Number(worker.processed ?? 0);
-  if (status === "running") return "Mac worker処理中 / 順番待ち";
-  if (status === "ok" && processed > 0) return "Mac worker確認中";
-  if (status === "blocked") return "Mac worker確認が必要";
-  return "Mac worker待ち";
-}
-
-function buildCreateOriginSummary(meta: Row) {
-  if (meta.create_session_source !== "create_view") return null;
-  const snapshot = asJson<Row>(meta.create_session_snapshot, {});
-  const draft = asJson<Row>(snapshot.draft, {});
-  const messages = Array.isArray(snapshot.messages) ? snapshot.messages : [];
-  const visibleSteps = Array.isArray(draft.visibleSteps)
-    ? draft.visibleSteps.map((item) => displayCreatePlanText(String(item))).filter(Boolean).slice(0, 4)
-    : [];
-  const title = displayCreatePlanText(String(meta.create_session_title ?? snapshot.title ?? draft.title ?? "作るから開始した実行"));
-  const nextAction = displayCreatePlanText(String(meta.create_session_next_action ?? draft.nextAction ?? visibleSteps[0] ?? "保存済み相談を読んで実行します。"));
-  const questionCount = messages.filter((message) => asJson<Row>(message, {}).role === "user").length;
-  if (!title && !nextAction && visibleSteps.length === 0) return null;
-  return { title, nextAction, visibleSteps, questionCount };
-}
-
-function buildWorkerResultSummary(events: Row[]) {
-  if (!events.length) return null;
-  const latest = [...events]
-    .filter((event) => ["worker_completed", "worker_blocked", "worker_started", "worker_once_blocked"].includes(String(event.event_type)))
-    .sort((a, b) => Date.parse(String(b.created_at ?? "")) - Date.parse(String(a.created_at ?? "")))[0];
-  if (!latest) return null;
-  const eventType = String(latest.event_type ?? "");
-  const meta = asJson<Row>(latest.metadata_json, {});
-  const message = redactDisplayPaths(String(latest.message ?? ""));
-  const adapterKey = String(meta.adapter ?? meta.worker_mode ?? meta.execution_mode ?? "");
-  const adapter = adapterKey ? displayWorkerMode(adapterKey) : "";
-  if (eventType === "worker_completed") {
-    return {
-      tone: "ok",
-      title: "Mac workerが処理しました。",
-      detail: adapter ? `${adapter}で処理記録を残しました。` : "処理記録を残しました。",
-      nextAction: "証跡と不足している確認を見てください。",
-      when: latest.created_at?.slice(0, 19) ?? "時刻不明"
-    };
-  }
-  if (eventType === "worker_blocked" || eventType === "worker_once_blocked") {
-    return {
-      tone: "blocked",
-      title: "Mac workerが途中で止まりました。",
-      detail: workerEventBlockerSummary(meta, message),
-      nextAction: "止まった理由を確認して、作るで続き相談してください。",
-      when: latest.created_at?.slice(0, 19) ?? "時刻不明"
-    };
-  }
-  return {
-    tone: "running",
-    title: "Mac workerが処理中です。",
-    detail: adapter ? `${adapter}で確認しています。` : "処理を開始しました。",
-    nextAction: "少し待ってから状態を更新してください。",
-    when: latest.created_at?.slice(0, 19) ?? "時刻不明"
-  };
-}
-
-function workerEventBlockerSummary(meta: Row, message: string) {
-  const issueSummary = asJson<Row>(meta.issue_ledger_summary, {});
-  const issueBlocker = String(issueSummary.latest_blocker ?? "");
-  if (issueBlocker) return `問題記録: ${displayCreatePlanText(issueBlocker).replace(/[_:]/g, " ")}。`;
-  const blocker = String(meta.exact_blocker ?? meta.exactBlocker ?? meta.blocker ?? message ?? "");
-  if (/billing|purchase|payment|checkout|invoice|subscription/i.test(blocker)) return "課金・購入・支払いの確認前で止まっています。";
-  if (/auth|login|captcha|otp|security|identity|human[_ -]?input/i.test(blocker)) return "ログインや本人確認など、人間の入力が必要です。";
-  if (/missing|not[_ -]?configured|not[_ -]?connected|runner/i.test(blocker)) return "実行に必要な接続や設定が足りません。";
-  if (/timeout|timed[_ -]?out/i.test(blocker)) return "時間内に確認が終わりませんでした。";
-  return message || "停止理由を詳細に保存しています。";
-}
-
-function buildRunHumanReport(run: Row, meta: Row, counts: { proofCount: number; stepCount: number; eventCount: number; nextStep: string }) {
-  const status = String(run.status ?? "");
-  const blocker = String(meta.exact_blocker ?? meta.exactBlocker ?? meta.stop_reason ?? meta.error ?? "");
-  const proofGate = meta.proof_gate ?? {};
-  const ok = status === "completed" || proofGate.ok === true;
-  const receiptOnly = meta.worker_mode === "receipt_only" || classifyRun(run).archiveReason === "receipt_only";
-  const approvalWaiting = status === "waiting_approval" || status === "approval_required";
-  const partial = status === "partial";
-  const blocked = status === "blocked" || status === "failed" || Boolean(blocker);
-  const missingLabels = missingProofLabels(proofGate);
-  const issueSummary = asJson<Row>(meta.issue_ledger_summary, {});
-  const issueCount = Number(issueSummary.count ?? 0);
-  const latestIssue = String(issueSummary.latest_blocker ?? "");
-  const conclusion = ok
-    ? "完了として扱えます。"
-    : approvalWaiting
-      ? "あなたの確認待ちです。"
-    : receiptOnly
-      ? "保存だけの記録です。実行完了ではありません。"
-      : partial
-        ? "一部だけ確認できています。完了には不足分があります。"
-      : blocked
-        ? "途中で止まっています。"
-        : "まだ確認中です。";
-  const seen = counts.stepCount > 0 ? `${counts.stepCount}件の手順を確認しました。` : "確認した手順はまだありません。";
-  const did = counts.eventCount > 0 ? `${counts.eventCount}件の実行記録があります。` : "実行記録はまだありません。";
-  const proof = issueCount > 0
-    ? `${issueCount}件の問題記録があります。${latestIssue ? `最新: ${displayCreatePlanText(latestIssue).replace(/[_:]/g, " ")}。` : ""}`
-    : counts.proofCount > 0
-    ? `${counts.proofCount}件の保存記録があります。`
-    : missingLabels.length > 0
-      ? `${missingLabels.slice(0, 2).join("、")}がまだ不足しています。`
-      : "保存記録はまだありません。";
-  const next = runNextActionSummary({ ok, approvalWaiting, receiptOnly, partial, blocked, nextStep: counts.nextStep, missingLabels });
-  return {
-    conclusion,
-    seen,
-    did,
-    blocker: runBlockerSummary({ blocker, receiptOnly, approvalWaiting, partial, blocked, missingLabels }),
-    proof,
-    next
-  };
-}
-
-type RunFollowUpAction = {
-  kind: "refresh" | "proof" | "approval" | "create";
-  label: string;
-  icon: typeof RefreshCcw;
-  primary?: boolean;
-};
-
-function buildRunFollowUpActions(run: Row, meta: Row, counts: { proofCount: number; firstProof?: Row }): RunFollowUpAction[] {
-  const status = String(run.status ?? "");
-  const proofGate = meta.proof_gate ?? {};
-  const ok = status === "completed" || proofGate.ok === true;
-  const receiptOnly = meta.worker_mode === "receipt_only" || classifyRun(run).archiveReason === "receipt_only";
-  const approvalWaiting = status === "waiting_approval" || status === "approval_required";
-  const actions: RunFollowUpAction[] = [];
-
-  if (counts.proofCount > 0 && counts.firstProof) {
-    actions.push({ kind: "proof", label: "保存記録を見る", icon: Eye, primary: ok });
-  }
-  if (approvalWaiting) {
-    actions.push({ kind: "approval", label: "承認を確認", icon: ShieldCheck, primary: true });
-  }
-  if (!ok) {
-    actions.push({ kind: "refresh", label: "状態を更新", icon: RefreshCcw, primary: actions.length === 0 && !receiptOnly });
-    actions.push({ kind: "create", label: "作るで続き相談", icon: MessageCircle, primary: receiptOnly && actions.length === 1 });
-  }
-  return actions;
-}
-
-function missingProofLabels(proofGate: Row) {
-  const missing = Array.isArray(proofGate.missing) ? proofGate.missing : [];
-  return missing
-    .map((item) => proofTypeLabels[String(item)] ?? displayCreatePlanText(String(item)).replace(/[_:]/g, " "))
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-function runBlockerSummary(input: {
-  blocker: string;
-  receiptOnly: boolean;
-  approvalWaiting: boolean;
-  partial: boolean;
-  blocked: boolean;
-  missingLabels: string[];
-}) {
-  if (input.approvalWaiting) return "承認画面であなたの確認が必要です。";
-  if (input.receiptOnly) return "開始前の保存記録だけです。";
-  if (input.missingLabels.length > 0) return `${input.missingLabels.slice(0, 3).join("、")}がまだ不足しています。`;
-  const blocker = input.blocker.toLowerCase();
-  if (/billing|purchase|payment|checkout|invoice|subscription/.test(blocker)) return "課金・購入・支払いの確認前で停止しています。";
-  if (/auth|login|captcha|otp|security|identity|human_input/.test(blocker)) return "ログインや本人確認など、人間の入力が必要です。";
-  if (/timeout|timed[_ -]?out|時間/.test(blocker)) return "時間内に確認が終わりませんでした。";
-  if (/runner|not[_ -]?configured|not[_ -]?connected|missing/.test(blocker)) return "実行に使う接続やローカル作業環境の確認が必要です。";
-  if (input.blocked) return "詳細に停止理由を保存しています。";
-  if (input.partial) return "完了に必要な確認がまだ残っています。";
-  return "明確な停止理由はまだありません。";
-}
-
-function runNextActionSummary(input: {
-  ok: boolean;
-  approvalWaiting: boolean;
-  receiptOnly: boolean;
-  partial: boolean;
-  blocked: boolean;
-  nextStep: string;
-  missingLabels: string[];
-}) {
-  if (input.ok) return "追加操作は不要です。";
-  if (input.approvalWaiting) return "承認画面で内容を確認してください。";
-  if (input.receiptOnly) return "実行結果か手動確認の記録を追加してください。";
-  if (input.missingLabels.length > 0) return `${input.missingLabels[0]}を確認してください。`;
-  if (input.partial) return input.nextStep || "不足している確認を続けてください。";
-  if (input.blocked) return input.nextStep || "詳細を開いて、止まった理由を確認してください。";
-  return input.nextStep || "次に確認する手順を選びます。";
-}
-
-function buildRunContinuationPrompt(
-  run: Row,
-  meta: Row,
-  counts: { proofCount: number; stepCount: number; eventCount: number; missingLabels: string[] }
-) {
-  const nextStep = String(meta.run_contract_summary?.nextVisibleStep ?? meta.run_contract?.nextVisibleStep ?? "");
-  const report = buildRunHumanReport(run, meta, {
-    proofCount: counts.proofCount,
-    stepCount: counts.stepCount,
-    eventCount: counts.eventCount,
-    nextStep
-  });
-  const missing = counts.missingLabels.length ? counts.missingLabels.slice(0, 3).join("、") : "不足している確認は画面上では特定できていません";
-  return [
-    "履歴からの続き相談です。",
-    `対象: ${displayTaskName(run.name)}`,
-    `状態: ${displayStatus(run.status)}`,
-    `結論: ${report.conclusion}`,
-    `止まった理由: ${report.blocker}`,
-    `証跡: ${report.proof}`,
-    `不足している確認: ${missing}`,
-    `次の一手: ${report.next}`,
-    "実行タイミング: 手動開始で小さく再確認します。",
-    "自動で進める範囲: このrunと同じ範囲で、課金・購入・支払い・決済だけ停止します。",
-    "正本: 履歴、保存記録、画面で見える確認結果を使います。",
-    "完了証拠: 不足している確認を新しい保存記録として残します。",
-    "この実行結果を踏まえて、追加質問、修正した手順、再実行前の確認、次に押すボタンを整理してください。"
-  ].join("\n");
-}
-
-function ReportItem({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
-}
-
-function Metric({ label, value, warn = false }: { label: string; value: string; warn?: boolean }) {
-  return (
-    <div className="metric">
-      <span>{label}</span>
-      <strong className={warn ? "warn" : ""}>{value}</strong>
-    </div>
-  );
-}
-
-function Panel({ title, action, actionLabel, children, onAction }: { title: string; action: string; actionLabel?: string; children: React.ReactNode; onAction?: () => void }) {
-  return (
-    <article className="panel">
-      <div className="panel-head">
-        <h2>{title}</h2>
-        <button onClick={onAction} disabled={!onAction} title={actionLabel ?? action} aria-label={actionLabel ?? action} className={action ? undefined : "icon-only"}>
-          {action && <span>{action}</span>}
-          <ChevronRight size={15} />
-        </button>
-      </div>
-      {children}
-    </article>
-  );
-}
-
-function Timeline({ steps, emptyText = "まだ実行されていません。" }: { steps: Row[]; emptyText?: string }) {
-  const visible = steps.slice(0, 12);
-  return (
-    <div className="timeline">
-      {visible.length === 0 && <Empty text={emptyText} />}
-      {visible.map((step) => {
-        const meta = asJson<Row>(step.metadata_json, {});
-        return (
-          <div className="timeline-row" key={step.id}>
-            <span className={`status-dot ${step.status}`} />
-            <div>
-              <strong>{displayTaskName(step.name)}</strong>
-              <small>{displayStatus(step.status)} · {(meta.resources ?? []).length ? `${(meta.resources ?? []).length}件の作業対象` : "ローカル処理"}</small>
-            </div>
-            <time>{displayStepTime(step)}</time>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function LaneMatrix({ lanes, compact = false }: { lanes: Row[]; compact?: boolean }) {
-  const visible = compact ? lanes.slice(0, 5) : lanes;
-  return (
-    <div className="table-wrap">
-      <table className="lane-matrix-table">
-        <thead>
-          <tr>
-            <th>レーン</th>
-            <th>役割</th>
-            <th>接続</th>
-            <th>ブラウザ</th>
-            <th>プロファイル</th>
-            <th>可視性</th>
-            <th>実行/更新</th>
-            <th>状態</th>
-            <th>作業</th>
-            <th>進行</th>
-            <th>健全性</th>
-            <th>ロック</th>
-          </tr>
-        </thead>
-        <tbody>
-          {visible.map((lane) => (
-            <tr key={lane.id}>
-              <td className="lane-cell"><strong>{displayLaneName(lane)}</strong><small>ID: {compactId(lane.id)}</small></td>
-              <td>{displayLaneRole(String(lane.role ?? ""))}</td>
-              <td className="lane-cell"><strong>{displayLaneConnection(lane)}</strong><small>接続先は内部管理</small></td>
-              <td className="lane-cell lane-detail-cell">
-                <strong>{displayLaneBrowserMode(lane)}</strong>
-                <small>接続情報は内部記録に保存</small>
-              </td>
-              <td className="lane-cell lane-path-cell">
-                <strong>{displayProfileStrategy(String(lane.profile_strategy ?? ""))}</strong>
-                <small>プロファイルは内部管理</small>
-              </td>
-              <td><span className={`pill ${lane.lane_visibility || "missing"}`}>{displayLaneVisibility(String(lane.lane_visibility ?? ""))}</span></td>
-              <td className="lane-cell lane-run-cell">
-                <strong>{displayLaneRunName(lane)}</strong>
-                <small>{displayShortDateTime(lane.updated_at)}</small>
-                <small>{lane.run_id ? `run ${compactId(String(lane.run_id))}` : "run未設定"}</small>
-              </td>
-              <td><span className={`pill ${lane.status}`}>{displayStatus(lane.status)}</span></td>
-              <td>{displayVisibleSummary(lane.current_task) || "待機中"}</td>
-              <td><Progress value={lane.progress} /></td>
-              <td>{displayStatus(lane.health)}</td>
-              <td>{asJson<string[]>(lane.resource_locks_json, []).map(displayResource).join(", ") || "なし"}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {lanes.length === 0 && <Empty text="レーンはまだありません。" />}
-    </div>
-  );
-}
-
-function LaneFocusList({ lanes }: { lanes: Row[] }) {
-  if (lanes.length === 0) {
-    return <Empty text="要確認のレーンはありません。" />;
-  }
-
-  return (
-    <div className="lane-focus-list">
-      {lanes.map((lane) => (
-        <article className="lane-focus-card" key={lane.id}>
-          <div className="lane-focus-head">
-            <strong>{displayLaneName(lane)}</strong>
-            <span className={`pill ${lane.status}`}>{displayStatus(lane.status)}</span>
-          </div>
-          <span>{displayLaneRunName(lane)}</span>
-          <small>{displayVisibleSummary(lane.current_task) || "待機中"}</small>
-          <div className="lane-focus-meta">
-            <span>{displayShortDateTime(lane.updated_at)}</span>
-            <span>{displayStatus(lane.health)}</span>
-            <Progress value={lane.progress} />
-          </div>
-        </article>
-      ))}
-    </div>
-  );
-}
-
-function ResearchTable({ events }: { events: Row[] }) {
-  return (
-    <div className="compact-list">
-      {events.slice(0, 8).map((event) => (
-        <div className="list-row" key={event.id}>
-          <Bot size={17} />
-          <div>
-            <strong>{event.topic}</strong>
-            <small>{event.recommendation}</small>
-          </div>
-          <span>{Math.round(Number(event.confidence) * 100)}%</span>
-        </div>
-      ))}
-      {events.length === 0 && <Empty text="調査メモはまだありません。" />}
-    </div>
-  );
-}
-
-function BridgeActionList({
-  actions,
-  receipts,
-  onRun,
-  busyKey
-}: {
-  actions: Row[];
-  receipts: Row[];
-  onRun: (id: string) => void;
-  busyKey: string | null;
-}) {
-  const latestByCapability = new Map<string, Row>();
-  for (const receipt of receipts) {
-    if (!latestByCapability.has(String(receipt.capability_id))) {
-      latestByCapability.set(String(receipt.capability_id), receipt);
-    }
-  }
-  return (
-    <div className="compact-list">
-      {actions.map((action) => {
-        const latest = latestByCapability.get(action.id);
-        const protectedAction = action.status === "approval_required";
-        return (
-          <div className="bridge-row" key={action.id}>
-            <div>
-              <strong>{action.label}</strong>
-              <small>{action.visibleSummary}</small>
-              {latest && <small>前回: {displayStatus(latest.status)} · {displayBridgeReceiptSummary(latest.summary)}</small>}
-            </div>
-            <button
-              className={protectedAction ? "text-button danger" : "text-button compact"}
-              disabled={busyKey === `bridge-${action.id}`}
-              onClick={() => onRun(String(action.id))}
-            >
-              {busyKey === `bridge-${action.id}` ? <Loader2 size={14} className="spin" /> : protectedAction ? <ShieldCheck size={14} /> : <Play size={14} />}
-              {protectedAction ? "承認へ進む" : action.buttonLabel ?? "実行"}
-            </button>
-          </div>
-        );
-      })}
-      {actions.length === 0 && <Empty text="安全操作はまだありません。" />}
-    </div>
-  );
-}
-
-function BridgeExecutionList({ executions }: { executions: Row[] }) {
-  return (
-    <div className="compact-list">
-      {executions.slice(0, 6).map((execution) => (
-        <div className="list-row" key={execution.id}>
-          <ShieldCheck size={17} />
-          <div>
-            <strong>{displayTaskName(execution.capability_id)}</strong>
-            <small>{displayBridgeReceiptSummary(execution.summary)}</small>
-          </div>
-          <span>{displayStatus(execution.executor_status)}</span>
-        </div>
-      ))}
-      {executions.length === 0 && <Empty text="外部実行はまだありません。" />}
-    </div>
-  );
-}
-
-function KnowledgeNotes({ notes }: { notes: Row[] }) {
-  return (
-    <div className="compact-list">
-      {notes.map((note) => (
-        <div className="list-row" key={note.id}>
-          <Database size={17} />
-          <div>
-            <strong>{note.title}</strong>
-            <small>{knowledgeNoteSummary(note)}</small>
-          </div>
-          <span>{note.updated_at?.slice(11, 16)}</span>
-        </div>
-      ))}
-      {notes.length === 0 && <Empty text="知識メモはまだありません。" />}
-    </div>
-  );
-}
-
-function knowledgeNoteSummary(note: Row) {
-  if (note.note_type === "credential_snapshot" || note.source_ref === "stored_secrets") {
-    return "保存済みの認証情報があります。値は表示しません。";
-  }
-  return displayVisibleSummary(String(note.body ?? "").split("\n").find((line) => line.trim().startsWith("- "))?.replace(/^- /, "") ?? note.note_type);
-}
-
-function ApprovalQueue(props: {
-  approvals: Row[];
-  onDecision?: (path: string, msg: string, options?: { view?: View; key?: string }) => Promise<void>;
-  busyKey?: string | null;
-  full?: boolean;
-}) {
-  const pending = props.approvals.filter((approval) => approval.status === "pending");
-  const visible = props.full ? pending : pending.slice(0, 5);
-  return (
-    <div className="approval-list">
-      {visible.map((approval) => (
-        <div className="approval" key={approval.id}>
-          <div>
-            <strong>{displayApprovalPublicTitle(approval)}</strong>
-            <div className="approval-chip-row" aria-label="確認内容">
-              <span className={`approval-chip ${displayApprovalActionTone(approval.action_kind)}`}>{displayApprovalActionLabel(approval)}</span>
-              <span className="approval-chip boundary">{displayApprovalBoundaryLabel(approval)}</span>
-              <span className="approval-chip execution">{displayApprovalExecutionLabel(approval)}</span>
-            </div>
-          </div>
-          {approval.status === "pending" && approval.decision_enabled !== false && props.onDecision ? (
-            <div className="approval-actions">
-              <button title="承認" aria-label="承認" disabled={props.busyKey === `approve-${approval.id}`} onClick={() => props.onDecision?.(`/api/approvals/${approval.id}/approve`, "承認しました", { view: "Runs", key: `approve-${approval.id}` })}>
-                <Check size={15} />
-                承認
-              </button>
-              <button title="却下" aria-label="却下" disabled={props.busyKey === `reject-${approval.id}`} onClick={() => props.onDecision?.(`/api/approvals/${approval.id}/reject`, "却下しました", { view: "Approvals", key: `reject-${approval.id}` })}>
-                <X size={15} />
-                却下
-              </button>
-              <button title="取り消し" aria-label="取り消し" disabled={props.busyKey === `cancel-${approval.id}`} onClick={() => props.onDecision?.(`/api/approvals/${approval.id}/cancel`, "承認待ちを取り消しました", { view: "Approvals", key: `cancel-${approval.id}` })}>
-                <Ban size={15} />
-                取消
-              </button>
-            </div>
-          ) : (
-            <span className={`pill ${approval.status}`}>{displayStatus(approval.status)}</span>
-          )}
-        </div>
-      ))}
-      {visible.length === 0 && <Empty text={props.full ? "承認待ちはありません。" : "0"} />}
-    </div>
-  );
-}
-
-function displayApprovalPublicTitle(approval: Row) {
-  if (typeof approval.task_label === "string" && approval.task_label.trim()) return `確認: ${approval.task_label.trim()}`;
-  return displayApprovalTitle(typeof approval.title === "string" ? approval.title : undefined);
-}
-
-function displayApprovalActionLabel(approval: Row) {
-  if (typeof approval.action_label === "string" && approval.action_label.trim()) return approval.action_label.trim();
-  return "承認";
-}
-
-function displayApprovalBoundaryLabel(approval: Row) {
-  if (typeof approval.boundary_label === "string" && approval.boundary_label.trim()) return approval.boundary_label.trim();
-  return displayApprovalSubtitle(approval);
-}
-
-function displayApprovalExecutionLabel(approval: Row) {
-  if (typeof approval.execution_label === "string" && approval.execution_label.trim()) return approval.execution_label.trim();
-  return "未実行";
-}
-
-function displayApprovalActionTone(value: unknown) {
-  const kind = String(value ?? "");
-  if (/delete|purchase|auth|pii/.test(kind)) return "action-danger";
-  if (/publish|submit|send|external/.test(kind)) return "action-external";
-  return "action-approval";
-}
-
-function ReceiptTable({ proofs, onSelect }: { proofs: Row[]; onSelect?: (proof: Row) => void }) {
-  return (
-    <div className="compact-list">
-      {proofs.slice(0, 10).map((proof) => (
-        <button className="list-row button-row" key={proof.id} onClick={() => onSelect?.(proof)}>
-          <FileCheck size={17} />
-          <div>
-            <strong>{proof.label}</strong>
-            <small>{displayProofType(proof.proof_type)} · {proof.can_open ? "表示できます" : "保存記録あり"}</small>
-          </div>
-          <ChevronRight size={15} />
-        </button>
-      ))}
-      {proofs.length === 0 && <Empty text="確認記録はまだありません。" />}
-    </div>
-  );
-}
-
-function ChildCodexRuns({ children }: { children: Row[] }) {
-  return (
-    <div className="compact-list child-codex-list">
-      {children.map((child) => {
-        const finished = child.exit_status == null ? "確認中" : "終了記録あり";
-        return (
-          <article className="list-row child-codex-row" key={child.id}>
-            <Bot size={17} />
-            <div>
-              <strong>{displayStatus(child.status)} · 別のAI作業</strong>
-              <small>{child.summary ? redactDisplayPaths(String(child.summary)) : "別のAI作業の結果待ちです"}</small>
-              {child.blocker && <small>{displayBridgeReceiptSummary(String(child.blocker))}</small>}
-              <small>指示文と結果の保存場所は内部記録に保存済みです。</small>
-            </div>
-            <span>{finished}</span>
-          </article>
-        );
-      })}
-      {children.length === 0 && <Empty text="この履歴には別のAI作業の結果はまだありません。保存記録だけの履歴とは別に表示します。" />}
-    </div>
-  );
-}
-
-function WorkerEvents({ events }: { events: Row[] }) {
-  return (
-    <div className="compact-list">
-      {events.slice(0, 8).map((event) => (
-        <div className="list-row" key={event.id}>
-          <Activity size={17} />
-          <div>
-            <strong>{displayEventType(event.event_type)}</strong>
-            <small>{redactDisplayPaths(String(event.message ?? ""))}</small>
-          </div>
-          <span>{event.created_at?.slice(11, 19)}</span>
-        </div>
-      ))}
-      {events.length === 0 && <Empty text="処理ログはまだありません。" />}
-    </div>
-  );
-}
-
-function AssetInventory({ summary, assets }: { summary: Row[]; assets: Row[] }) {
-  return (
-    <div className="asset-grid">
-      <div className="source-summary">
-        {summary.map((source) => (
-          <div key={source.source_type}>
-            <strong>{source.count}</strong>
-            <span>{displaySourceType(source.source_type)}</span>
-            <small>{sourceTypeHelp(source.source_type)}</small>
-          </div>
+    <aside className="sidebar">
+      <div className="brand">Automation OS</div>
+      <nav>
+        {nav.map(([label, href, Icon]) => (
+          <a key={href} className={route === href || (href.includes("projects") && route.includes("projects")) ? "active" : ""} href={href}>
+            <Icon size={16} /> {label}
+          </a>
         ))}
-        {summary.length === 0 && <Empty text="データはまだ取り込まれていません。" />}
-      </div>
-      <div className="asset-list">
-        {assets.slice(0, 5).map((asset) => (
-          <div key={asset.id}>
-            <span>{displaySourceType(asset.kind)}</span>
-            <strong>{asset.name}</strong>
-            <small>詳細パスは内部で保持しています。</small>
-          </div>
-        ))}
-        {assets.length > 5 && (
-          <div>
-            <span>内部データ</span>
-            <strong>ほか {assets.length - 5} 件</strong>
-            <small>必要なときだけバックエンドで参照します。</small>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function DetailDrawer({
-  proof,
-  proofView,
-  proofViewLoading,
-  skill,
-  onClose
-}: {
-  proof: Row | null;
-  proofView: ProofView | null;
-  proofViewLoading: boolean;
-  skill: Row | null;
-  onClose: () => void;
-}) {
-  return (
-    <aside className="detail-drawer">
-      <div className="drawer-head">
-        <h2>{proof ? "確認記録の詳細" : "スキル下書き"}</h2>
-        <button aria-label="詳細を閉じる" onClick={onClose}><X size={16} /></button>
-      </div>
-      {proof && (
-        <div className="drawer-body">
-          <div className="proof-human-summary">
-            <span className="pill ok">{proofKindLabel(proofView)}</span>
-            <strong>{proof.label || displayProofType(proof.proof_type)}</strong>
-            <p>{proofConfirmationText(proof, proofView)}</p>
-            <small>{proofPreviewSummary(proofView)}</small>
-          </div>
-          <div className="proof-fact-grid">
-            <Metric label="種類" value={displayProofType(proof.proof_type)} />
-            <Metric label="履歴" value={compactId(proof.run_id)} />
-            <Metric label="サイズ" value={formatBytes(Number(proofView?.size_bytes ?? proof.size_bytes ?? 0))} />
-            <Metric label="保存" value="保存記録あり" />
-          </div>
-          {proofViewLoading && <p>読み込んでいます...</p>}
-          {!proofViewLoading && proofView?.status === "blocked" && (
-            <p>{displayProofBlockedReason(proofView.blocked_reason)}</p>
-          )}
-          {!proofViewLoading && proofView?.status === "ok" && (
-            <ProofPreview proofView={proofView} />
-          )}
-          {!proofViewLoading && !proofView && <p>表示できる内容はありません。</p>}
+      </nav>
+      <div className="user">
+        <div className="avatar">A</div>
+        <div>
+          <strong>Administrator</strong>
+          <span>Local Agent</span>
         </div>
-      )}
-      {skill && <MarkdownPreview markdown={skill.draft_markdown ?? skill.markdown} />}
+      </div>
     </aside>
   );
 }
 
-function ProofPreview({ proofView }: { proofView: ProofView }) {
-  if (proofView.preview_kind === "image") {
-    const dimensions = proofView.image?.width && proofView.image?.height
-      ? `${proofView.image.width} x ${proofView.image.height}`
-      : "寸法未取得";
-    return (
-      <div className="proof-preview proof-image-card">
-        <div className="proof-image-placeholder" aria-hidden="true">
-          <Image size={28} />
-        </div>
-        <div className="proof-preview-meta">
-          <Metric label="形式" value={proofView.mime_type ?? "画像"} />
-          <Metric label="画像" value={dimensions} />
-          <p>画像本文は表示しません。保存形式・寸法・履歴との接続だけを確認できます。</p>
-        </div>
-      </div>
-    );
-  }
-  if (typeof proofView.preview === "string" && proofView.preview.trim()) {
-    return (
-      <div className="proof-preview">
-        <Metric label="形式" value={proofView.mime_type ?? "テキスト"} />
-        <pre>{redactDisplayPaths(proofView.preview)}</pre>
-        {proofView.truncated && <p>長い内容は省略しています。</p>}
-      </div>
-    );
-  }
-  return <p>表示できる preview はありません。</p>;
-}
-
-function displayProofBlockedReason(reason?: string) {
-  const map: Record<string, string> = {
-    absolute_path_requires_file_uri: "保存先の形式が安全条件に合わないため表示しません。",
-    file_too_large: "ファイルが大きすぎるため表示しません。",
-    file_unavailable: "保存記録のファイルを確認できません。",
-    invalid_file_uri: "保存先の形式が正しくないため表示しません。",
-    missing_file_reference: "表示できる保存先がありません。",
-    not_a_file: "保存記録がファイルではないため表示しません。",
-    path_not_allowed: "許可された保存領域の外なので表示しません。",
-    remote_uri_not_allowed: "外部URLは表示しません。",
-    tmp_path_not_allowed: "一時領域のファイルは表示しません。",
-    unsupported_file_type: "この形式は preview 対象外です。",
-    unsupported_uri_scheme: "この保存先形式は表示できません。"
+function TopHeader({ receipt, setReceipt }: { receipt: string; setReceipt: (value: string) => void }) {
+  const [query, setQuery] = useState("");
+  const actions = [
+    { label: "ホーム", route: "#/", keywords: "home ホーム dashboard ダッシュボード" },
+    { label: "チャット", route: "#/chat", keywords: "chat チャット 作成 自動化 llm" },
+    { label: "Project A", route: "#/projects/project-a/automations", keywords: "project プロジェクト プロジェクトa daily ai job nisenprints 実行" },
+    { label: "実行履歴", route: "#/runs", keywords: "run worker queue 実行 履歴" },
+    { label: "承認", route: "#/approvals", keywords: "approval 承認 停止 外部操作" },
+    { label: "テンプレート", route: "#/templates", keywords: "template テンプレート skills skill 雛形" },
+    { label: "プラグイン / MCP", route: "#/plugins", keywords: "plugin plugins プラグイン mcp runway browser" },
+    { label: "本番状態", route: "#/production/status", keywords: "production 本番 deploy zeabur" },
+    { label: "PC状態", route: "#/system/pc-status", keywords: "pc worker heartbeat local agent" },
+    { label: "Feedback", route: "", keywords: "feedback フィードバック 問題 スクショ" }
+  ];
+  const submitSearch = (event?: React.FormEvent) => {
+    event?.preventDefault();
+    const text = query.trim().toLowerCase();
+    if (!text) {
+      setReceipt(receipt);
+      return;
+    }
+    const found = actions.find((action) => `${action.label} ${action.keywords}`.toLowerCase().includes(text));
+    if (!found) {
+      setReceipt(`検索: "${query}" に一致する画面が見つかりません。チャット、プロジェクトA、実行履歴、テンプレート、プラグイン、本番状態などで検索できます。`);
+      return;
+    }
+    if (found.label === "Feedback") {
+      openFeedbackFor(`検索からFeedbackを開きました: ${query}`, { source: "top_search", query });
+      setReceipt("Feedbackを開きました。コメントとスクショを送信できます。");
+      return;
+    }
+    go(found.route);
+    setReceipt(`検索: ${found.label} を開きました。`);
   };
-  return map[String(reason ?? "")] ?? "安全確認のため表示しません。";
-}
-
-function MarkdownPreview({ markdown }: { markdown?: string }) {
-  return <pre className="markdown-preview">{markdown || "Markdown はまだありません。"}</pre>;
-}
-
-function Progress({ value }: { value: number }) {
   return (
-    <div className="progress">
-      <span style={{ width: `${Math.max(0, Math.min(100, Number(value) || 0))}%` }} />
-      <em>{value}%</em>
+    <header className="topbar">
+      <form className="search" onSubmit={submitSearch}>
+        <Search size={15} />
+        <input
+          aria-label="画面検索"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder={receipt}
+        />
+        <button type="submit">移動</button>
+      </form>
+      <div className="top-actions">
+        <IconButton label="同期" onClick={() => setReceipt("画面表示を更新しました。API readbackが必要な項目は各ページの再読込で確認してください。")}><RefreshCw size={16} /></IconButton>
+        <Button variant="primary" icon={<Plus size={15} />} onClick={() => go("#/chat")}>新しい自動化</Button>
+      </div>
+    </header>
+  );
+}
+
+function ProjectTabs() {
+  const route = useRoute();
+  const activeProject = projectSlugFromRoute(route);
+  const activeSection = subTabLabels.find(([, section]) => route.includes(`/${section}`))?.[1] ?? "automations";
+  return (
+    <div className="project-tabs">
+      <div className="project-switcher">{projectSlugs.map((slug) => <button className={slug === activeProject ? "selected" : ""} onClick={() => { rememberProject(slug); go(`#/projects/${slug}/${activeSection}`); }} key={slug}>{projectLabels[slug]}</button>)}</div>
+      <div className="sub-tabs">{subTabLabels.map(([label, section]) => {
+        const href = `#/projects/${activeProject}/${section}`;
+        return <a className={route === href ? "active" : ""} key={href} href={href}>{label}</a>;
+      })}</div>
     </div>
   );
 }
 
-function Empty({ text }: { text: string }) {
-  return <div className="empty">{text}</div>;
+function PageTitle({ title, desc, children }: { title: string; desc?: string; children?: React.ReactNode }) {
+  return (
+    <div className="page-title">
+      <div>
+        <h1>{title}</h1>
+        {desc && <p>{desc}</p>}
+      </div>
+      <div className="title-actions">{children}</div>
+    </div>
+  );
 }
+
+function ProjectScopeNotice({ projectId }: { projectId: string }) {
+  const capability = projectCapabilities[projectId] ?? projectCapabilities["project-a"];
+  if (projectId === "project-a") return null;
+  return (
+    <div className="notice-row">
+      {projectLabels[projectId]} は {capability.data_scope} です。API readbackは下書き保存まで、外部投稿・送信・削除・認証操作は実行しません。登録済みCodex App自動化はProject Aだけに接続しています。
+    </div>
+  );
+}
+
+function feedbackItemsFromState(state: MvpState) {
+  return (state.proofs ?? [])
+    .filter((item) => item.kind === "ui_feedback")
+    .map((item) => ({
+      id: item.feedback_id ?? item.id,
+      status: item.status ?? "open",
+      project_id: item.project_id ?? null,
+      route: item.route ?? "unknown",
+      comment: item.comment_preview ?? item.comment ?? item.summary ?? "",
+      target: item.fix_target ?? "unknown",
+      hasScreenshot: item.has_screenshot === true,
+      artifact: item.artifact_uri ?? "-"
+    }));
+}
+
+function classifyFeedback(comment: string, route: string) {
+  const text = `${comment} ${route}`;
+  if (/反応|できない|キュー|再生|ボタン|押して/.test(text)) return "操作反応";
+  if (/パフォーマンス|グラフ|見せ方|柔軟/.test(text)) return "表示改善";
+  if (/スクショ|Feedback|フィードバック|Supabase|inbox/.test(text)) return "Feedback導線";
+  if (/chat|チャット|リセット|Enter/i.test(text)) return "チャット";
+  return "確認待ち";
+}
+
+function humanNextStepForFeedback(comment: string, route: string) {
+  const category = classifyFeedback(comment, route);
+  if (category === "操作反応") return "押下後にreadback、exact blocker、次の解除条件を画面へ出す";
+  if (category === "表示改善") return "Project別のKPI表示とplaceholder/readback状態を分ける";
+  if (category === "Feedback導線") return "送信ID、スクショ有無、inbox状態を送信後に出す";
+  if (category === "チャット") return "入力、改行、送信、リセット後の状態を明示する";
+  return "再現操作をChrome QAへ追加する";
+}
+
+function FeedbackFixQueue({ state, setReceipt }: { state: MvpState; setReceipt: (value: string) => void }) {
+  const feedback = feedbackItemsFromState(state);
+  const allOpenItems = feedback.filter((item) => item.status === "open");
+  const allTriagedItems = feedback.filter((item) => item.status === "triaged");
+  const openItems = allOpenItems.slice(0, 10);
+  const triagedItems = allTriagedItems.slice(0, 3);
+  const rows = openItems.length ? openItems.map((item) => [
+    item.id,
+    classifyFeedback(item.comment, item.route),
+    item.route,
+    item.hasScreenshot ? "あり" : "なし",
+    humanNextStepForFeedback(item.comment, item.route),
+    <Button onClick={() => {
+      setReceipt(`Feedback ${item.id}: ${classifyFeedback(item.comment, item.route)} / ${humanNextStepForFeedback(item.comment, item.route)}`);
+      if (item.route.startsWith("#/")) go(item.route);
+    }}>対象を開く</Button>
+  ]) : [["open feedbackなし", "-", "-", "-", "現在のreadbackでは未処理feedbackはありません", <StatusBadge status="approved" label="完了" />]];
+  return (
+    <Panel title="Feedback修正キュー">
+      <div className="feedback-summary">
+        <strong>open {allOpenItems.length}件</strong>
+        <span>triaged {allTriagedItems.length}件</span>
+        <span>表示 {openItems.length}件 / 押しても分からない系を最優先</span>
+      </div>
+      <DataTable headers={["ID", "分類", "画面", "スクショ", "次の修正", "操作"]} rows={rows} />
+      <p className="muted">この一覧はMVP stateの feedback proof readback です。スクショ本体やsecretは表示しません。</p>
+    </Panel>
+  );
+}
+
+type AppModel = {
+  setReceipt: (value: string) => void;
+  automationRows: AutomationRow[];
+  setAutomationRows: React.Dispatch<React.SetStateAction<AutomationRow[]>>;
+  approvalRows: typeof seedApprovalItems;
+  setApprovalRows: React.Dispatch<React.SetStateAction<typeof seedApprovalItems>>;
+  createdTemplates: string[];
+  setCreatedTemplates: React.Dispatch<React.SetStateAction<string[]>>;
+  mvpState: MvpState;
+  setMvpState: React.Dispatch<React.SetStateAction<MvpState>>;
+};
+
+function renderPage(route: string, model: AppModel) {
+  const { setReceipt } = model;
+  if (route === "#/chat") return <ChatPage model={model} />;
+  if (route === "#/approvals") return <ApprovalsPage model={model} />;
+  if (route === "#/runs") return <RunsPage model={model} />;
+  if (route === "#/templates") return <TemplatesPage model={model} />;
+  if (route === "#/plugins") return <PluginsPage setReceipt={setReceipt} />;
+  if (route === "#/production/status") return <ProductionStatusPage setReceipt={setReceipt} />;
+  if (route === "#/system/pc-status") return <PcStatusPage model={model} />;
+  if (route.includes("/performance")) return <PerformancePage model={model} />;
+  if (route.includes("/automations/") && route.includes("/edit")) return <BuilderPage model={model} />;
+  if (route.includes("/lanes")) return <LanesPage setReceipt={setReceipt} />;
+  if (route.includes("/memory")) return <MemoryPage model={model} />;
+  if (route.includes("/security")) return <SecurityPage model={model} />;
+  if (route.includes("/artifacts")) return <ArtifactsPage setReceipt={setReceipt} />;
+  if (route.includes("/recovery")) return <RecoveryPage setReceipt={setReceipt} />;
+  if (route.includes("/runs/")) return <RunDetailPage setReceipt={setReceipt} />;
+  if (route.includes("/automations")) return <AutomationsPage model={model} />;
+  return <HomePage model={model} />;
+}
+
+function openFeedbackFor(comment: string, context: Record<string, unknown> = {}) {
+  window.dispatchEvent(new CustomEvent("automation-os-open-feedback", { detail: { comment, context } }));
+}
+
+function FeedbackWidget({ route, setReceipt, setMvpState }: { route: string; setReceipt: (value: string) => void; setMvpState: React.Dispatch<React.SetStateAction<MvpState>> }) {
+  const [open, setOpen] = useState(false);
+  const [comment, setComment] = useState("");
+  const [capture, setCapture] = useState<any>(null);
+  const [screenshot, setScreenshot] = useState<string | null>(null);
+  const [screenshotError, setScreenshotError] = useState<string | null>(null);
+  const [screenshotStatus, setScreenshotStatus] = useState<"idle" | "capturing" | "ready" | "failed" | "skipped">("idle");
+  const [sensitiveConfirmed, setSensitiveConfirmed] = useState(false);
+  const [feedbackContext, setFeedbackContext] = useState<Record<string, unknown> | null>(null);
+  const [busy, setBusy] = useState(false);
+  const captureGeneration = useRef(0);
+  const runCapture = async (nextRoute = route) => {
+    const generation = captureGeneration.current + 1;
+    captureGeneration.current = generation;
+    setScreenshotStatus("capturing");
+    setScreenshot(null);
+    setScreenshotError(null);
+    const nextCapture = buildFeedbackCapture(nextRoute);
+    setCapture(nextCapture);
+    const image = await captureAppScreenshotWithTimeout();
+    if (captureGeneration.current !== generation) return;
+    setScreenshot(image.dataUrl);
+    setScreenshotError(image.error);
+    setScreenshotStatus(image.dataUrl ? "ready" : "failed");
+    setReceipt(image.dataUrl ? "スクショを取得しました。コメントを書いて送信できます。" : "スクショなしでも送信できます。必要なら再取得してください。");
+  };
+  const openFeedback = async (preset?: { comment?: string; context?: Record<string, unknown> }) => {
+    if (typeof preset?.comment === "string") setComment(preset.comment);
+    setFeedbackContext(preset?.context ?? null);
+    setOpen(true);
+    setReceipt("フィードバック欄を開きました。スクショ取得中でもコメント入力できます。");
+    runCapture(route);
+  };
+  React.useEffect(() => {
+    const listener = (event: Event) => {
+      const detail = (event as CustomEvent).detail ?? {};
+      openFeedback({ comment: detail.comment, context: detail.context });
+    };
+    window.addEventListener("automation-os-open-feedback", listener);
+    return () => window.removeEventListener("automation-os-open-feedback", listener);
+  }, [route]);
+  const close = () => {
+    captureGeneration.current += 1;
+    setOpen(false);
+    setComment("");
+    setScreenshot(null);
+    setScreenshotError(null);
+    setScreenshotStatus("idle");
+    setSensitiveConfirmed(false);
+    setFeedbackContext(null);
+  };
+  const skipScreenshot = () => {
+    captureGeneration.current += 1;
+    setScreenshot(null);
+    setScreenshotError("feedback_screenshot_skipped_by_user");
+    setScreenshotStatus("skipped");
+    setCapture(buildFeedbackCapture(route));
+    setReceipt("スクショなしで送信する準備をしました。URLと画面テキストは保存されます。");
+  };
+  const submit = async () => {
+    const safeComment = redactSensitiveText(comment).trim();
+    if (!safeComment) {
+      setReceipt("コメントを入力してから送信してください。");
+      return;
+    }
+    if (!sensitiveConfirmed) {
+      setReceipt("secret、password、本人確認コードが映っていない確認にチェックしてください。");
+      return;
+    }
+    try {
+      setBusy(true);
+      const response = await fetch("/api/mvp/feedback", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          comment: safeComment,
+          route,
+          url: location.href,
+          page_title: document.title,
+          capture: capture ?? buildFeedbackCapture(route),
+          screenshot_data_url: screenshot,
+          workflow_context: feedbackContext,
+          category: feedbackContext?.source === "registered_automation" ? "automation_issue" : "bug",
+          fix_target: feedbackContext?.source === "registered_automation" ? "registered_automation" : "ui",
+          sensitive_content_confirmed: true
+        })
+      });
+      const result = await response.json();
+      if (!response.ok || !result.ok) throw new Error(result.exact_blocker || result.error || "feedback_submit_failed");
+      setMvpState(result.state);
+      setOpen(false);
+      setComment("");
+      setSensitiveConfirmed(false);
+      setFeedbackContext(null);
+      const inbox = result.inbox_forward?.status === "sent" ? " / inbox=sent" : result.inbox_forward?.status === "failed" ? " / inbox=failed" : " / inbox=local";
+      setReceipt(`フィードバックを送信しました。id=${result.feedback.feedback_id ?? result.feedback.id} / screenshot=${result.feedback.has_screenshot ? "yes" : "no"}${inbox}`);
+    } catch {
+      setReceipt("フィードバック保存に失敗しました。API readbackを確認してください。");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      <button className="feedback-launcher" type="button" aria-label="フィードバックを送る" title="フィードバックを送る" onClick={() => openFeedback()} disabled={busy}>
+        <Camera size={18} />
+        <span>Feedback</span>
+      </button>
+      {open && (
+        <div className="feedback-panel" role="dialog" aria-label="フィードバック送信">
+          <div className="feedback-panel-head">
+            <div>
+              <strong>フィードバック</strong>
+              <small>{route} / {screenshotStatus === "capturing" ? "スクショ取得中" : screenshot ? "スクショあり" : screenshotStatus === "skipped" ? "スクショなしで送信" : screenshotError ? "スクショなし" : "準備済み"}</small>
+            </div>
+            <IconButton label="閉じる" onClick={close}><X size={14} /></IconButton>
+          </div>
+          {feedbackContext && <div className="feedback-context">context: {String(feedbackContext.automation_name ?? feedbackContext.source ?? "page")}</div>}
+          {screenshot ? <img className="feedback-preview" src={screenshot} alt="送信する画面キャプチャ" /> : (
+            <div className={`feedback-preview missing ${screenshotStatus === "capturing" ? "loading" : ""}`}>
+              {screenshotStatus === "capturing" ? "スクショ取得中です。待たずにコメントを書けます。" : "スクショなしでも送れます。URLと画面テキストは一緒に保存されます。"}
+              {screenshotError && <small>{screenshotError}</small>}
+            </div>
+          )}
+          <div className="feedback-actions">
+            <Button disabled={busy || screenshotStatus === "capturing"} onClick={() => runCapture(route)}>スクショ再取得</Button>
+            <Button disabled={busy} onClick={skipScreenshot}>スクショなしで送る</Button>
+          </div>
+          <label>
+            コメント
+            <textarea value={comment} disabled={busy} onChange={(event) => setComment(event.target.value)} placeholder="どこが使いにくいか、期待した動き、実際の動きを書いてください。" />
+          </label>
+          <label className="feedback-confirm">
+            <input type="checkbox" checked={sensitiveConfirmed} onChange={(event) => setSensitiveConfirmed(event.target.checked)} />
+            secret、password、token、本人確認コードが画面に映っていないことを確認しました
+          </label>
+          <p className="muted">password、token、private key、本人確認コードが画面に映っている時は送らないでください。</p>
+          <div className="button-row">
+            <Button variant="primary" icon={<MessageSquare size={14} />} disabled={busy || !sensitiveConfirmed} onClick={submit}>{busy ? "送信中..." : "送信"}</Button>
+            <Button disabled={busy} onClick={close}>閉じる</Button>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+function HomePage({ model }: { model: AppModel }) {
+  const { setReceipt, automationRows, mvpState } = model;
+  const projectAAutomations = automationRows.filter((row) => (row.project_id ?? "project-a") === "project-a");
+  const waitingApprovals = (mvpState.approvals ?? []).filter((approval) => approval.status === "waiting");
+  const blockedRuns = (mvpState.runs ?? []).filter((run) => run.status === "blocked");
+  const queuedRuns = (mvpState.runs ?? []).filter((run) => run.status === "queued");
+  const worker = mvpState.worker;
+  const workerSummary = workerStatusSummary(worker);
+  const projectCards = [
+    {
+      title: "プロジェクトA",
+      value: `${projectAAutomations.length}件 接続`,
+      sub: `Codex App登録: Daily AI / NisenPrints / Job`,
+      status: projectAAutomations.length === 3 ? "enabled" : "waiting"
+    },
+    {
+      title: "承認",
+      value: `${waitingApprovals.length}件`,
+      sub: "外部操作前に停止する確認待ち",
+      status: waitingApprovals.length ? "waiting" : "enabled"
+    },
+    {
+      title: "実行履歴",
+      value: `${mvpState.runs?.length ?? 0}件`,
+      sub: `queued ${queuedRuns.length} / blocked ${blockedRuns.length}`,
+      status: queuedRuns.length ? "running" : blockedRuns.length ? "blocked" : "enabled"
+    },
+    {
+      title: "Worker",
+      value: worker?.status ?? "unknown",
+      sub: workerSummary.display,
+      status: workerSummary.fresh ? "enabled" : "blocked"
+    }
+  ];
+  const liveRows = projectAAutomations.length ? projectAAutomations.map((item) => [
+    item.lane,
+    "-",
+    "プロジェクトA",
+    item.name,
+    <StatusBadge status={item.status} />,
+    <RowActions name={item.name} setReceipt={setReceipt} scope="Project A registered readback" />
+  ]) : [["未接続", "-", "プロジェクトA", "Codex App登録自動化のreadback待ち", <StatusBadge status="waiting" />, <Button onClick={() => go("#/projects/project-a/automations")}>確認する</Button>]];
+  return (
+    <section>
+      <PageTitle title="ホーム" desc="すべてのプロジェクトと自動化の状態を確認できます。">
+        <Button variant="primary" icon={<Play size={15} />} onClick={() => setReceipt(`Project A readback: automations=${projectAAutomations.length} / queued=${queuedRuns.length} / external_action=false / worker=${workerSummary.label}${workerSummary.blocker ? ` / blocker=${workerSummary.blocker}` : ""}`)}>確認して実行</Button>
+      </PageTitle>
+      <div className="cards four">
+        {projectCards.map((card) => <MetricCard key={card.title} title={card.title} value={card.value} sub={card.sub} status={card.status as Status} />)}
+      </div>
+      <div className="section-grid">
+        <Panel title="ライブ実行" className="span-2">
+          <DataTable headers={["Lane", "Port", "プロジェクト", "タスク", "状態", "操作"]} rows={liveRows} />
+        </Panel>
+        <Panel title="承認待ち">
+          <div className="approval-widget">
+            <strong>承認待ち {waitingApprovals.length}件</strong>
+            <span>外部操作は承認前に停止</span>
+            <span>queued {queuedRuns.length}件</span>
+            <Button variant="primary" onClick={() => go("#/approvals")}>承認キューを開く</Button>
+          </div>
+        </Panel>
+      </div>
+      <Panel title="進捗一覧">
+        <DataTable headers={["対象", "状態", "Schedule", "Lane", "停止条件", "証跡"]} rows={projectAAutomations.map((item) => [
+          item.name,
+          <StatusBadge status={item.status} />,
+          item.schedule,
+          item.lane,
+          item.status === "enabled" ? "外部操作前に承認停止" : item.last,
+          "API / artifact readback"
+        ])} />
+      </Panel>
+    </section>
+  );
+}
+
+function ChatPage({ model }: { model: AppModel }) {
+  const { setReceipt, setAutomationRows, setMvpState } = model;
+  const [created, setCreated] = useState(false);
+  const [prompt, setPrompt] = useState("");
+  const [requestText, setRequestText] = useState("");
+  const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>([]);
+  const [planVisible, setPlanVisible] = useState(false);
+  const [plannerReadback, setPlannerReadback] = useState<PlannerReadback | null>(null);
+  const [chatNote, setChatNote] = useState("新しい自動化リクエストを入力できます。");
+  const [messages, setMessages] = useState<ChatMessage[]>([
+    { id: "welcome", role: "assistant", text: "どんな自動化を作りたいですか？目的、対象サービス、止めてほしい条件を書いてください。曖昧なところは質問しながら仕様にします。" }
+  ]);
+  const promptRef = useRef<HTMLTextAreaElement>(null);
+  const submittedPromptRef = useRef("");
+  const platformOptions = ["Instagram", "TikTok", "Facebook"];
+  const draftPrompt = prompt.trim();
+  const safePrompt = requestText.trim();
+  const activePrompt = draftPrompt || safePrompt;
+  const redactedActivePrompt = redactSensitiveText(activePrompt);
+  const fallbackPlan = buildAutomationPlan(redactedActivePrompt, selectedPlatforms);
+  const plan = plannerReadback?.plan ?? fallbackPlan;
+  const targetProject = plannerReadback?.project_id ?? projectSlugFromPrompt(redactedActivePrompt);
+  const plannerAdapter = plannerReadback?.planner_adapter ?? "client_deterministic_preview";
+  const plannerMode = plannerReadback?.planner_mode ?? "not_requested";
+  const resetChat = () => {
+    setPrompt("");
+    setRequestText("");
+    submittedPromptRef.current = "";
+    setSelectedPlatforms([]);
+    setPlanVisible(false);
+    setPlannerReadback(null);
+    setCreated(false);
+    setMessages([{ id: "welcome", role: "assistant", text: "リセットしました。前の計画や選択は引き継がず、新しい自動化として考えます。" }]);
+    setReceipt("チャットをリセットしました。新しい自動化リクエストを入力できます。");
+    setChatNote(`リセット完了: platform=0 / plan=false / ${actionStamp()}`);
+    promptRef.current?.focus();
+  };
+  const togglePlatform = (platform: string) => {
+    setSelectedPlatforms((items) => {
+      const next = items.includes(platform) ? items.filter((item) => item !== platform) : [...items, platform];
+      setChatNote(`投稿先を更新: ${next.length ? next.join(" / ") : "未選択"} / ${actionStamp()}`);
+      return next;
+    });
+    setPlanVisible(false);
+    setPlannerReadback(null);
+    setCreated(false);
+  };
+  const selectAllPlatforms = () => {
+    setSelectedPlatforms(platformOptions);
+    setPlanVisible(false);
+    setPlannerReadback(null);
+    setCreated(false);
+    setChatNote(`投稿先を一括選択: ${platformOptions.join(" / ")} / ${actionStamp()}`);
+  };
+  const startPlan = async () => {
+    if (!activePrompt) {
+      promptRef.current?.focus();
+      setReceipt("自動化リクエストを入力してからプランを作成してください。");
+      setChatNote(`プラン作成待ち: 入力が必要です / ${actionStamp()}`);
+      return;
+    }
+    const readback = await requestChatPlan(redactedActivePrompt, selectedPlatforms);
+    setPlannerReadback(readback);
+    setRequestText(redactedActivePrompt);
+    submittedPromptRef.current = activePrompt.trim();
+    setPlanVisible(true);
+    setCreated(false);
+    setMessages((items) => [
+      ...items,
+      { id: nextChatId("assistant-plan"), role: "assistant", text: `${readback.plan.kind}として理解しました。${readback.plan.targetLabel}向けに、${readback.plan.schedule} / ${readback.plan.cadence}で動く下書きを作ります。${readback.plan.safetyNote} 確認したいこと: ${readback.plan.questions.join(" / ")}` }
+    ]);
+    setReceipt(`チャット内容から自動化プランを作成しました。planner=${readback.planner_adapter} / external_action=false`);
+    setChatNote(`プラン作成完了: ${readback.plan.kind} / ${readback.plan.targetLabel} / ${actionStamp()}`);
+  };
+  const sendMessage = async () => {
+    if (!draftPrompt) {
+      promptRef.current?.focus();
+      setReceipt("まず作りたい自動化を入力してください。");
+      setChatNote(`送信待ち: 入力が必要です / ${actionStamp()}`);
+      return;
+    }
+    const redactedDraft = redactSensitiveText(draftPrompt);
+    const readback = await requestChatPlan(redactedDraft, selectedPlatforms);
+    const currentPlan = readback.plan;
+    setPlannerReadback(readback);
+    setRequestText(redactedDraft);
+    submittedPromptRef.current = draftPrompt;
+    setPrompt("");
+    setMessages((items) => [
+      ...items,
+      { id: nextChatId("user"), role: "user", text: redactedDraft },
+      { id: nextChatId("assistant"), role: "assistant", text: `${currentPlan.kind}として受け取りました。${currentPlan.targetLabel}で、${currentPlan.schedule}に${currentPlan.cadence}実行する下書きにします。${currentPlan.safetyNote} まだ必要なのは「${currentPlan.questions.join("」「")}」です。` }
+    ]);
+    setPlanVisible(true);
+    setCreated(false);
+    setReceipt(`${currentPlan.kind}の会話プランを更新しました。planner=${readback.planner_adapter} / mode=${readback.planner_mode}`);
+    setChatNote(`送信完了: ${currentPlan.kind} / ${currentPlan.targetLabel} / ${actionStamp()}`);
+  };
+  const editPlan = () => {
+    setPrompt(redactSensitiveText(safePrompt));
+    setPlanVisible(false);
+    setCreated(false);
+    setReceipt("内容を修正できます。入力後にプランを再作成してください。");
+    setChatNote(`修正モード: 既存内容を入力欄へ戻しました / ${actionStamp()}`);
+    promptRef.current?.focus();
+  };
+  const openDetails = () => {
+    setReceipt("詳細設定を開きました。Lane・承認・リトライ条件を確認できます。");
+    setChatNote(`詳細設定へ移動: project=${targetProject} / kind=${plan.kind} / ${actionStamp()}`);
+    rememberProject(targetProject);
+    go(`#/projects/${targetProject}/automations/${automationSlugForKind(plan.kind)}/edit`);
+  };
+  const createFromChat = async () => {
+    if (!activePrompt) {
+      promptRef.current?.focus();
+      setReceipt("自動化リクエストを入力してから作成してください。");
+      setChatNote(`作成待ち: 入力が必要です / ${actionStamp()}`);
+      return;
+    }
+    try {
+      const response = await fetch("/api/mvp/automations", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: `${plan.kind}: ${redactedActivePrompt}`.slice(0, 80),
+          project_id: targetProject,
+          automation_type: automationSlugForKind(plan.kind),
+          desc: "チャットから作成した安全なMVP自動化",
+          goal: `${redactedActivePrompt} / ${plan.targetLabel} 向けに下書き作成まで行い、外部操作前に承認で停止する`,
+          schedule: plan.schedule,
+          cadence: plan.cadence,
+          lane: "Lane 1",
+          risk_level: "high",
+          approval_policy: plan.approvalPolicy,
+          worker_command_kind: "safe_local_demo",
+          create_approval: true,
+          builder_spec: {
+            source: "chat",
+            prompt: redactedActivePrompt,
+            planner_adapter: plannerAdapter,
+            planner_mode: plannerMode,
+            planner_schema_version: plannerReadback?.planner_schema_version ?? "client-preview",
+            planner_model_ref: plannerReadback?.planner_model_ref ?? null,
+            plan_title: plan.title,
+            target_label: plan.targetLabel,
+            steps: plan.steps,
+            questions: plan.questions,
+            safety_note: plan.safetyNote,
+            approval_policy: plan.approvalPolicy,
+            external_action_allowed: false
+          }
+        })
+      });
+      if (!response.ok) throw new Error("create_automation_failed");
+      const result = await response.json();
+      setMvpState(result.state);
+      setAutomationRows(toAutomationRows(result.state.automations ?? []));
+      setCreated(true);
+      setReceipt(`Automation Builder に自動化案を保存しました。automation=${result.automation.id}`);
+      setChatNote(`作成完了: automation=${result.automation.id} / ${actionStamp()}`);
+      rememberProject(targetProject);
+      go(`#/projects/${targetProject}/automations/${result.automation.id}/edit`);
+    } catch {
+      setCreated(false);
+      setReceipt("Automation Builder への保存に失敗しました。実体のない編集画面へは進みません。MVP API readbackを確認してください。");
+      setChatNote(`作成失敗: MVP API readbackを確認してください / ${actionStamp()}`);
+    }
+  };
+  return (
+    <section className="chat-page">
+      <PageTitle title="チャット" desc="自然言語から自動化を作成します。">
+        <Button icon={<RefreshCw size={14} />} onClick={resetChat}>リセット</Button>
+      </PageTitle>
+      <div className="action-note" role="status">{chatNote}</div>
+      <div className="chat-shell">
+        <div className="chat-thread">
+          <div className="message-list" aria-live="polite">
+            {messages.map((message) => <Bubble key={message.id} side={message.role === "user" ? "user" : undefined}>{message.text}</Bubble>)}
+          </div>
+          <div className="choice-row">
+            {platformOptions.map((platform) => (
+              <button className={selectedPlatforms.includes(platform) ? "selected" : ""} onClick={() => togglePlatform(platform)} key={platform}>{platform}</button>
+            ))}
+            <button className={selectedPlatforms.length === platformOptions.length ? "selected" : ""} onClick={selectAllPlatforms}>Instagram / TikTok / Facebook</button>
+            <button onClick={() => { setChatNote(`詳細入力へフォーカスしました / ${actionStamp()}`); promptRef.current?.focus(); }}>詳細を書く</button>
+          </div>
+          <label className="chat-input">
+            自動化リクエスト
+            <textarea
+              ref={promptRef}
+              aria-label="自動化リクエスト"
+              value={prompt}
+              onChange={(event) => {
+                const nextPrompt = event.target.value;
+                const normalizedNextPrompt = nextPrompt.trim();
+                if (planVisible && normalizedNextPrompt && normalizedNextPrompt === submittedPromptRef.current) return;
+                setPrompt(nextPrompt);
+                setPlanVisible(false);
+                setCreated(false);
+                setChatNote(`入力更新: ${normalizedNextPrompt.length}文字 / ${actionStamp()}`);
+              }}
+              onKeyDown={(event) => {
+                if (event.key !== "Enter" || event.metaKey || event.ctrlKey || event.altKey) return;
+                event.preventDefault();
+                const target = event.currentTarget;
+                const start = target.selectionStart ?? prompt.length;
+                const end = target.selectionEnd ?? prompt.length;
+                target.setRangeText("\n", start, end, "end");
+                setPrompt(target.value);
+                setPlanVisible(false);
+                setCreated(false);
+                setChatNote(`改行を挿入しました / ${actionStamp()}`);
+              }}
+              placeholder="例: 毎日GoogleでAIの最新情報を探してまとめてLINEに通知する自動化を作って。"
+            />
+          </label>
+          <div className="button-row">
+            <Button variant="primary" icon={<MessageSquare size={14} />} onClick={sendMessage} disabled={!draftPrompt}>送信して考える</Button>
+            <Button onClick={startPlan} disabled={!activePrompt}>プランを再作成</Button>
+            <Button onClick={resetChat}>リセット</Button>
+          </div>
+          {planVisible && (
+          <div className="plan-card">
+            <h3>{plan.title}</h3>
+            <p className="muted">{plan.targetLabel} / {plan.cadence} / {plan.schedule} / 外部操作前に承認停止</p>
+            <p className="muted">planner: {plannerAdapter} / {plannerMode}{plannerReadback?.exact_blocker ? ` / ${plannerReadback.exact_blocker}` : ""}</p>
+            {plan.steps.map((s, i) => <div className="step-line" key={s}><span>{i + 1}</span>{s}</div>)}
+            <div className="question-box">
+              <strong>確認したいこと</strong>
+              {plan.questions.map((question) => <p key={question}>{question}</p>)}
+            </div>
+            <div className="button-row">
+              <Button variant="primary" onClick={createFromChat}>この内容で作成</Button>
+              <Button onClick={editPlan}>内容を修正</Button>
+              <Button onClick={openDetails}>詳細設定を開く</Button>
+            </div>
+          </div>
+          )}
+          {created && <Bubble>作成済みです。Automation Builder で仕様を編集できます。</Bubble>}
+        </div>
+        <aside className="side-panel">
+          <h3>Automation Builder</h3>
+          <p>{planVisible ? `${plan.kind}として仕様化中です。${plan.safetyNote}` : "入力と選択が完了すると、ここに自動化案の状態が反映されます。"}</p>
+          <p className="muted">{planVisible ? `${plan.targetLabel} / ${plan.schedule} / ${plan.cadence}` : "送信すると会話とプランが更新されます。"}</p>
+          <p className="muted">{planVisible ? `planner ${plannerAdapter}` : "server-side planner readbackで仕様化します。"}</p>
+          <StatusBadge status="draft" />
+        </aside>
+      </div>
+    </section>
+  );
+}
+
+function AutomationsPage({ model }: { model: AppModel }) {
+  const { setReceipt, automationRows, setAutomationRows, setMvpState } = model;
+  const route = useRoute();
+  const activeProject = projectSlugFromRoute(route);
+  const projectName = projectLabels[activeProject];
+  const visibleAutomationRows = automationRows.filter((row) => (row.project_id ?? "project-a") === activeProject);
+  const [registeredReadback, setRegisteredReadback] = useState<RegisteredAutomationReadback>({});
+  const [pendingDelete, setPendingDelete] = useState<{ id: string; name: string } | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [automationReceipts, setAutomationReceipts] = useState<Record<string, string>>({});
+  const [registeredReceipts, setRegisteredReceipts] = useState<Record<string, string>>({});
+  const [registeredRequestingId, setRegisteredRequestingId] = useState<string | null>(null);
+  const [pageNote, setPageNote] = useState("定期実行を開きました。押した操作の結果はここにも表示します。");
+  const registeredRequestInFlight = useRef(false);
+  React.useEffect(() => {
+    setPendingDelete(null);
+    setIsDeleting(false);
+  }, [activeProject]);
+  React.useEffect(() => {
+    let stale = false;
+    setPageNote(`${projectName} 定期実行を開きました。押した操作の結果はここにも表示します / ${actionStamp()}`);
+    if (activeProject !== "project-a") {
+      setRegisteredReadback({});
+      setRegisteredReceipts({});
+      return () => {
+        stale = true;
+      };
+    }
+    fetch("/api/mvp/registered-automations?project_id=project-a", { cache: "no-store" })
+      .then(async (response) => {
+        const readback = await response.json().catch(() => ({}));
+        if (!response.ok || readback.ok === false) throw new Error(readback.exact_boundary || readback.exact_blocker || `registered_automation_readback_http_${response.status}`);
+        return readback;
+      })
+      .then((readback) => {
+        if (stale) return;
+        setRegisteredReadback(readback);
+        setReceipt(`Codex App登録自動化 readback 済みです。count=${readback.automation_count ?? 0}`);
+        setPageNote(`Codex App登録自動化 readback完了: count=${readback.automation_count ?? 0} / ${actionStamp()}`);
+      })
+      .catch((error) => {
+        if (stale) return;
+        const exact = error instanceof Error ? error.message : "registered_automation_readback_unavailable";
+        setRegisteredReadback({ ok: false, read_only: true, exact_boundary: exact, automations: [] });
+        setReceipt(`Codex App登録自動化 readback 失敗: ${exact}`);
+        setPageNote(`Codex App登録自動化 readback失敗: ${exact} / ${actionStamp()}`);
+      });
+    return () => {
+      stale = true;
+    };
+  }, [activeProject, projectName]);
+  const runAutomation = async (id: string, name: string) => {
+    try {
+      setAutomationReceipts((prev) => ({ ...prev, [id]: "API readback確認中 / まだ実行開始は未確定です" }));
+      const response = await fetch(`/api/mvp/automations/${encodeURIComponent(id)}/run`, { method: "POST" });
+      if (!response.ok) throw new Error("run_queue_failed");
+      const result = await response.json();
+      setMvpState(result.state);
+      setAutomationRows(toAutomationRows(result.state.automations ?? []));
+      const message = `queued run=${result.run.id}${result.duplicate ? " / duplicate lock" : ""} / local_runner_pending / external_action=false`;
+      setAutomationReceipts((prev) => ({ ...prev, [id]: message }));
+      setReceipt(`${name}: ${message}。PC workerが拾うまでは外部サービス上の操作は始まりません。実行履歴でrun状態を確認してください。`);
+      setPageNote(`${name}: ${message} / 次: 実行履歴でworker pickupとproofを確認 / ${actionStamp()}`);
+    } catch {
+      setAutomationReceipts((prev) => ({ ...prev, [id]: "API readback失敗 / 実行開始なし" }));
+      setReceipt(`${name} はAPI readbackなしのため実行開始していません。queued状態は未確認です。`);
+      setPageNote(`${name}: API readback失敗 / 実行開始なし / ${actionStamp()}`);
+    }
+  };
+  const requestDeleteAutomation = (id: string, name: string) => {
+    setPendingDelete({ id, name });
+    setReceipt(`${name} の削除は確認待ちです。外部サービス上の投稿やデータは削除しません。`);
+    setPageNote(`${name}: 削除確認を開きました。まだ削除していません / ${actionStamp()}`);
+  };
+  const deleteAutomation = async () => {
+    if (!pendingDelete || isDeleting) return;
+    const { id, name } = pendingDelete;
+    try {
+      setIsDeleting(true);
+      const response = await fetch(`/api/mvp/automations/${encodeURIComponent(id)}`, { method: "DELETE" });
+      const result = await response.json();
+      if (!response.ok || !result.ok) throw new Error(result.exact_blocker || result.error || "delete_failed");
+      setMvpState(result.state);
+      setAutomationRows(toAutomationRows(result.state.automations ?? []));
+      setPendingDelete(null);
+      setIsDeleting(false);
+      setReceipt(`${name} を削除しました。external_action_executed=false / schedule removed`);
+      setPageNote(`${name}: 内部設定を削除しました / external_action=false / ${actionStamp()}`);
+    } catch {
+      setIsDeleting(false);
+      setReceipt(`${name} は削除できませんでした。API readbackを確認してください。`);
+      setPageNote(`${name}: 削除失敗 / API readbackを確認してください / ${actionStamp()}`);
+    }
+  };
+  const requestRegisteredRun = async (item: any) => {
+    const name = item.name ?? item.id;
+    if (!item.can_run) {
+      describeRegistered(item);
+      return;
+    }
+    if (registeredRequestInFlight.current) {
+      setRegisteredReceipts((prev) => ({ ...prev, [item.id]: "別の確認が進行中です。完了後に再試行してください。" }));
+      return;
+    }
+    try {
+      registeredRequestInFlight.current = true;
+      setRegisteredRequestingId(item.id);
+      setRegisteredReceipts((prev) => ({ ...prev, [item.id]: "preflight / proof readback確認中..." }));
+      setPageNote(`${name}: preflight / proof readback確認中 / ${actionStamp()}`);
+      const response = await fetch(`/api/mvp/registered-automations/${encodeURIComponent(item.id)}/run`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ project_id: "project-a" })
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.exact_blocker || result.error || `registered_automation_http_${response.status}`);
+      if (result.ok) {
+        const readOnly = result.read_only === false ? "false" : "true";
+        const externalAction = result.external_action_executed === true ? "true" : "false";
+        const proof = result.latest_proof ? `proof=${result.latest_proof.status ?? "available"}` : "proof=artifact_readback_pending";
+        const blocker = result.exact_blocker ?? result.blocked_action ?? "none";
+        const next = externalAction === "true" ? "停止: 外部action検出のため証跡確認" : "次: proof/readback確認、必要なら人間ログイン/CDP lane";
+        const message = `accepted / read-only=${readOnly} / external_action=${externalAction} / ${proof} / blocker=${blocker} / ${next}`;
+        setRegisteredReceipts((prev) => ({ ...prev, [item.id]: message }));
+        setReceipt(`${name}: ${message}`);
+        setPageNote(`${name}: ${message} / ${actionStamp()}`);
+        return;
+      }
+      const proof = result.latest_proof ? ` / latest=${result.latest_proof.status ?? "proof"} ${result.latest_proof.checked_at ?? ""}` : "";
+      const message = `blocked / read-only=true / blocker=${result.exact_blocker ?? "registered_automation_preflight_only"}${proof}`;
+      setRegisteredReceipts((prev) => ({ ...prev, [item.id]: message }));
+      setReceipt(`${name}: ${message}`);
+      setPageNote(`${name}: ${message} / ${actionStamp()}`);
+    } catch (error) {
+      const exact = error instanceof Error ? error.message : "registered_automation_request_failed";
+      const message = `blocked / read-only=true / blocker=${exact} / 実行開始なし`;
+      setRegisteredReceipts((prev) => ({ ...prev, [item.id]: message }));
+      setReceipt(`${name}: ${message}`);
+      setPageNote(`${name}: ${message} / ${actionStamp()}`);
+    } finally {
+      registeredRequestInFlight.current = false;
+      setRegisteredRequestingId(null);
+    }
+  };
+  const describeRegistered = (item: any) => {
+    const proof = item.latest_proof ? ` / proof=${item.latest_proof.status ?? "available"} ${item.latest_proof.checked_at ?? ""}` : " / proof=missing";
+    const action = item.preflight_status ?? item.ui_action ?? "read-only";
+    const status = item.can_run ? "runnable" : "blocked";
+    const blocker = item.exact_blocker ?? item.blocked_action ?? "none";
+    const next = item.can_run ? "次: read-only preflightを実行" : blocker === "none" ? "次: proofを確認" : "次: blocker解除条件を満たす";
+    const message = `${status} / read-only=true / ${action} / blocker=${blocker}${proof} / external_action=false / ${next}`;
+    setRegisteredReceipts((prev) => ({ ...prev, [item.id]: message }));
+    setReceipt(`${item.name ?? item.id}: ${message}`);
+    setPageNote(`${item.name ?? item.id}: ${message} / ${actionStamp()}`);
+  };
+  return (
+    <section>
+      <ProjectTabs />
+      <PageTitle title={projectName} desc="定期実行">
+        <Button icon={<Plus size={15} />} variant="primary" onClick={() => { setPageNote(`新規追加: チャットへ移動します / ${actionStamp()}`); go("#/chat"); }}>新規追加</Button>
+      </PageTitle>
+      <div className="action-note" role="status">{pageNote}</div>
+      <ProjectScopeNotice projectId={activeProject} />
+      {pendingDelete && (
+        <div className="confirm-panel" role="dialog" aria-label="削除確認">
+          <div>
+            <strong>{pendingDelete.name} を削除しますか？</strong>
+            <p>内部の自動化設定とスケジュールだけを削除します。外部サービス上の投稿やデータは削除しません。</p>
+          </div>
+          <div className="button-row compact">
+            <Button variant="danger" disabled={isDeleting} onClick={deleteAutomation}>{isDeleting ? "削除中" : "削除する"}</Button>
+            <Button disabled={isDeleting} onClick={() => { setPendingDelete(null); setReceipt("削除をキャンセルしました。"); setPageNote(`削除をキャンセルしました / ${actionStamp()}`); }}>キャンセル</Button>
+          </div>
+        </div>
+      )}
+      {activeProject === "project-a" && (
+        <Panel title="Project A 操作ガイド">
+          <div className="status-grid">
+            <div><strong>実行ボタン</strong><span>read-only preflightを行い、外部投稿・応募・削除は実行しません。</span></div>
+            <div><strong>結果表示</strong><span>押下後はこのページ上部、行内receipt、上部バーに exact blocker / proof / external_action を表示します。</span></div>
+            <div><strong>次に必要なこと</strong><span>ログイン、CDP lane、sandbox/test承認、OTP/本人確認などが必要な時は人間対応として表示します。</span></div>
+            <div><strong>安全境界</strong><span>UI操作は external_action=false を期待境界にし、readbackで true が出た場合はblockerとして扱います。</span></div>
+          </div>
+        </Panel>
+      )}
+      <Panel title="自動化一覧">
+        <DataTable headers={["タスク名", "説明", "スケジュール", "Lane", "最終実行", "ステータス", "操作"]} rows={visibleAutomationRows.length ? visibleAutomationRows.map((a) => [a.name, a.desc, a.schedule, a.lane, a.last, <StatusBadge status={a.status} />, <div className="row-actions"><IconButton label={`${a.name}を実行`} onClick={() => runAutomation(a.id, a.name)}><Play size={14} /></IconButton><IconButton label={`${a.name}を編集`} onClick={() => { setPageNote(`${a.name}: 編集画面へ移動します / ${actionStamp()}`); go(`#/projects/${activeProject}/automations/${a.id}/edit`); }}><Edit3 size={14} /></IconButton><IconButton label={`${a.name}を削除`} onClick={() => requestDeleteAutomation(a.id, a.name)}><Trash2 size={14} /></IconButton><IconButton label={`${a.name}の詳細`} onClick={() => { const message = `Lane=${a.lane} / status=${a.status} / ${actionStamp()}`; setAutomationReceipts((prev) => ({ ...prev, [a.id]: message })); setPageNote(`${a.name}: ${message}`); setReceipt(`${a.name} の詳細を選択しました。${message}`); }}><MoreHorizontal size={14} /></IconButton>{automationReceipts[a.id] && <small className="inline-action-receipt">{automationReceipts[a.id]}</small>}</div>]) : [["このプロジェクトの自動化はまだありません", "チャットから追加できます", "-", "-", "-", <StatusBadge status="draft" />, <Button onClick={() => { setPageNote(`作成する: チャットへ移動します / ${actionStamp()}`); go("#/chat"); }}>作成する</Button>]]} />
+      </Panel>
+      {activeProject === "project-a" && (
+        <Panel title="Codex App登録済み自動化">
+          <p className="muted">Project Aだけに接続しています。外部投稿・応募・削除・認証突破はせず、押した操作はproof確認か exact blocker を返します。</p>
+          <DataTable
+            headers={["名前", "状態", "実行クラス", "判定", "Blocker / Proof", "操作"]}
+            rows={(registeredReadback.automations ?? []).length ? (registeredReadback.automations ?? []).map((item) => [
+              item.name ?? item.id,
+              item.status ?? "-",
+              item.execution_class ?? "-",
+              <StatusBadge status={item.can_run ? "enabled" : item.latest_proof ? "approved" : "blocked"} label={item.action_label ?? item.ui_action ?? "read-only"} />,
+              item.latest_proof ? `${item.latest_proof.status ?? "proof"} / ${item.latest_proof.source_ref ?? "latest"}` : (item.exact_blocker ?? item.blocked_action ?? "-"),
+              <div className="row-actions">
+                <button
+                  type="button"
+                  className="icon-btn"
+                  aria-label={item.action_label ?? "確認"}
+                  title={item.action_label ?? "確認"}
+                  onClick={() => requestRegisteredRun(item)}
+                  disabled={Boolean(registeredRequestingId)}
+                >
+                  {registeredRequestingId === item.id ? <Clock size={14} /> : item.can_run ? <Play size={14} /> : <ShieldCheck size={14} />}
+                </button>
+                <IconButton label="問題を送る" onClick={() => openFeedbackFor(`${item.name ?? item.id}: `, {
+                  source: "registered_automation",
+                  automation_id: item.id,
+                  automation_name: item.name ?? item.id,
+                  project_id: "project-a",
+                  preflight_status: item.preflight_status ?? item.ui_action ?? item.action_label ?? "read-only",
+                  exact_blocker: item.exact_blocker ?? item.blocked_action ?? "",
+                  route: location.hash || "#/projects/project-a/automations"
+                })}><AlertTriangle size={14} /></IconButton>
+                <IconButton label="詳細" onClick={() => describeRegistered(item)}><MoreHorizontal size={14} /></IconButton>
+                {registeredReceipts[item.id] && <small className="inline-action-receipt">{registeredReceipts[item.id]}</small>}
+              </div>
+            ]) : [["Codex App登録自動化のreadbackがありません", registeredReadback.exact_boundary ?? "unavailable", "-", "-", "-", <StatusBadge status="waiting" label="read-only" />]]}
+          />
+          <div className="receipt-strip">
+            source={registeredReadback.source_ref ?? "unavailable"} / preflight={registeredReadback.preflight_run_id ?? "missing"} / proof={registeredReadback.latest_proof_run_id ?? "missing"}
+          </div>
+        </Panel>
+      )}
+      <button className="fab" aria-label="新規追加" onClick={() => { setPageNote(`新規追加FAB: チャットへ移動します / ${actionStamp()}`); go("#/chat"); }}><Plus size={22} /></button>
+    </section>
+  );
+}
+
+function PerformancePage({ model }: { model: AppModel }) {
+  const route = useRoute();
+  const activeProject = projectSlugFromRoute(route);
+  const projectName = projectLabels[activeProject];
+  const { mvpState } = model;
+  const hasProjectMetrics = activeProject === "project-a";
+  const projectAutomationIds = new Set((mvpState.automations ?? []).filter((item) => (item.project_id ?? "project-a") === activeProject).map((item) => item.id));
+  const projectRuns = (mvpState.runs ?? []).filter((run) => {
+    return run.project_id === activeProject || projectAutomationIds.has(run.automation_id);
+  });
+  const projectRunIds = new Set(projectRuns.map((run) => run.id));
+  const projectProofIdsFromRuns = new Set(projectRuns.flatMap((run) => run.proof_ids ?? []));
+  const proofBelongsToProject = (proof: any) => {
+    if (proof.project_id) return proof.project_id === activeProject;
+    if (proof.automation_id && projectAutomationIds.has(proof.automation_id)) return true;
+    if (proof.run_id && projectRunIds.has(proof.run_id)) return true;
+    return Boolean(proof.id && projectProofIdsFromRuns.has(proof.id));
+  };
+  const projectProofs = (mvpState.proofs ?? []).filter(proofBelongsToProject);
+  const projectFeedbackItems = feedbackItemsFromState(mvpState).filter((item) => item.project_id === activeProject || item.route.includes(`/projects/${activeProject}/`));
+  const blockedRuns = projectRuns.filter((run) => run.status === "blocked");
+  const completeRuns = projectRuns.filter((run) => ["complete", "completed"].includes(run.status));
+  const completionReadback = projectRuns.length ? `${completeRuns.length}/${projectRuns.length}` : "未計測";
+  const metrics = hasProjectMetrics
+    ? [["実行数", String(projectRuns.length || 0), "MVP state readback", "enabled"], ["完了readback", completionReadback, blockedRuns.length ? `blocked ${blockedRuns.length}` : "strict成功とは別", blockedRuns.length ? "blocked" : "waiting"], ["Proof", String(projectProofs.length), "Project A関連のみ", projectProofs.length ? "enabled" : "waiting"], ["Worker", mvpState.worker?.status ?? "unknown", mvpState.worker?.readback_status ?? "MVP state", mvpState.worker?.status === "idle" ? "enabled" : "waiting"]]
+    : [["実行数", "0", "未接続Project", "waiting"], ["完了readback", "未計測", "Project Aのみ接続済み", "waiting"], ["エンゲージメント", "未計測", "外部SNS readback待ち", "waiting"], ["返信対応数", "0", "DM / Gmail未接続", "waiting"]];
+  const laneRows = hasProjectMetrics
+    ? [["Lane 1", String(projectRuns.filter((run) => run.lane === "Lane 1").length), String(projectRuns.filter((run) => run.lane === "Lane 1" && run.status === "blocked").length), "未計測", String(mvpState.worker?.queue_depth ?? 0)], ["Lane 2", String(projectRuns.filter((run) => run.lane === "Lane 2").length), String(projectRuns.filter((run) => run.lane === "Lane 2" && run.status === "blocked").length), "未計測", "readback待ち"], ["Lane 3", String(projectRuns.filter((run) => run.lane === "Lane 3").length), String(projectRuns.filter((run) => run.lane === "Lane 3" && run.status === "blocked").length), "未計測", "readback待ち"]]
+    : [["このプロジェクトのLane実績はまだありません", "-", "-", "-", "-"]];
+  const kpiRows = hasProjectMetrics ? [
+    ["Daily AI", "投稿重複防止 / proof確認", `${projectProofs.filter((proof) => /daily|ai/i.test(`${proof.id ?? ""} ${proof.kind ?? ""} ${proof.workflow ?? ""}`)).length} proof`, "投稿URL・重複skip・cleanup"],
+    ["Job Manager", "応募/assessment境界", `${projectProofs.filter((proof) => /job|application/i.test(`${proof.id ?? ""} ${proof.kind ?? ""} ${proof.workflow ?? ""}`)).length} proof`, "会社名・求人URL・送信前停止"],
+    ["NisenPrints", "product/listing/pin重複防止", `${projectProofs.filter((proof) => /nisen|printify|etsy|pinterest/i.test(`${proof.id ?? ""} ${proof.kind ?? ""} ${proof.workflow ?? ""}`)).length} proof`, "Printify/Etsy/Pinterest ID対応"],
+    ["Feedback", "操作詰まりの改善", `${projectFeedbackItems.filter((item) => item.status === "open").length} open`, "open feedbackを修正キューへ"]
+  ] : [["このProject", "未接続", "readback待ち", "Project Aのみ実workflow接続"]];
+  return (
+    <section>
+      <ProjectTabs />
+      <PageTitle title={projectName} desc="パフォーマンス" />
+      <ProjectScopeNotice projectId={activeProject} />
+      <div className="cards four">
+        {metrics.map(([title, value, sub, status]) => <MetricCard title={title} value={value} sub={sub} status={status as Status} key={title} />)}
+      </div>
+      <div className="section-grid">
+        <Panel title="実行パフォーマンス" className="span-2"><LineChart /></Panel>
+        <Panel title="チャネル別成果"><Bars /></Panel>
+      </div>
+      <Panel title="Project別KPI設計">
+        <DataTable headers={["対象", "見るべき指標", "現在のreadback", "次の確認"]} rows={kpiRows} />
+        <p className="muted">Project AはMVP state/API readbackから表示します。未接続Projectは実データが入るまで未計測として扱います。</p>
+      </Panel>
+      <Panel title="Lane別状況"><DataTable headers={["Lane", "成功", "失敗", "平均時間", "キュー"]} rows={laneRows} /></Panel>
+    </section>
+  );
+}
+
+function BuilderPage({ model }: { model: AppModel }) {
+  const { setReceipt, mvpState, setMvpState, setAutomationRows } = model;
+  const route = useRoute();
+  const activeProject = projectSlugFromRoute(route);
+  const projectName = projectLabels[activeProject];
+  const routeAutomationKey = automationIdFromRoute(route);
+  const persistedAutomation = mvpState.automations?.find((item) => item.id === routeAutomationKey && (item.project_id ?? "project-a") === activeProject)
+    ?? mvpState.automations?.find((item) => (item.project_id ?? "project-a") === activeProject && item.automation_type === routeAutomationKey);
+  const automationId = persistedAutomation?.id ?? routeAutomationKey;
+  const persistedSpec = mvpState.builder_specs?.find((item) => item.automation_id === automationId);
+  const builderType = persistedAutomation?.automation_type ?? routeAutomationKey;
+  const builderKind = builderType === "gmail-reply"
+    ? "メール返信"
+    : builderType === "research-report"
+      ? "リサーチ"
+      : builderType === "research-notification"
+        ? "情報収集・通知"
+        : builderType === "daily-ai"
+          ? "Daily AI"
+          : builderType === "nisenprints"
+            ? "NisenPrints"
+            : builderType === "codex-job-manager"
+              ? "Codex Job Manager"
+              : "SNS投稿";
+  const builderTitle = `${builderKind} 自動化仕様`;
+  const automationName = persistedAutomation?.name
+    ?? (builderKind === "メール返信"
+      ? "Gmail返信"
+      : builderKind === "リサーチ"
+        ? "リサーチレポート"
+        : builderKind === "情報収集・通知"
+          ? "AI最新情報 LINE通知"
+          : builderKind === "Daily AI"
+            ? "Daily AI"
+            : builderKind === "NisenPrints"
+              ? "NisenPrints"
+              : builderKind === "Codex Job Manager"
+                ? "Codex Job Manager"
+                : "SNS投稿");
+  const [builderDraft, setBuilderDraft] = useState({
+    name: automationName,
+    lane: persistedAutomation?.lane ?? "Lane 1",
+    schedule: persistedAutomation?.schedule ?? "09:00",
+    approval_policy: persistedAutomation?.approval_policy ?? (builderKind === "情報収集・通知" ? "required_before_external_notification" : "毎回承認"),
+    retry_rule: persistedSpec?.spec?.retry_rule ?? "最大3回 / 5分間隔"
+  });
+  const [enabled, setEnabled] = useState([true, true, true, true, true, false, true]);
+  const [builderNotice, setBuilderNotice] = useState("外部投稿・送信・公開はまだ実行していません。");
+  const persistedSteps: string[] = Array.isArray(persistedSpec?.spec?.steps)
+    ? persistedSpec.spec.steps.map((step: any) => typeof step === "string" ? step : step?.title).filter(Boolean)
+    : [];
+  const steps: string[] = persistedSteps.length ? persistedSteps : builderKind === "メール返信"
+    ? ["対象メールを抽出", "返信案を生成", "個人情報とsecretを検査", "下書き作成", "承認待ち", "メール送信", "送信レポート保存"]
+    : builderKind === "リサーチ"
+      ? ["調査対象を確認", "参照元を収集", "要点を整理", "レポート下書き作成", "レビュー待ち", "成果物保存", "引用元レポート保存"]
+      : builderKind === "情報収集・通知"
+        ? ["検索条件を確認", "Google/Webから最新情報を収集", "重複と信頼性を検査", "要約を作成", "LINE通知下書き作成", "承認待ち", "readbackと証跡を保存"]
+        : builderKind === "Daily AI"
+          ? ["AIニュース候補を読む", "投稿案を作成", "重複投稿を確認", "SNS/Sheets証跡を確認", "外部投稿前に承認で停止", "cleanupを保存"]
+          : builderKind === "NisenPrints"
+            ? ["新規トピック重複確認", "Canva/画像素材確認", "Printify商品準備", "Etsy listing確認", "Pinterestリンク確認", "公開/削除/支払い境界で停止", "manifestとreadbackを保存"]
+            : builderKind === "Codex Job Manager"
+              ? ["求人キューを読む", "候補URLと会社名を確認", "応募前フォームを準備", "送信/assessment/本人確認の前で停止", "証跡とcleanupを保存"]
+            : ["Google Driveから素材取得", "投稿文を生成", "Instagram / TikTok / Facebookに接続", "下書き作成", "承認待ち", "投稿実行", "レポート保存"];
+  const builderInputSources = builderKind === "メール返信"
+    ? "Gmail / Project Memory / 承認メモ"
+    : builderKind === "リサーチ"
+      ? "Web / Google Drive / Sheets / Project Memory"
+      : builderKind === "情報収集・通知"
+        ? "Google検索 / Web / Project Memory / LINE接続情報"
+        : builderKind === "Daily AI"
+          ? "ニュースソース / Project Memory / Sheets / SNS account readback"
+          : builderKind === "NisenPrints"
+            ? "Canva / Printify / Etsy / Pinterest / 商品manifest"
+            : builderKind === "Codex Job Manager"
+              ? "求人キュー / 会社URL / 応募フォームreadback / Project Memory"
+              : "Google Drive / スプレッドシート / ブランドガイドライン / Plugin output";
+  const builderOutputs = builderKind === "メール返信"
+    ? "返信下書き / 承認ログ / 送信証跡"
+    : builderKind === "リサーチ"
+      ? "調査レポート / 引用元一覧 / Artifact"
+      : builderKind === "情報収集・通知"
+        ? "要約 / LINE通知下書き / 承認ログ / Artifact"
+        : builderKind === "Daily AI"
+          ? "投稿下書き / 投稿直前停止receipt / Sheets同期証跡 / Artifact"
+          : builderKind === "NisenPrints"
+            ? "商品準備manifest / 既存ID readback / 公開直前停止receipt / Artifact"
+            : builderKind === "Codex Job Manager"
+              ? "求人候補一覧 / 応募直前停止receipt / 会社URL・入力内容証跡 / Artifact"
+              : "SNS投稿レポート / 投稿ログ / Artifact";
+  const builderRiskBoundary = builderKind === "Daily AI"
+    ? "SNS投稿、外部通知、削除、認証突破は承認必須です。投稿直前で停止します。"
+    : builderKind === "NisenPrints"
+      ? "商品作成、公開、Pin投稿、削除、支払い、checkout、認証突破は承認必須です。既存IDを保持して直前停止します。"
+      : builderKind === "Codex Job Manager"
+        ? "応募submit、assessment/test、本人確認、メール認証、個人情報送信は承認必須です。送信直前で停止します。"
+        : "投稿、DM送信、メール送信、LINE/Webhook/外部通知、広告出稿、課金生成、削除は承認必須です。";
+  const noteBuilder = (message: string) => {
+    setBuilderNotice(message);
+    setReceipt(message);
+  };
+  React.useEffect(() => {
+    setBuilderDraft({
+      name: automationName,
+      lane: persistedAutomation?.lane ?? "Lane 1",
+      schedule: persistedAutomation?.schedule ?? "09:00",
+      approval_policy: persistedAutomation?.approval_policy ?? (builderKind === "情報収集・通知" ? "required_before_external_notification" : "毎回承認"),
+      retry_rule: persistedSpec?.spec?.retry_rule ?? "最大3回 / 5分間隔"
+    });
+  }, [automationId, persistedAutomation?.updated_at, persistedSpec?.updated_at]);
+  const saveBuilder = async () => {
+    try {
+      const specPayload = {
+        automation_type: automationSlugForKind(builderKind),
+        steps: steps.map((step, index) => ({ title: step, enabled: enabled[index] })),
+        retry_rule: builderDraft.retry_rule,
+        approval_policy: builderDraft.approval_policy,
+        external_action_allowed: false
+      };
+      if (!persistedAutomation) {
+        const createResponse = await fetch("/api/mvp/automations", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            name: builderDraft.name,
+            project_id: activeProject,
+            automation_type: automationSlugForKind(builderKind),
+            desc: `${builderKind} Builderから作成した安全なMVP自動化`,
+            goal: `${builderDraft.name} の下書き作成まで行い、外部操作前に承認で停止する`,
+            schedule: builderDraft.schedule,
+            cadence: "daily",
+            lane: builderDraft.lane,
+            risk_level: "high",
+            approval_policy: builderDraft.approval_policy,
+            worker_command_kind: "safe_local_demo",
+            create_approval: true,
+            builder_spec: specPayload
+          })
+        });
+        if (!createResponse.ok) throw new Error("automation_create_failed");
+        const createResult = await createResponse.json();
+        setMvpState(createResult.state);
+        setAutomationRows(toAutomationRows(createResult.state.automations ?? []));
+        noteBuilder("Builder設定を新しい下書きとして保存し、API readbackで確認しました。外部投稿・送信は未実行です。");
+        go(`#/projects/${activeProject}/automations/${createResult.automation.id}/edit`);
+        return;
+      }
+      const patchResponse = await fetch(`/api/mvp/automations/${encodeURIComponent(automationId)}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: builderDraft.name,
+          lane: builderDraft.lane,
+          schedule: builderDraft.schedule,
+          approval_policy: builderDraft.approval_policy,
+          project_id: activeProject,
+          automation_type: automationSlugForKind(builderKind)
+        })
+      });
+      if (!patchResponse.ok) throw new Error("automation_patch_failed");
+      const patchResult = await patchResponse.json();
+      const specResponse = await fetch(`/api/mvp/automations/${encodeURIComponent(automationId)}/builder-spec`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(specPayload)
+      });
+      if (!specResponse.ok) throw new Error("builder_spec_save_failed");
+      const specResult = await specResponse.json();
+      setMvpState(specResult.state ?? patchResult.state);
+      setAutomationRows(toAutomationRows((specResult.state ?? patchResult.state).automations ?? []));
+      noteBuilder("Builder設定を保存し、API readbackで確認しました。外部投稿・送信は未実行です。");
+    } catch {
+      noteBuilder("Builder設定の保存は未確認です。API readbackに失敗しました。");
+    }
+  };
+  return (
+    <section>
+      <ProjectTabs />
+      <PageTitle title={builderTitle} desc="チャットやテンプレートから生成された自動化を編集します。">
+        <Button onClick={saveBuilder}>下書きとして保存</Button>
+        <Button onClick={() => noteBuilder("mockテスト候補を作成しました。外部実行・投稿はしていません。")}>テスト実行</Button>
+        <Button variant="primary" onClick={() => noteBuilder("公開は確認待ちです。承認キューへ送る前のレビュー状態です。")}>公開</Button>
+      </PageTitle>
+      <ProjectScopeNotice projectId={activeProject} />
+      <div className="builder-grid">
+        <div>
+          <Panel title="基本設定">
+            <div className="form-grid">
+              <label>自動化名<input value={builderDraft.name} onChange={(event) => setBuilderDraft((draft) => ({ ...draft, name: event.target.value }))} /></label>
+              <label>プロジェクト<input value={projectName} readOnly /></label>
+              <label>Lane<input value={builderDraft.lane} onChange={(event) => setBuilderDraft((draft) => ({ ...draft, lane: event.target.value }))} /></label>
+              <label>スケジュール<input value={builderDraft.schedule} onChange={(event) => setBuilderDraft((draft) => ({ ...draft, schedule: event.target.value }))} /></label>
+              <label>承認ポリシー<input value={builderDraft.approval_policy} onChange={(event) => setBuilderDraft((draft) => ({ ...draft, approval_policy: event.target.value }))} /></label>
+              <label>リトライルール<input value={builderDraft.retry_rule} onChange={(event) => setBuilderDraft((draft) => ({ ...draft, retry_rule: event.target.value }))} /></label>
+            </div>
+          </Panel>
+          <Panel title="ワークフロー手順">
+            {steps.map((s, i) => <div className="workflow-row" key={s}><span className="drag">::</span><strong>{i + 1}. {s}</strong><button className={enabled[i] ? "switch on" : "switch"} onClick={() => setEnabled((prev) => prev.map((v, idx) => idx === i ? !v : v))} /><IconButton label="編集" onClick={() => noteBuilder(`${s} の編集対象を選択しました。ローカル表示のみで保存は未実行です。`)}><Edit3 size={14} /></IconButton><IconButton label="テスト実行" onClick={() => noteBuilder(`${s} のmockテスト候補を作成しました。外部実行はしていません。`)}><Play size={14} /></IconButton></div>)}
+          </Panel>
+        </div>
+        <aside className="side-panel">
+          <h3>入力元</h3><p>{builderInputSources}</p>
+          <h3>出力</h3><p>{builderOutputs}</p>
+          <h3>危険操作</h3><p>{builderRiskBoundary}</p>
+          <div className="preview-box">{builderNotice}</div>
+          <Button variant="primary" onClick={() => noteBuilder("現在設定のmockテスト候補を作成しました。実ブラウザ・外部投稿・送信は未実行です。")}>現在設定でmockテスト</Button>
+        </aside>
+      </div>
+    </section>
+  );
+}
+
+function ApprovalsPage({ model }: { model: AppModel }) {
+  const { setReceipt, approvalRows, mvpState, setMvpState } = model;
+  const [selected, setSelected] = useState(0);
+  const [editing, setEditing] = useState(false);
+  const [approvalNote, setApprovalNote] = useState("");
+  const [approvalStatusNote, setApprovalStatusNote] = useState("");
+  const persistedApprovals = (mvpState.approvals ?? []).map((approval) => ({
+    id: approval.id,
+    kind: approval.kind,
+    content: approval.content,
+    project: approval.project_id,
+    lane: "MVP API",
+    due: approval.updated_at?.slice(0, 10) ?? "-",
+    risk: approval.external_action_allowed ? "要確認" : "外部操作なし",
+    status: approval.status === "waiting" ? "waiting" as Status : approval.status === "rejected" ? "blocked" as Status : "approved" as Status
+  }));
+  const visibleApprovals = persistedApprovals.filter((approval) => approval.status === "waiting");
+  const selectedIndex = visibleApprovals.length ? Math.min(selected, visibleApprovals.length - 1) : -1;
+  const item = selectedIndex >= 0 ? visibleApprovals[selectedIndex] : null;
+  React.useEffect(() => {
+    if (selected !== selectedIndex) setSelected(selectedIndex < 0 ? 0 : selectedIndex);
+  }, [selected, selectedIndex]);
+  React.useEffect(() => {
+    setApprovalNote(`${item?.content ?? "承認候補はありません"} を確認しました。`);
+    setApprovalStatusNote(item ? `${item.kind}: ${item.content} を選択 / ${actionStamp()}` : `承認候補はありません / ${actionStamp()}`);
+    setEditing(false);
+  }, [selected, item?.id, item?.content]);
+  const updateSelectedApproval = async (decision: "approve" | "reject") => {
+    if (!item?.id) {
+      setReceipt("承認候補はありません。外部送信・投稿は実行していません。");
+      return;
+    }
+    try {
+      const response = await fetch(`/api/mvp/approvals/${encodeURIComponent(item.id)}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ decision, note: approvalNote || "UIから確認。外部操作は許可していません。" })
+      });
+      if (!response.ok) throw new Error("approval_update_failed");
+      const result = await response.json();
+      setMvpState(result.state);
+      setEditing(false);
+      setReceipt(`${item.kind} を${decision === "approve" ? "local draft承認" : "却下"}として保存しました。外部送信・投稿は実行していません。`);
+      setApprovalStatusNote(`${item.kind}: ${decision === "approve" ? "local draft承認" : "却下"}として保存 / external_action=false / ${actionStamp()}`);
+    } catch {
+      setReceipt(`${item.kind} の状態保存は未確認です。外部送信・投稿は実行していません。`);
+      setApprovalStatusNote(`${item.kind}: 状態保存は未確認 / external_action=false / ${actionStamp()}`);
+    }
+  };
+  const approveSelected = () => {
+    updateSelectedApproval("approve");
+  };
+  const rejectSelected = () => {
+    updateSelectedApproval("reject");
+  };
+  return (
+    <section>
+      <PageTitle title="承認キュー" desc="複数プロジェクト横断の確認待ちを処理します。">
+        <Button disabled={!visibleApprovals.length} onClick={() => { setApprovalStatusNote(`一括承認候補を確認しました。対象=${visibleApprovals.length} / 状態変更なし / ${actionStamp()}`); setReceipt("一括承認候補を確認しました。状態変更や外部実行はしていません。"); }}>一括承認</Button>
+      </PageTitle>
+      <div className="action-note" role="status">{approvalStatusNote || `承認候補 ${visibleApprovals.length}件 / external_action=false`}</div>
+      <div className="split">
+        <Panel title="承認待ち一覧" className="list-panel">
+          {visibleApprovals.length ? visibleApprovals.map((a, i) => <button key={a.id ?? a.content} className={`list-row approval-row ${i === selectedIndex ? "selected" : ""}`} onClick={() => { setSelected(i); setApprovalStatusNote(`${a.kind}: ${a.content} を選択 / ${actionStamp()}`); }}><span>{a.kind}</span><strong>{a.content}</strong><small>{a.project} / {a.lane}</small><StatusBadge status={a.status} label={a.status === "approved" ? "local draft承認" : a.risk} /></button>) : (
+            <div className="empty-state">
+              <strong>承認待ちはありません</strong>
+              <span>API readback上、外部操作前の確認待ちは0件です。</span>
+            </div>
+          )}
+        </Panel>
+        <aside className="side-panel wide">
+          {item ? (
+            <>
+              <h3>{item.kind}</h3>
+              <p className="muted">{item.project} / {item.lane} / 期限 {item.due}</p>
+              <div className="preview-box">{item.content} の全文プレビューです。送信前に人間が承認し、必要なら編集します。外部投稿・送信・応募・公開は承認と証跡なしに実行しません。</div>
+              {editing && <label>修正メモ<textarea aria-label="承認修正メモ" value={approvalNote} onChange={(event) => setApprovalNote(event.target.value)} /></label>}
+              <div className="button-row"><Button variant="primary" icon={<Check size={15} />} onClick={approveSelected}>承認</Button><Button icon={<Edit3 size={15} />} onClick={() => { setEditing(true); setApprovalStatusNote(`${item.kind}: 編集欄を開きました / ${actionStamp()}`); setReceipt(`${item.kind} の編集欄を開きました。`); }}>編集</Button><Button variant="danger" onClick={rejectSelected}>却下</Button></div>
+            </>
+          ) : (
+            <>
+              <h3>承認待ちはありません</h3>
+              <p className="muted">API readback / external_action=false</p>
+              <div className="preview-box">新しい承認が作成されると、対象workflow、停止条件、証跡URI、操作ボタンがここに表示されます。</div>
+            </>
+          )}
+        </aside>
+      </div>
+    </section>
+  );
+}
+
+function RunsPage({ model }: { model: AppModel }) {
+  const { mvpState, setMvpState, setReceipt, setAutomationRows } = model;
+  const runs = mvpState.runs ?? [];
+  const proofs = mvpState.proofs ?? [];
+  const worker = mvpState.worker;
+  const [statusFilter, setStatusFilter] = useState("active");
+  const [projectFilter, setProjectFilter] = useState("all");
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [workerPreview, setWorkerPreview] = useState<any>(null);
+  const [actionNote, setActionNote] = useState("実行履歴を開きました。再読込、worker、filter操作の結果はここにも表示します。");
+  const projectForRun = (run: any) => mvpState.automations?.find((automation) => automation.id === run.automation_id)?.project_id ?? "project-a";
+  const statusMatches = (run: any) => {
+    if (statusFilter === "active") return ["queued", "running"].includes(run.status);
+    if (statusFilter === "blocked") return run.status === "blocked";
+    if (statusFilter === "completed") return run.status === "completed";
+    return true;
+  };
+  const filteredRuns = runs.filter((run) => statusMatches(run) && (projectFilter === "all" || projectForRun(run) === projectFilter));
+  const activeRuns = runs.filter((run) => ["queued", "running"].includes(run.status));
+  const activeRunsForProject = activeRuns.filter((run) => projectFilter === "all" || projectForRun(run) === projectFilter);
+  const blockedRuns = runs.filter((run) => run.status === "blocked");
+  const completedRuns = runs.filter((run) => run.status === "completed");
+  const workerSummary = workerStatusSummary(worker);
+  const selectedRun = runs.find((run) => run.id === selectedRunId && filteredRuns.some((filtered) => filtered.id === run.id)) ?? filteredRuns[0] ?? null;
+  const selectedProofs = selectedRun ? proofs.filter((proof) => selectedRun.proof_ids?.includes(proof.id)) : [];
+  const refresh = async () => {
+    try {
+      const state = await readMvpState();
+      setMvpState(state);
+      setAutomationRows(toAutomationRows(state.automations ?? []));
+      setReceipt(`Runs readback 済みです。runs=${state.runs?.length ?? 0} / proofs=${state.proofs?.length ?? 0}`);
+      await refreshWorkerPreview(projectFilter);
+      setActionNote(`再読込完了: runs=${state.runs?.length ?? 0} / proofs=${state.proofs?.length ?? 0} / project=${projectFilter} / ${actionStamp()}`);
+    } catch {
+      setReceipt("Runs readback に失敗しました。MVP API接続を確認してください。");
+      setActionNote(`再読込失敗: MVP API接続を確認してください / ${actionStamp()}`);
+    }
+  };
+  React.useEffect(() => {
+    refresh();
+  }, []);
+  const refreshWorkerPreview = async (projectId = projectFilter) => {
+    try {
+      const body = projectId === "all" ? { limit: 10 } : { project_id: projectId, limit: 10 };
+      const response = await fetch("/api/mvp/worker/preview", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      if (!response.ok) throw new Error("worker_preview_failed");
+      const result = await response.json();
+      setWorkerPreview(result);
+      const blocker = result.exact_blocker ? ` / blocker=${result.exact_blocker}` : "";
+      setReceipt(`worker preview: queued=${result.picked_count ?? 0} / highRisk=${result.high_risk_count ?? 0}${blocker} / external_action=false`);
+      setActionNote(`worker preview更新: project=${projectId} / queued=${result.picked_count ?? 0} / highRisk=${result.high_risk_count ?? 0}${blocker} / ${actionStamp()}`);
+    } catch {
+      setWorkerPreview(null);
+      setReceipt("worker preview に失敗しました。実行はしていません。");
+      setActionNote(`worker preview失敗: project=${projectId} / 実行はしていません / ${actionStamp()}`);
+    }
+  };
+  const runWorkerOnce = async () => {
+    if (workerSummary.blocker) {
+      setReceipt(`${workerSummary.blocker}: worker heartbeat/readback が必要です。外部操作はしていません。`);
+      setActionNote(`worker実行停止: ${workerSummary.blocker} / ${workerSummary.nextAction} / ${actionStamp()}`);
+      return;
+    }
+    try {
+      const body = projectFilter === "all" ? { limit: 10 } : { project_id: projectFilter, limit: 10 };
+      const response = await fetch("/api/mvp/worker/once", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      if (!response.ok) throw new Error("worker_once_failed");
+      const result = await response.json();
+      setMvpState(result.state);
+      setAutomationRows(toAutomationRows(result.state.automations ?? []));
+      if (result.exact_blocker) {
+        setReceipt(`${result.exact_blocker}: worker heartbeat/readback が必要です。外部操作はしていません。`);
+        setActionNote(`worker実行停止: ${result.exact_blocker} / ${result.next_action ?? "Mac worker laneを起動してください"} / ${actionStamp()}`);
+        return;
+      }
+      setReceipt(result.picked ? `worker が ${result.processed_runs?.length ?? 1}件を処理しました。latest=${result.run.id} / status=${result.run.status}` : "worker は待機中です。queued runはありません。");
+      setActionNote(result.picked ? `worker実行完了: processed=${result.processed_runs?.length ?? 1} / latest=${result.run.id} / status=${result.run.status} / ${actionStamp()}` : `worker実行完了: queued runはありません。外部操作はしていません / ${actionStamp()}`);
+    } catch {
+      setReceipt("worker 実行に失敗しました。MVP API接続を確認してください。");
+      setActionNote(`worker実行失敗: MVP API接続を確認してください / ${actionStamp()}`);
+    }
+  };
+  return (
+    <section>
+      <PageTitle title="実行履歴" desc="MVP stateからrun、worker、proofを読み取ります。">
+        <Button icon={<RefreshCw size={15} />} onClick={refresh}>再読込</Button>
+        <Button variant="primary" icon={<Play size={15} />} onClick={runWorkerOnce} disabled={Boolean(workerSummary.blocker)}>workerを実行</Button>
+      </PageTitle>
+      <div className="action-note" role="status">{actionNote}</div>
+      <div className="cards four">
+        <MetricCard title="Runs" value={String(runs.length)} sub="durable state" status={runs.length ? "enabled" : "waiting"} />
+        <MetricCard title="Proofs" value={String(proofs.length)} sub="artifact readback" status={proofs.length ? "enabled" : "waiting"} />
+        <MetricCard title="Worker" value={worker?.status ?? "unknown"} sub={workerSummary.display} status={workerSummary.fresh ? "enabled" : "blocked"} />
+        <MetricCard title="Queue" value={String(worker?.queue_depth ?? 0)} sub="queued runs" status={(worker?.queue_depth ?? 0) > 0 ? "running" : "enabled"} />
+      </div>
+      <Panel title="Worker Impact Preflight">
+        <div className="filter-row">
+          {[
+            ["all", "全Project"],
+            ...projectSlugs.map((slug) => [slug, projectLabels[slug]])
+          ].map(([key, label]) => <button key={key} className={projectFilter === key ? "selected" : ""} onClick={() => { setProjectFilter(key); setActionNote(`Project filter: ${label} を選択しました。previewを更新しています / ${actionStamp()}`); refreshWorkerPreview(key); }}>{label}</button>)}
+        </div>
+        <DataTable headers={["項目", "値", "意味"]} rows={[
+          ["対象queued", String(workerPreview?.picked_count ?? activeRunsForProject.length), "この条件でworkerが処理候補にする件数"],
+          ["Project内訳", JSON.stringify(workerPreview?.by_project ?? {}), "API preview readback"],
+          ["高リスク", String(workerPreview?.high_risk_count ?? 0), "外部操作前にblockedへ止める対象"],
+          ["Preview blocker", workerPreview?.exact_blocker ?? workerSummary.blocker ?? "none", workerPreview?.next_action ?? workerSummary.nextAction],
+          ["Heartbeat", workerSummary.label, workerSummary.blocker ? `blocker=${workerSummary.blocker}` : "fresh readback"],
+          ["次の一手", workerSummary.nextAction, "worker completion expectation"],
+          ["安全境界", "external_action_executed=false", "投稿・送信・削除・認証突破・課金操作なし"]
+        ]} />
+      </Panel>
+      <div className="split">
+        <Panel title="Run readback" className="list-panel">
+          <div className="filter-row">
+            {[
+              ["active", `処理中 ${activeRuns.length}`],
+              ["blocked", `停止 ${blockedRuns.length}`],
+              ["completed", `完了 ${completedRuns.length}`],
+              ["all", `全て ${runs.length}`]
+            ].map(([key, label]) => <button key={key} className={statusFilter === key ? "selected" : ""} onClick={() => { setStatusFilter(key); setActionNote(`Status filter: ${label} を選択しました。表示run=${runs.filter((run) => {
+              if (key === "active") return ["queued", "running"].includes(run.status);
+              if (key === "blocked") return run.status === "blocked";
+              if (key === "completed") return run.status === "completed";
+              return true;
+            }).filter((run) => projectFilter === "all" || projectForRun(run) === projectFilter).length} / ${actionStamp()}`); }}>{label}</button>)}
+          </div>
+          <DataTable headers={["Run", "Automation", "Status", "Trigger", "Queued", "Blocker", "Proofs"]} rows={filteredRuns.slice(0, 20).map((run) => [
+            <button className="link-button" onClick={() => { setSelectedRunId(run.id); setActionNote(`Run選択: ${run.id} / status=${run.status} / ${actionStamp()}`); }}>{run.id}</button>,
+            run.automation_name ?? run.automation_id,
+            <StatusBadge status={run.status === "completed" ? "approved" : run.status === "blocked" ? "blocked" : run.status === "running" ? "running" : "waiting"} label={run.status} />,
+            run.trigger ?? "-",
+            run.queued_at ?? "-",
+            run.exact_blocker ?? "-",
+            String(run.proof_ids?.length ?? 0)
+          ])} />
+        </Panel>
+        <aside className="side-panel wide">
+          <h3>Latest proof</h3>
+          {selectedRun ? <p className="muted">{selectedRun.id} / {selectedRun.status}</p> : <p className="muted">runはまだありません。</p>}
+          {selectedProofs.length ? selectedProofs.map((proof) => (
+            <div className="preview-box" key={proof.id}>
+              <strong>{proof.kind}</strong>
+              <p>{proof.summary}</p>
+              <small>{proof.artifact_uri}</small>
+              <small>sha256 {String(proof.sha256).slice(0, 16)}...</small>
+            </div>
+          )) : <div className="preview-box">最新runにproofはまだありません。</div>}
+          <h3>Worker readback</h3>
+          <p>{worker?.id ?? "unknown"} / {worker?.status ?? "unknown"} / queue {worker?.queue_depth ?? 0}</p>
+          <p className="muted">{workerSummary.display}</p>
+        </aside>
+      </div>
+    </section>
+  );
+}
+
+function LanesPage({ setReceipt }: { setReceipt: (value: string) => void }) {
+  const [selected, setSelected] = useState(0);
+  const [laneNote, setLaneNote] = useState("Lane操作の結果はここに表示します。ブラウザ起動やプロセス停止は実行しません。");
+  const route = useRoute();
+  const projectName = projectLabels[projectSlugFromRoute(route)];
+  const selectedLane = lanes[selected];
+  const requestLaneBrowser = (lane: typeof lanes[number]) => {
+    setReceipt(`${lane.name} のブラウザ確認リクエストを作成しました。実Chrome起動は未実行です。`);
+    setLaneNote(`${lane.name}: ブラウザ確認リクエストを作成しました。実Chrome起動は未実行です / ${actionStamp()}`);
+  };
+  const selectLane = (index: number) => {
+    setSelected(index);
+    setLaneNote(`${lanes[index].name} を選択しました。Port ${lanes[index].port} / ${lanes[index].profile} / ${actionStamp()}`);
+  };
+  return (
+    <section>
+      <ProjectTabs />
+      <PageTitle title={projectName} desc="Lane">
+        <Button icon={<Plus size={15} />} onClick={() => { setReceipt("Lane追加フォームを準備しました。実Chrome profile作成は人間確認後に進めます。"); setLaneNote(`Lane追加フォームを準備しました。実Chrome profile作成は人間確認後に進めます / ${actionStamp()}`); }}>Laneを追加</Button>
+      </PageTitle>
+      <ProjectScopeNotice projectId={projectSlugFromRoute(route)} />
+      <div className="action-note" role="status">{laneNote}</div>
+      <p className="muted">Laneは共有実行面の表示です。{projectName}固有の実行状態はAPI readback後に反映します。</p>
+      <Panel title="LaneはPlaywright実行環境の分離単位です">
+        <DataTable headers={["Lane名", "Port", "Google Profile", "Browser Status", "使用アカウント", "現在のタスク", "キュー数", "ロック状態", "操作"]} rows={lanes.map((l, i) => [l.name, String(l.port), l.profile, <StatusBadge status={l.status} />, l.account, `${projectName} / ${l.task}`, String(l.queue), l.lock, <div className="row-actions"><IconButton label={`${l.name}を選択`} onClick={() => selectLane(i)}><ChevronRight size={14} /></IconButton><IconButton label={`${l.name}のブラウザを開く`} onClick={() => requestLaneBrowser(l)}><Network size={14} /></IconButton>{selected === i && <small className="inline-action-receipt">選択中 / {laneNote}</small>}</div>])} />
+      </Panel>
+      <aside className="floating-detail"><h3>{selectedLane.name}</h3><p>Port {selectedLane.port} / {selectedLane.profile}</p><Button icon={<Network size={14} />} onClick={() => requestLaneBrowser(selectedLane)}>ブラウザ確認</Button><Button onClick={() => { setReceipt(`${selectedLane.name} のPort ${selectedLane.port} 確認リクエストを作成しました。実ポート検査は未実行です。`); setLaneNote(`${selectedLane.name}: Port ${selectedLane.port} 確認リクエストを作成しました。実ポート検査は未実行です / ${actionStamp()}`); }}>ポート確認</Button><Button onClick={() => { setReceipt(`${selectedLane.name} のProfileロック解除は人間確認待ちです。`); setLaneNote(`${selectedLane.name}: Profileロック解除は人間確認待ちです / ${actionStamp()}`); }}>Profileロック解除</Button><Button variant="danger" onClick={() => { setReceipt(`${selectedLane.name} の停止は確認待ちです。実プロセスは停止していません。`); setLaneNote(`${selectedLane.name}: 停止は確認待ちです。実プロセスは停止していません / ${actionStamp()}`); }}>Lane停止</Button></aside>
+    </section>
+  );
+}
+
+function MemoryPage({ model }: { model: AppModel }) {
+  const { setReceipt, mvpState, setMvpState } = model;
+  const route = useRoute();
+  const activeProject = projectSlugFromRoute(route);
+  const projectName = projectLabels[activeProject];
+  const createMemoryItems = () => [
+    { key: "business", title: "事業概要", body: "このプロジェクトで必要なビジネス情報を保存しています。非表示のプロジェクトルールや運用方針も背景で活用されます。" },
+    { key: "target", title: "ターゲット", body: "このプロジェクトで必要なビジネス情報を保存しています。非表示のプロジェクトルールや運用方針も背景で活用されます。" },
+    { key: "brand", title: "ブランドトーン", body: "このプロジェクトで必要なビジネス情報を保存しています。非表示のプロジェクトルールや運用方針も背景で活用されます。" },
+    { key: "product", title: "商品情報", body: "このプロジェクトで必要なビジネス情報を保存しています。非表示のプロジェクトルールや運用方針も背景で活用されます。" }
+  ];
+  const createLoginRows = () => [
+    { platform: "Instagram", accountRef: "placeholder / 未確認", secretRef: "secret未確認", twoFactor: "未確認", updated: "未確認" },
+    { platform: "TikTok", accountRef: "placeholder / 未確認", secretRef: "secret未確認", twoFactor: "未確認", updated: "未確認" },
+    { platform: "LinkedIn", accountRef: "placeholder / 未確認", secretRef: "secret未確認", twoFactor: "未確認", updated: "未確認" }
+  ];
+  const [memoryByProject, setMemoryByProject] = useState(() => Object.fromEntries(projectSlugs.map((slug) => [slug, createMemoryItems()])));
+  const [editingMemory, setEditingMemory] = useState(0);
+  const [memoryDraft, setMemoryDraft] = useState(createMemoryItems()[0].body);
+  const [loginByProject, setLoginByProject] = useState(() => Object.fromEntries(projectSlugs.map((slug) => [slug, createLoginRows()])));
+  const [editingLogin, setEditingLogin] = useState(0);
+  const [loginDraft, setLoginDraft] = useState(createLoginRows()[0].accountRef);
+  const [memoryNote, setMemoryNote] = useState("保存情報を開きました。編集・保存・接続参照更新の結果はここにも表示します。");
+  const persistedMemory = mvpState.project_memory?.filter((item) => item.project_id === activeProject).map((item) => ({ key: item.key, title: item.title, body: item.body })) ?? [];
+  const persistedLogins = mvpState.account_refs?.filter((item) => item.project_id === activeProject).map((item) => ({ platform: item.platform, accountRef: item.account_ref, secretRef: item.secret_ref, twoFactor: item.two_factor, updated: item.updated_at?.slice(0, 10) ?? "readback" })) ?? [];
+  const memoryItems = persistedMemory.length ? persistedMemory : (memoryByProject[activeProject] ?? createMemoryItems());
+  const localLoginRows = loginByProject[activeProject] ?? createLoginRows();
+  const loginRows = persistedLogins.length
+    ? [
+      ...localLoginRows.map((row) => persistedLogins.find((persisted) => persisted.platform === row.platform) ?? row),
+      ...persistedLogins.filter((persisted) => !localLoginRows.some((row) => row.platform === persisted.platform))
+    ]
+    : localLoginRows;
+  React.useEffect(() => {
+    setEditingMemory(0);
+    setMemoryDraft(memoryItems[0]?.body ?? createMemoryItems()[0].body);
+    setEditingLogin(0);
+    setLoginDraft(loginRows[0]?.accountRef ?? createLoginRows()[0].accountRef);
+  }, [activeProject, mvpState.updated_at]);
+  const selectMemory = (index: number) => {
+    setEditingMemory(index);
+    setMemoryDraft(memoryItems[index].body);
+    setReceipt(`${projectName} の ${memoryItems[index].title} を編集できます。`);
+    setMemoryNote(`${projectName}: ${memoryItems[index].title} を選択 / ${actionStamp()}`);
+  };
+  const saveMemory = async () => {
+    const redactedMemoryDraft = redactSensitiveText(memoryDraft);
+    setMemoryByProject((all) => ({ ...all, [activeProject]: memoryItems.map((item, index) => index === editingMemory ? { ...item, body: redactedMemoryDraft } : item) }));
+    try {
+      const item = memoryItems[editingMemory];
+      const response = await fetch(`/api/mvp/projects/${encodeURIComponent(activeProject)}/memory/${encodeURIComponent(item.key)}`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ title: item.title, body: redactedMemoryDraft })
+      });
+      if (!response.ok) throw new Error("memory_save_failed");
+      const result = await response.json();
+      setMvpState(result.state);
+      setReceipt(`${projectName} の ${item.title} を保存し、API readbackで確認しました。`);
+      setMemoryNote(`${projectName}: ${item.title} を保存 / API readback済み / ${actionStamp()}`);
+    } catch {
+      setReceipt(`${projectName} の ${memoryItems[editingMemory].title} はローカル表示のみ更新しました。API readbackは未確認です。`);
+      setMemoryNote(`${projectName}: ${memoryItems[editingMemory].title} をローカル更新 / API readback未確認 / ${actionStamp()}`);
+    }
+  };
+  const selectLogin = (index: number) => {
+    setEditingLogin(index);
+    setLoginDraft(loginRows[index].accountRef);
+    setReceipt(`${loginRows[index].platform} の接続参照を編集できます。secret値はこの画面では扱いません。`);
+    setMemoryNote(`${projectName}: ${loginRows[index].platform} の接続参照を選択 / secret値は扱いません / ${actionStamp()}`);
+  };
+  const saveLogin = async () => {
+    const redactedLoginDraft = redactSensitiveText(loginDraft);
+    setLoginByProject((all) => ({ ...all, [activeProject]: loginRows.map((row, index) => index === editingLogin ? { ...row, accountRef: redactedLoginDraft, updated: "2026-07-03" } : row) }));
+    try {
+      const row = loginRows[editingLogin];
+      const response = await fetch(`/api/mvp/projects/${encodeURIComponent(activeProject)}/account-refs/${encodeURIComponent(row.platform)}`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ account_ref: redactedLoginDraft, two_factor: row.twoFactor })
+      });
+      if (!response.ok) throw new Error("account_ref_save_failed");
+      const result = await response.json();
+      setMvpState(result.state);
+      setReceipt(`${row.platform} の接続参照を保存し、API readbackで確認しました。secret値は保存していません。`);
+      setMemoryNote(`${projectName}: ${row.platform} 接続参照を保存 / API readback済み / secret値なし / ${actionStamp()}`);
+    } catch {
+      setReceipt(`${loginRows[editingLogin].platform} の接続参照をローカル表示で更新しました。API readbackは未確認です。secret値は保存していません。`);
+      setMemoryNote(`${projectName}: ${loginRows[editingLogin].platform} 接続参照をローカル更新 / API readback未確認 / secret値なし / ${actionStamp()}`);
+    }
+  };
+  return (
+    <section>
+      <ProjectTabs />
+      <PageTitle title={projectName} desc="保存情報 / Project Memory" />
+      <ProjectScopeNotice projectId={activeProject} />
+      <div className="action-note" role="status">{memoryNote}</div>
+      <div className="cards two">
+        {memoryItems.map((item, index) => (
+          <div className={`panel memory-card ${editingMemory === index ? "selected" : ""}`} key={item.title}>
+            <div className="panel-head">
+              <h2>{item.title}</h2>
+              <IconButton label={`${item.title}を編集`} onClick={() => selectMemory(index)}><MoreHorizontal size={16} /></IconButton>
+            </div>
+            <p>{item.body}</p>
+          </div>
+        ))}
+      </div>
+      <div className="section-grid">
+        <Panel title="ログイン情報 / 接続アカウント" className="span-2">
+          <DataTable headers={["プラットフォーム", "アカウント参照", "Secret参照", "2段階認証", "最終更新", "操作"]} rows={loginRows.map((row, index) => [row.platform, row.accountRef, row.secretRef, row.twoFactor, row.updated, <IconButton label={`${row.platform}を編集`} onClick={() => selectLogin(index)}><Edit3 size={14} /></IconButton>])} />
+        </Panel>
+        <aside className="side-panel wide">
+          <h3>{memoryItems[editingMemory].title}を編集</h3>
+          <label>保存内容<textarea value={memoryDraft} onChange={(event) => { setMemoryDraft(event.target.value); setMemoryNote(`${projectName}: ${memoryItems[editingMemory].title} 入力更新 ${event.target.value.trim().length}文字 / ${actionStamp()}`); }} aria-label="保存情報の編集" /></label>
+          <Button variant="primary" onClick={saveMemory}>保存情報を保存</Button>
+          <h3>{loginRows[editingLogin].platform} 接続情報</h3>
+          <label>アカウント参照<input value={loginDraft} onChange={(event) => { setLoginDraft(event.target.value); setMemoryNote(`${projectName}: ${loginRows[editingLogin].platform} 接続参照入力更新 / secret値なし / ${actionStamp()}`); }} aria-label="アカウント参照" /></label>
+          <p className="muted">パスワードやtokenはこのUIに入力・保存しません。secret更新は外部の承認済みlaneで別途確認します。</p>
+          <Button onClick={saveLogin}>接続参照を更新</Button>
+        </aside>
+      </div>
+    </section>
+  );
+}
+
+function SecurityPage({ model }: { model: AppModel }) {
+  const { mvpState, setReceipt } = model;
+  const route = useRoute();
+  const activeProject = projectSlugFromRoute(route);
+  const projectName = projectLabels[activeProject];
+  const [securityNote, setSecurityNote] = useState("接続・権限を開きました。接続サービスの操作結果はここに表示します。実ログインやOTP突破は実行しません。");
+  const policies = ["閲覧", "下書き作成", "投稿", "DM送信", "メール送信", "画像生成", "動画生成", "広告出稿", "削除"];
+  const services = ["Google Drive", "Gmail", "Instagram", "TikTok", "Facebook", "LinkedIn", "Slack", "Runway"];
+  const accountRefs = mvpState.account_refs?.filter((item) => item.project_id === activeProject) ?? [];
+  const serviceAction = (service: string, action: string) => {
+    const message = `${projectName} ${service}: ${action} / login_state=not_verified_here / external_action=false / ${actionStamp()}`;
+    setSecurityNote(message);
+    setReceipt(message);
+  };
+  return (
+    <section>
+      <ProjectTabs />
+      <PageTitle title={projectName} desc="接続・権限・セキュリティ" />
+      <ProjectScopeNotice projectId={activeProject} />
+      <div className="action-note" role="status">{securityNote}</div>
+      <p className="muted">この表はプロジェクト別の接続参照表示です。実認証readbackは未接続です。</p>
+      <div className="section-grid">
+        <Panel title="接続サービス" className="span-2"><DataTable headers={["サービス", "接続アカウント", "ステータス", "操作"]} rows={services.map((s, i) => {
+          const persisted = accountRefs.find((item) => item.platform === s);
+          const accountRef = persisted?.account_ref ?? "placeholder / 未確認";
+          const status = persisted ? <StatusBadge status="enabled" label="参照あり" /> : <StatusBadge status="waiting" label="未確認" />;
+          return [s, accountRef, status, <div className="row-actions"><IconButton label={`${s}接続テスト`} onClick={() => serviceAction(s, "接続テスト候補を表示。実ログイン/API callなし")}><Play size={14} /></IconButton><IconButton label={`${s}詳細`} onClick={() => serviceAction(s, `account_ref=${accountRef}`)}><MoreHorizontal size={14} /></IconButton><IconButton label={`${s}問題を送る`} onClick={() => openFeedbackFor(`${projectName} ${s}: 接続サービスの操作について`, { source: "connection_service", service: s, project_id: activeProject, route: location.hash || "#/projects/project-a/security" })}><AlertTriangle size={14} /></IconButton></div>];
+        })} /></Panel>
+        <Panel title="セキュリティ"><CheckList items={["二段階認証", "シークレット保管", "認証情報ローテーション", "許可されたローカルフォルダ", "危険な操作の保護", `Redaction readback: ${mvpState.redaction_readback?.ok ? "pass" : "未確認"}`]} /></Panel>
+      </div>
+      <Panel title="権限ポリシー"><DataTable headers={["アクション", "ポリシー"]} rows={policies.map((p) => [p, p === "閲覧" || p === "下書き作成" ? "自動許可" : p === "削除" ? "禁止" : "承認必須"])} /></Panel>
+    </section>
+  );
+}
+
+function PcStatusPage({ model }: { model: AppModel }) {
+  const { setReceipt, mvpState, setMvpState, setAutomationRows } = model;
+  const worker = mvpState.worker;
+  const workerSummary = workerStatusSummary(worker);
+  const [pcNote, setPcNote] = useState("PC状態を開きました。再確認結果はここにも表示します。");
+  const refresh = async () => {
+    try {
+      const state = await readMvpState();
+      setMvpState(state);
+      setAutomationRows(toAutomationRows(state.automations ?? []));
+      const nextSummary = workerStatusSummary(state.worker);
+      setReceipt(`Local Agent heartbeat readback 済みです。worker=${state.worker?.status ?? "unknown"} / queue=${state.worker?.queue_depth ?? 0}${nextSummary.blocker ? ` / blocker=${nextSummary.blocker}` : ""}`);
+      setPcNote(`Local Agent readback完了: worker=${state.worker?.status ?? "unknown"} / queue=${state.worker?.queue_depth ?? 0} / ${nextSummary.display} / ${actionStamp()}`);
+    } catch {
+      setReceipt("Local Agent のMVP readbackに失敗しました。");
+      setPcNote(`Local Agent readback失敗: MVP API接続を確認してください / ${actionStamp()}`);
+    }
+  };
+  return (
+    <section>
+      <PageTitle title="PC状態" desc="ユーザーPC上のAutomation OS Local Agent状態を表示します。">
+        <Button onClick={refresh}>再確認</Button>
+      </PageTitle>
+      <div className="action-note" role="status">{pcNote}</div>
+      <div className="cards four">
+        <MetricCard title="Local Agent" value={workerSummary.fresh ? "heartbeat確認済み" : "要確認"} sub={workerSummary.blocker ? workerSummary.nextAction : "外部操作証跡はworkflowごとに別確認します。"} status={workerSummary.fresh ? "enabled" : "blocked"} />
+        <MetricCard title="Heartbeat" value={workerSummary.fresh ? "fresh" : "stale"} sub={worker?.heartbeat_at ?? "未確認"} status={workerSummary.fresh ? "enabled" : "blocked"} />
+        <MetricCard title="Queue" value={String(worker?.queue_depth ?? 0)} sub="待機中の実行候補" status={(worker?.queue_depth ?? 0) > 0 ? "running" : "enabled"} />
+        <MetricCard title="Last Run" value={worker?.last_run_id ? "あり" : "なし"} sub={worker?.last_run_id ?? "未実行"} status={worker?.last_run_id ? "enabled" : "waiting"} />
+      </div>
+      <Panel title="Local Agent readback"><DataTable headers={["項目", "状態", "次に見ること"]} rows={[["接続状態", workerSummary.fresh ? "接続確認済み" : "要確認", workerSummary.nextAction], ["Worker", worker?.status ?? "unknown", worker?.id ?? "unknown"], ["Heartbeat", worker?.heartbeat_at ?? "none", workerSummary.blocker ?? "問題なし"], ["Queue", String(worker?.queue_depth ?? 0), "外部操作は各workflowの承認境界で停止"]]} /></Panel>
+      <Panel title="実行中ローカルタスク"><DataTable headers={["Run", "Automation", "開始時刻", "ステータス", "Blocker"]} rows={(mvpState.runs ?? []).filter((run) => ["queued", "running", "blocked"].includes(run.status)).slice(0, 8).map((run) => [run.id, run.automation_name ?? run.automation_id, run.started_at ?? run.queued_at ?? "-", <StatusBadge status={run.status === "blocked" ? "blocked" : run.status === "running" ? "running" : "waiting"} label={run.status} />, run.exact_blocker ?? "-"])} /></Panel>
+    </section>
+  );
+}
+
+function ProductionStatusPage({ setReceipt }: { setReceipt: (value: string) => void }) {
+  const [liveState, setLiveState] = useState<MvpState | null>(null);
+  const [liveReadbackAt, setLiveReadbackAt] = useState("");
+  const [readbackNote, setReadbackNote] = useState("本番状態を読み込み中です。API readback結果はここに表示します。");
+  const confirmed = productionRollup.results.filter((item) => item.actual_status === "confirmed");
+  const blocked = productionRollup.results.filter((item) => item.actual_status !== "confirmed");
+  const liveReadiness = liveState?.production_readiness_readback;
+  const refreshLive = async () => {
+    try {
+      const state = await readMvpState();
+      const readbackAt = new Date().toISOString();
+      setLiveState(state);
+      setLiveReadbackAt(readbackAt);
+      setReceipt(`本番状態API readback 済みです。adapter=${state.persistence?.adapter ?? "unknown"} / runs=${state.runs?.length ?? 0} / blocker=${state.production_readiness_readback?.blocker ?? "none"}`);
+      setReadbackNote(`API readback完了: adapter=${state.persistence?.adapter ?? "unknown"} / runs=${state.runs?.length ?? 0} / blocker=${state.production_readiness_readback?.blocker ?? "none"} / ${readbackAt}`);
+    } catch {
+      setReceipt("本番状態API readbackに失敗しました。静的rollupのみ表示しています。");
+      setReadbackNote(`API readback失敗: 静的rollupのみ表示しています / ${actionStamp()}`);
+    }
+  };
+  React.useEffect(() => {
+    refreshLive();
+  }, []);
+  const rows = productionRollup.results.map((item) => [
+    item.id,
+    item.capability,
+    <StatusBadge
+      status={item.actual_status === "confirmed" ? "approved" : "blocked"}
+      label={item.actual_status === "confirmed" ? "confirmed" : "blocked-runtime-verification"}
+    />,
+    item.artifact,
+    item.blocker ?? "-",
+    item.resume_condition ?? "-"
+  ]);
+
+  return (
+    <section>
+      <PageTitle title="本番状態" desc="デプロイ、DB、Worker、外部操作境界の現在地です。">
+        <Button
+          icon={<RefreshCw size={15} />}
+          onClick={refreshLive}
+        >
+          API readback
+        </Button>
+      </PageTitle>
+      <div className="action-note" role="status">{readbackNote}</div>
+      <Panel title="Live API Readback">
+        <DataTable
+          headers={["項目", "状態"]}
+          rows={[
+            ["Readback", liveReadbackAt || "未確認"],
+            ["DB / 永続化", liveState?.persistence ? `${liveState.persistence.adapter} / ${liveState.persistence.volume_ready ? "永続化OK" : liveState.persistence.exact_blocker ?? "要確認"}` : "未確認"],
+            ["Write guard", liveState?.persistence?.write_probe ? `${liveState.persistence.write_probe.ok ? "保護OK" : "要確認"} / ${liveState.persistence.write_probe.probe_ref ?? liveState.persistence.write_probe.exact_blocker ?? "-"}` : "未確認"],
+            ["Worker", liveState?.worker ? `${liveState.worker.heartbeat_fresh ? "接続確認済み" : "要確認"} / queue=${liveState.worker.queue_depth}` : "未確認"],
+            ["Runs / Automations", `${liveState?.runs?.length ?? 0} runs / ${liveState?.automations?.length ?? 0} automations`],
+            ["Redaction", liveState?.redaction_readback?.ok ? "pass" : "未確認"],
+            ["Production readiness", liveReadiness ? `${liveReadiness.configured ? "設定済み" : "未設定"} / ${liveReadiness.blocker ?? "ok"}` : "未確認"],
+            ["External action", liveState?.worker?.external_action_executed === true ? "実行検出 / 要確認" : liveState?.worker?.external_action_executed === false ? "未検出 / readback=false" : "未確認"]
+          ]}
+        />
+      </Panel>
+      <div className="cards four">
+        <MetricCard title="Rollup" value={productionRollup.run_id} sub={productionRollup.overall_status} status="waiting" />
+        <MetricCard title="Confirmed" value={String(confirmed.length)} sub="P001-P004" status="approved" />
+        <MetricCard title="Blocked Runtime" value={String(blocked.length)} sub="P005-P010" status="blocked" />
+        <MetricCard title="Goal Complete" value={productionRollup.goal_complete ? "true" : "false"} sub="実証跡が揃うまでfalse" status={productionRollup.goal_complete ? "approved" : "blocked"} />
+      </div>
+      <div className="cards four">
+        <MetricCard title="Current Packet" value={currentProductionReadiness.run_id} sub="current-production-readiness" status="waiting" />
+        <MetricCard title="Production Ready" value={currentProductionReadiness.production_ready ? "true" : "false"} sub="P005-P010実証跡待ち" status={currentProductionReadiness.production_ready ? "approved" : "blocked"} />
+        <MetricCard title="Next Stage" value={currentProductionReadiness.next_required_runtime_stage} sub="runtime evidence" status="blocked" />
+        <MetricCard title="Runtime Suite" value="confirmed" sub="P016-P024" status="approved" />
+      </div>
+      <div className="section-grid">
+        <Panel title="確認済み" className="span-2">
+          <CheckList items={confirmed.map((item) => `${item.id}: ${item.capability}`)} />
+        </Panel>
+        <Panel title="Hard Stops">
+          <CheckList items={["No raw secrets", "No public external side effects", "No production claim without P010", ...currentProductionReadiness.hard_stops_not_crossed]} />
+        </Panel>
+      </div>
+      <Panel title="次に必要な本番証跡">
+        <DataTable
+          headers={["確認項目", "状態"]}
+          rows={[
+            ["今日使える範囲", currentProductionReadiness.user_usable_today.automation_creation_and_local_mvp],
+            ["本番SaaS実行", currentProductionReadiness.user_usable_today.production_saas_runtime],
+            ["止まっている実証跡", currentProductionReadiness.blocked_runtime_capabilities.join(", ")],
+            ["次のゲート", currentProductionReadiness.next_required_runtime_stage],
+            ["次の作業場所", currentProductionReadiness.next_runtime_evidence_workspace],
+            ["人間対応が必要なもの", "実ログイン、外部操作直前の確認、OTP/本人確認が出た場合の入力"]
+          ]}
+        />
+      </Panel>
+      <Panel title="Production Goal Gates">
+        <DataTable headers={["ID", "Capability", "Status", "Artifact", "Blocker", "Resume Condition"]} rows={rows} />
+      </Panel>
+    </section>
+  );
+}
+
+function RunDetailPage({ setReceipt }: { setReceipt: (value: string) => void }) {
+  return (
+    <section>
+      <PageTitle title="実行詳細: Project A / SNS投稿 / 2026-06-29 09:00" desc="結果だけ表示 / 過程を表示">
+        <Button icon={<RefreshCw size={15} />} onClick={() => setReceipt("このRunを途中から再開します。")}>途中から再開</Button>
+      </PageTitle>
+      <div className="run-grid">
+        <Panel title="実行ステップ" className="span-2">
+          {["要件確認", "素材取得", "Chrome起動", "Lane確保", "ログイン確認", "下書き作成", "承認", "投稿実行", "レポート保存"].map((s, i) => <div className="timeline-row" key={s}><span className={i < 6 ? "done-dot" : "wait-dot"} /> <strong>{s}</strong><small>{i < 6 ? "完了" : "待機中"}</small></div>)}
+        </Panel>
+        <aside className="side-panel">
+          <h3>ライブプレビュー</h3>
+          <div className="preview-box">Mock local-agent readiness. Real browser screenshots, real logs, and real Chrome profile locks are not connected in this milestone.</div>
+          <Button variant="primary" onClick={() => go("#/runs/run-2026-06-29-0900/recovery")}>復旧UIを開く</Button>
+        </aside>
+      </div>
+    </section>
+  );
+}
+
+function RecoveryPage({ setReceipt }: { setReceipt: (value: string) => void }) {
+  const [action, setAction] = useState("待機して再実行");
+  return (
+    <section>
+      <PageTitle title="失敗時の復旧UI" desc="Laneのリソース競合により、タスクが実行できませんでした。" />
+      <div className="recovery-alert"><AlertTriangle size={20} /> Lane 2 の Port 9332 が使用中で、Google Profile Startup-A-SNS がロックされています。</div>
+      <div className="section-grid">
+        <Panel title="ワークフロー実行状況" className="span-2"><Stepper /></Panel>
+        <Panel title="失敗原因"><CheckList items={["LANE_LOCKED_PORT", "PROFILE_LOCKED", "直前成功ステップ: Lane確認", "失敗ステップ: Chrome起動"]} /></Panel>
+      </div>
+      <Panel title="推奨復旧アクション">
+        <div className="choice-row">{["待機して再実行", "別Laneへ移動", "ブラウザを開いて確認", "このステップから再開", "今回だけスキップ", "Codex Bridgeを再接続", "Pluginを再認証"].map((a) => <button className={a === action ? "selected" : ""} onClick={() => setAction(a)} key={a}>{a}</button>)}</div>
+        <Button variant="primary" onClick={() => setReceipt(`${action} を選択しました。実行詳細に反映します。`)}>選択した復旧を実行</Button>
+      </Panel>
+    </section>
+  );
+}
+
+function TemplatesPage({ model }: { model: AppModel }) {
+  const { setReceipt, createdTemplates, setCreatedTemplates, setMvpState, setAutomationRows } = model;
+  const [selected, setSelected] = useState(0);
+  const [templateNote, setTemplateNote] = useState("テンプレートを選ぶと詳細が表示されます。使用するを押すと保存結果をここに表示します。");
+  const useTemplate = async () => {
+    const [name, category, target, lane, approval] = templates[selected];
+    setTemplateNote(`${name}: 保存を開始しました。外部投稿・送信は実行しません。`);
+    const automationType = name.includes("Gmail") || name.includes("DM") ? "gmail-reply" : category.includes("リサーチ") ? "research-report" : "sns-post";
+    try {
+      const response = await fetch("/api/mvp/automations", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name,
+          project_id: rememberedProject(),
+          automation_type: automationType,
+          desc: `${category} テンプレートから作成した安全なMVP自動化`,
+          goal: `${target} 向けに下書き作成まで行い、外部操作前に承認で停止する`,
+          schedule: "09:00",
+          cadence: "daily",
+          lane,
+          risk_level: approval.includes("承認") ? "high" : "low",
+          approval_policy: approval.includes("承認") ? "required_before_external_post" : "auto_allowed_for_draft_only",
+          worker_command_kind: "safe_local_demo",
+          create_approval: approval.includes("承認"),
+          builder_spec: {
+            source: "template",
+            template_name: name,
+            category,
+            target_label: target,
+            approval,
+            external_action_allowed: false
+          }
+        })
+      });
+      if (!response.ok) throw new Error("template_create_failed");
+      const result = await response.json();
+      setMvpState(result.state);
+      setAutomationRows(toAutomationRows(result.state.automations ?? []));
+      setCreatedTemplates((items) => items.includes(name) ? items : [...items, name]);
+      setReceipt(`${name} から自動化案を保存しました。automation=${result.automation.id} / 外部操作は未実行です。`);
+      setTemplateNote(`${name}: 保存完了 automation=${result.automation.id} / 外部操作は未実行です。`);
+    } catch {
+      setReceipt(`${name} のAPI保存は未確認です。作成済みには追加していません。外部操作は未実行です。`);
+      setTemplateNote(`${name}: API保存は未確認です。作成済みには追加していません。外部操作は未実行です。`);
+    }
+  };
+  return (
+    <section>
+      <PageTitle title="テンプレート / Skills" desc="再利用可能な自動化テンプレートから作成します。" />
+      <div className="action-note" role="status">{templateNote}</div>
+      <div className="split">
+        <div className="template-grid">{templates.map((t, i) => <button key={t[0]} className={`template-card ${i === selected ? "selected" : ""}`} onClick={() => { setSelected(i); setTemplateNote(`${t[0]} を選択しました。必要接続=${t[2]} / 推奨Lane=${t[3]}`); }}><LayoutTemplate size={17} /><strong>{t[0]}</strong><span>{t[1]}</span><small>{t[2]} / {t[3]}</small></button>)}</div>
+        <aside className="side-panel wide"><h3>{templates[selected][0]}</h3><p>必要接続: {templates[selected][2]}</p><p>推奨Lane: {templates[selected][3]}</p><p>承認: {templates[selected][4]}</p><Button variant="primary" onClick={useTemplate}>使用する</Button><h3>作成済み</h3><p>{createdTemplates.length ? createdTemplates.join(" / ") : "まだありません"}</p></aside>
+      </div>
+    </section>
+  );
+}
+
+function ArtifactsPage({ setReceipt }: { setReceipt: (value: string) => void }) {
+  const route = useRoute();
+  const activeProject = projectSlugFromRoute(route);
+  const projectName = projectLabels[activeProject];
+  const hasArtifacts = activeProject === "project-a";
+  const metrics = hasArtifacts
+    ? [["Daily AI証跡", "readback待ち"], ["Job証跡", "readback待ち"], ["NisenPrints証跡", "readback待ち"], ["Feedback", "API readback待ち"], ["外部公開", "停止境界"]]
+    : [["月間リード数", "未接続"], ["DM返信率", "未計測"], ["SNS投稿数", "未接続"], ["商談化数", "未接続"], ["LP訪問数", "未計測"]];
+  const artifactRows = hasArtifacts
+    ? [["Daily AI", "投稿前proof", "最新readback待ち", "Daily AI", "Local", "Browser/Sheets", <StatusBadge status="waiting" label="直前停止" />, <RowActions name="Daily AI証跡" setReceipt={setReceipt} scope="成果物" />], ["Job Manager", "応募前receipt", "最新readback待ち", "Job", "Local", "Browser", <StatusBadge status="waiting" label="submit前停止" />, <RowActions name="Job証跡" setReceipt={setReceipt} scope="成果物" />], ["NisenPrints", "publish manifest", "最新readback待ち", "NisenPrints", "Local", "Canva/Printify/Etsy/Pinterest", <StatusBadge status="waiting" label="公開前停止" />, <RowActions name="NisenPrints証跡" setReceipt={setReceipt} scope="成果物" />]]
+    : [["このプロジェクトの成果物はまだありません", "-", "-", "-", "-", "-", <StatusBadge status="draft" />, <Button onClick={() => go("#/chat")}>チャットで作成</Button>]];
+  return (
+    <section>
+      <ProjectTabs />
+      <PageTitle title={projectName} desc="成果物 / KPI" />
+      <ProjectScopeNotice projectId={activeProject} />
+      <div className="cards five">{metrics.map(([a, b]) => <MetricCard title={a} value={b} sub={hasArtifacts ? "Project A" : "API readback未実行"} status="waiting" key={a} />)}</div>
+      <div className="split">
+        <Panel title="成果物一覧" className="list-panel"><DataTable headers={["タイトル", "タイプ", "生成日時", "自動化", "Lane", "Plugin", "ステータス", "操作"]} rows={artifactRows} /></Panel>
+        <aside className="side-panel wide"><h3>右側プレビュー</h3><div className="preview-box">{hasArtifacts ? "証跡artifactを選ぶと、投稿前/応募前/公開前のreceiptをここに表示します。現在は外部操作未実行です。" : `${projectName} の成果物はまだありません。実データ接続後に表示します。`}</div><Button icon={<Download size={15} />} onClick={() => setReceipt("成果物artifactの取得候補を表示しました。実ファイル取得は未実行です。")}>ダウンロード</Button><Button onClick={() => setReceipt("承認キュー候補を表示しました。API readbackは未実行です。")}>承認へ送る</Button></aside>
+      </div>
+    </section>
+  );
+}
+
+function PluginsPage({ setReceipt }: { setReceipt: (value: string) => void }) {
+  const [pluginNote, setPluginNote] = useState("プラグイン / MCP を開きました。接続候補を表示します。live MCP callや外部認証は実行しません。");
+  const pluginRows = plugins.map((p) => [
+    ...p.slice(0, 6),
+    <RowActions
+      name={p[0]}
+      setReceipt={(value) => {
+        setPluginNote(`${value} / ${actionStamp()}`);
+        setReceipt(value);
+      }}
+      scope="プラグイン"
+    />
+  ]);
+  return (
+    <section>
+      <PageTitle title="プラグイン / MCP" desc="Codex app互換のPlugin、MCP Server、Codex Bridge、Local Wrapperを管理します。">
+        <Button icon={<RefreshCw size={15} />} onClick={() => { setPluginNote(`Codex同期候補を表示しました。実Codex同期/API readbackは未実行です / ${actionStamp()}`); setReceipt("mock一覧を表示しました。実Codex同期/API readbackは未実行です。"); }}>Codexから同期</Button>
+      </PageTitle>
+      <div className="action-note" role="status">{pluginNote}</div>
+      <div className="notice-row">接続候補の一覧です。ここから外部認証、MCP live call、投稿、送信、secret保存は実行しません。</div>
+      <div className="cards four">
+        <MetricCard title="利用可能候補" value="6" sub="readiness catalog" status="waiting" />
+        <MetricCard title="接続済みMCP" value="0" sub="本画面では未接続" status="waiting" />
+        <MetricCard title="Codex Bridge対応" value="候補あり" sub="Runway / Browser Use readiness" status="waiting" />
+        <MetricCard title="要認証" value="1" sub="Slack" status="waiting" />
+      </div>
+      <div className="split">
+        <Panel title="Readiness Catalog" className="list-panel"><DataTable headers={["プラグイン", "種類", "接続方式", "認証状態", "Tools", "ステータス", "操作"]} rows={pluginRows} /></Panel>
+        <aside className="side-panel wide"><h3>Runway MCP</h3><p>優先接続方式: Codex Bridge</p><p>代替方式: Direct MCP / Local Wrapper</p><p>画像生成、動画生成、edit video、upscale video は承認必須です。</p><div className="preview-box">接続候補の確認画面です。実Runway、実Codex Bridge、実MCP認証はここでは実行しません。</div><Button variant="primary" onClick={() => { setPluginNote(`Runway MCP 接続テスト候補を表示しました。実認証/API readbackは未実行です / ${actionStamp()}`); setReceipt("Runway MCP の接続テスト候補を表示しました。実認証/API readbackは未実行です。"); }}>接続テスト</Button></aside>
+      </div>
+    </section>
+  );
+}
+
+function Panel({ title, children, className = "" }: { title: string; children: React.ReactNode; className?: string }) {
+  return <section className={`panel ${className}`}><div className="panel-head"><h2>{title}</h2><span className="panel-menu-static" title="このパネルのメニューはread-only表示です"><MoreHorizontal size={16} /></span></div>{children}</section>;
+}
+
+function MetricCard({ title, value, sub, status }: { title: string; value: string; sub: string; status: Status }) {
+  return <div className="metric"><div><span>{title}</span><strong>{value}</strong><small>{sub}</small></div><StatusBadge status={status} /></div>;
+}
+
+function DataTable({ headers, rows }: { headers: React.ReactNode[]; rows: React.ReactNode[][] }) {
+  return <div className="table-wrap"><table><thead><tr>{headers.map((h, i) => <th key={i}>{h}</th>)}</tr></thead><tbody>{rows.map((row, i) => <tr key={i}>{row.map((cell, j) => <td key={j}>{cell}</td>)}</tr>)}</tbody></table></div>;
+}
+
+function RowActions({ name = "項目", setReceipt, scope = "行操作" }: { name?: string; setReceipt?: (value: string) => void; scope?: string }) {
+  const [state, setState] = useState("待機中");
+  const update = (message: string) => {
+    setState(message);
+    setReceipt?.(`${scope}: ${name} - ${message}`);
+  };
+  return (
+    <div className="row-actions">
+      <IconButton label="実行候補" onClick={() => update("実行候補を選択しました。API readback未実行で、外部操作はしていません。")}><Play size={14} /></IconButton>
+      <IconButton label="一時停止候補" onClick={() => update("一時停止候補を選択しました。状態変更は未実行です。")}><Pause size={14} /></IconButton>
+      <IconButton label="詳細" onClick={() => update("詳細候補を表示中です。保存は未実行です。")}><MoreHorizontal size={14} /></IconButton>
+      <small>{state}</small>
+    </div>
+  );
+}
+
+function Bubble({ children, side }: { children: React.ReactNode; side?: "user" }) {
+  return <div className={`bubble ${side === "user" ? "user-bubble" : ""}`}>{children}</div>;
+}
+
+function LineChart() {
+  return <div className="line-chart"><svg viewBox="0 0 640 220" role="img" aria-label="実行パフォーマンスグラフ"><polyline points="20,170 120,150 220,130 320,118 420,90 520,70 620,42" fill="none" stroke="#111" strokeWidth="3" /><g>{[20,120,220,320,420,520,620].map((x, i) => <circle key={x} cx={x} cy={[170,150,130,118,90,70,42][i]} r="5" fill="#111" />)}</g></svg></div>;
+}
+
+function Bars() {
+  return <div className="bars">{["X", "Instagram", "LinkedIn", "Gmail"].map((b, i) => <div key={b}><span>{b}</span><strong style={{ width: `${88 - i * 14}%` }} /></div>)}</div>;
+}
+
+function CheckList({ items }: { items: string[] }) {
+  return <ul className="check-list">{items.map((i) => <li key={i}><Check size={15} />{i}</li>)}</ul>;
+}
+
+function Stepper() {
+  return <div className="stepper">{["成功ステップ", "直前成功", "失敗ステップ", "未実行"].map((s, i) => <div key={s} className={i === 2 ? "failed" : ""}><Circle size={14} /><strong>{s}</strong><span>{["素材取得", "Lane確認", "Chrome起動", "投稿実行"][i]}</span></div>)}</div>;
+}
+
+export default App;

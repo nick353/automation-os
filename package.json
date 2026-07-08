@@ -55,6 +55,7 @@
     "@vitejs/plugin-react": "^5.0.0",
     "better-sqlite3": "^12.11.1",
     "express": "^4.19.2",
+    "html2canvas": "^1.4.1",
     "lucide-react": "^0.468.0",
     "pg": "^8.22.0",
     "react": "^19.0.0",
