@@ -332,33 +332,53 @@ function queryPostgresSqlBatch(sqls: string[]): Array<Array<Record<string, unkno
 function runPostgresWorker(operation: "exec" | "query", sql: string): Array<Record<string, unknown>> {
   if (!postgresUrl) throw new Error("PostgreSQL backend selected but DATABASE_URL/AUTOMATION_OS_DATABASE_URL is missing");
   const command = resolvePostgresWorkerCommand();
-  const stdout = execFileSync(command.bin, command.args, {
-    cwd: process.cwd(),
-    env: { ...process.env, AUTOMATION_OS_POSTGRES_URL: postgresUrl },
-    input: `${JSON.stringify({ operation, sql: translateSqlForPostgres(sql) })}\n`,
-    encoding: "utf8",
-    maxBuffer: 50 * 1024 * 1024,
-    timeout: postgresWorkerTimeoutMs
-  });
-  const parsed = JSON.parse(stdout) as { ok: boolean; rows?: Array<Record<string, unknown>>; error?: string };
-  if (!parsed.ok) throw new Error(parsed.error ?? "PostgreSQL worker failed");
-  return parsed.rows ?? [];
+  try {
+    const stdout = execFileSync(command.bin, command.args, {
+      cwd: process.cwd(),
+      env: { ...process.env, AUTOMATION_OS_POSTGRES_URL: postgresUrl },
+      input: `${JSON.stringify({ operation, sql: translateSqlForPostgres(sql) })}\n`,
+      encoding: "utf8",
+      maxBuffer: 50 * 1024 * 1024,
+      timeout: postgresWorkerTimeoutMs
+    });
+    const parsed = JSON.parse(stdout) as { ok: boolean; rows?: Array<Record<string, unknown>>; error?: string };
+    if (!parsed.ok) throw new Error(parsed.error ?? "PostgreSQL worker failed");
+    return parsed.rows ?? [];
+  } catch (error) {
+    const stderr = typeof error === "object" && error && "stderr" in error ? String((error as { stderr?: unknown }).stderr ?? "").trim() : "";
+    const stdout = typeof error === "object" && error && "stdout" in error ? String((error as { stdout?: unknown }).stdout ?? "").trim() : "";
+    const detail = [stdout, stderr].filter(Boolean).join("\n").trim();
+    if (detail) {
+      throw new Error(detail);
+    }
+    throw error;
+  }
 }
 
 function runPostgresWorkerBatch(sqls: string[]): Array<Array<Record<string, unknown>>> {
   if (!postgresUrl) throw new Error("PostgreSQL backend selected but DATABASE_URL/AUTOMATION_OS_DATABASE_URL is missing");
   const command = resolvePostgresWorkerCommand();
-  const stdout = execFileSync(command.bin, command.args, {
-    cwd: process.cwd(),
-    env: { ...process.env, AUTOMATION_OS_POSTGRES_URL: postgresUrl },
-    input: `${JSON.stringify({ operation: "batchQuery", sqls })}\n`,
-    encoding: "utf8",
-    maxBuffer: 50 * 1024 * 1024,
-    timeout: postgresWorkerTimeoutMs
-  });
-  const parsed = JSON.parse(stdout) as { ok: boolean; batches?: Array<Array<Record<string, unknown>>>; error?: string };
-  if (!parsed.ok) throw new Error(parsed.error ?? "PostgreSQL worker failed");
-  return parsed.batches ?? [];
+  try {
+    const stdout = execFileSync(command.bin, command.args, {
+      cwd: process.cwd(),
+      env: { ...process.env, AUTOMATION_OS_POSTGRES_URL: postgresUrl },
+      input: `${JSON.stringify({ operation: "batchQuery", sqls })}\n`,
+      encoding: "utf8",
+      maxBuffer: 50 * 1024 * 1024,
+      timeout: postgresWorkerTimeoutMs
+    });
+    const parsed = JSON.parse(stdout) as { ok: boolean; batches?: Array<Array<Record<string, unknown>>>; error?: string };
+    if (!parsed.ok) throw new Error(parsed.error ?? "PostgreSQL worker failed");
+    return parsed.batches ?? [];
+  } catch (error) {
+    const stderr = typeof error === "object" && error && "stderr" in error ? String((error as { stderr?: unknown }).stderr ?? "").trim() : "";
+    const stdout = typeof error === "object" && error && "stdout" in error ? String((error as { stdout?: unknown }).stdout ?? "").trim() : "";
+    const detail = [stdout, stderr].filter(Boolean).join("\n").trim();
+    if (detail) {
+      throw new Error(detail);
+    }
+    throw error;
+  }
 }
 
 function resolvePostgresWorkerCommand(): { bin: string; args: string[] } {
