@@ -153,6 +153,38 @@ app.get("/api/mvp/feedback", (_req, res) => {
   });
 });
 
+app.get("/api/mvp/state", (_req, res) => {
+  initDb();
+  res.json(getMvpStateReadback());
+});
+
+app.post("/api/mvp/worker/preview", (req, res) => {
+  initDb();
+  const projectId = typeof req.body?.project_id === "string" && req.body.project_id.trim() ? req.body.project_id.trim() : "all";
+  res.json(buildMvpWorkerPreview(projectId));
+});
+
+app.post("/api/mvp/worker/once", (req, res) => {
+  initDb();
+  const projectId = typeof req.body?.project_id === "string" && req.body.project_id.trim() ? req.body.project_id.trim() : "all";
+  const state = getMvpStateReadback();
+  const worker = state.worker ?? buildMvpWorkerState(state);
+  const preview = buildMvpWorkerPreview(projectId, state);
+  const exactBlocker = worker.exact_blocker ?? preview.exact_blocker ?? "mac_worker_state_missing";
+  res.json({
+    ok: true,
+    read_only: true,
+    picked: false,
+    exact_blocker: exactBlocker,
+    next_action: worker.next_action ?? preview.next_action ?? "MVP stateを再読込してworker状態を確認してください。",
+    processed_runs: [],
+    run: null,
+    state,
+    workerProtocol: "read_only_preflight",
+    external_action_executed: false
+  });
+});
+
 let researchPlanSchedulerTimer: ReturnType<typeof setInterval> | undefined;
 const researchPlanSchedulerInFlightDueKeys = new Set<string>();
 
@@ -2059,6 +2091,145 @@ export function getDashboard() {
     browserHealth
   };
   return { ...body, nextActions: buildNextActions({ ...body, runs: actionQueueRuns }) };
+}
+
+function getMvpStateReadback() {
+  const dashboard = getDashboard();
+  return {
+    ...dashboard,
+    worker: buildMvpWorkerState(dashboard),
+    feedbacks: readMvpFeedbacks()
+  };
+}
+
+function readMvpFeedbacks() {
+  initDb();
+  return querySql<{
+    id: string;
+    feedback_id: string;
+    status: string;
+    route: string;
+    page_title: string;
+    comment: string;
+    artifact_uri: string;
+    has_screenshot: number;
+    viewport_json: string;
+    workflow_context_json: string;
+    category: string;
+    severity: string;
+    fix_target: string;
+    captured_at: string;
+    created_at: string;
+    payload_json: string;
+  }>("SELECT * FROM mvp_feedback ORDER BY created_at DESC LIMIT 500").map((row) => ({
+    id: row.id,
+    feedback_id: row.feedback_id,
+    status: row.status,
+    route: row.route,
+    page_title: row.page_title,
+    comment: row.comment,
+    artifact_uri: row.artifact_uri,
+    has_screenshot: row.has_screenshot === 1,
+    viewport: safeJsonParse<Record<string, unknown>>(row.viewport_json, {}),
+    workflow_context: safeJsonParse<Record<string, unknown>>(row.workflow_context_json, {}),
+    category: row.category,
+    severity: row.severity,
+    fix_target: row.fix_target,
+    captured_at: row.captured_at,
+    created_at: row.created_at,
+    payload: safeJsonParse<Record<string, unknown>>(row.payload_json, {})
+  }));
+}
+
+function buildMvpWorkerState(dashboard: ReturnType<typeof getDashboard>) {
+  const localWorker = dashboard.localWorker as
+    | {
+      status?: string;
+      label?: string;
+      detail?: string;
+      nextAction?: string;
+      updatedAt?: string | null;
+      processed?: number;
+      usesApiKey?: boolean;
+    }
+    | undefined;
+  const runs = Array.isArray(dashboard.runs) ? dashboard.runs : [];
+  const actionQueueRuns = selectActionQueueRuns(runs as Array<{ status?: unknown; metadata_json?: unknown; project_id?: unknown; objective?: unknown; name?: unknown }>);
+  const stale = localWorker?.status === "idle";
+  const missing = !localWorker || localWorker.status === "missing";
+  const readbackStatus = missing ? "heartbeat_missing" : stale ? "heartbeat_stale" : "fresh";
+  const exactBlocker = missing ? "mac_worker_state_missing" : stale ? "mac_worker_heartbeat_stale" : null;
+  return {
+    id: "local_codex_worker",
+    status: localWorker?.status === "ok" ? "ok" : localWorker?.status === "running" ? "running" : localWorker?.status === "blocked" ? "blocked" : "unknown",
+    heartbeat_at: localWorker?.updatedAt ?? null,
+    queue_depth: actionQueueRuns.length,
+    last_run_id: runs[0]?.id ? String(runs[0].id) : null,
+    heartbeat_age_seconds: null,
+    heartbeat_fresh: !missing && !stale,
+    readback_status: readbackStatus,
+    exact_blocker: exactBlocker,
+    next_action: localWorker?.nextAction ?? "MVP stateを再読込してworker状態を確認してください。",
+    external_action_executed: false
+  };
+}
+
+function buildMvpWorkerPreview(projectId = "all", dashboard = getDashboard()) {
+  const runs = Array.isArray(dashboard.runs) ? dashboard.runs : [];
+  const actionQueueRuns = selectActionQueueRuns(runs as Array<{ status?: unknown; metadata_json?: unknown; project_id?: unknown; objective?: unknown; name?: unknown }>);
+  const projectScopedRuns = projectId === "all"
+    ? actionQueueRuns
+    : actionQueueRuns.filter((run) => deriveRunProjectId(run) === projectId);
+  const byProject = projectScopedRuns.reduce<Record<string, number>>((acc, run) => {
+    const key = deriveRunProjectId(run);
+    acc[key] = (acc[key] ?? 0) + 1;
+    return acc;
+  }, {});
+  const highRiskCount = projectScopedRuns.filter((run) => {
+    const status = String((run as { status?: unknown }).status ?? "");
+    return status === "blocked" || status === "waiting_approval" || status === "approval_required" || Boolean((run as { exact_blocker?: unknown }).exact_blocker);
+  }).length;
+  const worker = buildMvpWorkerState(dashboard);
+  return {
+    ok: true,
+    read_only: true,
+    project_id: projectId,
+    picked_count: projectScopedRuns.length,
+    by_project: byProject,
+    high_risk_count: highRiskCount,
+    exact_blocker: worker.exact_blocker,
+    next_action: worker.next_action,
+    external_action_executed: false
+  };
+}
+
+function deriveRunProjectId(run: { project_id?: unknown; metadata_json?: unknown; objective?: unknown; name?: unknown }): string {
+  const direct = typeof run.project_id === "string" ? run.project_id.trim() : "";
+  if (direct) return direct;
+  const metadata = safeJsonParse<Record<string, unknown>>(typeof run.metadata_json === "string" ? run.metadata_json : "{}", {});
+  const metadataProject = firstStringValue(
+    metadata.project_id,
+    metadata.projectId,
+    metadata.project,
+    metadata.project_slug,
+    metadata.projectSlug
+  );
+  if (metadataProject) return metadataProject;
+  const text = `${String(run.name ?? "")} ${String(run.objective ?? "")} ${JSON.stringify(metadata)}`.toLowerCase();
+  if (/project\s*-?\s*a|daily-ai|job application|nisenprints|sns|feedback|dm返信|広告投稿/.test(text)) return "project-a";
+  if (/project\s*-?\s*b/.test(text)) return "project-b";
+  if (/project\s*-?\s*c/.test(text)) return "project-c";
+  if (/project\s*-?\s*d/.test(text)) return "project-d";
+  return "project-a";
+}
+
+function firstStringValue(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value !== "string") continue;
+    const trimmed = value.trim();
+    if (trimmed) return trimmed;
+  }
+  return null;
 }
 
 function getPostgresFastDashboard() {
