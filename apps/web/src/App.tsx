@@ -1368,7 +1368,7 @@ function ChatPage({ model }: { model: AppModel }) {
   return (
     <section className="chat-page">
       <PageTitle title="チャット" desc="自然言語から自動化を作成します。">
-        <Button icon={<RefreshCw size={14} />} onClick={resetChat}>リセット</Button>
+        <Button icon={<RefreshCw size={14} />} onClick={resetChat}>会話をリセット</Button>
       </PageTitle>
       <div className="action-note" role="status">{chatNote}</div>
       <div className="chat-shell">
@@ -1416,7 +1416,7 @@ function ChatPage({ model }: { model: AppModel }) {
           <div className="button-row">
             <Button variant="primary" icon={<MessageSquare size={14} />} onClick={sendMessage} disabled={!draftPrompt}>送信して考える</Button>
             <Button onClick={startPlan} disabled={!activePrompt}>プランを再作成</Button>
-            <Button onClick={resetChat}>リセット</Button>
+            <Button onClick={resetChat}>入力をリセット</Button>
           </div>
           {planVisible && (
           <div className="plan-card">

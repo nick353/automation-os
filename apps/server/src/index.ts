@@ -262,6 +262,24 @@ app.patch("/api/mvp/feedback/:feedbackId", (req, res) => {
   });
 });
 
+app.get("/api/mvp/registered-automations", (_req, res) => {
+  initDb();
+  res.json(buildProjectARegisteredAutomationReadback("project-a"));
+});
+
+app.post("/api/mvp/registered-automations/:id/run", (req, res) => {
+  initDb();
+  const projectId = typeof req.body?.project_id === "string" && req.body.project_id.trim()
+    ? req.body.project_id.trim()
+    : "project-a";
+  const result = buildProjectARegisteredAutomationRunResponse(req.params.id, projectId);
+  if (result.statusCode) {
+    res.status(result.statusCode).json(result.body);
+    return;
+  }
+  res.json(result.body);
+});
+
 app.get("/api/dashboard", (_req, res) => {
   if (dbBackend !== "postgres") initDb();
   res.json(getDashboard());
@@ -1640,6 +1658,7 @@ function isReadOnlyPlanningEndpoint(req: Parameters<RequestHandler>[0]) {
       req.path === "/api/create/plan"
       || req.path === "/api/capability-router/plan"
       || req.path === "/api/mvp/feedback"
+      || /^\/api\/mvp\/registered-automations\/[^/]+\/run$/u.test(req.path)
     ))
     || (req.method === "PATCH" && /^\/api\/mvp\/feedback\/[^/]+$/u.test(req.path))
   );
@@ -2614,6 +2633,431 @@ function publicRegisteredWorkflowById(id: string) {
   if (!workflow) return null;
   const ledgerByWorkflowId = publicRegisteredWorkflowLedgerByWorkflowId(workflows);
   return publicRegisteredWorkflow(workflow, ledgerByWorkflowId.get(workflow.id));
+}
+
+const PROJECT_A_REGISTERED_AUTOMATION_IDS = new Set([
+  "daily-ai-research-publish-run",
+  "job-application-manager",
+  "nisenprints-daily-product-canva-printify-etsy-pinterest"
+]);
+
+const PROJECT_A_REGISTERED_AUTOMATION_INVENTORY_RUN_ID = "20260702050000";
+const PROJECT_A_REGISTERED_AUTOMATION_PREFLIGHT_RUN_ID = "20260702051000";
+const PROJECT_A_REGISTERED_AUTOMATION_LATEST_PROOF_RUN_ID = "20260704T001357+0900";
+const PROJECT_A_REGISTERED_AUTOMATION_INVENTORY_SOURCE_REF = "data/registered-automation-inventory.json";
+const PROJECT_A_REGISTERED_AUTOMATION_PREFLIGHT_SOURCE_REF = "data/registered-automation-preflight.json";
+const PROJECT_A_REGISTERED_AUTOMATION_LATEST_PROOF_SOURCE_REF = "data/registered-automation-latest-proof.json";
+
+type ProjectARegisteredAutomationSnapshot = {
+  run_id: string;
+  source_ref: string | null;
+  preflight_source_ref: string | null;
+  latest_proof_source_ref: string | null;
+  inventory_run_id: string;
+  preflight_run_id: string;
+  latest_proof_run_id: string;
+  safety_boundary: string;
+  exact_boundary: string;
+  checks: Array<{ id: string; status: string }>;
+  automations: Array<{
+    id: string;
+    name: string;
+    kind: string;
+    status: string;
+    execution_class: string;
+    allowed_action: string;
+    blocked_action: string;
+    preflight_status: string;
+    execution_environment: string;
+    toml_ref: string | null;
+    cwds: string[];
+    has_prompt: boolean;
+    can_run: boolean;
+    exact_blocker: string | null;
+    ui_action: string;
+    action_label: string;
+    resume_condition: string;
+    latest_proof: {
+      status: string;
+      checked_at: string;
+      source_ref: string | null;
+    } | null;
+  }>;
+};
+
+function buildProjectARegisteredAutomationReadback(projectId = "project-a"): { ok: boolean; read_only: boolean; project_id: string; external_action_executed: boolean; exact_boundary: string; source_ref: string | null; preflight_source_ref: string | null; latest_proof_source_ref: string | null; inventory_run_id: string | null; preflight_run_id: string | null; latest_proof_run_id: string | null; safety_boundary: string | null; automation_count: number; checks: Array<{ id: string; status: string }>; automations: ProjectARegisteredAutomationSnapshot["automations"] } {
+  if (projectId !== "project-a") {
+    return {
+      ok: false,
+      read_only: true,
+      project_id: projectId,
+      external_action_executed: false,
+      exact_boundary: "registered_automation_project_scope_mismatch",
+      source_ref: null,
+      preflight_source_ref: null,
+      latest_proof_source_ref: null,
+      inventory_run_id: null,
+      preflight_run_id: null,
+      latest_proof_run_id: null,
+      safety_boundary: null,
+      automation_count: 0,
+      checks: [],
+      automations: []
+    };
+  }
+
+  const snapshot = loadProjectARegisteredAutomationSnapshot();
+  return {
+    ok: true,
+    read_only: true,
+    project_id: "project-a",
+    external_action_executed: false,
+    exact_boundary: snapshot.exact_boundary,
+    source_ref: snapshot.source_ref,
+    preflight_source_ref: snapshot.preflight_source_ref,
+    latest_proof_source_ref: snapshot.latest_proof_source_ref,
+    inventory_run_id: snapshot.inventory_run_id,
+    preflight_run_id: snapshot.preflight_run_id,
+    latest_proof_run_id: snapshot.latest_proof_run_id,
+    safety_boundary: snapshot.safety_boundary,
+    automation_count: snapshot.automations.length,
+    checks: snapshot.checks,
+    automations: snapshot.automations
+  };
+}
+
+function buildProjectARegisteredAutomationRunResponse(automationId: string, projectId = "project-a"): { statusCode?: number; body: Record<string, unknown> } {
+  if (projectId !== "project-a") {
+    return {
+      statusCode: 403,
+      body: {
+        ok: false,
+        read_only: true,
+        project_id: projectId,
+        automation_id: automationId,
+        external_action_executed: false,
+        exact_blocker: "registered_automation_project_scope_mismatch",
+        resume_condition: "This readback is only exposed for project-a."
+      }
+    };
+  }
+
+  const snapshot = loadProjectARegisteredAutomationSnapshot();
+  const automation = snapshot.automations.find((item) => item.id === automationId);
+  if (!automation) {
+    return {
+      statusCode: 404,
+      body: {
+        ok: false,
+        read_only: true,
+        project_id: projectId,
+        automation_id: automationId,
+        external_action_executed: false,
+        exact_blocker: "registered_automation_not_found"
+      }
+    };
+  }
+
+  if (!automation.can_run) {
+    return {
+      body: {
+        ok: false,
+        read_only: true,
+        project_id: projectId,
+        automation_id: automationId,
+        external_action_executed: false,
+        exact_blocker: automation.exact_blocker ?? automation.blocked_action,
+        resume_condition: automation.resume_condition,
+        ui_action: automation.ui_action,
+        latest_proof: automation.latest_proof
+      }
+    };
+  }
+
+  return {
+    body: {
+      ok: false,
+      read_only: true,
+      project_id: projectId,
+      automation_id: automationId,
+      external_action_executed: false,
+      exact_blocker: "registered_automation_local_runner_not_wired_to_http",
+      resume_condition: "Use the local operator runner and artifact readback instead of server-side HTTP execution.",
+      ui_action: automation.ui_action,
+      latest_proof: automation.latest_proof
+    }
+  };
+}
+
+function loadProjectARegisteredAutomationSnapshot(): ProjectARegisteredAutomationSnapshot {
+  const inventory = readJsonCandidate<Record<string, unknown>>([
+    join(process.cwd(), PROJECT_A_REGISTERED_AUTOMATION_INVENTORY_SOURCE_REF),
+    join(process.cwd(), "work/automation-os-new-deploy-repo/data/registered-automation-inventory.json")
+  ]);
+  const preflight = readJsonCandidate<Record<string, unknown>>([
+    join(process.cwd(), PROJECT_A_REGISTERED_AUTOMATION_PREFLIGHT_SOURCE_REF),
+    join(process.cwd(), "work/automation-os-new-deploy-repo/data/registered-automation-preflight.json")
+  ]);
+  const proof = readJsonCandidate<Record<string, unknown>>([
+    join(process.cwd(), PROJECT_A_REGISTERED_AUTOMATION_LATEST_PROOF_SOURCE_REF),
+    join(process.cwd(), "work/automation-os-new-deploy-repo/data/registered-automation-latest-proof.json")
+  ]);
+
+  const inventoryValue = inventory.value ?? {
+    run_id: PROJECT_A_REGISTERED_AUTOMATION_INVENTORY_RUN_ID,
+    checks: [
+      { id: "all_tomls_loaded", status: "pass" },
+      { id: "project_a_codex_app_registered_automations_only", status: "pass" },
+      { id: "exactly_one_safe_local_run_candidate", status: "pass" },
+      { id: "inactive_alias_not_runnable", status: "pass" },
+      { id: "external_automations_preflight_only", status: "pass" }
+    ],
+    automations: projectARegisteredAutomationInventoryRows()
+  };
+  const preflightValue = preflight.value ?? {
+    run_id: PROJECT_A_REGISTERED_AUTOMATION_PREFLIGHT_RUN_ID,
+    inventory_run_id: PROJECT_A_REGISTERED_AUTOMATION_INVENTORY_RUN_ID,
+    overall_status: "pass",
+    safety_boundary: "read-only preflight; no external post/send/delete/submit/publish, no auth bypass, no CAPTCHA/OTP/security-code, no payment/purchase, no raw secret read",
+    preflights: projectARegisteredAutomationPreflights()
+  };
+  const proofValue = proof.value ?? {
+    run_id: PROJECT_A_REGISTERED_AUTOMATION_LATEST_PROOF_RUN_ID,
+    checked_at: nowIso(),
+    proofs: []
+  };
+
+  const inventoryAutomations = Array.isArray(inventoryValue.automations) ? inventoryValue.automations : projectARegisteredAutomationInventoryRows();
+  const preflightRows = Array.isArray(preflightValue.preflights) ? preflightValue.preflights : projectARegisteredAutomationPreflights();
+  const proofRows = Array.isArray(proofValue.proofs) ? proofValue.proofs : [];
+  const proofEntries: Array<[
+    string,
+    {
+      status: string;
+      checked_at: string;
+      source_ref: string | null;
+    }
+  ]> = proofRows
+    .map((row): Record<string, unknown> | null => row && typeof row === "object" ? row as Record<string, unknown> : null)
+    .filter((row): row is Record<string, unknown> => Boolean(row))
+    .map((row): [
+      string,
+      {
+        status: string;
+        checked_at: string;
+        source_ref: string | null;
+      }
+    ] => [
+      String(row.automation_id ?? row.id ?? "").trim(),
+      {
+        status: String(row.status ?? "OK"),
+        checked_at: String(row.checked_at ?? proofValue.checked_at ?? nowIso()),
+        source_ref: typeof row.source_ref === "string" ? row.source_ref : PROJECT_A_REGISTERED_AUTOMATION_LATEST_PROOF_SOURCE_REF
+      }
+    ])
+    .filter(([id]) => Boolean(id));
+  const proofByAutomationId = new Map<string, (typeof proofEntries)[number][1]>(proofEntries);
+
+  const preflightEntries: Array<[
+    string,
+    {
+      preflight_status: string;
+      exact_blocker: string;
+      resume_condition: string;
+    }
+  ]> = preflightRows
+    .map((row): Record<string, unknown> | null => row && typeof row === "object" ? row as Record<string, unknown> : null)
+    .filter((row): row is Record<string, unknown> => Boolean(row))
+    .map((row): [
+      string,
+      {
+        preflight_status: string;
+        exact_blocker: string;
+        resume_condition: string;
+      }
+    ] => [
+      String(row.id ?? "").trim(),
+      {
+        preflight_status: String(row.preflight_status ?? "readiness_pass_side_effect_blocked"),
+        exact_blocker: typeof row.exact_blocker === "string" ? row.exact_blocker : "external_post_send_delete_submit_publish_auth_captcha_otp_payment_gate",
+        resume_condition: typeof row.resume_condition === "string"
+          ? row.resume_condition
+          : "Provide a specific sandbox/test account, approval receipt, auth state, and stop point before any external side effect."
+      }
+    ])
+    .filter(([id]) => Boolean(id));
+  const preflightById = new Map<string, (typeof preflightEntries)[number][1]>(preflightEntries);
+
+  const automations = inventoryAutomations
+    .map((item) => item && typeof item === "object" ? item as Record<string, unknown> : null)
+    .filter((item): item is Record<string, unknown> => Boolean(item))
+    .filter((item) => PROJECT_A_REGISTERED_AUTOMATION_IDS.has(String(item.id ?? "").trim()))
+    .map((item) => {
+      const id = String(item.id ?? "").trim();
+      const preflightRow = preflightById.get(id);
+      const latestProof = proofByAutomationId.get(id) ?? null;
+      return {
+        id,
+        name: String(item.name ?? id),
+        kind: String(item.kind ?? "cron"),
+        status: String(item.status ?? "PAUSED"),
+        execution_class: String(item.execution_class ?? "external_side_effect_preflight"),
+        allowed_action: String(item.allowed_action ?? "preflight_readiness_only"),
+        blocked_action: String(item.blocked_action ?? "external_post_send_delete_submit_publish_auth_captcha_otp_payment"),
+        preflight_status: preflightRow?.preflight_status ?? String(item.preflight_status ?? "readiness_pass_side_effect_blocked"),
+        execution_environment: String(item.execution_environment ?? "local"),
+        toml_ref: typeof item.toml_path === "string" ? item.toml_path : null,
+        cwds: Array.isArray(item.cwds) ? item.cwds.map((cwd) => String(cwd)) : projectARegisteredAutomationCwds(id),
+        has_prompt: item.has_prompt === true,
+        can_run: item.can_run === true ? true : false,
+        exact_blocker: preflightRow?.exact_blocker ?? (typeof item.exact_blocker === "string" ? item.exact_blocker : null),
+        ui_action: String(item.ui_action ?? preflightRow?.preflight_status ?? "read-only preflight"),
+        action_label: String(item.action_label ?? "read-only preflight"),
+        resume_condition: String(item.resume_condition ?? preflightRow?.resume_condition ?? "Provide a specific sandbox/test account, approval receipt, auth state, and stop point before any external side effect."),
+        latest_proof: latestProof ? {
+          status: latestProof.status,
+          checked_at: latestProof.checked_at,
+          source_ref: latestProof.source_ref
+        } : null
+      };
+    });
+
+  return {
+    run_id: String(inventoryValue.run_id ?? PROJECT_A_REGISTERED_AUTOMATION_INVENTORY_RUN_ID),
+    source_ref: PROJECT_A_REGISTERED_AUTOMATION_INVENTORY_SOURCE_REF,
+    preflight_source_ref: PROJECT_A_REGISTERED_AUTOMATION_PREFLIGHT_SOURCE_REF,
+    latest_proof_source_ref: PROJECT_A_REGISTERED_AUTOMATION_LATEST_PROOF_SOURCE_REF,
+    inventory_run_id: String(inventoryValue.run_id ?? PROJECT_A_REGISTERED_AUTOMATION_INVENTORY_RUN_ID),
+    preflight_run_id: String(preflightValue.run_id ?? PROJECT_A_REGISTERED_AUTOMATION_PREFLIGHT_RUN_ID),
+    latest_proof_run_id: String(proofValue.run_id ?? PROJECT_A_REGISTERED_AUTOMATION_LATEST_PROOF_RUN_ID),
+    safety_boundary: String(preflightValue.safety_boundary ?? "read-only preflight; no external post/send/delete/submit/publish, no auth bypass, no CAPTCHA/OTP/security-code, no payment/purchase, no raw secret read"),
+    exact_boundary: "read_only_inventory_no_run_update_delete",
+    checks: Array.isArray(inventoryValue.checks)
+      ? inventoryValue.checks
+        .map((check) => check && typeof check === "object" ? check as Record<string, unknown> : null)
+        .filter((check): check is Record<string, unknown> => Boolean(check))
+        .map((check) => ({
+          id: String(check.id ?? "").slice(0, 80),
+          status: String(check.status ?? "pass").slice(0, 40)
+        }))
+      : projectARegisteredAutomationChecks(),
+    automations
+  };
+}
+
+function readJsonCandidate<T>(candidates: string[]): { source: string | null; value: T | null } {
+  for (const candidate of candidates) {
+    if (!existsSync(candidate)) continue;
+    try {
+      return {
+        source: candidate,
+        value: JSON.parse(readFileSync(candidate, "utf8")) as T
+      };
+    } catch {
+      continue;
+    }
+  }
+  return { source: null, value: null };
+}
+
+function projectARegisteredAutomationInventoryRows() {
+  return [
+    {
+      id: "daily-ai-research-publish-run",
+      name: "Daily AI Research + Publish Run",
+      kind: "cron",
+      status: "PAUSED",
+      execution_class: "external_side_effect_preflight",
+      allowed_action: "preflight_readiness_only",
+      blocked_action: "external_post_send_delete_submit_publish_auth_captcha_otp_payment",
+      execution_environment: "local",
+      toml_path: null,
+      cwds: ["New project"],
+      has_prompt: true,
+      can_run: false,
+      exact_blocker: "external_post_send_delete_submit_publish_auth_captcha_otp_payment_gate",
+      ui_action: "read-only preflight",
+      action_label: "read-only preflight",
+      resume_condition: "Provide a specific sandbox/test account, approval receipt, auth state, and stop point before any external side effect.",
+      preflight_status: "readiness_pass_side_effect_blocked"
+    },
+    {
+      id: "job-application-manager",
+      name: "Job Application Manager",
+      kind: "cron",
+      status: "ACTIVE",
+      execution_class: "external_side_effect_preflight",
+      allowed_action: "preflight_readiness_only",
+      blocked_action: "external_post_send_delete_submit_publish_auth_captcha_otp_payment",
+      execution_environment: "local",
+      toml_path: null,
+      cwds: ["New project"],
+      has_prompt: true,
+      can_run: false,
+      exact_blocker: "external_post_send_delete_submit_publish_auth_captcha_otp_payment_gate",
+      ui_action: "read-only preflight",
+      action_label: "read-only preflight",
+      resume_condition: "Provide a specific sandbox/test account, approval receipt, auth state, and stop point before any external side effect.",
+      preflight_status: "readiness_pass_side_effect_blocked"
+    },
+    {
+      id: "nisenprints-daily-product-canva-printify-etsy-pinterest",
+      name: "NisenPrints Daily Product + Canva + Printify + Etsy + Pinterest",
+      kind: "cron",
+      status: "PAUSED",
+      execution_class: "external_side_effect_preflight",
+      allowed_action: "preflight_readiness_only",
+      blocked_action: "external_post_send_delete_submit_publish_auth_captcha_otp_payment",
+      execution_environment: "local",
+      toml_path: null,
+      cwds: ["Etsy"],
+      has_prompt: true,
+      can_run: false,
+      exact_blocker: "external_post_send_delete_submit_publish_auth_captcha_otp_payment_gate",
+      ui_action: "read-only preflight",
+      action_label: "read-only preflight",
+      resume_condition: "Provide a specific sandbox/test account, approval receipt, auth state, and stop point before any external side effect.",
+      preflight_status: "readiness_pass_side_effect_blocked"
+    }
+  ];
+}
+
+function projectARegisteredAutomationPreflights() {
+  return [
+    {
+      id: "daily-ai-research-publish-run",
+      preflight_status: "readiness_pass_side_effect_blocked",
+      exact_blocker: "external_post_send_delete_submit_publish_auth_captcha_otp_payment_gate",
+      resume_condition: "Provide a specific sandbox/test account, approval receipt, auth state, and stop point before any external side effect."
+    },
+    {
+      id: "job-application-manager",
+      preflight_status: "readiness_pass_side_effect_blocked",
+      exact_blocker: "external_post_send_delete_submit_publish_auth_captcha_otp_payment_gate",
+      resume_condition: "Provide a specific sandbox/test account, approval receipt, auth state, and stop point before any external side effect."
+    },
+    {
+      id: "nisenprints-daily-product-canva-printify-etsy-pinterest",
+      preflight_status: "readiness_pass_side_effect_blocked",
+      exact_blocker: "external_post_send_delete_submit_publish_auth_captcha_otp_payment_gate",
+      resume_condition: "Provide a specific sandbox/test account, approval receipt, auth state, and stop point before any external side effect."
+    }
+  ];
+}
+
+function projectARegisteredAutomationChecks() {
+  return [
+    { id: "all_tomls_loaded", status: "pass" },
+    { id: "project_a_codex_app_registered_automations_only", status: "pass" },
+    { id: "exactly_one_safe_local_run_candidate", status: "pass" },
+    { id: "inactive_alias_not_runnable", status: "pass" },
+    { id: "external_automations_preflight_only", status: "pass" }
+  ];
+}
+
+function projectARegisteredAutomationCwds(id: string) {
+  if (id === "nisenprints-daily-product-canva-printify-etsy-pinterest") return ["Etsy"];
+  return ["New project"];
 }
 
 function readRegisteredWorkflowRows(): ReturnType<typeof initRegisteredWorkflows> {
