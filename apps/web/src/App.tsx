@@ -2077,12 +2077,12 @@ function ApprovalsPage({ model }: { model: AppModel }) {
   const [approvalStatusNote, setApprovalStatusNote] = useState("");
   const persistedApprovals = (mvpState.approvals ?? []).map((approval) => ({
     id: approval.id,
-    kind: approval.kind,
-    content: approval.content,
-    project: approval.project_id,
-    lane: "MVP API",
+    kind: String(approval.task_label ?? approval.title ?? approval.kind ?? "承認候補"),
+    content: String(([approval.action_label, approval.boundary_label, approval.execution_label].filter(Boolean).join(" / ") || approval.content) ?? ""),
+    project: String(approval.project_id ?? "project-a"),
+    lane: String(approval.approval_group_id ?? approval.lane ?? "MVP API"),
     due: approval.updated_at?.slice(0, 10) ?? "-",
-    risk: approval.external_action_allowed ? "要確認" : "外部操作なし",
+    risk: String(approval.boundary_label ?? (approval.external_action_allowed ? "要確認" : "外部操作なし")),
     status: normalizeApprovalStatus(approval.status)
   }));
   const visibleApprovals = persistedApprovals.filter((approval) => approval.status === "waiting");
