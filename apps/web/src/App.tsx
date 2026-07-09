@@ -1858,6 +1858,10 @@ function BuilderPage({ model }: { model: AppModel }) {
         approval_policy: builderDraft.approval_policy,
         external_action_allowed: false
       };
+      const readError = async (response: Response, fallback: string) => {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.exact_blocker || body.exactBlocker || body.error || fallback);
+      };
       if (!persistedAutomation) {
         const createResponse = await fetch("/api/mvp/automations", {
           method: "POST",
@@ -1878,7 +1882,7 @@ function BuilderPage({ model }: { model: AppModel }) {
             builder_spec: specPayload
           })
         });
-        if (!createResponse.ok) throw new Error("automation_create_failed");
+        if (!createResponse.ok) await readError(createResponse, "automation_create_failed");
         const createResult = await createResponse.json();
         setMvpState(createResult.state);
         setAutomationRows(toAutomationRows(createResult.state.automations ?? []));
@@ -1898,20 +1902,21 @@ function BuilderPage({ model }: { model: AppModel }) {
           automation_type: automationSlugForKind(builderKind)
         })
       });
-      if (!patchResponse.ok) throw new Error("automation_patch_failed");
+      if (!patchResponse.ok) await readError(patchResponse, "automation_patch_failed");
       const patchResult = await patchResponse.json();
       const specResponse = await fetch(`/api/mvp/automations/${encodeURIComponent(automationId)}/builder-spec`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(specPayload)
       });
-      if (!specResponse.ok) throw new Error("builder_spec_save_failed");
+      if (!specResponse.ok) await readError(specResponse, "builder_spec_save_failed");
       const specResult = await specResponse.json();
       setMvpState(specResult.state ?? patchResult.state);
       setAutomationRows(toAutomationRows((specResult.state ?? patchResult.state).automations ?? []));
       noteBuilder("Builder設定を保存し、API readbackで確認しました。外部投稿・送信は未実行です。");
-    } catch {
-      noteBuilder("Builder設定の保存は未確認です。API readbackに失敗しました。");
+    } catch (error) {
+      const exact = error instanceof Error ? error.message : "builder_save_failed";
+      noteBuilder(`Builder設定の保存は未確認です: ${exact}`);
     }
   };
   return (
