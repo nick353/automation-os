@@ -265,6 +265,52 @@ app.post("/api/mvp/feedback", (req, res) => {
   });
 });
 
+app.post("/api/mvp/approvals", (req, res) => {
+  initDb();
+  const body = req.body ?? {};
+  const title = typeof body.title === "string" && body.title.trim() ? body.title.trim() : "MVP 承認待ち";
+  const requestedBy = typeof body.requested_by === "string" && body.requested_by.trim() ? body.requested_by.trim() : "local-ui";
+  const approvalGroupId = typeof body.approval_group_id === "string" && body.approval_group_id.trim() ? body.approval_group_id.trim() : `mvp_ui_${makeId("approval_group")}`;
+  const resourceLocks = Array.isArray(body.resource_locks)
+    ? body.resource_locks.map((lock: unknown) => String(lock).trim()).filter(Boolean)
+    : [];
+  const priority = typeof body.priority === "string" && body.priority.trim() ? body.priority.trim() : "normal";
+  const runId = typeof body.run_id === "string" && body.run_id.trim() ? body.run_id.trim() : null;
+  const approvalId = makeId("approval");
+  const createdAt = nowIso();
+  insert("approvals", {
+    id: approvalId,
+    run_id: runId,
+    title,
+    requested_by: requestedBy,
+    status: "pending",
+    priority,
+    approval_group_id: approvalGroupId,
+    resource_locks_json: JSON.stringify(resourceLocks),
+    created_at: createdAt,
+    decided_at: null,
+    decision_note: null
+  });
+  res.status(201).json({
+    ok: true,
+    approval: {
+      id: approvalId,
+      run_id: runId,
+      title,
+      requested_by: requestedBy,
+      status: "pending",
+      priority,
+      approval_group_id: approvalGroupId,
+      resource_locks_json: resourceLocks,
+      created_at: createdAt,
+      decided_at: null,
+      decision_note: null
+    },
+    state: getMvpStateReadback(),
+    external_action_executed: false
+  });
+});
+
 app.patch("/api/mvp/feedback/:feedbackId", (req, res) => {
   initDb();
   const feedbackId = typeof req.params.feedbackId === "string" ? req.params.feedbackId.trim() : "";
@@ -292,6 +338,41 @@ app.patch("/api/mvp/feedback/:feedbackId", (req, res) => {
     status,
     updated_at: nowIso()
   });
+});
+
+app.patch("/api/mvp/approvals/:approvalId", async (req, res, next) => {
+  try {
+    const approvalId = typeof req.params.approvalId === "string" ? req.params.approvalId.trim() : "";
+    const decision = typeof req.body?.decision === "string" ? req.body.decision.trim() : "";
+    const note = typeof req.body?.note === "string" ? req.body.note.trim() : "";
+    if (!approvalId) {
+      res.status(400).json({ ok: false, error: "approval_id_required", exactBlocker: "approval_id_required" });
+      return;
+    }
+    if (!["approve", "reject"].includes(decision)) {
+      res.status(400).json({ ok: false, error: "approval_decision_invalid", exactBlocker: "approval_decision_invalid" });
+      return;
+    }
+    const status = decision === "approve" ? "approved" : "rejected";
+    const result = await decideStoredApproval(approvalId, status);
+    if (result.statusCode && result.statusCode !== 200) {
+      res.status(result.statusCode).json(result.body);
+      return;
+    }
+    if (note) {
+      execSql(`UPDATE approvals SET decision_note = ${sqlValue(note)} WHERE id = ${sqlValue(approvalId)};`);
+    }
+    res.json({
+      ok: true,
+      approval_id: approvalId,
+      decision,
+      state: getMvpStateReadback(),
+      approval: querySql(`SELECT * FROM approvals WHERE id=${sqlValue(approvalId)} LIMIT 1`)[0] ?? null,
+      external_action_executed: false
+    });
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.get("/api/mvp/registered-automations", (_req, res) => {
@@ -1690,9 +1771,13 @@ function isReadOnlyPlanningEndpoint(req: Parameters<RequestHandler>[0]) {
       req.path === "/api/create/plan"
       || req.path === "/api/capability-router/plan"
       || req.path === "/api/mvp/feedback"
+      || req.path === "/api/mvp/approvals"
       || /^\/api\/mvp\/registered-automations\/[^/]+\/run$/u.test(req.path)
     ))
-    || (req.method === "PATCH" && /^\/api\/mvp\/feedback\/[^/]+$/u.test(req.path))
+    || (req.method === "PATCH" && (
+      /^\/api\/mvp\/feedback\/[^/]+$/u.test(req.path)
+      || /^\/api\/mvp\/approvals\/[^/]+$/u.test(req.path)
+    ))
   );
 }
 

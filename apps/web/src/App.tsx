@@ -1124,7 +1124,7 @@ function renderPage(route: string, model: AppModel) {
   if (route.includes("/lanes")) return <LanesPage setReceipt={setReceipt} />;
   if (route.includes("/memory")) return <MemoryPage model={model} />;
   if (route.includes("/security")) return <SecurityPage model={model} />;
-  if (route.includes("/artifacts")) return <ArtifactsPage setReceipt={setReceipt} />;
+  if (route.includes("/artifacts")) return <ArtifactsPage setReceipt={setReceipt} mvpState={model.mvpState} setMvpState={model.setMvpState} />;
   if (route.includes("/recovery")) return <RecoveryPage setReceipt={setReceipt} />;
   if (route.includes("/runs/")) return <RunDetailPage setReceipt={setReceipt} />;
   if (route.includes("/automations")) return <AutomationsPage model={model} />;
@@ -2746,17 +2746,109 @@ function TemplatesPage({ model }: { model: AppModel }) {
   );
 }
 
-function ArtifactsPage({ setReceipt }: { setReceipt: (value: string) => void }) {
+function ArtifactsPage({ setReceipt, mvpState, setMvpState }: { setReceipt: (value: string) => void; mvpState: MvpState; setMvpState: React.Dispatch<React.SetStateAction<MvpState>> }) {
   const route = useRoute();
   const activeProject = projectSlugFromRoute(route);
   const projectName = projectLabels[activeProject];
   const hasArtifacts = activeProject === "project-a";
+  const artifactItems = hasArtifacts ? [
+    {
+      id: "daily-ai",
+      name: "Daily AI",
+      type: "投稿前proof",
+      generated: "最新readback待ち",
+      automation: "Daily AI",
+      lane: "Local",
+      plugin: "Browser/Sheets",
+      status: "直前停止",
+      preview: "投稿前のproofを確認して、外部投稿前で止めます。"
+    },
+    {
+      id: "job-manager",
+      name: "Job Manager",
+      type: "応募前receipt",
+      generated: "最新readback待ち",
+      automation: "Job",
+      lane: "Local",
+      plugin: "Browser",
+      status: "submit前停止",
+      preview: "応募前のreceiptを確認して、submit前で止めます。"
+    },
+    {
+      id: "nisenprints",
+      name: "NisenPrints",
+      type: "publish manifest",
+      generated: "最新readback待ち",
+      automation: "NisenPrints",
+      lane: "Local",
+      plugin: "Canva/Printify/Etsy/Pinterest",
+      status: "公開前停止",
+      preview: "公開前のmanifestを確認して、公開前で止めます。"
+    }
+  ] : [];
+  const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(artifactItems[0]?.id ?? null);
+  React.useEffect(() => {
+    if (!artifactItems.length) return;
+    if (!selectedArtifactId || !artifactItems.some((item) => item.id === selectedArtifactId)) {
+      setSelectedArtifactId(artifactItems[0].id);
+    }
+  }, [artifactItems, selectedArtifactId]);
+  const selectedArtifact = artifactItems.find((item) => item.id === selectedArtifactId) ?? artifactItems[0] ?? null;
   const metrics = hasArtifacts
     ? [["Daily AI証跡", "readback待ち"], ["Job証跡", "readback待ち"], ["NisenPrints証跡", "readback待ち"], ["Feedback", "API readback待ち"], ["外部公開", "停止境界"]]
     : [["月間リード数", "未接続"], ["DM返信率", "未計測"], ["SNS投稿数", "未接続"], ["商談化数", "未接続"], ["LP訪問数", "未計測"]];
   const artifactRows = hasArtifacts
-    ? [["Daily AI", "投稿前proof", "最新readback待ち", "Daily AI", "Local", "Browser/Sheets", <StatusBadge status="waiting" label="直前停止" />, <RowActions name="Daily AI証跡" setReceipt={setReceipt} scope="成果物" />], ["Job Manager", "応募前receipt", "最新readback待ち", "Job", "Local", "Browser", <StatusBadge status="waiting" label="submit前停止" />, <RowActions name="Job証跡" setReceipt={setReceipt} scope="成果物" />], ["NisenPrints", "publish manifest", "最新readback待ち", "NisenPrints", "Local", "Canva/Printify/Etsy/Pinterest", <StatusBadge status="waiting" label="公開前停止" />, <RowActions name="NisenPrints証跡" setReceipt={setReceipt} scope="成果物" />]]
+    ? artifactItems.map((item) => [item.name, item.type, item.generated, item.automation, item.lane, item.plugin, <StatusBadge key={`${item.id}-status`} status="waiting" label={item.status} />, <RowActions key={`${item.id}-actions`} name={`${item.name}証跡`} setReceipt={setReceipt} scope="成果物" onDetail={() => setSelectedArtifactId(item.id)} />])
     : [["このプロジェクトの成果物はまだありません", "-", "-", "-", "-", "-", <StatusBadge status="draft" />, <Button onClick={() => go("#/chat")}>チャットで作成</Button>]];
+  const downloadSelectedArtifact = () => {
+    if (!selectedArtifact) {
+      setReceipt("ダウンロード対象の成果物がありません。");
+      return;
+    }
+    const payload = {
+      project_id: activeProject,
+      project_name: projectName,
+      selected_artifact: selectedArtifact,
+      mvp_updated_at: mvpState.updated_at ?? null,
+      generated_at: new Date().toISOString()
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${selectedArtifact.id}.json`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    setReceipt(`${selectedArtifact.name} のダウンロードを作成しました。`);
+  };
+  const sendSelectedArtifactToApproval = async () => {
+    if (!selectedArtifact) {
+      setReceipt("承認へ送る対象の成果物がありません。");
+      return;
+    }
+    try {
+      const response = await fetch("/api/mvp/approvals", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          title: `${selectedArtifact.name} を承認へ送る`,
+          requested_by: "local-ui",
+          approval_group_id: `artifact_${activeProject}_${selectedArtifact.id}`,
+          resource_locks: [`artifact:${selectedArtifact.id}`, `project:${activeProject}`],
+          priority: "normal",
+          run_id: null
+        })
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || result.ok === false) throw new Error(result.exactBlocker || result.error || "approval_create_failed");
+      if (result.state) setMvpState(result.state);
+      setReceipt(`${selectedArtifact.name} を承認キューへ送信しました。approval=${result.approval?.id ?? "created"} / external_action=false`);
+    } catch {
+      setReceipt(`${selectedArtifact.name} の承認送付は未確認です。外部送信はしていません。`);
+    }
+  };
   return (
     <section>
       <ProjectTabs />
@@ -2765,7 +2857,12 @@ function ArtifactsPage({ setReceipt }: { setReceipt: (value: string) => void }) 
       <div className="cards five">{metrics.map(([a, b]) => <MetricCard title={a} value={b} sub={hasArtifacts ? "Project A" : "API readback未実行"} status="waiting" key={a} />)}</div>
       <div className="split">
         <Panel title="成果物一覧" className="list-panel"><DataTable headers={["タイトル", "タイプ", "生成日時", "自動化", "Lane", "Plugin", "ステータス", "操作"]} rows={artifactRows} /></Panel>
-        <aside className="side-panel wide"><h3>右側プレビュー</h3><div className="preview-box">{hasArtifacts ? "証跡artifactを選ぶと、投稿前/応募前/公開前のreceiptをここに表示します。現在は外部操作未実行です。" : `${projectName} の成果物はまだありません。実データ接続後に表示します。`}</div><Button icon={<Download size={15} />} onClick={() => setReceipt("成果物artifactの取得候補を表示しました。実ファイル取得は未実行です。")}>ダウンロード</Button><Button onClick={() => setReceipt("承認キュー候補を表示しました。API readbackは未実行です。")}>承認へ送る</Button></aside>
+        <aside className="side-panel wide">
+          <h3>右側プレビュー</h3>
+          <div className="preview-box">{hasArtifacts && selectedArtifact ? `${selectedArtifact.name} / ${selectedArtifact.type} / ${selectedArtifact.preview}` : `${projectName} の成果物はまだありません。実データ接続後に表示します。`}</div>
+          <Button icon={<Download size={15} />} onClick={downloadSelectedArtifact} disabled={!selectedArtifact}>ダウンロード</Button>
+          <Button onClick={sendSelectedArtifactToApproval} disabled={!selectedArtifact}>承認へ送る</Button>
+        </aside>
       </div>
     </section>
   );
@@ -2817,7 +2914,7 @@ function DataTable({ headers, rows }: { headers: React.ReactNode[]; rows: React.
   return <div className="table-wrap"><table><thead><tr>{headers.map((h, i) => <th key={i}>{h}</th>)}</tr></thead><tbody>{rows.map((row, i) => <tr key={i}>{row.map((cell, j) => <td key={j}>{cell}</td>)}</tr>)}</tbody></table></div>;
 }
 
-function RowActions({ name = "項目", setReceipt, scope = "行操作" }: { name?: string; setReceipt?: (value: string) => void; scope?: string }) {
+function RowActions({ name = "項目", setReceipt, scope = "行操作", onDetail }: { name?: string; setReceipt?: (value: string) => void; scope?: string; onDetail?: () => void }) {
   const [state, setState] = useState("待機中");
   const update = (message: string) => {
     setState(message);
@@ -2827,7 +2924,7 @@ function RowActions({ name = "項目", setReceipt, scope = "行操作" }: { name
     <div className="row-actions">
       <IconButton label="実行候補" onClick={() => update("実行候補を選択しました。API readback未実行で、外部操作はしていません。")}><Play size={14} /></IconButton>
       <IconButton label="一時停止候補" onClick={() => update("一時停止候補を選択しました。状態変更は未実行です。")}><Pause size={14} /></IconButton>
-      <IconButton label="詳細" onClick={() => update("詳細候補を表示中です。保存は未実行です。")}><MoreHorizontal size={14} /></IconButton>
+      <IconButton label="詳細" onClick={() => { update("詳細候補を表示中です。保存は未実行です。"); onDetail?.(); }}><MoreHorizontal size={14} /></IconButton>
       <small>{state}</small>
     </div>
   );
