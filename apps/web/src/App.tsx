@@ -2096,7 +2096,36 @@ function BuilderPage({ model }: { model: AppModel }) {
       <PageTitle title={builderTitle} desc="チャットやテンプレートから生成された自動化を編集します。">
         <Button onClick={saveBuilder}>下書きとして保存</Button>
         <Button onClick={() => noteBuilder("mockテスト候補を作成しました。外部実行・投稿はしていません。")}>テスト実行</Button>
-        <Button variant="primary" onClick={() => noteBuilder("公開は確認待ちです。承認キューへ送る前のレビュー状態です。")}>公開</Button>
+        <Button
+          variant="primary"
+          onClick={async () => {
+            try {
+              const approvalTitle = `${builderDraft.name || builderTitle} 公開確認`;
+              const approvalResponse = await mvpFetch("/api/mvp/approvals", {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({
+                  title: approvalTitle,
+                  requested_by: "builder-ui",
+                  approval_group_id: activeProject,
+                  resource_locks: [builderType, activeProject],
+                  priority: "normal",
+                  run_id: null
+                })
+              });
+              if (!approvalResponse.ok) await readError(approvalResponse, "approval_create_failed");
+              const approvalResult = await approvalResponse.json();
+              setMvpState(approvalResult.state ?? mvpState);
+              noteBuilder(`公開確認を承認キューへ送信しました。/ ${actionStamp()}`);
+              setReceipt("公開確認を承認キューへ送信しました。外部投稿はまだ実行していません。");
+            } catch (error) {
+              const exact = error instanceof Error ? error.message : "approval_create_failed";
+              noteBuilder(`公開確認の送信は未確認です: ${exact}`);
+            }
+          }}
+        >
+          公開
+        </Button>
       </PageTitle>
       <ProjectScopeNotice projectId={activeProject} />
       <div className="builder-grid">
