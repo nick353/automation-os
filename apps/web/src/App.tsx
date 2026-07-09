@@ -258,6 +258,45 @@ function buildAutomationPlan(prompt: string, selectedPlatforms: string[]): Autom
       approvalPolicy: "required_before_external_publish"
     };
   }
+  if (prompt.includes("フィードバック") || lower.includes("feedback")) {
+    return {
+      kind: "フィードバック",
+      title: "フィードバック収集 自動化プラン",
+      schedule,
+      cadence,
+      targetLabel: "Feedback / Support",
+      steps: ["フィードバックの入力元を確認", "重複と個人情報の混入を検査", "内容を分類", "優先度と担当先を整理", "triage待ちで停止", "readbackと証跡を保存"],
+      questions: ["フィードバックの入力元", "triage時の承認条件"],
+      safetyNote: "収集と分類までは進めますが、外部送信や公開は承認まで実行しません。",
+      approvalPolicy: "required_before_external_send"
+    };
+  }
+  if (prompt.includes("DM返信") || prompt.includes("ダイレクトメッセージ") || lower.includes("dm reply") || lower.includes("dm-reply")) {
+    return {
+      kind: "DM返信",
+      title: "DM返信 自動化プラン",
+      schedule,
+      cadence,
+      targetLabel: "SNS DM",
+      steps: ["受信DMを確認", "返信候補を生成", "個人情報とsecret混入を検査", "返信下書きを作成", "承認待ちで停止", "送信結果と証跡を保存"],
+      questions: ["対象アカウント", "送信前の承認条件"],
+      safetyNote: "DM送信は承認まで実行しません。",
+      approvalPolicy: "required_before_external_send"
+    };
+  }
+  if (prompt.includes("広告投稿") || prompt.includes("広告") || lower.includes("ads")) {
+    return {
+      kind: "広告投稿",
+      title: "広告投稿 自動化プラン",
+      schedule,
+      cadence,
+      targetLabel: "広告アカウント",
+      steps: ["キャンペーン素材を確認", "投稿先アカウントを確認", "広告文案を作成", "配信条件と予算を検査", "承認待ちで停止", "配信結果と証跡を保存"],
+      questions: ["広告アカウント", "配信前の承認条件"],
+      safetyNote: "広告出稿は承認まで実行しません。",
+      approvalPolicy: "required_before_external_post"
+    };
+  }
   const targetLabel = selectedPlatforms.length ? selectedPlatforms.join(" / ") : "SNS";
   return {
     kind: "SNS投稿",
@@ -273,14 +312,144 @@ function buildAutomationPlan(prompt: string, selectedPlatforms: string[]): Autom
 }
 
 function automationSlugForKind(kind: string) {
+  if (kind === "sns-post" || kind === "SNS投稿") return "sns-post";
   if (kind === "メール返信") return "gmail-reply";
+  if (kind === "gmail-reply") return "gmail-reply";
   if (kind === "リサーチ") return "research-report";
+  if (kind === "research-report") return "research-report";
   if (kind === "情報収集・通知") return "research-notification";
+  if (kind === "research-notification") return "research-notification";
   if (kind === "Daily AI") return "daily-ai";
+  if (kind === "daily-ai") return "daily-ai";
   if (kind === "NisenPrints") return "nisenprints";
+  if (kind === "nisenprints") return "nisenprints";
   if (kind === "Codex Job Manager") return "codex-job-manager";
+  if (kind === "codex-job-manager") return "codex-job-manager";
   if (kind === "回答のみ") return "answer-only";
+  if (kind === "answer-only") return "answer-only";
+  if (kind === "フィードバック") return "feedback";
+  if (kind === "feedback") return "feedback";
+  if (kind === "DM返信") return "dm-reply";
+  if (kind === "dm-reply") return "dm-reply";
+  if (kind === "広告投稿") return "ads";
+  if (kind === "ads") return "ads";
   return "sns-post";
+}
+
+type BuilderConfig = {
+  kindLabel: string;
+  automationName: string;
+  approvalPolicy: string;
+  steps: string[];
+  inputSources: string;
+  outputs: string;
+  riskBoundary: string;
+};
+
+const builderConfigs: Record<string, BuilderConfig> = {
+  "sns-post": {
+    kindLabel: "SNS投稿",
+    automationName: "SNS投稿",
+    approvalPolicy: "required_before_external_post",
+    steps: ["素材の取得元を確認", "投稿文と画像候補を作成", "SNSの下書きに変換", "外部投稿前に承認で停止", "承認後の実行Laneを割り当て", "実行結果とURLを保存", "失敗時の再試行条件を記録"],
+    inputSources: "Google Drive / スプレッドシート / ブランドガイドライン / Plugin output",
+    outputs: "SNS投稿レポート / 投稿ログ / Artifact",
+    riskBoundary: "投稿、DM送信、メール送信、LINE/Webhook/外部通知、広告出稿、課金生成、削除は承認必須です。"
+  },
+  feedback: {
+    kindLabel: "フィードバック",
+    automationName: "フィードバック",
+    approvalPolicy: "required_before_external_send",
+    steps: ["フィードバックの入力元を確認", "重複と個人情報の混入を検査", "内容を分類", "優先度と担当先を整理", "triage待ちで停止", "readbackと証跡を保存"],
+    inputSources: "フィードバックフォーム / 画面コメント / API readback / Project Memory",
+    outputs: "フィードバック一覧 / triage queue / screenshot proof / Artifact",
+    riskBoundary: "外部送信、公開、削除、本人確認、認証突破は承認必須です。"
+  },
+  "dm-reply": {
+    kindLabel: "DM返信",
+    automationName: "DM返信",
+    approvalPolicy: "required_before_external_send",
+    steps: ["受信DMを確認", "返信候補を生成", "個人情報とsecret混入を検査", "返信下書きを作成", "承認待ちで停止", "送信結果と証跡を保存"],
+    inputSources: "SNS DM / 受信箱 / Project Memory / 返信テンプレート",
+    outputs: "返信下書き / 承認ログ / 送信証跡 / Artifact",
+    riskBoundary: "DM送信、返信公開、削除、本人確認、認証突破は承認必須です。"
+  },
+  ads: {
+    kindLabel: "広告投稿",
+    automationName: "広告投稿",
+    approvalPolicy: "required_before_external_post",
+    steps: ["キャンペーン素材を確認", "投稿先アカウントを確認", "広告文案を作成", "配信条件と予算を検査", "承認待ちで停止", "配信結果と証跡を保存"],
+    inputSources: "広告アカウント / キャンペーン素材 / Project Memory / 予算メモ",
+    outputs: "広告下書き / 承認ログ / 配信前チェック / Artifact",
+    riskBoundary: "広告配信開始、出稿、支払い、削除、認証突破は承認必須です。"
+  },
+  "gmail-reply": {
+    kindLabel: "メール返信",
+    automationName: "Gmail返信",
+    approvalPolicy: "required_before_external_send",
+    steps: ["対象メールを抽出", "返信案を生成", "個人情報とsecretを検査", "下書き作成", "承認待ち", "メール送信", "送信レポート保存"],
+    inputSources: "Gmail / Project Memory / 承認メモ",
+    outputs: "返信下書き / 承認ログ / 送信証跡",
+    riskBoundary: "メール送信は承認まで実行しません。"
+  },
+  "research-report": {
+    kindLabel: "リサーチ",
+    automationName: "リサーチレポート",
+    approvalPolicy: "required_before_external_publish",
+    steps: ["調査対象を確認", "参照元を収集", "要点を整理", "レポート下書き作成", "レビュー待ち", "成果物保存", "引用元レポート保存"],
+    inputSources: "Web / Google Drive / Sheets / Project Memory",
+    outputs: "調査レポート / 引用元一覧 / Artifact",
+    riskBoundary: "外部投稿や送信は含めず、成果物保存前に確認します。"
+  },
+  "research-notification": {
+    kindLabel: "情報収集・通知",
+    automationName: "AI最新情報 LINE通知",
+    approvalPolicy: "required_before_external_notification",
+    steps: ["通知条件と情報源を確認", "Google/Webから最新情報候補を収集", "重複・古い情報・信頼性の低い情報を除外", "重要ポイントを短く要約", "通知文の下書きを作成", "LINE/Webhook/外部通知送信前に承認で停止", "readbackと証跡を保存"],
+    inputSources: "Google検索 / Web / Project Memory / LINE接続情報",
+    outputs: "要約 / LINE通知下書き / 承認ログ / Artifact",
+    riskBoundary: "LINE/Webhook/外部通知は承認まで実行しません。"
+  },
+  "daily-ai": {
+    kindLabel: "Daily AI",
+    automationName: "Daily AI",
+    approvalPolicy: "required_before_external_post",
+    steps: ["AIニュース候補を読む", "投稿案を作成", "重複投稿を確認", "SNS/Sheets証跡を確認", "外部投稿前に承認で停止", "cleanupを保存"],
+    inputSources: "ニュースソース / Project Memory / Sheets / SNS account readback",
+    outputs: "投稿下書き / 投稿直前停止receipt / Sheets同期証跡 / Artifact",
+    riskBoundary: "SNS投稿、外部通知、削除、認証突破は承認必須です。投稿直前で停止します。"
+  },
+  nisenprints: {
+    kindLabel: "NisenPrints",
+    automationName: "NisenPrints",
+    approvalPolicy: "required_before_external_publish",
+    steps: ["新規トピック重複確認", "Canva/画像素材確認", "Printify商品準備", "Etsy listing確認", "Pinterestリンク確認", "公開/削除/支払い境界で停止", "manifestとreadbackを保存"],
+    inputSources: "Canva / Printify / Etsy / Pinterest / 商品manifest",
+    outputs: "商品準備manifest / 既存ID readback / 公開直前停止receipt / Artifact",
+    riskBoundary: "商品作成、公開、Pin投稿、削除、支払い、checkout、認証突破は承認必須です。既存IDを保持して直前停止します。"
+  },
+  "codex-job-manager": {
+    kindLabel: "Codex Job Manager",
+    automationName: "Codex Job Manager",
+    approvalPolicy: "required_before_external_submit",
+    steps: ["求人キューを読む", "候補URLと会社名を確認", "応募前フォームを準備", "送信/assessment/本人確認の前で停止", "証跡とcleanupを保存"],
+    inputSources: "求人キュー / 会社URL / 応募フォームreadback / Project Memory",
+    outputs: "求人候補一覧 / 応募直前停止receipt / 会社URL・入力内容証跡 / Artifact",
+    riskBoundary: "応募submit、assessment/test、本人確認、メール認証、個人情報送信は承認必須です。送信直前で停止します。"
+  },
+  "answer-only": {
+    kindLabel: "回答のみ",
+    automationName: "回答のみ",
+    approvalPolicy: "auto_allowed_for_draft_only",
+    steps: ["質問意図を確認", "回答草案を作成", "外部操作を伴わないことを確認", "結果を保存"],
+    inputSources: "チャット入力 / Project Memory",
+    outputs: "回答草案 / 参照メモ / Artifact",
+    riskBoundary: "外部送信、投稿、購入、認証突破は行いません。"
+  }
+};
+
+function builderConfigForAutomationType(type: string): BuilderConfig {
+  return builderConfigs[type] ?? builderConfigs["sns-post"];
 }
 
 async function requestChatPlan(prompt: string, selectedPlatforms: string[]): Promise<PlannerReadback> {
@@ -1750,39 +1919,15 @@ function BuilderPage({ model }: { model: AppModel }) {
   const automationId = persistedAutomation?.id ?? routeAutomationKey;
   const persistedSpec = mvpState.builder_specs?.find((item) => item.automation_id === automationId);
   const builderType = persistedAutomation?.automation_type ?? routeAutomationKey;
-  const builderKind = builderType === "gmail-reply"
-    ? "メール返信"
-    : builderType === "research-report"
-      ? "リサーチ"
-      : builderType === "research-notification"
-        ? "情報収集・通知"
-        : builderType === "daily-ai"
-          ? "Daily AI"
-          : builderType === "nisenprints"
-            ? "NisenPrints"
-            : builderType === "codex-job-manager"
-              ? "Codex Job Manager"
-              : "SNS投稿";
+  const builderConfig = builderConfigForAutomationType(builderType);
+  const builderKind = builderConfig.kindLabel;
   const builderTitle = `${builderKind} 自動化仕様`;
-  const automationName = persistedAutomation?.name
-    ?? (builderKind === "メール返信"
-      ? "Gmail返信"
-      : builderKind === "リサーチ"
-        ? "リサーチレポート"
-        : builderKind === "情報収集・通知"
-          ? "AI最新情報 LINE通知"
-          : builderKind === "Daily AI"
-            ? "Daily AI"
-            : builderKind === "NisenPrints"
-              ? "NisenPrints"
-              : builderKind === "Codex Job Manager"
-                ? "Codex Job Manager"
-                : "SNS投稿");
+  const automationName = persistedAutomation?.name ?? builderConfig.automationName;
   const [builderDraft, setBuilderDraft] = useState({
     name: automationName,
     lane: persistedAutomation?.lane ?? "Lane 1",
     schedule: persistedAutomation?.schedule ?? "09:00",
-    approval_policy: persistedAutomation?.approval_policy ?? (builderKind === "情報収集・通知" ? "required_before_external_notification" : "毎回承認"),
+    approval_policy: persistedAutomation?.approval_policy ?? builderConfig.approvalPolicy,
     retry_rule: persistedSpec?.spec?.retry_rule ?? "最大3回 / 5分間隔"
   });
   const [enabled, setEnabled] = useState([true, true, true, true, true, false, true]);
@@ -1790,52 +1935,10 @@ function BuilderPage({ model }: { model: AppModel }) {
   const persistedSteps: string[] = Array.isArray(persistedSpec?.spec?.steps)
     ? persistedSpec.spec.steps.map((step: any) => typeof step === "string" ? step : step?.title).filter(Boolean)
     : [];
-  const steps: string[] = persistedSteps.length ? persistedSteps : builderKind === "メール返信"
-    ? ["対象メールを抽出", "返信案を生成", "個人情報とsecretを検査", "下書き作成", "承認待ち", "メール送信", "送信レポート保存"]
-    : builderKind === "リサーチ"
-      ? ["調査対象を確認", "参照元を収集", "要点を整理", "レポート下書き作成", "レビュー待ち", "成果物保存", "引用元レポート保存"]
-      : builderKind === "情報収集・通知"
-        ? ["検索条件を確認", "Google/Webから最新情報を収集", "重複と信頼性を検査", "要約を作成", "LINE通知下書き作成", "承認待ち", "readbackと証跡を保存"]
-        : builderKind === "Daily AI"
-          ? ["AIニュース候補を読む", "投稿案を作成", "重複投稿を確認", "SNS/Sheets証跡を確認", "外部投稿前に承認で停止", "cleanupを保存"]
-          : builderKind === "NisenPrints"
-            ? ["新規トピック重複確認", "Canva/画像素材確認", "Printify商品準備", "Etsy listing確認", "Pinterestリンク確認", "公開/削除/支払い境界で停止", "manifestとreadbackを保存"]
-            : builderKind === "Codex Job Manager"
-              ? ["求人キューを読む", "候補URLと会社名を確認", "応募前フォームを準備", "送信/assessment/本人確認の前で停止", "証跡とcleanupを保存"]
-            : ["Google Driveから素材取得", "投稿文を生成", "Instagram / TikTok / Facebookに接続", "下書き作成", "承認待ち", "投稿実行", "レポート保存"];
-  const builderInputSources = builderKind === "メール返信"
-    ? "Gmail / Project Memory / 承認メモ"
-    : builderKind === "リサーチ"
-      ? "Web / Google Drive / Sheets / Project Memory"
-      : builderKind === "情報収集・通知"
-        ? "Google検索 / Web / Project Memory / LINE接続情報"
-        : builderKind === "Daily AI"
-          ? "ニュースソース / Project Memory / Sheets / SNS account readback"
-          : builderKind === "NisenPrints"
-            ? "Canva / Printify / Etsy / Pinterest / 商品manifest"
-            : builderKind === "Codex Job Manager"
-              ? "求人キュー / 会社URL / 応募フォームreadback / Project Memory"
-              : "Google Drive / スプレッドシート / ブランドガイドライン / Plugin output";
-  const builderOutputs = builderKind === "メール返信"
-    ? "返信下書き / 承認ログ / 送信証跡"
-    : builderKind === "リサーチ"
-      ? "調査レポート / 引用元一覧 / Artifact"
-      : builderKind === "情報収集・通知"
-        ? "要約 / LINE通知下書き / 承認ログ / Artifact"
-        : builderKind === "Daily AI"
-          ? "投稿下書き / 投稿直前停止receipt / Sheets同期証跡 / Artifact"
-          : builderKind === "NisenPrints"
-            ? "商品準備manifest / 既存ID readback / 公開直前停止receipt / Artifact"
-            : builderKind === "Codex Job Manager"
-              ? "求人候補一覧 / 応募直前停止receipt / 会社URL・入力内容証跡 / Artifact"
-              : "SNS投稿レポート / 投稿ログ / Artifact";
-  const builderRiskBoundary = builderKind === "Daily AI"
-    ? "SNS投稿、外部通知、削除、認証突破は承認必須です。投稿直前で停止します。"
-    : builderKind === "NisenPrints"
-      ? "商品作成、公開、Pin投稿、削除、支払い、checkout、認証突破は承認必須です。既存IDを保持して直前停止します。"
-      : builderKind === "Codex Job Manager"
-        ? "応募submit、assessment/test、本人確認、メール認証、個人情報送信は承認必須です。送信直前で停止します。"
-        : "投稿、DM送信、メール送信、LINE/Webhook/外部通知、広告出稿、課金生成、削除は承認必須です。";
+  const steps: string[] = persistedSteps.length ? persistedSteps : builderConfig.steps;
+  const builderInputSources = builderConfig.inputSources;
+  const builderOutputs = builderConfig.outputs;
+  const builderRiskBoundary = builderConfig.riskBoundary;
   const noteBuilder = (message: string) => {
     setBuilderNotice(message);
     setReceipt(message);
@@ -1845,14 +1948,14 @@ function BuilderPage({ model }: { model: AppModel }) {
       name: automationName,
       lane: persistedAutomation?.lane ?? "Lane 1",
       schedule: persistedAutomation?.schedule ?? "09:00",
-      approval_policy: persistedAutomation?.approval_policy ?? (builderKind === "情報収集・通知" ? "required_before_external_notification" : "毎回承認"),
+      approval_policy: persistedAutomation?.approval_policy ?? builderConfig.approvalPolicy,
       retry_rule: persistedSpec?.spec?.retry_rule ?? "最大3回 / 5分間隔"
     });
-  }, [automationId, persistedAutomation?.updated_at, persistedSpec?.updated_at]);
+  }, [automationId, persistedAutomation?.updated_at, persistedSpec?.updated_at, automationName, builderConfig.approvalPolicy]);
   const saveBuilder = async () => {
     try {
       const specPayload = {
-        automation_type: automationSlugForKind(builderKind),
+        automation_type: automationSlugForKind(builderType),
         steps: steps.map((step, index) => ({ title: step, enabled: enabled[index] })),
         retry_rule: builderDraft.retry_rule,
         approval_policy: builderDraft.approval_policy,
@@ -1869,7 +1972,7 @@ function BuilderPage({ model }: { model: AppModel }) {
           body: JSON.stringify({
             name: builderDraft.name,
             project_id: activeProject,
-            automation_type: automationSlugForKind(builderKind),
+            automation_type: automationSlugForKind(builderType),
             desc: `${builderKind} Builderから作成した安全なMVP自動化`,
             goal: `${builderDraft.name} の下書き作成まで行い、外部操作前に承認で停止する`,
             schedule: builderDraft.schedule,
@@ -1893,13 +1996,13 @@ function BuilderPage({ model }: { model: AppModel }) {
       const patchResponse = await fetch(`/api/mvp/automations/${encodeURIComponent(automationId)}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          name: builderDraft.name,
-          lane: builderDraft.lane,
-          schedule: builderDraft.schedule,
-          approval_policy: builderDraft.approval_policy,
-          project_id: activeProject,
-          automation_type: automationSlugForKind(builderKind)
+          body: JSON.stringify({
+            name: builderDraft.name,
+            lane: builderDraft.lane,
+            schedule: builderDraft.schedule,
+            approval_policy: builderDraft.approval_policy,
+            project_id: activeProject,
+            automation_type: automationSlugForKind(builderType)
         })
       });
       if (!patchResponse.ok) await readError(patchResponse, "automation_patch_failed");
