@@ -62,6 +62,49 @@ const subTabLabels = [
   ["成果物 / KPI", "artifacts"]
 ];
 
+const writeTokenStorageKey = "automation-os-write-token";
+
+function readWriteToken() {
+  try {
+    return (window.sessionStorage.getItem(writeTokenStorageKey) || window.localStorage.getItem(writeTokenStorageKey) || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+function persistWriteToken(value: string) {
+  try {
+    const normalized = value.trim();
+    window.sessionStorage.setItem(writeTokenStorageKey, normalized);
+    window.localStorage.setItem(writeTokenStorageKey, normalized);
+  } catch {
+    // ignore storage errors in read-only mode
+  }
+}
+
+function clearWriteToken() {
+  try {
+    window.sessionStorage.removeItem(writeTokenStorageKey);
+    window.localStorage.removeItem(writeTokenStorageKey);
+  } catch {
+    // ignore storage errors in read-only mode
+  }
+}
+
+function withMvpWriteHeaders(init: RequestInit = {}) {
+  const headers = new Headers(init.headers || {});
+  const method = String(init.method || "GET").toUpperCase();
+  if (isStateChangingMethod(method)) {
+    const token = readWriteToken();
+    if (token) headers.set("x-automation-os-token", token);
+  }
+  return { ...init, headers };
+}
+
+async function mvpFetch(input: RequestInfo | URL, init: RequestInit = {}) {
+  return fetch(input, withMvpWriteHeaders(init));
+}
+
 function redactSensitiveText(value: string) {
   return String(value || "")
     .replace(/\bauthorization\s*[:=]\s*bearer\s+[A-Za-z0-9._-]{8,}/gi, "[redacted]")
@@ -465,7 +508,7 @@ function builderConfigForAutomationType(type: string): BuilderConfig {
 async function requestChatPlan(prompt: string, selectedPlatforms: string[]): Promise<PlannerReadback> {
   const fallbackPlan = buildAutomationPlan(prompt, selectedPlatforms);
   try {
-    const response = await fetch("/api/mvp/chat/plan", {
+    const response = await mvpFetch("/api/mvp/chat/plan", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ prompt, selected_platforms: selectedPlatforms })
@@ -637,7 +680,7 @@ function toAutomationRows(items: any[]): AutomationRow[] {
 }
 
 async function readMvpState() {
-  const response = await fetch("/api/mvp/state", { cache: "no-store" });
+  const response = await mvpFetch("/api/mvp/state", { cache: "no-store" });
   if (!response.ok) throw new Error("mvp_state_unavailable");
   return response.json();
 }
@@ -834,7 +877,7 @@ function App() {
       .catch(() => setReceipt("Local Agent は待機中です。MVP API未接続のためローカル表示です。"));
   }, []);
   React.useEffect(() => {
-    fetch("/api/mvp/feedback", { cache: "no-store" })
+    mvpFetch("/api/mvp/feedback", { cache: "no-store" })
       .then(async (response) => {
         const json = await response.json().catch(() => ({}));
         if (!response.ok || json.ok === false) throw new Error("feedback_readback_failed");
@@ -1045,14 +1088,14 @@ function FeedbackFixQueue({ feedbacks, state, setReceipt, setFeedbackReadback }:
   const triagedItems = allTriagedItems.slice(0, 3);
   const updateFeedbackStatus = async (feedbackId: string, status: "open" | "triaged") => {
     try {
-      const response = await fetch(`/api/mvp/feedback/${encodeURIComponent(feedbackId)}`, {
+      const response = await mvpFetch(`/api/mvp/feedback/${encodeURIComponent(feedbackId)}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ status })
       });
       const result = await response.json().catch(() => ({}));
       if (!response.ok || result.ok === false) throw new Error(result.exactBlocker || result.error || "feedback_update_failed");
-      const refreshed = await fetch("/api/mvp/feedback", { cache: "no-store" }).then(async (response) => {
+      const refreshed = await mvpFetch("/api/mvp/feedback", { cache: "no-store" }).then(async (response) => {
         const json = await response.json().catch(() => ({}));
         if (!response.ok || json.ok === false) throw new Error("feedback_readback_failed");
         return Array.isArray(json.feedbacks) ? json.feedbacks : [];
@@ -1212,7 +1255,7 @@ function FeedbackWidget({ route, setReceipt, setMvpState }: { route: string; set
     }
     try {
       setBusy(true);
-      const response = await fetch("/api/mvp/feedback", {
+      const response = await mvpFetch("/api/mvp/feedback", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -1496,7 +1539,7 @@ function ChatPage({ model }: { model: AppModel }) {
       return;
     }
     try {
-      const response = await fetch("/api/mvp/automations", {
+      const response = await mvpFetch("/api/mvp/automations", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -1656,7 +1699,7 @@ function AutomationsPage({ model }: { model: AppModel }) {
         stale = true;
       };
     }
-    fetch("/api/mvp/registered-automations?project_id=project-a", { cache: "no-store" })
+    mvpFetch("/api/mvp/registered-automations?project_id=project-a", { cache: "no-store" })
       .then(async (response) => {
         const readback = await response.json().catch(() => ({}));
         if (!response.ok || readback.ok === false) throw new Error(readback.exact_boundary || readback.exact_blocker || `registered_automation_readback_http_${response.status}`);
@@ -1682,7 +1725,7 @@ function AutomationsPage({ model }: { model: AppModel }) {
   const runAutomation = async (id: string, name: string) => {
     try {
       setAutomationReceipts((prev) => ({ ...prev, [id]: "API readback確認中 / まだ実行開始は未確定です" }));
-      const response = await fetch(`/api/mvp/automations/${encodeURIComponent(id)}/run`, { method: "POST" });
+      const response = await mvpFetch(`/api/mvp/automations/${encodeURIComponent(id)}/run`, { method: "POST" });
       if (!response.ok) throw new Error("run_queue_failed");
       const result = await response.json();
       setMvpState(result.state);
@@ -1707,7 +1750,7 @@ function AutomationsPage({ model }: { model: AppModel }) {
     const { id, name } = pendingDelete;
     try {
       setIsDeleting(true);
-      const response = await fetch(`/api/mvp/automations/${encodeURIComponent(id)}`, { method: "DELETE" });
+      const response = await mvpFetch(`/api/mvp/automations/${encodeURIComponent(id)}`, { method: "DELETE" });
       const result = await response.json();
       if (!response.ok || !result.ok) throw new Error(result.exact_blocker || result.error || "delete_failed");
       setMvpState(result.state);
@@ -1737,7 +1780,7 @@ function AutomationsPage({ model }: { model: AppModel }) {
       setRegisteredRequestingId(item.id);
       setRegisteredReceipts((prev) => ({ ...prev, [item.id]: "preflight / proof readback確認中..." }));
       setPageNote(`${name}: preflight / proof readback確認中 / ${actionStamp()}`);
-      const response = await fetch(`/api/mvp/registered-automations/${encodeURIComponent(item.id)}/run`, {
+      const response = await mvpFetch(`/api/mvp/registered-automations/${encodeURIComponent(item.id)}/run`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ project_id: "project-a" })
@@ -1976,7 +2019,7 @@ function BuilderPage({ model }: { model: AppModel }) {
         throw new Error(body.exact_blocker || body.exactBlocker || body.error || fallback);
       };
       if (!persistedAutomation) {
-        const createResponse = await fetch("/api/mvp/automations", {
+        const createResponse = await mvpFetch("/api/mvp/automations", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
@@ -2003,7 +2046,7 @@ function BuilderPage({ model }: { model: AppModel }) {
         go(`#/projects/${activeProject}/automations/${createResult.automation.id}/edit`);
         return;
       }
-      const patchResponse = await fetch(`/api/mvp/automations/${encodeURIComponent(automationId)}`, {
+      const patchResponse = await mvpFetch(`/api/mvp/automations/${encodeURIComponent(automationId)}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
           body: JSON.stringify({
@@ -2017,7 +2060,7 @@ function BuilderPage({ model }: { model: AppModel }) {
       });
       if (!patchResponse.ok) await readError(patchResponse, "automation_patch_failed");
       const patchResult = await patchResponse.json();
-      const specResponse = await fetch(`/api/mvp/automations/${encodeURIComponent(automationId)}/builder-spec`, {
+      const specResponse = await mvpFetch(`/api/mvp/automations/${encodeURIComponent(automationId)}/builder-spec`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(specPayload)
@@ -2102,7 +2145,7 @@ function ApprovalsPage({ model }: { model: AppModel }) {
       return;
     }
     try {
-      const response = await fetch(`/api/mvp/approvals/${encodeURIComponent(item.id)}`, {
+      const response = await mvpFetch(`/api/mvp/approvals/${encodeURIComponent(item.id)}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ decision, note: approvalNote || "UIから確認。外部操作は許可していません。" })
@@ -2205,7 +2248,7 @@ function RunsPage({ model }: { model: AppModel }) {
   const refreshWorkerPreview = async (projectId = projectFilter) => {
     try {
       const body = projectId === "all" ? { limit: 10 } : { project_id: projectId, limit: 10 };
-      const response = await fetch("/api/mvp/worker/preview", {
+      const response = await mvpFetch("/api/mvp/worker/preview", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body)
@@ -2230,7 +2273,7 @@ function RunsPage({ model }: { model: AppModel }) {
     }
     try {
       const body = projectFilter === "all" ? { limit: 10 } : { project_id: projectFilter, limit: 10 };
-      const response = await fetch("/api/mvp/worker/once", {
+      const response = await mvpFetch("/api/mvp/worker/once", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body)
@@ -2407,7 +2450,7 @@ function MemoryPage({ model }: { model: AppModel }) {
     setMemoryByProject((all) => ({ ...all, [activeProject]: memoryItems.map((item, index) => index === editingMemory ? { ...item, body: redactedMemoryDraft } : item) }));
     try {
       const item = memoryItems[editingMemory];
-      const response = await fetch(`/api/mvp/projects/${encodeURIComponent(activeProject)}/memory/${encodeURIComponent(item.key)}`, {
+      const response = await mvpFetch(`/api/mvp/projects/${encodeURIComponent(activeProject)}/memory/${encodeURIComponent(item.key)}`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ title: item.title, body: redactedMemoryDraft })
@@ -2433,7 +2476,7 @@ function MemoryPage({ model }: { model: AppModel }) {
     setLoginByProject((all) => ({ ...all, [activeProject]: loginRows.map((row, index) => index === editingLogin ? { ...row, accountRef: redactedLoginDraft, updated: "2026-07-03" } : row) }));
     try {
       const row = loginRows[editingLogin];
-      const response = await fetch(`/api/mvp/projects/${encodeURIComponent(activeProject)}/account-refs/${encodeURIComponent(row.platform)}`, {
+      const response = await mvpFetch(`/api/mvp/projects/${encodeURIComponent(activeProject)}/account-refs/${encodeURIComponent(row.platform)}`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ account_ref: redactedLoginDraft, two_factor: row.twoFactor })
@@ -2488,6 +2531,7 @@ function SecurityPage({ model }: { model: AppModel }) {
   const route = useRoute();
   const activeProject = projectSlugFromRoute(route);
   const projectName = projectLabels[activeProject];
+  const [writeToken, setWriteTokenState] = useState(readWriteToken());
   const [securityNote, setSecurityNote] = useState("接続・権限を開きました。接続サービスの操作結果はここに表示します。実ログインやOTP突破は実行しません。");
   const policies = ["閲覧", "下書き作成", "投稿", "DM送信", "メール送信", "画像生成", "動画生成", "広告出稿", "削除"];
   const services = ["Google Drive", "Gmail", "Instagram", "TikTok", "Facebook", "LinkedIn", "Slack", "Runway"];
@@ -2504,6 +2548,25 @@ function SecurityPage({ model }: { model: AppModel }) {
       <ProjectScopeNotice projectId={activeProject} />
       <div className="action-note" role="status">{securityNote}</div>
       <p className="muted">この表はプロジェクト別の接続参照表示です。実認証readbackは未接続です。</p>
+      <Panel title="書き込みトークン">
+        <div className="form-grid">
+          <label>Automation OS write token<input type="password" value={writeToken} onChange={(event) => setWriteTokenState(event.target.value)} placeholder="x-automation-os-token" /></label>
+        </div>
+        <div className="row-actions">
+          <Button variant="primary" onClick={() => {
+            persistWriteToken(writeToken);
+            setReceipt("write token を保存しました。以後の write 系リクエストに付与します。");
+            setSecurityNote(`write token を保存しました。保存先=session/local storage / ${actionStamp()}`);
+          }}>保存</Button>
+          <Button onClick={() => {
+            clearWriteToken();
+            setWriteTokenState("");
+            setReceipt("write token を削除しました。");
+            setSecurityNote(`write token を削除しました / ${actionStamp()}`);
+          }}>削除</Button>
+        </div>
+        <p className="muted">保存した token は write 系 API の `x-automation-os-token` にだけ使います。</p>
+      </Panel>
       <div className="section-grid">
         <Panel title="接続サービス" className="span-2"><DataTable headers={["サービス", "接続アカウント", "ステータス", "操作"]} rows={services.map((s, i) => {
           const persisted = accountRefs.find((item) => item.platform === s);
@@ -2702,7 +2765,7 @@ function TemplatesPage({ model }: { model: AppModel }) {
     setTemplateNote(`${name}: 保存を開始しました。外部投稿・送信は実行しません。`);
     const automationType = name.includes("Gmail") || name.includes("DM") ? "gmail-reply" : category.includes("リサーチ") ? "research-report" : "sns-post";
     try {
-      const response = await fetch("/api/mvp/automations", {
+      const response = await mvpFetch("/api/mvp/automations", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -2835,7 +2898,7 @@ function ArtifactsPage({ setReceipt, mvpState, setMvpState }: { setReceipt: (val
       return;
     }
     try {
-      const response = await fetch("/api/mvp/approvals", {
+      const response = await mvpFetch("/api/mvp/approvals", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
