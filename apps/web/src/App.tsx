@@ -217,7 +217,11 @@ function buildAutomationPlan(prompt: string, selectedPlatforms: string[]): Autom
   const wantsNotify = prompt.includes("通知") || prompt.includes("知らせ") || prompt.includes("送って") || prompt.includes("連絡") || lower.includes("notify") || lower.includes("alert") || lower.includes("webhook") || lower.includes("slack");
   const wantsNews = prompt.includes("最新") || prompt.includes("ニュース") || prompt.includes("探して") || prompt.includes("調べ") || prompt.includes("まとめ") || lower.includes("google") || lower.includes("web") || lower.includes("news");
   const wantsAi = prompt.includes("AI") || lower.includes("ai");
-  if (lower.includes("gmail") || prompt.includes("メール") || prompt.includes("問い合わせ") || prompt.includes("返信")) {
+  if ((lower.includes("gmail") || prompt.includes("メール") || prompt.includes("問い合わせ") || prompt.includes("返信"))
+    && !prompt.includes("DM返信")
+    && !prompt.includes("ダイレクトメッセージ")
+    && !lower.includes("dm reply")
+    && !lower.includes("dm-reply")) {
     return {
       kind: "メール返信",
       title: "メール返信 自動化プラン",
