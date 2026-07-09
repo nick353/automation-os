@@ -2256,7 +2256,7 @@ export function getDashboard() {
       project_id: String(row.project_id ?? "project-a"),
       automation_type: String(row.automation_type ?? "sns-post"),
       name: String(row.name ?? ""),
-      desc: String(row.desc ?? ""),
+      desc: String(row.description ?? row.desc ?? ""),
       goal: String(row.goal ?? ""),
       schedule: String(row.schedule ?? "09:00"),
       cadence: String(row.cadence ?? "daily"),
@@ -2357,7 +2357,7 @@ function readMvpAutomations() {
     project_id: string;
     automation_type: string;
     name: string;
-    desc: string;
+    description: string;
     goal: string;
     schedule: string;
     cadence: string;
@@ -2375,7 +2375,7 @@ function readMvpAutomations() {
     project_id: row.project_id,
     automation_type: row.automation_type,
     name: row.name,
-    desc: row.desc,
+    desc: row.description,
     goal: row.goal,
     schedule: row.schedule,
     cadence: row.cadence,
@@ -2419,7 +2419,7 @@ function saveMvpAutomationDraft(body: any, fallbackId?: string) {
     project_id: payload.project_id,
     automation_type: payload.automation_type,
     name: payload.name,
-    desc: payload.desc,
+    description: payload.desc,
     goal: payload.goal,
     schedule: payload.schedule,
     cadence: payload.cadence,
@@ -2438,7 +2438,7 @@ function saveMvpAutomationDraft(body: any, fallbackId?: string) {
     project_id: payload.project_id,
     automation_type: payload.automation_type,
     name: payload.name,
-    desc: payload.desc,
+    description: payload.desc,
     goal: payload.goal,
     schedule: payload.schedule,
     cadence: payload.cadence,
@@ -2646,7 +2646,7 @@ function getPostgresFastDashboard() {
       project_id: String(row.project_id ?? "project-a"),
       automation_type: String(row.automation_type ?? "sns-post"),
       name: String(row.name ?? ""),
-      desc: String(row.desc ?? ""),
+      desc: String(row.description ?? row.desc ?? ""),
       goal: String(row.goal ?? ""),
       schedule: String(row.schedule ?? "09:00"),
       cadence: String(row.cadence ?? "daily"),

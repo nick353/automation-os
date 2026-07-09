@@ -205,7 +205,7 @@ CREATE TABLE IF NOT EXISTS mvp_automations (
   project_id TEXT NOT NULL,
   automation_type TEXT NOT NULL,
   name TEXT NOT NULL,
-  desc TEXT NOT NULL,
+  description TEXT NOT NULL,
   goal TEXT NOT NULL,
   schedule TEXT NOT NULL,
   cadence TEXT NOT NULL,
