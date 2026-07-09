@@ -185,6 +185,103 @@ app.post("/api/mvp/worker/once", (req, res) => {
   });
 });
 
+app.get("/api/mvp/automations", (_req, res) => {
+  initDb();
+  const automations = readMvpAutomations();
+  res.json({
+    ok: true,
+    automations,
+    builder_specs: automations.map((item) => ({
+      automation_id: item.id,
+      project_id: item.project_id,
+      updated_at: item.updated_at,
+      spec: item.builder_spec
+    })),
+    state: getMvpStateReadback()
+  });
+});
+
+app.post("/api/mvp/automations", (req, res) => {
+  try {
+    initDb();
+    const automation = saveMvpAutomationDraft(req.body);
+    res.status(201).json({
+      ok: true,
+      automation,
+      state: getMvpStateReadback(),
+      external_action_executed: false
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "automation_create_failed";
+    res.status(message === "automation_id_required" ? 400 : 500).json({ ok: false, error: message, exactBlocker: message });
+  }
+});
+
+app.patch("/api/mvp/automations/:automationId", (req, res) => {
+  try {
+    initDb();
+    const automationId = typeof req.params.automationId === "string" ? req.params.automationId.trim() : "";
+    if (!automationId) {
+      res.status(400).json({ ok: false, error: "automation_id_required", exactBlocker: "automation_id_required" });
+      return;
+    }
+    const automation = saveMvpAutomationDraft(req.body, automationId);
+    res.json({
+      ok: true,
+      automation,
+      state: getMvpStateReadback(),
+      external_action_executed: false
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "automation_patch_failed";
+    res.status(message === "automation_id_required" ? 400 : 500).json({ ok: false, error: message, exactBlocker: message });
+  }
+});
+
+app.put("/api/mvp/automations/:automationId/builder-spec", (req, res) => {
+  try {
+    initDb();
+    const automationId = typeof req.params.automationId === "string" ? req.params.automationId.trim() : "";
+    if (!automationId) {
+      res.status(400).json({ ok: false, error: "automation_id_required", exactBlocker: "automation_id_required" });
+      return;
+    }
+    const existing = querySql<{ created_at: string }>("SELECT created_at FROM mvp_automations WHERE id = " + sqlValue(automationId) + " LIMIT 1")[0];
+    const current = readMvpAutomations().find((item) => item.id === automationId);
+    const timestamp = nowIso();
+    const nextSpec = req.body && typeof req.body === "object" ? req.body : {};
+    upsert("mvp_automations", {
+      id: automationId,
+      project_id: current?.project_id ?? "project-a",
+      automation_type: current?.automation_type ?? "sns-post",
+      name: current?.name ?? "SNS投稿",
+      desc: current?.desc ?? "",
+      goal: current?.goal ?? "",
+      schedule: current?.schedule ?? "09:00",
+      cadence: current?.cadence ?? "daily",
+      lane: current?.lane ?? "Lane 1",
+      risk_level: current?.risk_level ?? "high",
+      approval_policy: current?.approval_policy ?? "required_before_external_post",
+      worker_command_kind: current?.worker_command_kind ?? "safe_local_demo",
+      create_approval: current?.create_approval ? 1 : 0,
+      status: current?.status ?? "draft",
+      builder_spec_json: JSON.stringify(nextSpec),
+      created_at: existing?.created_at ?? timestamp,
+      updated_at: timestamp
+    });
+    res.json({
+      ok: true,
+      automation_id: automationId,
+      spec: nextSpec,
+      state: getMvpStateReadback(),
+      external_action_executed: false
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "builder_spec_save_failed";
+    res.status(message === "automation_id_required" ? 400 : 500).json({ ok: false, error: message, exactBlocker: message });
+  }
+});
+
 let researchPlanSchedulerTimer: ReturnType<typeof setInterval> | undefined;
 const researchPlanSchedulerInFlightDueKeys = new Set<string>();
 
@@ -2023,7 +2120,8 @@ export function getDashboard() {
     rawAssets,
     rawSkills,
     rawResearchPlans,
-    rawSecrets
+    rawSecrets,
+    rawMvpAutomations
   ] = querySqlBatch([
     "SELECT * FROM runs ORDER BY created_at DESC LIMIT 20",
     "SELECT * FROM runs ORDER BY updated_at DESC LIMIT 500",
@@ -2107,7 +2205,8 @@ export function getDashboard() {
     "SELECT * FROM codex_assets ORDER BY imported_at DESC LIMIT 12",
     "SELECT id, run_id, name, draft_markdown, created_at FROM skills ORDER BY created_at DESC LIMIT 8",
     "SELECT * FROM research_plans ORDER BY updated_at DESC LIMIT 8",
-    "SELECT id, kind, label, masked_value, updated_at FROM stored_secrets ORDER BY updated_at DESC"
+    "SELECT id, kind, label, masked_value, updated_at FROM stored_secrets ORDER BY updated_at DESC",
+    "SELECT * FROM mvp_automations ORDER BY updated_at DESC LIMIT 500"
   ]);
   const approvalInboxRows = latestPendingApprovalInboxRows(rawApprovalInboxRows as ApprovalInboxSourceRow[]);
   const codexAutomationMigrationLedger = buildCodexAutomationMigrationLedger({
@@ -2152,6 +2251,31 @@ export function getDashboard() {
     assets: sanitizeDashboardRows(rawAssets),
     skills: sanitizeDashboardRows(rawSkills),
     registeredWorkflows: publicRegisteredWorkflows,
+    automations: (rawMvpAutomations as Array<Record<string, unknown>>).map((row) => ({
+      id: String(row.id ?? ""),
+      project_id: String(row.project_id ?? "project-a"),
+      automation_type: String(row.automation_type ?? "sns-post"),
+      name: String(row.name ?? ""),
+      desc: String(row.desc ?? ""),
+      goal: String(row.goal ?? ""),
+      schedule: String(row.schedule ?? "09:00"),
+      cadence: String(row.cadence ?? "daily"),
+      lane: String(row.lane ?? "Lane 1"),
+      risk_level: String(row.risk_level ?? "high"),
+      approval_policy: String(row.approval_policy ?? "required_before_external_post"),
+      worker_command_kind: String(row.worker_command_kind ?? "safe_local_demo"),
+      create_approval: row.create_approval === 1 || row.create_approval === true,
+      status: String(row.status ?? "draft"),
+      builder_spec: safeJsonParse<Record<string, unknown>>(typeof row.builder_spec_json === "string" ? row.builder_spec_json : "{}", {}),
+      created_at: String(row.created_at ?? ""),
+      updated_at: String(row.updated_at ?? "")
+    })),
+    builder_specs: (rawMvpAutomations as Array<Record<string, unknown>>).map((row) => ({
+      automation_id: String(row.id ?? ""),
+      project_id: String(row.project_id ?? "project-a"),
+      updated_at: String(row.updated_at ?? ""),
+      spec: safeJsonParse<Record<string, unknown>>(typeof row.builder_spec_json === "string" ? row.builder_spec_json : "{}", {})
+    })),
     secrets: rawSecrets.map((row) => ({
       id: String(row.id ?? ""),
       kind: String(row.kind ?? ""),
@@ -2224,6 +2348,110 @@ function readMvpFeedbacks() {
     created_at: row.created_at,
     payload: safeJsonParse<Record<string, unknown>>(row.payload_json, {})
   }));
+}
+
+function readMvpAutomations() {
+  initDb();
+  return querySql<{
+    id: string;
+    project_id: string;
+    automation_type: string;
+    name: string;
+    desc: string;
+    goal: string;
+    schedule: string;
+    cadence: string;
+    lane: string;
+    risk_level: string;
+    approval_policy: string;
+    worker_command_kind: string;
+    create_approval: number;
+    status: string;
+    builder_spec_json: string;
+    created_at: string;
+    updated_at: string;
+  }>("SELECT * FROM mvp_automations ORDER BY updated_at DESC LIMIT 500").map((row) => ({
+    id: row.id,
+    project_id: row.project_id,
+    automation_type: row.automation_type,
+    name: row.name,
+    desc: row.desc,
+    goal: row.goal,
+    schedule: row.schedule,
+    cadence: row.cadence,
+    lane: row.lane,
+    risk_level: row.risk_level,
+    approval_policy: row.approval_policy,
+    worker_command_kind: row.worker_command_kind,
+    create_approval: row.create_approval === 1,
+    status: row.status,
+    builder_spec: safeJsonParse<Record<string, unknown>>(row.builder_spec_json, {}),
+    created_at: row.created_at,
+    updated_at: row.updated_at
+  }));
+}
+
+function automationDraftPayloadFromBody(body: any, fallbackId?: string) {
+  const id = typeof body?.id === "string" && body.id.trim() ? body.id.trim() : (fallbackId ?? "");
+  const project_id = typeof body?.project_id === "string" && body.project_id.trim() ? body.project_id.trim() : "project-a";
+  const automation_type = typeof body?.automation_type === "string" && body.automation_type.trim() ? body.automation_type.trim() : "sns-post";
+  const name = typeof body?.name === "string" && body.name.trim() ? body.name.trim() : "SNS投稿";
+  const desc = typeof body?.desc === "string" ? body.desc.trim() : "";
+  const goal = typeof body?.goal === "string" ? body.goal.trim() : "";
+  const schedule = typeof body?.schedule === "string" && body.schedule.trim() ? body.schedule.trim() : "09:00";
+  const cadence = typeof body?.cadence === "string" && body.cadence.trim() ? body.cadence.trim() : "daily";
+  const lane = typeof body?.lane === "string" && body.lane.trim() ? body.lane.trim() : "Lane 1";
+  const risk_level = typeof body?.risk_level === "string" && body.risk_level.trim() ? body.risk_level.trim() : "high";
+  const approval_policy = typeof body?.approval_policy === "string" && body.approval_policy.trim() ? body.approval_policy.trim() : "required_before_external_post";
+  const worker_command_kind = typeof body?.worker_command_kind === "string" && body.worker_command_kind.trim() ? body.worker_command_kind.trim() : "safe_local_demo";
+  const create_approval = body?.create_approval === false ? 0 : 1;
+  const builder_spec = body?.builder_spec && typeof body.builder_spec === "object" ? body.builder_spec : {};
+  return { id, project_id, automation_type, name, desc, goal, schedule, cadence, lane, risk_level, approval_policy, worker_command_kind, create_approval, builder_spec };
+}
+
+function saveMvpAutomationDraft(body: any, fallbackId?: string) {
+  const payload = automationDraftPayloadFromBody(body, fallbackId);
+  if (!payload.id) throw new Error("automation_id_required");
+  const existing = querySql<{ created_at: string }>("SELECT created_at FROM mvp_automations WHERE id = " + sqlValue(payload.id) + " LIMIT 1")[0];
+  const timestamp = nowIso();
+  upsert("mvp_automations", {
+    id: payload.id,
+    project_id: payload.project_id,
+    automation_type: payload.automation_type,
+    name: payload.name,
+    desc: payload.desc,
+    goal: payload.goal,
+    schedule: payload.schedule,
+    cadence: payload.cadence,
+    lane: payload.lane,
+    risk_level: payload.risk_level,
+    approval_policy: payload.approval_policy,
+    worker_command_kind: payload.worker_command_kind,
+    create_approval: payload.create_approval,
+    status: "draft",
+    builder_spec_json: JSON.stringify(payload.builder_spec),
+    created_at: existing?.created_at ?? timestamp,
+    updated_at: timestamp
+  });
+  return {
+    id: payload.id,
+    project_id: payload.project_id,
+    automation_type: payload.automation_type,
+    name: payload.name,
+    desc: payload.desc,
+    goal: payload.goal,
+    schedule: payload.schedule,
+    cadence: payload.cadence,
+    lane: payload.lane,
+    risk_level: payload.risk_level,
+    approval_policy: payload.approval_policy,
+    worker_command_kind: payload.worker_command_kind,
+    create_approval: Boolean(payload.create_approval),
+    status: "draft",
+    builder_spec: payload.builder_spec,
+    created_at: existing?.created_at ?? timestamp,
+    updated_at: timestamp
+  };
 }
 
 function buildMvpWorkerState(dashboard: ReturnType<typeof getDashboard>) {
@@ -2327,7 +2555,8 @@ function getPostgresFastDashboard() {
     rawSystemChecks,
     rawSteps,
     rawLanes,
-    rawWorkerEvents
+    rawWorkerEvents,
+    rawMvpAutomations
   ] = querySqlBatch([
     "SELECT * FROM runs ORDER BY created_at DESC LIMIT 20",
     "SELECT * FROM runs ORDER BY updated_at DESC LIMIT 80",
@@ -2366,7 +2595,8 @@ function getPostgresFastDashboard() {
         lanes.cdp_port ASC
       LIMIT 50
     `,
-    "SELECT * FROM worker_events ORDER BY created_at DESC LIMIT 12"
+    "SELECT * FROM worker_events ORDER BY created_at DESC LIMIT 12",
+    "SELECT * FROM mvp_automations ORDER BY updated_at DESC LIMIT 500"
   ]);
   const rawBridgeExecutions: Array<Record<string, unknown>> = [];
   const rawProofs: Array<Record<string, unknown>> = [];
@@ -2411,6 +2641,31 @@ function getPostgresFastDashboard() {
     assets: [],
     skills: [],
     registeredWorkflows: publicRegisteredWorkflows,
+    automations: (rawMvpAutomations as Array<Record<string, unknown>>).map((row) => ({
+      id: String(row.id ?? ""),
+      project_id: String(row.project_id ?? "project-a"),
+      automation_type: String(row.automation_type ?? "sns-post"),
+      name: String(row.name ?? ""),
+      desc: String(row.desc ?? ""),
+      goal: String(row.goal ?? ""),
+      schedule: String(row.schedule ?? "09:00"),
+      cadence: String(row.cadence ?? "daily"),
+      lane: String(row.lane ?? "Lane 1"),
+      risk_level: String(row.risk_level ?? "high"),
+      approval_policy: String(row.approval_policy ?? "required_before_external_post"),
+      worker_command_kind: String(row.worker_command_kind ?? "safe_local_demo"),
+      create_approval: row.create_approval === 1 || row.create_approval === true,
+      status: String(row.status ?? "draft"),
+      builder_spec: safeJsonParse<Record<string, unknown>>(typeof row.builder_spec_json === "string" ? row.builder_spec_json : "{}", {}),
+      created_at: String(row.created_at ?? ""),
+      updated_at: String(row.updated_at ?? "")
+    })),
+    builder_specs: (rawMvpAutomations as Array<Record<string, unknown>>).map((row) => ({
+      automation_id: String(row.id ?? ""),
+      project_id: String(row.project_id ?? "project-a"),
+      updated_at: String(row.updated_at ?? ""),
+      spec: safeJsonParse<Record<string, unknown>>(typeof row.builder_spec_json === "string" ? row.builder_spec_json : "{}", {})
+    })),
     secrets: [],
     obsidian: getObsidianExportStatus(),
     resumeContract: getResumeContract(),

@@ -2036,6 +2036,7 @@ function BuilderPage({ model }: { model: AppModel }) {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
+            id: automationId,
             name: builderDraft.name,
             project_id: activeProject,
             automation_type: automationSlugForKind(builderType),
@@ -2063,6 +2064,7 @@ function BuilderPage({ model }: { model: AppModel }) {
         method: "PATCH",
         headers: { "content-type": "application/json" },
           body: JSON.stringify({
+            id: automationId,
             name: builderDraft.name,
             lane: builderDraft.lane,
             schedule: builderDraft.schedule,

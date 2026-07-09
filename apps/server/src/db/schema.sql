@@ -200,6 +200,29 @@ CREATE INDEX IF NOT EXISTS mvp_feedback_status_idx ON mvp_feedback(status);
 CREATE INDEX IF NOT EXISTS mvp_feedback_route_idx ON mvp_feedback(route);
 CREATE INDEX IF NOT EXISTS mvp_feedback_created_at_idx ON mvp_feedback(created_at DESC);
 
+CREATE TABLE IF NOT EXISTS mvp_automations (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  automation_type TEXT NOT NULL,
+  name TEXT NOT NULL,
+  desc TEXT NOT NULL,
+  goal TEXT NOT NULL,
+  schedule TEXT NOT NULL,
+  cadence TEXT NOT NULL,
+  lane TEXT NOT NULL,
+  risk_level TEXT NOT NULL,
+  approval_policy TEXT NOT NULL,
+  worker_command_kind TEXT NOT NULL,
+  create_approval INTEGER NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'draft',
+  builder_spec_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS mvp_automations_project_idx ON mvp_automations(project_id);
+CREATE INDEX IF NOT EXISTS mvp_automations_updated_at_idx ON mvp_automations(updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS knowledge_notes (
   id TEXT PRIMARY KEY,
   note_type TEXT NOT NULL,
