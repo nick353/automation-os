@@ -342,7 +342,7 @@ function runPostgresWorker(operation: "exec" | "query", sql: string): Array<Reco
       timeout: postgresWorkerTimeoutMs
     });
     const parsed = JSON.parse(stdout) as { ok: boolean; rows?: Array<Record<string, unknown>>; error?: string };
-    if (!parsed.ok) throw new Error(parsed.error ?? "PostgreSQL worker failed");
+    if (!parsed.ok) throw new Error(`${parsed.error ?? "PostgreSQL worker failed"}\nSQL: ${sql}`);
     return parsed.rows ?? [];
   } catch (error) {
     const stderr = typeof error === "object" && error && "stderr" in error ? String((error as { stderr?: unknown }).stderr ?? "").trim() : "";
@@ -368,7 +368,7 @@ function runPostgresWorkerBatch(sqls: string[]): Array<Array<Record<string, unkn
       timeout: postgresWorkerTimeoutMs
     });
     const parsed = JSON.parse(stdout) as { ok: boolean; batches?: Array<Array<Record<string, unknown>>>; error?: string };
-    if (!parsed.ok) throw new Error(parsed.error ?? "PostgreSQL worker failed");
+    if (!parsed.ok) throw new Error(`${parsed.error ?? "PostgreSQL worker failed"}\nSQL: ${sqls.join(";\n")}`);
     return parsed.batches ?? [];
   } catch (error) {
     const stderr = typeof error === "object" && error && "stderr" in error ? String((error as { stderr?: unknown }).stderr ?? "").trim() : "";
