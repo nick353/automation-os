@@ -2392,7 +2392,11 @@ function readMvpAutomations() {
 }
 
 function automationDraftPayloadFromBody(body: any, fallbackId?: string) {
-  const id = typeof body?.id === "string" && body.id.trim() ? body.id.trim() : (fallbackId ?? "");
+  const id = typeof body?.id === "string" && body.id.trim()
+    ? body.id.trim()
+    : (typeof body?.automation_type === "string" && body.automation_type.trim()
+      ? body.automation_type.trim()
+      : (fallbackId ?? ""));
   const project_id = typeof body?.project_id === "string" && body.project_id.trim() ? body.project_id.trim() : "project-a";
   const automation_type = typeof body?.automation_type === "string" && body.automation_type.trim() ? body.automation_type.trim() : "sns-post";
   const name = typeof body?.name === "string" && body.name.trim() ? body.name.trim() : "SNS投稿";
