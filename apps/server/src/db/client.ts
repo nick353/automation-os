@@ -67,8 +67,14 @@ export function querySqlBatch(sqls: string[]): Array<Array<Record<string, unknow
 export function initDb(): void {
   if (dbInitialized) return;
   if (dbBackend === "postgres" && process.env.AUTOMATION_OS_ASSUME_EXISTING_POSTGRES_SCHEMA === "1") {
-    dbInitialized = true;
-    dbInitRunCount += 1;
+    dbInitializing = true;
+    try {
+      runIdempotentMigrations();
+      dbInitialized = true;
+      dbInitRunCount += 1;
+    } finally {
+      dbInitializing = false;
+    }
     return;
   }
   if (dbBackend === "sqlite") {
