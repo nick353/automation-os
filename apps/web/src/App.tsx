@@ -63,16 +63,23 @@ const subTabLabels = [
 ];
 
 const writeTokenStorageKey = "automation-os-write-token";
+var runtimeWriteToken = "";
+
+function isStateChangingMethod(method: string) {
+  return method === "POST" || method === "PATCH" || method === "PUT" || method === "DELETE";
+}
 
 function readWriteToken() {
+  if (runtimeWriteToken.trim()) return runtimeWriteToken.trim();
   try {
     return (window.sessionStorage.getItem(writeTokenStorageKey) || window.localStorage.getItem(writeTokenStorageKey) || "").trim();
   } catch {
-    return "";
+    return runtimeWriteToken.trim();
   }
 }
 
 function persistWriteToken(value: string) {
+  runtimeWriteToken = value.trim();
   try {
     const normalized = value.trim();
     window.sessionStorage.setItem(writeTokenStorageKey, normalized);
@@ -83,6 +90,7 @@ function persistWriteToken(value: string) {
 }
 
 function clearWriteToken() {
+  runtimeWriteToken = "";
   try {
     window.sessionStorage.removeItem(writeTokenStorageKey);
     window.localStorage.removeItem(writeTokenStorageKey);
@@ -861,6 +869,7 @@ function IconButton({ children, onClick, label }: { children: React.ReactNode; o
 function App() {
   const route = useRoute();
   const [receipt, setReceipt] = useState("Local Agent は待機中です。");
+  const [writeToken, setWriteToken] = useState(readWriteToken());
   const [automationRows, setAutomationRows] = useState<AutomationRow[]>(seedAutomations);
   const [approvalRows, setApprovalRows] = useState(seedApprovalItems);
   const [createdTemplates, setCreatedTemplates] = useState<string[]>([]);
@@ -887,6 +896,8 @@ function App() {
   }, []);
   const page = useMemo(() => renderPage(route, {
     setReceipt,
+    writeToken,
+    setWriteToken,
     automationRows,
     setAutomationRows,
     approvalRows,
@@ -897,7 +908,7 @@ function App() {
     setMvpState,
     feedbackReadback,
     setFeedbackReadback
-  }), [route, automationRows, approvalRows, createdTemplates, mvpState, feedbackReadback]);
+  }), [route, writeToken, automationRows, approvalRows, createdTemplates, mvpState, feedbackReadback]);
 
   return (
     <div className="app">
@@ -1147,6 +1158,8 @@ function FeedbackFixQueue({ feedbacks, state, setReceipt, setFeedbackReadback }:
 
 type AppModel = {
   setReceipt: (value: string) => void;
+  writeToken: string;
+  setWriteToken: React.Dispatch<React.SetStateAction<string>>;
   automationRows: AutomationRow[];
   setAutomationRows: React.Dispatch<React.SetStateAction<AutomationRow[]>>;
   approvalRows: typeof seedApprovalItems;
@@ -2527,11 +2540,10 @@ function MemoryPage({ model }: { model: AppModel }) {
 }
 
 function SecurityPage({ model }: { model: AppModel }) {
-  const { mvpState, setReceipt } = model;
+  const { mvpState, setReceipt, writeToken, setWriteToken } = model;
   const route = useRoute();
   const activeProject = projectSlugFromRoute(route);
   const projectName = projectLabels[activeProject];
-  const [writeToken, setWriteTokenState] = useState(readWriteToken());
   const [securityNote, setSecurityNote] = useState("接続・権限を開きました。接続サービスの操作結果はここに表示します。実ログインやOTP突破は実行しません。");
   const policies = ["閲覧", "下書き作成", "投稿", "DM送信", "メール送信", "画像生成", "動画生成", "広告出稿", "削除"];
   const services = ["Google Drive", "Gmail", "Instagram", "TikTok", "Facebook", "LinkedIn", "Slack", "Runway"];
@@ -2550,7 +2562,7 @@ function SecurityPage({ model }: { model: AppModel }) {
       <p className="muted">この表はプロジェクト別の接続参照表示です。実認証readbackは未接続です。</p>
       <Panel title="書き込みトークン">
         <div className="form-grid">
-          <label>Automation OS write token<input type="password" value={writeToken} onChange={(event) => setWriteTokenState(event.target.value)} placeholder="x-automation-os-token" /></label>
+          <label>Automation OS write token<input type="password" value={writeToken} onChange={(event) => setWriteToken(event.target.value)} placeholder="x-automation-os-token" /></label>
         </div>
         <div className="row-actions">
           <Button variant="primary" onClick={() => {
