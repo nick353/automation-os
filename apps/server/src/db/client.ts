@@ -132,6 +132,30 @@ function runIdempotentMigrations(): void {
   ensureColumn("create_planner_jobs", "started_at", "TEXT");
   ensureColumn("create_planner_jobs", "completed_at", "TEXT");
   ensureColumn("create_planner_jobs", "metadata_json", "TEXT NOT NULL DEFAULT '{}'");
+  execSql(`
+    CREATE TABLE IF NOT EXISTS mvp_automations (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      automation_type TEXT NOT NULL,
+      name TEXT NOT NULL,
+      desc TEXT NOT NULL,
+      goal TEXT NOT NULL,
+      schedule TEXT NOT NULL,
+      cadence TEXT NOT NULL,
+      lane TEXT NOT NULL,
+      risk_level TEXT NOT NULL,
+      approval_policy TEXT NOT NULL,
+      worker_command_kind TEXT NOT NULL,
+      create_approval INTEGER NOT NULL DEFAULT 1,
+      status TEXT NOT NULL DEFAULT 'draft',
+      builder_spec_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS mvp_automations_project_idx ON mvp_automations(project_id);
+    CREATE INDEX IF NOT EXISTS mvp_automations_updated_at_idx ON mvp_automations(updated_at DESC);
+  `);
   ensureColumn("child_runs", "parent_run_id", "TEXT NOT NULL DEFAULT ''");
   ensureColumn("child_runs", "step_id", "TEXT");
   ensureColumn("child_runs", "role", "TEXT NOT NULL DEFAULT 'child_codex'");
