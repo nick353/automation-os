@@ -203,6 +203,12 @@ function actionStamp() {
   return `${new Date().toLocaleTimeString("ja-JP", { hour12: false })}.${String(Date.now()).slice(-3)}`;
 }
 
+function normalizeApprovalStatus(status: string): Status {
+  if (status === "waiting" || status === "pending") return "waiting";
+  if (status === "rejected") return "blocked";
+  return "approved";
+}
+
 function detectSchedule(text: string) {
   const hourMatch = text.match(/(\d{1,2})\s*時/);
   const hour = hourMatch ? Math.max(0, Math.min(23, Number(hourMatch[1]))) : text.includes("夕方") ? 18 : text.includes("夜") ? 20 : 9;
@@ -1285,7 +1291,7 @@ function FeedbackWidget({ route, setReceipt, setMvpState }: { route: string; set
 function HomePage({ model }: { model: AppModel }) {
   const { setReceipt, automationRows, mvpState, feedbackReadback } = model;
   const projectAAutomations = automationRows.filter((row) => (row.project_id ?? "project-a") === "project-a");
-  const waitingApprovals = (mvpState.approvals ?? []).filter((approval) => approval.status === "waiting");
+  const waitingApprovals = (mvpState.approvals ?? []).filter((approval) => approval.status === "waiting" || approval.status === "pending");
   const blockedRuns = (mvpState.runs ?? []).filter((run) => run.status === "blocked");
   const queuedRuns = (mvpState.runs ?? []).filter((run) => run.status === "queued");
   const feedbackRows = feedbackItemsFromState({ ...mvpState, feedbacks: feedbackReadback });
@@ -2077,7 +2083,7 @@ function ApprovalsPage({ model }: { model: AppModel }) {
     lane: "MVP API",
     due: approval.updated_at?.slice(0, 10) ?? "-",
     risk: approval.external_action_allowed ? "要確認" : "外部操作なし",
-    status: approval.status === "waiting" ? "waiting" as Status : approval.status === "rejected" ? "blocked" as Status : "approved" as Status
+    status: normalizeApprovalStatus(approval.status)
   }));
   const visibleApprovals = persistedApprovals.filter((approval) => approval.status === "waiting");
   const selectedIndex = visibleApprovals.length ? Math.min(selected, visibleApprovals.length - 1) : -1;
