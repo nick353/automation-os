@@ -36,27 +36,40 @@ export type RegisteredCodexAutomationRunResult = {
   stderrTail: string;
 };
 
-const automationRoot = "/Users/nichikatanaka/.codex/automations";
+const defaultAutomationRoot = "/Users/nichikatanaka/.codex/automations";
 const defaultTimeoutMs = 90 * 60 * 1000;
 const defaultPlaywrightCliWrapper = "/Users/nichikatanaka/.codex/skills/playwright/scripts/playwright_cli.sh";
 
-const workflows: Record<string, { cwd: string; automationToml: string; proofType: string; label: string }> = {
-  job_submit_registered: {
-    cwd: "/Users/nichikatanaka/Documents/New project",
-    automationToml: join(automationRoot, "job-application-manager", "automation.toml"),
-    proofType: "job_submit_registered_codex_execution",
-    label: "Job submit registered Codex execution"
-  },
-  job_followup_registered: {
-    cwd: "/Users/nichikatanaka/Documents/New project",
-    automationToml: join(automationRoot, "job-application-manager", "automation.toml"),
-    proofType: "job_followup_registered_codex_execution",
-    label: "Job follow-up registered Codex execution"
-  }
+type RegisteredWorkflowConfig = {
+  cwd: string;
+  automationToml: string;
+  proofType: string;
+  label: string;
 };
 
-export function runRegisteredCodexAutomation(input: { runId: string; workflowId: string }): RegisteredCodexAutomationRunResult {
-  const workflow = workflows[input.workflowId];
+function workflowConfigFor(workflowId: string, automationRoot = defaultAutomationRoot): RegisteredWorkflowConfig | undefined {
+  switch (workflowId) {
+    case "job_submit_registered":
+      return {
+        cwd: "/Users/nichikatanaka/Documents/New project",
+        automationToml: join(automationRoot, "job-application-manager", "automation.toml"),
+        proofType: "job_submit_registered_codex_execution",
+        label: "Job submit registered Codex execution"
+      };
+    case "job_followup_registered":
+      return {
+        cwd: "/Users/nichikatanaka/Documents/New project",
+        automationToml: join(automationRoot, "job-application-manager", "automation.toml"),
+        proofType: "job_followup_registered_codex_execution",
+        label: "Job follow-up registered Codex execution"
+      };
+    default:
+      return undefined;
+  }
+}
+
+export function runRegisteredCodexAutomation(input: { runId: string; workflowId: string; automationRoot?: string }): RegisteredCodexAutomationRunResult {
+  const workflow = workflowConfigFor(input.workflowId, input.automationRoot);
   if (!workflow) return blockedResult(input, "registered_workflow_runner_unknown", { workflow_id: input.workflowId });
   if (!existsSync(workflow.automationToml)) {
     return blockedResult(input, "automation_toml_missing", { workflow_id: input.workflowId, automation_toml: workflow.automationToml });

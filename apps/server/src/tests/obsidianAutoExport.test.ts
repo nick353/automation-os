@@ -34,10 +34,16 @@ test("Obsidian auto export status is persisted and restored", async () => {
   const restored = restoredModule.getObsidianExportStatus();
 
   assert.equal(restored.ok, true);
+  assert.equal(restored.health, "healthy");
+  assert.match(restored.summary, /running normally/);
+  assert.match(restored.nextStep, /No action needed/);
   assert.equal(restored.lastSuccessAt, written.lastSuccessAt);
   assert.equal(restored.vaultPath, written.vaultPath);
   assert.equal(restored.outputDir, written.outputDir);
   assert.equal(restored.reason, "test_persisted_status");
+  assert.equal(restored.failureCount, 0);
+  assert.equal(restored.lastFailureAt, null);
+  assert.equal(restored.nextRecoveryAt, null);
   assert.deepEqual(restored.secondBrainFiles, written.secondBrainFiles);
   assert.equal(restored.generatedFileCheck.ok, true);
   assert.equal(restored.generatedFileCheck.checkedAt, written.lastSuccessAt);
@@ -45,6 +51,12 @@ test("Obsidian auto export status is persisted and restored", async () => {
   assert.equal(restored.generatedFileCheck.missing.length, 0);
   assert.equal(restored.generatedFileCheck.nonGenerated.length, 0);
   assert.ok(restored.generatedFileCheck.files.some((file: RowLike) => file.path.endsWith("Resume Current Work.md") && file.marker === "frontmatter"));
+  assert.ok(
+    restored.generatedFileCheck.files.some((file: RowLike) => file.path.endsWith("Obsidian x Codex Self Diagnosis.md") && file.marker === "frontmatter")
+  );
+  assert.ok(
+    restored.generatedFileCheck.files.some((file: RowLike) => file.path.endsWith("Obsidian x Codex Weekly Check.md") && file.marker === "frontmatter")
+  );
   assert.ok(restored.generatedFileCheck.files.some((file: RowLike) => file.path.endsWith("Action Queue.base") && file.marker === "comment"));
   assert.ok(
     restored.generatedFileCheck.files.some(
@@ -62,6 +74,48 @@ test("Obsidian auto export status is persisted and restored", async () => {
   assert.ok(restored.secondBrainPolicy.autoApprovedScopes.includes("obsidian_internal_distill"));
   assert.deepEqual(restored.secondBrainPolicy.approvalRequiredScopes, ["billing_purchase_payment_checkout"]);
   assert.equal(restored.proofInboxFile?.endsWith(join("04_Proof Pointers", "Proof Inbox.md")), true);
+});
+
+test("Obsidian auto export records a recovery retry after failure and clears it after success", async () => {
+  const statusFile = join(tempRoot, "recovery-retry", "obsidian-export-status.json");
+  mkdirSync(join(tempRoot, "recovery-retry"), { recursive: true });
+  process.env.AUTOMATION_OS_OBSIDIAN_STATUS_FILE = statusFile;
+  process.env.AUTOMATION_OS_OBSIDIAN_AUTO_EXPORT = "1";
+
+  const autoExport = await import(`../obsidian/autoExport.js?recovery-retry=${Date.now()}`);
+  const failed = autoExport.runObsidianExportAttemptForTest("recovery_retry_failure", () => {
+    throw new Error("transient export failure");
+  });
+
+  assert.equal(failed.ok, false);
+  assert.equal(failed.health, "degraded");
+  assert.match(failed.summary, /needs attention/);
+  assert.match(failed.nextStep, /recovery retry|Inspect the latest blocker/);
+  assert.equal(failed.failureCount, 1);
+  assert.equal(failed.lastError, "transient export failure");
+  assert.equal(failed.lastFailureAt, failed.lastAttemptAt);
+  assert.ok(failed.nextRecoveryAt);
+
+  const recovered = autoExport.runObsidianExportAttemptForTest("recovery_retry_success", () => ({
+    vaultPath: join(tempRoot, "recovery-vault"),
+    outputDir: join(tempRoot, "recovery-vault", "02_Systems", "automation-os"),
+    files: [],
+    runs: 0,
+    proofs: 0,
+    docs: 0,
+    missionFiles: [],
+    secondBrainFiles: [],
+    dashboardFiles: [],
+    orientationFiles: [],
+    templateFiles: []
+  }));
+
+  assert.equal(recovered.ok, true);
+  assert.equal(recovered.health, "healthy");
+  assert.match(recovered.summary, /running normally/);
+  assert.equal(recovered.failureCount, 0);
+  assert.equal(recovered.lastFailureAt, null);
+  assert.equal(recovered.nextRecoveryAt, null);
 });
 
 test("Obsidian generated file check records missing, non-generated, and JSON not-applicable files", async () => {
@@ -359,6 +413,19 @@ test("Periodic Obsidian export is disabled when interval is zero", async () => {
   delete process.env.AUTOMATION_OS_OBSIDIAN_PERIODIC_EXPORT_MS;
 });
 
+test("Periodic Obsidian export defaults to five minutes when interval is unset", async () => {
+  const previousInterval = process.env.AUTOMATION_OS_OBSIDIAN_PERIODIC_EXPORT_MS;
+  delete process.env.AUTOMATION_OS_OBSIDIAN_PERIODIC_EXPORT_MS;
+  const autoExport = await import(`../obsidian/autoExport.js?periodic-default=${Date.now()}`);
+  const controller = autoExport.startPeriodicObsidianExport();
+
+  assert.equal(controller.enabled, true);
+  assert.equal(controller.intervalMs, 300000);
+  controller.stop();
+  if (previousInterval === undefined) delete process.env.AUTOMATION_OS_OBSIDIAN_PERIODIC_EXPORT_MS;
+  else process.env.AUTOMATION_OS_OBSIDIAN_PERIODIC_EXPORT_MS = previousInterval;
+});
+
 test("Periodic Obsidian export starts and writes status on interval", async () => {
   const statusFile = join(tempRoot, "periodic", "obsidian-export-status.json");
   const vaultPath = join(tempRoot, "periodic-vault");
@@ -460,6 +527,34 @@ test("NODE_TEST_CONTEXT disables auto export unless explicitly enabled", async (
     } else {
       process.env.NODE_TEST_CONTEXT = previousNodeTestContext;
     }
+  }
+});
+
+test("hosted runtime reports Obsidian as Mac-worker owned unless hosted export is explicitly enabled", async () => {
+  const previousCommit = process.env.ZEABUR_GIT_COMMIT;
+  const previousHostedExport = process.env.AUTOMATION_OS_OBSIDIAN_HOSTED_EXPORT;
+  const previousStatusFile = process.env.AUTOMATION_OS_OBSIDIAN_STATUS_FILE;
+  process.env.ZEABUR_GIT_COMMIT = "test-hosted-commit";
+  delete process.env.AUTOMATION_OS_OBSIDIAN_HOSTED_EXPORT;
+  process.env.AUTOMATION_OS_OBSIDIAN_STATUS_FILE = join(tempRoot, "hosted-readonly-status.json");
+  try {
+    const autoExport = await import(`../obsidian/autoExport.js?hosted-readonly=${Date.now()}`);
+    const status = autoExport.getObsidianExportStatus();
+
+    assert.equal(status.enabled, false);
+    assert.equal(status.ok, false);
+    assert.equal(status.health, "disabled");
+    assert.equal(status.reason, "hosted_local_worker_required");
+    assert.equal(status.lastError, null);
+    assert.match(status.summary, /Mac worker/);
+    assert.match(status.nextStep, /Mac worker/);
+  } finally {
+    if (previousCommit === undefined) delete process.env.ZEABUR_GIT_COMMIT;
+    else process.env.ZEABUR_GIT_COMMIT = previousCommit;
+    if (previousHostedExport === undefined) delete process.env.AUTOMATION_OS_OBSIDIAN_HOSTED_EXPORT;
+    else process.env.AUTOMATION_OS_OBSIDIAN_HOSTED_EXPORT = previousHostedExport;
+    if (previousStatusFile === undefined) delete process.env.AUTOMATION_OS_OBSIDIAN_STATUS_FILE;
+    else process.env.AUTOMATION_OS_OBSIDIAN_STATUS_FILE = previousStatusFile;
   }
 });
 

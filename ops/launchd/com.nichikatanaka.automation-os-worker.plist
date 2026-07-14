@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.nichikatanaka.automation-os-worker</string>
+  <string>com.nichikatanaka.automation-os.worker</string>
   <key>ProgramArguments</key>
   <array>
     <string>/Users/nichikatanaka/Library/Application Support/Automation OS/start-automation-os-worker.sh</string>
@@ -11,11 +11,11 @@
   <key>WorkingDirectory</key>
   <string>/Users/nichikatanaka/Documents/Codex/automation-os</string>
   <key>RunAtLoad</key>
-  <false/>
+  <true/>
   <key>KeepAlive</key>
   <dict>
-    <key>Crashed</key>
-    <true/>
+    <key>SuccessfulExit</key>
+    <false/>
   </dict>
   <key>ThrottleInterval</key>
   <integer>30</integer>

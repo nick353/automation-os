@@ -1,6 +1,8 @@
 export function redactSensitiveText(value: string): string {
   let redacted = redactUrlLikeSecrets(value);
   redacted = redactDelimitedParams(redacted);
+  redacted = redacted.replace(/\b(?:sample|token|secret|password|apikey)[-_][A-Za-z0-9._-]{4,}\b/giu, "[redacted-token]");
+  redacted = redacted.replace(/\b(?:[A-Za-z0-9]+_)?(?:jwt|token|secret|key)_[A-Za-z0-9._-]{4,}\b/giu, "[redacted-token]");
   redacted = redacted.replace(/\b(Bearer\s+)[A-Za-z0-9._~+/-]{12,}/gu, "$1[redacted-token]");
   redacted = redacted.replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/gu, "[redacted-token]");
   redacted = redacted.replace(/\bgh[pousr]_[A-Za-z0-9_]{20,}\b/gu, "[redacted-token]");

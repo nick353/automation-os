@@ -42,6 +42,14 @@ export type BrowserHealth = {
     status: "requires_bridge";
     summary: string;
   };
+  chromeExtension: {
+    status: "ready" | "blocked";
+    exactBlocker: string | null;
+    summary: string;
+    nextAction: string;
+    chromeBinary: string | null;
+    cdpLaneConfigured: boolean;
+  };
   localApp: {
     canReportHealth: boolean;
     canExecuteBrowserPlugin: boolean;
@@ -61,6 +69,13 @@ export function getBrowserHealth(): BrowserHealth {
   const browserUseLocalCommand = existsSync(localBrowserUse) ? localBrowserUse : null;
   const browserUseCommand = browserUseDisabled ? null : browserUseDirectCommand ?? browserUseLocalCommand;
   const browserUseRecordingQa = getBrowserUseRecordingQaHealth(Boolean(browserUseCommand));
+  const chromeBinary = resolveChromeBinary();
+  const cdpLaneConfigured = Boolean(
+    firstNonEmpty(process.env.AUTOMATION_OS_BROWSER_USE_CDP_URL) ||
+      cdpUrlFromPort(process.env.AUTOMATION_OS_BROWSER_USE_CDP_PORT) ||
+      firstNonEmpty(process.env.BROWSER_USE_CDP_URL) ||
+      autoCdpLaunchConfigured()
+  );
   return {
     generatedAt: new Date().toISOString(),
     playwrightCli: {
@@ -79,6 +94,14 @@ export function getBrowserHealth(): BrowserHealth {
       directCallableFromLocalApp: false,
       status: "requires_bridge",
       summary: "In-App Browser plugin actions require the Codex runtime bridge; this local API can only report readiness."
+    },
+    chromeExtension: {
+      status: "blocked",
+      exactBlocker: "chrome_extension_requires_codex_bridge",
+      summary: "Chrome Extension lane は local app から直呼びできず、Codex bridge が必要です。",
+      nextAction: "Codex bridge の接続状態と Chrome profile/CDP lane を bridge 側 readback で確認してください。",
+      chromeBinary,
+      cdpLaneConfigured
     },
     localApp: {
       canReportHealth: true,
@@ -177,6 +200,13 @@ function autoCdpLaunchConfigured(): boolean {
   if (process.env.AUTOMATION_OS_BROWSER_USE_AUTO_CDP !== "1") return false;
   const chromePath = process.env.AUTOMATION_OS_BROWSER_USE_CHROME_BIN || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
   return existsSync(chromePath);
+}
+
+function resolveChromeBinary(): string | null {
+  const envChrome = firstNonEmpty(process.env.AUTOMATION_OS_BROWSER_USE_CHROME_BIN) ?? firstNonEmpty(process.env.AUTOMATION_OS_YOUTUBE_TRANSCRIPT_CHROME_BIN);
+  if (envChrome) return envChrome;
+  const defaultChromePath = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  return existsSync(defaultChromePath) ? defaultChromePath : null;
 }
 
 function resolveGeminiApiKey(): string | null {

@@ -2,6 +2,8 @@ import type { CodexCapabilitiesSummary } from "./capabilities.js";
 import type { TrustedBridgeAction } from "../bridge/trustedBridge.js";
 
 export type CapabilityRouteStatus = "ready" | "partial" | "missing";
+export type CapabilityRouteAuthority = "catalog" | "runtime" | "connected";
+export type CapabilityRouteProof = "none" | "read_only" | "receipt";
 export type CapabilityRoute = {
   id: string;
   label: string;
@@ -10,6 +12,8 @@ export type CapabilityRoute = {
   nextAction: string;
   evidence: string[];
   signals: string[];
+  authority: CapabilityRouteAuthority;
+  proof: CapabilityRouteProof;
 };
 
 export type CapabilityGap = {
@@ -75,6 +79,9 @@ function buildRoutes(input: RouterInput, context: CommandContext): CapabilityRou
   const routes: CapabilityRoute[] = [];
   const skillNames = new Set(input.capabilities.capabilities.skills.map((skill) => cleanName(skill.name)));
   const bridgeIds = new Set(input.bridgeActions.map((action) => action.id));
+  const chromeState = input.capabilities.capabilities.chrome.state;
+  const automationOsApiState = input.capabilities.capabilities.automationOsApi.state;
+  const browserConnected = chromeState.connected;
 
   if (context.urls.length > 0) {
     routes.push({
@@ -84,7 +91,9 @@ function buildRoutes(input: RouterInput, context: CommandContext): CapabilityRou
       lane: "Web capture",
       nextAction: "Research PlannerのWeb確認またはObsidian URL保存に回す",
       evidence: ["取得結果", "保存先ノート", "停止理由"],
-      signals: context.urls.map((url) => url.host)
+      signals: context.urls.map((url) => url.host),
+      authority: "catalog",
+      proof: "read_only"
     });
   }
 
@@ -96,7 +105,9 @@ function buildRoutes(input: RouterInput, context: CommandContext): CapabilityRou
       lane: "YouTube transcript lane",
       nextAction: "公式の台本表示からテキストを取得して調査証跡にする",
       evidence: ["台本テキスト", "取得manifest", "停止理由"],
-      signals: context.youtubeUrls.map((url) => url.href)
+      signals: context.youtubeUrls.map((url) => url.href),
+      authority: "catalog",
+      proof: "read_only"
     });
   }
 
@@ -104,11 +115,13 @@ function buildRoutes(input: RouterInput, context: CommandContext): CapabilityRou
     routes.push({
       id: "x_authenticated_capture",
       label: "X投稿を読み取り保存する",
-      status: "partial",
+      status: browserConnected ? "ready" : "partial",
       lane: "X read-only lane",
       nextAction: "投稿URLをX captureへ渡し、レビューキューへ接続する",
       evidence: ["投稿本文", "capture manifest", "レビュー候補"],
-      signals: context.xStatusUrls.map((url) => url.href)
+      signals: context.xStatusUrls.map((url) => url.href),
+      authority: browserConnected ? "connected" : "catalog",
+      proof: browserConnected ? "read_only" : "none"
     });
   }
 
@@ -120,7 +133,9 @@ function buildRoutes(input: RouterInput, context: CommandContext): CapabilityRou
       lane: "PDF skill",
       nextAction: "PDF SkillをAutomation OSの添付/URL入力から呼べるようにする",
       evidence: ["抽出テキスト", "ページ画像確認", "レイアウト所見"],
-      signals: context.pdfUrls.map((url) => url.href).concat(context.hasPdfIntent ? ["pdf-intent"] : [])
+      signals: context.pdfUrls.map((url) => url.href).concat(context.hasPdfIntent ? ["pdf-intent"] : []),
+      authority: "catalog",
+      proof: "read_only"
     });
   }
 
@@ -132,7 +147,9 @@ function buildRoutes(input: RouterInput, context: CommandContext): CapabilityRou
       lane: "Prompt brief skill",
       nextAction: "Web/スクショ/調査結果をvisual briefへ変換する",
       evidence: ["参照元", "visual brief", "生成prompt"],
-      signals: ["image-prompt-intent"]
+      signals: ["image-prompt-intent"],
+      authority: "catalog",
+      proof: "none"
     });
   }
 
@@ -144,7 +161,9 @@ function buildRoutes(input: RouterInput, context: CommandContext): CapabilityRou
       lane: "Price checker skill",
       nextAction: "Playwright版価格確認runnerへ移植してから実行導線に入れる",
       evidence: ["価格候補", "画面確認", "cleanup"],
-      signals: ["price-intent"]
+      signals: ["price-intent"],
+      authority: "catalog",
+      proof: "none"
     });
   }
 
@@ -156,7 +175,9 @@ function buildRoutes(input: RouterInput, context: CommandContext): CapabilityRou
       lane: "Video frame reader",
       nextAction: "最新の録画/スクショ列を読み、失敗stageを診断する",
       evidence: ["キーフレーム", "画面所見", "修復対象"],
-      signals: ["video-intent"]
+      signals: ["video-intent"],
+      authority: "catalog",
+      proof: "none"
     });
   }
 
@@ -164,11 +185,13 @@ function buildRoutes(input: RouterInput, context: CommandContext): CapabilityRou
     routes.push({
       id: "second_brain_process",
       label: "保存したメモを整理する",
-      status: "ready",
+      status: automationOsApiState.connected ? "ready" : "partial",
       lane: "Second Brain bridge",
       nextAction: "Obsidian inboxを安全に分類候補へ進める",
       evidence: ["処理件数", "更新候補", "停止理由"],
-      signals: ["knowledge-intent"]
+      signals: ["knowledge-intent"],
+      authority: automationOsApiState.connected ? "connected" : "runtime",
+      proof: "receipt"
     });
   }
 
@@ -180,7 +203,9 @@ function buildRoutes(input: RouterInput, context: CommandContext): CapabilityRou
       lane: "Skill Factory",
       nextAction: "完了runからSkill下書きを作り、手動昇格待ちにする",
       evidence: ["完了run", "下書き", "必要証跡"],
-      signals: ["reuse-intent"]
+      signals: ["reuse-intent"],
+      authority: "catalog",
+      proof: "none"
     });
   }
 
@@ -356,7 +381,14 @@ function choosePrimaryAction(routes: CapabilityRoute[], gaps: CapabilityGap[]): 
 
 function routeRank(a: CapabilityRoute, b: CapabilityRoute): number {
   const statusRank = { ready: 0, partial: 1, missing: 2 };
-  return statusRank[a.status] - statusRank[b.status] || a.label.localeCompare(b.label);
+  const authorityRank = { connected: 0, runtime: 1, catalog: 2 };
+  const proofRank = { receipt: 0, read_only: 1, none: 2 };
+  return (
+    statusRank[a.status] - statusRank[b.status] ||
+    authorityRank[a.authority] - authorityRank[b.authority] ||
+    proofRank[a.proof] - proofRank[b.proof] ||
+    a.label.localeCompare(b.label)
+  );
 }
 
 function gapRank(a: CapabilityGap, b: CapabilityGap): number {

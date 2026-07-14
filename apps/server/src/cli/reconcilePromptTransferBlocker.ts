@@ -3,6 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { dbBackend, dbPath, insert, makeId, nowIso } from "../db/client.js";
+import { buildCanonicalExecutionRoutingMetadataForCommand } from "../codex/executionRouting.js";
 
 const defaultSummaryPath =
   "/Users/nichikatanaka/Documents/Codex/automation-os/data/artifacts/prompt-transfer-ukiyoe/artifacts/runs/run_mqtbe1ep_vgi2ex/result.json";
@@ -33,6 +34,11 @@ const proofGate = {
   missing: [exactBlocker],
   present: ["prompt_transfer_plan_ready", proofType]
 };
+const routeMetadata = buildCanonicalExecutionRoutingMetadataForCommand({
+  command: "Record Prompt Transfer credential blocker as Automation OS reconciliation readback without writing to Google Sheets",
+  source: "manual",
+  selectedAdapter: "prompt_transfer_blocker_reconciliation_readback"
+});
 const receipt = {
   ok: exactBlocker === "google_service_account_json_missing" && summary.status === "blocked" && summary.committed === false,
   workflow: "prompt-transfer-ukiyoe",
@@ -70,8 +76,9 @@ const receipt = {
     external_actions_performed: false,
     google_sheets_write_performed: false,
     strict_registered_success_claimed: false,
+    ...routeMetadata,
     proof_gate: proofGate,
-    proof_summary: `blocked: ${exactBlocker}`
+    proof_summary: `blocked: ${exactBlocker}`,
   },
   next_safe_action:
     "Keep Prompt Transfer blocked until an approved GOOGLE_SERVICE_ACCOUNT_JSON secret lane is available; then rerun the commit stage and capture commit.json plus same-range Google Sheets readback.",
@@ -136,6 +143,7 @@ function commitBlockerReadback(receiptPath: string): { runId: string; proofId: s
     external_actions_performed: false,
     google_sheets_write_performed: false,
     strict_registered_success_claimed: false,
+    ...routeMetadata,
     proof_gate: receipt.project_run.proof_gate,
     proof_summary: receipt.project_run.proof_summary
   };
@@ -163,7 +171,8 @@ function commitBlockerReadback(receiptPath: string): { runId: string; proofId: s
       external_actions_performed: false,
       google_sheets_write_performed: false,
       proof_gate: receipt.project_run.proof_gate,
-      proof_summary: receipt.project_run.proof_summary
+      proof_summary: receipt.project_run.proof_summary,
+      ...routeMetadata
     }
   });
   insert("proofs", {

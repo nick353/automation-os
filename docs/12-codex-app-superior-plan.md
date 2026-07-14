@@ -1,6 +1,6 @@
 # Automation OS Codex App Superior Plan
 
-Updated: 2026-06-24
+Updated: 2026-07-13
 
 This is the working plan for making Automation OS feel like a natural-language execution OS, not a static dashboard. `STATE.md` remains the current proof log. This file records the product gap, target behavior, implementation owner surface, and verification method.
 
@@ -9,6 +9,94 @@ This is the working plan for making Automation OS feel like a natural-language e
 Automation OS should let the user describe work in normal language, then keep a living plan: what is known, what is missing, what can run now, what must stop, what proof will prove completion, and what happened after a button was pressed.
 
 The app should be better than a plain Codex chat for recurring automations because it owns schedule state, run state, proof state, and production readback in one place.
+
+## Codex Server Connection Model
+
+When Automation OS is connected to a Codex server, the practical change is reachability, not authority. The app may be able to use additional server-backed session/execution surfaces and whatever MCP, plugin, and browser capabilities are enabled in that environment, subject to runtime availability and the active executor/connector. That can improve planner handoff, worker pickup, and readback orchestration compared with relying on a single local shell.
+
+What does not change is the project boundary: `STATE.md` and the other project-owned authority files remain the source of truth, locator files are still only locators, and a Codex server connection is not completion proof or permission to skip readback. Chrome browser work still follows the explicit browser-surface rule, so an explicit Chrome request remains on Chrome Extension / Chrome plugin. Dangerous or irreversible actions still require the same explicit approval, and completion still depends on the existing readback, artifact, and done-criteria gates.
+
+The environment-specific capability set can change over time. A configuration file may expose node, browser, or MCP backends, but enabled does not mean always available and does not guarantee success on the next run.
+
+## Capability Matrix
+
+| Surface | Primary use | Probe signal | Completion proof role |
+| --- | --- | --- | --- |
+| `codex exec` | Local repo work, audits, focused verification, scripted automation | `codex exec --sandbox read-only "echo ready"` returns a clean result | Runner entrypoint, not authority |
+| `app-server` | Session history, approvals, streamed events, and remote continuation | session id, approval state, and event stream availability | Coordination layer, not proof |
+| `app-server probe` | Read-only Codex App Server inventory refresh | `POST /api/codex/app-server/probe` returns initialize-only readback with `connected=false` | Readback only, not authority |
+| `worktree` | Parallel or risky edits isolated from the main checkout | separate worktree path / branch / diff | Isolation layer, not proof |
+| `cloud` | Longer background tasks in a separate environment | cloud task id and environment availability | Offload layer, not proof |
+| `MCP` / plugin / browser surfaces | External tools, browsers, and connector-backed actions | `codex mcp list` plus connector-specific probes | Capability layer, not proof |
+| `Chrome Extension` | Signed-in browser/profile work | explicit Chrome surface + authenticated session | Required lane for identity-bound web work |
+
+Routing rule:
+
+- Use the narrowest verified surface that can still produce the required proof.
+- Prefer `codex exec` for local repo tasks.
+- Prefer `worktree` or `cloud` for long or parallel work.
+- Prefer `Chrome Extension` for signed-in browser work.
+- Prefer MCP / plugin surfaces for external tools that have dedicated connectors.
+- Treat `configured` as a hint, `enabled` as loadable, `verified` as proven for the current session, and `connected` as ready for action.
+
+## Surface Selection Cheat Sheet
+
+| Surface | Use when | Proof to keep |
+| --- | --- | --- |
+| `codex exec` | Local repo edits, audits, and bounded verification | command output, diff, test result |
+| `Chrome Extension` | Signed-in browser/profile work or extension-gated web actions | bridge readback, browser/proof artifact, exact blocker when unavailable |
+| `MCP` / plugin | External tools with dedicated connectors, especially when Codex already supports them | capability readback, probe result, connector-specific artifact |
+| `app-server` | Session history, approvals, and state/readback orchestration | API readback, receipt, and dashboard panel |
+| `worktree` / `cloud` | Long or parallel work that should stay isolated from the main checkout | branch/worktree id, diff, final readback |
+
+When the surface is uncertain, keep the narrowest verified lane and surface the blocker instead of silently falling back.
+
+## Implementation Policy
+
+The first integration pass should stay backend-first and preserve the current UI contract.
+
+### File-level change map
+
+- `apps/server/src/codex/capabilities.ts`: separate the Automation OS local API server from any future Codex App Server identity; keep capability state as structured reachability instead of a plain boolean.
+- `apps/server/src/codex/appServerProbe.ts`: keep the Codex App Server probe read-only, initialize-only, default-off, and TTL-bounded; success refreshes inventory only.
+- `apps/server/src/codex/capabilityProbe.ts`: keep MCP probing read-only and TTL-cached; use it only as evidence for `configured / enabled / verified / connected`.
+- `apps/server/src/codex/capabilityRouter.ts`: route by authority, proof, and lane, not just by catalog membership; record connected vs runtime vs catalog provenance.
+- `apps/server/src/codex/executionRouting.ts`: persist a deterministic `route_decision` at run start and a separate `route_readback` at worker pickup.
+- `apps/server/src/runs/workerEngine.ts`: attach routing metadata to runs and steps; keep worker execution behind feature flags so the existing path can remain the default.
+- `apps/server/src/runs/approvalGate.ts`: keep approval separate from reachability; dangerous or external actions should still require explicit gate checks.
+- `apps/server/src/runs/proofGate.ts`: keep proof evaluation distinct from routing so server success cannot masquerade as completion proof.
+- `apps/server/src/runs/runContracts.ts`: define the first thin slice as read-only local repo analysis, with a contract that forbids browser writes and external side effects.
+- `apps/server/src/tests/*.test.ts`: add regression tests for route separation, fallback failure, Chrome-only browser gating, and feature-flag off behavior.
+- `docs/12-codex-app-superior-plan.md` and `docs/13-project-boundary-standard.md`: keep the policy visible and current as the implementation lands.
+
+### Future target
+
+Not implemented yet:
+
+1. Start a read-only analysis task for a local repository command.
+2. Save a capability snapshot and execution routing snapshot.
+3. Route the task through App Server only when the feature flag says to do so.
+4. Record event progress back into the existing run metadata without changing the UI layout.
+5. Treat completion as false until proof, readback, and approval gates all agree.
+6. Fail closed with `codex_server_unreachable` when the Codex server is absent.
+
+### What should not change yet
+
+- no UI redesign
+- no browser fallback to Playwright or temporary profiles
+- no automatic approval of risky actions
+- no scheduler rewrite before the read-only slice is stable
+- no promotion of Codex server connectivity to source-of-truth status
+
+### Acceptance criteria
+
+- The app can describe which surface it selected and why.
+- App Server presence changes reachability, not authority.
+- App Server success still reads back as inventory only and keeps `connected=false`.
+- Browser tasks remain pinned to Chrome Extension.
+- Read-only tasks can flow through App Server behind a flag.
+- Completion still requires proof, readback, and project-owned state.
+- Turning the flag off restores the current behavior.
 
 ## Current Gap Ledger
 

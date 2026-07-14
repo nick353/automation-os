@@ -93,7 +93,7 @@ export function detectSecretsInText(text: string): SecretCandidate[] {
     /\bsk-[A-Za-z0-9_-]{20,}\b/g,
     /\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\b/g,
     /\b(?:api[_-]?key|token|secret|access[_-]?token)\s*[:=]\s*([A-Za-z0-9_.-]{32,})\b/gi,
-    /(?:APIキー|apiキー|キー|トークン)\s*(?:[:=：]|は|が|を)?\s*([A-Za-z0-9_.-]{32,})\b/g,
+    /\b(?:[A-Za-z][A-Za-z0-9._-]{1,40}\s+)?(?:APIキー|apiキー|キー|トークン)\s*(?:[:=：]|は|が|を)?\s*([A-Za-z0-9_.-]{32,})\b/g,
     /\b(?:password|passwd|pwd)\s*[:=]\s*([^\s"'<>]{8,})/gi,
     /\b(?:cookie|session(?:[_-]?token)?|sessionid)\s*[:=]\s*([A-Za-z0-9_.=%:+/-]{16,})\b/gi,
     /\b(?:recovery[_-]?code|backup[_-]?code)\s*[:=]\s*([A-Za-z0-9 -]{8,})\b/gi,

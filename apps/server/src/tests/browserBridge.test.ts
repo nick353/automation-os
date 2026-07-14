@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import { resolveBuiltInBrowserUseScript } from "../browser/browserUseBuiltIns.js";
+import { buildAutoCdpLaunchArgs } from "../browser/browserUseLocalCheck.js";
 import { findCdpTarget } from "../browser/browserUseRecordingSidecar.js";
 import { runBrowserUseLocalCheck, runBrowserUseLocalCheckAsync } from "../browser/browserUseLocalCheck.js";
 import { runLocalBrowserBridgeCheck, runLocalBrowserBridgeCheckAsync, validateLocalTargetUrl } from "../browser/localCheck.js";
@@ -46,6 +47,17 @@ test("Browser Use built-in resolver ignores src TypeScript and finds dist JavaSc
       process.env.AUTOMATION_OS_REPO_ROOT = oldRepoRoot;
     }
   }
+});
+
+test("browser use auto CDP launch does not force a new window", () => {
+  const args = buildAutoCdpLaunchArgs("browser_use_check_2026_07_10", 9471, "/tmp/automation-os-browser-use-check");
+  assert.ok(!args.includes("--new-window"));
+  assert.deepEqual(args.slice(0, 4), [
+    "--remote-debugging-port=9471",
+    "--user-data-dir=/tmp/automation-os-browser-use-check",
+    "--window-size=1280,900",
+    "--no-first-run"
+  ]);
 });
 
 test("browser bridge check opens only local targets and captures screenshot proof", () => {
@@ -510,7 +522,7 @@ test("Browser Use local check blocks when screenshot and state exist but recordi
     runner: (_command, args) => {
       calls.push(args);
       const cliCommand = browserUseCliAction(args);
-      if (cliCommand === "state") return { status: 0, stdout: "url: http://127.0.0.1:5173/#sources\n", stderr: "" };
+      if (cliCommand === "state") return { status: 0, stdout: "url: http://127.0.0.1:5173/#sources\ntitle: Automation OS\n", stderr: "" };
       if (cliCommand === "screenshot") {
         writeFileSync(String(args.at(-1)), "png");
         return { status: 0, stdout: "saved screenshot\n", stderr: "" };
@@ -539,6 +551,8 @@ test("Browser Use local check blocks when screenshot and state exist but recordi
   assert.ok(existsSync(result.statePath));
   assert.ok(existsSync(result.logPath));
   assert.match(readFileSync(result.statePath, "utf8"), /url: http:\/\/127\.0\.0\.1:5173\/#sources/);
+  assert.match(readFileSync(result.logPath, "utf8"), /current_url=http:\/\/127\.0\.0\.1:5173\/#sources/);
+  assert.match(readFileSync(result.logPath, "utf8"), /current_title=Automation OS/);
   assert.match(readFileSync(result.logPath, "utf8"), /driver=browser_use_cli/);
   assert.deepEqual(calls.map(browserUseCliAction), ["open", "state", "screenshot", "close"]);
   assert.ok(calls.every((args) => args[0] === "--session" && args[1] === result.metadata.session));

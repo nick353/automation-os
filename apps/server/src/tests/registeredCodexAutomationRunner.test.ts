@@ -1,15 +1,25 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 
 const tempRoot = mkdtempSync(join(tmpdir(), "automation-os-registered-codex-"));
+const automationRoot = join(tempRoot, "automations");
+const automationPromptPath = join(automationRoot, "job-application-manager", "automation.toml");
 process.env.AUTOMATION_OS_ARTIFACT_ROOT = join(tempRoot, "artifacts");
 process.env.AUTOMATION_OS_REGISTERED_SUMMARY_ROOT = join(tempRoot, "registered-summaries");
 
 const { runRegisteredCodexAutomation } = await import("../runs/registeredCodexAutomationRunner.js");
+const { classifyWorkerCommandSpec } = await import("../runs/workerEngine.js");
+
+mkdirSync(dirname(automationPromptPath), { recursive: true });
+writeFileSync(automationPromptPath, 'prompt = "Registered workflow prompt fixture for registeredCodexAutomationRunner tests"\n');
+
+test.after(() => {
+  if (existsSync(automationPromptPath)) unlinkSync(automationPromptPath);
+});
 
 function registeredSummary(overrides: Record<string, unknown> = {}): string {
   return JSON.stringify({
@@ -106,7 +116,7 @@ test("blocks successful job registered execution when Gemini video QA contradict
       }
     });
 
-    const result = runRegisteredCodexAutomation({ runId: "job-gemini-mismatch-run", workflowId: "job_submit_registered" });
+    const result = runRegisteredCodexAutomation({ runId: "job-gemini-mismatch-run", workflowId: "job_submit_registered", automationRoot });
 
     assert.equal(result.status, "blocked");
     assert.equal(result.proof_gate.ok, false);
@@ -121,6 +131,8 @@ test("blocks successful job registered execution when Gemini video QA contradict
     assert.match(result.command.args[result.command.args.length - 1], /--submit-authorized/);
     assert.equal(result.command.env.AUTOMATION_OS_BROWSER_DRIVER, "playwright_cli");
     assert.match(String(result.command.env.PLAYWRIGHT_CLI_WRAPPER), /playwright_cli\.sh/);
+    assert.equal(classifyWorkerCommandSpec(result.command).classification, "legacy_browser_backed");
+    assert.ok(classifyWorkerCommandSpec(result.command).signals.includes("playwright"));
     assert.equal(result.command.args.includes("--full-auto"), false);
     assert.doesNotMatch(result.command.display, /--full-auto/);
     assert.match(result.command.display, /--sandbox danger-full-access --cd "\/Users\/nichikatanaka\/Documents\/New project"/);
@@ -143,7 +155,7 @@ test("blocks job submit registered execution when Codex exits zero without submi
       exact_blocker: "browser_use_cdp_lane_unavailable"
     });
 
-    const result = runRegisteredCodexAutomation({ runId: "job-submit-blocked-run", workflowId: "job_submit_registered" });
+    const result = runRegisteredCodexAutomation({ runId: "job-submit-blocked-run", workflowId: "job_submit_registered", automationRoot });
 
     assert.equal(result.status, "blocked");
     assert.equal(result.proof_gate.ok, false);
@@ -184,7 +196,7 @@ test("blocks job submit partial success below the 20 submitted_confirmed target"
       ]
     });
 
-    const result = runRegisteredCodexAutomation({ runId: "job-submit-partial-success-run", workflowId: "job_submit_registered" });
+    const result = runRegisteredCodexAutomation({ runId: "job-submit-partial-success-run", workflowId: "job_submit_registered", automationRoot });
 
     assert.equal(result.status, "blocked");
     assert.equal(result.proof_gate.ok, false);
@@ -210,7 +222,7 @@ test("blocks job submit registered execution unless both split buckets reach 20"
       application_appends: 40
     });
 
-    const result = runRegisteredCodexAutomation({ runId: "job-submit-overseas-short-run", workflowId: "job_submit_registered" });
+    const result = runRegisteredCodexAutomation({ runId: "job-submit-overseas-short-run", workflowId: "job_submit_registered", automationRoot });
 
     assert.equal(result.status, "blocked");
     assert.equal(result.proof_gate.ok, false);
@@ -229,7 +241,7 @@ test("completes job submit registered execution with 20 submitted_confirmed proo
       application_appends: 20
     });
 
-    const result = runRegisteredCodexAutomation({ runId: "job-submit-no-visual-qa-run", workflowId: "job_submit_registered" });
+    const result = runRegisteredCodexAutomation({ runId: "job-submit-no-visual-qa-run", workflowId: "job_submit_registered", automationRoot });
 
     assert.equal(result.status, "complete");
     assert.equal(result.proof_gate.ok, true);
@@ -261,7 +273,7 @@ test("completes job submit registered execution with 20 submitted_confirmed when
       }
     });
 
-    const result = runRegisteredCodexAutomation({ runId: "job-submit-missing-qa-files-run", workflowId: "job_submit_registered" });
+    const result = runRegisteredCodexAutomation({ runId: "job-submit-missing-qa-files-run", workflowId: "job_submit_registered", automationRoot });
 
     assert.equal(result.status, "complete");
     assert.equal(result.proof_gate.ok, true);
@@ -308,7 +320,7 @@ test("completes job submit registered execution with 20 submitted_confirmed proo
       }
     });
 
-    const result = runRegisteredCodexAutomation({ runId: "job-submit-valid-qa-run", workflowId: "job_submit_registered" });
+    const result = runRegisteredCodexAutomation({ runId: "job-submit-valid-qa-run", workflowId: "job_submit_registered", automationRoot });
 
     assert.equal(result.status, "complete");
     assert.equal(result.proof_gate.ok, true);
@@ -337,7 +349,7 @@ test("keeps failed job registered execution blocked even when Gemini video QA ma
       }
     });
 
-    const result = runRegisteredCodexAutomation({ runId: "job-gemini-matches-run", workflowId: "job_followup_registered" });
+    const result = runRegisteredCodexAutomation({ runId: "job-gemini-matches-run", workflowId: "job_followup_registered", automationRoot });
 
     assert.equal(result.status, "blocked");
     assert.equal(result.proof_gate.ok, false);
@@ -352,7 +364,7 @@ test("blocks job follow-up registered execution when Codex exits zero without re
   withFakeCodex(async () => {
     process.env.FAKE_CODEX_STDOUT = "no follow-up action needed\n";
 
-    const result = runRegisteredCodexAutomation({ runId: "job-followup-no-summary-run", workflowId: "job_followup_registered" });
+    const result = runRegisteredCodexAutomation({ runId: "job-followup-no-summary-run", workflowId: "job_followup_registered", automationRoot });
     const summaryPath = String(result.command.env.AUTOMATION_OS_REGISTERED_SUMMARY_PATH);
 
     assert.equal(result.status, "blocked");
@@ -380,7 +392,7 @@ test("blocks job submit registered execution with submitted stdout when register
   withFakeCodex(async () => {
     process.env.FAKE_CODEX_STDOUT = "submitted_confirmed=1\napplication_appends=1\n";
 
-    const result = runRegisteredCodexAutomation({ runId: "job-submit-submitted-no-summary-run", workflowId: "job_submit_registered" });
+    const result = runRegisteredCodexAutomation({ runId: "job-submit-submitted-no-summary-run", workflowId: "job_submit_registered", automationRoot });
 
     assert.equal(result.status, "blocked");
     assert.equal(result.proof_gate.ok, false);
@@ -411,7 +423,7 @@ test("exposes Job registered issue ledger summary from sidecar metadata", async 
       ]
     });
 
-    const result = runRegisteredCodexAutomation({ runId: "job-issue-ledger-run", workflowId: "job_submit_registered" });
+    const result = runRegisteredCodexAutomation({ runId: "job-issue-ledger-run", workflowId: "job_submit_registered", automationRoot });
     const issueSummary = result.metadata.issue_ledger_summary as Record<string, unknown>;
     assert.equal(result.status, "blocked");
     assert.equal(issueSummary.count, 1);
@@ -429,7 +441,7 @@ test("keeps legacy submitted_confirmed job summary compatible", async () =>
       application_appends: 20
     });
 
-    const result = runRegisteredCodexAutomation({ runId: "job-legacy-submitted-confirmed-run", workflowId: "job_submit_registered" });
+    const result = runRegisteredCodexAutomation({ runId: "job-legacy-submitted-confirmed-run", workflowId: "job_submit_registered", automationRoot });
 
     assert.equal(result.status, "complete");
     assert.equal(result.proof_gate.ok, true);

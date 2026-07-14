@@ -36,6 +36,9 @@ const userSignalsFilename = "User Signals.md";
 const skillRegistryFilename = "Skill Registry.md";
 const codexAppParityLedgerFilename = "Codex App Parity Ledger.md";
 const projectMemoryMapFilename = "Project Memory Map.md";
+const obsidianCodexSelfDiagnosisFilename = "Obsidian x Codex Self Diagnosis.md";
+const obsidianCodexWeeklyCheckFilename = "Obsidian x Codex Weekly Check.md";
+const obsidianAutonomyOpsMemoFilename = "Obsidian Autonomy Ops Memo.md";
 const decisionLogFilename = "Decision Log.md";
 const failureFixLogFilename = "Failure Fix Log.md";
 const weeklyReviewFilename = "Weekly Review.md";
@@ -700,6 +703,36 @@ export function exportObsidianVault(options: ObsidianExportOptions = {}): Obsidi
       exportTimestamp
     ),
     writeMarkdown(
+      startHereDir,
+      obsidianAutonomyOpsMemoFilename,
+      renderObsidianAutonomyOpsMemo({ generatedAt: exportTimestamp }),
+      exportTimestamp
+    ),
+    writeMarkdown(
+      startHereDir,
+      obsidianCodexSelfDiagnosisFilename,
+      renderObsidianCodexSelfDiagnosis({
+        projectAudit,
+        commandQueue,
+        proofs,
+        runs,
+        generatedAt: exportTimestamp
+      }),
+      exportTimestamp
+    ),
+    writeMarkdown(
+      startHereDir,
+      obsidianCodexWeeklyCheckFilename,
+      renderObsidianCodexWeeklyCheck({
+        projectAudit,
+        commandQueue,
+        proofs,
+        runs,
+        generatedAt: exportTimestamp
+      }),
+      exportTimestamp
+    ),
+    writeMarkdown(
       join(vaultPath, "07_Decisions"),
       decisionLogFilename,
       renderDecisionLog({ runs, bridgeExecutions, commandQueue, generatedAt: exportTimestamp }),
@@ -714,7 +747,7 @@ export function exportObsidianVault(options: ObsidianExportOptions = {}): Obsidi
     writeMarkdown(
       startHereDir,
       weeklyReviewFilename,
-      renderWeeklyReview({ runs, proofs, bridgeExecutions, commandQueue, generatedAt: exportTimestamp }),
+      renderWeeklyReview({ runs, proofs, bridgeExecutions, commandQueue, projectAudit, generatedAt: exportTimestamp }),
       exportTimestamp
     )
   ];
@@ -1448,6 +1481,121 @@ function renderCodexDailyBrief(input: {
   ].join("\n");
 }
 
+function computeObsidianCodexSelfDiagnosis(input: {
+  projectAudit: ProjectAuditResult;
+  commandQueue: CommandQueueItem[];
+  proofs: ProofRow[];
+  runs: RunRow[];
+}): { score: number; weakestItem: string; why: string } {
+  let score = 5;
+  if (input.projectAudit.summary.blocked > 0) score -= 2;
+  else if (input.projectAudit.summary.attention > 0) score -= 2;
+  if (input.commandQueue.length > 0) score -= 1;
+  if (input.proofs.length === 0) score -= 1;
+  score = Math.max(0, Math.min(5, score));
+  const weakestItem =
+    input.projectAudit.summary.attention > 0 || input.proofs.length === 0
+      ? "レビューと改善"
+      : input.commandQueue.length > 0
+        ? "コマンドキュー"
+        : "なし";
+  const why =
+    input.projectAudit.summary.attention > 0
+      ? "入口と導線は整っているが、改善ループの自動回収を継続する余地がある"
+      : input.commandQueue.length > 0
+        ? "未処理の入力が残っている"
+        : input.proofs.length === 0
+          ? "証跡が少なく、改善の裏取りが薄い"
+          : "自動ループは概ね整っている";
+  return { score, weakestItem, why };
+}
+
+function renderObsidianCodexSelfDiagnosis(input: {
+  projectAudit: ProjectAuditResult;
+  commandQueue: CommandQueueItem[];
+  proofs: ProofRow[];
+  runs: RunRow[];
+  generatedAt: string;
+}): string {
+  const diagnosis = computeObsidianCodexSelfDiagnosis(input);
+  return [
+    "---",
+    "system: automation-os",
+    "generated_by: automation-os",
+    "kind: obsidian-codex-self-diagnosis",
+    "status: active",
+    "priority: medium",
+    "source_of_truth: Automation OS export plus Obsidian control-panel links",
+    `generated_at: ${input.generatedAt}`,
+    "---",
+    "",
+    "# Obsidian x Codex Self Diagnosis",
+    "",
+    "This page is auto-generated from the current Obsidian/Codex control panel state. You do not need to fill it in by hand.",
+    "",
+    "## Score",
+    "",
+    `- Current date: ${input.generatedAt.slice(0, 10)}`,
+    `- Current score: \`${diagnosis.score}/5\``,
+    `- Weakest item: \`${diagnosis.weakestItem}\``,
+    `- Why: ${diagnosis.why}`,
+    "",
+    "## Read First",
+    "",
+    "- [[Today]]",
+    "- [[Resume Current Work]]",
+    "- [[Weekly Review]]",
+    "- [[Project Handoff Index]]",
+    "",
+    "## Rule",
+    "",
+    "- Keep Obsidian as locator plus operating memory, not as execution proof.",
+    "- Fix only one weak item per cycle and let the next export re-score the surface."
+  ].join("\n");
+}
+
+function renderObsidianCodexWeeklyCheck(input: {
+  projectAudit: ProjectAuditResult;
+  commandQueue: CommandQueueItem[];
+  proofs: ProofRow[];
+  runs: RunRow[];
+  generatedAt: string;
+}): string {
+  const diagnosis = computeObsidianCodexSelfDiagnosis(input);
+  return [
+    "---",
+    "system: automation-os",
+    "generated_by: automation-os",
+    "kind: obsidian-codex-weekly-check",
+    "status: active",
+    "priority: medium",
+    "source_of_truth: Automation OS export plus Obsidian weekly review links",
+    `generated_at: ${input.generatedAt}`,
+    "---",
+    "",
+    "# Obsidian x Codex Weekly Check",
+    "",
+    "This page is auto-generated. It is meant to be read, not hand-filled.",
+    "",
+    "## Check",
+    "",
+    `- Current score: \`${diagnosis.score} / 5\``,
+    `- Weakest item: \`${diagnosis.weakestItem}\``,
+    `- One fix for this week: ${diagnosis.weakestItem === "なし" ? "none needed" : "focus on the weakest item only"}`,
+    "",
+    "## Short Review",
+    "",
+    "1. Did `Today` and `Resume Current Work` actually help restart work?",
+    "2. Did `Project Handoff Index` and `Project Memory Map` lead to real reuse?",
+    "3. Did `Weekly Review` capture one concrete improvement?",
+    "",
+    "## Rule",
+    "",
+    "- Fix only one weak item per week.",
+    "- Keep Obsidian as locator plus operating memory, not as execution proof."
+  ].join("\n");
+}
+
 function renderTodayDashboard(input: {
   runs: RunRow[];
   proofs: ProofRow[];
@@ -1481,6 +1629,8 @@ function renderTodayDashboard(input: {
     "## First Read",
     "",
     "- [[Resume Current Work]]",
+    "- [[Obsidian Autonomy Ops Memo]]",
+    "- [[Obsidian x Codex Self Diagnosis]]",
     "- [[Project Cockpit]]",
     "- [[Conversation Memory Cards]]",
     "- [[User Signals]]",
@@ -2339,6 +2489,12 @@ function renderResumeCurrentWork(input: {
     "",
     inferResumeMove({ latestRun, blockedRun, latestBridgeExecution, latestCheck }),
     "",
+    "## Weekly Automation",
+    "",
+    "- [[Obsidian Autonomy Ops Memo]]",
+    "- [[Obsidian x Codex Self Diagnosis]]",
+    "- [[Obsidian x Codex Weekly Check]]",
+    "",
     "## Current Action Queue",
     "",
     actionQueueRuns.length
@@ -2363,8 +2519,8 @@ function renderResumeCurrentWork(input: {
     latestSession
       ? [
           `- Modified: ${latestSession.mtime}`,
-          `- Last user: ${latestSession.lastUser}`,
-          `- Last assistant: ${latestSession.lastAssistant}`
+          `- Last user: ${shortSnippet(latestSession.lastUser, 180)}`,
+          `- Last assistant: ${shortSnippet(latestSession.lastAssistant, 180)}`
         ].join("\n")
       : "- No recent Codex session summary indexed.",
     "",
@@ -2551,6 +2707,48 @@ function renderProjectMemoryMap(input: {
     "## Boundary",
     "",
     "Use this note to find the right project quickly. Do not treat it as proof of completion or as permission to resume external writes."
+  ].join("\n");
+}
+
+function renderObsidianAutonomyOpsMemo(input: { generatedAt: string }): string {
+  return [
+    "---",
+    "system: automation-os",
+    "generated_by: automation-os",
+    "kind: obsidian-autonomy-ops-memo",
+    "status: active",
+    "priority: medium",
+    "source_of_truth: docs/14-obsidian-autonomy-ops-memo.md and current startup contract",
+    `generated_at: ${input.generatedAt}`,
+    "---",
+    "",
+    "# Obsidian Autonomy Ops Memo",
+    "",
+    "This page is the Vault-facing summary for the current Obsidian x Codex autonomy contract.",
+    "",
+    "## Automatic Now",
+    "",
+    "- Server login recovery starts Obsidian auto export by default.",
+    "- The periodic export timer defaults to 5 minutes.",
+    "- SQLite fallback is allowed when stored Postgres cannot be restored cleanly.",
+    "- Self diagnosis and weekly check pages are regenerated on every export.",
+    "",
+    "## Read First",
+    "",
+    "- [[Today]]",
+    "- [[Resume Current Work]]",
+    "- [[Obsidian x Codex Self Diagnosis]]",
+    "- [[Obsidian x Codex Weekly Check]]",
+    "",
+    "## Still Matters",
+    "",
+    "- Postgres remains the preferred source of truth when its stored secret is valid again.",
+    "- Generated Obsidian pages are review surfaces and locators, not execution proof.",
+    "- If startup defaults change, rebuild, re-test, and reinstall the LaunchAgent.",
+    "",
+    "## Source",
+    "",
+    "- Docs copy: docs/14-obsidian-autonomy-ops-memo.md"
   ].join("\n");
 }
 
@@ -2897,6 +3095,7 @@ function renderWeeklyReview(input: {
   proofs: ProofRow[];
   bridgeExecutions: BridgeExecutionRow[];
   commandQueue: CommandQueueItem[];
+  projectAudit: ProjectAuditResult;
   generatedAt: string;
 }): string {
   const since = Date.now() - 7 * 24 * 60 * 60 * 1000;
@@ -2905,6 +3104,12 @@ function renderWeeklyReview(input: {
   const recentBridge = input.bridgeExecutions.filter((execution) => Date.parse(execution.updated_at) >= since);
   const statusMix = countBy(recentRuns, (run) => run.status);
   const blockers = selectAttentionRuns(recentRuns).slice(0, 8);
+  const diagnosis = computeObsidianCodexSelfDiagnosis({
+    projectAudit: input.projectAudit,
+    commandQueue: input.commandQueue,
+    proofs: input.proofs,
+    runs: input.runs
+  });
   return [
     "---",
     "system: automation-os",
@@ -2929,6 +3134,8 @@ function renderWeeklyReview(input: {
     `- Status mix: ${Object.entries(statusMix)
       .map(([status, count]) => `${status}=${count}`)
       .join(", ") || "none"}`,
+    `- Obsidian x Codex self score: \`${diagnosis.score}/5\``,
+    `- Weakest item: \`${diagnosis.weakestItem}\``,
     "",
     "## Needs Attention",
     "",
@@ -2938,9 +3145,12 @@ function renderWeeklyReview(input: {
     "",
     "## Suggested Improvement Loop",
     "",
+    "- Review [[Obsidian Autonomy Ops Memo]] first if the startup contract changed.",
     "- Promote repeated blockers into runbooks or registered automation checks.",
     "- Convert useful handwritten command items into project notes, decisions, or explicit Codex runs.",
-    "- Keep proof claims linked to receipts, artifacts, or no-action evidence before marking work complete."
+    "- Keep proof claims linked to receipts, artifacts, or no-action evidence before marking work complete.",
+    `- Weekly fix: ${diagnosis.weakestItem === "なし" ? "none needed" : `focus on ${diagnosis.weakestItem} only`}.`,
+    "- Review [[Obsidian x Codex Self Diagnosis]] and open [[Obsidian x Codex Weekly Check]] to keep the weakest item to one per cycle."
   ].join("\n");
 }
 
@@ -3731,6 +3941,7 @@ function redactSensitive(text: string): string {
   return text
     .replace(/([a-z][a-z0-9+.-]*:\/\/)([^\/\s:@]+):([^\/\s@]+)@/gi, "$1[redacted-auth]@")
     .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, "[redacted-jwt]")
+    .replace(/\bjwt\s+[A-Za-z0-9._-]+\b/gi, "jwt [redacted-jwt]")
     .replace(/\b(?:sk|rk|pk|ghp|github_pat|xox[baprs]?)-[A-Za-z0-9_-]{8,}\b/g, "[redacted-token]")
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{12,}\b/gi, "Bearer [redacted]")
     .replace(/\b([A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|API_KEY|ACCESS_KEY)[A-Z0-9_]*)\s*[:=]\s*['"]?[^'"\s,)}]+/g, "$1=[redacted]")

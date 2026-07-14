@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -13,6 +14,43 @@ process.env.AUTOMATION_OS_SECRET_DIR = join(tempRoot, "secrets");
 const { app } = await import("../index.js");
 const db = await import("../db/client.js");
 const secrets = await import("../secrets/secretStore.js");
+
+function canonicalUserTableHash(): string {
+  const tables = db.querySql<{ name: string; sql: string | null }>(
+    `SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`
+  );
+  const snapshot = tables.map((table) => {
+    const columns = db.querySql<{ name: string; pk: number }>(`PRAGMA table_info(${quoteSqlIdentifier(table.name)})`);
+    const orderedColumns = [...columns].sort((a, b) => a.pk - b.pk || a.name.localeCompare(b.name));
+    const columnNames = orderedColumns.map((column) => column.name);
+    const orderBy = orderedColumns.filter((column) => column.pk > 0).map((column) => quoteSqlIdentifier(column.name));
+    const fallbackOrderBy = columnNames.map((column) => quoteSqlIdentifier(column));
+    const orderClause = orderBy.length > 0 ? orderBy.join(", ") : fallbackOrderBy.join(", ");
+    const rowSql = columnNames.length > 0
+      ? `SELECT ${columnNames.map(quoteSqlIdentifier).join(", ")} FROM ${quoteSqlIdentifier(table.name)}${orderClause ? ` ORDER BY ${orderClause}` : ""}`
+      : `SELECT * FROM ${quoteSqlIdentifier(table.name)}${orderClause ? ` ORDER BY ${orderClause}` : ""}`;
+    const rows = db.querySql<Record<string, unknown>>(rowSql).map((row) => stableCanonicalValue(row));
+    return {
+      name: table.name,
+      sql: table.sql ? table.sql.replace(/\s+/g, " ").trim() : null,
+      columns: orderedColumns.map((column) => ({ name: column.name, pk: column.pk })),
+      rows
+    };
+  });
+  return createHash("sha256").update(JSON.stringify(snapshot)).digest("hex");
+}
+
+function quoteSqlIdentifier(value: string): string {
+  return `"${value.replaceAll('"', '""')}"`;
+}
+
+function stableCanonicalValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((item) => stableCanonicalValue(item));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.keys(value as Record<string, unknown>).sort().map((key) => [key, stableCanonicalValue((value as Record<string, unknown>)[key])]));
+  }
+  return value;
+}
 
 test("POST /api/runs/start sanitizes raw API keys before creating the run", async () => {
   db.initDb();
@@ -29,8 +67,25 @@ test("POST /api/runs/start sanitizes raw API keys before creating the run", asyn
   const run = db.querySql<{ name: string; objective: string; metadata_json: string }>(
     `SELECT name, objective, metadata_json FROM runs WHERE id=${db.sqlValue(body.runId)} LIMIT 1`
   )[0];
+  const step = db.querySql<{ metadata_json: string }>(
+    `SELECT metadata_json FROM run_steps WHERE run_id=${db.sqlValue(body.runId)} LIMIT 1`
+  )[0];
   const approvals = db.querySql<{ title: string }>(`SELECT title FROM approvals WHERE run_id=${db.sqlValue(body.runId)} ORDER BY created_at ASC`);
-  const metadata = JSON.parse(run.metadata_json) as { command: string; plan: { command: string }; worker_protocol?: string; worker_loop?: { requiredCommand?: string } };
+  const metadata = JSON.parse(run.metadata_json) as {
+    command: string;
+    plan: { command: string };
+    worker_protocol?: string;
+    worker_loop?: { requiredCommand?: string };
+    route_decision?: { phase?: string; fingerprint?: string };
+    route_decision_fingerprint?: string | null;
+    route_readback?: null;
+    execution_routing?: { fingerprint?: string };
+  };
+  const stepMetadata = JSON.parse(step.metadata_json) as {
+    route_decision?: { phase?: string; fingerprint?: string };
+    route_decision_fingerprint?: string | null;
+    route_readback?: null;
+  };
   const persistedStartFields = JSON.stringify({
     responseBody: body,
     runName: run.name,
@@ -46,8 +101,40 @@ test("POST /api/runs/start sanitizes raw API keys before creating the run", asyn
   assert.equal(metadata.plan.command, run.objective);
   assert.equal(metadata.worker_protocol, "local_worker_loop_required");
   assert.equal(metadata.worker_loop?.requiredCommand, "npm run worker:loop");
+  assert.equal(metadata.route_decision?.phase, "route_decision");
+  assert.equal(metadata.route_decision_fingerprint, metadata.route_decision?.fingerprint);
+  assert.equal(metadata.execution_routing?.fingerprint, metadata.route_decision?.fingerprint);
+  assert.equal(metadata.route_readback, null);
+  assert.equal(stepMetadata.route_decision?.phase, "route_decision");
+  assert.equal(stepMetadata.route_decision_fingerprint, metadata.route_decision?.fingerprint);
+  assert.equal(stepMetadata.route_readback, null);
   assert.equal(approvals.length, 0);
   assert.equal(persistedStartFields.includes(token), false);
+});
+
+test("GET /api/runs/:id returns execution routing readback from stored metadata", async () => {
+  db.initDb();
+  db.resetDemoData();
+
+  const startResponse = await postJson("/api/runs/start", { command: "Codex server backend readback test" });
+  const startBody = JSON.parse(startResponse.body) as { runId: string };
+  const detailResponse = await requestJson("GET", `/api/runs/${encodeURIComponent(startBody.runId)}`);
+  const detailBody = JSON.parse(detailResponse.body) as {
+    executionRouting: Record<string, unknown> | null;
+    run: { metadata_json: string };
+  };
+  const runMetadata = JSON.parse(detailBody.run.metadata_json) as {
+    execution_routing?: Record<string, unknown>;
+    route_decision?: Record<string, unknown>;
+    route_decision_fingerprint?: string | null;
+    route_readback?: null;
+  };
+  const routeDecision = runMetadata.route_decision as { fingerprint?: string } | undefined;
+
+  assert.equal(detailResponse.status, 200);
+  assert.deepEqual(detailBody.executionRouting, runMetadata.execution_routing ?? null);
+  assert.equal(runMetadata.route_readback, null);
+  assert.equal(runMetadata.route_decision_fingerprint, routeDecision?.fingerprint ?? null);
 });
 
 test("production write guard blocks state-changing API calls without a configured token", async () => {
@@ -57,16 +144,19 @@ test("production write guard blocks state-changing API calls without a configure
   const previousToken = process.env.AUTOMATION_OS_WRITE_TOKEN;
   process.env.AUTOMATION_OS_REQUIRE_WRITE_TOKEN = "1";
   delete process.env.AUTOMATION_OS_WRITE_TOKEN;
+  const beforeHash = canonicalUserTableHash();
 
   try {
     const response = await postJson("/api/runs/start", { command: "safe local smoke" });
     const body = JSON.parse(response.body) as { error: string; exactBlocker: string };
     const runs = db.querySql<{ count: number }>("SELECT count(*) AS count FROM runs")[0].count;
+    const afterHash = canonicalUserTableHash();
 
     assert.equal(response.status, 423);
     assert.equal(body.error, "production_write_locked");
     assert.equal(body.exactBlocker, "production_write_locked");
     assert.equal(runs, 0);
+    assert.equal(afterHash, beforeHash);
   } finally {
     if (previousRequire === undefined) delete process.env.AUTOMATION_OS_REQUIRE_WRITE_TOKEN;
     else process.env.AUTOMATION_OS_REQUIRE_WRITE_TOKEN = previousRequire;
@@ -96,6 +186,122 @@ test("production write guard allows state-changing API calls with the configured
     else process.env.AUTOMATION_OS_REQUIRE_WRITE_TOKEN = previousRequire;
     if (previousToken === undefined) delete process.env.AUTOMATION_OS_WRITE_TOKEN;
     else process.env.AUTOMATION_OS_WRITE_TOKEN = previousToken;
+  }
+});
+
+test("production write guard and JSON parsing apply to early MVP automation routes", async () => {
+  db.initDb();
+  db.resetDemoData();
+  const previousRequire = process.env.AUTOMATION_OS_REQUIRE_WRITE_TOKEN;
+  const previousToken = process.env.AUTOMATION_OS_WRITE_TOKEN;
+  process.env.AUTOMATION_OS_REQUIRE_WRITE_TOKEN = "1";
+  process.env.AUTOMATION_OS_WRITE_TOKEN = "test-write-token";
+  const request = {
+    id: "guarded-mvp-automation",
+    project_id: "project-a",
+    automation_type: "safe-local-demo",
+    name: "Guarded MVP automation",
+    desc: "parser and guard regression",
+    goal: "save a local draft",
+    schedule: "09:00",
+    cadence: "daily",
+    lane: "Lane 1",
+    risk_level: "high",
+    approval_policy: "required_before_external_post",
+    worker_command_kind: "safe_local_demo",
+    create_approval: true,
+    builder_spec: { source: "test", external_action_allowed: false }
+  };
+
+  try {
+    const blocked = await postJson("/api/mvp/automations", request);
+    assert.equal(blocked.status, 401);
+    assert.equal(db.querySql<{ count: number }>("SELECT count(*) AS count FROM mvp_automations WHERE id='guarded-mvp-automation'")[0].count, 0);
+
+    const allowed = await postJson("/api/mvp/automations", request, { "x-automation-os-token": "test-write-token" });
+    const body = JSON.parse(allowed.body) as { automation: { id: string; name: string; builder_spec: Record<string, unknown> } };
+    assert.equal(allowed.status, 201);
+    assert.equal(body.automation.id, request.id);
+    assert.equal(body.automation.name, request.name);
+    assert.equal(body.automation.builder_spec.external_action_allowed, false);
+  } finally {
+    if (previousRequire === undefined) delete process.env.AUTOMATION_OS_REQUIRE_WRITE_TOKEN;
+    else process.env.AUTOMATION_OS_REQUIRE_WRITE_TOKEN = previousRequire;
+    if (previousToken === undefined) delete process.env.AUTOMATION_OS_WRITE_TOKEN;
+    else process.env.AUTOMATION_OS_WRITE_TOKEN = previousToken;
+  }
+});
+
+test("production API access guard protects operator readbacks while health stays public", async () => {
+  db.initDb();
+  db.resetDemoData();
+  const previousRequireApi = process.env.AUTOMATION_OS_REQUIRE_API_TOKEN;
+  const previousToken = process.env.AUTOMATION_OS_WRITE_TOKEN;
+  process.env.AUTOMATION_OS_REQUIRE_API_TOKEN = "1";
+  process.env.AUTOMATION_OS_WRITE_TOKEN = "test-operator-token";
+
+  try {
+    const health = await requestJson("GET", "/api/health");
+    const blocked = await requestJson("GET", "/api/mvp/state");
+    const blockedMixedCase = await requestJson("GET", "/API/mvp/state");
+    const blockedBody = JSON.parse(blocked.body) as { error: string };
+    const allowed = await requestJson("GET", "/api/mvp/state", {}, { "x-automation-os-token": "test-operator-token" });
+    const mixedCaseWithToken = await requestJson("GET", "/API/mvp/state", {}, { "x-automation-os-token": "test-operator-token" });
+    const mixedCasePost = await postJson("/API/mvp/automations", { id: "mixed-case-bypass" }, { "x-automation-os-token": "test-operator-token" });
+
+    assert.equal(health.status, 200);
+    assert.equal(blocked.status, 401);
+    assert.equal(blockedMixedCase.status, 401);
+    assert.equal(blockedBody.error, "production_api_token_required");
+    assert.equal(allowed.status, 200);
+    assert.equal(mixedCaseWithToken.status, 404);
+    assert.equal(mixedCasePost.status, 404);
+    assert.equal(db.querySql<{ count: number }>("SELECT count(*) AS count FROM mvp_automations WHERE id='mixed-case-bypass'")[0].count, 0);
+  } finally {
+    if (previousRequireApi === undefined) delete process.env.AUTOMATION_OS_REQUIRE_API_TOKEN;
+    else process.env.AUTOMATION_OS_REQUIRE_API_TOKEN = previousRequireApi;
+    if (previousToken === undefined) delete process.env.AUTOMATION_OS_WRITE_TOKEN;
+    else process.env.AUTOMATION_OS_WRITE_TOKEN = previousToken;
+  }
+});
+
+test("production API access guard defaults closed without PORT and resists path variants", async () => {
+  db.initDb();
+  db.resetDemoData();
+  const previousRequireApi = process.env.AUTOMATION_OS_REQUIRE_API_TOKEN;
+  const previousToken = process.env.AUTOMATION_OS_WRITE_TOKEN;
+  const previousPort = process.env.PORT;
+  const previousNodeTestContext = process.env.NODE_TEST_CONTEXT;
+  delete process.env.AUTOMATION_OS_REQUIRE_API_TOKEN;
+  delete process.env.AUTOMATION_OS_WRITE_TOKEN;
+  delete process.env.PORT;
+  delete process.env.NODE_TEST_CONTEXT;
+
+  try {
+    const locked = await requestJson("GET", "/api/mvp/state");
+    const lockedBody = JSON.parse(locked.body) as { error: string };
+    assert.equal(locked.status, 423);
+    assert.equal(lockedBody.error, "production_api_locked");
+
+    for (const path of ["/api", "/api/", "/api//mvp/state", "/api/%6dvp/state", "/%61pi/mvp/state"]) {
+      const response = await requestJson("GET", path);
+      assert.equal(response.status, 423, `${path} must remain locked`);
+    }
+
+    process.env.AUTOMATION_OS_WRITE_TOKEN = "default-closed-token";
+    const missing = await requestJson("GET", "/api/mvp/state");
+    const allowed = await requestJson("GET", "/api/mvp/state", {}, { "x-automation-os-token": "default-closed-token" });
+    assert.equal(missing.status, 401);
+    assert.equal(allowed.status, 200);
+  } finally {
+    if (previousRequireApi === undefined) delete process.env.AUTOMATION_OS_REQUIRE_API_TOKEN;
+    else process.env.AUTOMATION_OS_REQUIRE_API_TOKEN = previousRequireApi;
+    if (previousToken === undefined) delete process.env.AUTOMATION_OS_WRITE_TOKEN;
+    else process.env.AUTOMATION_OS_WRITE_TOKEN = previousToken;
+    if (previousPort === undefined) delete process.env.PORT;
+    else process.env.PORT = previousPort;
+    if (previousNodeTestContext === undefined) delete process.env.NODE_TEST_CONTEXT;
+    else process.env.NODE_TEST_CONTEXT = previousNodeTestContext;
   }
 });
 
@@ -815,6 +1021,9 @@ test("Create schedule adjustment covers registered workflow, Schedule, worker pi
     const run = db.querySql<{ status: string; metadata_json: string }>(
       `SELECT status, metadata_json FROM runs WHERE id=${db.sqlValue(startBody.run.runId)} LIMIT 1;`
     )[0];
+    const step = db.querySql<{ metadata_json: string }>(
+      `SELECT metadata_json FROM run_steps WHERE run_id=${db.sqlValue(startBody.run.runId)} LIMIT 1;`
+    )[0];
     const runMetadata = JSON.parse(run.metadata_json) as {
       registered_workflow_id?: string;
       registered_workflow_start?: { source?: string; runnerKind?: string };
@@ -822,6 +1031,15 @@ test("Create schedule adjustment covers registered workflow, Schedule, worker pi
       worker_mode?: string;
       worker_loop?: { status?: string; requiredCommand?: string };
       proof_gate?: unknown;
+      route_decision?: { phase?: string; fingerprint?: string };
+      route_decision_fingerprint?: string | null;
+      route_readback?: null;
+      execution_routing?: { fingerprint?: string };
+    };
+    const stepMetadata = JSON.parse(step.metadata_json) as {
+      route_decision?: { phase?: string; fingerprint?: string };
+      route_decision_fingerprint?: string | null;
+      route_readback?: null;
     };
     const workerEventCount = db.querySql<{ count: number }>(
       `SELECT count(*) AS count FROM worker_events WHERE run_id=${db.sqlValue(startBody.run.runId)} AND event_type='queued_for_worker_loop';`
@@ -849,6 +1067,13 @@ test("Create schedule adjustment covers registered workflow, Schedule, worker pi
     assert.equal(runMetadata.worker_loop?.status, "waiting_for_pickup");
     assert.equal(runMetadata.worker_loop?.requiredCommand, "npm run worker:loop");
     assert.equal(runMetadata.proof_gate, undefined);
+    assert.equal(runMetadata.route_decision?.phase, "route_decision");
+    assert.equal(runMetadata.route_decision_fingerprint, runMetadata.route_decision?.fingerprint);
+    assert.equal(runMetadata.execution_routing?.fingerprint, runMetadata.route_decision?.fingerprint);
+    assert.equal(runMetadata.route_readback, null);
+    assert.equal(stepMetadata.route_decision?.phase, "route_decision");
+    assert.equal(stepMetadata.route_decision_fingerprint, runMetadata.route_decision?.fingerprint);
+    assert.equal(stepMetadata.route_readback, null);
     assert.equal(workerEventCount, 1);
     assert.equal(refreshReadbackResponse.status, 200);
     assert.ok(dailyReadback);
@@ -1273,6 +1498,33 @@ test("POST /api/capability-router/plan returns a route snapshot and bypasses wri
   }
 });
 
+test("GET /api/capability-router/backlog and POST /api/codex/capabilities/probe stay read-only", async () => {
+  db.initDb();
+  db.resetDemoData();
+
+  const beforeRuns = db.querySql<{ count: number }>("SELECT count(*) AS count FROM runs")[0].count;
+  const beforeApprovals = db.querySql<{ count: number }>("SELECT count(*) AS count FROM approvals")[0].count;
+  const beforeBridgeActions = db.querySql<{ count: number }>("SELECT count(*) AS count FROM bridge_actions")[0].count;
+
+  const backlogResponse = await requestJson("GET", "/api/capability-router/backlog");
+  const probeResponse = await postJson("/api/codex/capabilities/probe", {});
+  const backlogBody = JSON.parse(backlogResponse.body) as { counts?: Record<string, unknown> };
+  const probeBody = JSON.parse(probeResponse.body) as { probe: { cached: boolean; ok: boolean; exactBlocker: string | null } };
+
+  const afterRuns = db.querySql<{ count: number }>("SELECT count(*) AS count FROM runs")[0].count;
+  const afterApprovals = db.querySql<{ count: number }>("SELECT count(*) AS count FROM approvals")[0].count;
+  const afterBridgeActions = db.querySql<{ count: number }>("SELECT count(*) AS count FROM bridge_actions")[0].count;
+
+  assert.equal(backlogResponse.status, 200);
+  assert.equal(typeof backlogBody.counts, "object");
+  assert.equal(probeResponse.status, 200);
+  assert.equal(typeof probeBody.probe.ok, "boolean");
+  assert.equal(typeof probeBody.probe.cached, "boolean");
+  assert.equal(beforeRuns, afterRuns);
+  assert.equal(beforeApprovals, afterApprovals);
+  assert.equal(beforeBridgeActions, afterBridgeActions);
+});
+
 test("POST /api/secrets/from-message returns immediately for non-secret chat text", async () => {
   db.initDb();
   db.resetDemoData();
@@ -1445,6 +1697,7 @@ test("POST /api/runs/start stores sanitized Create session context before any wo
   });
   const body = JSON.parse(response.body) as { runId: string; workerProtocol?: string; nextAction?: string; run: { status: string } };
   const run = db.querySql<{ metadata_json: string }>(`SELECT metadata_json FROM runs WHERE id=${db.sqlValue(body.runId)} LIMIT 1`)[0];
+  const step = db.querySql<{ metadata_json: string }>(`SELECT metadata_json FROM run_steps WHERE run_id=${db.sqlValue(body.runId)} LIMIT 1`)[0];
   const metadataText = run.metadata_json;
   const metadata = JSON.parse(metadataText) as {
     create_session_source?: string;
@@ -1453,6 +1706,15 @@ test("POST /api/runs/start stores sanitized Create session context before any wo
     create_session_snapshot?: { messages: Array<{ text: string }>; draft: { command: string; visibleSteps: string[] } };
     worker_protocol?: string;
     worker_loop?: { requiredCommand?: string };
+    route_decision?: { phase?: string; fingerprint?: string };
+    route_decision_fingerprint?: string | null;
+    route_readback?: null;
+    execution_routing?: { fingerprint?: string };
+  };
+  const stepMetadata = JSON.parse(step.metadata_json) as {
+    route_decision?: { phase?: string; fingerprint?: string };
+    route_decision_fingerprint?: string | null;
+    route_readback?: null;
   };
 
   assert.equal(response.status, 202);
@@ -1466,6 +1728,13 @@ test("POST /api/runs/start stores sanitized Create session context before any wo
   assert.deepEqual(metadata.create_session_snapshot?.draft.visibleSteps, ["保存済み相談を読む", "runを作る", "Mac workerが拾う"]);
   assert.equal(metadata.worker_protocol, undefined);
   assert.equal(metadata.worker_loop, undefined);
+  assert.equal(metadata.route_decision?.phase, "route_decision");
+  assert.equal(metadata.route_decision_fingerprint, metadata.route_decision?.fingerprint);
+  assert.equal(metadata.execution_routing?.fingerprint, metadata.route_decision?.fingerprint);
+  assert.equal(metadata.route_readback, null);
+  assert.equal(stepMetadata.route_decision?.phase, "route_decision");
+  assert.equal(stepMetadata.route_decision_fingerprint, metadata.route_decision?.fingerprint);
+  assert.equal(stepMetadata.route_readback, null);
   assert.equal(metadataText.includes(rawSecret), false);
   assert.match(metadataText, /\[redacted-token\]/);
 });

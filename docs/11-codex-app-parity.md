@@ -2,6 +2,10 @@
 
 Automation OS should expose Codex App capabilities without making the beginner UI noisy.
 
+The capability inventory below is environment-dependent. A Codex server connection may make additional configured surfaces reachable, but it does not change the project-owned source of truth or the completion-proof boundary.
+
+Treat the inventory as a surface map, not a boolean. `configured`, `enabled`, `verified`, and `connected` are different states, and the UI/API should keep them separate so the runner does not confuse a listed capability with a live one.
+
 Current rule:
 
 - Home and New Create stay simple: chat, start, status, and approval.
@@ -10,12 +14,24 @@ Current rule:
 - The Obsidian sync card may show `generatedFileCheck` as a small health line. This is file-generation health only; it is not proof of external execution.
 - Data and advanced operations show system details: Codex skills, plugin cache, automations, detailed Obsidian status, and browser readiness.
 - Browser and Chrome plugin actions are bridge-backed. The local app can report readiness, but direct in-app Browser or Chrome Extension execution still requires the Codex runtime/plugin bridge.
+- `GET /api/browser/health` now separates `codexBrowserBridge` and `chromeExtension` readback. `chromeExtension` stays blocked when local app direct execution is unavailable, even if Chrome binaries or a CDP lane exist, so the UI can show the bridge requirement explicitly instead of implying direct control.
 - `child_codex` is connected for local read-only child Codex execution. It can inspect, review, test-plan, and report results back into `child_runs`, `child_codex_result` / `child_codex_blocked` proofs, and Runs detail UI.
 - The UI should explicitly preserve the boundary that the external executor is not connected. Obsidian sync, local receipts, and generated handoff notes must not be presented as completed protected external work.
+
+Surface routing should prefer the narrowest verified lane that can still prove completion:
+
+- local repo work -> `codex exec`
+- parallel or long-running repo work -> `worktrees` or `cloud`
+- signed-in browser/profile work -> `Chrome Extension`
+- external tool access -> `MCP` / plugin surface
+- remote supervision or resume -> `remote connections`
+- desktop app interaction -> `Computer Use`
+- streamed approvals and session history -> `app-server`
 
 Implemented local API:
 
 - `GET /api/codex/capabilities` scans local Codex skills, agent skills, plugin cache, automations, and bridge-backed capabilities.
+- `POST /api/codex/capabilities/probe` refreshes the read-only MCP inventory snapshot, and `POST /api/codex/app-server/probe` refreshes the read-only Codex App Server inventory snapshot. Both stay inventory-only: success does not mean authority, connected execution, or completion proof.
 - `GET /api/browser/health` reports Playwright CLI readiness, Browser Use CLI readiness, and the Codex Browser bridge boundary.
 - `POST /api/bridge/browser-check` is the Playwright CLI primary local UI check. It only accepts local URLs, opens the app, captures a DOM snapshot, screenshot, and console-error report, stores the result in `system_checks`, shows it in Data, and triggers Obsidian auto-export. For generic Automation OS local UI work, this Playwright-owned artifact bundle is the current completion proof.
 - `POST /api/bridge/browser-use-check` remains available as a diagnostic recording path for local URLs: it can capture screenshot/state/log plus recording/Gemini metadata, and blocks when its recording-specific requirements are not met. Browser Use diagnostic proof strengthens or vetoes completion, but normal Automation OS local UI completion is based on Playwright-owned DOM/screenshot/console artifacts and their readback.
@@ -29,9 +45,10 @@ Implemented local API:
 - `POST /api/planner/:planId/demo` is limited to a local Automation OS Browser Use check. It must not operate external sites; X/Reddit/YouTube research starts as visible read-only browser/CDP/profile work rather than paid API usage.
 - `POST /api/planner/:planId/start` creates the real run through the existing worker path and attaches `research_plan_snapshot` to run metadata. That snapshot is planning evidence only, not completion proof.
 - `POST /api/planner/:planId/regularize` registers a demoed Research Planner entry in `registered_workflows` as `research_plan_registered`. The server scheduler reads those entries on a one-minute interval and starts only due Research Planner registrations; fixed native workflows remain owned by their existing registered automation entrypoints.
-- `ops/launchd/com.nichikatanaka.automation-os.plist` restores the existing Automation OS server at login through `scripts/start-automation-os-server.sh`. This is a recovery mechanism for the server-hosted Research Planner scheduler, not a second scheduler daemon and not completion proof; truth remains the live server process, SQLite `registered_workflows`, and workflow-owned artifacts/provenance.
+- `ops/launchd/com.nichikatanaka.automation-os.plist` restores the existing Automation OS server at login through `scripts/start-automation-os-server.sh`. The recovery path now defaults to Obsidian auto export on, a 5 minute periodic export timer, and sqlite fallback when stored Postgres cannot be restored cleanly. This is still a recovery mechanism for the server-hosted Research Planner scheduler, not a second scheduler daemon and not completion proof; truth remains the live server process, SQLite `registered_workflows`, and workflow-owned artifacts/provenance.
 - `POST /api/planner/:planId/capture/web-url` attaches a no-API-cost readable public Web URL capture to a started Research Planner run. On success it stores `readable_source_snapshot:web` proof and re-evaluates the Research Planner proof gate. It is a guarded server-side URL capture, not browser-visible DOM/screenshot proof.
 - `POST /api/planner/:planId/capture/youtube-transcript` attaches a no-API-cost read-only YouTube transcript capture to a started Research Planner run. On success it stores `visible_source_snapshot:youtube` proof and re-evaluates the existing Research Planner proof gate. Blocked or rejected captures remain missing proof.
+- `route_decision`, `route_readback`, and the route fingerprint must fail closed. A readback mismatch or missing decision fingerprint is a routing blocker, not a partial success.
 - State-changing APIs trigger best-effort Obsidian export automatically.
 - Server startup begins a periodic best-effort Obsidian export unless `NODE_TEST_CONTEXT` is truthy. `AUTOMATION_OS_OBSIDIAN_AUTO_EXPORT=1` explicitly enables it for tests. The interval defaults to 5 minutes, can be changed with `AUTOMATION_OS_OBSIDIAN_PERIODIC_EXPORT_MS`, and `0` disables the periodic timer.
 - The Codex Stop hook runs `npm run obsidian:export -- --reason=codex_stop_hook`; Sources shows that reason as "Codex終了時の自動同期" while the raw value remains in details/status JSON.

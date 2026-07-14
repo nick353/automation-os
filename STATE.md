@@ -1,6 +1,60 @@
 # Automation OS Current State
 
-Updated: 2026-07-08
+Updated: 2026-07-15
+
+## 2026-07-15 SaaS release candidate verification
+
+The 54 frontend source-contract mismatches have been reconciled without a UI redesign. The current Runs view selects the freshest actionable run, reads run details from the same-origin API, clears stale proof state during selection changes, derives proof-view URLs only from proof IDs, and keeps internal paths, metadata, and exact blockers out of the normal display. Operator access is session-only and the server API is fail-closed by default outside test context.
+
+Backend hardening now applies access and write guards before all API routes, uses case-sensitive routing plus normalized path checks, reports heartbeat freshness from timestamp age, and treats hosted Obsidian export as Mac-worker-owned unless explicitly enabled. The 54-item decision ledger is recorded in `work/frontend-source-contract-drift-classification-20260715.md`; release boundaries are recorded in `work/saas-release-boundary-20260715.md`. These `work/` notes are audit artifacts and are excluded from the release commit.
+
+Current verified local gates:
+
+- focused dashboard/run-detail contracts: `30/30` pass
+- complete isolated test sweep: `537/537` pass, `0` fail, `0` skipped
+- `npm run typecheck:web`: pass
+- `npm run build:web`: pass
+- `npm run build:server`: pass
+- `git diff --check`: pass
+- independent final code review: approve, no remaining code-level release blocker
+- dependency audit: no high-severity production dependency finding; one low-severity esbuild advisory remains
+
+No deployment or external workflow action has been performed from this release candidate. The next release gate is to create a scoped commit, reproduce the checks from a clean worktree at that exact SHA, then run a Chrome Extension/Profile 2 canary. Promotion must stop if the existing Profile 2 backend cannot register. Posting, applying, billing, CAPTCHA/OTP, identity, and permission changes remain hard stops.
+
+## 2026-07-15 App Server / Chrome Extension fail-closed backend integration (superseded verification snapshot)
+
+Backend integration is implemented without changing the UI. Codex App Server remains default-off and inventory-only: the bounded stdio probe sends only `initialize`, never sends `initialized`, never starts a thread or turn, does not execute an external action, and cannot become Automation OS authority, approval, or completion proof. Child env is allowlisted and returned probe fields are bounded and redacted.
+
+Worker routing now separates canonical `route_decision` from `route_readback`. All eight legacy browser-backed adapters (`playwright_cli`, `browser_use_cli`, Daily AI, NisenPrints, Job Submit, Job Followup, Prompt Transfer, SNS Multi Poster) stop with `chrome_extension_required` before runner/spawn/proof/external action even when the persisted Chrome capability says connected. Run, step, and lane readback persist the blocker, adapter policy, command display, worker mode, proof gate, stop reason, and `external_action_executed=false`. Stale Daily AI and Job reconciliation applies the same gate before accepting legacy summaries/artifacts; an already-visible legacy process no longer bypasses that gate. The Extension-backed X lane remains a separate classification.
+
+Registered Codex runner tests use an explicitly injected temporary automation root and contain no live `~/.codex/automations` path. They do not replace or restore a production `automation.toml`.
+
+Verified locally without browser, scheduler, or external-service actions:
+
+- `npm run build:server`: pass
+- real local `codex app-server` initialize-only probe: `ok=true`, `platformOs=macos`, `initializedNotificationSent=false`, `threadStarted=false`, `turnStarted=false`, `externalActionExecuted=false`
+- final `workerEngine.test.js`: `66/66` pass
+- related eight-suite backend run before the final stale-process hardening: `199/199` pass
+- related eight-suite rerun after the hardening: `197/199`; both failures were bounded fake-probe timeout flakes, and the two exact tests passed `2/2` in immediate isolation
+- `npm run typecheck:web`: pass
+- `npm run build:web`: pass
+- `git diff --check`: pass
+- live automation-path guard in `registeredCodexAutomationRunner.test.ts`: zero matches
+- high-confidence secret regex scan: no credential finding; dedicated `gitleaks` is unavailable
+
+This section's former `frontend_source_contract_drift_54_tests` blocker has been resolved by the release-candidate work above. Keep the historical backend notes below as provenance; use the newer verification section as the current truth.
+
+No live Chrome Extension E2E or scheduled-run entrypoint was executed in this slice, so future scheduled runs are not yet claimed fixed. The backend gate is verified; live scheduler/Extension readback remains a separate controlled stage.
+
+## 2026-07-13 Codex Server Connection Note
+
+`docs/12-codex-app-superior-plan.md` now records the current Codex server connection model for Automation OS. The durable point is that a Codex server connection may expand reachable session/execution surfaces and any enabled MCP, plugin, or browser backends in the current environment, but it does not change the project-owned source of truth, the Chrome-extension rule, approval requirements, or the readback/artifact gates for completion.
+
+Current environment capability is configuration-dependent and may change. The local `~/.codex/config.toml` currently exposes node_repl, Chrome/browser, and Runway MCP surfaces, but those settings are not proof of availability on a future run and are not execution permission by themselves.
+
+## 2026-07-13 Codex Surface Probe
+
+`codex exec --sandbox read-only "echo ready"` succeeded in this environment, so the local runner entrypoint is live. `codex mcp list` currently shows enabled `node_repl`, `runway`, and `sites-design-picker`; `computer-use` is disabled. Treat that as point-in-time routing evidence only: configured and enabled surfaces still need a successful probe before they are treated as verified for the current session.
 
 ## 2026-07-08 Push 済み / Zeabur 反映待ち
 Goal `Automation OS product-ready hardening` の残作業として、Create replay の無効送信ボタン待ちと mobile overflow に対する修正を入れ、`main` に commit `103b9ce` を push した。ローカル `npm run build` と server tests は通過しているが、production replay はまだ旧 asset を返しており、Create 画面は `SNS投稿 自動化プラン` 系の古い文言と `mobile:*` の horizontal overflow を示している。Zeabur 自動デプロイの反映待ちが現在の exact blocker。

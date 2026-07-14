@@ -25,8 +25,16 @@
   <string>/Users/nichikatanaka/Documents/Codex/automation-os/data/logs/automation-os-launchd.err.log</string>
   <key>EnvironmentVariables</key>
   <dict>
+    <key>AUTOMATION_OS_OBSIDIAN_AUTO_EXPORT</key>
+    <string>1</string>
+    <key>AUTOMATION_OS_ALLOW_SQLITE_FALLBACK</key>
+    <string>1</string>
+    <key>AUTOMATION_OS_OBSIDIAN_PERIODIC_EXPORT_MS</key>
+    <string>300000</string>
     <key>AUTOMATION_OS_PORT</key>
     <string>8787</string>
+    <key>AUTOMATION_OS_REQUIRE_API_TOKEN</key>
+    <string>0</string>
     <key>AUTOMATION_OS_REPO_ROOT</key>
     <string>/Users/nichikatanaka/Documents/Codex/automation-os</string>
     <key>AUTOMATION_OS_SKIP_BUILD_CHECK</key>

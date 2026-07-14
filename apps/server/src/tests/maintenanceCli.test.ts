@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 const tempRoot = mkdtempSync(join(tmpdir(), "automation-os-maintenance-"));
+const currentProjectRoot = process.cwd();
 process.env.AUTOMATION_OS_DB = join(tempRoot, "automation-os.sqlite");
 process.env.AUTOMATION_OS_RESUME_CONTRACT_PATH = join(tempRoot, "resume-contract.json");
 
@@ -89,15 +90,15 @@ test("exportObsidianVault writes wiki-linked run, proof, and docs markdown", () 
   writeFileSync(join(agentSkillRoot, "daily-runner", "SKILL.md"), "---\nname: Daily Runner\n---\n\n# Daily Runner\n");
   writeFileSync(
     join(vaultPath, "00_Start Here", "Project Handoff Index.md"),
-    "---\ngenerated_by: automation-os\nkind: project-handoff-index\n---\n\n# Project Handoff Index\n\n- Automation OS: /Users/nichikatanaka/Documents/Codex/automation-os\n- Demo: /tmp/demo-project/STATE.md\n"
+    `---\ngenerated_by: automation-os\nkind: project-handoff-index\n---\n\n# Project Handoff Index\n\n- Automation OS: ${currentProjectRoot}\n- Demo: /tmp/demo-project/STATE.md\n`
   );
   writeFileSync(
     memoryFile,
     [
       "# Task Group: Automation OS test memory",
       "",
-      "scope: `/Users/nichikatanaka/Documents/Codex/automation-os` generated control surface tests.",
-      "applies_to: cwd_family=/Users/nichikatanaka/Documents/Codex/automation-os and /tmp/other-project; source stays external.",
+      `scope: \`${currentProjectRoot}\` generated control surface tests.`,
+      `applies_to: cwd_family=${currentProjectRoot} and /tmp/other-project; source stays external.`,
       "- rollout summary (cwd=/tmp/work-2, updated_at=2026-06-11T00:00:00Z)",
       `- automation candidate cwd=${automationsRoot}/demo-automation`
     ].join("\n")
@@ -390,6 +391,8 @@ test("exportObsidianVault writes wiki-linked run, proof, and docs markdown", () 
   const skillRegistry = readFileSync(join(vaultPath, "01_Control Panel", "Skill Registry.md"), "utf8");
   const codexAppParityLedger = readFileSync(join(vaultPath, "01_Control Panel", "Codex App Parity Ledger.md"), "utf8");
   const projectMemoryMap = readFileSync(join(vaultPath, "00_Start Here", "Project Memory Map.md"), "utf8");
+  const selfDiagnosis = readFileSync(join(vaultPath, "00_Start Here", "Obsidian x Codex Self Diagnosis.md"), "utf8");
+  const weeklyCheck = readFileSync(join(vaultPath, "00_Start Here", "Obsidian x Codex Weekly Check.md"), "utf8");
   const decisionLog = readFileSync(join(vaultPath, "07_Decisions", "Decision Log.md"), "utf8");
   const failureFixLog = readFileSync(join(vaultPath, "07_Decisions", "Failure Fix Log.md"), "utf8");
   const weeklyReview = readFileSync(join(vaultPath, "00_Start Here", "Weekly Review.md"), "utf8");
@@ -439,7 +442,7 @@ test("exportObsidianVault writes wiki-linked run, proof, and docs markdown", () 
   assert.match(controlPanel, /demo-automation/);
   assert.match(controlPanel, /automation:demo-automation/);
   assert.match(controlPanel, /read-only inventory/);
-  assert.ok(result.missionFiles.length >= 10);
+  assert.ok(result.missionFiles.length >= 11);
   assert.ok(result.missionFiles.some((file) => file.endsWith(join("00_Start Here", "Today.md"))));
   assert.ok(result.missionFiles.some((file) => file.endsWith(join("00_Start Here", "Codex Daily Brief.md"))));
   assert.ok(result.missionFiles.some((file) => file.endsWith(join("00_Start Here", "Project Cockpit.md"))));
@@ -453,6 +456,9 @@ test("exportObsidianVault writes wiki-linked run, proof, and docs markdown", () 
   assert.ok(result.missionFiles.some((file) => file.endsWith(join("01_Control Panel", "Skill Registry.md"))));
   assert.ok(result.missionFiles.some((file) => file.endsWith(join("01_Control Panel", "Codex App Parity Ledger.md"))));
   assert.ok(result.missionFiles.some((file) => file.endsWith(join("00_Start Here", "Project Memory Map.md"))));
+  assert.ok(result.missionFiles.some((file) => file.endsWith(join("00_Start Here", "Obsidian Autonomy Ops Memo.md"))));
+  assert.ok(result.missionFiles.some((file) => file.endsWith(join("00_Start Here", "Obsidian x Codex Self Diagnosis.md"))));
+  assert.ok(result.missionFiles.some((file) => file.endsWith(join("00_Start Here", "Obsidian x Codex Weekly Check.md"))));
   assert.ok(result.missionFiles.some((file) => file.endsWith(join("07_Decisions", "Decision Log.md"))));
   assert.ok(result.missionFiles.some((file) => file.endsWith(join("07_Decisions", "Failure Fix Log.md"))));
   assert.ok(result.missionFiles.some((file) => file.endsWith(join("00_Start Here", "Weekly Review.md"))));
@@ -466,18 +472,25 @@ test("exportObsidianVault writes wiki-linked run, proof, and docs markdown", () 
   assert.match(today, /Conversation Memory Cards/);
   assert.match(today, /Failure Fix Log/);
   assert.match(today, /Resume Rule/);
+  assert.match(today, /Obsidian Autonomy Ops Memo/);
+  assert.match(today, /Obsidian x Codex Self Diagnosis/);
   assert.match(dailyBrief, /generated_by: automation-os/);
   assert.match(dailyBrief, /Codex Daily Brief/);
   assert.match(dailyBrief, /Latest run: \[\[Runs#run_obsidian\|Obsidian export run\]\] \(complete\)/);
   assert.match(dailyBrief, /Open command queue items: 2/);
   assert.match(projectCockpit, /generated_by: automation-os/);
   assert.match(projectCockpit, /# Project Cockpit/);
+  assert.match(selfDiagnosis, /generated_by: automation-os/);
+  assert.match(selfDiagnosis, /Current score:/);
+  assert.match(weeklyCheck, /generated_by: automation-os/);
+  assert.match(weeklyCheck, /Current score:/);
   assert.match(projectCockpit, /全project横断/);
   assert.match(projectCockpit, /Recent Run Proof Surface/);
   assert.match(resumeCurrentWork, /generated_by: automation-os/);
   assert.match(resumeCurrentWork, /# Resume Current Work/);
   assert.match(resumeCurrentWork, /Latest run: \[\[Runs#run_obsidian\|Obsidian export run\]\] \(complete/);
   assert.match(resumeCurrentWork, /Resume candidate: \[\[Runs#run_blocked_obsidian\|Blocked Obsidian follow-up\]\] \(blocked/);
+  assert.match(resumeCurrentWork, /Obsidian Autonomy Ops Memo/);
   assert.match(resumeCurrentWork, /## Current Action Queue/);
   assert.match(resumeCurrentWork, /- \[\[Runs#run_blocked_obsidian\|Blocked Obsidian follow-up\]\] \(blocked/);
   assert.match(resumeCurrentWork, /Latest system check: ok - Local UI verified/);
@@ -518,7 +531,7 @@ test("exportObsidianVault writes wiki-linked run, proof, and docs markdown", () 
   assert.ok(resumeContractJson.readFirst.some((entry) => entry.label === "Codex AGENTS" && entry.path === codexAgentsPath));
   assert.ok(resumeContractJson.projects.some((project) => project.cwd === homedir()));
   assert.ok(resumeContractJson.projects.some((project) => project.cwd === join(homedir(), ".codex")));
-  assert.ok(resumeContractJson.projects.some((project) => project.cwd === "/Users/nichikatanaka/Documents/Codex/automation-os"));
+  assert.ok(resumeContractJson.projects.some((project) => project.cwd === currentProjectRoot));
   assert.ok(resumeContractJson.authorityFiles.some((entry) => entry.path === userAgentsPath));
   assert.ok(resumeContractJson.authorityFiles.some((entry) => entry.path === codexAgentsPath));
   assert.ok(resumeContractJson.authorityFiles.some((entry) => entry.path.endsWith("automation.toml") || entry.path.endsWith("AGENTS.md")));
@@ -691,7 +704,7 @@ test("exportObsidianVault writes wiki-linked run, proof, and docs markdown", () 
   assert.match(projectMemoryMap, /### demo-automation/);
   assert.match(projectMemoryMap, /Path: `.*demo-automation\/automation\.toml`/);
   assert.match(projectMemoryMap, /Memory hints: .*demo-automation/);
-  assert.match(projectMemoryMap, /Memory hints: .*\/Users\/nichikatanaka\/Documents\/Codex\/automation-os/);
+  assert.equal(projectMemoryMap.split("\n").some((line) => line.startsWith("- Memory hints:") && line.includes(currentProjectRoot)), true);
   assert.match(projectMemoryMap, /\[redacted-token\]/);
   assert.match(projectMemoryMap, /\[redacted-auth\]/);
   assert.doesNotMatch(projectMemoryMap, /supersecret/);
@@ -704,6 +717,10 @@ test("exportObsidianVault writes wiki-linked run, proof, and docs markdown", () 
   assert.match(weeklyReview, /generated_by: automation-os/);
   assert.match(weeklyReview, /Runs updated in 7 days: 1/);
   assert.match(weeklyReview, /Open command queue items: 2/);
+  assert.match(weeklyReview, /Obsidian x Codex self score: `2\/5`/);
+  assert.match(weeklyReview, /Weekly fix: focus on レビューと改善 only\./);
+  assert.match(weeklyReview, /Obsidian Autonomy Ops Memo/);
+  assert.match(weeklyReview, /Obsidian x Codex Weekly Check/);
   assert.doesNotMatch(weeklyReview, /これは未分類依頼ではない/);
   assert.doesNotMatch(weeklyReview, /research unchecked task should stay out of intake/);
   assert.match(secondBrainWeeklyDigest, /generated_by: automation-os/);

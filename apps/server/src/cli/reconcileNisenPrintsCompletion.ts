@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { dbBackend, dbPath, insert, makeId, nowIso } from "../db/client.js";
+import { buildCanonicalExecutionRoutingMetadataForCommand } from "../codex/executionRouting.js";
 
 const defaultRunSlug = "2026-06-25-210709-ce8b-fuji-hollyhock-summer-onsen-torbie-cat";
 const defaultManifestPath = `/Users/nichikatanaka/Documents/Etsy/artifacts/publish_manifests/${defaultRunSlug}.json`;
@@ -61,6 +62,11 @@ const proofGate = {
     ...(pinterestLinksToEtsy(manifest, strictProof) ? ["etsy_visit_site_match_verified"] : [])
   ]
 };
+const routeMetadata = buildCanonicalExecutionRoutingMetadataForCommand({
+  command: "Record project-owned NisenPrints public-local completion readback without claiming strict registered runner success",
+  source: "manual",
+  selectedAdapter: "nisenprints_completion_reconciliation_readback"
+});
 const reconciliationStatus = strictStageObservationsOk
   ? "project_owned_completion_observed_but_registered_runner_success_not_claimed"
   : "project_owned_public_local_completion_reconciled_with_remaining_strict_gap";
@@ -106,7 +112,8 @@ const receipt = {
     proof_summary: proofSummary,
     external_actions_performed: false,
     additional_listing_created: false,
-    additional_pin_created: false
+    additional_pin_created: false,
+    ...routeMetadata
   },
   next_safe_action:
     "Keep the historical Automation OS NisenPrints runner run preserved. If strict registered completion is required, rerun the registered NisenPrints definition or repair the missing stage observation evidence without creating duplicate Etsy listings or Pinterest pins.",
@@ -174,6 +181,7 @@ function commitReconciliationReadback(receiptPath: string): { runId: string; pro
     external_actions_performed: false,
     additional_listing_created: false,
     additional_pin_created: false,
+    ...routeMetadata,
     strict_registered_success_claimed: false,
     accepted_partial: acceptedPartialClassification !== null,
     accepted_partial_reason: acceptedPartialClassification,
@@ -205,7 +213,8 @@ function commitReconciliationReadback(receiptPath: string): { runId: string; pro
       additional_listing_created: false,
       additional_pin_created: false,
       proof_gate: receipt.project_run.proof_gate,
-      proof_summary: receipt.project_run.proof_summary
+      proof_summary: receipt.project_run.proof_summary,
+      ...routeMetadata
     }
   });
   insert("proofs", {

@@ -6,9 +6,12 @@ REPO_ROOT="${AUTOMATION_OS_REPO_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 export AUTOMATION_OS_PORT="${AUTOMATION_OS_PORT:-8787}"
+export AUTOMATION_OS_REQUIRE_API_TOKEN="${AUTOMATION_OS_REQUIRE_API_TOKEN:-0}"
 export AUTOMATION_OS_BROWSER_USE_AUTO_CDP="${AUTOMATION_OS_BROWSER_USE_AUTO_CDP:-0}"
 export AUTOMATION_OS_RESEARCH_PLAN_SCHEDULER_MS="${AUTOMATION_OS_RESEARCH_PLAN_SCHEDULER_MS:-0}"
-export AUTOMATION_OS_OBSIDIAN_PERIODIC_EXPORT_MS="${AUTOMATION_OS_OBSIDIAN_PERIODIC_EXPORT_MS:-0}"
+export AUTOMATION_OS_OBSIDIAN_AUTO_EXPORT="${AUTOMATION_OS_OBSIDIAN_AUTO_EXPORT:-1}"
+export AUTOMATION_OS_OBSIDIAN_PERIODIC_EXPORT_MS="${AUTOMATION_OS_OBSIDIAN_PERIODIC_EXPORT_MS:-300000}"
+export AUTOMATION_OS_ALLOW_SQLITE_FALLBACK="${AUTOMATION_OS_ALLOW_SQLITE_FALLBACK:-1}"
 export AUTOMATION_OS_DAILY_AI_VISIBLE_BROWSER="${AUTOMATION_OS_DAILY_AI_VISIBLE_BROWSER:-1}"
 
 cd "$REPO_ROOT"
@@ -48,8 +51,12 @@ if stored_database_url="$(node apps/server/dist/cli/readStoredPostgresSecret.js 
     export AUTOMATION_OS_ASSUME_EXISTING_POSTGRES_SCHEMA="${AUTOMATION_OS_ASSUME_EXISTING_POSTGRES_SCHEMA:-1}"
   fi
 elif [[ "$has_postgres_secret" == "1" ]]; then
-  printf 'stored Postgres connection unavailable; refusing to start Automation OS UI/API to avoid DB split.\n' >&2
-  exit 2
+  if [[ "$AUTOMATION_OS_ALLOW_SQLITE_FALLBACK" == "1" ]]; then
+    printf 'stored Postgres connection unavailable; falling back to local sqlite because AUTOMATION_OS_ALLOW_SQLITE_FALLBACK=1.\n' >&2
+  else
+    printf 'stored Postgres connection unavailable; refusing to start Automation OS UI/API to avoid DB split.\n' >&2
+    exit 2
+  fi
 fi
 
 if command -v npm >/dev/null 2>&1; then

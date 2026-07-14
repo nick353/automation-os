@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { dbBackend, dbPath, insert, makeId, nowIso } from "../db/client.js";
+import { buildCanonicalExecutionRoutingMetadataForCommand } from "../codex/executionRouting.js";
 
 const defaultRunDir = "/Users/nichikatanaka/Documents/New project/artifacts/run-summaries/codex-app-job-application-manager-20260702-153200";
 const runDir = resolve(readArgValue("--run-dir") ?? defaultRunDir);
@@ -35,6 +36,11 @@ const historicalAuditStates = {
   "completion-audit-full-target-readback-now.json": Boolean(historicalFullTargetAudit.ok),
   "completion-audit-after-normalized-proof.json": Boolean(historicalNormalizedAudit.ok)
 };
+const routeMetadata = buildCanonicalExecutionRoutingMetadataForCommand({
+  command: "Record Job completion reconciliation readback",
+  source: "manual",
+  selectedAdapter: "job_reconciliation_readback"
+});
 const checks = [
   {
     name: "automation_os_latest_job_run_present",
@@ -184,7 +190,8 @@ function commitReconciliationReadback(receiptPath: string): { runId: string; pro
     additional_applications_submitted: false,
     strict_registered_success_claimed: false,
     proof_gate: { ok: true, missing: [], present: [proofType] },
-    proof_summary: "complete: Job completion reconciliation readback recorded without additional submissions"
+    proof_summary: "complete: Job completion reconciliation readback recorded without additional submissions",
+    ...routeMetadata
   };
   insert("runs", {
     id: runId,
@@ -210,7 +217,8 @@ function commitReconciliationReadback(receiptPath: string): { runId: string; pro
       external_actions_performed: false,
       additional_applications_submitted: false,
       proof_gate: metadata.proof_gate,
-      proof_summary: metadata.proof_summary
+      proof_summary: metadata.proof_summary,
+      ...routeMetadata
     }
   });
   insert("proofs", {

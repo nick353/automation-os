@@ -8,7 +8,13 @@ export type ObsidianExportStatus = {
   ok: boolean | null;
   lastAttemptAt: string | null;
   lastSuccessAt: string | null;
+  lastFailureAt: string | null;
   lastError: string | null;
+  failureCount: number;
+  nextRecoveryAt: string | null;
+  health: "disabled" | "healthy" | "recovering" | "degraded" | "unknown";
+  summary: string;
+  nextStep: string;
   vaultPath: string | null;
   outputDir: string | null;
   files: string[];
@@ -71,7 +77,19 @@ export type PeriodicObsidianExportController = {
   stop: () => void;
 };
 
+export type ObsidianAutonomyLoopController = {
+  enabled: boolean;
+  recoveryRetryMs: number;
+  weeklyDiagnosisMs: number;
+  stop: () => void;
+};
+
+type ObsidianExportStatusDraft = Omit<ObsidianExportStatus, "health" | "summary" | "nextStep">;
+
 const defaultPeriodicExportMs = 5 * 60 * 1000;
+const defaultRecoveryRetryMs = 60 * 1000;
+const defaultRecoveryRetryMaxMs = 30 * 60 * 1000;
+const defaultWeeklyDiagnosisMs = 7 * 24 * 60 * 60 * 1000;
 const defaultSecondBrainPolicy: SecondBrainPolicy = {
   autoApprovedScopes: [
     "obsidian_internal_capture",
@@ -108,7 +126,13 @@ const defaultStatus: ObsidianExportStatus = {
   ok: null,
   lastAttemptAt: null,
   lastSuccessAt: null,
+  lastFailureAt: null,
   lastError: null,
+  failureCount: 0,
+  nextRecoveryAt: null,
+  health: "unknown",
+  summary: "",
+  nextStep: "",
   vaultPath: null,
   outputDir: null,
   files: [],
@@ -133,12 +157,14 @@ const defaultStatus: ObsidianExportStatus = {
 
 let lastStatus: ObsidianExportStatus = readStatusFile();
 let periodicTimer: ReturnType<typeof setInterval> | undefined;
+let recoveryRetryTimer: ReturnType<typeof setTimeout> | undefined;
+let weeklyDiagnosisTimer: ReturnType<typeof setTimeout> | undefined;
 let exportInFlight = false;
 
 export function getObsidianExportStatus(): ObsidianExportStatus {
   const persistedStatus = readPersistedStatusFile();
   if (persistedStatus) lastStatus = persistedStatus;
-  return { ...lastStatus, enabled: autoExportEnabled() };
+  return decorateStatus({ ...lastStatus, enabled: autoExportEnabled() });
 }
 
 export function runObsidianExportNow(reason = "manual", options: ObsidianExportOptions = {}): ObsidianExportStatus {
@@ -180,6 +206,25 @@ export function stopPeriodicObsidianExport(): void {
   periodicTimer = undefined;
 }
 
+export function startObsidianAutonomyLoops(): ObsidianAutonomyLoopController {
+  const recoveryRetryMs = recoveryRetryDelayMs(lastStatus.failureCount);
+  if (autoExportEnabled()) {
+    scheduleRecoveryRetryFromStatus();
+    startWeeklyDiagnosisLoop();
+  }
+  return {
+    enabled: autoExportEnabled(),
+    recoveryRetryMs,
+    weeklyDiagnosisMs: defaultWeeklyDiagnosisMs,
+    stop: stopObsidianAutonomyLoops
+  };
+}
+
+export function stopObsidianAutonomyLoops(): void {
+  stopRecoveryRetryTimer();
+  stopWeeklyDiagnosisLoop();
+}
+
 export function periodicExportIntervalMs(): number {
   const raw = process.env.AUTOMATION_OS_OBSIDIAN_PERIODIC_EXPORT_MS;
   if (raw === undefined || raw.trim() === "") return defaultPeriodicExportMs;
@@ -203,12 +248,16 @@ function recordExportAttempt(reason: string, action: () => ObsidianExportResult)
   try {
     const result = action();
     const generatedFileCheck = checkGeneratedFiles(result, attemptedAt);
-    lastStatus = {
+    stopRecoveryRetryTimer();
+    lastStatus = decorateStatus({
       enabled: autoExportEnabled(),
       ok: true,
       lastAttemptAt: attemptedAt,
       lastSuccessAt: attemptedAt,
+      lastFailureAt: null,
       lastError: null,
+      failureCount: 0,
+      nextRecoveryAt: null,
       vaultPath: result.vaultPath,
       outputDir: result.outputDir,
       files: result.files,
@@ -230,14 +279,19 @@ function recordExportAttempt(reason: string, action: () => ObsidianExportResult)
       backupRetention: result.backupRetention,
       generatedFileCheck,
       reason
-    };
+    });
   } catch (error) {
-    lastStatus = {
+    const failureCount = (lastStatus.failureCount ?? 0) + 1;
+    const nextRecoveryAt = new Date(Date.now() + recoveryRetryDelayMs(failureCount)).toISOString();
+    lastStatus = decorateStatus({
       enabled: autoExportEnabled(),
       ok: false,
       lastAttemptAt: attemptedAt,
       lastSuccessAt: lastStatus.lastSuccessAt,
+      lastFailureAt: attemptedAt,
       lastError: error instanceof Error ? error.message : "unknown_error",
+      failureCount,
+      nextRecoveryAt,
       vaultPath: null,
       outputDir: null,
       files: [],
@@ -259,7 +313,8 @@ function recordExportAttempt(reason: string, action: () => ObsidianExportResult)
       backupRetention: undefined,
       generatedFileCheck: defaultGeneratedFileCheck,
       reason
-    };
+    });
+    scheduleRecoveryRetry(reason, failureCount);
   }
   try {
     writeStatusFile(lastStatus);
@@ -276,6 +331,7 @@ function recordSkippedExport(reason: string): ObsidianExportStatus {
     lastAttemptAt: new Date().toISOString(),
     reason: `${reason}_skipped_export_in_flight`
   };
+  lastStatus = decorateStatus(lastStatus);
   writeStatusFile(lastStatus);
   return getObsidianExportStatus();
 }
@@ -291,6 +347,7 @@ function queueDetachedAutoExport(reason: string): ObsidianExportStatus {
     lastError: null,
     reason: `${reason}_queued`
   };
+  lastStatus = decorateStatus(lastStatus);
   writeStatusFile(lastStatus);
 
   const cli = resolveExportCli();
@@ -302,14 +359,22 @@ function queueDetachedAutoExport(reason: string): ObsidianExportStatus {
   });
   child.once("error", (error) => {
     exportInFlight = false;
+    const failureCount = (lastStatus.failureCount ?? 0) + 1;
+    const attemptedAt = lastStatus.lastAttemptAt ?? new Date().toISOString();
+    const nextRecoveryAt = new Date(Date.now() + recoveryRetryDelayMs(failureCount)).toISOString();
     lastStatus = {
       ...lastStatus,
       enabled: autoExportEnabled(),
       ok: false,
-      lastAttemptAt: lastStatus.lastAttemptAt ?? new Date().toISOString(),
+      lastAttemptAt: attemptedAt,
+      lastFailureAt: attemptedAt,
       lastError: error.message,
+      failureCount,
+      nextRecoveryAt,
       reason
     };
+    lastStatus = decorateStatus(lastStatus);
+    scheduleRecoveryRetry(reason, failureCount);
     writeStatusFile(lastStatus);
   });
   child.once("exit", () => {
@@ -338,7 +403,7 @@ function inlineAutoExportEnabled(): boolean {
 }
 
 function readStatusFile(): ObsidianExportStatus {
-  return readPersistedStatusFile() ?? { ...defaultStatus, enabled: autoExportEnabled() };
+  return decorateStatus(readPersistedStatusFile() ?? { ...defaultStatus, enabled: autoExportEnabled() });
 }
 
 function readPersistedStatusFile(): ObsidianExportStatus | null {
@@ -346,7 +411,7 @@ function readPersistedStatusFile(): ObsidianExportStatus | null {
   if (!existsSync(path)) return null;
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<ObsidianExportStatus>;
-    return normalizeStatus({ ...defaultStatus, ...parsed, enabled: autoExportEnabled() });
+    return decorateStatus(normalizeStatus({ ...defaultStatus, ...parsed, enabled: autoExportEnabled() }));
   } catch {
     return null;
   }
@@ -377,7 +442,64 @@ function normalizeStatus(status: ObsidianExportStatus): ObsidianExportStatus {
     orientationFiles: Array.isArray(status.orientationFiles) ? status.orientationFiles : [],
     templateFiles: Array.isArray(status.templateFiles) ? status.templateFiles : [],
     backupRetention: normalizeBackupRetention(status.backupRetention),
-    generatedFileCheck: normalizeGeneratedFileCheck(status.generatedFileCheck)
+    generatedFileCheck: normalizeGeneratedFileCheck(status.generatedFileCheck),
+    lastFailureAt: optionalString(status.lastFailureAt) ?? null,
+    nextRecoveryAt: optionalString(status.nextRecoveryAt) ?? null,
+    failureCount: typeof status.failureCount === "number" && Number.isFinite(status.failureCount) && status.failureCount >= 0 ? Math.floor(status.failureCount) : 0
+  };
+}
+
+function decorateStatus(status: ObsidianExportStatusDraft): ObsidianExportStatus {
+  const enabled = autoExportEnabled();
+  const hostedLocalWorkerRequired = hostedRuntime() && process.env.AUTOMATION_OS_OBSIDIAN_HOSTED_EXPORT !== "1";
+  const failureCount = typeof status.failureCount === "number" && Number.isFinite(status.failureCount) ? Math.max(0, Math.floor(status.failureCount)) : 0;
+  const effectiveOk = hostedLocalWorkerRequired ? false : status.ok;
+  const hasFailure = effectiveOk === false || Boolean(status.lastError) || failureCount > 0;
+  const health: ObsidianExportStatus["health"] = !enabled
+    ? "disabled"
+    : effectiveOk === true
+      ? failureCount > 0
+        ? "recovering"
+        : "healthy"
+      : hasFailure
+        ? "degraded"
+        : "unknown";
+  const summary =
+    health === "healthy"
+      ? "Obsidian export is running normally."
+      : health === "recovering"
+        ? `Obsidian export recovered, but ${failureCount} recent failure${failureCount === 1 ? "" : "s"} are still recorded.`
+        : health === "degraded"
+          ? status.lastError
+            ? `Obsidian export needs attention: ${status.lastError}`
+            : "Obsidian export needs attention."
+          : health === "disabled"
+            ? hostedLocalWorkerRequired
+              ? "Obsidian export is handled by the Mac worker; the hosted control plane is read-only."
+              : "Obsidian auto export is disabled."
+            : "Obsidian export status is not yet known.";
+  const nextStep =
+    health === "healthy"
+      ? "No action needed. Let the periodic and weekly loops continue."
+      : health === "recovering"
+        ? status.nextRecoveryAt
+          ? `Wait for the scheduled retry at ${status.nextRecoveryAt}.`
+          : "Wait for the scheduled retry."
+        : health === "degraded"
+          ? "Inspect the latest blocker, then let the recovery retry run or restart the server if the failure persists."
+          : health === "disabled"
+            ? hostedLocalWorkerRequired
+              ? "Start or reconnect the Mac worker, then refresh this status."
+              : "Re-enable AUTOMATION_OS_OBSIDIAN_AUTO_EXPORT if you want the loop back on."
+            : "Run a fresh export or inspect the persisted status file.";
+  return {
+    ...status,
+    ok: effectiveOk,
+    lastError: hostedLocalWorkerRequired ? null : status.lastError,
+    reason: hostedLocalWorkerRequired ? "hosted_local_worker_required" : status.reason,
+    health,
+    summary,
+    nextStep
   };
 }
 
@@ -475,6 +597,57 @@ function normalizeGeneratedFileCheck(value: unknown): GeneratedFileCheck {
   };
 }
 
+function recoveryRetryDelayMs(failureCount: number): number {
+  const count = Math.max(1, Math.floor(failureCount));
+  return Math.min(defaultRecoveryRetryMaxMs, defaultRecoveryRetryMs * 2 ** Math.max(0, count - 1));
+}
+
+function scheduleRecoveryRetry(reason: string, failureCount: number): void {
+  if (!autoExportEnabled()) return;
+  stopRecoveryRetryTimer();
+  const delayMs = recoveryRetryDelayMs(failureCount);
+  recoveryRetryTimer = setTimeout(() => {
+    recoveryRetryTimer = undefined;
+    runObsidianAutoExportBestEffort(`recovery:${reason}`);
+  }, delayMs);
+  recoveryRetryTimer.unref?.();
+}
+
+function scheduleRecoveryRetryFromStatus(): void {
+  if (!autoExportEnabled()) return;
+  if (recoveryRetryTimer) return;
+  if (lastStatus.ok !== false && !lastStatus.nextRecoveryAt) return;
+  const nextRecoveryAt = lastStatus.nextRecoveryAt ? Date.parse(lastStatus.nextRecoveryAt) : NaN;
+  const delayMs = Number.isFinite(nextRecoveryAt) ? Math.max(0, nextRecoveryAt - Date.now()) : recoveryRetryDelayMs(lastStatus.failureCount);
+  recoveryRetryTimer = setTimeout(() => {
+    recoveryRetryTimer = undefined;
+    runObsidianAutoExportBestEffort("recovery:restore");
+  }, delayMs);
+  recoveryRetryTimer.unref?.();
+}
+
+function stopRecoveryRetryTimer(): void {
+  if (!recoveryRetryTimer) return;
+  clearTimeout(recoveryRetryTimer);
+  recoveryRetryTimer = undefined;
+}
+
+function startWeeklyDiagnosisLoop(): void {
+  if (!autoExportEnabled() || weeklyDiagnosisTimer) return;
+  weeklyDiagnosisTimer = setTimeout(function tick() {
+    weeklyDiagnosisTimer = undefined;
+    runObsidianAutoExportBestEffort("weekly-diagnosis");
+    startWeeklyDiagnosisLoop();
+  }, defaultWeeklyDiagnosisMs);
+  weeklyDiagnosisTimer.unref?.();
+}
+
+function stopWeeklyDiagnosisLoop(): void {
+  if (!weeklyDiagnosisTimer) return;
+  clearTimeout(weeklyDiagnosisTimer);
+  weeklyDiagnosisTimer = undefined;
+}
+
 function normalizeGeneratedFileCheckFile(value: unknown): GeneratedFileCheckFile | null {
   if (!value || typeof value !== "object") return null;
   const candidate = value as Partial<GeneratedFileCheckFile>;
@@ -534,7 +707,15 @@ function resolveStatusFile(): string {
 }
 
 function autoExportEnabled(): boolean {
+  if (hostedRuntime() && process.env.AUTOMATION_OS_OBSIDIAN_HOSTED_EXPORT !== "1") return false;
   if (process.env.AUTOMATION_OS_OBSIDIAN_AUTO_EXPORT === "0") return false;
   if (process.env.AUTOMATION_OS_OBSIDIAN_AUTO_EXPORT === "1") return true;
   return !process.env.NODE_TEST_CONTEXT;
+}
+
+function hostedRuntime(): boolean {
+  return process.env.AUTOMATION_OS_HOSTED === "1"
+    || Boolean(process.env.ZEABUR_GIT_COMMIT)
+    || Boolean(process.env.ZEABUR_GIT_COMMIT_SHA)
+    || Boolean(process.env.ZEABUR_SERVICE_ID);
 }

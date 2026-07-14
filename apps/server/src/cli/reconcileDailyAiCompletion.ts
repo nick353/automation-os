@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { dbBackend, dbPath, insert, makeId, nowIso } from "../db/client.js";
+import { buildCanonicalExecutionRoutingMetadataForCommand } from "../codex/executionRouting.js";
 import { evaluateDailyAiRegisteredSummary } from "../runs/dailyAiRegisteredRunner.js";
 
 const defaultSummaryPath =
@@ -33,6 +34,11 @@ const proofGate = {
   present: [...new Set([...evaluation.proof_gate.present, proofType])]
 };
 const ok = evaluation.status === "complete" && proofGate.ok;
+const routeMetadata = buildCanonicalExecutionRoutingMetadataForCommand({
+  command: "Record project-owned Daily AI completion proof as Automation OS reconciliation readback without posting",
+  source: "manual",
+  selectedAdapter: "daily_ai_completion_reconciliation_readback"
+});
 const receipt = {
   ok,
   workflow: "daily-ai-research-publish-run",
@@ -155,7 +161,8 @@ function commitCompletionReadback(receiptPath: string): { runId: string; proofId
     strict_registered_success_claimed: false,
     proof_gate: proofGate,
     proof_summary: "complete: Daily AI completion reconciliation readback recorded without additional posting",
-    full_flow_completion: fullFlow ?? null
+    full_flow_completion: fullFlow ?? null,
+    ...routeMetadata
   };
   insert("runs", {
     id: runId,
@@ -181,7 +188,8 @@ function commitCompletionReadback(receiptPath: string): { runId: string; proofId
       external_actions_performed: false,
       additional_posts_published: false,
       proof_gate: metadata.proof_gate,
-      proof_summary: metadata.proof_summary
+      proof_summary: metadata.proof_summary,
+      ...routeMetadata
     }
   });
   insert("proofs", {

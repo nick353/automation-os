@@ -8,7 +8,7 @@
     "dev:server": "tsx watch apps/server/src/index.ts",
     "dev:web": "vite --host 127.0.0.1 apps/web",
     "start": "npm run start:server",
-    "start:server": "AUTOMATION_OS_RESEARCH_PLAN_SCHEDULER_MS=${AUTOMATION_OS_RESEARCH_PLAN_SCHEDULER_MS:-0} AUTOMATION_OS_OBSIDIAN_PERIODIC_EXPORT_MS=${AUTOMATION_OS_OBSIDIAN_PERIODIC_EXPORT_MS:-0} node apps/server/dist/cli/processHygiene.js --cleanup --max-age-minutes 360 && AUTOMATION_OS_RESEARCH_PLAN_SCHEDULER_MS=${AUTOMATION_OS_RESEARCH_PLAN_SCHEDULER_MS:-0} AUTOMATION_OS_OBSIDIAN_PERIODIC_EXPORT_MS=${AUTOMATION_OS_OBSIDIAN_PERIODIC_EXPORT_MS:-0} node apps/server/dist/index.js",
+    "start:server": "AUTOMATION_OS_RESEARCH_PLAN_SCHEDULER_MS=${AUTOMATION_OS_RESEARCH_PLAN_SCHEDULER_MS:-0} AUTOMATION_OS_OBSIDIAN_AUTO_EXPORT=${AUTOMATION_OS_OBSIDIAN_AUTO_EXPORT:-1} AUTOMATION_OS_OBSIDIAN_PERIODIC_EXPORT_MS=${AUTOMATION_OS_OBSIDIAN_PERIODIC_EXPORT_MS:-300000} AUTOMATION_OS_ALLOW_SQLITE_FALLBACK=${AUTOMATION_OS_ALLOW_SQLITE_FALLBACK:-1} node apps/server/dist/cli/processHygiene.js --cleanup --max-age-minutes 360 && AUTOMATION_OS_RESEARCH_PLAN_SCHEDULER_MS=${AUTOMATION_OS_RESEARCH_PLAN_SCHEDULER_MS:-0} AUTOMATION_OS_OBSIDIAN_AUTO_EXPORT=${AUTOMATION_OS_OBSIDIAN_AUTO_EXPORT:-1} AUTOMATION_OS_OBSIDIAN_PERIODIC_EXPORT_MS=${AUTOMATION_OS_OBSIDIAN_PERIODIC_EXPORT_MS:-300000} AUTOMATION_OS_ALLOW_SQLITE_FALLBACK=${AUTOMATION_OS_ALLOW_SQLITE_FALLBACK:-1} node apps/server/dist/index.js",
     "process:scan": "npm run build:server && node apps/server/dist/cli/processHygiene.js --scan",
     "process:cleanup": "npm run build:server && node apps/server/dist/cli/processHygiene.js --cleanup",
     "qa:production": "node scripts/productionQa.mjs",

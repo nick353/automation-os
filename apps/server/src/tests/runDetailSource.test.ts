@@ -21,10 +21,10 @@ test("run detail endpoint fetches run-scoped rows beyond dashboard limits", () =
   assert.match(serverSource, /LIMIT 500/);
   assert.match(serverSource, /LIMIT 1000/);
   assert.match(serverSource, /LIMIT 2000/);
-  assert.match(appSource, /fetchApiJson<unknown>\(`\/api\/runs\/\$\{encodeURIComponent\(selectedRunId\)\}`/);
-  assert.match(appSource, /detailForCurrentRun \? detailForCurrentRun\.steps/);
-  assert.match(appSource, /detailForCurrentRun \? detailForCurrentRun\.proofs/);
-  assert.match(appSource, /detailForCurrentRun\.workerEvents/);
+  assert.match(appSource, /fetchApiJson<RunDetail>\(`\/api\/runs\/\$\{encodeURIComponent\(currentRunId\)\}`/);
+  assert.match(appSource, /const selectedSteps = detailForCurrentRun\?\.steps \?\? \[\]/);
+  assert.match(appSource, /const selectedProofs = detailForCurrentRun\?\.proofs/);
+  assert.match(appSource, /const selectedWorkerEvents = detailForCurrentRun\?\.workerEvents \?\? \[\]/);
 });
 
 test("proof viewer endpoint is id based and blocks unsafe raw paths", () => {
@@ -64,13 +64,11 @@ test("proof viewer endpoint is id based and blocks unsafe raw paths", () => {
   assert.match(appSource, /fetchApiJson<ProofView>\(viewerUrl/);
 });
 
-test("run detail display redacts raw local paths from proof previews and source text", () => {
+test("run detail display redacts raw local paths and URLs from proof previews", () => {
   const serverSource = readFileSync(resolve(process.cwd(), "apps/server/src/index.ts"), "utf8");
   const appSource = readFileSync(resolve(process.cwd(), "apps/web/src/App.tsx"), "utf8");
-  const childSource = appSource.slice(appSource.indexOf("function ChildCodexRuns"), appSource.indexOf("function WorkerEvents"));
-  const workerSource = appSource.slice(appSource.indexOf("function WorkerEvents"), appSource.indexOf("function AssetInventory"));
-  const previewSource = appSource.slice(appSource.indexOf("function ProofPreview"), appSource.indexOf("function displayProofBlockedReason"));
-  const displayRedactionSource = appSource.slice(appSource.indexOf("function redactDisplayPaths"), appSource.indexOf("type BrowserUseResult"));
+  const runsSource = appSource.slice(appSource.indexOf("function RunsPage"), appSource.indexOf("function LanesPage"));
+  const displayRedactionSource = appSource.slice(appSource.indexOf("function redactDisplayPaths"), appSource.indexOf("function publicRunStatus"));
   const proofPreviewSource = serverSource.slice(serverSource.indexOf("export function redactProofPreview"), serverSource.indexOf("function imageMetadata"));
 
   assertSourceIncludes(proofPreviewSource, [
@@ -84,10 +82,9 @@ test("run detail display redacts raw local paths from proof previews and source 
     String.raw`\.playwright-cli`,
     String.raw`.replace(/https?:\/\/[^\s"'<>]+/g, "[redacted-url]")`
   ]);
-  assert.match(childSource, /redactDisplayPaths\(String\(child\.summary\)\)/);
-  assert.match(childSource, /displayBridgeReceiptSummary\(String\(child\.blocker\)\)/);
-  assert.match(workerSource, /redactDisplayPaths\(String\(event\.message \?\? ""\)\)/);
-  assert.match(previewSource, /redactDisplayPaths\(proofView\.preview\)/);
+  assert.match(runsSource, /redactDisplayPaths\(proof\.summary\)/);
+  assert.match(runsSource, /redactDisplayPaths\(proofView\.preview\)/);
+  assert.doesNotMatch(runsSource, /proof\.artifact_uri/);
   assert.match(displayRedactionSource, /\/Users/);
   assert.match(displayRedactionSource, /Documents\\\/New project/);
   assert.match(displayRedactionSource, /data\\\/artifacts/);
@@ -102,16 +99,16 @@ test("run detail display redacts raw local paths from proof previews and source 
 test("dashboard refresh and polling correct stale selected run ids", () => {
   const appSource = readFileSync(resolve(process.cwd(), "apps/web/src/App.tsx"), "utf8");
 
-  assert.match(appSource, /function resolveSelectedRunId\(current: string \| null, runs: Row\[\], actionableRuns: Row\[\] = \[\]\): string \| null/);
+  assert.match(appSource, /function resolveSelectedRunId\(current: string \| null, runs: any\[\], actionableRuns: any\[\] = \[\]\): string \| null/);
   assert.match(appSource, /if \(!runs\.length\) return null/);
   assert.match(appSource, /if \(current && runs\.some\(\(run\) => run\.id === current\)\) return current/);
-  assert.match(appSource, /function runDispositionRank\(run: Row\)/);
-  assert.match(appSource, /const latestRunId = \[\.\.\.actionableRuns\]\.sort\(\(a, b\) => runDispositionRank\(a\) - runDispositionRank\(b\)\)\[0\]\?\.id/);
+  assert.match(appSource, /function runDispositionRank\(run: any\)/);
+  assert.match(appSource, /const candidates = actionableRuns\.length \? actionableRuns : runs/);
   assert.match(appSource, /return typeof latestRunId === "string" \? latestRunId : null/);
 
-  const correctionCalls = appSource.match(/setSelectedRunId\(\(current\) => resolveSelectedRunId\(current, body\.runs, body\.actionableRuns \?\? \[\]\)\)/g) ?? [];
+  const correctionCalls = appSource.match(/setSelectedRunId\(\(current\) => resolveSelectedRunId\(current, state\.runs \?\? \[\], state\.actionableRuns \?\? \[\]\)\)/g) ?? [];
   assert.equal(correctionCalls.length, 2);
 
-  assert.match(appSource, /async function refresh\(announce = true(?:, options: RefreshOptions = \{\})?\)[\s\S]*setSelectedRunId\(\(current\) => resolveSelectedRunId\(current, body\.runs, body\.actionableRuns \?\? \[\]\)\)/);
-  assert.match(appSource, /window\.setInterval\(\(\) => \{[\s\S]*setSelectedRunId\(\(current\) => resolveSelectedRunId\(current, body\.runs, body\.actionableRuns \?\? \[\]\)\)[\s\S]*\}, 30000\)/);
+  assert.match(appSource, /const refresh = async \(\) => \{[\s\S]*setSelectedRunId\(\(current\) => resolveSelectedRunId\(current, state\.runs \?\? \[\], state\.actionableRuns \?\? \[\]\)\)/);
+  assert.match(appSource, /window\.setInterval\(\(\) => \{[\s\S]*setSelectedRunId\(\(current\) => resolveSelectedRunId\(current, state\.runs \?\? \[\], state\.actionableRuns \?\? \[\]\)\)[\s\S]*\}, 30000\)/);
 });

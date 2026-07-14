@@ -112,13 +112,25 @@ test("Daily AI blocker reconciliation CLI records a blocked readback without pos
   const sourceRun = db.querySql<{ status: string }>("SELECT status FROM runs WHERE id='run_mqtbe1ef_p0tjpw'")[0];
   assert.equal(sourceRun.status, "blocked");
   const newRun = db.querySql<{ status: string; metadata_json: string }>(`SELECT status, metadata_json FROM runs WHERE id='${body.committedRun.runId}'`)[0];
+  const step = db.querySql<{ status: string; metadata_json: string }>(`SELECT status, metadata_json FROM run_steps WHERE run_id='${body.committedRun.runId}' LIMIT 1`)[0];
   assert.equal(newRun.status, "blocked");
+  assert.equal(step.status, "blocked");
   const metadata = JSON.parse(newRun.metadata_json) as {
     reconciliation_of_run_id: string;
     additional_posts_published: boolean;
     external_actions_performed: boolean;
     strict_registered_success_claimed: boolean;
     proof_gate: { ok: boolean; missing: string[] };
+    route_decision?: { fingerprint?: string; phase?: string };
+    route_decision_fingerprint?: string | null;
+    route_readback?: null;
+    execution_routing?: { fingerprint?: string };
+  };
+  const stepMetadata = JSON.parse(step.metadata_json) as {
+    route_decision?: { fingerprint?: string; phase?: string };
+    route_decision_fingerprint?: string | null;
+    route_readback?: null;
+    execution_routing?: { fingerprint?: string };
   };
   assert.equal(metadata.reconciliation_of_run_id, "run_mqtbe1ef_p0tjpw");
   assert.equal(metadata.additional_posts_published, false);
@@ -126,6 +138,14 @@ test("Daily AI blocker reconciliation CLI records a blocked readback without pos
   assert.equal(metadata.strict_registered_success_claimed, false);
   assert.equal(metadata.proof_gate.ok, false);
   assert.ok(metadata.proof_gate.missing.includes("runway_mcp_repair_required"));
+  assert.equal(metadata.route_decision?.phase, "route_decision");
+  assert.equal(metadata.route_decision_fingerprint, metadata.route_decision?.fingerprint ?? null);
+  assert.equal(metadata.execution_routing?.fingerprint, metadata.route_decision?.fingerprint);
+  assert.equal(metadata.route_readback, null);
+  assert.equal(stepMetadata.route_decision?.phase, "route_decision");
+  assert.equal(stepMetadata.route_decision_fingerprint, metadata.route_decision?.fingerprint ?? null);
+  assert.equal(stepMetadata.execution_routing?.fingerprint, metadata.route_decision?.fingerprint);
+  assert.equal(stepMetadata.route_readback, null);
   const proof = db.querySql<{ proof_type: string; uri: string }>(`SELECT proof_type, uri FROM proofs WHERE id='${body.committedRun.proofId}'`)[0];
   assert.equal(proof.proof_type, "daily_ai_blocker_reconciliation_readback");
   assert.match(proof.uri, /daily-ai-blocker-reconciliation-receipt\.json$/);
@@ -251,7 +271,9 @@ test("Daily AI blocker reconciliation CLI records fresh child partial ingest wit
   const sourceRun = db.querySql<{ status: string }>("SELECT status FROM runs WHERE id='run_mqtbe1ef_p0tjpw'")[0];
   assert.equal(sourceRun.status, "blocked");
   const newRun = db.querySql<{ status: string; metadata_json: string }>(`SELECT status, metadata_json FROM runs WHERE id='${body.committedRun.runId}'`)[0];
+  const step = db.querySql<{ status: string; metadata_json: string }>(`SELECT status, metadata_json FROM run_steps WHERE run_id='${body.committedRun.runId}' LIMIT 1`)[0];
   assert.equal(newRun.status, "partial");
+  assert.equal(step.status, "blocked");
   const metadata = JSON.parse(newRun.metadata_json) as {
     reconciliation_of_run_id: string;
     reconciliation_kind: string;
@@ -262,6 +284,16 @@ test("Daily AI blocker reconciliation CLI records fresh child partial ingest wit
     strict_registered_success_claimed: boolean;
     external_action_summary: { linkedin_post_url: string; x_reposted: boolean };
     proof_gate: { ok: boolean; missing: string[] };
+    route_decision?: { fingerprint?: string; phase?: string };
+    route_decision_fingerprint?: string | null;
+    route_readback?: null;
+    execution_routing?: { fingerprint?: string };
+  };
+  const stepMetadata = JSON.parse(step.metadata_json) as {
+    route_decision?: { fingerprint?: string; phase?: string };
+    route_decision_fingerprint?: string | null;
+    route_readback?: null;
+    execution_routing?: { fingerprint?: string };
   };
   assert.equal(metadata.reconciliation_of_run_id, "run_mqtbe1ef_p0tjpw");
   assert.equal(metadata.reconciliation_kind, "fresh_child_partial_ingest");
@@ -273,6 +305,14 @@ test("Daily AI blocker reconciliation CLI records fresh child partial ingest wit
   assert.equal(metadata.external_action_summary.x_reposted, false);
   assert.ok(metadata.proof_gate.missing.includes("daily_ai_engagement"));
   assert.ok(!metadata.proof_gate.missing.includes("daily_ai_sync"));
+  assert.equal(metadata.route_decision?.phase, "route_decision");
+  assert.equal(metadata.route_decision_fingerprint, metadata.route_decision?.fingerprint ?? null);
+  assert.equal(metadata.execution_routing?.fingerprint, metadata.route_decision?.fingerprint);
+  assert.equal(metadata.route_readback, null);
+  assert.equal(stepMetadata.route_decision?.phase, "route_decision");
+  assert.equal(stepMetadata.route_decision_fingerprint, metadata.route_decision?.fingerprint ?? null);
+  assert.equal(stepMetadata.execution_routing?.fingerprint, metadata.route_decision?.fingerprint);
+  assert.equal(stepMetadata.route_readback, null);
   const proof = db.querySql<{ proof_type: string; uri: string }>(`SELECT proof_type, uri FROM proofs WHERE id='${body.committedRun.proofId}'`)[0];
   assert.equal(proof.proof_type, "daily_ai_fresh_child_partial_ingest_readback");
   assert.match(proof.uri, /daily-ai-fresh-child-partial-ingest-reconciliation-receipt\.json$/);

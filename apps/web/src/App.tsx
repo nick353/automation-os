@@ -65,14 +65,10 @@ const subTabLabels = [
 const writeTokenStorageKey = "automation-os-write-token";
 var runtimeWriteToken = "";
 
-function isStateChangingMethod(method: string) {
-  return method === "POST" || method === "PATCH" || method === "PUT" || method === "DELETE";
-}
-
 function readWriteToken() {
   if (runtimeWriteToken.trim()) return runtimeWriteToken.trim();
   try {
-    return (window.sessionStorage.getItem(writeTokenStorageKey) || window.localStorage.getItem(writeTokenStorageKey) || "").trim();
+    return (window.sessionStorage.getItem(writeTokenStorageKey) || "").trim();
   } catch {
     return runtimeWriteToken.trim();
   }
@@ -83,7 +79,7 @@ function persistWriteToken(value: string) {
   try {
     const normalized = value.trim();
     window.sessionStorage.setItem(writeTokenStorageKey, normalized);
-    window.localStorage.setItem(writeTokenStorageKey, normalized);
+    window.localStorage.removeItem(writeTokenStorageKey);
   } catch {
     // ignore storage errors in read-only mode
   }
@@ -99,18 +95,15 @@ function clearWriteToken() {
   }
 }
 
-function withMvpWriteHeaders(init: RequestInit = {}) {
+function withMvpApiHeaders(init: RequestInit = {}) {
   const headers = new Headers(init.headers || {});
-  const method = String(init.method || "GET").toUpperCase();
-  if (isStateChangingMethod(method)) {
-    const token = readWriteToken();
-    if (token) headers.set("x-automation-os-token", token);
-  }
+  const token = readWriteToken();
+  if (token) headers.set("x-automation-os-token", token);
   return { ...init, headers };
 }
 
 async function mvpFetch(input: RequestInfo | URL, init: RequestInit = {}) {
-  return fetch(input, withMvpWriteHeaders(init));
+  return fetch(input, withMvpApiHeaders(init));
 }
 
 function redactSensitiveText(value: string) {
@@ -121,6 +114,59 @@ function redactSensitiveText(value: string) {
     .replace(/\b(?:sk-|xox|ghp_|eyJ)[A-Za-z0-9._-]{8,}/g, "[redacted]")
     .replace(/\bpostgres(?:ql)?:\/\/[^\s,;]+/gi, "[redacted]")
     .replace(/BEGIN PRIVATE KEY[\s\S]*?END PRIVATE KEY/g, "[redacted]");
+}
+
+function redactDisplayPaths(value: unknown) {
+  return redactSensitiveText(String(value ?? ""))
+    .replace(/file:\/\/\/(?:Users|private|tmp)\/[^\n\r"'<>]+/gi, "[保存場所]")
+    .replace(/\/Users\/[^\n\r"'<>]+/g, "[保存場所]")
+    .replace(/(?:\/private)?\/tmp\/[^\n\r"'<>]+/g, "[保存場所]")
+    .replace(/(?:Documents\/New project|data\/artifacts|artifacts\/|output\/playwright|\.playwright-cli)[^\n\r"'<>]*/gi, "[保存場所]")
+    .replace(/https?:\/\/[^\s"'<>]+/gi, "[外部リンク]");
+}
+
+function publicRunStatus(status: unknown) {
+  const value = String(status ?? "").toLowerCase();
+  if (value === "completed" || value === "success" || value === "succeeded") return "完了";
+  if (value === "blocked" || value === "failed") return "要確認";
+  if (value === "running") return "実行中";
+  if (value === "queued" || value === "pending" || value === "waiting_approval") return "待機中";
+  return "未確認";
+}
+
+function publicBlockerSummary(value: unknown) {
+  if (!String(value ?? "").trim()) return "なし";
+  const normalized = String(value).toLowerCase();
+  if (normalized.includes("approval")) return "承認が必要です";
+  if (normalized.includes("heartbeat") || normalized.includes("worker")) return "Mac側の接続確認が必要です";
+  if (normalized.includes("chrome") || normalized.includes("browser")) return "Chrome接続の確認が必要です";
+  if (normalized.includes("auth") || normalized.includes("login") || normalized.includes("credential")) return "ログイン確認が必要です";
+  return "詳細確認が必要です";
+}
+
+function runDispositionRank(run: any) {
+  const status = String(run?.status ?? "");
+  if (status === "blocked" || status === "waiting_approval" || status === "approval_required") return 0;
+  if (status === "running") return 1;
+  if (status === "queued" || status === "pending") return 2;
+  return 3;
+}
+
+function resolveSelectedRunId(current: string | null, runs: any[], actionableRuns: any[] = []): string | null {
+  if (!runs.length) return null;
+  if (current && runs.some((run) => run.id === current)) return current;
+  const candidates = actionableRuns.length ? actionableRuns : runs;
+  const latestRunId = [...candidates]
+    .sort((a, b) => runDispositionRank(a) - runDispositionRank(b))[0]?.id;
+  return typeof latestRunId === "string" ? latestRunId : null;
+}
+
+function newerRunSnapshot(detailRun: any, dashboardRun: any) {
+  if (!detailRun) return dashboardRun ?? null;
+  if (!dashboardRun) return detailRun;
+  const detailTime = Date.parse(String(detailRun.updated_at ?? detailRun.created_at ?? "")) || 0;
+  const dashboardTime = Date.parse(String(dashboardRun.updated_at ?? dashboardRun.created_at ?? "")) || 0;
+  return dashboardTime >= detailTime ? dashboardRun : detailRun;
 }
 
 const seedAutomations = [
@@ -134,11 +180,33 @@ type AutomationRow = typeof seedAutomations[number];
 type MvpState = {
   updated_at?: string;
   worker?: { id: string; status: string; heartbeat_at: string | null; queue_depth: number; last_run_id: string | null; heartbeat_age_seconds?: number | null; heartbeat_fresh?: boolean; readback_status?: string; exact_blocker?: string | null; next_action?: string; external_action_executed?: boolean };
+  obsidian?: {
+    ok?: boolean | null;
+    enabled?: boolean;
+    health?: "disabled" | "healthy" | "recovering" | "degraded" | "unknown";
+    summary?: string;
+    nextStep?: string;
+    lastAttemptAt?: string | null;
+    lastSuccessAt?: string | null;
+    lastFailureAt?: string | null;
+    lastError?: string | null;
+    failureCount?: number;
+    nextRecoveryAt?: string | null;
+    reason?: string | null;
+    generatedFileCheck?: {
+      ok: boolean;
+      checkedAt?: string | null;
+      total?: number;
+      missing?: string[];
+      nonGenerated?: string[];
+    };
+  };
   persistence?: any;
   projects?: any[];
   automations?: any[];
   schedules?: any[];
   runs?: any[];
+  actionableRuns?: any[];
   proofs?: any[];
   approvals?: any[];
   project_memory?: any[];
@@ -147,6 +215,56 @@ type MvpState = {
   audit_events?: any[];
   redaction_readback?: any;
   production_readiness_readback?: any;
+  browserHealth?: {
+    codexBrowserBridge?: {
+      required: boolean;
+      directCallableFromLocalApp: boolean;
+      status: string;
+      summary: string;
+    };
+    chromeExtension?: {
+      status: string;
+      exactBlocker: string | null;
+      summary: string;
+      nextAction: string;
+      chromeBinary: string | null;
+      cdpLaneConfigured: boolean;
+    };
+  };
+  codexCapabilities?: {
+    summary: {
+      skills: number;
+      agentSkills: number;
+      plugins: number;
+      automations: number;
+      mcp: number;
+    };
+    browser?: CapabilitySurface;
+    chrome?: CapabilitySurface;
+    mcp?: CapabilitySurface;
+    appServer?: CapabilitySurface;
+    notes?: string[];
+  };
+  capabilityRouter?: {
+    primaryAction?: string;
+    counts?: { ready: number; partial: number; missing: number; gaps: number };
+    recommendedRoutes?: Array<{
+      id: string;
+      label: string;
+      status: string;
+      lane: string;
+      nextAction: string;
+      authority?: string;
+      proof?: string;
+    }>;
+    gapBacklog?: Array<{
+      id: string;
+      label: string;
+      priority: string;
+      status: string;
+      nextAction: string;
+    }>;
+  };
   feedbacks?: Array<{
     id: string;
     feedback_id: string;
@@ -166,6 +284,58 @@ type MvpState = {
     payload: Record<string, unknown>;
   }>;
 };
+
+type RunDetail = {
+  run: any;
+  steps: any[];
+  proofs: any[];
+  children: any[];
+  workerEvents: any[];
+};
+
+type ProofView = {
+  id: string;
+  run_id?: string;
+  proof_type?: string;
+  label?: string;
+  created_at?: string;
+  status: "ok" | "blocked" | "not_found";
+  preview_kind?: "text" | "json" | "image" | "unsupported";
+  preview?: string;
+  blocked_reason?: string;
+  truncated?: boolean;
+  image?: { width?: number; height?: number; mime_type?: string };
+};
+
+type CapabilitySurface = {
+  id: string;
+  name: string;
+  path: string;
+  status: string;
+  kind: string;
+  state: {
+    configured: boolean;
+    enabled: boolean;
+    verified: boolean;
+    connected: boolean;
+  };
+};
+
+const defaultCapabilitySurfaceState = {
+  configured: false,
+  enabled: false,
+  verified: false,
+  connected: false
+} as const;
+
+function getCapabilitySurfaceState(surface?: CapabilitySurface) {
+  return surface?.state ?? defaultCapabilitySurfaceState;
+}
+
+function getCapabilitySurfaceStatus(surface?: CapabilitySurface) {
+  const state = getCapabilitySurfaceState(surface);
+  return state.connected ? "connected" : state.verified ? "verified" : "requires_bridge";
+}
 
 type RegisteredAutomationReadback = {
   ok?: boolean;
@@ -689,8 +859,14 @@ function toAutomationRows(items: any[]): AutomationRow[] {
 
 async function readMvpState() {
   const response = await mvpFetch("/api/mvp/state", { cache: "no-store" });
-  if (!response.ok) throw new Error("mvp_state_unavailable");
+  if (!response.ok) throw new Error(`mvp_state_http_${response.status}`);
   return response.json();
+}
+
+async function fetchApiJson<T>(url: string): Promise<T> {
+  const response = await mvpFetch(url, { cache: "no-store" });
+  if (!response.ok) throw new Error(`api_readback_http_${response.status}`);
+  return response.json() as Promise<T>;
 }
 
 function buildFeedbackCapture(route: string) {
@@ -875,6 +1051,8 @@ function App() {
   const [createdTemplates, setCreatedTemplates] = useState<string[]>([]);
   const [mvpState, setMvpState] = useState<MvpState>({});
   const [feedbackReadback, setFeedbackReadback] = useState<MvpState["feedbacks"]>([]);
+  const [apiAccessRequired, setApiAccessRequired] = useState(false);
+  const [accessChecking, setAccessChecking] = useState(false);
   React.useEffect(() => {
     readMvpState()
       .then((state) => {
@@ -883,7 +1061,15 @@ function App() {
         const worker = state.worker?.status ? `worker=${state.worker.status}` : "worker=unknown";
         setReceipt(`MVP state readback 済みです。${worker} / runs=${state.runs?.length ?? 0}`);
       })
-      .catch(() => setReceipt("Local Agent は待機中です。MVP API未接続のためローカル表示です。"));
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : "";
+        if (/mvp_state_http_(?:401|423)/.test(message)) {
+          setApiAccessRequired(true);
+          setReceipt("operator token が必要です。");
+          return;
+        }
+        setReceipt("Local Agent は待機中です。MVP API未接続のためローカル表示です。");
+      });
   }, []);
   React.useEffect(() => {
     mvpFetch("/api/mvp/feedback", { cache: "no-store" })
@@ -909,6 +1095,43 @@ function App() {
     feedbackReadback,
     setFeedbackReadback
   }), [route, writeToken, automationRows, approvalRows, createdTemplates, mvpState, feedbackReadback]);
+
+  const unlockOperatorAccess = async () => {
+    if (!writeToken.trim()) {
+      setReceipt("operator token を入力してください。");
+      return;
+    }
+    setAccessChecking(true);
+    persistWriteToken(writeToken);
+    try {
+      const state = await readMvpState();
+      setMvpState(state);
+      setAutomationRows(toAutomationRows(state.automations ?? []));
+      setApiAccessRequired(false);
+      setReceipt("operator token を確認しました。このタブでAutomation OSを利用できます。");
+    } catch {
+      clearWriteToken();
+      setReceipt("operator token を確認できませんでした。値を確認してください。");
+    } finally {
+      setAccessChecking(false);
+    }
+  };
+
+  if (apiAccessRequired) {
+    return (
+      <main className="main">
+        <section>
+          <PageTitle title="Automation OS" desc="この画面は管理者専用です。" />
+          <Panel title="オペレーター確認">
+            <label>Operator token<input type="password" value={writeToken} onChange={(event) => setWriteToken(event.target.value)} autoComplete="current-password" /></label>
+            <div className="button-row"><Button variant="primary" onClick={unlockOperatorAccess} disabled={accessChecking}>{accessChecking ? "確認中" : "開く"}</Button></div>
+            <p className="muted">token はこのタブだけに保存し、タブを閉じると破棄されます。</p>
+            <div className="action-note" role="status">{receipt}</div>
+          </Panel>
+        </section>
+      </main>
+    );
+  }
 
   return (
     <div className="app">
@@ -1046,6 +1269,66 @@ function ProjectScopeNotice({ projectId }: { projectId: string }) {
   );
 }
 
+type ObsidianGeneratedFileCheck = NonNullable<NonNullable<MvpState["obsidian"]>["generatedFileCheck"]>;
+
+function displayGeneratedFileCheckPublic(generatedFileCheck?: ObsidianGeneratedFileCheck) {
+  if (!generatedFileCheck) return "生成ファイル確認: 未取得";
+  const missing = generatedFileCheck.missing?.length ?? 0;
+  const nonGenerated = generatedFileCheck.nonGenerated?.length ?? 0;
+  return generatedFileCheck.ok
+    ? `生成ファイル確認: OK / missing ${missing} / non-generated ${nonGenerated}`
+    : `生成ファイル確認: 要確認 / missing ${missing} / non-generated ${nonGenerated}`;
+}
+
+function ObsidianSyncCard({ obsidian, setReceipt }: { obsidian?: MvpState["obsidian"]; setReceipt: (value: string) => void; }) {
+  const health = obsidian?.health ?? (obsidian?.ok === false ? "degraded" : obsidian?.ok === true ? "healthy" : "unknown");
+  const generatedFileCheckFailed = obsidian?.generatedFileCheck ? !obsidian.generatedFileCheck.ok : false;
+  const ok = obsidian?.ok === true && !generatedFileCheckFailed;
+  const failed = obsidian?.ok === false || generatedFileCheckFailed;
+  const publicGeneratedFileCheckText = displayGeneratedFileCheckPublic(obsidian?.generatedFileCheck);
+  const diagnostics = failed || health !== "healthy";
+  const summary = obsidian?.summary ?? "Obsidian status readbackを待っています。";
+  const nextStep = obsidian?.nextStep ?? "API readbackが入ると次の一手がここに出ます。";
+  const healthLabel = {
+    healthy: "安定",
+    recovering: "回復中",
+    degraded: "要確認",
+    disabled: "停止中",
+    unknown: "未確認"
+  }[health] ?? "未確認";
+  return (
+    <Panel title="Obsidian同期">
+      <div className="obsidian-sync-card">
+        <div className="obsidian-sync-title">
+          <strong>作業ノート</strong>
+          <StatusBadge status={ok ? "enabled" : failed ? "blocked" : "draft"} label={healthLabel} />
+        </div>
+        <p>{summary}</p>
+        <p className="muted">{nextStep}</p>
+        <div className="obsidian-sync-actions">
+          <Button variant="primary" onClick={() => setReceipt(`Obsidian: ${healthLabel} / ${summary} / ${nextStep}`)}>状態を読む</Button>
+          <Button onClick={() => setReceipt(publicGeneratedFileCheckText)} icon={<RefreshCw size={14} />}>生成ファイル確認</Button>
+        </div>
+        {diagnostics && (
+          <details className="internal-details obsidian-sync-details">
+            <summary>開発者向け診断</summary>
+            <div className="obsidian-sync-diagnostics">
+              <div>health: {health}</div>
+              <div>lastSuccessAt: {obsidian?.lastSuccessAt ?? "none"}</div>
+              <div>lastFailureAt: {obsidian?.lastFailureAt ?? "none"}</div>
+              <div>nextRecoveryAt: {obsidian?.nextRecoveryAt ?? "none"}</div>
+              <div>failureCount: {obsidian?.failureCount ?? 0}</div>
+              <div>reason: {obsidian?.reason ?? "none"}</div>
+              <div>{publicGeneratedFileCheckText}</div>
+              <p>外部操作の完了判断には使いません。</p>
+            </div>
+          </details>
+        )}
+      </div>
+    </Panel>
+  );
+}
+
 function feedbackItemsFromState(state: MvpState) {
   const directFeedbacks = (state.feedbacks ?? []).map((item) => ({
     id: item.feedback_id ?? item.id,
@@ -1178,7 +1461,7 @@ function renderPage(route: string, model: AppModel) {
   if (route === "#/approvals") return <ApprovalsPage model={model} />;
   if (route === "#/runs") return <RunsPage model={model} />;
   if (route === "#/templates") return <TemplatesPage model={model} />;
-  if (route === "#/plugins") return <PluginsPage setReceipt={setReceipt} />;
+  if (route === "#/plugins") return <PluginsPage setReceipt={setReceipt} mvpState={model.mvpState} />;
   if (route === "#/production/status") return <ProductionStatusPage setReceipt={setReceipt} />;
   if (route === "#/system/pc-status") return <PcStatusPage model={model} />;
   if (route.includes("/performance")) return <PerformancePage model={model} />;
@@ -1401,6 +1684,7 @@ function HomePage({ model }: { model: AppModel }) {
         <Panel title="ライブ実行" className="span-2">
           <DataTable headers={["Lane", "Port", "プロジェクト", "タスク", "状態", "操作"]} rows={liveRows} />
         </Panel>
+        <ObsidianSyncCard obsidian={mvpState.obsidian} setReceipt={setReceipt} />
         <Panel title="承認待ち">
           <div className="approval-widget">
             <strong>承認待ち {waitingApprovals.length}件</strong>
@@ -2113,7 +2397,7 @@ function BuilderPage({ model }: { model: AppModel }) {
                   run_id: null
                 })
               });
-              if (!approvalResponse.ok) await readError(approvalResponse, "approval_create_failed");
+              if (!approvalResponse.ok) throw new Error("approval_create_failed");
               const approvalResult = await approvalResponse.json();
               setMvpState(approvalResult.state ?? mvpState);
               noteBuilder(`公開確認を承認キューへ送信しました。/ ${actionStamp()}`);
@@ -2256,6 +2540,10 @@ function RunsPage({ model }: { model: AppModel }) {
   const [statusFilter, setStatusFilter] = useState("active");
   const [projectFilter, setProjectFilter] = useState("all");
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [selectedRunDetail, setSelectedRunDetail] = useState<RunDetail | null>(null);
+  const [selectedProofId, setSelectedProofId] = useState<string | null>(null);
+  const [proofView, setProofView] = useState<ProofView | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
   const [workerPreview, setWorkerPreview] = useState<any>(null);
   const [actionNote, setActionNote] = useState("実行履歴を開きました。再読込、worker、filter操作の結果はここにも表示します。");
   const projectForRun = (run: any) => mvpState.automations?.find((automation) => automation.id === run.automation_id)?.project_id ?? "project-a";
@@ -2271,12 +2559,17 @@ function RunsPage({ model }: { model: AppModel }) {
   const blockedRuns = runs.filter((run) => run.status === "blocked");
   const completedRuns = runs.filter((run) => run.status === "completed");
   const workerSummary = workerStatusSummary(worker);
-  const selectedRun = runs.find((run) => run.id === selectedRunId && filteredRuns.some((filtered) => filtered.id === run.id)) ?? filteredRuns[0] ?? null;
-  const selectedProofs = selectedRun ? proofs.filter((proof) => selectedRun.proof_ids?.includes(proof.id)) : [];
+  const dashboardSelectedRun = runs.find((run) => run.id === selectedRunId && filteredRuns.some((filtered) => filtered.id === run.id)) ?? filteredRuns[0] ?? null;
+  const detailForCurrentRun = selectedRunDetail?.run?.id === dashboardSelectedRun?.id ? selectedRunDetail : null;
+  const selectedRun = newerRunSnapshot(detailForCurrentRun?.run, dashboardSelectedRun);
+  const selectedProofs = detailForCurrentRun?.proofs ?? (selectedRun ? proofs.filter((proof) => selectedRun.proof_ids?.includes(proof.id)) : []);
+  const selectedSteps = detailForCurrentRun?.steps ?? [];
+  const selectedWorkerEvents = detailForCurrentRun?.workerEvents ?? [];
   const refresh = async () => {
     try {
       const state = await readMvpState();
       setMvpState(state);
+      setSelectedRunId((current) => resolveSelectedRunId(current, state.runs ?? [], state.actionableRuns ?? []));
       setAutomationRows(toAutomationRows(state.automations ?? []));
       setReceipt(`Runs readback 済みです。runs=${state.runs?.length ?? 0} / proofs=${state.proofs?.length ?? 0}`);
       await refreshWorkerPreview(projectFilter);
@@ -2289,6 +2582,55 @@ function RunsPage({ model }: { model: AppModel }) {
   React.useEffect(() => {
     refresh();
   }, []);
+  React.useEffect(() => {
+    const currentRunId = dashboardSelectedRun?.id;
+    if (!currentRunId) {
+      setSelectedRunDetail(null);
+      setSelectedProofId(null);
+      setProofView(null);
+      return;
+    }
+    let cancelled = false;
+    setSelectedRunDetail(null);
+    setSelectedProofId(null);
+    setProofView(null);
+    setDetailLoading(true);
+    fetchApiJson<RunDetail>(`/api/runs/${encodeURIComponent(currentRunId)}`)
+      .then((detail) => {
+        if (cancelled) return;
+        setSelectedRunDetail(detail);
+        setSelectedProofId((current) => detail.proofs.some((proof) => proof.id === current) ? current : null);
+      })
+      .catch(() => {
+        if (!cancelled) setSelectedRunDetail(null);
+      })
+      .finally(() => {
+        if (!cancelled) setDetailLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [dashboardSelectedRun?.id]);
+  React.useEffect(() => {
+    if (!selectedProofId) {
+      setProofView(null);
+      return;
+    }
+    const viewerUrl = `/api/proofs/${encodeURIComponent(selectedProofId)}/view`;
+    let cancelled = false;
+    fetchApiJson<ProofView>(viewerUrl)
+      .then((view) => { if (!cancelled) setProofView(view); })
+      .catch(() => { if (!cancelled) setProofView({ id: selectedProofId, status: "blocked", blocked_reason: "viewer_unavailable" }); });
+    return () => { cancelled = true; };
+  }, [selectedProofId]);
+  React.useEffect(() => {
+    const timer = window.setInterval(() => {
+      readMvpState().then((state) => {
+        setMvpState(state);
+        setAutomationRows(toAutomationRows(state.automations ?? []));
+        setSelectedRunId((current) => resolveSelectedRunId(current, state.runs ?? [], state.actionableRuns ?? []));
+      }).catch(() => undefined);
+    }, 30000);
+    return () => window.clearInterval(timer);
+  }, [setAutomationRows, setMvpState]);
   const refreshWorkerPreview = async (projectId = projectFilter) => {
     try {
       const body = projectId === "all" ? { limit: 10 } : { project_id: projectId, limit: 10 };
@@ -2300,9 +2642,9 @@ function RunsPage({ model }: { model: AppModel }) {
       if (!response.ok) throw new Error("worker_preview_failed");
       const result = await response.json();
       setWorkerPreview(result);
-      const blocker = result.exact_blocker ? ` / blocker=${result.exact_blocker}` : "";
-      setReceipt(`worker preview: queued=${result.picked_count ?? 0} / highRisk=${result.high_risk_count ?? 0}${blocker} / external_action=false`);
-      setActionNote(`worker preview更新: project=${projectId} / queued=${result.picked_count ?? 0} / highRisk=${result.high_risk_count ?? 0}${blocker} / ${actionStamp()}`);
+      const blocker = result.exact_blocker ? ` / ${publicBlockerSummary(result.exact_blocker)}` : "";
+      setReceipt(`実行前確認: 候補=${result.picked_count ?? 0}件 / 事前確認=${result.high_risk_count ?? 0}件${blocker} / 外部操作なし`);
+      setActionNote(`実行前確認を更新: project=${projectId} / 候補=${result.picked_count ?? 0}件 / 事前確認=${result.high_risk_count ?? 0}件${blocker} / ${actionStamp()}`);
     } catch {
       setWorkerPreview(null);
       setReceipt("worker preview に失敗しました。実行はしていません。");
@@ -2311,8 +2653,8 @@ function RunsPage({ model }: { model: AppModel }) {
   };
   const runWorkerOnce = async () => {
     if (workerSummary.blocker) {
-      setReceipt(`${workerSummary.blocker}: worker heartbeat/readback が必要です。外部操作はしていません。`);
-      setActionNote(`worker実行停止: ${workerSummary.blocker} / ${workerSummary.nextAction} / ${actionStamp()}`);
+      setReceipt(`${publicBlockerSummary(workerSummary.blocker)} 外部操作はしていません。`);
+      setActionNote(`実行停止: ${publicBlockerSummary(workerSummary.blocker)} / ${redactDisplayPaths(workerSummary.nextAction)} / ${actionStamp()}`);
       return;
     }
     try {
@@ -2327,8 +2669,8 @@ function RunsPage({ model }: { model: AppModel }) {
       setMvpState(result.state);
       setAutomationRows(toAutomationRows(result.state.automations ?? []));
       if (result.exact_blocker) {
-        setReceipt(`${result.exact_blocker}: worker heartbeat/readback が必要です。外部操作はしていません。`);
-        setActionNote(`worker実行停止: ${result.exact_blocker} / ${result.next_action ?? "Mac worker laneを起動してください"} / ${actionStamp()}`);
+        setReceipt(`${publicBlockerSummary(result.exact_blocker)} 外部操作はしていません。`);
+        setActionNote(`実行停止: ${publicBlockerSummary(result.exact_blocker)} / ${redactDisplayPaths(result.next_action ?? "Mac側の接続を確認してください")} / ${actionStamp()}`);
         return;
       }
       setReceipt(result.picked ? `worker が ${result.processed_runs?.length ?? 1}件を処理しました。latest=${result.run.id} / status=${result.run.status}` : "worker は待機中です。queued runはありません。");
@@ -2340,36 +2682,34 @@ function RunsPage({ model }: { model: AppModel }) {
   };
   return (
     <section>
-      <PageTitle title="実行履歴" desc="MVP stateからrun、worker、proofを読み取ります。">
+      <PageTitle title="実行履歴" desc="自動化の進み具合と保存された確認記録を表示します。">
         <Button icon={<RefreshCw size={15} />} onClick={refresh}>再読込</Button>
         <Button variant="primary" icon={<Play size={15} />} onClick={runWorkerOnce} disabled={Boolean(workerSummary.blocker)}>workerを実行</Button>
       </PageTitle>
       <div className="action-note" role="status">{actionNote}</div>
       <div className="cards four">
-        <MetricCard title="Runs" value={String(runs.length)} sub="durable state" status={runs.length ? "enabled" : "waiting"} />
-        <MetricCard title="Proofs" value={String(proofs.length)} sub="artifact readback" status={proofs.length ? "enabled" : "waiting"} />
-        <MetricCard title="Worker" value={worker?.status ?? "unknown"} sub={workerSummary.display} status={workerSummary.fresh ? "enabled" : "blocked"} />
-        <MetricCard title="Queue" value={String(worker?.queue_depth ?? 0)} sub="queued runs" status={(worker?.queue_depth ?? 0) > 0 ? "running" : "enabled"} />
+        <MetricCard title="実行件数" value={String(runs.length)} sub="保存済みの履歴" status={runs.length ? "enabled" : "waiting"} />
+        <MetricCard title="確認記録" value={String(proofs.length)} sub="安全に開ける記録" status={proofs.length ? "enabled" : "waiting"} />
+        <MetricCard title="Mac接続" value={workerSummary.fresh ? "接続中" : "要確認"} sub={workerSummary.fresh ? "最新状態を確認済み" : publicBlockerSummary(workerSummary.blocker)} status={workerSummary.fresh ? "enabled" : "blocked"} />
+        <MetricCard title="待機中" value={String(worker?.queue_depth ?? 0)} sub="処理を待っている件数" status={(worker?.queue_depth ?? 0) > 0 ? "running" : "enabled"} />
       </div>
-      <Panel title="Worker Impact Preflight">
+      <Panel title="実行前の安全確認">
         <div className="filter-row">
           {[
             ["all", "全Project"],
             ...projectSlugs.map((slug) => [slug, projectLabels[slug]])
           ].map(([key, label]) => <button key={key} className={projectFilter === key ? "selected" : ""} onClick={() => { setProjectFilter(key); setActionNote(`Project filter: ${label} を選択しました。previewを更新しています / ${actionStamp()}`); refreshWorkerPreview(key); }}>{label}</button>)}
         </div>
-        <DataTable headers={["項目", "値", "意味"]} rows={[
-          ["対象queued", String(workerPreview?.picked_count ?? activeRunsForProject.length), "この条件でworkerが処理候補にする件数"],
-          ["Project内訳", JSON.stringify(workerPreview?.by_project ?? {}), "API preview readback"],
-          ["高リスク", String(workerPreview?.high_risk_count ?? 0), "外部操作前にblockedへ止める対象"],
-          ["Preview blocker", workerPreview?.exact_blocker ?? workerSummary.blocker ?? "none", workerPreview?.next_action ?? workerSummary.nextAction],
-          ["Heartbeat", workerSummary.label, workerSummary.blocker ? `blocker=${workerSummary.blocker}` : "fresh readback"],
-          ["次の一手", workerSummary.nextAction, "worker completion expectation"],
-          ["安全境界", "external_action_executed=false", "投稿・送信・削除・認証突破・課金操作なし"]
+        <DataTable headers={["項目", "状態", "意味"]} rows={[
+          ["処理候補", String(workerPreview?.picked_count ?? activeRunsForProject.length), "この条件で処理する候補件数"],
+          ["事前確認が必要", String(workerPreview?.high_risk_count ?? 0), "外部操作の前に必ず停止する件数"],
+          ["Mac接続", workerSummary.fresh ? "確認済み" : "要確認", publicBlockerSummary(workerPreview?.exact_blocker ?? workerSummary.blocker)],
+          ["次の一手", redactDisplayPaths(workerPreview?.next_action ?? workerSummary.nextAction), "安全に再開するための案内"],
+          ["安全境界", "外部操作なし", "投稿・送信・削除・認証・課金は承認なしに実行しません"]
         ]} />
       </Panel>
       <div className="split">
-        <Panel title="Run readback" className="list-panel">
+        <Panel title="履歴" className="list-panel">
           <div className="filter-row">
             {[
               ["active", `処理中 ${activeRuns.length}`],
@@ -2383,30 +2723,38 @@ function RunsPage({ model }: { model: AppModel }) {
               return true;
             }).filter((run) => projectFilter === "all" || projectForRun(run) === projectFilter).length} / ${actionStamp()}`); }}>{label}</button>)}
           </div>
-          <DataTable headers={["Run", "Automation", "Status", "Trigger", "Queued", "Blocker", "Proofs"]} rows={filteredRuns.slice(0, 20).map((run) => [
-            <button className="link-button" onClick={() => { setSelectedRunId(run.id); setActionNote(`Run選択: ${run.id} / status=${run.status} / ${actionStamp()}`); }}>{run.id}</button>,
+          <DataTable headers={["記録", "自動化", "状態", "開始待ち", "確認事項", "記録数"]} rows={filteredRuns.slice(0, 20).map((run) => [
+            <button className="link-button" onClick={() => { setSelectedRunId(run.id); setActionNote(`履歴を選択しました / ${publicRunStatus(run.status)} / ${actionStamp()}`); }}>{run.id}</button>,
             run.automation_name ?? run.automation_id,
-            <StatusBadge status={run.status === "completed" ? "approved" : run.status === "blocked" ? "blocked" : run.status === "running" ? "running" : "waiting"} label={run.status} />,
-            run.trigger ?? "-",
+            <StatusBadge status={run.status === "completed" ? "approved" : run.status === "blocked" ? "blocked" : run.status === "running" ? "running" : "waiting"} label={publicRunStatus(run.status)} />,
             run.queued_at ?? "-",
-            run.exact_blocker ?? "-",
+            publicBlockerSummary(run.exact_blocker),
             String(run.proof_ids?.length ?? 0)
           ])} />
         </Panel>
         <aside className="side-panel wide">
-          <h3>Latest proof</h3>
-          {selectedRun ? <p className="muted">{selectedRun.id} / {selectedRun.status}</p> : <p className="muted">runはまだありません。</p>}
+          <h3>確認記録</h3>
+          {selectedRun ? <p className="muted">{selectedRun.id} / {publicRunStatus(selectedRun.status)}{detailLoading ? " / 読込中" : ""}</p> : <p className="muted">履歴はまだありません。</p>}
+          {selectedRun && <p className="muted">手順 {selectedSteps.length}件 / 更新 {selectedWorkerEvents.length}件</p>}
           {selectedProofs.length ? selectedProofs.map((proof) => (
             <div className="preview-box" key={proof.id}>
-              <strong>{proof.kind}</strong>
-              <p>{proof.summary}</p>
-              <small>{proof.artifact_uri}</small>
-              <small>sha256 {String(proof.sha256).slice(0, 16)}...</small>
+              <strong>{redactDisplayPaths(proof.label ?? proof.proof_type ?? proof.kind ?? "確認記録")}</strong>
+              {proof.summary && <p>{redactDisplayPaths(proof.summary)}</p>}
+              <Button onClick={() => setSelectedProofId(proof.id)}>安全に開く</Button>
             </div>
-          )) : <div className="preview-box">最新runにproofはまだありません。</div>}
-          <h3>Worker readback</h3>
-          <p>{worker?.id ?? "unknown"} / {worker?.status ?? "unknown"} / queue {worker?.queue_depth ?? 0}</p>
-          <p className="muted">{workerSummary.display}</p>
+          )) : <div className="preview-box">この履歴に確認記録はまだありません。</div>}
+          {proofView && (
+            <div className="preview-box" role="region" aria-label="確認記録プレビュー">
+              <strong>{proofView.label ?? "確認記録"}</strong>
+              {proofView.status === "ok" && proofView.preview && <pre>{redactDisplayPaths(proofView.preview)}</pre>}
+              {proofView.status === "ok" && proofView.preview_kind === "image" && <p>画像記録を確認できます（{proofView.image?.width ?? "?"} × {proofView.image?.height ?? "?"}）。</p>}
+              {proofView.status !== "ok" && <p>{publicBlockerSummary(proofView.blocked_reason)}</p>}
+              {proofView.truncated && <small>安全のため先頭部分のみ表示しています。</small>}
+            </div>
+          )}
+          <h3>Mac接続</h3>
+          <p>{workerSummary.fresh ? "最新状態を確認済み" : publicBlockerSummary(workerSummary.blocker)}</p>
+          <p className="muted">待機中 {worker?.queue_depth ?? 0}件</p>
         </aside>
       </div>
     </section>
@@ -2591,24 +2939,24 @@ function SecurityPage({ model }: { model: AppModel }) {
       <ProjectScopeNotice projectId={activeProject} />
       <div className="action-note" role="status">{securityNote}</div>
       <p className="muted">この表はプロジェクト別の接続参照表示です。実認証readbackは未接続です。</p>
-      <Panel title="書き込みトークン">
+        <Panel title="オペレータートークン">
         <div className="form-grid">
-          <label>Automation OS write token<input type="password" value={writeToken} onChange={(event) => setWriteToken(event.target.value)} placeholder="x-automation-os-token" /></label>
+          <label>Automation OS operator token<input type="password" value={writeToken} onChange={(event) => setWriteToken(event.target.value)} placeholder="x-automation-os-token" /></label>
         </div>
         <div className="row-actions">
           <Button variant="primary" onClick={() => {
             persistWriteToken(writeToken);
-            setReceipt("write token を保存しました。以後の write 系リクエストに付与します。");
-            setSecurityNote(`write token を保存しました。保存先=session/local storage / ${actionStamp()}`);
+            setReceipt("operator token を保存しました。以後のAutomation OS APIリクエストに付与します。");
+            setSecurityNote(`operator token を保存しました。このタブを閉じると破棄されます / ${actionStamp()}`);
           }}>保存</Button>
           <Button onClick={() => {
             clearWriteToken();
-            setWriteTokenState("");
-            setReceipt("write token を削除しました。");
-            setSecurityNote(`write token を削除しました / ${actionStamp()}`);
+            setWriteToken("");
+            setReceipt("operator token を削除しました。");
+            setSecurityNote(`operator token を削除しました / ${actionStamp()}`);
           }}>削除</Button>
         </div>
-        <p className="muted">保存した token は write 系 API の `x-automation-os-token` にだけ使います。</p>
+        <p className="muted">token はこのタブのsession storageだけに保存し、Automation OS APIの `x-automation-os-token` にだけ使います。</p>
       </Panel>
       <div className="section-grid">
         <Panel title="接続サービス" className="span-2"><DataTable headers={["サービス", "接続アカウント", "ステータス", "操作"]} rows={services.map((s, i) => {
@@ -2718,6 +3066,24 @@ function ProductionStatusPage({ setReceipt }: { setReceipt: (value: string) => v
             ["Redaction", liveState?.redaction_readback?.ok ? "pass" : "未確認"],
             ["Production readiness", liveReadiness ? `${liveReadiness.configured ? "設定済み" : "未設定"} / ${liveReadiness.blocker ?? "ok"}` : "未確認"],
             ["External action", liveState?.worker?.external_action_executed === true ? "実行検出 / 要確認" : liveState?.worker?.external_action_executed === false ? "未検出 / readback=false" : "未確認"]
+          ]}
+        />
+      </Panel>
+      <div className="cards four">
+        <MetricCard title="Codex server" value={liveState?.codexCapabilities?.mcp?.state?.connected ? "connected" : "readback"} sub="reachability only" status={liveState?.codexCapabilities?.mcp?.state?.connected ? "approved" : "waiting"} />
+        <MetricCard title="Codex surfaces" value={String((liveState?.codexCapabilities?.summary.plugins ?? 0) + (liveState?.codexCapabilities?.summary.automations ?? 0))} sub="plugins + automations" status="waiting" />
+        <MetricCard title="Browser bridge" value={liveState?.browserHealth?.codexBrowserBridge?.directCallableFromLocalApp ? "direct" : "bridge required"} sub={liveState?.browserHealth?.codexBrowserBridge?.status ?? "unknown"} status={liveState?.browserHealth?.codexBrowserBridge?.directCallableFromLocalApp ? "approved" : "blocked"} />
+        <MetricCard title="Chrome lane" value={liveState?.browserHealth?.chromeExtension?.status ?? "unknown"} sub={liveState?.browserHealth?.chromeExtension?.exactBlocker ?? "readback"} status={liveState?.browserHealth?.chromeExtension?.status === "ready" ? "approved" : "blocked"} />
+        <MetricCard title="MCP probe" value={liveState?.codexCapabilities?.mcp?.state?.connected ? "connected" : liveState?.codexCapabilities?.mcp ? "readback" : "unknown"} sub={liveState?.codexCapabilities?.mcp?.state?.verified ? "verified" : "inventory-only"} status={liveState?.codexCapabilities?.mcp?.state?.connected ? "approved" : "waiting"} />
+      </div>
+      <Panel title="Codex Surface Matrix">
+        <DataTable
+          headers={["Surface", "Status", "Configured", "Enabled", "Verified", "Connected", "Path"]}
+          rows={[
+            ...(liveState?.codexCapabilities?.browser ? [[liveState.codexCapabilities.browser.name, getCapabilitySurfaceStatus(liveState.codexCapabilities.browser), getCapabilitySurfaceState(liveState.codexCapabilities.browser).configured ? "yes" : "no", getCapabilitySurfaceState(liveState.codexCapabilities.browser).enabled ? "yes" : "no", getCapabilitySurfaceState(liveState.codexCapabilities.browser).verified ? "yes" : "no", getCapabilitySurfaceState(liveState.codexCapabilities.browser).connected ? "yes" : "no", liveState.codexCapabilities.browser.path]] : []),
+            ...(liveState?.codexCapabilities?.chrome ? [[liveState.codexCapabilities.chrome.name, getCapabilitySurfaceStatus(liveState.codexCapabilities.chrome), getCapabilitySurfaceState(liveState.codexCapabilities.chrome).configured ? "yes" : "no", getCapabilitySurfaceState(liveState.codexCapabilities.chrome).enabled ? "yes" : "no", getCapabilitySurfaceState(liveState.codexCapabilities.chrome).verified ? "yes" : "no", getCapabilitySurfaceState(liveState.codexCapabilities.chrome).connected ? "yes" : "no", liveState.codexCapabilities.chrome.path]] : []),
+            ...(liveState?.codexCapabilities?.mcp ? [[liveState.codexCapabilities.mcp.name, getCapabilitySurfaceStatus(liveState.codexCapabilities.mcp), getCapabilitySurfaceState(liveState.codexCapabilities.mcp).configured ? "yes" : "no", getCapabilitySurfaceState(liveState.codexCapabilities.mcp).enabled ? "yes" : "no", getCapabilitySurfaceState(liveState.codexCapabilities.mcp).verified ? "yes" : "no", getCapabilitySurfaceState(liveState.codexCapabilities.mcp).connected ? "yes" : "no", liveState.codexCapabilities.mcp.path]] : []),
+            ...(liveState?.codexCapabilities?.appServer ? [[liveState.codexCapabilities.appServer.name, getCapabilitySurfaceStatus(liveState.codexCapabilities.appServer), getCapabilitySurfaceState(liveState.codexCapabilities.appServer).configured ? "yes" : "no", getCapabilitySurfaceState(liveState.codexCapabilities.appServer).enabled ? "yes" : "no", getCapabilitySurfaceState(liveState.codexCapabilities.appServer).verified ? "yes" : "no", getCapabilitySurfaceState(liveState.codexCapabilities.appServer).connected ? "yes" : "no", liveState.codexCapabilities.appServer.path]] : [])
           ]}
         />
       </Panel>
@@ -2980,8 +3346,28 @@ function ArtifactsPage({ setReceipt, mvpState, setMvpState }: { setReceipt: (val
   );
 }
 
-function PluginsPage({ setReceipt }: { setReceipt: (value: string) => void }) {
+function PluginsPage({ setReceipt, mvpState }: { setReceipt: (value: string) => void; mvpState: MvpState }) {
   const [pluginNote, setPluginNote] = useState("プラグイン / MCP を開きました。接続候補を表示します。live MCP callや外部認証は実行しません。");
+  const codexCapabilities = mvpState.codexCapabilities;
+  const capabilityRouter = mvpState.capabilityRouter;
+  const surfaces = [
+    codexCapabilities?.browser,
+    codexCapabilities?.chrome,
+    codexCapabilities?.mcp,
+    codexCapabilities?.appServer
+  ].filter((surface): surface is CapabilitySurface => Boolean(surface));
+  const surfaceRows = surfaces.map((surface) => [
+    surface.name,
+    surface.kind,
+    <StatusBadge
+      status={getCapabilitySurfaceState(surface).connected ? "approved" : getCapabilitySurfaceState(surface).verified ? "waiting" : "blocked"}
+      label={getCapabilitySurfaceStatus(surface)}
+    />,
+    getCapabilitySurfaceState(surface).configured ? "configured" : "missing",
+    getCapabilitySurfaceState(surface).enabled ? "enabled" : "disabled",
+    getCapabilitySurfaceState(surface).connected ? "connected" : "offline",
+    surface.path
+  ]);
   const pluginRows = plugins.map((p) => [
     ...p.slice(0, 6),
     <RowActions
@@ -3001,15 +3387,54 @@ function PluginsPage({ setReceipt }: { setReceipt: (value: string) => void }) {
       <div className="action-note" role="status">{pluginNote}</div>
       <div className="notice-row">接続候補の一覧です。ここから外部認証、MCP live call、投稿、送信、secret保存は実行しません。</div>
       <div className="cards four">
-        <MetricCard title="利用可能候補" value="6" sub="readiness catalog" status="waiting" />
-        <MetricCard title="接続済みMCP" value="0" sub="本画面では未接続" status="waiting" />
-        <MetricCard title="Codex Bridge対応" value="候補あり" sub="Runway / Browser Use readiness" status="waiting" />
-        <MetricCard title="要認証" value="1" sub="Slack" status="waiting" />
+        <MetricCard title="Codex server" value={codexCapabilities?.mcp?.state?.connected ? "connected" : "readback"} sub={codexCapabilities?.mcp?.state?.verified ? "verified" : "reachability only"} status={codexCapabilities?.mcp?.state?.connected ? "approved" : "waiting"} />
+        <MetricCard title="利用可能候補" value={String(codexCapabilities?.summary.plugins ?? 0)} sub="plugin cache" status="waiting" />
+        <MetricCard title="Chrome lane" value={codexCapabilities?.chrome?.state?.connected ? "connected" : "requires_bridge"} sub={codexCapabilities?.chrome?.state?.verified ? "local readback" : "bridge required"} status={codexCapabilities?.chrome?.state?.connected ? "approved" : "blocked"} />
+        <MetricCard title="App server" value={codexCapabilities?.appServer?.state?.connected ? "connected" : "readback"} sub={codexCapabilities?.notes?.[0] ?? "state readback"} status={codexCapabilities?.appServer?.state?.connected ? "approved" : "waiting"} />
       </div>
       <div className="split">
-        <Panel title="Readiness Catalog" className="list-panel"><DataTable headers={["プラグイン", "種類", "接続方式", "認証状態", "Tools", "ステータス", "操作"]} rows={pluginRows} /></Panel>
-        <aside className="side-panel wide"><h3>Runway MCP</h3><p>優先接続方式: Codex Bridge</p><p>代替方式: Direct MCP / Local Wrapper</p><p>画像生成、動画生成、edit video、upscale video は承認必須です。</p><div className="preview-box">接続候補の確認画面です。実Runway、実Codex Bridge、実MCP認証はここでは実行しません。</div><Button variant="primary" onClick={() => { setPluginNote(`Runway MCP 接続テスト候補を表示しました。実認証/API readbackは未実行です / ${actionStamp()}`); setReceipt("Runway MCP の接続テスト候補を表示しました。実認証/API readbackは未実行です。"); }}>接続テスト</Button></aside>
+        <Panel title="Codex Server Readback" className="list-panel"><DataTable headers={["Surface", "Kind", "Status", "Configured", "Enabled", "Connected", "Path"]} rows={surfaceRows} /></Panel>
+        <aside className="side-panel wide">
+          <h3>Codex Bridge</h3>
+          <p>必要性: {mvpState.browserHealth?.codexBrowserBridge?.required ? "required" : "unknown"}</p>
+          <p>直呼び可否: {mvpState.browserHealth?.codexBrowserBridge?.directCallableFromLocalApp ? "direct" : "bridge required"}</p>
+          <p className="muted">{mvpState.browserHealth?.codexBrowserBridge?.summary ?? "bridge readback 未確認"}</p>
+          <div className="preview-box">Codex server は到達可否の readback に使います。Chrome Extension と Browser 系の signed-in 操作は bridge 依存で、local app からの直実行はしません。</div>
+          <Button variant="primary" onClick={() => { setPluginNote(`Codex Bridge の readback を表示しました。実認証/API call は未実行です / ${actionStamp()}`); setReceipt("Codex Bridge の readback を表示しました。実認証/API call は未実行です。"); }}>Bridge readback</Button>
+          {capabilityRouter?.primaryAction ? <p className="muted">Router優先アクション: {capabilityRouter.primaryAction}</p> : null}
+        </aside>
       </div>
+      <Panel title="Chrome Extension Probe">
+        <DataTable
+          headers={["Status", "Blocker", "Summary", "Next action", "Chrome binary", "CDP lane"]}
+          rows={[
+            [
+              <StatusBadge
+                status={mvpState.browserHealth?.chromeExtension?.status === "ready" ? "approved" : "blocked"}
+                label={mvpState.browserHealth?.chromeExtension?.status ?? "unknown"}
+              />,
+              mvpState.browserHealth?.chromeExtension?.exactBlocker ?? "-",
+              mvpState.browserHealth?.chromeExtension?.summary ?? "未確認",
+              mvpState.browserHealth?.chromeExtension?.nextAction ?? "未確認",
+              mvpState.browserHealth?.chromeExtension?.chromeBinary ?? "-",
+              mvpState.browserHealth?.chromeExtension?.cdpLaneConfigured ? "configured" : "missing"
+            ]
+          ]}
+        />
+      </Panel>
+      <Panel title="Router Readback">
+        <DataTable
+          headers={["Route", "Lane", "Authority", "Proof", "Status", "Next action"]}
+          rows={(capabilityRouter?.recommendedRoutes ?? []).slice(0, 6).map((route) => [
+            route.label,
+            route.lane,
+            route.authority ?? "-",
+            route.proof ?? "-",
+            <StatusBadge status={route.status === "ready" ? "approved" : route.status === "partial" ? "waiting" : "blocked"} label={route.status} />,
+            route.nextAction
+          ])}
+        />
+      </Panel>
     </section>
   );
 }

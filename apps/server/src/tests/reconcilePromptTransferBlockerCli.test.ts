@@ -118,7 +118,9 @@ test("Prompt Transfer blocker reconciliation records google service account bloc
   const sourceRun = db.querySql<{ status: string }>("SELECT status FROM runs WHERE id='run_mqtbe1ep_vgi2ex'")[0];
   assert.equal(sourceRun.status, "blocked");
   const newRun = db.querySql<{ status: string; metadata_json: string }>(`SELECT status, metadata_json FROM runs WHERE id='${body.committedRun.runId}'`)[0];
+  const step = db.querySql<{ status: string; metadata_json: string }>(`SELECT status, metadata_json FROM run_steps WHERE run_id='${body.committedRun.runId}' LIMIT 1`)[0];
   assert.equal(newRun.status, "blocked");
+  assert.equal(step.status, "blocked");
   const metadata = JSON.parse(newRun.metadata_json) as {
     reconciliation_of_run_id: string;
     exact_blocker: string;
@@ -128,6 +130,16 @@ test("Prompt Transfer blocker reconciliation records google service account bloc
     strict_registered_success_claimed: boolean;
     proof_gate: { ok: boolean; missing: string[] };
     planned_range: string;
+    route_decision?: { fingerprint?: string; phase?: string };
+    route_decision_fingerprint?: string | null;
+    route_readback?: null;
+    execution_routing?: { fingerprint?: string };
+  };
+  const stepMetadata = JSON.parse(step.metadata_json) as {
+    route_decision?: { fingerprint?: string; phase?: string };
+    route_decision_fingerprint?: string | null;
+    route_readback?: null;
+    execution_routing?: { fingerprint?: string };
   };
   assert.equal(metadata.reconciliation_of_run_id, "run_mqtbe1ep_vgi2ex");
   assert.equal(metadata.exact_blocker, "google_service_account_json_missing");
@@ -138,6 +150,14 @@ test("Prompt Transfer blocker reconciliation records google service account bloc
   assert.equal(metadata.proof_gate.ok, false);
   assert.deepEqual(metadata.proof_gate.missing, ["google_service_account_json_missing"]);
   assert.equal(metadata.planned_range, "B16:D16");
+  assert.equal(metadata.route_decision?.phase, "route_decision");
+  assert.equal(metadata.route_decision_fingerprint, metadata.route_decision?.fingerprint ?? null);
+  assert.equal(metadata.execution_routing?.fingerprint, metadata.route_decision?.fingerprint);
+  assert.equal(metadata.route_readback, null);
+  assert.equal(stepMetadata.route_decision?.phase, "route_decision");
+  assert.equal(stepMetadata.route_decision_fingerprint, metadata.route_decision?.fingerprint ?? null);
+  assert.equal(stepMetadata.execution_routing?.fingerprint, metadata.route_decision?.fingerprint);
+  assert.equal(stepMetadata.route_readback, null);
   const proof = db.querySql<{ proof_type: string; uri: string }>(`SELECT proof_type, uri FROM proofs WHERE id='${body.committedRun.proofId}'`)[0];
   assert.equal(proof.proof_type, "prompt_transfer_blocker_reconciliation_readback");
   assert.match(proof.uri, /prompt-transfer-blocker-reconciliation-receipt\.json$/);

@@ -1,6 +1,10 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
+import { spawnSync } from "node:child_process";
 import { basename, join, relative } from "node:path";
+import { getBrowserHealth } from "../browser/health.js";
+import type { CodexAppServerProbeResult } from "./appServerProbe.js";
+import type { CapabilityAxisState, McpProbeResult } from "./capabilityProbe.js";
 
 type CapabilityItem = {
   id: string;
@@ -8,6 +12,7 @@ type CapabilityItem = {
   path: string;
   status: "available" | "available_with_codex_runtime" | "requires_bridge" | "read_only_indexed" | "missing";
   kind: string;
+  state: CapabilityAxisState;
   role?: "primary" | "helper";
   hiddenFromSuggestions?: boolean;
 };
@@ -25,9 +30,10 @@ export type CodexCapabilitiesSummary = {
   capabilities: {
     browser: CapabilityItem;
     chrome: CapabilityItem;
+    automationOsApi: CapabilityItem;
+    appServer: CapabilityItem;
     mcp: CapabilityItem;
     cli: CapabilityItem;
-    appServer: CapabilityItem;
     skills: CapabilityItem[];
     plugins: CapabilityItem[];
     automations: CapabilityItem[];
@@ -35,7 +41,10 @@ export type CodexCapabilitiesSummary = {
   notes: string[];
 };
 
-export function getCodexCapabilities(): CodexCapabilitiesSummary {
+export function getCodexCapabilities(options: {
+  mcpProbe?: McpProbeResult | null;
+  appServerProbe?: CodexAppServerProbeResult | null;
+} = {}): CodexCapabilitiesSummary {
   const home = process.env.AUTOMATION_OS_CAPABILITIES_HOME ?? homedir();
   const codexRoot = process.env.AUTOMATION_OS_CODEX_ROOT ?? join(home, ".codex");
   const agentsRoot = process.env.AUTOMATION_OS_AGENTS_ROOT ?? join(home, ".agents");
@@ -53,7 +62,25 @@ export function getCodexCapabilities(): CodexCapabilitiesSummary {
   const skills = [...codexSkills, ...agentSkills];
   const plugins = pluginRoots.flatMap(scanPlugins);
   const automations = scanAutomations(roots.automations);
-  const mcpCount = plugins.filter((plugin) => /mcp|browser|chrome|gmail|calendar|drive|supabase|shopify/i.test(plugin.name)).length;
+  const browserHealth = getBrowserHealth();
+  const mcpProbe = options.mcpProbe ?? null;
+  const appServerProbe = options.appServerProbe ?? null;
+  const codexRuntimeAvailable = commandExists("codex");
+  const appServerEnabled = process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_ENABLED === "1";
+  const appServerConfigured = codexRuntimeAvailable;
+  const mcpState = mcpProbe?.state ?? {
+    configured: codexRuntimeAvailable,
+    enabled: codexRuntimeAvailable,
+    verified: false,
+    connected: false
+  };
+  const appServerState = {
+    configured: appServerConfigured,
+    enabled: appServerEnabled,
+    verified: appServerProbe?.ok ?? false,
+    connected: false
+  };
+  const mcpCount = mcpProbe?.entries.length ?? 0;
 
   return {
     generatedAt: new Date().toISOString(),
@@ -71,35 +98,52 @@ export function getCodexCapabilities(): CodexCapabilitiesSummary {
         name: "Browser / In-App Browser",
         path: "plugin://Browser",
         status: "requires_bridge",
-        kind: "browser_bridge"
+        kind: "browser_bridge",
+        state: browserSurfaceState(browserHealth)
       },
       chrome: {
         id: "chrome-extension",
         name: "Chrome extension lane",
         path: "plugin://Chrome",
         status: "requires_bridge",
-        kind: "browser_bridge"
+        kind: "browser_bridge",
+        state: chromeSurfaceState(browserHealth)
+      },
+      automationOsApi: {
+        id: "automation-os-api",
+        name: "Automation OS local API server",
+        path: "http://127.0.0.1",
+        status: "available",
+        kind: "automation_os_api",
+        state: connectedState(true)
+      },
+      appServer: {
+        id: "codex-app-server",
+        name: "Codex App Server",
+        path: "codex-app-server://stdio",
+        status: appServerConfigured ? "available_with_codex_runtime" : "missing",
+        kind: "codex_app_server",
+        state: appServerState
       },
       mcp: {
         id: "mcp-tools",
         name: "MCP tools exposed by Codex runtime",
         path: "codex-runtime://mcp",
-        status: "available_with_codex_runtime",
-        kind: "mcp"
+        status: mcpState.connected
+          ? "available"
+          : codexRuntimeAvailable || mcpState.enabled
+            ? "available_with_codex_runtime"
+            : "missing",
+        kind: "mcp",
+        state: mcpState
       },
       cli: {
         id: "codex-cli",
         name: "Codex CLI",
         path: "command://codex",
-        status: "available_with_codex_runtime",
-        kind: "cli"
-      },
-      appServer: {
-        id: "automation-os-server",
-        name: "Automation OS local API server",
-        path: "http://127.0.0.1",
-        status: "available",
-        kind: "app_server"
+        status: commandExists("codex") ? "available_with_codex_runtime" : "missing",
+        kind: "cli",
+        state: commandState("codex")
       },
       skills,
       plugins,
@@ -107,7 +151,16 @@ export function getCodexCapabilities(): CodexCapabilitiesSummary {
     },
     notes: [
       "This endpoint is a read-only local inventory and does not execute plugins, skills, automations, or MCP calls.",
-      "Bridge-backed capabilities are visible here but require the Codex runtime/plugin bridge to use directly."
+      `Browser bridge readback: localApp.canReportHealth=${browserHealth.localApp.canReportHealth}, localApp.canExecuteBrowserPlugin=${browserHealth.localApp.canExecuteBrowserPlugin}.`,
+      `Browser bridge directCallableFromLocalApp=${browserHealth.codexBrowserBridge.directCallableFromLocalApp}.`,
+      appServerProbe
+        ? `Codex App Server probe is read-only and bounded; status=${appServerProbe.status}, exactBlocker=${appServerProbe.exactBlocker ?? "none"}, protocol=${appServerProbe.protocol}.`
+        : "Codex App Server probe not run yet; capability state stays inventory-only until POST /api/codex/app-server/probe refreshes it.",
+      mcpProbe
+        ? `MCP probe is read-only, bounded, and TTL-cached; parsed entries=${mcpProbe.entries.length}, parsedFrom=${mcpProbe.parsedFrom}.`
+        : codexRuntimeAvailable
+          ? "MCP probe not run yet; Codex runtime is present but capability state stays inventory-only until POST /api/codex/capabilities/probe refreshes it."
+          : "MCP probe not run yet and Codex runtime command is missing; capability state is inventory-only."
     ]
   };
 }
@@ -122,7 +175,8 @@ function scanSkillDir(root: string, kind: string): CapabilityItem[] {
       name: readSkillName(path) ?? basename(path),
       path: relativeToHome(path),
       status: "read_only_indexed" as const,
-      kind
+      kind,
+      state: localInventoryState()
     }))
     .sort(byName);
 }
@@ -140,7 +194,8 @@ function scanPlugins(root: string): CapabilityItem[] {
       name: pluginDisplayName(path),
       path: relativeToHome(path),
       status: "available_with_codex_runtime" as const,
-      kind: "plugin"
+      kind: "plugin",
+      state: localInventoryState()
     }))
     .sort(byName);
 }
@@ -163,6 +218,7 @@ function scanAutomations(root: string): CapabilityItem[] {
         path: relativeToHome(path),
         status: "available_with_codex_runtime" as const,
         kind: helper ? "automation_helper" : "automation",
+        state: localInventoryState(),
         role: helper ? "helper" as const : "primary" as const,
         hiddenFromSuggestions: helper
       };
@@ -237,4 +293,57 @@ function isHelperAutomation(name: string): boolean {
     "automation-live-supervisor-2",
     "automation-child-launcher-bridge"
   ].includes(name);
+}
+
+function localInventoryState(): CapabilityAxisState {
+  return {
+    configured: true,
+    enabled: true,
+    verified: true,
+    connected: false
+  };
+}
+
+function browserSurfaceState(browserHealth: ReturnType<typeof getBrowserHealth>): CapabilityAxisState {
+  return {
+    configured: true,
+    enabled: browserHealth.localApp.canReportHealth,
+    verified: browserHealth.codexBrowserBridge.required,
+    connected: browserHealth.codexBrowserBridge.directCallableFromLocalApp
+  };
+}
+
+function chromeSurfaceState(browserHealth: ReturnType<typeof getBrowserHealth>): CapabilityAxisState {
+  return {
+    configured: true,
+    enabled: browserHealth.chromeExtension.status === "ready",
+    verified: browserHealth.chromeExtension.status === "ready",
+    connected: browserHealth.chromeExtension.status === "ready"
+  };
+}
+
+function connectedState(connected: boolean): CapabilityAxisState {
+  return {
+    configured: true,
+    enabled: connected,
+    verified: connected,
+    connected
+  };
+}
+
+function commandState(command: string): CapabilityAxisState {
+  const connected = commandExists(command);
+  return connectedState(connected);
+}
+
+function commandExists(command: string): boolean {
+  const result = spawnSync("sh", ["-lc", `command -v ${shellEscape(command)}`], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"]
+  });
+  return result.status === 0 && result.stdout.trim().length > 0;
+}
+
+function shellEscape(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 }

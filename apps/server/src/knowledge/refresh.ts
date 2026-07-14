@@ -1,4 +1,4 @@
-import { nowIso, querySql, upsert } from "../db/client.js";
+import { initDb, nowIso, querySql, upsert } from "../db/client.js";
 import { listStoredSecrets } from "../secrets/secretStore.js";
 
 type RunRow = {
@@ -48,6 +48,7 @@ export type KnowledgeRefreshResult = {
 };
 
 export function refreshKnowledgeNotes(): KnowledgeRefreshResult {
+  initDb();
   const refreshedAt = nowIso();
   const notes = [
     buildOperatingSnapshot(refreshedAt),

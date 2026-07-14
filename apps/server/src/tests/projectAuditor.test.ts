@@ -121,8 +121,11 @@ test("Project Auditor falls back to the source default registry when runtime dat
   try {
     process.chdir(emptyRoot);
     const registry = loadProjectRegistry();
-    assert.equal(registry.projects.length, 8);
+    const audit = auditProjects({ generatedAt: "2026-07-15T00:00:00.000Z" });
+    assert.ok(registry.projects.length > 0);
     assert.equal(registry.projects.some((project) => project.id === "automation-os"), true);
+    assert.equal(audit.summary.projects, registry.projects.length);
+    assert.equal(audit.registryPath, join(process.cwd(), "data", "project-registry.json"));
   } finally {
     process.chdir(previousCwd);
   }

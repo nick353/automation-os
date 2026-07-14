@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { dbBackend, dbPath, insert, makeId, nowIso } from "../db/client.js";
+import { buildCanonicalExecutionRoutingMetadataForCommand } from "../codex/executionRouting.js";
 import { evaluateDailyAiRegisteredSummary } from "../runs/dailyAiRegisteredRunner.js";
 
 const defaultSummaryPath =
@@ -132,6 +133,11 @@ function commitBlockerReadback(receiptPath: string, receipt: JsonRecord, latestD
   const eventId = makeId("evt_daily_ai_reconcile");
   const now = nowIso();
   const proofType = "daily_ai_blocker_reconciliation_readback";
+  const routeMetadata = buildCanonicalExecutionRoutingMetadataForCommand({
+    command: "Record project-owned Daily AI blocker as Automation OS reconciliation readback without posting",
+    source: "manual",
+    selectedAdapter: "daily_ai_blocker_reconciliation_readback"
+  });
   const metadata = {
     registeredWorkflowId: "daily-ai-research-publish-run",
     registered_workflow_id: "daily-ai-research-publish-run",
@@ -143,6 +149,7 @@ function commitBlockerReadback(receiptPath: string, receipt: JsonRecord, latestD
     external_actions_performed: false,
     additional_posts_published: false,
     strict_registered_success_claimed: false,
+    ...routeMetadata,
     proof_gate: projectRun.proof_gate,
     proof_summary: `blocked: ${stringValue(projectRun.exact_blocker)}`,
     buffer: projectRun.buffer,
@@ -172,7 +179,8 @@ function commitBlockerReadback(receiptPath: string, receipt: JsonRecord, latestD
       external_actions_performed: false,
       additional_posts_published: false,
       proof_gate: projectRun.proof_gate,
-      proof_summary: metadata.proof_summary
+      proof_summary: metadata.proof_summary,
+      ...routeMetadata
     }
   });
   insert("proofs", {
@@ -315,6 +323,11 @@ function commitPartialIngestReadback(receiptPath: string, receipt: JsonRecord): 
   const eventId = makeId("evt_daily_ai_partial_ingest");
   const now = nowIso();
   const projectRun = recordValue(receipt.project_run) ?? {};
+  const routeMetadata = buildCanonicalExecutionRoutingMetadataForCommand({
+    command: "Record Daily AI fresh child partial ingest without reposting or resuming external engagement",
+    source: "manual",
+    selectedAdapter: "daily_ai_fresh_child_partial_ingest_readback"
+  });
   const metadata = {
     registeredWorkflowId: "daily-ai-research-publish-run",
     registered_workflow_id: "daily-ai-research-publish-run",
@@ -331,6 +344,7 @@ function commitPartialIngestReadback(receiptPath: string, receipt: JsonRecord): 
     external_actions_performed: false,
     additional_posts_published: false,
     strict_registered_success_claimed: false,
+    ...routeMetadata,
     proof_gate: projectRun.proof_gate,
     proof_summary: stringValue(projectRun.proof_summary),
     external_action_summary: projectRun.external_action_summary ?? null,
@@ -363,7 +377,8 @@ function commitPartialIngestReadback(receiptPath: string, receipt: JsonRecord): 
       additional_posts_published: false,
       child_external_action_observed: metadata.child_external_action_observed,
       proof_gate: metadata.proof_gate,
-      proof_summary: metadata.proof_summary
+      proof_summary: metadata.proof_summary,
+      ...routeMetadata
     }
   });
   insert("proofs", {

@@ -26,6 +26,9 @@ import {
   storeBridgeReceipt
 } from "./bridge/trustedBridge.js";
 import { getCodexCapabilities } from "./codex/capabilities.js";
+import { buildCanonicalExecutionRoutingMetadata, buildExecutionRoutingSnapshot } from "./codex/executionRouting.js";
+import { getLatestCapabilityProbeSnapshot, probeCodexMcpSurface } from "./codex/capabilityProbe.js";
+import { getLatestAppServerProbeSnapshot, probeCodexAppServerSurface } from "./codex/appServerProbe.js";
 import { buildCapabilityRouterSnapshot } from "./codex/capabilityRouter.js";
 import {
   buildCodexAppParityLedger,
@@ -61,7 +64,9 @@ import {
   getObsidianExportStatus,
   runObsidianAutoExportBestEffort,
   runObsidianExportNow,
+  startObsidianAutonomyLoops,
   startPeriodicObsidianExport,
+  stopObsidianAutonomyLoops,
   stopPeriodicObsidianExport
 } from "./obsidian/autoExport.js";
 import { runObsidianIngest } from "./obsidian/ingest.js";
@@ -86,6 +91,7 @@ import {
 import { getResumeContract } from "./resumeContract.js";
 
 export const app = express();
+app.set("case sensitive routing", true);
 const port = Number(process.env.AUTOMATION_OS_PORT ?? process.env.PORT ?? 8787);
 const host = process.env.HOST ?? (!process.env.PORT ? process.env.AUTOMATION_OS_HOST : undefined) ?? (process.env.PORT ? "0.0.0.0" : "127.0.0.1");
 const webDistDir = resolvePath(process.env.AUTOMATION_OS_WEB_DIST_DIR ?? join(process.cwd(), "dist"));
@@ -93,6 +99,24 @@ const webIndexPath = join(webDistDir, "index.html");
 let youtubeTranscriptCaptureRunner = runYouTubeTranscriptCapture;
 let researchPlanDemoRunner = runBrowserUseLocalCheckAsync;
 let researchPlanStartRunner = startCommandRun;
+
+app.use(productionApiAccessGuard);
+
+const defaultJsonBodyParser = express.json({ limit: "1mb" });
+app.use((req, res, next) => {
+  if (req.method === "POST" && req.path === "/api/mvp/feedback") {
+    readSmallJsonBody(req, res, next);
+    return;
+  }
+  if (req.method === "POST" && /^\/api\/planner\/[^/]+\/capture\/youtube-transcript$/u.test(req.path)) {
+    readSmallJsonBody(req, res, next);
+    return;
+  }
+  defaultJsonBodyParser(req, res, next);
+});
+
+app.use(productionWriteGuard);
+
 app.get("/api/health", (_req, res) => {
   res.json({
     ok: true,
@@ -100,6 +124,7 @@ app.get("/api/health", (_req, res) => {
     time: nowIso(),
     database: getDatabaseRuntimeInfo(),
     productionGuard: getProductionWriteGuardStatus(),
+    accessGuard: getProductionApiAccessGuardStatus(),
     deployment: getDeploymentReadback()
   });
 });
@@ -284,21 +309,6 @@ app.put("/api/mvp/automations/:automationId/builder-spec", (req, res) => {
 
 let researchPlanSchedulerTimer: ReturnType<typeof setInterval> | undefined;
 const researchPlanSchedulerInFlightDueKeys = new Set<string>();
-
-const defaultJsonBodyParser = express.json({ limit: "1mb" });
-app.use((req, res, next) => {
-  if (req.method === "POST" && req.path === "/api/mvp/feedback") {
-    readSmallJsonBody(req, res, next);
-    return;
-  }
-  if (req.method === "POST" && /^\/api\/planner\/[^/]+\/capture\/youtube-transcript$/u.test(req.path)) {
-    readSmallJsonBody(req, res, next);
-    return;
-  }
-  defaultJsonBodyParser(req, res, next);
-});
-
-app.use(productionWriteGuard);
 
 app.post("/api/mvp/feedback", (req, res) => {
   initDb();
@@ -496,23 +506,43 @@ app.get("/api/dashboard", (_req, res) => {
 });
 
 app.get("/api/codex/capabilities", (_req, res) => {
-  res.json(getCodexCapabilities());
+  res.json(getCodexCapabilitiesReadback());
+});
+
+app.post("/api/codex/capabilities/probe", (_req, res) => {
+  const probe = probeCodexMcpSurface();
+  res.json(getCodexCapabilitiesReadback({ mcpProbe: probe, forceRefresh: true }));
+});
+
+app.post("/api/codex/app-server/probe", async (_req, res, next) => {
+  try {
+    const probe = await probeCodexAppServerSurface();
+    res.json({
+      ok: probe.ok,
+      probe,
+      matrix: getCodexCapabilitiesReadback({ appServerProbe: probe, forceRefresh: true }).matrix
+    });
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.get("/api/capability-router/backlog", (_req, res) => {
+  const capabilities = getCodexCapabilitiesCache().cache.capabilities;
   res.json(
     buildCapabilityRouterSnapshot({
-      capabilities: getCodexCapabilities(),
+      capabilities,
       bridgeActions: listTrustedBridgeActions()
     })
   );
 });
 
 app.post("/api/capability-router/plan", (req, res) => {
+  const capabilities = getCodexCapabilitiesCache().cache.capabilities;
   res.json(
     buildCapabilityRouterSnapshot({
       command: typeof req.body?.command === "string" ? req.body.command : "",
-      capabilities: getCodexCapabilities(),
+      capabilities,
       bridgeActions: listTrustedBridgeActions()
     })
   );
@@ -583,7 +613,7 @@ app.get("/api/codex/automation-migration-ledger", (_req, res) => {
 });
 
 app.post("/api/codex/capabilities", (_req, res) => {
-  res.json(getCodexCapabilities());
+  res.json(getCodexCapabilitiesReadback({ forceRefresh: true }));
 });
 
 app.get("/api/registered-workflows", (_req, res) => {
@@ -663,18 +693,19 @@ app.patch("/api/registered-workflows/:id/schedule", (req, res) => {
 app.post("/api/registered-workflows/:id/start", async (req, res, next) => {
   try {
     if (dbBackend === "postgres" && req.params.id === "daily-ai-research-publish-run") {
-      const fixedWorkflow = fixedRegisteredWorkflows.find((workflow) => workflow.id === req.params.id);
-      if (fixedWorkflow) {
-        const workflowRow = await getPostgresRegisteredWorkflowRowFast(fixedWorkflow.id);
-        if (workflowRow && String(workflowRow.status).toLowerCase() !== "active") {
+        const fixedWorkflow = fixedRegisteredWorkflows.find((workflow) => workflow.id === req.params.id);
+        if (fixedWorkflow) {
+          const workflowRow = await getPostgresRegisteredWorkflowRowFast(fixedWorkflow.id);
+          if (workflowRow && String(workflowRow.status).toLowerCase() !== "active") {
           res.status(409).json({ error: "registered_workflow_inactive" });
           return;
         }
         const command = startCommandFromRegisteredWorkflowRow(workflowRow) ?? fixedWorkflow.startCommand.command;
+        const executionRouting = buildExecutionRoutingSnapshot({ command, source: "manual" });
         const fastStarted = await startRegisteredPostgresRunFast({
           workflow: { id: fixedWorkflow.id, runner_kind: fixedWorkflow.runnerKind },
           command,
-          metadata: registeredWorkflowStartMetadataFromDefinition(fixedWorkflow, { source: "manual" })
+          metadata: registeredWorkflowStartMetadataFromDefinition(fixedWorkflow, { source: "manual", command, executionRouting })
         });
         res.status(202).json({
           accepted: true,
@@ -709,7 +740,7 @@ app.post("/api/registered-workflows/:id/start", async (req, res, next) => {
       res.status(404).json({ error: "registered_workflow_not_found" });
       return;
     }
-    const runMetadata = registeredWorkflowStartMetadata(workflow, { source: "manual" });
+    const runMetadata = registeredWorkflowStartMetadata(workflow, { source: "manual", command });
     if (dbBackend === "postgres" && workflow.id === "daily-ai-research-publish-run") {
       const fastStarted = await startRegisteredPostgresRunFast({ workflow, command, metadata: runMetadata });
       clearRegisteredWorkflowSchedulerBlock(workflow);
@@ -741,8 +772,15 @@ app.post("/api/registered-workflows/:id/start", async (req, res, next) => {
         res.status(404).json({ error: "research_plan_not_found" });
         return;
       }
+      const researchPlanMetadata = {
+        ...runMetadata,
+        execution_routing: buildExecutionRoutingSnapshot({
+          command: plan.command,
+          source: "manual"
+        })
+      };
       const started = await withTimeout(
-        researchPlanStartRunner(plan.command, { metadata: runMetadata, deferWorker: true }),
+        researchPlanStartRunner(plan.command, { metadata: researchPlanMetadata, deferWorker: true }),
         researchPlanDirectStartTimeoutMs(),
         {
           operation: "research_plan_start",
@@ -1831,7 +1869,8 @@ export const apiErrorHandler: ErrorRequestHandler = (error, _req, res, next) => 
 };
 
 function productionWriteGuard(req: Parameters<RequestHandler>[0], res: Parameters<RequestHandler>[1], next: Parameters<RequestHandler>[2]) {
-  if (!isStateChangingMethod(req.method) || !req.path.startsWith("/api/")) {
+  const normalizedPath = normalizedRequestPath(req.path);
+  if (!isStateChangingMethod(req.method) || (normalizedPath !== "/api" && !normalizedPath.startsWith("/api/"))) {
     next();
     return;
   }
@@ -1856,6 +1895,40 @@ function productionWriteGuard(req: Parameters<RequestHandler>[0], res: Parameter
     error,
     exactBlocker: error
   });
+}
+
+function productionApiAccessGuard(req: Parameters<RequestHandler>[0], res: Parameters<RequestHandler>[1], next: Parameters<RequestHandler>[2]) {
+  const normalizedPath = normalizedRequestPath(req.path);
+  const apiPath = normalizedPath === "/api" || normalizedPath.startsWith("/api/");
+  if (!apiPath || normalizedPath === "/api/health") {
+    next();
+    return;
+  }
+  const guard = getProductionApiAccessGuardStatus();
+  if (!guard.required) {
+    next();
+    return;
+  }
+  const providedToken = readRequestWriteToken(req);
+  if (guard.tokenConfigured && providedToken === process.env.AUTOMATION_OS_WRITE_TOKEN) {
+    next();
+    return;
+  }
+  const error = guard.tokenConfigured ? "production_api_token_required" : "production_api_locked";
+  res.status(guard.tokenConfigured ? 401 : 423).json({
+    ok: false,
+    status: "blocked",
+    error,
+    exactBlocker: error
+  });
+}
+
+function normalizedRequestPath(path: string) {
+  try {
+    return decodeURIComponent(path).toLowerCase().replace(/\/{2,}/g, "/");
+  } catch {
+    return path.toLowerCase();
+  }
 }
 
 function isStateChangingMethod(method: string) {
@@ -1913,10 +1986,21 @@ function getProductionWriteGuardStatus() {
   };
 }
 
+function getProductionApiAccessGuardStatus() {
+  const explicit = process.env.AUTOMATION_OS_REQUIRE_API_TOKEN;
+  const required = explicit === "1" || (explicit !== "0" && !process.env.NODE_TEST_CONTEXT);
+  return {
+    required,
+    tokenConfigured: Boolean(process.env.AUTOMATION_OS_WRITE_TOKEN),
+    mode: required ? (process.env.AUTOMATION_OS_WRITE_TOKEN ? "token_required" : "locked") : "off"
+  };
+}
+
 if (existsSync(webIndexPath)) {
   app.use(express.static(webDistDir));
   app.get("*", (req, res, next) => {
-    if (req.path === "/api" || req.path.startsWith("/api/")) {
+    const normalizedPath = req.path.toLowerCase();
+    if (normalizedPath === "/api" || normalizedPath.startsWith("/api/")) {
       next();
       return;
     }
@@ -1924,7 +2008,14 @@ if (existsSync(webIndexPath)) {
   });
 }
 
-app.use("/api", apiNotFoundHandler);
+app.use((req, res, next) => {
+  const normalizedPath = req.path.toLowerCase();
+  if (normalizedPath === "/api" || normalizedPath.startsWith("/api/")) {
+    apiNotFoundHandler(req, res, next);
+    return;
+  }
+  next();
+});
 app.use(apiErrorHandler);
 
 export function startServer() {
@@ -1934,7 +2025,9 @@ export function startServer() {
       process.env.AUTOMATION_OS_OBSIDIAN_PERIODIC_EXPORT_MS === "0";
     if (!process.env.NODE_TEST_CONTEXT && !backgroundStartupDisabled) {
       const backgroundStartup = setTimeout(() => {
+        runObsidianAutoExportBestEffort("startup-recovery");
         startPeriodicObsidianExport();
+        startObsidianAutonomyLoops();
         startResearchPlanScheduler();
       }, 100);
       backgroundStartup.unref?.();
@@ -1943,6 +2036,7 @@ export function startServer() {
   });
   server.on("close", () => {
     stopPeriodicObsidianExport();
+    stopObsidianAutonomyLoops();
     stopResearchPlanScheduler();
   });
   return server;
@@ -2063,6 +2157,93 @@ let dashboardExpensiveSnapshotCache: {
   codexCapabilities: ReturnType<typeof getCodexCapabilities>;
   browserHealth: ReturnType<typeof getBrowserHealth>;
 } | null = null;
+
+type CodexCapabilitiesProbeReadback = {
+  ok: boolean;
+  cached: boolean;
+  generatedAt: string;
+  exactBlocker: string | null;
+  matrix: ReturnType<typeof getCodexCapabilities>;
+};
+
+let codexCapabilitiesCache: {
+  key: string;
+  expiresAt: number;
+  capabilities: ReturnType<typeof getCodexCapabilities>;
+} | null = null;
+
+function getCodexCapabilitiesReadback(options: {
+  mcpProbe?: ReturnType<typeof probeCodexMcpSurface> | null;
+  appServerProbe?: Awaited<ReturnType<typeof probeCodexAppServerSurface>> | null;
+  forceRefresh?: boolean;
+} = {}) {
+  const { cache, cached } = getCodexCapabilitiesCache({
+    forceRefresh: options.forceRefresh ?? false,
+    appServerProbe: options.appServerProbe ?? null
+  });
+  return {
+    ...cache.capabilities,
+    matrix: cache.capabilities,
+    probe: buildCodexCapabilitiesProbe(cache.capabilities, cached, options.mcpProbe ?? getLatestCapabilityProbeSnapshot())
+  };
+}
+
+function getCodexCapabilitiesCache(options: {
+  forceRefresh?: boolean;
+  appServerProbe?: Awaited<ReturnType<typeof probeCodexAppServerSurface>> | null;
+} = {}) {
+  const key = [
+    process.cwd(),
+    process.env.AUTOMATION_OS_CAPABILITIES_HOME ?? "",
+    process.env.AUTOMATION_OS_CODEX_ROOT ?? "",
+    process.env.AUTOMATION_OS_AGENTS_ROOT ?? "",
+    process.env.AUTOMATION_OS_CODEX_SKILL_ROOTS ?? "",
+    process.env.AUTOMATION_OS_AGENT_SKILL_ROOTS ?? "",
+    process.env.AUTOMATION_OS_CODEX_PLUGIN_ROOTS ?? "",
+    process.env.AUTOMATION_OS_CODEX_AUTOMATIONS_ROOT ?? ""
+  ].join("\n");
+  const ttlMs = process.env.NODE_TEST_CONTEXT
+    ? 0
+    : Number(process.env.AUTOMATION_OS_CODEX_CAPABILITIES_CACHE_MS ?? 300000);
+  const now = Date.now();
+  if (!options.forceRefresh && ttlMs > 0 && codexCapabilitiesCache?.key === key && codexCapabilitiesCache.expiresAt > now) {
+    return { cache: codexCapabilitiesCache, cached: true };
+  }
+  const capabilities = getCodexCapabilities({
+    mcpProbe: getLatestCapabilityProbeSnapshot(now),
+    appServerProbe: options.appServerProbe ?? getLatestAppServerProbeSnapshot()
+  });
+  const cache = {
+    key,
+    expiresAt: now + Math.max(0, ttlMs),
+    capabilities
+  };
+  codexCapabilitiesCache = cache;
+  return { cache, cached: false };
+}
+
+function buildCodexCapabilitiesProbe(
+  capabilities: ReturnType<typeof getCodexCapabilities>,
+  cached: boolean,
+  probe: ReturnType<typeof getLatestCapabilityProbeSnapshot>
+): CodexCapabilitiesProbeReadback {
+  if (!probe) {
+    return {
+      ok: false,
+      cached,
+      generatedAt: capabilities.generatedAt,
+      exactBlocker: "probe_required",
+      matrix: capabilities
+    };
+  }
+  return {
+    ok: probe.status === "ok",
+    cached,
+    generatedAt: probe.generatedAt,
+    exactBlocker: probe.exactBlocker,
+    matrix: capabilities
+  };
+}
 
 function getDashboardExpensiveSnapshot() {
   const key = [
@@ -2285,10 +2466,19 @@ export function getDashboard() {
     })),
     obsidian: getObsidianExportStatus(),
     resumeContract: getResumeContract(),
+    executionRouting: buildExecutionRoutingSnapshot({
+      command: "dashboard_readback",
+      source: "manual",
+      capabilities: codexCapabilities
+    }),
     codexCapabilities: {
       summary: codexCapabilities.summary,
       browser: codexCapabilities.capabilities.browser,
-      mcp: codexCapabilities.capabilities.mcp
+      chrome: codexCapabilities.capabilities.chrome,
+      automationOsApi: codexCapabilities.capabilities.automationOsApi,
+      appServer: codexCapabilities.capabilities.appServer,
+      mcp: codexCapabilities.capabilities.mcp,
+      notes: codexCapabilities.notes
     },
     codexParityLedger: buildCodexAppParityLedger({
       capabilities: codexCapabilities,
@@ -2473,8 +2663,23 @@ function buildMvpWorkerState(dashboard: ReturnType<typeof getDashboard>) {
     | undefined;
   const runs = Array.isArray(dashboard.runs) ? dashboard.runs : [];
   const actionQueueRuns = selectActionQueueRuns(runs as Array<{ status?: unknown; metadata_json?: unknown; project_id?: unknown; objective?: unknown; name?: unknown }>);
-  const stale = localWorker?.status === "idle";
   const missing = !localWorker || localWorker.status === "missing";
+  const heartbeatTimestamp = localWorker?.updatedAt ? Date.parse(localWorker.updatedAt) : Number.NaN;
+  const heartbeatNow = Date.now();
+  const heartbeatInFuture = Number.isFinite(heartbeatTimestamp) && heartbeatTimestamp > heartbeatNow + 30_000;
+  const heartbeatAgeSeconds = Number.isFinite(heartbeatTimestamp) && !heartbeatInFuture
+    ? Math.max(0, Math.floor((heartbeatNow - heartbeatTimestamp) / 1000))
+    : null;
+  const configuredStaleSeconds = Number(process.env.AUTOMATION_OS_WORKER_HEARTBEAT_STALE_SECONDS ?? 300);
+  const staleAfterSeconds = Number.isFinite(configuredStaleSeconds) && configuredStaleSeconds >= 30
+    ? configuredStaleSeconds
+    : 300;
+  const stale = !missing && (
+    localWorker?.status === "idle"
+    || heartbeatInFuture
+    || heartbeatAgeSeconds === null
+    || heartbeatAgeSeconds > staleAfterSeconds
+  );
   const readbackStatus = missing ? "heartbeat_missing" : stale ? "heartbeat_stale" : "fresh";
   const exactBlocker = missing ? "mac_worker_state_missing" : stale ? "mac_worker_heartbeat_stale" : null;
   return {
@@ -2483,7 +2688,7 @@ function buildMvpWorkerState(dashboard: ReturnType<typeof getDashboard>) {
     heartbeat_at: localWorker?.updatedAt ?? null,
     queue_depth: actionQueueRuns.length,
     last_run_id: runs[0]?.id ? String(runs[0].id) : null,
-    heartbeat_age_seconds: null,
+    heartbeat_age_seconds: heartbeatAgeSeconds,
     heartbeat_fresh: !missing && !stale,
     readback_status: readbackStatus,
     exact_blocker: exactBlocker,
@@ -3823,9 +4028,13 @@ export function getRunDetail(runId: string) {
   normalizeReceiptOnlyRuns();
   const run = sanitizeDashboardRows(querySql(`SELECT * FROM runs WHERE id=${sqlValue(runId)} LIMIT 1`))[0];
   if (!run) return undefined;
+  const metadata = parseJson<Record<string, unknown>>(typeof run.metadata_json === "string" ? run.metadata_json : "{}", {});
+  const executionRouting =
+    metadata.execution_routing && typeof metadata.execution_routing === "object" ? metadata.execution_routing : null;
 
   return {
     run,
+    executionRouting,
     steps: sanitizeDashboardRows(
       querySql(`SELECT * FROM run_steps WHERE run_id=${sqlValue(runId)} ORDER BY COALESCE(started_at, completed_at, '') ASC LIMIT 500`)
     ),
@@ -4762,7 +4971,7 @@ export async function runResearchPlanSchedulerOnce(now = new Date()): Promise<Re
       continue;
     }
     try {
-      const runMetadata = registeredWorkflowStartMetadata(workflow, { source: "scheduler", dueKey: due.dueKey });
+      const runMetadata = registeredWorkflowStartMetadata(workflow, { source: "scheduler", dueKey: due.dueKey, command });
       if (workflow.runner_kind === "research_plan_registered") {
         const startCommand = parseJson<{ researchPlanId?: unknown }>(workflow.start_command_json, {});
         const researchPlanId = typeof startCommand.researchPlanId === "string" ? startCommand.researchPlanId : undefined;
@@ -4771,8 +4980,15 @@ export async function runResearchPlanSchedulerOnce(now = new Date()): Promise<Re
           skipped += 1;
           continue;
         }
+        const researchPlanMetadata = {
+          ...runMetadata,
+          execution_routing: buildExecutionRoutingSnapshot({
+            command: plan.command,
+            source: "scheduler"
+          })
+        };
         const started = await withTimeout(
-          researchPlanStartRunner(plan.command, { metadata: runMetadata, deferWorker: true }),
+          researchPlanStartRunner(plan.command, { metadata: researchPlanMetadata, deferWorker: true }),
           researchPlanSchedulerStartTimeoutMs(),
           {
             operation: "research_plan_scheduler_start",
@@ -4926,8 +5142,12 @@ function publicResearchPlanRunStartSummary(value: unknown) {
 
 function registeredWorkflowStartMetadata(
   workflow: { id: string; runner_kind: string },
-  start: { source: "manual" | "scheduler"; dueKey?: string }
+  start: { source: "manual" | "scheduler"; dueKey?: string; command: string }
 ) {
+  const routeDecision = buildExecutionRoutingSnapshot({
+    command: start.command,
+    source: start.source
+  });
   return {
     registeredWorkflowId: workflow.id,
     registered_workflow_id: workflow.id,
@@ -4937,7 +5157,8 @@ function registeredWorkflowStartMetadata(
       source: start.source,
       runnerKind: workflow.runner_kind,
       ...(start.dueKey ? { dueKey: start.dueKey } : {})
-    }
+    },
+    ...buildCanonicalExecutionRoutingMetadata(routeDecision)
   };
 }
 
@@ -5554,15 +5775,22 @@ function publicFixedRegisteredWorkflowFast(workflow: RegisteredWorkflowDefinitio
 
 function registeredWorkflowStartMetadataFromDefinition(
   workflow: RegisteredWorkflowDefinition,
-  input: { source: "manual" | "scheduler"; dueKey?: string }
+  input: { source: "manual" | "scheduler"; dueKey?: string; command: string; executionRouting?: ReturnType<typeof buildExecutionRoutingSnapshot> }
 ) {
+  const routeDecision =
+    input.executionRouting ??
+    buildExecutionRoutingSnapshot({
+      command: input.command,
+      source: input.source
+    });
   return {
     registered_workflow_start: {
       source: input.source,
       workflowId: workflow.id,
       runnerKind: workflow.runnerKind,
       ...(input.dueKey ? { dueKey: input.dueKey } : {})
-    }
+    },
+    ...buildCanonicalExecutionRoutingMetadata(routeDecision)
   };
 }
 
@@ -5604,6 +5832,10 @@ async function startRegisteredPostgresRunFast(input: {
   const stepId = `${runId}_step_1`;
   const lane = visibleBrowserLaneForRecordReplay(registeredBrowserLaneForWorkflow(input.workflow.id));
   const adapter = input.workflow.runner_kind ?? "local_worker";
+  const routeDecision = buildExecutionRoutingSnapshot({
+    command: input.command,
+    source: "manual"
+  });
   const laneId = `${runId}_${lane?.id ?? "daily-ai-playwright-cli"}`;
   const metadata = {
     command: input.command,
@@ -5613,6 +5845,7 @@ async function startRegisteredPostgresRunFast(input: {
       runnerKind: input.workflow.runner_kind
     },
     ...input.metadata,
+    ...buildCanonicalExecutionRoutingMetadata(routeDecision),
     ai_adapters: ["playwright_cli"],
     openai_api: "not_required",
     worker_protocol: "mac_worker_polling_required",
@@ -5676,7 +5909,8 @@ async function startRegisteredPostgresRunFast(input: {
           collision_with: [],
           collision_override_required: false,
           adapter,
-          parallel_safe: false
+          parallel_safe: false,
+          ...buildCanonicalExecutionRoutingMetadata(routeDecision)
         })
       ]
     );

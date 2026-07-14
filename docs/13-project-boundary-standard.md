@@ -27,6 +27,8 @@ For resume or cross-project work, use this order:
 
 Generated Obsidian files are locators. A locator can tell Codex where to look, but it cannot prove execution completion, approve an external action, or override a project-owned state file.
 
+Codex server connectivity is a reachability layer, not a boundary override. It may expand which configured surfaces are reachable in the current environment, but it does not replace project-owned state, proof, or approval requirements.
+
 ## Durable Managed Status
 
 A project without project-owned `STATE.md` or an explicit current-state authority may appear in generated Obsidian pages as a locator only. Do not promote it to execution-ready or durable managed status until `current_state`, `next_action`, `blocker`, `risk_gate`, `source_of_truth`, and `proof_locator` are present and fresh-read from the project itself.

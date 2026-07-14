@@ -24,9 +24,23 @@ npm run dev
 
 The default server port is `8787`. The dev script starts the local server and web UI together.
 
+### Codex App Server Probe
+
+`AUTOMATION_OS_CODEX_APP_SERVER_PROBE_ENABLED` defaults to `0`. When set to `1`, `POST /api/codex/app-server/probe` performs a bounded stdio initialize-only read-only probe.
+
+Tune the probe with:
+
+```bash
+AUTOMATION_OS_CODEX_APP_SERVER_PROBE_COMMAND=codex
+AUTOMATION_OS_CODEX_APP_SERVER_PROBE_TIMEOUT_MS=1500
+AUTOMATION_OS_CODEX_APP_SERVER_PROBE_TTL_MS=30000
+```
+
+A successful probe only refreshes capability inventory. It still leaves `appServer.state.connected=false`, and it is not authority, external action, or completion proof.
+
 ## Production Safety
 
-Public deployments must be treated as read-mostly control surfaces. When `PORT` is present, the server locks `POST`, `PATCH`, `PUT`, and `DELETE` API calls by default. To deliberately allow production writes, set `AUTOMATION_OS_WRITE_TOKEN` and send it as `x-automation-os-token`. Do not set `AUTOMATION_OS_REQUIRE_WRITE_TOKEN=0` unless the service is private and isolated.
+Public deployments must be treated as private operator control surfaces. All `/api/*` routes except `/api/health` require `AUTOMATION_OS_WRITE_TOKEN` by default, even when `PORT` is absent; the same token also protects state-changing calls. Send it as `x-automation-os-token`. Only the loopback-only local launcher sets `AUTOMATION_OS_REQUIRE_API_TOKEN=0`. Do not disable either guard on a publicly reachable service.
 
 PostgreSQL is the preferred production database. Create a PostgreSQL service in the host, then set one of these variables on the Automation OS service:
 
@@ -45,6 +59,7 @@ When either variable is set, Automation OS initializes and uses PostgreSQL. When
 ```bash
 AUTOMATION_OS_DB=/data/automation-os.sqlite
 AUTOMATION_OS_REQUIRE_WRITE_TOKEN=1
+AUTOMATION_OS_REQUIRE_API_TOKEN=1
 AUTOMATION_OS_WRITE_TOKEN=<set in the host secret manager>
 ```
 
@@ -76,6 +91,10 @@ The following are intentionally ignored:
 - `.env` files and private key material.
 
 Before publishing or pushing, run a secret scan against the staged files and verify that only source code, docs, package manifests, and safe templates are included.
+
+`lint_not_configured`: there is no dedicated repo lint script. Use `npm run build`, `npm run typecheck:web`, and `npm test` as the maintained verification set.
+
+`dedicated_secret_scanner unavailable`: use a bounded grep-based secret scan against the changed files instead of a missing workspace scanner.
 
 ## Operating Rules
 

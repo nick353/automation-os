@@ -111,11 +111,14 @@ type DirectoryEntry = {
   isDirectory: () => boolean;
 };
 
-const defaultRegistryPath = resolve(process.cwd(), "data", "project-registry.json");
 const staleStateHours = Number.parseFloat(process.env.AUTOMATION_OS_PROJECT_AUDIT_STALE_STATE_HOURS || "72");
 
+function defaultRegistryPath(): string {
+  return resolve(process.cwd(), "data", "project-registry.json");
+}
+
 export function resolveProjectRegistryPath(input?: string): string {
-  return resolve(input || process.env.AUTOMATION_OS_PROJECT_REGISTRY || defaultRegistryPath);
+  return resolve(input || process.env.AUTOMATION_OS_PROJECT_REGISTRY || defaultRegistryPath());
 }
 
 export function loadProjectRegistry(input?: string): ProjectRegistry {
@@ -132,7 +135,7 @@ export function loadProjectRegistry(input?: string): ProjectRegistry {
 
 export function auditProjects(options: { registryPath?: string; obsidianVaultPath?: string; generatedAt?: string } = {}): ProjectAuditResult {
   const registryPath = resolveProjectRegistryPath(options.registryPath);
-  const registry = loadProjectRegistry(registryPath);
+  const registry = loadProjectRegistry(options.registryPath);
   const generatedAt = options.generatedAt ?? new Date().toISOString();
   const projects = registry.projects.map((project) => auditProject(project, options.obsidianVaultPath));
   const summary = {

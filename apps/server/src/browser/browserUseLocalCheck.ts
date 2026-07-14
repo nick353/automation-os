@@ -270,22 +270,10 @@ function launchAutoCdpLane(id: string): AutoCdpLane | null {
     const profileDir = `/tmp/automation-os-browser-use-auto-cdp-${id}-${attempt}`;
     rmSync(profileDir, { recursive: true, force: true });
     mkdirSync(profileDir, { recursive: true });
-    const child = spawn(
-      chromePath,
-      [
-        `--remote-debugging-port=${port}`,
-        `--user-data-dir=${profileDir}`,
-        "--window-size=1280,900",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--disable-background-networking",
-        "--disable-sync",
-        "--disable-extensions",
-        "--new-window",
-        browserUseLocalCheckStartingUrl(id)
-      ],
-      { detached: true, stdio: "ignore" }
-    );
+    const child = spawn(chromePath, buildAutoCdpLaunchArgs(id, port, profileDir), {
+      detached: true,
+      stdio: "ignore"
+    });
     child.unref();
     const cdpUrl = `http://127.0.0.1:${port}`;
     if (waitForCdp(cdpUrl)) return { pid: child.pid ?? 0, port, profileDir, cdpUrl };
@@ -293,6 +281,20 @@ function launchAutoCdpLane(id: string): AutoCdpLane | null {
     rmSync(profileDir, { recursive: true, force: true });
   }
   return null;
+}
+
+export function buildAutoCdpLaunchArgs(id: string, port: number, profileDir: string): string[] {
+  return [
+    `--remote-debugging-port=${port}`,
+    `--user-data-dir=${profileDir}`,
+    "--window-size=1280,900",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-background-networking",
+    "--disable-sync",
+    "--disable-extensions",
+    browserUseLocalCheckStartingUrl(id)
+  ];
 }
 
 function browserUseLocalCheckStartingUrl(id: string): string {
@@ -579,10 +581,21 @@ function finalizeBrowserUseLocalCheck(
   cleanup: BrowserUseLocalCheckResult["metadata"]["cleanup"]
 ): BrowserUseLocalCheckResult {
   const stateStep = prepared.steps.find((step) => /\sstate$/.test(step.command));
+  const openStep = prepared.steps.find((step) => /\sopen\s/.test(step.command));
+  const currentUrl = extractStateUrl(stateStep?.stdout ?? "") ?? extractStateUrl(openStep?.stdout ?? "");
+  const currentTitle = extractStateTitle(stateStep?.stdout ?? "") ?? extractStateTitle(openStep?.stdout ?? "");
   writeFileSync(prepared.statePath, `${stateStep?.stdout ?? ""}${stateStep?.stderr ? `\n${stateStep.stderr}` : ""}\n`, "utf8");
   writeFileSync(
     prepared.logPath,
-    formatLog({ id: prepared.id, createdAt: prepared.createdAt, session: prepared.session, targetUrl: prepared.targetUrl, steps: prepared.steps }),
+    formatLog({
+      id: prepared.id,
+      createdAt: prepared.createdAt,
+      session: prepared.session,
+      targetUrl: prepared.targetUrl,
+      currentUrl,
+      currentTitle,
+      steps: prepared.steps
+    }),
     "utf8"
   );
 
@@ -591,7 +604,6 @@ function finalizeBrowserUseLocalCheck(
   const combinedOutput = prepared.steps.map((step) => `${step.stdout}\n${step.stderr}`).join("\n");
   const linkedScreenshotPath = latestLinkedPath(combinedOutput, ".png");
   const screenshotPath = existsSync(prepared.plannedScreenshotPath) ? prepared.plannedScreenshotPath : linkedScreenshotPath;
-  const openStep = prepared.steps.find((step) => /\sopen\s/.test(step.command));
   const stateTargetOk = stateOrOpenMatchesTarget(stateStep?.stdout ?? "", openStep?.stdout ?? "", prepared.targetUrl);
   const recordingQa = buildRecordingQa({
     targetUrl: prepared.targetUrl,
@@ -871,6 +883,11 @@ function extractStateUrl(stateOutput: string): string | null {
   return match?.[1] ?? null;
 }
 
+function extractStateTitle(stateOutput: string): string | null {
+  const match = stateOutput.match(/(?:^|\n)\s*title:\s*(.+)$/im);
+  return match?.[1]?.trim() ?? null;
+}
+
 function existsNonEmptyFile(path: string): boolean {
   try {
     return existsSync(path) && statSync(path).isFile() && statSync(path).size > 0;
@@ -1064,6 +1081,8 @@ function formatLog(input: {
   createdAt: string;
   session: string;
   targetUrl: string;
+  currentUrl: string | null;
+  currentTitle: string | null;
   steps: BrowserUseLocalCheckResult["steps"];
 }): string {
   const lines = [
@@ -1071,7 +1090,9 @@ function formatLog(input: {
     `created_at=${input.createdAt}`,
     `driver=browser_use_cli`,
     `session=${input.session}`,
-    `target_url=${input.targetUrl}`
+    `target_url=${input.targetUrl}`,
+    `current_url=${input.currentUrl ?? ""}`,
+    `current_title=${input.currentTitle ?? ""}`
   ];
   for (const step of input.steps) {
     lines.push("", `$ ${step.command}`, `status=${step.status ?? "null"}`, step.stdout.trim(), step.stderr.trim());

@@ -1,4 +1,5 @@
 import { execSql, insert, makeId, nowIso, resetDemoData, sqlValue } from "./db/client.js";
+import { buildCanonicalExecutionRoutingMetadataForCommand } from "./codex/executionRouting.js";
 import { allocateParallelLanes } from "./runs/laneManager.js";
 import { createApprovalRequest } from "./runs/approvalGate.js";
 import { evaluateProofGate, summarizeProofGate } from "./runs/proofGate.js";
@@ -11,6 +12,11 @@ export function seedDailyAiDemo() {
   const runId = "run_demo_daily_ai";
   const objective =
     "Collect Daily AI sources, publish one candidate to X and LinkedIn, study engagement, sync receipts, refresh buffer, and keep cleanup proof.";
+  const routeMetadata = buildCanonicalExecutionRoutingMetadataForCommand({
+    command: objective,
+    source: "manual",
+    selectedAdapter: "local_worker"
+  });
 
   insert("runs", {
     id: runId,
@@ -19,7 +25,11 @@ export function seedDailyAiDemo() {
     objective,
     created_at: now,
     updated_at: now,
-    metadata_json: { ai_adapters: ["codex_cli", "codex_app", "chatgpt_subscription"], openai_api: "optional_docs_only" }
+    metadata_json: {
+      ai_adapters: ["codex_cli", "codex_app", "chatgpt_subscription"],
+      openai_api: "optional_docs_only",
+      ...routeMetadata
+    }
   });
 
   const planned = decomposeGoal(
@@ -67,7 +77,7 @@ export function seedDailyAiDemo() {
       lane_id: lanePlan.lanes[index]?.id,
       started_at: now,
       completed_at: now,
-      metadata_json: { resources: task.resources, parallel_safe: task.parallelSafe }
+      metadata_json: { resources: task.resources, parallel_safe: task.parallelSafe, ...routeMetadata }
     });
   });
 

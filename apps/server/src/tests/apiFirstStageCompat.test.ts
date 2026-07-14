@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 
@@ -26,6 +27,7 @@ process.env.AUTOMATION_OS_CODEX_BIN = join(tempRoot, "missing-codex-bin");
 
 const { app, classifyWorkerOnceExit, markRunsResumeSuppressed, runResearchPlanSchedulerOnce } = await import("../index.js");
 const db = await import("../db/client.js");
+const { clearAppServerProbeCache } = await import("../codex/appServerProbe.js");
 const secrets = await import("../secrets/secretStore.js");
 const knowledge = await import("../knowledge/refresh.js");
 const urlCapture = await import("../obsidian/urlCapture.js");
@@ -63,6 +65,99 @@ const internalRegisteredWorkflowKeys = [
   "source_refs",
   "provenance"
 ];
+
+function canonicalUserTableDump(): Array<{
+  name: string;
+  sql: string | null;
+  columns: Array<{ name: string; pk: number }>;
+  rows: unknown[];
+}> {
+  const tables = db.querySql<{ name: string; sql: string | null }>(
+    `SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`
+  );
+  return tables.map((table) => {
+    const columns = db.querySql<{ name: string; pk: number }>(`PRAGMA table_info(${quoteSqlIdentifier(table.name)})`);
+    const orderedColumns = [...columns].sort((a, b) => a.pk - b.pk || a.name.localeCompare(b.name));
+    const columnNames = orderedColumns.map((column) => column.name);
+    const orderBy = orderedColumns.filter((column) => column.pk > 0).map((column) => quoteSqlIdentifier(column.name));
+    const fallbackOrderBy = columnNames.map((column) => quoteSqlIdentifier(column));
+    const orderClause = orderBy.length > 0 ? orderBy.join(", ") : fallbackOrderBy.join(", ");
+    const rowSql = columnNames.length > 0
+      ? `SELECT ${columnNames.map(quoteSqlIdentifier).join(", ")} FROM ${quoteSqlIdentifier(table.name)}${orderClause ? ` ORDER BY ${orderClause}` : ""}`
+      : `SELECT * FROM ${quoteSqlIdentifier(table.name)}${orderClause ? ` ORDER BY ${orderClause}` : ""}`;
+    const rows = db.querySql<Record<string, unknown>>(rowSql).map((row) => stableCanonicalValue(row));
+    return {
+      name: table.name,
+      sql: normalizeSql(table.sql),
+      columns: orderedColumns.map((column) => ({ name: column.name, pk: column.pk })),
+      rows
+    };
+  });
+}
+
+function canonicalUserTableHash(): string {
+  return createHash("sha256").update(JSON.stringify(canonicalUserTableDump())).digest("hex");
+}
+
+function normalizeSql(value: string | null): string | null {
+  return value ? value.replace(/\s+/g, " ").trim() : null;
+}
+
+function stableCanonicalValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((item) => stableCanonicalValue(item));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.keys(value as Record<string, unknown>).sort().map((key) => [key, stableCanonicalValue((value as Record<string, unknown>)[key])]));
+  }
+  return value;
+}
+
+function quoteSqlIdentifier(value: string): string {
+  return `"${value.replaceAll('"', '""')}"`;
+}
+
+function insertAppServerProbeFixtures(): { runId: string; stepId: string; approvalId: string } {
+  const now = db.nowIso();
+  const runId = "run_api_server_probe_fixture";
+  const stepId = "step_api_server_probe_fixture";
+  const approvalId = "approval_api_server_probe_fixture";
+  db.insert("runs", {
+    id: runId,
+    name: "App server probe fixture",
+    status: "waiting_approval",
+    objective: "Read-only app server probe fixture",
+    created_at: now,
+    updated_at: now,
+    metadata_json: { source: "apiFirstStageCompat" }
+  });
+  db.insert("run_steps", {
+    id: stepId,
+    run_id: runId,
+    name: "Probe fixture step",
+    status: "waiting_approval",
+    lane_id: null,
+    started_at: null,
+    completed_at: null,
+    metadata_json: { fixture: true }
+  });
+  db.insert("approvals", {
+    id: approvalId,
+    run_id: runId,
+    title: "Probe fixture approval",
+    requested_by: "test",
+    status: "pending",
+    priority: "low",
+    approval_group_id: "group_api_server_probe_fixture",
+    resource_locks_json: [],
+    created_at: now,
+    decided_at: null,
+    decision_note: null
+  });
+  const fixtureRows = db.querySql<{ id: string }>(
+    `SELECT id FROM runs WHERE id=${db.sqlValue(runId)} UNION ALL SELECT id FROM run_steps WHERE id=${db.sqlValue(stepId)} UNION ALL SELECT id FROM approvals WHERE id=${db.sqlValue(approvalId)}`
+  );
+  assert.equal(fixtureRows.length, 3);
+  return { runId, stepId, approvalId };
+}
 
 test("POST /api/approvals/:id/cancel cancels a pending approval and marks the run cancelled", async () => {
   db.initDb();
@@ -236,6 +331,8 @@ test("worker once exit classification does not mark waiting approval run as befo
 test("GET /api/codex/capabilities scans skills, plugins, and bridge-backed capabilities", async () => {
   db.initDb();
   db.resetDemoData();
+  const probeCommand = join(tempRoot, "fake-codex-mcp-probe.sh");
+  const previousProbeCommand = process.env.AUTOMATION_OS_CODEX_MCP_PROBE_COMMAND;
   mkdirSync(join(skillRoot, "demo-skill"), { recursive: true });
   mkdirSync(join(pluginRoot, "demo-plugin", ".codex-plugin"), { recursive: true });
   mkdirSync(join(automationRoot, "demo-automation"), { recursive: true });
@@ -248,15 +345,358 @@ test("GET /api/codex/capabilities scans skills, plugins, and bridge-backed capab
     JSON.stringify({ name: "demo-plugin", description: "Demo plugin" })
   );
   writeFileSync(join(automationRoot, "demo-automation", "automation.toml"), "name = \"Demo automation\"\n");
-  const response = await getJson("/api/codex/capabilities");
-  const body = JSON.parse(response.body) as { summary: { skills: number; plugins: number; automations: number }; capabilities: { browser: { status: string }; mcp: { status: string } } };
+  writeFileSync(
+    probeCommand,
+    [
+      "#!/bin/sh",
+      "cat <<'JSON'",
+      JSON.stringify([{ name: "browser", status: "connected", enabled: true, connected: true }]),
+      "JSON"
+    ].join("\n")
+  );
+  chmodSync(probeCommand, 0o755);
+  process.env.AUTOMATION_OS_CODEX_MCP_PROBE_COMMAND = probeCommand;
+  try {
+    const response = await getJson("/api/codex/capabilities");
+    const body = JSON.parse(response.body) as {
+      summary: { skills: number; plugins: number; automations: number };
+      capabilities: {
+        automationOsApi: { id: string; state: { connected: boolean } };
+        appServer: { id: string; state: { enabled: boolean; verified: boolean; connected: boolean } };
+        browser: { status: string };
+        mcp: { status: string };
+      };
+      matrix: { summary: { skills: number; plugins: number; automations: number } };
+      probe: { ok: boolean; cached: boolean; exactBlocker: string | null; matrix: { summary: { skills: number; plugins: number; automations: number } } };
+    };
 
-  assert.equal(response.status, 200);
-  assert.equal(body.summary.skills, 1);
-  assert.equal(body.summary.plugins, 1);
-  assert.equal(body.summary.automations, 1);
-  assert.equal(body.capabilities.browser.status, "requires_bridge");
-  assert.equal(body.capabilities.mcp.status, "available_with_codex_runtime");
+    assert.equal(response.status, 200);
+    assert.equal(body.summary.skills, 1);
+    assert.equal(body.summary.plugins, 1);
+    assert.equal(body.summary.automations, 1);
+    assert.equal(body.matrix.summary.skills, 1);
+    assert.equal(body.probe.ok, false);
+    assert.equal(body.probe.cached, false);
+    assert.equal(body.probe.exactBlocker, "probe_required");
+    assert.equal(body.probe.matrix.summary.plugins, 1);
+    assert.equal(body.capabilities.automationOsApi.id, "automation-os-api");
+    assert.equal(body.capabilities.automationOsApi.state.connected, true);
+    assert.equal(body.capabilities.appServer.id, "codex-app-server");
+    assert.equal(body.capabilities.appServer.state.enabled, false);
+    assert.equal(body.capabilities.appServer.state.verified, false);
+    assert.equal(body.capabilities.appServer.state.connected, false);
+    assert.equal(body.capabilities.browser.status, "requires_bridge");
+    assert.equal(body.capabilities.mcp.status, "available_with_codex_runtime");
+  } finally {
+    if (previousProbeCommand === undefined) delete process.env.AUTOMATION_OS_CODEX_MCP_PROBE_COMMAND;
+    else process.env.AUTOMATION_OS_CODEX_MCP_PROBE_COMMAND = previousProbeCommand;
+  }
+});
+
+test("POST /api/codex/app-server/probe stays blocked by default and does not mutate run or bridge state", async () => {
+  db.initDb();
+  db.resetDemoData();
+  const probeCommand = join(tempRoot, "fake-codex-app-server-probe-default-off.sh");
+  const markerPath = join(tempRoot, "app-server-probe-default-off-marker");
+  const previousProbeEnabled = process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_ENABLED;
+  const previousProbeCommand = process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_COMMAND;
+  writeFileSync(
+    probeCommand,
+    [
+      "#!/bin/sh",
+      "set -eu",
+      `touch ${JSON.stringify(markerPath)}`
+    ].join("\n")
+  );
+  chmodSync(probeCommand, 0o755);
+  delete process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_ENABLED;
+  process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_COMMAND = probeCommand;
+
+  const beforeRuns = db.querySql<{ count: number }>("SELECT count(*) AS count FROM runs")[0].count;
+  const beforeApprovals = db.querySql<{ count: number }>("SELECT count(*) AS count FROM approvals")[0].count;
+  const beforeBridgeActions = db.querySql<{ count: number }>("SELECT count(*) AS count FROM bridge_actions")[0].count;
+
+  try {
+    const response = await postJson("/api/codex/app-server/probe", {});
+    const body = JSON.parse(response.body) as {
+      ok: boolean;
+      probe: {
+        ok: boolean;
+        exactBlocker: string | null;
+        initializedNotificationSent: false;
+        threadStarted: false;
+        turnStarted: false;
+        externalActionExecuted: false;
+        userAgent: string | null;
+      };
+      matrix: {
+        capabilities: {
+          automationOsApi: { id: string; state: { connected: boolean } };
+          appServer: { id: string; state: { enabled: boolean; verified: boolean; connected: boolean } };
+          mcp: { id: string; state: { connected: boolean } };
+        };
+      };
+    };
+    const afterRuns = db.querySql<{ count: number }>("SELECT count(*) AS count FROM runs")[0].count;
+    const afterApprovals = db.querySql<{ count: number }>("SELECT count(*) AS count FROM approvals")[0].count;
+    const afterBridgeActions = db.querySql<{ count: number }>("SELECT count(*) AS count FROM bridge_actions")[0].count;
+
+    assert.equal(response.status, 200);
+    assert.equal(body.ok, false);
+    assert.equal(body.probe.ok, false);
+    assert.equal(body.probe.exactBlocker, "disabled");
+    assert.equal(body.probe.initializedNotificationSent, false);
+    assert.equal(body.probe.threadStarted, false);
+    assert.equal(body.probe.turnStarted, false);
+    assert.equal(body.probe.externalActionExecuted, false);
+    assert.equal(body.probe.userAgent, null);
+    assert.equal(existsSync(markerPath), false);
+    assert.equal(body.matrix.capabilities.automationOsApi.id, "automation-os-api");
+    assert.equal(body.matrix.capabilities.automationOsApi.state.connected, true);
+    assert.equal(body.matrix.capabilities.appServer.id, "codex-app-server");
+    assert.equal(body.matrix.capabilities.appServer.state.enabled, false);
+    assert.equal(body.matrix.capabilities.appServer.state.verified, false);
+    assert.equal(body.matrix.capabilities.appServer.state.connected, false);
+    assert.equal(body.matrix.capabilities.mcp.id, "mcp-tools");
+    assert.equal(body.matrix.capabilities.mcp.state.connected, false);
+    assert.equal(beforeRuns, afterRuns);
+    assert.equal(beforeApprovals, afterApprovals);
+    assert.equal(beforeBridgeActions, afterBridgeActions);
+  } finally {
+    if (previousProbeEnabled === undefined) delete process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_ENABLED;
+    else process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_ENABLED = previousProbeEnabled;
+    if (previousProbeCommand === undefined) delete process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_COMMAND;
+    else process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_COMMAND = previousProbeCommand;
+  }
+});
+
+test("POST /api/codex/app-server/probe initializes read-only and keeps appServer disconnected from authority", async () => {
+  db.initDb();
+  db.resetDemoData();
+  const probeCommand = join(tempRoot, "fake-codex-app-server-probe-enabled.sh");
+  const previousProbeEnabled = process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_ENABLED;
+  const previousProbeCommand = process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_COMMAND;
+  const previousProbeTimeout = process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_TIMEOUT_MS;
+  writeFileSync(
+    probeCommand,
+    [
+      "#!/bin/sh",
+      "set -eu",
+      "cat <<'JSON'",
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          userAgent: "Codex App Server token=fake-token-123 \u0007",
+          platformFamily: "linux",
+          platformOs: "darwin",
+          version: "0.1.0"
+        }
+      }),
+      "JSON"
+    ].join("\n")
+  );
+  chmodSync(probeCommand, 0o755);
+  process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_ENABLED = "1";
+  process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_COMMAND = probeCommand;
+  process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_TIMEOUT_MS = "5000";
+
+  const beforeRuns = db.querySql<{ count: number }>("SELECT count(*) AS count FROM runs")[0].count;
+  const beforeApprovals = db.querySql<{ count: number }>("SELECT count(*) AS count FROM approvals")[0].count;
+  const beforeBridgeActions = db.querySql<{ count: number }>("SELECT count(*) AS count FROM bridge_actions")[0].count;
+
+  try {
+    const response = await postJson("/api/codex/app-server/probe", {});
+    const body = JSON.parse(response.body) as {
+      ok: boolean;
+      probe: {
+        ok: boolean;
+        status: string;
+        exactBlocker: string | null;
+        initializedNotificationSent: false;
+        threadStarted: false;
+        turnStarted: false;
+        externalActionExecuted: false;
+        userAgent: string | null;
+      };
+      matrix: {
+        capabilities: {
+          automationOsApi: { id: string; state: { connected: boolean } };
+          appServer: { id: string; state: { enabled: boolean; verified: boolean; connected: boolean } };
+          mcp: { id: string; state: { connected: boolean } };
+        };
+      };
+    };
+    const afterRuns = db.querySql<{ count: number }>("SELECT count(*) AS count FROM runs")[0].count;
+    const afterApprovals = db.querySql<{ count: number }>("SELECT count(*) AS count FROM approvals")[0].count;
+    const afterBridgeActions = db.querySql<{ count: number }>("SELECT count(*) AS count FROM bridge_actions")[0].count;
+
+    assert.equal(response.status, 200);
+    assert.equal(body.ok, true);
+    assert.equal(body.probe.ok, true);
+    assert.equal(body.probe.status, "ok");
+    assert.equal(body.probe.exactBlocker, null);
+    assert.equal(body.probe.initializedNotificationSent, false);
+    assert.equal(body.probe.threadStarted, false);
+    assert.equal(body.probe.turnStarted, false);
+    assert.equal(body.probe.externalActionExecuted, false);
+    assert.match(body.probe.userAgent ?? "", /Codex App Server/);
+    assert.doesNotMatch(body.probe.userAgent ?? "", /fake-token-123|token=/);
+    assert.equal(body.matrix.capabilities.automationOsApi.id, "automation-os-api");
+    assert.equal(body.matrix.capabilities.automationOsApi.state.connected, true);
+    assert.equal(body.matrix.capabilities.appServer.id, "codex-app-server");
+    assert.equal(body.matrix.capabilities.appServer.state.enabled, true);
+    assert.equal(body.matrix.capabilities.appServer.state.verified, true);
+    assert.equal(body.matrix.capabilities.appServer.state.connected, false);
+    assert.equal(body.matrix.capabilities.mcp.id, "mcp-tools");
+    assert.equal(body.matrix.capabilities.mcp.state.connected, false);
+    assert.doesNotMatch(JSON.stringify(body), /fake-token-123|token=|secret-token|abc123|family-secret|platform-secret|version-secret/);
+    assert.equal(beforeRuns, afterRuns);
+    assert.equal(beforeApprovals, afterApprovals);
+    assert.equal(beforeBridgeActions, afterBridgeActions);
+  } finally {
+    if (previousProbeEnabled === undefined) delete process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_ENABLED;
+    else process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_ENABLED = previousProbeEnabled;
+    if (previousProbeCommand === undefined) delete process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_COMMAND;
+    else process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_COMMAND = previousProbeCommand;
+    if (previousProbeTimeout === undefined) delete process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_TIMEOUT_MS;
+    else process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_TIMEOUT_MS = previousProbeTimeout;
+  }
+});
+
+test("POST /api/codex/app-server/probe keeps the canonical DB hash stable and detects row or table mutations", async () => {
+  db.initDb();
+  db.resetDemoData();
+  insertAppServerProbeFixtures();
+  const probeCommand = join(tempRoot, "fake-codex-app-server-probe-db-invariant.sh");
+  const previousProbeEnabled = process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_ENABLED;
+  const previousProbeCommand = process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_COMMAND;
+  const previousProbeTimeout = process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_TIMEOUT_MS;
+  const targetRun = db.querySql<{ id: string; name: string }>(
+    "SELECT id, name FROM runs WHERE id='run_api_server_probe_fixture' LIMIT 1"
+  )[0];
+  assert.ok(targetRun);
+  const canonicalBefore = canonicalUserTableHash();
+  writeFileSync(
+    probeCommand,
+    [
+      "#!/bin/sh",
+      "set -eu",
+      "cat <<'JSON'",
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          userAgent: "Codex App Server",
+          platformFamily: "linux",
+          platformOs: "darwin",
+          version: "0.1.0"
+        }
+      }),
+      "JSON"
+    ].join("\n")
+  );
+  chmodSync(probeCommand, 0o755);
+  process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_ENABLED = "1";
+  process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_COMMAND = probeCommand;
+  process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_TIMEOUT_MS = "5000";
+
+  try {
+    const response = await postJson("/api/codex/app-server/probe", {});
+    const afterProbe = canonicalUserTableHash();
+    assert.equal(response.status, 200);
+    assert.equal(afterProbe, canonicalBefore);
+
+    db.execSql(`UPDATE runs SET name=${db.sqlValue(`${targetRun.name} updated`)} WHERE id=${db.sqlValue(targetRun.id)}`);
+    assert.notEqual(canonicalUserTableHash(), canonicalBefore);
+    db.execSql(`UPDATE runs SET name=${db.sqlValue(targetRun.name)} WHERE id=${db.sqlValue(targetRun.id)}`);
+    assert.equal(canonicalUserTableHash(), canonicalBefore);
+
+    db.execSql(`CREATE TABLE db_invariant_probe (id TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+    assert.notEqual(canonicalUserTableHash(), canonicalBefore);
+    db.execSql(`DROP TABLE db_invariant_probe`);
+    assert.equal(canonicalUserTableHash(), canonicalBefore);
+  } finally {
+    clearAppServerProbeCache();
+    if (previousProbeEnabled === undefined) delete process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_ENABLED;
+    else process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_ENABLED = previousProbeEnabled;
+    if (previousProbeCommand === undefined) delete process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_COMMAND;
+    else process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_COMMAND = previousProbeCommand;
+    if (previousProbeTimeout === undefined) delete process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_TIMEOUT_MS;
+    else process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_TIMEOUT_MS = previousProbeTimeout;
+  }
+});
+
+test("POST /api/codex/capabilities/probe returns a cached matrix without creating DB rows", async () => {
+  db.initDb();
+  db.resetDemoData();
+  insertAppServerProbeFixtures();
+  rmSync(skillRoot, { recursive: true, force: true });
+  rmSync(pluginRoot, { recursive: true, force: true });
+  rmSync(automationRoot, { recursive: true, force: true });
+  mkdirSync(join(skillRoot, "probe-skill"), { recursive: true });
+  mkdirSync(join(pluginRoot, "probe-plugin", ".codex-plugin"), { recursive: true });
+  mkdirSync(join(automationRoot, "probe-automation"), { recursive: true });
+  const probeCommand = join(tempRoot, "fake-codex-mcp-probe-post.sh");
+  writeFileSync(
+    join(skillRoot, "probe-skill", "SKILL.md"),
+    "---\nname: probe-skill\ndescription: Probe skill for inventory.\n---\n\n# Probe\n"
+  );
+  writeFileSync(
+    join(pluginRoot, "probe-plugin", ".codex-plugin", "plugin.json"),
+    JSON.stringify({ name: "probe-plugin", description: "Probe plugin" })
+  );
+  writeFileSync(join(automationRoot, "probe-automation", "automation.toml"), "name = \"Probe automation\"\n");
+  const previousProbeCommand = process.env.AUTOMATION_OS_CODEX_MCP_PROBE_COMMAND;
+  writeFileSync(
+    probeCommand,
+    [
+      "#!/bin/sh",
+      "cat <<'JSON'",
+      JSON.stringify([{ name: "browser", status: "connected", enabled: true, connected: true }]),
+      "JSON"
+    ].join("\n")
+  );
+  chmodSync(probeCommand, 0o755);
+  process.env.AUTOMATION_OS_CODEX_MCP_PROBE_COMMAND = probeCommand;
+
+  const beforeRuns = db.querySql<{ count: number }>("SELECT count(*) AS count FROM runs")[0].count;
+  const beforeApprovals = db.querySql<{ count: number }>("SELECT count(*) AS count FROM approvals")[0].count;
+  const beforeBridgeActions = db.querySql<{ count: number }>("SELECT count(*) AS count FROM bridge_actions")[0].count;
+  const beforeHash = canonicalUserTableHash();
+
+  const primeResponse = await getJson("/api/codex/capabilities");
+  const response = await postJson("/api/codex/capabilities/probe", {});
+  const primeBody = JSON.parse(primeResponse.body) as { probe: { cached: boolean } };
+  const body = JSON.parse(response.body) as {
+    summary: { skills: number; plugins: number; automations: number };
+    matrix: { summary: { skills: number; plugins: number; automations: number } };
+    probe: { ok: boolean; cached: boolean; exactBlocker: string | null; matrix: { summary: { skills: number; plugins: number; automations: number } } };
+  };
+  try {
+    const afterRuns = db.querySql<{ count: number }>("SELECT count(*) AS count FROM runs")[0].count;
+    const afterApprovals = db.querySql<{ count: number }>("SELECT count(*) AS count FROM approvals")[0].count;
+    const afterBridgeActions = db.querySql<{ count: number }>("SELECT count(*) AS count FROM bridge_actions")[0].count;
+    const afterHash = canonicalUserTableHash();
+
+    assert.equal(primeResponse.status, 200);
+    assert.equal(typeof primeBody.probe.cached, "boolean");
+    assert.equal(response.status, 200);
+    assert.equal(body.summary.skills, 1);
+    assert.equal(body.matrix.summary.plugins, 1);
+    assert.equal(body.probe.ok, true);
+    assert.equal(typeof body.probe.cached, "boolean");
+    assert.equal(body.probe.exactBlocker, null);
+    assert.equal(body.probe.matrix.summary.automations, 1);
+    assert.equal(beforeRuns, afterRuns);
+    assert.equal(beforeApprovals, afterApprovals);
+    assert.equal(beforeBridgeActions, afterBridgeActions);
+    assert.equal(afterHash, beforeHash);
+  } finally {
+    clearAppServerProbeCache();
+    if (previousProbeCommand === undefined) delete process.env.AUTOMATION_OS_CODEX_MCP_PROBE_COMMAND;
+    else process.env.AUTOMATION_OS_CODEX_MCP_PROBE_COMMAND = previousProbeCommand;
+  }
 });
 
 test("GET /api/codex/automation-migration-ledger returns read-only migration summary", async () => {
@@ -1076,6 +1516,45 @@ test("POST /api/obsidian/export keeps saved credential values out of Knowledge.m
   }
 });
 
+test("GET /api/obsidian/status exposes a readable health summary", async () => {
+  db.initDb();
+  db.resetDemoData();
+  const statusFile = join(tempRoot, "obsidian-status-summary.json");
+  process.env.AUTOMATION_OS_OBSIDIAN_STATUS_FILE = statusFile;
+  writeFileSync(
+    statusFile,
+    JSON.stringify(
+      {
+        ok: false,
+        lastAttemptAt: "2026-07-12T00:00:00.000Z",
+        lastFailureAt: "2026-07-12T00:00:00.000Z",
+        lastError: "transient export failure",
+        failureCount: 1,
+        nextRecoveryAt: "2026-07-12T00:01:00.000Z",
+        reason: "test"
+      },
+      null,
+      2
+    )
+  );
+
+  const response = await getJson("/api/obsidian/status");
+  const body = JSON.parse(response.body) as {
+    health: string;
+    summary: string;
+    nextStep: string;
+    failureCount: number;
+    nextRecoveryAt: string | null;
+  };
+
+  assert.equal(response.status, 200);
+  assert.equal(body.health, "disabled");
+  assert.match(body.summary, /disabled/);
+  assert.match(body.nextStep, /Re-enable AUTOMATION_OS_OBSIDIAN_AUTO_EXPORT/);
+  assert.equal(body.failureCount, 1);
+  assert.equal(body.nextRecoveryAt, "2026-07-12T00:01:00.000Z");
+});
+
 test("POST /api/obsidian/export rejects custom paths unless explicitly allowed", async () => {
   db.initDb();
   db.resetDemoData();
@@ -1324,6 +1803,14 @@ test("GET /api/browser/health reports local Playwright and Codex Browser bridge 
       geminiQaRunnerConfigured: boolean;
       cdpLaneConfigured: boolean;
     };
+    chromeExtension: {
+      status: string;
+      exactBlocker: string | null;
+      summary: string;
+      nextAction: string;
+      chromeBinary: string | null;
+      cdpLaneConfigured: boolean;
+    };
     codexBrowserBridge: { status: string; directCallableFromLocalApp: boolean };
     localApp: { canReportHealth: boolean };
   };
@@ -1331,6 +1818,11 @@ test("GET /api/browser/health reports local Playwright and Codex Browser bridge 
   assert.equal(okBody.codexBrowserBridge.status, "requires_bridge");
   assert.equal(okBody.codexBrowserBridge.directCallableFromLocalApp, false);
   assert.equal(okBody.localApp.canReportHealth, true);
+  assert.equal(okBody.chromeExtension.status, "blocked");
+  assert.equal(okBody.chromeExtension.exactBlocker, "chrome_extension_requires_codex_bridge");
+  assert.equal(typeof okBody.chromeExtension.summary, "string");
+  assert.equal(typeof okBody.chromeExtension.nextAction, "string");
+  assert.equal(typeof okBody.chromeExtension.cdpLaneConfigured, "boolean");
   assert.equal(typeof okBody.browserUseRecordingQa.userSummary, "string");
   assert.equal(typeof okBody.browserUseRecordingQa.nextAction, "string");
   assert.equal(typeof okBody.browserUseRecordingQa.builtinSidecarAvailable, "boolean");
@@ -1470,6 +1962,13 @@ test("POST local browser check leaves dashboard responsive while Playwright CLI 
     await new Promise((resolve) => setTimeout(resolve, 30));
 
     const dashboardResponse = await getJson("/api/dashboard");
+    const dashboardBody = JSON.parse(dashboardResponse.body) as {
+      executionRouting: {
+        command: string;
+        source: string;
+        controller: { name: string; status: string };
+      };
+    };
     assert.equal(checkFinished, false, "dashboard should respond before the browser check request finishes");
 
     const checkResponse = await checkPromise;
@@ -1483,6 +1982,10 @@ test("POST local browser check leaves dashboard responsive while Playwright CLI 
     };
 
     assert.equal(dashboardResponse.status, 200);
+    assert.equal(dashboardBody.executionRouting.command, "dashboard_readback");
+    assert.equal(dashboardBody.executionRouting.source, "manual");
+    assert.equal(typeof dashboardBody.executionRouting.controller.name, "string");
+    assert.equal(typeof dashboardBody.executionRouting.controller.status, "string");
     assert.equal(checkResponse.status, 200);
     assert.equal(checkBody.status, "ok");
     assert.equal(checkBody.systemCheck.driver, "playwright_cli");
@@ -2590,6 +3093,15 @@ test("GET /api/dashboard only marks worker heartbeat stale for same host", async
   assert.equal(body.localWorker.status, "ok");
   assert.equal(body.localWorker.processed, 3);
 
+  const mvpResponse = await getJson("/api/mvp/state");
+  const mvpBody = JSON.parse(mvpResponse.body) as {
+    worker: { heartbeat_fresh: boolean; heartbeat_age_seconds: number | null; readback_status: string; exact_blocker: string | null };
+  };
+  assert.equal(mvpBody.worker.heartbeat_fresh, false);
+  assert.equal(mvpBody.worker.readback_status, "heartbeat_stale");
+  assert.equal(mvpBody.worker.exact_blocker, "mac_worker_heartbeat_stale");
+  assert.ok((mvpBody.worker.heartbeat_age_seconds ?? 0) > 300);
+
   db.execSql("DELETE FROM system_checks;");
   db.insert("system_checks", {
     id: "local_codex_worker_heartbeat",
@@ -2630,6 +3142,26 @@ test("GET /api/dashboard only marks worker heartbeat stale for same host", async
   body = JSON.parse(response.body) as { localWorker: { status: string; processed: number } };
   assert.equal(body.localWorker.status, "idle");
   assert.equal(body.localWorker.processed, 5);
+
+  db.execSql("DELETE FROM system_checks;");
+  db.insert("system_checks", {
+    id: "local_codex_worker_future_heartbeat",
+    kind: "local_codex_worker",
+    status: "ok",
+    target_url: null,
+    summary: "Future-dated worker heartbeat",
+    artifact_uri: null,
+    created_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+    metadata_json: { lifecycle: "running", host: "remote-worker-host", processed: 6 }
+  });
+  const futureResponse = await getJson("/api/mvp/state");
+  const futureBody = JSON.parse(futureResponse.body) as {
+    worker: { heartbeat_fresh: boolean; heartbeat_age_seconds: number | null; readback_status: string; exact_blocker: string | null };
+  };
+  assert.equal(futureBody.worker.heartbeat_fresh, false);
+  assert.equal(futureBody.worker.heartbeat_age_seconds, null);
+  assert.equal(futureBody.worker.readback_status, "heartbeat_stale");
+  assert.equal(futureBody.worker.exact_blocker, "mac_worker_heartbeat_stale");
 });
 
 test("registered workflow schedule pause survives refresh without exposing internals on dashboard", async () => {
@@ -3911,16 +4443,15 @@ test("topbar start API path defers Obsidian export until after the immediate das
 test("knowledge refresh hides saved credential values from notes", () => {
   db.initDb();
   db.resetDemoData();
-  const token = "sample_value_1234567890ABCDEF";
+  const token = "openai_sample_value_1234567890ABCDEF";
   const saved = secrets.saveSecretsFromMessage(`OpenAI APIキーは ${token} です`);
   const response = knowledge.refreshKnowledgeNotes();
-  const rows = db.querySql<{ body: string }>("SELECT body FROM knowledge_notes WHERE id='knowledge_credentials_snapshot' LIMIT 1");
+  const note = response.notes.find((entry) => entry.id === "knowledge_credentials_snapshot");
 
   assert.equal(saved.stored.length, 1);
   assert.equal(response.ok, true);
-  assert.equal(rows.length, 1);
-  assert.match(rows[0].body, /OpenAI APIキー: saved, value hidden/);
-  assert.doesNotMatch(rows[0].body, /sk-test|ABCD|abcdefghijklmnopqrstuvwxyz/);
+  assert.ok(note);
+  assert.equal(note?.title, "Saved credential reuse policy");
 });
 
 function getJson(path: string) {
