@@ -3783,7 +3783,7 @@ export function getDashboard(companyIds?: string[]) {
     automations: (rawMvpAutomations as Array<Record<string, unknown>>).map((row) => ({
       id: String(row.id ?? ""),
       company_id: String(row.company_id ?? row.project_id ?? ""),
-      project_id: String(row.project_id ?? "project-a"),
+      project_id: String(row.project_id ?? row.company_id ?? ""),
       automation_type: String(row.automation_type ?? "sns-post"),
       name: String(row.name ?? ""),
       desc: String(row.description ?? row.desc ?? ""),
@@ -3802,7 +3802,7 @@ export function getDashboard(companyIds?: string[]) {
     })),
     builder_specs: (rawMvpAutomations as Array<Record<string, unknown>>).map((row) => ({
       automation_id: String(row.id ?? ""),
-      project_id: String(row.project_id ?? "project-a"),
+      project_id: String(row.project_id ?? row.company_id ?? ""),
       updated_at: String(row.updated_at ?? ""),
       spec: safeJsonParse<Record<string, unknown>>(typeof row.builder_spec_json === "string" ? row.builder_spec_json : "{}", {})
     })),
@@ -4159,12 +4159,7 @@ function deriveRunProjectId(run: { company_id?: unknown; project_id?: unknown; m
     metadata.projectSlug
   );
   if (metadataProject) return metadataProject;
-  const text = `${String(run.name ?? "")} ${String(run.objective ?? "")} ${JSON.stringify(metadata)}`.toLowerCase();
-  if (/project\s*-?\s*a|daily-ai|job application|nisenprints|sns|feedback|dm返信|広告投稿/.test(text)) return "project-a";
-  if (/project\s*-?\s*b/.test(text)) return "project-b";
-  if (/project\s*-?\s*c/.test(text)) return "project-c";
-  if (/project\s*-?\s*d/.test(text)) return "project-d";
-  return "project-a";
+  return "";
 }
 
 function firstStringValue(...values: unknown[]): string | null {
@@ -4274,7 +4269,7 @@ function getPostgresFastDashboard() {
     registeredWorkflows: publicRegisteredWorkflows,
     automations: (rawMvpAutomations as Array<Record<string, unknown>>).map((row) => ({
       id: String(row.id ?? ""),
-      project_id: String(row.project_id ?? "project-a"),
+      project_id: String(row.project_id ?? row.company_id ?? ""),
       automation_type: String(row.automation_type ?? "sns-post"),
       name: String(row.name ?? ""),
       desc: String(row.description ?? row.desc ?? ""),
@@ -4293,7 +4288,7 @@ function getPostgresFastDashboard() {
     })),
     builder_specs: (rawMvpAutomations as Array<Record<string, unknown>>).map((row) => ({
       automation_id: String(row.id ?? ""),
-      project_id: String(row.project_id ?? "project-a"),
+      project_id: String(row.project_id ?? row.company_id ?? ""),
       updated_at: String(row.updated_at ?? ""),
       spec: safeJsonParse<Record<string, unknown>>(typeof row.builder_spec_json === "string" ? row.builder_spec_json : "{}", {})
     })),
