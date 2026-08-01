@@ -62,9 +62,24 @@ test("Daily AI completion reconciliation CLI records complete readback without c
   const now = db.nowIso();
   db.insert("runs", {
     id: "run_mqtbe1ef_p0tjpw",
+    company_id: "project-a",
     name: "Daily AI registered workflow historical blocker",
     status: "blocked",
     objective: "historical blocked Daily AI run",
+    created_at: now,
+    updated_at: now,
+    metadata_json: {
+      registeredWorkflowId: "daily-ai-research-publish-run",
+      registered_workflow_id: "daily-ai-research-publish-run",
+      proof_gate: { ok: false, missing: ["daily_ai_buffer"], present: ["daily_ai_sync"] }
+    }
+  });
+  db.insert("runs", {
+    id: "run_daily_ai_completion_other_company",
+    company_id: "project-b",
+    name: "Daily AI registered workflow historical blocker",
+    status: "blocked",
+    objective: "same workflow in another company",
     created_at: now,
     updated_at: now,
     metadata_json: {
@@ -90,7 +105,13 @@ test("Daily AI completion reconciliation CLI records complete readback without c
 
   const output = execFileSync(
     process.execPath,
-    ["apps/server/dist/cli/reconcileDailyAiCompletion.js", `--summary=${summaryPath}`, `--out-dir=${outDir}`, "--commit"],
+    [
+      "apps/server/dist/cli/reconcileDailyAiCompletion.js",
+      `--summary=${summaryPath}`,
+      `--out-dir=${outDir}`,
+      `--source-run-id=run_mqtbe1ef_p0tjpw`,
+      "--commit"
+    ],
     {
       cwd: process.cwd(),
       env: { ...process.env, AUTOMATION_OS_DB: process.env.AUTOMATION_OS_DB ?? "" },
@@ -129,8 +150,9 @@ test("Daily AI completion reconciliation CLI records complete readback without c
 
   const sourceRun = db.querySql<{ status: string }>("SELECT status FROM runs WHERE id='run_mqtbe1ef_p0tjpw'")[0];
   assert.equal(sourceRun.status, "blocked");
-  const newRun = db.querySql<{ status: string; metadata_json: string }>(`SELECT status, metadata_json FROM runs WHERE id='${body.committedRun.runId}'`)[0];
+  const newRun = db.querySql<{ status: string; company_id: string | null; metadata_json: string }>(`SELECT status, company_id, metadata_json FROM runs WHERE id='${body.committedRun.runId}'`)[0];
   assert.equal(newRun.status, "complete");
+  assert.equal(newRun.company_id, "project-a");
   const metadata = JSON.parse(newRun.metadata_json) as {
     reconciliation_of_run_id: string;
     reconciliation_kind: string;
@@ -149,8 +171,9 @@ test("Daily AI completion reconciliation CLI records complete readback without c
   assert.ok(metadata.proof_gate.present.includes("daily_ai_completion_reconciliation_readback"));
   const step = db.querySql<{ status: string }>(`SELECT status FROM run_steps WHERE run_id='${body.committedRun.runId}'`)[0];
   assert.equal(step.status, "completed");
-  const proof = db.querySql<{ proof_type: string; uri: string }>(`SELECT proof_type, uri FROM proofs WHERE id='${body.committedRun.proofId}'`)[0];
+  const proof = db.querySql<{ proof_type: string; company_id: string | null; uri: string }>(`SELECT proof_type, company_id, uri FROM proofs WHERE id='${body.committedRun.proofId}'`)[0];
   assert.equal(proof.proof_type, "daily_ai_completion_reconciliation_readback");
+  assert.equal(proof.company_id, "project-a");
   assert.match(proof.uri, /daily-ai-completion-reconciliation-receipt\.json$/);
   const event = db.querySql<{ event_type: string }>(`SELECT event_type FROM worker_events WHERE run_id='${body.committedRun.runId}'`)[0];
   assert.equal(event.event_type, "worker_completed");

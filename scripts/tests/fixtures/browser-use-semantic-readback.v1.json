@@ -1,0 +1,29 @@
+{
+  "schema": "browser_use_semantic_readback.v1",
+  "url": "https://example.com/",
+  "url_sha256": "0f115db062b7c0dd030b16878c99dea5c354b49dc37b38eb8846179c7783e9d7",
+  "origin": "https://example.com",
+  "origin_sha256": "100680ad546ce6a577f42f52df33b4cfdca756859e664b8d7de329b150d09ce9",
+  "title_sha256": "162b81548a8db0ab220f7137405fb003019c266883d4181869662ad7eafdbc4d",
+  "title_length": 14,
+  "state": {
+    "ready_state": "complete",
+    "url": "https://example.com/",
+    "origin": "https://example.com",
+    "redirect_count": 0,
+    "dns_revalidation": true,
+    "dns_private_address_count": 0,
+    "dns_link_local_address_count": 0,
+    "dns_loopback_address_count": 0
+  },
+  "state_sha256": "bc662b9903b1d405c9b3c3e18b555df85433f43c07a851b403b1ba0e707db835",
+  "redirect_hops": [],
+  "redirect_count": 0,
+  "final_dns_resolution": {
+    "public_only": true,
+    "private_address_count": 0,
+    "link_local_address_count": 0,
+    "loopback_address_count": 0,
+    "address_count": 1
+  }
+}

@@ -25,6 +25,10 @@ test("run detail endpoint fetches run-scoped rows beyond dashboard limits", () =
   assert.match(appSource, /const selectedSteps = detailForCurrentRun\?\.steps \?\? \[\]/);
   assert.match(appSource, /const selectedProofs = detailForCurrentRun\?\.proofs/);
   assert.match(appSource, /const selectedWorkerEvents = detailForCurrentRun\?\.workerEvents \?\? \[\]/);
+  const scopedRunDetailSource = appSource.slice(appSource.indexOf("function TruthfulRunDetailPage"), appSource.indexOf("function TruthfulRecoveryPage"));
+  assert.match(scopedRunDetailSource, /const companyId = projectSlugFromRoute\(route\)/);
+  assert.match(scopedRunDetailSource, /return Boolean\(companyId\) && \(item\.company_id \?\? item\.project_id \?\? automationCompanyId\) === companyId/);
+  assert.match(scopedRunDetailSource, /const proofs = \(model\.mvpState\.proofs \?\? \[\]\)\.filter\(\(proof\) => proof\.run_id === runId\s+&& \(\(!proof\.company_id && !proof\.project_id\) \|\| \(proof\.company_id \?\? proof\.project_id\) === companyId\)\);/);
 });
 
 test("proof viewer endpoint is id based and blocks unsafe raw paths", () => {
@@ -35,7 +39,8 @@ test("proof viewer endpoint is id based and blocks unsafe raw paths", () => {
   const targetSource = serverSource.slice(serverSource.indexOf("function resolveProofTarget"), serverSource.indexOf("function proofTargetString"));
   const previewSource = serverSource.slice(serverSource.indexOf("function redactProofPreview"), serverSource.indexOf("function imageMetadata"));
 
-  assert.match(viewerSource, /getProofView\(req\.params\.id\)/);
+  assert.match(viewerSource, /getProofView\(req\.params\.id, actorCompanyIds\(\)\)/);
+  assert.match(resolverSource, /findScopedProof\(proofId, companyIds\)/);
   assert.match(resolverSource, /SELECT \* FROM proofs WHERE id=/);
   assert.match(targetSource, /\^https\?:\\\/\\\//);
   assert.match(targetSource, /unsupported_uri_scheme/);

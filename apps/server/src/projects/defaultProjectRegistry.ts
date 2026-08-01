@@ -157,6 +157,48 @@ export function buildDefaultProjectRegistry(): ProjectRegistry {
         context_pack: "/Users/nichikatanaka/Documents/Obsidian Vault/05_Projects/Generated Context Packs/apparel-heavy-chain.md"
       },
       {
+        id: "muscle-ai",
+        label: "MyPro / Muscle AI",
+        aliases: ["MyPro", "Muscle AI", "muscle"],
+        root: "/Users/nichikatanaka/Desktop/muscle/muscle",
+        owner_layer: "project_workspace",
+        obsidian: true,
+        authority_files: ["STATE.md", "AGENTS.md", "PROJECT_DESIGN.md", "GOAL.md", "muscle.xcodeproj/project.pbxproj"],
+        artifact_roots: ["goals", "work", "build", "test-results"],
+        source_of_truth: [
+          "/Users/nichikatanaka/Desktop/muscle/muscle/STATE.md",
+          "/Users/nichikatanaka/Desktop/muscle/muscle/PROJECT_DESIGN.md",
+          "/Users/nichikatanaka/Desktop/muscle/muscle/GOAL.md",
+          "/Users/nichikatanaka/Desktop/muscle/muscle/goals/"
+        ],
+        related_projects: ["automation-os", "local-codex"],
+        allowed_automation: ["safe_auto_fix", "read_only_audit"],
+        approval_required: ["deploy", "external_api_write", "github_push", "delete", "external_service_settings_change", "secret_change"],
+        human_only: ["billing", "purchase", "payment", "checkout", "paid_subscription", "invoice", "captcha", "otp", "security_code", "identity_verification"],
+        context_pack: "/Users/nichikatanaka/Documents/Obsidian Vault/05_Projects/Generated Context Packs/muscle-ai.md"
+      },
+      {
+        id: "heavy-chain",
+        label: "Heavy Chain",
+        aliases: ["Heavy Chain", "heavy-chain", "Apparel Heavy Chain"],
+        root: "/Users/nichikatanaka/Documents/Codex/external-repos/heavy-chain",
+        owner_layer: "project_workspace",
+        obsidian: true,
+        authority_files: ["STATE.md", "PROJECT_DESIGN.md", "GOAL.md", "package.json"],
+        artifact_roots: ["output", "artifacts", "test-results"],
+        source_of_truth: [
+          "/Users/nichikatanaka/Documents/Codex/external-repos/heavy-chain/STATE.md",
+          "/Users/nichikatanaka/Documents/Codex/external-repos/heavy-chain/PROJECT_DESIGN.md",
+          "/Users/nichikatanaka/Documents/Codex/external-repos/heavy-chain/GOAL.md",
+          "/Users/nichikatanaka/Documents/Codex/external-repos/heavy-chain/output/"
+        ],
+        related_projects: ["automation-os", "apparel-ai-workspace", "apparel-heavy-chain", "local-codex"],
+        allowed_automation: ["safe_auto_fix", "read_only_audit"],
+        approval_required: ["deploy", "external_api_write", "github_push", "delete", "external_service_settings_change", "secret_change"],
+        human_only: ["billing", "purchase", "payment", "checkout", "paid_subscription", "invoice", "captcha", "otp", "security_code", "identity_verification"],
+        context_pack: "/Users/nichikatanaka/Documents/Obsidian Vault/05_Projects/Generated Context Packs/heavy-chain.md"
+      },
+      {
         id: "prompt-transfer",
         label: "Prompt Transfer",
         root: "/Users/nichikatanaka/.agents/skills/prompt-transfer",

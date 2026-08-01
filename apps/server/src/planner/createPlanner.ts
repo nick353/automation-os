@@ -1,16 +1,18 @@
 import { spawn } from "node:child_process";
 import { redactSensitiveText } from "../obsidian/redaction.js";
+import { CodexAppServerClient, type CodexAppServerEvent } from "../codex/appServerClient.js";
 
 export type CreatePlannerMessage = {
   role: "assistant" | "user";
   text: string;
 };
 
-export type CreatePlannerProvider = "auto" | "codex" | "openai" | "local";
+export type CreatePlannerProvider = "auto" | "codex" | "codex_app_server" | "openai" | "local";
 
 export type CreatePlannerResult = {
-  source: "local_codex" | "openai" | "local_fallback";
+  source: "local_codex" | "codex_app_server" | "openai" | "local_fallback";
   intent?: "answer_question" | "plan_workflow";
+  operation?: "create_automation" | "manage_workflow" | "answer_question";
   exactBlocker?: string;
   model?: string;
   title: string;
@@ -47,6 +49,9 @@ export async function createPlannerResponse(input: {
       return buildLocalPlanner(messages, blocker);
     }
   }
+  if (provider === "codex_app_server") {
+    return (await createCodexAppServerPlannerResponse({ messages, currentDraft: input.currentDraft })).result;
+  }
   if (provider === "auto" && !process.env.OPENAI_API_KEY) return buildLocalPlanner(messages, "openai_api_key_missing");
   if (provider !== "openai" && provider !== "auto") return buildLocalPlanner(messages, "local_planner_selected");
   const apiKey = process.env.OPENAI_API_KEY;
@@ -68,7 +73,52 @@ export async function createPlannerResponse(input: {
 
 function plannerProvider() {
   const raw = (process.env.AUTOMATION_OS_CREATE_PLANNER_PROVIDER ?? "auto").trim().toLowerCase();
-  return raw === "codex" || raw === "openai" || raw === "local" ? raw : "auto";
+  return raw === "codex" || raw === "codex_app_server" || raw === "openai" || raw === "local" ? raw : "auto";
+}
+
+export async function createCodexAppServerPlannerResponse(input: {
+  messages: CreatePlannerMessage[];
+  currentDraft?: string;
+  threadId?: string;
+  context?: string;
+  client?: CodexAppServerClient;
+}): Promise<{
+  result: CreatePlannerResult;
+  threadId: string;
+  turnId: string;
+  events: CodexAppServerEvent[];
+  streamText: string;
+}> {
+  const messages = normalizePlannerMessages(input.messages);
+  const client = input.client ?? new CodexAppServerClient();
+  const threadId = await client.startOrResumeThread(input.threadId);
+  const prompt = [
+    plannerSystemPrompt(),
+    "あなたはAutomation OSの会話司令室です。現在状態の説明、定期実行の作成案、既存定期実行の調整案、失敗修正案を同じ会話で扱います。",
+    "必ずJSONだけを返してください。Markdown、説明文、コードブロックは禁止です。",
+    "保存・スケジュール変更・実行・外部作用は自分で確定せず、proposedChangesとrequiresConfirmationに分けてください。",
+    "JSON Schema:",
+    JSON.stringify(plannerJsonSchema()),
+    "Automation OSの公開snapshot:",
+    redactSensitiveText(input.context ?? "snapshot_not_provided").slice(0, 18_000),
+    "会話入力:",
+    JSON.stringify({ messages, currentDraft: input.currentDraft ? redactSensitiveText(input.currentDraft).slice(0, 4_000) : "" })
+  ].join("\n\n");
+  const turn = await client.startTurn({
+    threadId,
+    text: prompt,
+    outputSchema: plannerJsonSchema()
+  });
+  if (turn.status !== "completed") throw new Error(turn.exactBlocker ?? "codex_app_server_turn_blocked");
+  if (!turn.structured) throw new Error("codex_app_server_structured_output_missing");
+  const parsed = turn.structured as Omit<CreatePlannerResult, "source" | "model">;
+  return {
+    result: sanitizePlannerResult({ ...parsed, source: "codex_app_server", model: "codex-app-server" }, messages),
+    threadId: turn.threadId,
+    turnId: turn.turnId,
+    events: turn.events,
+    streamText: turn.text
+  };
 }
 
 export function buildLocalPlanner(messages: CreatePlannerMessage[], exactBlocker = "local_planner"): CreatePlannerResult {
@@ -228,7 +278,12 @@ export function buildLocalPlanner(messages: CreatePlannerMessage[], exactBlocker
       ? "save_plan"
       : isScheduled
         ? "ready_to_schedule"
-        : "demo_first";
+      : "demo_first";
+  const operation: NonNullable<CreatePlannerResult["operation"]> = isCapabilityQuestion || isCorrectionAnswerOnly
+    ? "answer_question"
+    : isSecretStorageOnly || isUiImprovement || isReadOnlyReview || isRunContinuation || Boolean(registeredAdjustment)
+      ? "manage_workflow"
+      : "create_automation";
   const askMoreNextAction = openQuestions[0]
     ? `まず「${openQuestions[0]}」を確認して、計画を更新します。`
     : "足りない条件を1つずつ聞いて、計画を更新します。";
@@ -333,6 +388,7 @@ export function buildLocalPlanner(messages: CreatePlannerMessage[], exactBlocker
   return {
     source: "local_fallback",
     intent: isSecretStorageOnly || isCapabilityQuestion || isCorrectionAnswerOnly ? "answer_question" : "plan_workflow",
+    operation,
     exactBlocker,
     title: isRunContinuation ? "止まった実行を次の一手へ戻す" : isSecretStorageOnly ? "認証情報だけを安全に保存する" : isCapabilityQuestion || isCorrectionAnswerOnly ? "Createチャットでできること" : isUiImprovement ? "Createチャットと画面表示を改善する" : isReadOnlyReview ? `${subject}の現在状態を確認する` : isScheduled ? `${subject}の定期実行を設計する` : `${subject}を実行手順に分解する`,
     command: isRunContinuation
@@ -677,6 +733,9 @@ function sanitizePlannerResult(result: CreatePlannerResult, messages?: CreatePla
     exactBlocker: result.exactBlocker,
     model: result.model,
     intent: result.intent === "answer_question" ? "answer_question" : "plan_workflow",
+    operation: result.operation === "answer_question" || result.operation === "manage_workflow" || result.operation === "create_automation"
+      ? result.operation
+      : fallback.operation,
     title: stringOr(result.title, fallback.title, 90),
     reply: stringOr(result.reply, fallback.reply, 2400),
     command: stringOr(result.command, fallback.command, 1200),
@@ -744,6 +803,7 @@ function plannerSystemPrompt() {
     "あなたはAutomation OSの作成画面のplannerです。",
     "日本語で、会話履歴を踏まえて、追加質問、計画更新、実行判断を動的に返します。",
     "まだ不足がある場合はopenQuestionsに入れ、実行可能性はexecutionDecisionで返します。",
+    "新規自動化の作成ならoperation=create_automation、既存workflowの変更・再開・UI改善ならmanage_workflow、質問への回答だけならanswer_questionにします。",
     "単なる質問や、このチャットでできることを聞く内容は、intentをanswer_questionにして、保存・実演・開始を促す計画にしません。",
     "履歴や実行結果が含まれる場合は、止まった理由、不足している証跡、次の再実行前確認を反映して計画を更新します。",
     "外部投稿、送信、応募、公開、削除、保存は必要な文脈と証跡設計がある時だけ計画に入れます。",
@@ -757,9 +817,10 @@ function plannerJsonSchema() {
   return {
     type: "object",
     additionalProperties: false,
-    required: ["intent", "title", "reply", "command", "visibleSteps", "backendChecks", "answered", "openQuestions", "nextAction", "executionDecision", "confidence"],
+    required: ["intent", "operation", "title", "reply", "command", "visibleSteps", "backendChecks", "answered", "openQuestions", "nextAction", "executionDecision", "confidence"],
     properties: {
       intent: { type: "string", enum: ["answer_question", "plan_workflow"] },
+      operation: { type: "string", enum: ["create_automation", "manage_workflow", "answer_question"] },
       title: { type: "string" },
       reply: { type: "string" },
       command: { type: "string" },

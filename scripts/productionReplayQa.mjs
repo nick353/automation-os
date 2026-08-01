@@ -2,6 +2,7 @@ import { createRequire } from "node:module";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join, relative, resolve } from "node:path";
+import { buildReadbackHeaders, readProductionReadToken } from "./productionReadbackAuth.mjs";
 
 let chromium;
 try {
@@ -21,6 +22,7 @@ const stamp = new Date().toISOString().replace(/[^0-9A-Za-z]+/gu, "-").replace(/
 const outDir = resolve(process.env.AUTOMATION_OS_REPLAY_QA_OUTPUT_DIR || join("/tmp", `automation-os-production-replay-qa-${stamp}`));
 const allowWrite = process.env.AUTOMATION_OS_REPLAY_ALLOW_WRITE === "1";
 const writeToken = (process.env.AUTOMATION_OS_WRITE_TOKEN || process.env.AUTOMATION_OS_REPLAY_WRITE_TOKEN || "").trim();
+const readToken = readProductionReadToken();
 const writeWorkflowAllowlist = new Set(
   (process.env.AUTOMATION_OS_REPLAY_WRITE_WORKFLOWS || "")
     .split(",")
@@ -38,6 +40,7 @@ const result = {
   baseUrl,
   artifactRoot: basename(outDir),
   generatedAt: new Date().toISOString(),
+  readTokenAvailable: Boolean(readToken),
   allowWrite,
   writeTokenAvailable: Boolean(writeToken),
   writeWorkflowAllowlist: [...writeWorkflowAllowlist],
@@ -251,19 +254,37 @@ await stage("limited-write-run-readback", async () => {
 });
 
 await stage("route-visual-readback", async () => {
+  if (!readToken) {
+    fail("production_read_token_missing");
+    return;
+  }
   const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext();
   try {
     for (const viewport of [
       { label: "desktop", width: 1440, height: 1000 },
       { label: "mobile", width: 390, height: 844 }
     ]) {
-      const page = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
+      const page = await context.newPage({ viewport: { width: viewport.width, height: viewport.height } });
+      await installScopedReadbackRoute(page, baseUrl, readToken);
       let consoleErrors = [];
+      let protectedApiFailures = [];
       page.on("console", (msg) => {
         if (msg.type() === "error") consoleErrors.push(msg.text());
       });
+      page.on("response", (response) => {
+        try {
+          const pathname = new URL(response.url()).pathname;
+          if (pathname.startsWith("/api/") && [401, 403, 423].includes(response.status())) {
+            protectedApiFailures.push(`${response.status()}:${pathname}`);
+          }
+        } catch {
+          // Ignore non-URL response observations; DOM and navigation remain authoritative.
+        }
+      });
       for (const route of ["#home", "#create", "#schedule", "#runs", "#sources"]) {
         consoleErrors = [];
+        protectedApiFailures = [];
         const routeLabel = route.replace("#", "");
         await page.goto(`${baseUrl}/${route}`, { waitUntil: "networkidle" });
         await page.screenshot({ path: join(outDir, `${viewport.label}-${routeLabel}.png`), fullPage: true });
@@ -275,38 +296,57 @@ await stage("route-visual-readback", async () => {
           headings: Array.from(document.querySelectorAll("h1,h2,h3")).map((el) => el.textContent || "").slice(0, 20)
         }));
         const routeArtifact = `${viewport.label}-${routeLabel}.json`;
-        writeFileSync(join(outDir, routeArtifact), `${JSON.stringify({ viewport, route, dom, consoleErrors }, null, 2)}\n`);
+        writeFileSync(join(outDir, routeArtifact), `${JSON.stringify({ viewport, route, dom, consoleErrors, protectedApiFailures }, null, 2)}\n`);
         result.ui[`${viewport.label}:${routeLabel}`] = {
           url: dom.url,
           scrollWidth: dom.scrollWidth,
           clientWidth: dom.clientWidth,
           horizontalOverflow: dom.scrollWidth > dom.clientWidth,
           consoleErrorCount: consoleErrors.length,
+          protectedApiFailureCount: protectedApiFailures.length,
           headings: dom.headings,
           artifact: routeArtifact,
           screenshot: `${viewport.label}-${routeLabel}.png`
         };
         if (dom.scrollWidth > dom.clientWidth) fail(`horizontal_overflow:${viewport.label}:${routeLabel}`);
         if (consoleErrors.length) fail(`console_errors:${viewport.label}:${routeLabel}`);
+        if (protectedApiFailures.length) fail(`protected_api_auth_failed:${viewport.label}:${routeLabel}`);
       }
       await page.close();
     }
   } finally {
+    await context.close();
     await browser.close();
   }
 });
 
 await stage("create-chat-ui-video-replay", async () => {
+  if (!readToken) {
+    fail("production_read_token_missing");
+    return;
+  }
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({
     viewport: { width: 530, height: 844 },
     recordVideo: { dir: join(outDir, "videos"), size: { width: 530, height: 844 } }
   });
   const page = await context.newPage();
+  await installScopedReadbackRoute(page, baseUrl, readToken);
   const video = page.video();
   const consoleErrors = [];
+  const protectedApiFailures = [];
   page.on("console", (msg) => {
     if (msg.type() === "error") consoleErrors.push(msg.text());
+  });
+  page.on("response", (response) => {
+    try {
+      const pathname = new URL(response.url()).pathname;
+      if (pathname.startsWith("/api/") && [401, 403, 423].includes(response.status())) {
+        protectedApiFailures.push(`${response.status()}:${pathname}`);
+      }
+    } catch {
+      // Ignore non-URL response observations; readback assertions remain authoritative.
+    }
   });
   let readback = null;
   try {
@@ -354,6 +394,7 @@ await stage("create-chat-ui-video-replay", async () => {
   result.createReplay = {
     ...compactCreateReadback(readback),
     consoleErrorCount: consoleErrors.length,
+    protectedApiFailureCount: protectedApiFailures.length,
     consoleErrorsArtifact: consoleErrors.length ? "create-chat-ui-video-replay-console.json" : "",
     screenshot: "create-chat-ui-video-replay-final.png",
     video: videoPath ? relativeArtifact(videoPath) : "",
@@ -365,6 +406,7 @@ await stage("create-chat-ui-video-replay", async () => {
   if (!readback?.latestHasCapabilityAnswer || readback?.latestHasBadPlanningPhrase) fail("create_ui_latest_answer_template_drift");
   if (readback && readback.scrollWidth > readback.clientWidth) fail("create_ui_horizontal_overflow");
   if (consoleErrors.length) fail("create_ui_console_errors");
+  if (protectedApiFailures.length) fail("create_ui_protected_api_auth_failed");
 });
 
 if (!allowWrite) {
@@ -427,9 +469,15 @@ async function stage(name, fn) {
   const startedAt = new Date().toISOString();
   const stageEntry = { name, startedAt, status: "running" };
   result.stages.push(stageEntry);
+  const failureStart = result.failures.length;
   try {
     await fn();
-    stageEntry.status = "ok";
+    if (result.failures.length > failureStart) {
+      stageEntry.status = "blocked";
+      stageEntry.exact_blocker = result.failures[failureStart] || `${name}:failed`;
+    } else {
+      stageEntry.status = "ok";
+    }
   } catch (error) {
     stageEntry.status = "blocked";
     stageEntry.exact_blocker = classifyError(name, error);
@@ -442,7 +490,8 @@ async function stage(name, fn) {
 
 async function getJson(route) {
   try {
-    const response = await fetch(`${baseUrl}${route}`);
+    const headers = route === "/api/health" ? {} : buildReadbackHeaders(readToken);
+    const response = await fetch(`${baseUrl}${route}`, Object.keys(headers).length ? { headers } : undefined);
     const text = await response.text();
     let body = null;
     try {
@@ -472,6 +521,19 @@ async function getJson(route) {
       errorArtifact: writeErrorArtifact(`fetch-${route.replace(/[^0-9A-Za-z]+/gu, "-")}`, error)
     };
   }
+}
+
+async function installScopedReadbackRoute(page, targetUrl, readToken) {
+  const targetOrigin = new URL(targetUrl).origin;
+  const readbackHeaders = buildReadbackHeaders(readToken);
+  await page.route("**/*", async (route) => {
+    const requestUrl = new URL(route.request().url());
+    if (requestUrl.origin !== targetOrigin || !requestUrl.pathname.startsWith("/api/") || !Object.keys(readbackHeaders).length) {
+      await route.continue();
+      return;
+    }
+    await route.continue({ headers: { ...route.request().headers(), ...readbackHeaders } });
+  });
 }
 
 async function postJson(route, payload, options = {}) {

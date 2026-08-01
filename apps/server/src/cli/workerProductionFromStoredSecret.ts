@@ -100,7 +100,7 @@ function readArgValue(name: string) {
 }
 
 function finishBlocked(summary: Record<string, unknown>): never {
-  finish({ ok: false, status: "blocked", ...summary, mode }, 0);
+  finish({ ok: false, status: "blocked", ...summary, mode }, 1);
 }
 
 function finish(summary: Record<string, unknown>, code: number): never {

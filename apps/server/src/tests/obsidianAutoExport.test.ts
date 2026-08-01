@@ -21,10 +21,34 @@ test("Obsidian auto export status is persisted and restored", async () => {
   const docsDir = join(tempRoot, "docs");
   const vaultPath = join(tempRoot, "vault");
   mkdirSync(docsDir, { recursive: true });
-  writeFileSync(join(docsDir, "00-vision.md"), "# Vision\n\nPersistent status.");
+  mkdirSync(join(vaultPath, "06_Research"), { recursive: true });
+  writeFileSync(
+    join(docsDir, "00-vision.md"),
+    "# Vision\n\nPersistent status.\n\n- [Operations](./10-operations.md)\n- [LaunchAgent](../ops/launchd/example.plist)\n"
+  );
+  writeFileSync(join(docsDir, "10-operations.md"), "# Operations\n\nVerified operations.\n");
+  writeFileSync(
+    join(vaultPath, "06_Research", "Reusable Workflow.md"),
+    "---\nkind: research\nskill_candidate: true\nskill_candidate_reason: repeated recovery judgment\nknowledge_reuse_status: ready\ndistillation: Reuse the verified recovery path.\nnext_use: Apply after a matching blocker.\n---\n# Reusable Workflow\n"
+  );
+  const knowledgeUseLedgerFile = join(tempRoot, "obsidian-knowledge-use-ledger.jsonl");
+  writeFileSync(
+    knowledgeUseLedgerFile,
+    `${JSON.stringify({
+      usedAt: "2026-07-15T00:00:00.000Z",
+      projectId: "automation-os",
+      projectLabel: "Automation OS",
+      projectRoot: "/tmp/automation-os",
+      match: "cwd",
+      contextPackPath: "/tmp/vault/context.md",
+      contextPackAvailable: true,
+      authorityFilesAvailable: 3,
+      sourceOfTruthAvailable: 2
+    })}\n`
+  );
 
   const firstModule = await import(`../obsidian/autoExport.js?status-write=${Date.now()}`);
-  const written = firstModule.runObsidianExportNow("test_persisted_status", { vaultPath, docsDir });
+  const written = firstModule.runObsidianExportNow("test_persisted_status", { vaultPath, docsDir, knowledgeUseLedgerFile });
 
   assert.equal(written.ok, true);
   assert.ok(written.lastSuccessAt);
@@ -63,10 +87,18 @@ test("Obsidian auto export status is persisted and restored", async () => {
       (file: RowLike) => file.path.endsWith("resume-contract.json") && file.marker === "not_applicable" && file.generated === "not_applicable"
     )
   );
-  assert.equal(restored.secondBrainFiles.length, 3);
+  assert.equal(restored.secondBrainFiles.length, 4);
   assert.ok(restored.secondBrainFiles.some((file: string) => file.endsWith(join("01_Control Panel", "Second Brain Intake.md"))));
   assert.ok(restored.secondBrainFiles.some((file: string) => file.endsWith(join("01_Control Panel", "Second Brain Auto Processor.md"))));
   assert.ok(restored.secondBrainFiles.some((file: string) => file.endsWith(join("00_Start Here", "Second Brain Weekly Digest.md"))));
+  const skillCandidatesFile = restored.secondBrainFiles.find((file: string) => file.endsWith(join("01_Control Panel", "Skill Candidates.md")));
+  assert.ok(skillCandidatesFile);
+  assert.match(readFileSync(skillCandidatesFile, "utf8"), /Reusable Workflow/);
+  assert.match(readFileSync(skillCandidatesFile, "utf8"), /does not.*create|Skillを作成/u);
+  const knowledgeReuseFile = restored.missionFiles.find((file: string) => file.endsWith(join("00_Start Here", "Knowledge Reuse Ledger.md")));
+  assert.ok(knowledgeReuseFile);
+  assert.match(readFileSync(knowledgeReuseFile, "utf8"), /automation-os/);
+  assert.doesNotMatch(readFileSync(knowledgeReuseFile, "utf8"), /user query/i);
   assert.equal(restored.dashboardFiles.length, 7);
   assert.ok(restored.dashboardFiles.some((file: string) => file.endsWith(join("10_Dashboards", "Second Brain Review.base"))));
   assert.ok(restored.dashboardFiles.some((file: string) => file.endsWith(join("10_Dashboards", "Blocker Radar.md"))));
@@ -74,6 +106,11 @@ test("Obsidian auto export status is persisted and restored", async () => {
   assert.ok(restored.secondBrainPolicy.autoApprovedScopes.includes("obsidian_internal_distill"));
   assert.deepEqual(restored.secondBrainPolicy.approvalRequiredScopes, ["billing_purchase_payment_checkout"]);
   assert.equal(restored.proofInboxFile?.endsWith(join("04_Proof Pointers", "Proof Inbox.md")), true);
+  const docsFile = restored.files.find((file: string) => file.endsWith(join("02_Systems", "automation-os", "Docs.md")));
+  assert.ok(docsFile);
+  assert.match(readFileSync(docsFile, "utf8"), /\[\[Docs#10-operations\|Operations\]\]/);
+  assert.match(readFileSync(docsFile, "utf8"), /LaunchAgent \(`\.\.\/ops\/launchd\/example\.plist`\)/);
+  assert.doesNotMatch(readFileSync(docsFile, "utf8"), /\]\(\.\.\/ops\/launchd\/example\.plist\)/);
 });
 
 test("Obsidian auto export records a recovery retry after failure and clears it after success", async () => {

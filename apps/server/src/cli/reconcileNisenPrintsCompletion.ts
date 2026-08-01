@@ -1,9 +1,9 @@
-import Database from "better-sqlite3";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { dbBackend, dbPath, insert, makeId, nowIso } from "../db/client.js";
+import { insert, makeId, nowIso } from "../db/client.js";
 import { buildCanonicalExecutionRoutingMetadataForCommand } from "../codex/executionRouting.js";
+import { resolveExactSourceRunBinding, type RunRow } from "./sourceRunBinding.js";
 
 const defaultRunSlug = "2026-06-25-210709-ce8b-fuji-hollyhock-summer-onsen-torbie-cat";
 const defaultManifestPath = `/Users/nichikatanaka/Documents/Etsy/artifacts/publish_manifests/${defaultRunSlug}.json`;
@@ -13,20 +13,16 @@ const strictProofPath = resolve(readArgValue("--strict-proof") ?? defaultStrictP
 const outDir = resolve(readArgValue("--out-dir") ?? `data/artifacts/nisenprints/reconciliation-${timestamp()}`);
 const commitRequested = process.argv.includes("--commit");
 
-type RunRow = {
-  id: string;
-  name: string;
-  status: string;
-  created_at: string;
-  updated_at: string;
-  metadata_json: string;
-};
-
 type JsonRecord = Record<string, unknown>;
 
 const manifest = readJson(manifestPath);
 const strictProof = readJson(strictProofPath);
-const latestNisenPrintsRun = readLatestNisenPrintsRun();
+const sourceRun = resolveExactSourceRunBinding({
+  expectedWorkflowId: "nisenprints-daily-product-canva-printify-etsy-pinterest",
+  explicitSourceRunId: readArgValue("--source-run-id")
+});
+const sourceRunCompanyId = normalizeCompanyId(sourceRun.company_id);
+if (!sourceRunCompanyId) throw new Error("source_run_company_id_missing");
 const artifactIdentityConsistent = nisenPrintsArtifactIdentityConsistent(manifest, strictProof);
 const publicLocalCompletionObserved =
   manifest.ok === true &&
@@ -67,6 +63,7 @@ const routeMetadata = buildCanonicalExecutionRoutingMetadataForCommand({
   source: "manual",
   selectedAdapter: "nisenprints_completion_reconciliation_readback"
 });
+const ok = publicLocalCompletionObserved;
 const reconciliationStatus = strictStageObservationsOk
   ? "project_owned_completion_observed_but_registered_runner_success_not_claimed"
   : "project_owned_public_local_completion_reconciled_with_remaining_strict_gap";
@@ -74,26 +71,26 @@ const proofSummary = strictStageObservationsOk
   ? "partial: NisenPrints public-local completion reconciled; Automation OS runner-exit proof remains unavailable for the historical run"
   : "partial: NisenPrints public-local completion reconciled; strict stage observation and Automation OS runner-exit proof remain unavailable for the historical run";
 const receipt = {
-  ok: publicLocalCompletionObserved,
+  ok,
   workflow: "nisenprints-daily-product-canva-printify-etsy-pinterest",
   stage: "automation_os_nisenprints_completion_reconciliation_receipt",
   generated_at: new Date().toISOString(),
-  automation_os_db_mutated: commitRequested,
+  automation_os_db_mutated: commitRequested && ok,
   strict_registered_success_claimed: false,
   accepted_partial: acceptedPartialClassification !== null,
   accepted_partial_reason: acceptedPartialClassification,
   reconciliation_status: reconciliationStatus,
   registered_workflow_id: "nisenprints-daily-product-canva-printify-etsy-pinterest",
-  automation_os_latest_run: latestNisenPrintsRun
-    ? {
-        id: latestNisenPrintsRun.id,
-        status: latestNisenPrintsRun.status,
-        created_at: latestNisenPrintsRun.created_at,
-        updated_at: latestNisenPrintsRun.updated_at
-      }
-    : null,
+  automation_os_latest_run: {
+    id: sourceRun.id,
+    company_id: sourceRun.company_id,
+    status: sourceRun.status,
+    created_at: sourceRun.created_at,
+    updated_at: sourceRun.updated_at
+  },
   project_run: {
     run_id: stringValue(manifest.run_id),
+    source_run_company_id: sourceRunCompanyId,
     manifest_path: manifestPath,
     strict_proof_path: strictProofPath,
     final_status: stringValue(manifest.final_status),
@@ -128,7 +125,7 @@ const receipt = {
 mkdirSync(outDir, { recursive: true });
 const receiptPath = join(outDir, "nisenprints-completion-reconciliation-receipt.json");
 writeFileSync(receiptPath, JSON.stringify(receipt, null, 2) + "\n");
-const committedRun = commitRequested && publicLocalCompletionObserved ? commitReconciliationReadback(receiptPath) : null;
+const committedRun = commitRequested && ok ? commitReconciliationReadback(receiptPath, sourceRun, sourceRunCompanyId) : null;
 
 console.log(
   JSON.stringify(
@@ -140,6 +137,7 @@ console.log(
       latestAutomationOsRun: receipt.automation_os_latest_run,
       projectRun: {
         run_id: receipt.project_run.run_id,
+        source_run_company_id: receipt.project_run.source_run_company_id,
         proof_gate: receipt.project_run.proof_gate,
         strict_stage_observations_ok: receipt.project_run.strict_stage_observations_ok,
         strict_stage_missing: receipt.project_run.strict_stage_missing,
@@ -154,8 +152,12 @@ console.log(
 );
 process.exitCode = publicLocalCompletionObserved ? 0 : 1;
 
-function commitReconciliationReadback(receiptPath: string): { runId: string; proofId: string } {
-  if (!latestNisenPrintsRun) throw new Error("automation_os_latest_nisenprints_run_missing");
+function commitReconciliationReadback(
+  receiptPath: string,
+  sourceRun: RunRow,
+  companyId: string | null
+): { runId: string; proofId: string } {
+  if (!companyId) throw new Error("source_run_company_id_missing");
   const runId = makeId("run_nisenprints_reconcile");
   const stepId = `${runId}_step_1`;
   const proofId = makeId("proof_nisenprints_reconcile");
@@ -165,7 +167,7 @@ function commitReconciliationReadback(receiptPath: string): { runId: string; pro
     registeredWorkflowId: "nisenprints-daily-product-canva-printify-etsy-pinterest",
     registered_workflow_id: "nisenprints-daily-product-canva-printify-etsy-pinterest",
     reconciliation_run: true,
-    reconciliation_of_run_id: latestNisenPrintsRun.id,
+    reconciliation_of_run_id: sourceRun.id,
     project_run_id: receipt.project_run.run_id,
     project_manifest_path: manifestPath,
     project_strict_proof_path: strictProofPath,
@@ -190,6 +192,7 @@ function commitReconciliationReadback(receiptPath: string): { runId: string; pro
   };
   insert("runs", {
     id: runId,
+    company_id: companyId,
     name: "NisenPrints completion reconciliation readback",
     status: "partial",
     objective: "Record project-owned NisenPrints public-local completion readback without claiming strict registered runner success",
@@ -200,6 +203,7 @@ function commitReconciliationReadback(receiptPath: string): { runId: string; pro
   insert("run_steps", {
     id: stepId,
     run_id: runId,
+    company_id: companyId,
     name: "Record NisenPrints completion reconciliation readback",
     status: "blocked",
     lane_id: null,
@@ -219,6 +223,7 @@ function commitReconciliationReadback(receiptPath: string): { runId: string; pro
   });
   insert("proofs", {
     id: proofId,
+    company_id: companyId,
     run_id: runId,
     step_id: stepId,
     proof_type: proofType,
@@ -232,6 +237,7 @@ function commitReconciliationReadback(receiptPath: string): { runId: string; pro
     id: eventId,
     run_id: runId,
     step_id: stepId,
+    company_id: companyId,
     lane_id: null,
     event_type: "worker_blocked",
     message: receipt.project_run.proof_summary,
@@ -239,29 +245,6 @@ function commitReconciliationReadback(receiptPath: string): { runId: string; pro
     metadata_json: metadata
   });
   return { runId, proofId };
-}
-
-function readLatestNisenPrintsRun(): RunRow | null {
-  if (dbBackend !== "sqlite") throw new Error("nisenprints_reconciliation_requires_local_sqlite_readback");
-  const db = new Database(dbPath, { readonly: true, fileMustExist: true });
-  try {
-    return (
-      db
-        .prepare(
-          `
-          SELECT id, name, status, created_at, updated_at, metadata_json
-          FROM runs
-          WHERE COALESCE(json_extract(metadata_json,'$.registeredWorkflowId'), json_extract(metadata_json,'$.registered_workflow_id'))='nisenprints-daily-product-canva-printify-etsy-pinterest'
-            AND COALESCE(json_extract(metadata_json,'$.reconciliation_run'), 0) != 1
-          ORDER BY created_at DESC
-          LIMIT 1;
-        `
-        )
-        .get() as RunRow | undefined
-    ) ?? null;
-  } finally {
-    db.close();
-  }
 }
 
 function strictStageObservationMissing(strictProof: JsonRecord): string[] {
@@ -301,6 +284,11 @@ function readJson(path: string): JsonRecord {
 function readArgValue(name: string): string | undefined {
   const match = process.argv.find((arg) => arg.startsWith(`${name}=`));
   return match?.slice(name.length + 1);
+}
+
+function normalizeCompanyId(value: unknown): string | null {
+  const companyId = stringValue(value).trim();
+  return companyId ? companyId : null;
 }
 
 function timestamp(): string {

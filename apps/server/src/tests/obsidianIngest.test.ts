@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 
 import { runObsidianIngest } from "../obsidian/ingest.js";
+import { acquireVaultWriteLock } from "../obsidian/vaultWriteLock.js";
 
 const tempRoot = mkdtempSync(join(tmpdir(), "automation-os-obsidian-ingest-"));
 const previousAllowCustomVault = process.env.AUTOMATION_OS_ALLOW_CUSTOM_OBSIDIAN_EXPORT;
@@ -101,6 +102,27 @@ test("Obsidian ingest refuses symlink 09_Inbox", () => {
   assert.equal(result.error, "obsidian_inbox_not_directory");
   assert.deepEqual(readFileSync(join(externalRoot, "Existing.md"), "utf8"), "external");
   assert.equal(existsSync(join(externalRoot, "note.md")), false);
+});
+
+test("Obsidian ingest returns an exact blocker without writing while another Vault writer owns the lock", () => {
+  const vaultPath = createVault("write-lock-busy");
+  const lock = acquireVaultWriteLock(vaultPath, "test-owner");
+  try {
+    const result = runObsidianIngest({
+      vaultPath,
+      sourceTitle: "Blocked Note",
+      sourceType: "note",
+      text: "must not write",
+      capturedAt: "2026-06-14T01:02:00.000Z"
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.error, "obsidian_vault_write_locked:test-owner");
+    assert.equal(result.summary, "Vault writer is busy");
+    assert.equal(existsSync(join(vaultPath, "09_Inbox", "Blocked-Note.md")), false);
+  } finally {
+    lock.release();
+  }
 });
 
 test("Obsidian ingest CLI reads stdin and prints JSON", () => {

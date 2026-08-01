@@ -1,9 +1,9 @@
-import Database from "better-sqlite3";
 import { dirname, join, resolve } from "node:path";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { dbBackend, dbPath, insert, makeId, nowIso } from "../db/client.js";
+import { insert, makeId, nowIso } from "../db/client.js";
 import { buildCanonicalExecutionRoutingMetadataForCommand } from "../codex/executionRouting.js";
+import { resolveExactSourceRunBinding, type RunRow } from "./sourceRunBinding.js";
 
 const defaultSummaryPath =
   "/Users/nichikatanaka/Documents/Codex/automation-os/data/artifacts/prompt-transfer-ukiyoe/artifacts/runs/run_mqtbe1ep_vgi2ex/result.json";
@@ -11,27 +11,25 @@ const summaryPath = resolve(readArgValue("--summary") ?? defaultSummaryPath);
 const outDir = resolve(readArgValue("--out-dir") ?? `data/artifacts/prompt-transfer-ukiyoe/reconciliation-${timestamp()}`);
 const commitRequested = process.argv.includes("--commit");
 
-type RunRow = {
-  id: string;
-  name: string;
-  status: string;
-  created_at: string;
-  updated_at: string;
-  metadata_json: string;
-};
-
 type JsonRecord = Record<string, unknown>;
 
 const summary = readJson(summaryPath);
 const planPath = join(dirname(summaryPath), "apply-plan", "plan.json");
 const plan = readJson(planPath);
-const latestPromptTransferRun = readLatestPromptTransferRun();
+const sourceRun = resolveExactSourceRunBinding({
+  expectedWorkflowId: "prompt-transfer-ukiyoe",
+  explicitSourceRunId: readArgValue("--source-run-id"),
+  artifactRunIdFallback: stringValue(summary.run_id),
+  allowArtifactRunIdFallback: true
+});
+const sourceRunCompanyId = normalizeCompanyId(sourceRun.company_id);
+if (!sourceRunCompanyId) throw new Error("source_run_company_id_missing");
 const exactBlocker = stringValue(summary.exact_blocker) || "prompt_transfer_blocker_unknown";
 const plannedRange = plannedRangeFromPlan(plan);
 const proofType = "prompt_transfer_blocker_reconciliation_readback";
 const proofGate = {
   ok: false,
-  missing: [exactBlocker],
+  missing: [exactBlocker].filter(Boolean),
   present: ["prompt_transfer_plan_ready", proofType]
 };
 const routeMetadata = buildCanonicalExecutionRoutingMetadataForCommand({
@@ -40,26 +38,32 @@ const routeMetadata = buildCanonicalExecutionRoutingMetadataForCommand({
   selectedAdapter: "prompt_transfer_blocker_reconciliation_readback"
 });
 const receipt = {
-  ok: exactBlocker === "google_service_account_json_missing" && summary.status === "blocked" && summary.committed === false,
+  ok:
+    exactBlocker === "google_service_account_json_missing" &&
+    summary.status === "blocked" &&
+    summary.committed === false,
   workflow: "prompt-transfer-ukiyoe",
   stage: "automation_os_prompt_transfer_blocker_reconciliation_receipt",
   generated_at: new Date().toISOString(),
-  automation_os_db_mutated: commitRequested && exactBlocker === "google_service_account_json_missing" && summary.status === "blocked" && summary.committed === false,
+  automation_os_db_mutated:
+    commitRequested &&
+    exactBlocker === "google_service_account_json_missing" &&
+    summary.status === "blocked" &&
+    summary.committed === false,
   strict_registered_success_claimed: false,
   reconciliation_status: commitRequested
     ? "project_owned_credential_blocker_recorded_as_reconciliation_readback"
     : "project_owned_credential_blocker_ready_for_reconciliation_readback",
   registered_workflow_id: "prompt-transfer-ukiyoe",
-  automation_os_latest_run: latestPromptTransferRun
-    ? {
-        id: latestPromptTransferRun.id,
-        status: latestPromptTransferRun.status,
-        created_at: latestPromptTransferRun.created_at,
-        updated_at: latestPromptTransferRun.updated_at
-      }
-    : null,
+  automation_os_latest_run: {
+    id: sourceRun.id,
+    status: sourceRun.status,
+    created_at: sourceRun.created_at,
+    updated_at: sourceRun.updated_at
+  },
   project_run: {
     run_id: stringValue(summary.run_id),
+    source_run_company_id: sourceRunCompanyId,
     summary_path: summaryPath,
     plan_path: planPath,
     status: stringValue(summary.status),
@@ -93,7 +97,7 @@ const receipt = {
 mkdirSync(outDir, { recursive: true });
 const receiptPath = join(outDir, "prompt-transfer-blocker-reconciliation-receipt.json");
 writeFileSync(receiptPath, JSON.stringify(receipt, null, 2) + "\n");
-const committedRun = commitRequested && receipt.ok ? commitBlockerReadback(receiptPath) : null;
+const committedRun = commitRequested && receipt.ok ? commitBlockerReadback(receiptPath, sourceRun, sourceRunCompanyId) : null;
 
 console.log(
   JSON.stringify(
@@ -106,6 +110,7 @@ console.log(
       projectRun: {
         run_id: receipt.project_run.run_id,
         exact_blocker: receipt.project_run.exact_blocker,
+        source_run_company_id: receipt.project_run.source_run_company_id,
         proof_gate: receipt.project_run.proof_gate,
         planned_range: receipt.project_run.planned_range,
         committed: receipt.project_run.committed
@@ -118,8 +123,12 @@ console.log(
 );
 process.exitCode = receipt.ok ? 0 : 1;
 
-function commitBlockerReadback(receiptPath: string): { runId: string; proofId: string } {
-  if (!latestPromptTransferRun) throw new Error("automation_os_latest_prompt_transfer_run_missing");
+function commitBlockerReadback(
+  receiptPath: string,
+  sourceRun: RunRow,
+  companyId: string | null
+): { runId: string; proofId: string } {
+  if (!companyId) throw new Error("source_run_company_id_missing");
   const runId = makeId("run_prompt_transfer_reconcile");
   const stepId = `${runId}_step_1`;
   const proofId = makeId("proof_prompt_transfer_reconcile");
@@ -129,7 +138,7 @@ function commitBlockerReadback(receiptPath: string): { runId: string; proofId: s
     registeredWorkflowId: "prompt-transfer-ukiyoe",
     registered_workflow_id: "prompt-transfer-ukiyoe",
     reconciliation_run: true,
-    reconciliation_of_run_id: latestPromptTransferRun.id,
+    reconciliation_of_run_id: sourceRun.id,
     project_run_id: receipt.project_run.run_id,
     project_summary_path: summaryPath,
     project_plan_path: planPath,
@@ -149,6 +158,7 @@ function commitBlockerReadback(receiptPath: string): { runId: string; proofId: s
   };
   insert("runs", {
     id: runId,
+    company_id: companyId,
     name: "Prompt Transfer blocker reconciliation readback",
     status: "blocked",
     objective: "Record Prompt Transfer credential blocker as Automation OS reconciliation readback without writing to Google Sheets",
@@ -159,6 +169,7 @@ function commitBlockerReadback(receiptPath: string): { runId: string; proofId: s
   insert("run_steps", {
     id: stepId,
     run_id: runId,
+    company_id: companyId,
     name: "Record Prompt Transfer blocker reconciliation readback",
     status: "blocked",
     lane_id: null,
@@ -177,6 +188,7 @@ function commitBlockerReadback(receiptPath: string): { runId: string; proofId: s
   });
   insert("proofs", {
     id: proofId,
+    company_id: companyId,
     run_id: runId,
     step_id: stepId,
     proof_type: proofType,
@@ -190,6 +202,7 @@ function commitBlockerReadback(receiptPath: string): { runId: string; proofId: s
     id: eventId,
     run_id: runId,
     step_id: stepId,
+    company_id: companyId,
     lane_id: null,
     event_type: "worker_blocked",
     message: receipt.project_run.proof_summary,
@@ -197,29 +210,6 @@ function commitBlockerReadback(receiptPath: string): { runId: string; proofId: s
     metadata_json: metadata
   });
   return { runId, proofId };
-}
-
-function readLatestPromptTransferRun(): RunRow | null {
-  if (dbBackend !== "sqlite") throw new Error("prompt_transfer_reconciliation_requires_local_sqlite_readback");
-  const db = new Database(dbPath, { readonly: true, fileMustExist: true });
-  try {
-    return (
-      db
-        .prepare(
-          `
-          SELECT id, name, status, created_at, updated_at, metadata_json
-          FROM runs
-          WHERE COALESCE(json_extract(metadata_json,'$.registeredWorkflowId'), json_extract(metadata_json,'$.registered_workflow_id'))='prompt-transfer-ukiyoe'
-            AND COALESCE(json_extract(metadata_json,'$.reconciliation_run'), 0) != 1
-          ORDER BY created_at DESC
-          LIMIT 1;
-        `
-        )
-        .get() as RunRow | undefined
-    ) ?? null;
-  } finally {
-    db.close();
-  }
 }
 
 function plannedRangeFromPlan(plan: JsonRecord): string {
@@ -237,6 +227,11 @@ function readJson(path: string): JsonRecord {
 function readArgValue(name: string): string | undefined {
   const match = process.argv.find((arg) => arg.startsWith(`${name}=`));
   return match?.slice(name.length + 1);
+}
+
+function normalizeCompanyId(value: unknown): string | null {
+  const companyId = stringValue(value).trim();
+  return companyId ? companyId : null;
 }
 
 function timestamp(): string {

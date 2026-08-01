@@ -1,9 +1,9 @@
-import Database from "better-sqlite3";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { dbBackend, dbPath, insert, makeId, nowIso } from "../db/client.js";
+import { insert, makeId, nowIso } from "../db/client.js";
 import { buildCanonicalExecutionRoutingMetadataForCommand } from "../codex/executionRouting.js";
+import { resolveExactSourceRunBinding, type RunRow } from "./sourceRunBinding.js";
 import { evaluateDailyAiRegisteredSummary } from "../runs/dailyAiRegisteredRunner.js";
 
 const defaultSummaryPath =
@@ -12,15 +12,6 @@ const ingestReceiptPath = readArgValue("--ingest-receipt");
 const summaryPath = resolve(readArgValue("--summary") ?? defaultSummaryPath);
 const outDir = resolve(readArgValue("--out-dir") ?? `data/artifacts/daily-ai-research-publish-run/reconciliation-${timestamp()}`);
 const commitRequested = process.argv.includes("--commit");
-
-type RunRow = {
-  id: string;
-  name: string;
-  status: string;
-  created_at: string;
-  updated_at: string;
-  metadata_json: string;
-};
 
 type JsonRecord = Record<string, unknown>;
 
@@ -33,7 +24,14 @@ if (ingestReceiptPath) {
 function runBlockerReconciliation(): void {
 const summary = readJson(summaryPath);
 const evaluation = evaluateDailyAiRegisteredSummary(summaryPath);
-const latestDailyAiRun = readLatestDailyAiRun();
+const sourceRun = resolveExactSourceRunBinding({
+  expectedWorkflowId: "daily-ai-research-publish-run",
+  explicitSourceRunId: readArgValue("--source-run-id"),
+  artifactAutomationOsRunId: stringValue(summary.automation_os_run_id),
+  artifactAutomationOsRunIdCamel: stringValue(summary.automationOsRunId)
+});
+const sourceRunCompanyId = normalizeCompanyId(sourceRun.company_id);
+if (!sourceRunCompanyId) throw new Error("source_run_company_id_missing");
 const fullFlow = recordValue(summary.full_flow_completion);
 const runwayRepair = recordValue(fullFlow?.runway_mcp_repair);
 const buffer = {
@@ -52,7 +50,10 @@ const proofGate = {
   missing: [...new Set(explicitMissing)],
   present: evaluation.proof_gate.present
 };
-const exactBlocker = stringValue(runwayRepair?.exact_blocker) || firstFailureMatching(failures, /runway_mcp|image_generation|buffer|ship_now/i) || evaluation.proof_summary;
+const exactBlocker =
+  stringValue(runwayRepair?.exact_blocker) ||
+  firstFailureMatching(failures, /runway_mcp|image_generation|buffer|ship_now/i) ||
+  evaluation.proof_summary;
 const receipt = {
   ok: true,
   workflow: "daily-ai-research-publish-run",
@@ -62,16 +63,16 @@ const receipt = {
   strict_registered_success_claimed: false,
   reconciliation_status: commitRequested ? "project_owned_blocker_recorded_as_reconciliation_readback" : "project_owned_blocker_ready_for_reconciliation_readback",
   registered_workflow_id: "daily-ai-research-publish-run",
-  automation_os_latest_run: latestDailyAiRun
-    ? {
-        id: latestDailyAiRun.id,
-        status: latestDailyAiRun.status,
-        created_at: latestDailyAiRun.created_at,
-        updated_at: latestDailyAiRun.updated_at
-      }
-    : null,
+  automation_os_latest_run: {
+    id: sourceRun.id,
+    company_id: sourceRun.company_id,
+    status: sourceRun.status,
+    created_at: sourceRun.created_at,
+    updated_at: sourceRun.updated_at
+  },
   project_run: {
     run_id: stringValue(summary.run_id),
+    source_run_company_id: sourceRunCompanyId,
     summary_path: summaryPath,
     status: evaluation.status,
     proof_summary: evaluation.proof_summary,
@@ -100,7 +101,7 @@ const receipt = {
 mkdirSync(outDir, { recursive: true });
 const receiptPath = join(outDir, "daily-ai-blocker-reconciliation-receipt.json");
 writeFileSync(receiptPath, JSON.stringify(receipt, null, 2) + "\n");
-const committedRun = commitRequested ? commitBlockerReadback(receiptPath, receipt, latestDailyAiRun, summaryPath) : null;
+const committedRun = commitRequested && receipt.ok ? commitBlockerReadback(receiptPath, receipt, sourceRun, summaryPath, sourceRunCompanyId) : null;
 
 console.log(
   JSON.stringify(
@@ -112,6 +113,7 @@ console.log(
       latestAutomationOsRun: receipt.automation_os_latest_run,
       projectRun: {
         run_id: receipt.project_run.run_id,
+        source_run_company_id: receipt.project_run.source_run_company_id,
         proof_gate: receipt.project_run.proof_gate,
         exact_blocker: receipt.project_run.exact_blocker,
         buffer: receipt.project_run.buffer
@@ -124,8 +126,14 @@ console.log(
 );
 }
 
-function commitBlockerReadback(receiptPath: string, receipt: JsonRecord, latestDailyAiRun: RunRow | null, summaryPath: string): { runId: string; proofId: string } {
-  if (!latestDailyAiRun) throw new Error("automation_os_latest_daily_ai_run_missing");
+function commitBlockerReadback(
+  receiptPath: string,
+  receipt: JsonRecord,
+  sourceRun: RunRow,
+  summaryPath: string,
+  companyId: string | null
+): { runId: string; proofId: string } {
+  if (!companyId) throw new Error("source_run_company_id_missing");
   const projectRun = recordValue(receipt.project_run) ?? {};
   const runId = makeId("run_daily_ai_reconcile");
   const stepId = `${runId}_step_1`;
@@ -142,7 +150,8 @@ function commitBlockerReadback(receiptPath: string, receipt: JsonRecord, latestD
     registeredWorkflowId: "daily-ai-research-publish-run",
     registered_workflow_id: "daily-ai-research-publish-run",
     reconciliation_run: true,
-    reconciliation_of_run_id: latestDailyAiRun.id,
+    reconciliation_of_run_id: sourceRun.id,
+    source_run_company_id: companyId,
     project_run_id: stringValue(projectRun.run_id),
     project_summary_path: summaryPath,
     exact_blocker: stringValue(projectRun.exact_blocker),
@@ -157,6 +166,7 @@ function commitBlockerReadback(receiptPath: string, receipt: JsonRecord, latestD
   };
   insert("runs", {
     id: runId,
+    company_id: companyId,
     name: "Daily AI blocker reconciliation readback",
     status: "blocked",
     objective: "Record project-owned Daily AI blocker as Automation OS reconciliation readback without posting",
@@ -167,6 +177,7 @@ function commitBlockerReadback(receiptPath: string, receipt: JsonRecord, latestD
   insert("run_steps", {
     id: stepId,
     run_id: runId,
+    company_id: companyId,
     name: "Record Daily AI blocker reconciliation readback",
     status: "blocked",
     lane_id: null,
@@ -185,6 +196,7 @@ function commitBlockerReadback(receiptPath: string, receipt: JsonRecord, latestD
   });
   insert("proofs", {
     id: proofId,
+    company_id: companyId,
     run_id: runId,
     step_id: stepId,
     proof_type: proofType,
@@ -198,6 +210,7 @@ function commitBlockerReadback(receiptPath: string, receipt: JsonRecord, latestD
     id: eventId,
     run_id: runId,
     step_id: stepId,
+    company_id: companyId,
     lane_id: null,
     event_type: "worker_blocked",
     message: metadata.proof_summary,
@@ -209,7 +222,14 @@ function commitBlockerReadback(receiptPath: string, receipt: JsonRecord, latestD
 
 function runPartialIngestReconciliation(sourceReceiptPath: string): void {
   const ingestReceipt = readJson(sourceReceiptPath);
-  const latestDailyAiRun = readLatestDailyAiRun();
+  const sourceRun = resolveExactSourceRunBinding({
+    expectedWorkflowId: "daily-ai-research-publish-run",
+    explicitSourceRunId: readArgValue("--source-run-id"),
+    artifactAutomationOsRunId: stringValue(ingestReceipt.automation_os_run_id),
+    artifactAutomationOsRunIdCamel: stringValue(ingestReceipt.automationOsRunId)
+  });
+  const sourceRunCompanyId = normalizeCompanyId(sourceRun.company_id);
+  if (!sourceRunCompanyId) throw new Error("source_run_company_id_missing");
   const terminalState = recordValue(ingestReceipt.terminal_state);
   const queueReadback = recordValue(ingestReceipt.queue_readback);
   const externalActionSummary = recordValue(ingestReceipt.external_action_summary);
@@ -234,21 +254,21 @@ function runPartialIngestReconciliation(sourceReceiptPath: string): void {
     ok: true,
     workflow: "daily-ai-research-publish-run",
     stage: "automation_os_daily_ai_fresh_child_partial_ingest_reconciliation_receipt",
-    generated_at: new Date().toISOString(),
-    automation_os_db_mutated: commitRequested,
-    strict_registered_success_claimed: false,
-    reconciliation_status: commitRequested ? "fresh_child_partial_ingest_recorded_as_reconciliation_readback" : "fresh_child_partial_ingest_ready_for_reconciliation_readback",
-    registered_workflow_id: "daily-ai-research-publish-run",
-    automation_os_latest_run: latestDailyAiRun
-      ? {
-          id: latestDailyAiRun.id,
-          status: latestDailyAiRun.status,
-          created_at: latestDailyAiRun.created_at,
-          updated_at: latestDailyAiRun.updated_at
-        }
-      : null,
-    project_run: {
-      run_id: stringValue(ingestReceipt.run_id),
+  generated_at: new Date().toISOString(),
+  automation_os_db_mutated: commitRequested,
+  strict_registered_success_claimed: false,
+  reconciliation_status: commitRequested ? "fresh_child_partial_ingest_recorded_as_reconciliation_readback" : "fresh_child_partial_ingest_ready_for_reconciliation_readback",
+  registered_workflow_id: "daily-ai-research-publish-run",
+  automation_os_latest_run: {
+    id: sourceRun.id,
+    company_id: sourceRun.company_id,
+    status: sourceRun.status,
+    created_at: sourceRun.created_at,
+    updated_at: sourceRun.updated_at
+  },
+  project_run: {
+    run_id: stringValue(ingestReceipt.run_id),
+    source_run_company_id: sourceRunCompanyId,
       child_thread_id: stringValue(ingestReceipt.child_thread_id),
       child_status: stringValue(ingestReceipt.child_status),
       summary_path: stringValue(ingestReceipt.run_summary),
@@ -288,7 +308,7 @@ function runPartialIngestReconciliation(sourceReceiptPath: string): void {
   mkdirSync(outDir, { recursive: true });
   const receiptPath = join(outDir, "daily-ai-fresh-child-partial-ingest-reconciliation-receipt.json");
   writeFileSync(receiptPath, JSON.stringify(receipt, null, 2) + "\n");
-  const committedRun = commitRequested ? commitPartialIngestReadback(receiptPath, receipt) : null;
+  const committedRun = commitRequested && receipt.ok ? commitPartialIngestReadback(receiptPath, receipt, sourceRun, sourceRunCompanyId) : null;
 
   console.log(
     JSON.stringify(
@@ -300,6 +320,7 @@ function runPartialIngestReconciliation(sourceReceiptPath: string): void {
         latestAutomationOsRun: receipt.automation_os_latest_run,
         projectRun: {
           run_id: receipt.project_run.run_id,
+          source_run_company_id: receipt.project_run.source_run_company_id,
           proof_gate: receipt.project_run.proof_gate,
           exact_blocker: receipt.project_run.exact_blocker,
           buffer: receipt.project_run.buffer,
@@ -314,9 +335,13 @@ function runPartialIngestReconciliation(sourceReceiptPath: string): void {
   );
 }
 
-function commitPartialIngestReadback(receiptPath: string, receipt: JsonRecord): { runId: string; proofId: string } {
-  const latestDailyAiRun = readLatestDailyAiRun();
-  if (!latestDailyAiRun) throw new Error("automation_os_latest_daily_ai_run_missing");
+function commitPartialIngestReadback(
+  receiptPath: string,
+  receipt: JsonRecord,
+  sourceRun: RunRow,
+  companyId: string | null
+): { runId: string; proofId: string } {
+  if (!companyId) throw new Error("source_run_company_id_missing");
   const runId = makeId("run_daily_ai_partial_ingest");
   const stepId = `${runId}_step_1`;
   const proofId = makeId("proof_daily_ai_partial_ingest");
@@ -333,7 +358,8 @@ function commitPartialIngestReadback(receiptPath: string, receipt: JsonRecord): 
     registered_workflow_id: "daily-ai-research-publish-run",
     reconciliation_run: true,
     reconciliation_kind: "fresh_child_partial_ingest",
-    reconciliation_of_run_id: latestDailyAiRun.id,
+    reconciliation_of_run_id: sourceRun.id,
+    source_run_company_id: companyId,
     project_run_id: stringValue(projectRun.run_id),
     child_thread_id: stringValue(projectRun.child_thread_id),
     project_summary_path: stringValue(projectRun.summary_path),
@@ -354,6 +380,7 @@ function commitPartialIngestReadback(receiptPath: string, receipt: JsonRecord): 
   };
   insert("runs", {
     id: runId,
+    company_id: companyId,
     name: "Daily AI fresh child partial ingest readback",
     status: "partial",
     objective: "Record Daily AI fresh child partial ingest without reposting or resuming external engagement",
@@ -364,6 +391,7 @@ function commitPartialIngestReadback(receiptPath: string, receipt: JsonRecord): 
   insert("run_steps", {
     id: stepId,
     run_id: runId,
+    company_id: companyId,
     name: "Record Daily AI fresh child partial ingest readback",
     status: "blocked",
     lane_id: null,
@@ -383,6 +411,7 @@ function commitPartialIngestReadback(receiptPath: string, receipt: JsonRecord): 
   });
   insert("proofs", {
     id: proofId,
+    company_id: companyId,
     run_id: runId,
     step_id: stepId,
     proof_type: "daily_ai_fresh_child_partial_ingest_readback",
@@ -396,6 +425,7 @@ function commitPartialIngestReadback(receiptPath: string, receipt: JsonRecord): 
     id: eventId,
     run_id: runId,
     step_id: stepId,
+    company_id: companyId,
     lane_id: null,
     event_type: "worker_blocked",
     message: metadata.proof_summary,
@@ -403,29 +433,6 @@ function commitPartialIngestReadback(receiptPath: string, receipt: JsonRecord): 
     metadata_json: metadata
   });
   return { runId, proofId };
-}
-
-function readLatestDailyAiRun(): RunRow | null {
-  if (dbBackend !== "sqlite") throw new Error("daily_ai_reconciliation_requires_local_sqlite_readback");
-  const db = new Database(dbPath, { readonly: true, fileMustExist: true });
-  try {
-    return (
-      db
-        .prepare(
-          `
-          SELECT id, name, status, created_at, updated_at, metadata_json
-          FROM runs
-          WHERE COALESCE(json_extract(metadata_json,'$.registeredWorkflowId'), json_extract(metadata_json,'$.registered_workflow_id'))='daily-ai-research-publish-run'
-            AND COALESCE(json_extract(metadata_json,'$.reconciliation_run'), 0) != 1
-          ORDER BY created_at DESC
-          LIMIT 1;
-        `
-        )
-        .get() as RunRow | undefined
-    ) ?? null;
-  } finally {
-    db.close();
-  }
 }
 
 function readJson(path: string): JsonRecord {
@@ -456,6 +463,11 @@ function numberValue(value: unknown): number {
     return Number.isFinite(parsed) ? parsed : 0;
   }
   return 0;
+}
+
+function normalizeCompanyId(value: unknown): string | null {
+  const companyId = stringValue(value).trim();
+  return companyId ? companyId : null;
 }
 
 function firstFailureMatching(failures: string[], pattern: RegExp): string {

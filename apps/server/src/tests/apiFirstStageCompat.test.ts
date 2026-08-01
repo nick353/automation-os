@@ -24,6 +24,7 @@ process.env.AUTOMATION_OS_NISENPRINTS_PLAYWRIGHT_RUNNER = join(tempRoot, "missin
 process.env.AUTOMATION_OS_SNS_MULTI_POSTER_RUNNER = join(tempRoot, "missing-sns-multi-poster-runner.mjs");
 process.env.AUTOMATION_OS_PROMPT_TRANSFER_UKIYOE_RUNNER = join(tempRoot, "missing-prompt-transfer-runner.py");
 process.env.AUTOMATION_OS_CODEX_BIN = join(tempRoot, "missing-codex-bin");
+process.env.AUTOMATION_OS_GLOBAL_SYSTEM_SERVICE_USER_ID = "user_test_global_service";
 
 const { app, classifyWorkerOnceExit, markRunsResumeSuppressed, runResearchPlanSchedulerOnce } = await import("../index.js");
 const db = await import("../db/client.js");
@@ -65,6 +66,109 @@ const internalRegisteredWorkflowKeys = [
   "source_refs",
   "provenance"
 ];
+
+function writeValidReferenceCanaryReceipt(path: string, overrides: Record<string, unknown> = {}): void {
+  const definitions = [
+    ["daily-ai-research-publish-run", "daily_ai_registered"],
+    ["job-application-manager", "job_submit_registered"],
+    ["nisenprints-daily-product-canva-printify-etsy-pinterest", "nisenprints_registered"]
+  ];
+  const paths = definitions.map(([id, adapter]) => {
+    const workflow = db.querySql<{
+      id: string;
+      status: string;
+      runner_kind: string;
+      start_command_json: string;
+      source_refs_json: string;
+      provenance_json: string;
+      schedule_json: string;
+    }>(`SELECT id, status, runner_kind, start_command_json, source_refs_json, provenance_json, schedule_json FROM registered_workflows WHERE id=${db.sqlValue(id)} LIMIT 1`)[0];
+    if (!workflow) throw new Error(`reference workflow fixture missing: ${id}`);
+    return {
+      id,
+      adapter,
+      run_id: `canary_${id}`,
+      status: "proof_backed_safe_stop_verified",
+      exact_blocker: "in_app_browser_required",
+      run_blocked: true,
+      step_blocked: true,
+      proof_gate_ok: false,
+      runner_exit_status: null,
+      runner_started: false,
+      runner_completed: false,
+      external_action_executed: false,
+      idempotent_recheck: true,
+      approval_boundary_verified: true,
+      company_scope_verified: true,
+      start_lineage_verified: true,
+      worker_blocked_event_verified: true,
+      safety_proof_verified: true,
+      completion_claimed: false,
+      operation_proof_gate_ok: false,
+      definition_fingerprint: createHash("sha256").update(JSON.stringify({
+        id: workflow.id,
+        status: workflow.status,
+        runner_kind: workflow.runner_kind,
+        start_command_json: workflow.start_command_json,
+        source_refs_json: workflow.source_refs_json,
+        provenance_json: workflow.provenance_json
+      })).digest("hex"),
+      schedule_fingerprint: createHash("sha256").update(JSON.stringify({ schedule_json: workflow.schedule_json })).digest("hex")
+    };
+  });
+  writeFileSync(path, JSON.stringify({
+    schema: "automation_os_reference_workflow_canary.v2",
+    generated_at: new Date().toISOString(),
+    ok: true,
+    safety_reference_paths_ok: true,
+    reference_paths_complete: false,
+    external_action_executed: false,
+    mode: "isolated_sqlite_proof_backed_safe_stop_canary",
+    scope: { database: "ephemeral_tmp", artifacts: "ephemeral_tmp", approval_model: "billing_only_no_start_approval" },
+    paths,
+    ...overrides
+  }));
+}
+
+function seedOwnerCompany(companyId = "project-a"): void {
+  const timestamp = db.nowIso();
+  db.upsert("users", {
+    id: "user_local_owner",
+    auth_provider: "legacy_operator_token",
+    auth_subject: "user_local_owner",
+    email: null,
+    display_name: "Test owner",
+    kind: "human",
+    status: "active",
+    created_at: timestamp,
+    updated_at: timestamp
+  });
+  db.upsert("companies", { id: companyId, slug: companyId, name: "Project A", status: "active", created_at: timestamp, updated_at: timestamp });
+  db.upsert("company_memberships", {
+    id: `membership_${companyId}_owner`,
+    company_id: companyId,
+    user_id: "user_local_owner",
+    role: "owner",
+    status: "active",
+    created_at: timestamp,
+    updated_at: timestamp
+  });
+}
+
+function seedGlobalSystemService(userId = "user_test_global_service", kind = "service", status = "active"): void {
+  const timestamp = db.nowIso();
+  db.upsert("users", {
+    id: userId,
+    auth_provider: "test",
+    auth_subject: userId,
+    email: null,
+    display_name: "Test global system service",
+    kind,
+    status,
+    created_at: timestamp,
+    updated_at: timestamp
+  });
+}
 
 function canonicalUserTableDump(): Array<{
   name: string;
@@ -162,6 +266,7 @@ function insertAppServerProbeFixtures(): { runId: string; stepId: string; approv
 test("POST /api/approvals/:id/cancel cancels a pending approval and marks the run cancelled", async () => {
   db.initDb();
   db.resetDemoData();
+  seedOwnerCompany();
   const previousAutoExport = process.env.AUTOMATION_OS_OBSIDIAN_AUTO_EXPORT;
   const previousVault = process.env.AUTOMATION_OS_OBSIDIAN_VAULT;
   const previousStatusFile = process.env.AUTOMATION_OS_OBSIDIAN_STATUS_FILE;
@@ -172,6 +277,7 @@ test("POST /api/approvals/:id/cancel cancels a pending approval and marks the ru
   const now = db.nowIso();
   db.insert("runs", {
     id: "run_cancel",
+    company_id: "project-a",
     name: "Publish needs approval",
     status: "waiting_approval",
     objective: "Publish after approval",
@@ -191,6 +297,7 @@ test("POST /api/approvals/:id/cancel cancels a pending approval and marks the ru
   });
   db.insert("approvals", {
     id: "approval_cancel",
+    company_id: "project-a",
     run_id: "run_cancel",
     title: "Approve publish",
     requested_by: "test",
@@ -230,9 +337,11 @@ test("POST /api/approvals/:id/cancel cancels a pending approval and marks the ru
 test("POST /api/approvals/:id/approve returns before protected worker execution completes", async () => {
   db.initDb();
   db.resetDemoData();
+  seedOwnerCompany();
   const now = db.nowIso();
   db.insert("runs", {
     id: "run_async_approval",
+    company_id: "project-a",
     name: "Async approval worker",
     status: "waiting_approval",
     objective: "SNS Multi Poster Ukiyoe registered workflow billing-only post publish",
@@ -258,6 +367,7 @@ test("POST /api/approvals/:id/approve returns before protected worker execution 
   });
   db.insert("approvals", {
     id: "approval_async",
+    company_id: "project-a",
     run_id: "run_async_approval",
     title: "Approve async worker",
     requested_by: "test",
@@ -910,12 +1020,17 @@ test("registered workflows API seeds fixed native, skill, and lane workflows and
 test("registered workflow rehearsal run-once is static and public", async () => {
   db.initDb();
   db.resetDemoData();
+  seedOwnerCompany();
   const refresh = await postJson("/api/registered-workflows/refresh", {});
   insertResearchPlannerReviewWorkflows(1, "active");
   insertResearchPlannerReviewWorkflows(2, "inactive");
   const beforeRuns = db.querySql<{ count: number }>("SELECT count(*) AS count FROM runs;")[0];
+  const receiptPath = join(tempRoot, "valid-reference-canary.json");
+  writeValidReferenceCanaryReceipt(receiptPath);
+  process.env.AUTOMATION_OS_REFERENCE_CANARY_RECEIPT = receiptPath;
 
   const response = await postJson("/api/registered-workflows/rehearsal/run-once", {});
+  delete process.env.AUTOMATION_OS_REFERENCE_CANARY_RECEIPT;
   const body = JSON.parse(response.body) as {
     ok: boolean;
     checked: number;
@@ -923,6 +1038,11 @@ test("registered workflow rehearsal run-once is static and public", async () => 
     review_required: number;
     labels: string[];
     workflows: Array<Record<string, unknown>>;
+    safety_reference_paths_ok: boolean;
+    reference_paths_complete: boolean;
+    reference_paths_ok: boolean;
+    reference_paths: Array<{ id: string; status: string; stages: Record<string, boolean> }>;
+    external_action_executed: boolean;
   };
   const afterRuns = db.querySql<{ count: number }>("SELECT count(*) AS count FROM runs;")[0];
   const check = db.querySql<{ kind: string; status: string; summary: string; metadata_json: string }>(
@@ -943,6 +1063,15 @@ test("registered workflow rehearsal run-once is static and public", async () => 
   assert.ok(body.labels.some((label) => label.includes("X:課金停止")));
   assert.equal(body.workflows.filter((workflow) => workflow.status === "review_required").length, 1);
   assert.equal(body.workflows.some((workflow) => String(workflow.id).includes("inactive")), false);
+  assert.equal(body.safety_reference_paths_ok, true);
+  assert.equal(body.reference_paths_complete, body.reference_paths.every((item) => item.status === "complete"));
+  assert.equal(body.reference_paths_ok, body.reference_paths_complete);
+  assert.equal(body.reference_paths.length, 3);
+  assert.deepEqual(body.reference_paths.map((item) => item.id).sort(), ["daily-ai-research-publish-run", "job-application-manager", "nisenprints-daily-product-canva-printify-etsy-pinterest"]);
+  assert.ok(body.reference_paths.every((item) => item.status === "proof_backed_safe_stop_verified" || item.status === "complete"));
+  assert.ok(body.reference_paths.every((item) => item.stages.safety_canary_verified === true));
+  assert.ok(body.reference_paths.every((item) => item.stages.completion_verified === (item.status === "complete")));
+  assert.equal(body.external_action_executed, false);
   assert.ok(body.workflows.every((workflow) => Object.keys(workflow).sort().join(",") === "id,name,safety_kind,safety_label,status"));
   assert.ok(body.workflows.every((workflow) => workflow.status === "ok" || workflow.status === "review_required"));
   assert.ok(check);
@@ -960,6 +1089,7 @@ test("registered workflow rehearsal run-once is static and public", async () => 
 test("registered workflow public rows prioritize Research Planner identity over X or publish command text", async () => {
   db.initDb();
   db.resetDemoData();
+  seedOwnerCompany();
   await postJson("/api/registered-workflows/refresh", {});
   const now = db.nowIso();
   for (const row of [
@@ -987,6 +1117,7 @@ test("registered workflow public rows prioritize Research Planner identity over 
   ]) {
     db.insert("registered_workflows", {
       id: row.id,
+      company_id: "project-a",
       name: row.name,
       status: "active",
       runner_status: "connected",
@@ -1024,15 +1155,357 @@ test("registered workflow public rows prioritize Research Planner identity over 
   assert.equal(sourcePriority?.boundary_label, "確認");
 });
 
+test("registered workflow rehearsal fails canonically when the canary receipt is stale", async () => {
+  db.initDb();
+  db.resetDemoData();
+  await postJson("/api/registered-workflows/refresh", {});
+  const receiptPath = join(tempRoot, "stale-reference-canary.json");
+  writeValidReferenceCanaryReceipt(receiptPath, { generated_at: "2020-01-01T00:00:00.000Z" });
+  process.env.AUTOMATION_OS_REFERENCE_CANARY_RECEIPT = receiptPath;
+
+  const response = await postJson("/api/registered-workflows/rehearsal/run-once", {});
+  delete process.env.AUTOMATION_OS_REFERENCE_CANARY_RECEIPT;
+  const body = JSON.parse(response.body) as { ok: boolean; reference_paths_ok: boolean; reference_paths: Array<{ id: string; status: string }> };
+  const check = db.querySql<{ status: string; summary: string; metadata_json: string }>(
+    "SELECT status, summary, metadata_json FROM system_checks WHERE kind='registered_workflow_rehearsal' ORDER BY created_at DESC LIMIT 1"
+  )[0];
+
+  assert.equal(response.status, 200);
+  assert.equal(body.ok, false);
+  assert.equal(body.reference_paths_ok, false);
+  assert.equal(body.reference_paths.find((item) => item.id === "daily-ai-research-publish-run")?.status, "contract_shape_ready");
+  assert.equal(check.status, "blocked");
+  assert.match(check.summary, /参照フローの安全境界が不足/);
+  assert.equal(JSON.parse(check.metadata_json).reference_paths_ok, false);
+});
+
+test("registered workflow rehearsal rejects duplicate or empty canary run identities", async () => {
+  db.initDb();
+  db.resetDemoData();
+  await postJson("/api/registered-workflows/refresh", {});
+  const receiptPath = join(tempRoot, "duplicate-run-reference-canary.json");
+  writeValidReferenceCanaryReceipt(receiptPath);
+  const receipt = JSON.parse(readFileSync(receiptPath, "utf8")) as { paths: Array<{ run_id: string }> };
+  receipt.paths[1].run_id = receipt.paths[0].run_id;
+  receipt.paths[2].run_id = "";
+  writeFileSync(receiptPath, JSON.stringify(receipt));
+  process.env.AUTOMATION_OS_REFERENCE_CANARY_RECEIPT = receiptPath;
+
+  const response = await postJson("/api/registered-workflows/rehearsal/run-once", {});
+  delete process.env.AUTOMATION_OS_REFERENCE_CANARY_RECEIPT;
+  const body = JSON.parse(response.body) as { ok: boolean; reference_paths_ok: boolean; reference_paths: Array<{ status: string }> };
+
+  assert.equal(response.status, 200);
+  assert.equal(body.ok, false);
+  assert.equal(body.reference_paths_ok, false);
+  assert.ok(body.reference_paths.every((path) => path.status === "contract_shape_ready"));
+});
+
+test("registered workflow rehearsal rejects a safety receipt that claims reference completion", async () => {
+  db.initDb();
+  db.resetDemoData();
+  await postJson("/api/registered-workflows/refresh", {});
+  const receiptPath = join(tempRoot, "false-completion-reference-canary.json");
+  writeValidReferenceCanaryReceipt(receiptPath, { reference_paths_complete: true });
+  process.env.AUTOMATION_OS_REFERENCE_CANARY_RECEIPT = receiptPath;
+
+  const response = await postJson("/api/registered-workflows/rehearsal/run-once", {});
+  delete process.env.AUTOMATION_OS_REFERENCE_CANARY_RECEIPT;
+  const body = JSON.parse(response.body) as {
+    ok: boolean;
+    safety_reference_paths_ok: boolean;
+    reference_paths_complete: boolean;
+    reference_paths_ok: boolean;
+    reference_paths: Array<{ status: string }>;
+  };
+
+  assert.equal(response.status, 200);
+  assert.equal(body.ok, false);
+  assert.equal(body.safety_reference_paths_ok, false);
+  assert.equal(body.reference_paths_complete, false);
+  assert.equal(body.reference_paths_ok, false);
+  assert.ok(body.reference_paths.every((path) => path.status === "contract_shape_ready"));
+});
+
+test("registered workflow rehearsal invalidates a canary whose schedule fingerprint no longer matches", async () => {
+  db.initDb();
+  db.resetDemoData();
+  await postJson("/api/registered-workflows/refresh", {});
+  const receiptPath = join(tempRoot, "stale-definition-reference-canary.json");
+  writeValidReferenceCanaryReceipt(receiptPath);
+  const workflowId = "daily-ai-research-publish-run";
+  const receipt = JSON.parse(readFileSync(receiptPath, "utf8")) as {
+    paths: Array<{ id: string; schedule_fingerprint: string }>;
+  };
+  const changedReceiptPath = receipt.paths.find((path) => path.id === workflowId);
+  assert.ok(changedReceiptPath);
+  changedReceiptPath.schedule_fingerprint = createHash("sha256").update("changed after canary").digest("hex");
+  writeFileSync(receiptPath, JSON.stringify(receipt));
+  process.env.AUTOMATION_OS_REFERENCE_CANARY_RECEIPT = receiptPath;
+
+  const response = await postJson("/api/registered-workflows/rehearsal/run-once", {});
+  delete process.env.AUTOMATION_OS_REFERENCE_CANARY_RECEIPT;
+  const body = JSON.parse(response.body) as {
+    ok: boolean;
+    safety_reference_paths_ok: boolean;
+    reference_paths_complete: boolean;
+    reference_paths: Array<{ id: string; status: string; stages: { safety_canary_verified: boolean } }>;
+  };
+  const changedPath = body.reference_paths.find((path) => path.id === workflowId);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.ok, false);
+  assert.equal(body.safety_reference_paths_ok, false);
+  assert.equal(body.reference_paths_complete, false);
+  assert.equal(changedPath?.status, "contract_shape_ready");
+  assert.equal(changedPath?.stages.safety_canary_verified, false);
+});
+
+test("registered workflow rehearsal does not treat an unversioned legacy completion proof as current", async () => {
+  db.initDb();
+  db.resetDemoData();
+  seedOwnerCompany();
+  await postJson("/api/registered-workflows/refresh", {});
+  const receiptPath = join(tempRoot, "lineage-bound-reference-canary.json");
+  writeValidReferenceCanaryReceipt(receiptPath);
+  process.env.AUTOMATION_OS_REFERENCE_CANARY_RECEIPT = receiptPath;
+  const now = db.nowIso();
+  db.insert("runs", {
+    id: "run_legacy_daily_completion",
+    company_id: "project-a",
+    name: "legacy daily completion",
+    status: "completed",
+    objective: "legacy daily completion",
+    created_at: now,
+    updated_at: now,
+    metadata_json: { registered_workflow_id: "daily-ai-research-publish-run", proof_gate: { ok: true, missing: [] } }
+  });
+  db.insert("proofs", {
+    id: "proof_legacy_daily_completion",
+    company_id: "project-a",
+    run_id: "run_legacy_daily_completion",
+    step_id: null,
+    proof_type: "legacy_completion_receipt",
+    label: "legacy completion",
+    uri: "memory://legacy-completion",
+    size_bytes: 1,
+    created_at: now,
+    metadata_json: {}
+  });
+
+  const response = await postJson("/api/registered-workflows/rehearsal/run-once", {});
+  delete process.env.AUTOMATION_OS_REFERENCE_CANARY_RECEIPT;
+  const body = JSON.parse(response.body) as {
+    reference_paths_complete: boolean;
+    reference_paths: Array<{ id: string; status: string; stages: { completion_lineage_verified: boolean; completion_verified: boolean } }>;
+  };
+  const daily = body.reference_paths.find((path) => path.id === "daily-ai-research-publish-run");
+
+  assert.equal(response.status, 200);
+  assert.equal(body.reference_paths_complete, false);
+  assert.equal(daily?.status, "proof_backed_safe_stop_verified");
+  assert.equal(daily?.stages.completion_lineage_verified, false);
+  assert.equal(daily?.stages.completion_verified, false);
+});
+
+test("registered workflow rehearsal excludes another company's runs, proofs, and blocker metadata", async () => {
+  db.initDb();
+  db.resetDemoData();
+  seedOwnerCompany();
+  await postJson("/api/registered-workflows/refresh", {});
+  const now = db.nowIso();
+  db.insert("users", {
+    id: "user_company_b_owner",
+    auth_provider: "test",
+    auth_subject: "user_company_b_owner",
+    email: null,
+    display_name: "Company B owner",
+    kind: "human",
+    status: "active",
+    created_at: now,
+    updated_at: now
+  });
+  db.insert("companies", { id: "project-b", slug: "project-b", name: "Project B", status: "active", created_at: now, updated_at: now });
+  db.insert("company_memberships", {
+    id: "membership_project_b_owner",
+    company_id: "project-b",
+    user_id: "user_company_b_owner",
+    role: "owner",
+    status: "active",
+    created_at: now,
+    updated_at: now
+  });
+  db.insert("runs", {
+    id: "run_company_b_secret_external_action",
+    company_id: "project-b",
+    name: "COMPANY_B_SECRET_RUN",
+    status: "partial",
+    objective: "COMPANY_B_SECRET_OBJECTIVE",
+    created_at: now,
+    updated_at: now,
+    metadata_json: { registered_workflow_id: "daily-ai-research-publish-run", external_action_executed: true }
+  });
+  db.insert("run_steps", {
+    id: "step_company_b_secret_external_action",
+    company_id: "project-b",
+    run_id: "run_company_b_secret_external_action",
+    name: "COMPANY_B_SECRET_STEP",
+    status: "partial",
+    lane_id: null,
+    started_at: now,
+    completed_at: now,
+    metadata_json: { external_action_executed: true }
+  });
+  db.insert("proofs", {
+    id: "proof_company_b_secret_external_action",
+    company_id: "project-b",
+    run_id: "run_company_b_secret_external_action",
+    step_id: "step_company_b_secret_external_action",
+    proof_type: "COMPANY_B_SECRET_PROOF",
+    label: "COMPANY_B_SECRET_LABEL",
+    uri: "memory://company-b-secret",
+    size_bytes: 1,
+    created_at: now,
+    metadata_json: { external_action_executed: true }
+  });
+
+  const response = await postJson("/api/registered-workflows/rehearsal/run-once", {});
+  const body = JSON.parse(response.body) as { failed: number; workflows: Array<{ id: string; status: string }> };
+  const check = db.querySql<{ metadata_json: string }>(
+    "SELECT metadata_json FROM system_checks WHERE kind='registered_workflow_rehearsal' ORDER BY created_at DESC LIMIT 1"
+  )[0];
+  const serialized = `${response.body}\n${check.metadata_json}`;
+
+  assert.equal(response.status, 200);
+  assert.equal(body.workflows.find((workflow) => workflow.id === "daily-ai-research-publish-run")?.status, "ok");
+  assert.doesNotMatch(serialized, /COMPANY_B_SECRET|run_company_b_secret|project-b/);
+});
+
+test("registered workflow rehearsal accepts authorized global evidence and excludes another actor's global evidence", async () => {
+  db.initDb();
+  db.resetDemoData();
+  seedOwnerCompany();
+  await postJson("/api/registered-workflows/refresh", {});
+  const receiptPath = join(tempRoot, "authorized-global-reference-canary.json");
+  writeValidReferenceCanaryReceipt(receiptPath);
+  process.env.AUTOMATION_OS_REFERENCE_CANARY_RECEIPT = receiptPath;
+  const receipt = JSON.parse(readFileSync(receiptPath, "utf8")) as {
+    paths: Array<{ id: string; definition_fingerprint: string; schedule_fingerprint: string }>;
+  };
+  const dailyCanary = receipt.paths.find((path) => path.id === "daily-ai-research-publish-run");
+  assert.ok(dailyCanary);
+  const now = db.nowIso();
+  const lineage = {
+    workflow_id: "daily-ai-research-publish-run",
+    definition_fingerprint: dailyCanary.definition_fingerprint,
+    schedule_fingerprint: dailyCanary.schedule_fingerprint
+  };
+  db.insert("runs", {
+    id: "run_authorized_global_daily_completion",
+    company_id: null,
+    name: "Authorized global Daily AI completion",
+    status: "completed",
+    objective: "Authorized global Daily AI completion",
+    created_at: now,
+    updated_at: now,
+    metadata_json: {
+      registered_workflow_id: "daily-ai-research-publish-run",
+      system_scope: "global",
+      system_admin_actor_user_id: "user_local_owner",
+      proof_gate: { ok: true, missing: [] },
+      registered_workflow_start: lineage
+    }
+  });
+  db.insert("proofs", {
+    id: "proof_authorized_global_daily_completion",
+    company_id: null,
+    run_id: "run_authorized_global_daily_completion",
+    step_id: null,
+    proof_type: "published_receipt",
+    label: "Authorized global completion",
+    uri: "memory://authorized-global-completion",
+    size_bytes: 1,
+    created_at: now,
+    metadata_json: { registered_workflow_start: lineage }
+  });
+  db.insert("runs", {
+    id: "run_other_actor_global_secret",
+    company_id: null,
+    name: "OTHER_ACTOR_GLOBAL_SECRET_RUN",
+    status: "completed",
+    objective: "OTHER_ACTOR_GLOBAL_SECRET_OBJECTIVE",
+    created_at: new Date(Date.parse(now) + 1_000).toISOString(),
+    updated_at: new Date(Date.parse(now) + 1_000).toISOString(),
+    metadata_json: {
+      registered_workflow_id: "daily-ai-research-publish-run",
+      system_scope: "global",
+      system_admin_actor_user_id: "user_other_global_actor",
+      proof_gate: { ok: true, missing: [] },
+      registered_workflow_start: lineage
+    }
+  });
+  db.insert("proofs", {
+    id: "proof_other_actor_global_secret",
+    company_id: null,
+    run_id: "run_other_actor_global_secret",
+    step_id: null,
+    proof_type: "OTHER_ACTOR_GLOBAL_SECRET_PROOF",
+    label: "OTHER_ACTOR_GLOBAL_SECRET_LABEL",
+    uri: "memory://other-actor-global-secret",
+    size_bytes: 1,
+    created_at: new Date(Date.parse(now) + 1_000).toISOString(),
+    metadata_json: { registered_workflow_start: lineage }
+  });
+  for (let index = 0; index < 500; index += 1) {
+    const fillerAt = new Date(Date.parse(now) + 2_000 + index).toISOString();
+    db.insert("runs", {
+      id: `run_other_actor_global_filler_${index}`,
+      company_id: null,
+      name: `OTHER_ACTOR_GLOBAL_FILLER_${index}`,
+      status: "completed",
+      objective: "Unauthorized global filler must not crowd authorized evidence",
+      created_at: fillerAt,
+      updated_at: fillerAt,
+      metadata_json: {
+        registered_workflow_id: "daily-ai-research-publish-run",
+        system_scope: "global",
+        system_admin_actor_user_id: "user_other_global_actor",
+        proof_gate: { ok: true, missing: [] },
+        registered_workflow_start: lineage
+      }
+    });
+  }
+
+  const response = await postJson("/api/registered-workflows/rehearsal/run-once", {});
+  delete process.env.AUTOMATION_OS_REFERENCE_CANARY_RECEIPT;
+  const body = JSON.parse(response.body) as {
+    reference_paths_complete: boolean;
+    reference_paths: Array<{ id: string; status: string; stages: { completion_verified: boolean } }>;
+  };
+  const daily = body.reference_paths.find((path) => path.id === "daily-ai-research-publish-run");
+  const check = db.querySql<{ metadata_json: string }>(
+    "SELECT metadata_json FROM system_checks WHERE kind='registered_workflow_rehearsal' ORDER BY created_at DESC LIMIT 1"
+  )[0];
+  const serialized = `${response.body}\n${check.metadata_json}`;
+
+  assert.equal(response.status, 200);
+  assert.equal(daily?.status, "complete");
+  assert.equal(daily?.stages.completion_verified, true);
+  assert.equal(body.reference_paths_complete, false);
+  assert.doesNotMatch(serialized, /OTHER_ACTOR_GLOBAL_(?:SECRET|FILLER)|run_other_actor_global_(?:secret|filler)|proof_other_actor_global_secret/);
+});
+
 test("registered workflow rehearsal detects unsafe latest run metadata beyond proof metadata", async () => {
   db.initDb();
   db.resetDemoData();
+  seedOwnerCompany();
   await postJson("/api/registered-workflows/refresh", {});
   const now = db.nowIso();
   const artifactPath = join(tempRoot, "rehearsal-unsafe-proof-artifact.json");
   writeFileSync(artifactPath, JSON.stringify({ runner_safety: { externalActionExecutedByRehearsal: true } }), "utf8");
   db.insert("runs", {
     id: "run_rehearsal_unsafe_x",
+    company_id: "project-a",
     name: "X authenticated browser lane registered workflow billing-only x.com save lane proof",
     status: "partial",
     objective: "X authenticated browser lane registered workflow billing-only x.com save lane proof",
@@ -1049,6 +1522,7 @@ test("registered workflow rehearsal detects unsafe latest run metadata beyond pr
   });
   db.insert("run_steps", {
     id: "step_rehearsal_unsafe_x",
+    company_id: "project-a",
     run_id: "run_rehearsal_unsafe_x",
     name: "X boundary",
     status: "blocked",
@@ -1062,6 +1536,7 @@ test("registered workflow rehearsal detects unsafe latest run metadata beyond pr
   });
   db.insert("proofs", {
     id: "proof_rehearsal_unsafe_x",
+    company_id: "project-a",
     run_id: "run_rehearsal_unsafe_x",
     step_id: "step_rehearsal_unsafe_x",
     proof_type: "x_authenticated_browser_lane_registered_blocked",
@@ -1087,12 +1562,14 @@ test("registered workflow rehearsal detects unsafe latest run metadata beyond pr
 test("registered workflow rehearsal allows approved non-billing external action evidence", async () => {
   db.initDb();
   db.resetDemoData();
+  seedOwnerCompany();
   await postJson("/api/registered-workflows/refresh", {});
   const now = db.nowIso();
   const artifactPath = join(tempRoot, "rehearsal-approved-post-proof-artifact.json");
   writeFileSync(artifactPath, JSON.stringify({ external_action_executed: true, externalActionExecutedByRehearsal: false }), "utf8");
   db.insert("runs", {
     id: "run_rehearsal_approved_post",
+    company_id: "project-a",
     name: "SNS Multi Poster approved post proof",
     status: "completed",
     objective: "SNS Multi Poster approved post proof",
@@ -1111,6 +1588,7 @@ test("registered workflow rehearsal allows approved non-billing external action 
   });
   db.insert("run_steps", {
     id: "step_rehearsal_approved_post",
+    company_id: "project-a",
     run_id: "run_rehearsal_approved_post",
     name: "SNS approved post",
     status: "completed",
@@ -1124,6 +1602,7 @@ test("registered workflow rehearsal allows approved non-billing external action 
   });
   db.insert("proofs", {
     id: "proof_rehearsal_approved_post",
+    company_id: "project-a",
     run_id: "run_rehearsal_approved_post",
     step_id: "step_rehearsal_approved_post",
     proof_type: "sns_multi_poster_external_post_done",
@@ -1150,6 +1629,7 @@ test("registered workflow rehearsal allows approved non-billing external action 
 test("registered workflow start API creates Automation OS runs from fixed entrypoints", async () => {
   db.initDb();
   db.resetDemoData();
+  seedOwnerCompany();
   db.execSql("DELETE FROM registered_workflows;");
 
   const missing = await postJson("/api/registered-workflows/not-registered/start", {});
@@ -1158,6 +1638,7 @@ test("registered workflow start API creates Automation OS runs from fixed entryp
   const now = db.nowIso();
   db.insert("registered_workflows", {
     id: "research-plan-inactive-api-test",
+    company_id: "project-a",
     name: "Inactive research plan",
     status: "inactive",
     runner_status: "connected",
@@ -1178,6 +1659,7 @@ test("registered workflow start API creates Automation OS runs from fixed entryp
 
   db.insert("registered_workflows", {
     id: "inactive-broken-command-api-test",
+    company_id: "project-a",
     name: "Inactive broken command",
     status: "INACTIVE",
     runner_status: "connected",
@@ -1230,10 +1712,11 @@ test("registered workflow start API creates Automation OS runs from fixed entryp
   assert.equal(dailyMetadata.workflow_id, "daily-ai-research-publish-run");
   assert.equal(dailyBody.workerProtocol, "local_worker_loop_required");
   assert.match(String(dailyBody.nextAction), /npm run worker:loop/);
-  assert.deepEqual(dailyMetadata.registered_workflow_start, {
-    source: "manual",
-    runnerKind: "daily_ai_registered"
-  });
+  assert.equal(dailyMetadata.registered_workflow_start.source, "manual");
+  assert.equal(dailyMetadata.registered_workflow_start.runnerKind, "daily_ai_registered");
+  assert.equal(dailyMetadata.registered_workflow_start.workflow_id, "daily-ai-research-publish-run");
+  assert.match(dailyMetadata.registered_workflow_start.definition_fingerprint, /^[a-f0-9]{64}$/);
+  assert.match(dailyMetadata.registered_workflow_start.schedule_fingerprint, /^[a-f0-9]{64}$/);
   assert.equal(dailyMetadata.worker_protocol, "local_worker_loop_required");
   assert.equal(dailyMetadata.worker_mode, "queued_for_local_worker_loop");
   assert.equal(dailyMetadata.worker_loop.requiredCommand, "npm run worker:loop");
@@ -1290,6 +1773,7 @@ test("registered workflow start API creates Automation OS runs from fixed entryp
 test("registered workflow scheduler starts due fixed registered workflows with provenance metadata", async () => {
   db.initDb();
   db.resetDemoData();
+  seedGlobalSystemService();
   db.execSql("DELETE FROM registered_workflows;");
   await postJson("/api/registered-workflows/refresh", {});
   db.execSql(`
@@ -1314,7 +1798,14 @@ test("registered workflow scheduler starts due fixed registered workflows with p
     registered_workflow_id?: string;
     workflowId?: string;
     workflow_id?: string;
-    registered_workflow_start?: { source?: string; runnerKind?: string; dueKey?: string };
+    registered_workflow_start?: {
+      source?: string;
+      runnerKind?: string;
+      workflow_id?: string;
+      definition_fingerprint?: string;
+      schedule_fingerprint?: string;
+      dueKey?: string;
+    };
     worker_protocol?: string;
     worker_mode?: string;
     worker_loop?: { requiredCommand?: string };
@@ -1324,11 +1815,12 @@ test("registered workflow scheduler starts due fixed registered workflows with p
   assert.equal(metadata.registered_workflow_id, "daily-ai-research-publish-run");
   assert.equal(metadata.workflowId, "daily-ai-research-publish-run");
   assert.equal(metadata.workflow_id, "daily-ai-research-publish-run");
-  assert.deepEqual(metadata.registered_workflow_start, {
-    source: "scheduler",
-    runnerKind: "daily_ai_registered",
-    dueKey: "2026-06-18T09:00"
-  });
+  assert.equal(metadata.registered_workflow_start?.source, "scheduler");
+  assert.equal(metadata.registered_workflow_start?.runnerKind, "daily_ai_registered");
+  assert.equal(metadata.registered_workflow_start?.workflow_id, "daily-ai-research-publish-run");
+  assert.match(String(metadata.registered_workflow_start?.definition_fingerprint), /^[a-f0-9]{64}$/);
+  assert.match(String(metadata.registered_workflow_start?.schedule_fingerprint), /^[a-f0-9]{64}$/);
+  assert.equal(metadata.registered_workflow_start?.dueKey, "2026-06-18T09:00");
   assert.equal(metadata.plan?.approvalRequired, false);
   assert.equal(metadata.plan?.tasks?.[0]?.adapter, "daily_ai_registered");
   assert.equal(dailyRun.status, "queued");
@@ -1371,9 +1863,62 @@ test("registered workflow scheduler starts due fixed registered workflows with p
   assert.equal(ledgerItem.remainingBlocker, null);
 });
 
+test("fixed global scheduler requires an active service identity before starting", async () => {
+  db.initDb();
+  db.resetDemoData();
+  seedOwnerCompany();
+  db.execSql("DELETE FROM registered_workflows;");
+  await postJson("/api/registered-workflows/refresh", {});
+  db.execSql(`
+    UPDATE registered_workflows
+    SET status=CASE WHEN id='daily-ai-research-publish-run' THEN 'active' ELSE 'inactive' END,
+        created_at='2026-06-17T00:00:00.000Z',
+        updated_at='2026-06-17T00:00:00.000Z';
+  `);
+  const previousIdentity = process.env.AUTOMATION_OS_GLOBAL_SYSTEM_SERVICE_USER_ID;
+  try {
+    delete process.env.AUTOMATION_OS_GLOBAL_SYSTEM_SERVICE_USER_ID;
+    const missing = await runResearchPlanSchedulerOnce(new Date("2026-06-18T11:00:00"));
+    assert.equal(missing.started, 0);
+    assert.deepEqual(missing.blockers, [{
+      workflowId: "daily-ai-research-publish-run",
+      dueKey: "2026-06-18T09:00",
+      exactBlocker: "registered_workflow_global_service_identity_missing"
+    }]);
+
+    process.env.AUTOMATION_OS_GLOBAL_SYSTEM_SERVICE_USER_ID = "user_test_global_human";
+    seedGlobalSystemService("user_test_global_human", "human");
+    const human = await runResearchPlanSchedulerOnce(new Date("2026-06-19T11:00:00"));
+    assert.equal(human.started, 0);
+    assert.deepEqual(human.blockers, [{
+      workflowId: "daily-ai-research-publish-run",
+      dueKey: "2026-06-19T09:00",
+      exactBlocker: "registered_workflow_global_service_identity_invalid"
+    }]);
+
+    seedGlobalSystemService("user_test_global_human", "service");
+    const service = await runResearchPlanSchedulerOnce(new Date("2026-06-20T11:00:00"));
+    assert.equal(service.started, 1);
+    assert.equal(service.blocked, 0);
+    const metadata = JSON.parse(db.querySql<{ metadata_json: string }>(
+      `SELECT metadata_json FROM runs WHERE id=${db.sqlValue(service.runIds[0])}`
+    )[0].metadata_json) as { system_scope?: string; scheduler_service_identity?: { userId?: string; kind?: string; scope?: string } };
+    assert.equal(metadata.system_scope, "global");
+    assert.deepEqual(metadata.scheduler_service_identity, {
+      userId: "user_test_global_human",
+      kind: "service",
+      scope: "global_system"
+    });
+  } finally {
+    if (previousIdentity === undefined) delete process.env.AUTOMATION_OS_GLOBAL_SYSTEM_SERVICE_USER_ID;
+    else process.env.AUTOMATION_OS_GLOBAL_SYSTEM_SERVICE_USER_ID = previousIdentity;
+  }
+});
+
 test("registered workflow scheduler skips paused and inactive fixed registered workflows", async () => {
   db.initDb();
   db.resetDemoData();
+  seedGlobalSystemService();
   db.execSql("DELETE FROM registered_workflows;");
   await postJson("/api/registered-workflows/refresh", {});
   await postJson("/api/registered-workflows/daily-ai-research-publish-run/pause", {});
@@ -1458,10 +2003,11 @@ test("POST /api/obsidian/export exposes the existing guarded exporter", async ()
   assert.ok(body.missionFiles.some((file) => file.endsWith(join("07_Decisions", "Decision Log.md"))));
   assert.ok(body.missionFiles.some((file) => file.endsWith(join("07_Decisions", "Failure Fix Log.md"))));
   assert.ok(body.missionFiles.some((file) => file.endsWith(join("00_Start Here", "Weekly Review.md"))));
-  assert.equal(body.secondBrainFiles.length, 3);
+  assert.equal(body.secondBrainFiles.length, 4);
   assert.ok(body.secondBrainFiles.some((file) => file.endsWith(join("01_Control Panel", "Second Brain Intake.md"))));
   assert.ok(body.secondBrainFiles.some((file) => file.endsWith(join("01_Control Panel", "Second Brain Auto Processor.md"))));
   assert.ok(body.secondBrainFiles.some((file) => file.endsWith(join("00_Start Here", "Second Brain Weekly Digest.md"))));
+  assert.ok(body.secondBrainFiles.some((file) => file.endsWith(join("01_Control Panel", "Skill Candidates.md"))));
   assert.equal(body.orientationFiles.length, 5);
   assert.ok(body.orientationFiles.some((file) => file.endsWith(join("05_Projects", "Project Index.md"))));
   assert.ok(body.orientationFiles.some((file) => file.endsWith(join("09_Inbox", "Inbox Index.md"))));
@@ -3036,6 +3582,7 @@ test("GET /api/dashboard includes persisted system check results", async () => {
 test("registered workflow allowlist limits public API and dashboard lists without deleting fixed definitions", async () => {
   db.initDb();
   db.resetDemoData();
+  seedOwnerCompany();
   const previous = process.env.AUTOMATION_OS_REGISTERED_WORKFLOW_ALLOWLIST;
   process.env.AUTOMATION_OS_REGISTERED_WORKFLOW_ALLOWLIST = [
     "daily-ai-research-publish-run",
@@ -3069,7 +3616,7 @@ test("registered workflow allowlist limits public API and dashboard lists withou
   }
 });
 
-test("GET /api/dashboard only marks worker heartbeat stale for same host", async () => {
+test("GET /api/dashboard scopes local heartbeat staleness while MVP state uses the durable queue readback", async () => {
   db.initDb();
   db.resetDemoData();
   db.execSql("DELETE FROM runs; DELETE FROM approvals; DELETE FROM system_checks; DELETE FROM bridge_executions; DELETE FROM bridge_actions; DELETE FROM knowledge_notes;");
@@ -3095,12 +3642,12 @@ test("GET /api/dashboard only marks worker heartbeat stale for same host", async
 
   const mvpResponse = await getJson("/api/mvp/state");
   const mvpBody = JSON.parse(mvpResponse.body) as {
-    worker: { heartbeat_fresh: boolean; heartbeat_age_seconds: number | null; readback_status: string; exact_blocker: string | null };
+    worker: { heartbeat_fresh?: boolean; heartbeat_age_seconds?: number | null; readback_status: string; exact_blocker: string | null };
   };
-  assert.equal(mvpBody.worker.heartbeat_fresh, false);
-  assert.equal(mvpBody.worker.readback_status, "heartbeat_stale");
-  assert.equal(mvpBody.worker.exact_blocker, "mac_worker_heartbeat_stale");
-  assert.ok((mvpBody.worker.heartbeat_age_seconds ?? 0) > 300);
+  assert.equal(mvpBody.worker.heartbeat_fresh, undefined);
+  assert.equal(mvpBody.worker.readback_status, "stored");
+  assert.equal(mvpBody.worker.exact_blocker, null);
+  assert.equal(mvpBody.worker.heartbeat_age_seconds, undefined);
 
   db.execSql("DELETE FROM system_checks;");
   db.insert("system_checks", {
@@ -3156,12 +3703,12 @@ test("GET /api/dashboard only marks worker heartbeat stale for same host", async
   });
   const futureResponse = await getJson("/api/mvp/state");
   const futureBody = JSON.parse(futureResponse.body) as {
-    worker: { heartbeat_fresh: boolean; heartbeat_age_seconds: number | null; readback_status: string; exact_blocker: string | null };
+    worker: { heartbeat_fresh?: boolean; heartbeat_age_seconds?: number | null; readback_status: string; exact_blocker: string | null };
   };
-  assert.equal(futureBody.worker.heartbeat_fresh, false);
-  assert.equal(futureBody.worker.heartbeat_age_seconds, null);
-  assert.equal(futureBody.worker.readback_status, "heartbeat_stale");
-  assert.equal(futureBody.worker.exact_blocker, "mac_worker_heartbeat_stale");
+  assert.equal(futureBody.worker.heartbeat_fresh, undefined);
+  assert.equal(futureBody.worker.heartbeat_age_seconds, undefined);
+  assert.equal(futureBody.worker.readback_status, "stored");
+  assert.equal(futureBody.worker.exact_blocker, null);
 });
 
 test("registered workflow schedule pause survives refresh without exposing internals on dashboard", async () => {
@@ -3277,6 +3824,7 @@ test("dashboard registered workflows expose public trust and freshness labels wi
   for (const id of workflowIds) {
     db.insert("registered_workflows", {
       id,
+      company_id: "project-a",
       name: id,
       status: "active",
       runner_status: "connected",
@@ -4400,6 +4948,7 @@ test("POST /api/knowledge/refresh does not run inline Obsidian export", async ()
 test("topbar start API path defers Obsidian export until after the immediate dashboard refresh", async () => {
   db.initDb();
   db.resetDemoData();
+  seedOwnerCompany();
   const previousAutoExport = process.env.AUTOMATION_OS_OBSIDIAN_AUTO_EXPORT;
   const previousVault = process.env.AUTOMATION_OS_OBSIDIAN_VAULT;
   const previousStatusFile = process.env.AUTOMATION_OS_OBSIDIAN_STATUS_FILE;
@@ -4413,7 +4962,7 @@ test("topbar start API path defers Obsidian export until after the immediate das
   try {
     const token = "sk-topbarDeferred1234567890abcdefghijklmnopqrstuvwxyzABCD";
     const secretsResponse = await postJson("/api/secrets/from-message", { text: `OpenAI API key: ${token}` });
-    const runResponse = await postJson("/api/runs/start", { command: "Daily AI run with saved key" });
+    const runResponse = await postJson("/api/runs/start", { company_id: "project-a", command: "Daily AI run with saved key" });
     const dashboardResponse = await getJson("/api/dashboard");
     const dashboard = JSON.parse(dashboardResponse.body) as { knowledgeNotes: Array<{ id: string }>; runs: Array<{ id: string }> };
 
@@ -4498,6 +5047,7 @@ function insertResearchPlannerReviewWorkflows(count: number, status: "active" | 
     const id = `research-plan-api-review-${status}-${index}`;
     db.insert("registered_workflows", {
       id,
+      company_id: "project-a",
       name: `Research Planner review ${index}`,
       status,
       runner_status: "connected",

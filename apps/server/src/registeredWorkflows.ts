@@ -1,4 +1,7 @@
+import { createHash } from "node:crypto";
 import { execSql, nowIso, querySql, sqlValue, upsert } from "./db/client.js";
+import { canonicalJson } from "./automations/idempotency.js";
+import { scopedCompanyPredicate } from "./companies/scopedResources.js";
 import type { ResearchPlanSnapshot } from "./planner/researchPlanner.js";
 
 export type RegisteredRunnerStatus = "connected" | "registered_runner_pending";
@@ -98,6 +101,7 @@ export type ResearchPlanRegisteredWorkflow = {
 
 export type RegisteredWorkflowRow = {
   id: string;
+  company_id?: string | null;
   name: string;
   status: string;
   runner_status: string;
@@ -315,9 +319,29 @@ export const fixedRegisteredWorkflows: RegisteredWorkflowDefinition[] = [
   })
 ];
 
+const trustedWorkflowAliases: Record<string, string> = {
+  "daily-ai": "daily-ai-research-publish-run",
+  "job-manager": "job-application-manager",
+  "job-application-manager": "job-application-manager",
+  "nisenprints": "nisenprints-daily-product-canva-printify-etsy-pinterest"
+};
+
+/**
+ * Return the digest of the immutable in-process registered workflow definition.
+ * This is the local trusted manifest source used by the root-owned IAB gate;
+ * unknown workflow ids fail closed instead of accepting a caller-supplied hash.
+ */
+export function readTrustedRegisteredWorkflowManifestHash(workflowId: string): string | null {
+  const canonicalId = trustedWorkflowAliases[workflowId] ?? workflowId;
+  const definition = fixedRegisteredWorkflows.find((workflow) => workflow.id === canonicalId);
+  if (!definition) return null;
+  return createHash("sha256").update(canonicalJson(definition), "utf8").digest("hex");
+}
+
 type StoredWorkflowFields = Pick<
   RegisteredWorkflowRow,
   | "id"
+  | "company_id"
   | "name"
   | "status"
   | "runner_status"
@@ -332,6 +356,7 @@ type StoredWorkflowFields = Pick<
 function storedWorkflowFields(workflow: RegisteredWorkflowDefinition): StoredWorkflowFields {
   return {
     id: workflow.id,
+    company_id: null,
     name: workflow.name,
     status: workflow.status,
     runner_status: workflow.runnerStatus,
@@ -344,9 +369,10 @@ function storedWorkflowFields(workflow: RegisteredWorkflowDefinition): StoredWor
   };
 }
 
-function storedResearchPlanWorkflowFields(workflow: ResearchPlanRegisteredWorkflow): StoredWorkflowFields {
+function storedResearchPlanWorkflowFields(workflow: ResearchPlanRegisteredWorkflow, companyId: string): StoredWorkflowFields {
   return {
     id: workflow.id,
+    company_id: companyId,
     name: workflow.name,
     status: workflow.status,
     runner_status: workflow.runnerStatus,
@@ -420,8 +446,32 @@ export function listRegisteredWorkflows(): RegisteredWorkflowRow[] {
   `);
 }
 
+export function listRegisteredWorkflowsForCompanies(companyIds: readonly string[]): RegisteredWorkflowRow[] {
+  return querySql<RegisteredWorkflowRow>(`
+    SELECT *
+    FROM registered_workflows
+    WHERE ${registeredWorkflowScopePredicate(companyIds)}
+    ORDER BY
+      CASE runner_status
+        WHEN 'connected' THEN 0
+        WHEN 'registered_runner_pending' THEN 1
+        ELSE 2
+      END,
+      id ASC;
+  `);
+}
+
 export function getRegisteredWorkflow(id: string): RegisteredWorkflowRow | undefined {
   return querySql<RegisteredWorkflowRow>(`SELECT * FROM registered_workflows WHERE id=${sqlValue(id)} LIMIT 1;`)[0];
+}
+
+export function getRegisteredWorkflowForCompanies(id: string, companyIds: readonly string[]): RegisteredWorkflowRow | undefined {
+  return querySql<RegisteredWorkflowRow>(`
+    SELECT * FROM registered_workflows
+    WHERE id=${sqlValue(id)}
+      AND ${registeredWorkflowScopePredicate(companyIds)}
+    LIMIT 1;
+  `)[0];
 }
 
 export function isRegisteredWorkflowSchedulePaused(workflow: Pick<RegisteredWorkflowRow, "provenance_json">): boolean {
@@ -445,8 +495,12 @@ export function getRegisteredWorkflowEffectiveSchedule(workflow: Pick<Registered
   return { rrule, label };
 }
 
-export function setRegisteredWorkflowSchedulePaused(id: string, paused: boolean): RegisteredWorkflowRow | undefined {
-  const workflow = getRegisteredWorkflow(id);
+export function setRegisteredWorkflowSchedulePaused(
+  id: string,
+  paused: boolean,
+  companyIds?: readonly string[]
+): RegisteredWorkflowRow | undefined {
+  const workflow = companyIds ? getRegisteredWorkflowForCompanies(id, companyIds) : getRegisteredWorkflow(id);
   if (!workflow) return undefined;
   const provenance = parseJson<Record<string, unknown>>(workflow.provenance_json, {});
   const scheduleControl = typeof provenance.scheduleControl === "object" && provenance.scheduleControl
@@ -465,11 +519,15 @@ export function setRegisteredWorkflowSchedulePaused(id: string, paused: boolean)
     },
     updated_at: now
   });
-  return getRegisteredWorkflow(id);
+  return companyIds ? getRegisteredWorkflowForCompanies(id, companyIds) : getRegisteredWorkflow(id);
 }
 
-export function setRegisteredWorkflowScheduleOverride(id: string, input: unknown): RegisteredWorkflowRow | undefined {
-  const workflow = getRegisteredWorkflow(id);
+export function setRegisteredWorkflowScheduleOverride(
+  id: string,
+  input: unknown,
+  companyIds?: readonly string[]
+): RegisteredWorkflowRow | undefined {
+  const workflow = companyIds ? getRegisteredWorkflowForCompanies(id, companyIds) : getRegisteredWorkflow(id);
   if (!workflow) return undefined;
   const scheduleOverride = parseScheduleOverrideInput(input);
   const provenance = parseJson<Record<string, unknown>>(workflow.provenance_json, {});
@@ -491,7 +549,7 @@ export function setRegisteredWorkflowScheduleOverride(id: string, input: unknown
     },
     updated_at: now
   });
-  return getRegisteredWorkflow(id);
+  return companyIds ? getRegisteredWorkflowForCompanies(id, companyIds) : getRegisteredWorkflow(id);
 }
 
 export function researchPlanRegisteredWorkflowId(planId: string): string {
@@ -500,6 +558,7 @@ export function researchPlanRegisteredWorkflowId(planId: string): string {
 }
 
 export function registerResearchPlanWorkflow(plan: ResearchPlanSnapshot, rrule = "FREQ=DAILY;BYHOUR=9;BYMINUTE=0;BYSECOND=0"): RegisteredWorkflowRow {
+  if (!plan.companyId) throw new Error("research_plan_company_required");
   const now = nowIso();
   const workflow: ResearchPlanRegisteredWorkflow = {
     id: researchPlanRegisteredWorkflowId(plan.id),
@@ -530,7 +589,7 @@ export function registerResearchPlanWorkflow(plan: ResearchPlanSnapshot, rrule =
     }
   };
   const existing = getRegisteredWorkflow(workflow.id);
-  const expected = withRuntimeProvenance(storedResearchPlanWorkflowFields(workflow), existing);
+  const expected = withRuntimeProvenance(storedResearchPlanWorkflowFields(workflow, plan.companyId), existing);
   upsert("registered_workflows", {
     ...expected,
     created_at: existing?.created_at ?? now,
@@ -555,13 +614,21 @@ export function findFixedRegisteredWorkflow(id: string): RegisteredWorkflowDefin
   return fixedRegisteredWorkflows.find((workflow) => workflow.id === id);
 }
 
-export function getRegisteredWorkflowStartCommand(id: string): string | undefined {
+export function getRegisteredWorkflowStartCommand(id: string, companyIds?: readonly string[]): string | undefined {
+  const workflow = companyIds ? getRegisteredWorkflowForCompanies(id, companyIds) : getRegisteredWorkflow(id);
+  if (companyIds && !workflow) return undefined;
   const fixedCommand = findFixedRegisteredWorkflow(id)?.startCommand.command;
   if (fixedCommand) return fixedCommand;
-  const workflow = getRegisteredWorkflow(id);
   if (!workflow || workflow.runner_kind !== "research_plan_registered") return undefined;
   const startCommand = parseJson<{ command?: unknown }>(workflow.start_command_json, {});
   return typeof startCommand.command === "string" ? startCommand.command : undefined;
+}
+
+function registeredWorkflowScopePredicate(companyIds: readonly string[]): string {
+  const normalized = [...new Set(companyIds.map((value) => value.trim()).filter(Boolean))];
+  if (normalized.length === 0) return "1=0";
+  const fixedIds = fixedRegisteredWorkflows.map((workflow) => sqlValue(workflow.id)).join(", ");
+  return `(${scopedCompanyPredicate("company_id", normalized)} OR (company_id IS NULL AND id IN (${fixedIds})))`;
 }
 
 function parseJson<T>(value: string, fallback: T): T {

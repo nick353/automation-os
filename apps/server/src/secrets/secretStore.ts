@@ -332,8 +332,11 @@ function parseSecretMetadata(raw: string): { state?: string; purpose?: string; a
 }
 
 function maskSecret(value: string): string {
-  if (value.length <= 12) return "保存済み";
-  return `${value.slice(0, 4)}...${value.slice(-4)}`;
+  void value;
+  // A prefix/suffix is still credential-derived data and can be used to
+  // correlate or brute-force a stored token. Public readbacks only need to
+  // communicate that a secret exists; they must never contain fragments.
+  return "保存済み（値は非表示）";
 }
 
 function fingerprint(value: string): string {

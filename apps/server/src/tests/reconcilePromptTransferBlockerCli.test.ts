@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -50,9 +50,25 @@ test("Prompt Transfer blocker reconciliation records google service account bloc
   const now = db.nowIso();
   db.insert("runs", {
     id: "run_mqtbe1ep_vgi2ex",
+    company_id: "project-a",
     name: "Prompt Transfer Ukiyoe registered workflow billing-only save sheets",
     status: "blocked",
     objective: "historical Prompt Transfer credential blocker",
+    created_at: now,
+    updated_at: now,
+    metadata_json: {
+      registeredWorkflowId: "prompt-transfer-ukiyoe",
+      registered_workflow_id: "prompt-transfer-ukiyoe",
+      exact_blocker: "google_service_account_json_missing",
+      proof_gate: { ok: false, missing: ["prompt_transfer_runner_exit_nonzero"], present: [] }
+    }
+  });
+  db.insert("runs", {
+    id: "run_prompt_transfer_other_company",
+    company_id: "project-b",
+    name: "Prompt Transfer Ukiyoe registered workflow billing-only save sheets",
+    status: "blocked",
+    objective: "same workflow in another company",
     created_at: now,
     updated_at: now,
     metadata_json: {
@@ -117,9 +133,10 @@ test("Prompt Transfer blocker reconciliation records google service account bloc
 
   const sourceRun = db.querySql<{ status: string }>("SELECT status FROM runs WHERE id='run_mqtbe1ep_vgi2ex'")[0];
   assert.equal(sourceRun.status, "blocked");
-  const newRun = db.querySql<{ status: string; metadata_json: string }>(`SELECT status, metadata_json FROM runs WHERE id='${body.committedRun.runId}'`)[0];
+  const newRun = db.querySql<{ status: string; company_id: string | null; metadata_json: string }>(`SELECT status, company_id, metadata_json FROM runs WHERE id='${body.committedRun.runId}'`)[0];
   const step = db.querySql<{ status: string; metadata_json: string }>(`SELECT status, metadata_json FROM run_steps WHERE run_id='${body.committedRun.runId}' LIMIT 1`)[0];
   assert.equal(newRun.status, "blocked");
+  assert.equal(newRun.company_id, "project-a");
   assert.equal(step.status, "blocked");
   const metadata = JSON.parse(newRun.metadata_json) as {
     reconciliation_of_run_id: string;
@@ -158,11 +175,147 @@ test("Prompt Transfer blocker reconciliation records google service account bloc
   assert.equal(stepMetadata.route_decision_fingerprint, metadata.route_decision?.fingerprint ?? null);
   assert.equal(stepMetadata.execution_routing?.fingerprint, metadata.route_decision?.fingerprint);
   assert.equal(stepMetadata.route_readback, null);
-  const proof = db.querySql<{ proof_type: string; uri: string }>(`SELECT proof_type, uri FROM proofs WHERE id='${body.committedRun.proofId}'`)[0];
+  const proof = db.querySql<{ proof_type: string; company_id: string | null; uri: string }>(`SELECT proof_type, company_id, uri FROM proofs WHERE id='${body.committedRun.proofId}'`)[0];
   assert.equal(proof.proof_type, "prompt_transfer_blocker_reconciliation_readback");
+  assert.equal(proof.company_id, "project-a");
   assert.match(proof.uri, /prompt-transfer-blocker-reconciliation-receipt\.json$/);
   const event = db.querySql<{ event_type: string }>(`SELECT event_type FROM worker_events WHERE run_id='${body.committedRun.runId}'`)[0];
   assert.equal(event.event_type, "worker_blocked");
+});
+
+test("Prompt Transfer blocker reconciliation fails closed when source run company id is missing", () => {
+  db.initDb();
+  db.resetDemoData();
+  const runDir = join(tempRoot, "prompt-transfer-missing-company-run");
+  const applyPlanDir = join(runDir, "apply-plan");
+  const outDir = join(tempRoot, "prompt-transfer-missing-company-reconciliation");
+  mkdirSync(applyPlanDir, { recursive: true });
+  const summaryPath = join(runDir, "result.json");
+  writeJson(summaryPath, {
+    status: "blocked",
+    run_id: "run_prompt_transfer_missing_company",
+    source_url: "https://docs.google.com/document/d/source/edit",
+    target_url: "https://docs.google.com/spreadsheets/d/target/edit",
+    theme: "浮世絵 猫シリーズ",
+    commit_requested: true,
+    allow_external_commit: true,
+    committed: false,
+    artifact_uri: runDir,
+    stages: [
+      { stage: "extract", status: "success", artifact_uri: join(runDir, "extract", "extracted.json") },
+      { stage: "apply-plan", status: "success", artifact_uri: join(applyPlanDir, "plan.json") }
+    ],
+    exact_blocker: "google_service_account_json_missing",
+    retry_from_stage: "commit"
+  });
+  writeJson(join(applyPlanDir, "plan.json"), {
+    status: "ready",
+    target_url: "https://docs.google.com/spreadsheets/d/target/edit",
+    theme: "浮世絵 猫シリーズ",
+    prompt_text: "Japanese woodblock print style...",
+    adopted: "○",
+    rows: [{ row: 16, theme_cell: "B16", prompt_cell: "C16", adopted_cell: "D16" }],
+    append_row: 16
+  });
+  db.insert("runs", {
+    id: "run_prompt_transfer_missing_company",
+    name: "Prompt Transfer missing company source run",
+    status: "blocked",
+    objective: "source run missing company",
+    created_at: db.nowIso(),
+    updated_at: db.nowIso(),
+    metadata_json: {
+      registeredWorkflowId: "prompt-transfer-ukiyoe",
+      registered_workflow_id: "prompt-transfer-ukiyoe"
+    }
+  });
+  const runsBefore = db.querySql<{ count: number }>("SELECT count(*) AS count FROM runs")[0].count;
+  const result = spawnSync(
+    process.execPath,
+    ["apps/server/dist/cli/reconcilePromptTransferBlocker.js", `--summary=${summaryPath}`, `--out-dir=${outDir}`, "--commit"],
+    {
+      cwd: process.cwd(),
+      env: { ...process.env, AUTOMATION_OS_DB: process.env.AUTOMATION_OS_DB ?? "" },
+      encoding: "utf8"
+    }
+  );
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /source_run_company_id_missing/);
+  assert.equal(existsSync(outDir), false);
+  assert.equal(db.querySql<{ count: number }>("SELECT count(*) AS count FROM runs")[0].count, runsBefore);
+});
+
+test("Prompt Transfer blocker reconciliation fails closed when artifact and explicit source run ids conflict", () => {
+  db.initDb();
+  db.resetDemoData();
+  const runDir = join(tempRoot, "prompt-transfer-conflict-run");
+  const applyPlanDir = join(runDir, "apply-plan");
+  const outDir = join(tempRoot, "prompt-transfer-conflict-reconciliation");
+  mkdirSync(applyPlanDir, { recursive: true });
+  const summaryPath = join(runDir, "result.json");
+  writeJson(summaryPath, {
+    status: "blocked",
+    run_id: "run_mqtbe1ep_vgi2ex",
+    source_url: "https://docs.google.com/document/d/source/edit",
+    target_url: "https://docs.google.com/spreadsheets/d/target/edit",
+    theme: "浮世絵 猫シリーズ",
+    commit_requested: true,
+    allow_external_commit: true,
+    committed: false,
+    artifact_uri: runDir,
+    stages: [
+      { stage: "extract", status: "success", artifact_uri: join(runDir, "extract", "extracted.json") },
+      { stage: "apply-plan", status: "success", artifact_uri: join(applyPlanDir, "plan.json") }
+    ],
+    exact_blocker: "google_service_account_json_missing",
+    retry_from_stage: "commit"
+  });
+  writeJson(join(applyPlanDir, "plan.json"), {
+    status: "ready",
+    target_url: "https://docs.google.com/spreadsheets/d/target/edit",
+    theme: "浮世絵 猫シリーズ",
+    prompt_text: "Japanese woodblock print style...",
+    adopted: "○",
+    rows: [{ row: 16, theme_cell: "B16", prompt_cell: "C16", adopted_cell: "D16" }],
+    append_row: 16
+  });
+  db.insert("runs", {
+    id: "run_mqtbe1ep_vgi2ex",
+    company_id: "project-a",
+    name: "Prompt Transfer Ukiyoe registered workflow billing-only save sheets",
+    status: "blocked",
+    objective: "historical Prompt Transfer credential blocker",
+    created_at: db.nowIso(),
+    updated_at: db.nowIso(),
+    metadata_json: {
+      registeredWorkflowId: "prompt-transfer-ukiyoe",
+      registered_workflow_id: "prompt-transfer-ukiyoe",
+      exact_blocker: "google_service_account_json_missing",
+      proof_gate: { ok: false, missing: ["prompt_transfer_runner_exit_nonzero"], present: [] }
+    }
+  });
+  const runsBefore = db.querySql<{ count: number }>("SELECT count(*) AS count FROM runs")[0].count;
+  const result = spawnSync(
+    process.execPath,
+    [
+      "apps/server/dist/cli/reconcilePromptTransferBlocker.js",
+      `--summary=${summaryPath}`,
+      `--out-dir=${outDir}`,
+      `--source-run-id=run_prompt_transfer_other_company`,
+      "--commit"
+    ],
+    {
+      cwd: process.cwd(),
+      env: { ...process.env, AUTOMATION_OS_DB: process.env.AUTOMATION_OS_DB ?? "" },
+      encoding: "utf8"
+    }
+  );
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /source_run_id_conflict/);
+  assert.equal(existsSync(outDir), false);
+  assert.equal(db.querySql<{ count: number }>("SELECT count(*) AS count FROM runs")[0].count, runsBefore);
 });
 
 function writeJson(path: string, value: unknown): void {

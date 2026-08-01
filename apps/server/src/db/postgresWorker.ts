@@ -6,6 +6,12 @@ type WorkerInput = {
 } | {
   operation: "batchQuery";
   sqls: string[];
+} | {
+  operation: "transaction";
+  steps: Array<{ sql: string; expectChanges?: number }>;
+} | {
+  operation: "initialize";
+  bootstrapVersion: number;
 };
 
 const { Client, types } = pg;
@@ -44,9 +50,15 @@ try {
   }, timeoutMs + 1000);
   hardTimeout.unref();
   const input = JSON.parse(await readStdin()) as WorkerInput;
-  const inputPreview = input.operation === "batchQuery" ? `${input.sqls.length} statements` : input.sql.slice(0, 240).replace(/\s+/g, " ");
+  const inputPreview = input.operation === "initialize"
+    ? "schema bootstrap"
+    : input.operation === "batchQuery"
+    ? `${input.sqls.length} statements`
+    : input.operation === "transaction"
+      ? `${input.steps.length} transaction steps`
+      : input.sql.slice(0, 240).replace(/\s+/g, " ");
   if (trace) console.error(`postgresWorker: input ${input.operation} ${inputPreview}`);
-  if (input.operation !== "exec" && input.operation !== "query" && input.operation !== "batchQuery") {
+  if (input.operation !== "exec" && input.operation !== "query" && input.operation !== "batchQuery" && input.operation !== "transaction" && input.operation !== "initialize") {
     throw new Error(`Unsupported PostgreSQL operation: ${String(input.operation)}`);
   }
 
@@ -61,7 +73,59 @@ try {
   if (trace) console.error("postgresWorker: connected");
   try {
     if (trace) console.error("postgresWorker: querying");
-    if (input.operation === "batchQuery") {
+    if (input.operation === "initialize") {
+      if (!Number.isSafeInteger(input.bootstrapVersion) || input.bootstrapVersion < 1) {
+        throw new Error("postgres_schema_bootstrap_version_invalid");
+      }
+      await client.query("SELECT pg_advisory_lock(hashtext('automation_os_schema_bootstrap'))");
+      try {
+        const marker = await client.query(`
+          SELECT EXISTS (
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema=current_schema() AND table_name='automation_os_schema_bootstrap'
+          ) AS present
+        `);
+        let databaseVersion: number | null = null;
+        if (marker.rows[0]?.present === true) {
+          const version = await client.query("SELECT version FROM automation_os_schema_bootstrap WHERE id='primary' LIMIT 1");
+          if (version.rows[0]?.version !== undefined) databaseVersion = Number(version.rows[0].version);
+        }
+        if (databaseVersion !== null && Number.isFinite(databaseVersion) && databaseVersion > input.bootstrapVersion) {
+          throw new Error(`postgres_schema_version_newer_than_binary:${databaseVersion}:${input.bootstrapVersion}`);
+        }
+        if (databaseVersion !== input.bootstrapVersion) {
+          process.env.AUTOMATION_OS_POSTGRES_BOOTSTRAP_LOCK_HELD = "1";
+          const database = await import("./client.js");
+          if (database.postgresSchemaBootstrapVersion !== input.bootstrapVersion) {
+            throw new Error(`postgres_schema_bootstrap_version_mismatch:${database.postgresSchemaBootstrapVersion}:${input.bootstrapVersion}`);
+          }
+          database.initializePostgresSchemaUnderLock();
+        }
+        writeResult({ ok: true });
+      } finally {
+        delete process.env.AUTOMATION_OS_POSTGRES_BOOTSTRAP_LOCK_HELD;
+        await client.query("SELECT pg_advisory_unlock(hashtext('automation_os_schema_bootstrap'))");
+      }
+    } else if (input.operation === "transaction") {
+      await client.query("BEGIN");
+      try {
+        for (const step of input.steps) {
+          const result = await client.query(step.sql);
+          const changes = Array.isArray(result)
+            ? result.reduce((sum, item) => sum + Number(item.rowCount ?? 0), 0)
+            : Number(result.rowCount ?? 0);
+          if (step.expectChanges !== undefined && changes !== step.expectChanges) {
+            throw new Error(`sql_transaction_expected_changes:${step.expectChanges}:actual:${changes}`);
+          }
+        }
+        await client.query("COMMIT");
+        if (trace) console.error("postgresWorker: transaction committed");
+        writeResult({ ok: true });
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      }
+    } else if (input.operation === "batchQuery") {
       const batches = [];
       for (const sql of input.sqls) {
         const result = await client.query(sql);

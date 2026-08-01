@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -38,6 +38,7 @@ test("job reconciliation CLI --commit records a new readback run without changin
   const now = db.nowIso();
   db.insert("runs", {
     id: "run_mqu3doqb_9n1c6a",
+    company_id: "project-a",
     name: "Job Application Manager registered workflow billing-only inbox readback",
     status: "blocked",
     objective: "historical blocked Job run",
@@ -49,10 +50,30 @@ test("job reconciliation CLI --commit records a new readback run without changin
       proof_gate: { ok: false, missing: ["job_submit_registered_codex_execution"], present: [] }
     }
   });
+  db.insert("runs", {
+    id: "run_job_latest_other_company",
+    company_id: "project-b",
+    name: "Job Application Manager registered workflow billing-only inbox readback",
+    status: "blocked",
+    objective: "same workflow in another company",
+    created_at: now,
+    updated_at: now,
+    metadata_json: {
+      registeredWorkflowId: "job-application-manager",
+      registered_workflow_id: "job-application-manager",
+      proof_gate: { ok: false, missing: ["job_submit_registered_codex_execution"], present: [] }
+    }
+  });
 
   const output = execFileSync(
     process.execPath,
-    ["apps/server/dist/cli/reconcileJobCompletion.js", `--run-dir=${runDir}`, `--out-dir=${outDir}`, "--commit"],
+    [
+      "apps/server/dist/cli/reconcileJobCompletion.js",
+      `--run-dir=${runDir}`,
+      `--out-dir=${outDir}`,
+      `--source-run-id=run_mqu3doqb_9n1c6a`,
+      "--commit"
+    ],
     {
       cwd: process.cwd(),
       env: { ...process.env, AUTOMATION_OS_DB: process.env.AUTOMATION_OS_DB ?? "" },
@@ -72,8 +93,9 @@ test("job reconciliation CLI --commit records a new readback run without changin
 
   const sourceRun = db.querySql<{ status: string }>("SELECT status FROM runs WHERE id='run_mqu3doqb_9n1c6a'")[0];
   assert.equal(sourceRun.status, "blocked");
-  const newRun = db.querySql<{ status: string; metadata_json: string }>(`SELECT status, metadata_json FROM runs WHERE id='${body.committedRun.runId}'`)[0];
+  const newRun = db.querySql<{ status: string; company_id: string | null; metadata_json: string }>(`SELECT status, company_id, metadata_json FROM runs WHERE id='${body.committedRun.runId}'`)[0];
   assert.equal(newRun.status, "complete");
+  assert.equal(newRun.company_id, "project-a");
   const newRunMetadata = JSON.parse(newRun.metadata_json) as {
     reconciliation_of_run_id: string;
     additional_applications_submitted: boolean;
@@ -85,8 +107,9 @@ test("job reconciliation CLI --commit records a new readback run without changin
   assert.equal(newRunMetadata.strict_registered_success_claimed, false);
   assert.equal(newRunMetadata.proof_gate.ok, true);
   assert.deepEqual(newRunMetadata.proof_gate.present, ["job_completion_reconciliation_readback"]);
-  const proof = db.querySql<{ proof_type: string; uri: string }>(`SELECT proof_type, uri FROM proofs WHERE id='${body.committedRun.proofId}'`)[0];
+  const proof = db.querySql<{ proof_type: string; company_id: string | null; uri: string }>(`SELECT proof_type, company_id, uri FROM proofs WHERE id='${body.committedRun.proofId}'`)[0];
   assert.equal(proof.proof_type, "job_completion_reconciliation_readback");
+  assert.equal(proof.company_id, "project-a");
   assert.match(proof.uri, /job-completion-reconciliation-receipt\.json$/);
   const event = db.querySql<{ event_type: string }>(`SELECT event_type FROM worker_events WHERE run_id='${body.committedRun.runId}'`)[0];
   assert.equal(event.event_type, "worker_completed");
@@ -95,3 +118,56 @@ test("job reconciliation CLI --commit records a new readback run without changin
 function writeJson(path: string, value: unknown): void {
   writeFileSync(path, JSON.stringify(value, null, 2) + "\n");
 }
+
+test("job reconciliation CLI fails closed when source run id is missing", () => {
+  db.initDb();
+  db.resetDemoData();
+  const runDir = join(tempRoot, "job-missing-source-run");
+  const outDir = join(tempRoot, "job-missing-source-reconciliation");
+  mkdirSync(runDir, { recursive: true });
+  writeJson(join(runDir, "submitted-count-by-bucket-summary.json"), {
+    ok: true,
+    run_id: "codex-app-job-application-manager-test",
+    submitted_count_by_bucket: { japan_targeted: 21, overseas_global: 20 }
+  });
+  writeJson(join(runDir, "user-action-normalization-receipt.json"), {
+    ok: true,
+    final_user_action_count: 14,
+    resolved_non_user_action_count: 36
+  });
+  writeJson(join(runDir, "completion-audit-after-user-action-normalization.json"), {
+    ok: true,
+    failed_checks: []
+  });
+  writeJson(join(runDir, "completion-audit-full-target-readback-now.json"), { ok: false });
+  writeJson(join(runDir, "completion-audit-after-normalized-proof.json"), { ok: false });
+  db.insert("runs", {
+    id: "run_mqu3doqb_9n1c6a",
+    company_id: "project-a",
+    name: "Job Application Manager registered workflow billing-only inbox readback",
+    status: "blocked",
+    objective: "historical blocked Job run",
+    created_at: db.nowIso(),
+    updated_at: db.nowIso(),
+    metadata_json: {
+      registeredWorkflowId: "job-application-manager",
+      registered_workflow_id: "job-application-manager",
+      proof_gate: { ok: false, missing: ["job_submit_registered_codex_execution"], present: [] }
+    }
+  });
+  const runsBefore = db.querySql<{ count: number }>("SELECT count(*) AS count FROM runs")[0].count;
+  const result = spawnSync(
+    process.execPath,
+    ["apps/server/dist/cli/reconcileJobCompletion.js", `--run-dir=${runDir}`, `--out-dir=${outDir}`, "--commit"],
+    {
+      cwd: process.cwd(),
+      env: { ...process.env, AUTOMATION_OS_DB: process.env.AUTOMATION_OS_DB ?? "" },
+      encoding: "utf8"
+    }
+  );
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /source_run_id_required/);
+  assert.equal(existsSync(outDir), false);
+  assert.equal(db.querySql<{ count: number }>("SELECT count(*) AS count FROM runs")[0].count, runsBefore);
+});

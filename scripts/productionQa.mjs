@@ -1,16 +1,20 @@
-import { spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { buildReadbackHeaders, readProductionReadToken } from "./productionReadbackAuth.mjs";
 
 const baseUrl = (process.env.AUTOMATION_OS_PRODUCTION_URL || process.argv[2] || "https://automation-os.zeabur.app").replace(/\/+$/u, "");
 const stamp = new Date().toISOString().replace(/[^0-9A-Za-z]+/gu, "-").replace(/-$/u, "");
 const outDir = resolve(process.env.AUTOMATION_OS_QA_OUTPUT_DIR || join("/tmp", `automation-os-production-qa-${stamp}`));
+const readToken = readProductionReadToken();
 mkdirSync(outDir, { recursive: true });
 
 const result = {
   baseUrl,
   outDir,
   generatedAt: new Date().toISOString(),
+  readTokenAvailable: Boolean(readToken),
   api: [],
   endpointAliases: {},
   compatibilityMode: false,
@@ -20,7 +24,7 @@ const result = {
   failures: []
 };
 
-await checkApi("/api/health", { required: true, routeType: "health" });
+await checkApi("/api/health", { required: true, routeType: "health", includeReadToken: false });
 
 const dashboardReadback = await checkPreferredRoute([
   { route: "/api/dashboard", required: false },
@@ -40,8 +44,8 @@ if (dashboardReadback.foundRoute !== "/api/dashboard") {
 }
 
 await checkServedAssets();
-captureScreenshot("desktop", "1440,1000");
-captureScreenshot("mobile", "390,844");
+await captureScreenshot("desktop", "1440,1000");
+await captureScreenshot("mobile", "390,844");
 
 writeFileSync(join(outDir, "summary.json"), `${JSON.stringify(result, null, 2)}\n`);
 console.log(JSON.stringify(result, null, 2));
@@ -104,9 +108,10 @@ async function getPreferredRoute(candidates) {
 }
 
 async function checkRoute(route, options = {}) {
-  const { required = false, routeType = "" } = options;
+  const { required = false, routeType = "", includeReadToken = route !== "/api/health" } = options;
   try {
-    const response = await fetch(`${baseUrl}${route}`);
+    const headers = includeReadToken ? buildReadbackHeaders(readToken) : {};
+    const response = await fetch(`${baseUrl}${route}`, Object.keys(headers).length ? { headers } : undefined);
     const contentType = response.headers.get("content-type") || "";
     const text = await response.text();
     let parsed;
@@ -253,7 +258,8 @@ function summarizeRouteJson(route, body) {
 
 async function checkServedAssets() {
   try {
-    const response = await fetch(`${baseUrl}/`);
+    const headers = buildReadbackHeaders(readToken);
+    const response = await fetch(`${baseUrl}/`, Object.keys(headers).length ? { headers } : undefined);
     const html = await response.text();
     writeFileSync(join(outDir, "index.html"), html);
     const js = html.match(/src="([^"]+index-[^"]+\.js)"/u)?.[1] || "";
@@ -288,25 +294,130 @@ function sanitizeDeploymentReadback(deployment) {
   };
 }
 
-function captureScreenshot(label, viewport) {
+async function captureScreenshot(label, viewport) {
   const path = join(outDir, `${label}.png`);
   const harPath = join(outDir, `${label}.har`);
-  const run = spawnSync(
-    "npx",
-    ["playwright", "screenshot", "--full-page", "--viewport-size", viewport, "--save-har", harPath, baseUrl, path],
-    { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 }
-  );
-  const entry = {
-    label,
-    viewport,
-    path,
-    harPath,
-    status: run.status,
-    stdout: run.stdout.trim(),
-    stderr: run.stderr.trim()
-  };
-  result.screenshots.push(entry);
-  if (run.status !== 0) {
-    result.failures.push(`screenshot_${label}: ${run.stderr.trim() || `exit_${run.status}`}`);
+  if (!readToken) {
+    result.screenshots.push({ label, viewport, path, harPath, status: null, exactBlocker: "production_read_token_missing" });
+    result.failures.push(`screenshot_${label}: production_read_token_missing`);
+    return;
+  }
+  const [width, height] = viewport.split(",").map((value) => Number(value));
+  const playwright = loadPlaywright();
+  const browser = await playwright.chromium.launch({ headless: true });
+  const context = await browser.newContext({
+    viewport: { width, height },
+    recordHar: { path: harPath, content: "embed" }
+  });
+  const page = await context.newPage();
+  await installScopedReadbackRoute(page, baseUrl, readToken);
+  const consoleErrors = [];
+  const protectedApiFailures = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") consoleErrors.push(message.text().slice(0, 500));
+  });
+  page.on("response", (response) => {
+    try {
+      const pathname = new URL(response.url()).pathname;
+      if (pathname.startsWith("/api/") && [401, 403, 423].includes(response.status())) {
+        protectedApiFailures.push(`${response.status()}:${pathname}`);
+      }
+    } catch {
+      // Ignore non-URL response observations; navigation status remains authoritative.
+    }
+  });
+  let status = 0;
+  let error = "";
+  try {
+    const response = await page.goto(baseUrl, { waitUntil: "networkidle" });
+    status = response?.status() ?? 0;
+    await page.screenshot({ path, fullPage: true });
+    if (status < 200 || status >= 400) error = `http_${status}`;
+    if (protectedApiFailures.length) error = error || "protected_api_auth_failed";
+    if (consoleErrors.length) error = error || "console_errors";
+  } catch (caught) {
+    error = caught instanceof Error ? caught.message : String(caught);
+  } finally {
+    await context.close();
+    await browser.close();
+    redactHarFile(harPath, readToken);
+  }
+  result.screenshots.push({ label, viewport, path, harPath, status, consoleErrors, protectedApiFailures, error });
+  if (error) {
+    result.failures.push(`screenshot_${label}: ${error}`);
+  }
+}
+
+async function installScopedReadbackRoute(page, targetUrl, readToken) {
+  const targetOrigin = new URL(targetUrl).origin;
+  const readbackHeaders = buildReadbackHeaders(readToken);
+  await page.route("**/*", async (route) => {
+    const requestUrl = new URL(route.request().url());
+    if (requestUrl.origin !== targetOrigin || !requestUrl.pathname.startsWith("/api/") || !Object.keys(readbackHeaders).length) {
+      await route.continue();
+      return;
+    }
+    await route.continue({ headers: { ...route.request().headers(), ...readbackHeaders } });
+  });
+}
+
+function redactHarFile(path, readToken) {
+  if (!readToken || !existsSync(path)) return;
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    redactHarNode(parsed, readToken);
+    writeFileSync(path, `${JSON.stringify(parsed, null, 2)}\n`);
+  } catch {
+    // A missing/non-JSON HAR remains an artifact failure for the caller to inspect.
+  }
+}
+
+function redactHarNode(value, readToken, key = "") {
+  if (Array.isArray(value)) {
+    if (key.toLowerCase().includes("header")) {
+      for (const item of value) {
+        if (!item || typeof item !== "object" || Array.isArray(item)) {
+          redactHarNode(item, readToken, key);
+          continue;
+        }
+        const headerName = String(item.name ?? "").toLowerCase();
+        const headerValue = typeof item.value === "string" ? item.value : "";
+        if (headerName.includes("authorization") || headerName.includes("token") || headerValue.includes(readToken)) {
+          if (typeof item.value === "string") item.value = "[redacted]";
+        } else {
+          redactHarNode(item, readToken, key);
+        }
+      }
+      return;
+    }
+    for (const item of value) redactHarNode(item, readToken, key);
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+  for (const [childKey, childValue] of Object.entries(value)) {
+    const normalizedKey = childKey.toLowerCase();
+    if (normalizedKey.includes("authorization") || normalizedKey.includes("token")) {
+      if (typeof childValue === "string") value[childKey] = "[redacted]";
+      else redactHarNode(childValue, readToken, childKey);
+      continue;
+    }
+    if (typeof childValue === "string") {
+      value[childKey] = childValue.split(readToken).join("[redacted]");
+    } else {
+      redactHarNode(childValue, readToken, childKey);
+    }
+  }
+}
+
+function loadPlaywright() {
+  const localRequire = createRequire(import.meta.url);
+  try {
+    return localRequire("playwright");
+  } catch (localError) {
+    const bundledModuleRoot = process.env.AUTOMATION_OS_PLAYWRIGHT_NODE_MODULES
+      || join(homedir(), ".cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules");
+    const bundledPackage = join(bundledModuleRoot, "playwright", "package.json");
+    if (existsSync(bundledPackage)) return createRequire(bundledPackage)("playwright");
+    throw localError;
   }
 }

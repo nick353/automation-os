@@ -1,6 +1,8 @@
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { guardObsidianVaultPath, resolveConfiguredObsidianVaultPath } from "./vaultGuard.js";
+import { withVaultWriteLockSync } from "./vaultWriteLock.js";
 
 const defaultStatusFile = join(process.cwd(), "data", "second-brain-processor-status.json");
 const targetFolders = ["05_Projects", "06_Research", "07_Decisions", "08_Runbooks", "09_Inbox"];
@@ -15,6 +17,10 @@ const upsertKeys = [
   "next_use",
   "unresolved_question",
   "review_cycle",
+  "distillation_quality",
+  "knowledge_reuse_status",
+  "skill_candidate",
+  "skill_candidate_reason",
   "external_action_required",
   "approval_required",
   "processed_by",
@@ -89,6 +95,7 @@ type NoteSignals = {
   body: string;
   contentText: string;
   contentExcerpt: string;
+  summaryPoints: string[];
   placeholders: Set<string>;
   observedCategories: Set<string>;
 };
@@ -105,6 +112,25 @@ export function runSecondBrainProcessor(options: SecondBrainProcessorOptions = {
   const vaultGuard = guardObsidianVaultPath(options.vaultPath);
   if (!vaultGuard.ok) return blockedProcessorResult({ apply, vaultPath: vaultGuard.vaultPath, processedAt, reason: vaultGuard.error });
   const vaultPath = vaultGuard.vaultPath;
+  if (!apply) return runSecondBrainProcessorUnlocked(options, vaultPath, processedAt);
+  try {
+    return withVaultWriteLockSync(vaultPath, "second-brain-processor", () => runSecondBrainProcessorUnlocked(options, vaultPath, processedAt));
+  } catch (error) {
+    return blockedProcessorResult({
+      apply,
+      vaultPath,
+      processedAt,
+      reason: error instanceof Error ? error.message : "obsidian_vault_write_locked"
+    });
+  }
+}
+
+function runSecondBrainProcessorUnlocked(
+  options: SecondBrainProcessorOptions,
+  vaultPath: string,
+  processedAt: string
+): SecondBrainProcessorResult {
+  const apply = options.apply === true;
   const vaultRealPath = existsSync(vaultPath) ? realpathSync(vaultPath) : resolve(vaultPath);
   const results: SecondBrainNoteResult[] = [];
   const files = collectTargetMarkdownFiles(vaultPath, vaultRealPath);
@@ -142,8 +168,12 @@ export function runSecondBrainProcessor(options: SecondBrainProcessorOptions = {
       results.push({ file: candidate.rel, status: "blocked", reason: prewriteBlockReason, suggestedDestination });
       continue;
     }
+    const expectedHash = markdownHash(markdown);
     const backupFile = backupNoteBeforeUpdate({ vaultPath, vaultRealPath, path: candidate.path, processedAt });
-    writeMarkdownAtomic(candidate.path, nextMarkdown);
+    if (!writeMarkdownAtomic(candidate.path, nextMarkdown, expectedHash)) {
+      results.push({ file: candidate.rel, status: "blocked", reason: "note_changed_since_read", suggestedDestination, backupFile });
+      continue;
+    }
     results.push({ file: candidate.rel, status: "updated", reason: "frontmatter_updated", suggestedDestination, backupFile });
   }
 
@@ -269,6 +299,8 @@ function buildUpdates(input: { path: string; markdown: string; frontmatter: Reco
     signals
   });
   const sourcePointerUpdates = canonicalSourcePointerUpdates(input.frontmatter);
+  const distillationQuality = inferDistillationQuality(signals, summary);
+  const skillCandidate = inferSkillCandidate(signals, destination);
   const semanticUpdates: Record<string, string | boolean> = {
     auto_process: "obsidian_internal_only",
     processing_status: "review_ready",
@@ -298,6 +330,10 @@ function buildUpdates(input: { path: string; markdown: string; frontmatter: Reco
       signals,
       fallback: () => defaultReviewCycle(destination)
     }),
+    distillation_quality: distillationQuality,
+    knowledge_reuse_status: distillationQuality === "substantive" && destination !== "09_Inbox" ? "ready" : "review_needed",
+    skill_candidate: skillCandidate,
+    skill_candidate_reason: skillCandidate ? "repeatable judgment or procedure detected" : "none",
     external_action_required: false,
     approval_required: false,
     processed_by: processorName
@@ -320,6 +356,7 @@ function buildNoteSignals(input: { path: string; markdown: string; frontmatter: 
   const sourceOfTruth = firstPresentString(input.frontmatter.source_of_truth, input.frontmatter.sourceOfTruth);
   const contentText = extractObservedContent(body, title, sourceTitle, fileBasename);
   const contentExcerpt = shortSnippet(contentText || body || title, 220);
+  const summaryPoints = extractSummaryPoints(contentText);
   const placeholders = new Set(
     [title, sourceTitle, fileBasename, stripXTitleSuffix(sourceTitle), stripXTitleSuffix(title)]
       .filter((value): value is string => Boolean(value))
@@ -345,6 +382,7 @@ function buildNoteSignals(input: { path: string; markdown: string; frontmatter: 
     body,
     contentText,
     contentExcerpt,
+    summaryPoints,
     placeholders,
     observedCategories
   };
@@ -369,6 +407,9 @@ function isPlaceholderFieldValue(input: {
   const normalized = normalizePlaceholder(input.value);
   if (!normalized) return true;
   if (input.signals.placeholders.has(normalized)) return true;
+  if (["progressive_summary", "distillation"].includes(input.field) && isPageTitleLike(input.value, input.signals)) return true;
+  if (input.field === "unresolved_question" && /^(why|what|how|who|なぜ|何|どうして)[?？]?$/i.test(input.value.trim())) return true;
+  if (input.field === "next_use" && isPageTitleLike(input.value.replace(/^[^:：]{2,80}[:：]\s*/, ""), input.signals)) return true;
   if (isAuthenticatedCaptureEvidenceFieldValue(input.value)) return true;
   if (["review and classify", "review note", "review note source", "review note title"].includes(normalized)) return true;
   if (input.field === "distillation" && normalized === normalizePlaceholder(`Review note: ${input.signals.title}`)) return true;
@@ -519,15 +560,29 @@ function extractObservedContent(body: string, title: string, sourceTitle?: strin
   const placeholderValues = new Set(
     [title, sourceTitle, fileBasename, "Source Pointer", "Content"]
       .filter((value): value is string => Boolean(value))
-      .map(normalizePlaceholder)
+      .map(normalizeTitleComparison)
   );
+  const seen = new Set<string>();
   const lines = raw
     .split("\n")
-    .map((line) => line.replace(/^#+\s*/, "").replace(/^[-*]\s*/, "").trim())
+    .map((line) => decodeHtmlEntities(line).replace(/<[^>]+>/g, " ").replace(/^#+\s*/, "").replace(/^[-*]\s*/, "").replace(/\s+/g, " ").trim())
     .filter((line) => line && !line.startsWith("```"))
     .filter((line) => !/^source (url|type):|^captured at:/i.test(line))
     .filter((line) => !isAuthenticatedCaptureEvidenceHeader(line))
-    .filter((line) => !placeholderValues.has(normalizePlaceholder(line)));
+    .filter((line) => !isCaptureBoilerplate(line))
+    .filter((line) => {
+      const normalized = normalizeTitleComparison(line.replace(/^home\s*[»>]\s*/i, ""));
+      return ![...placeholderValues].some((placeholder) =>
+        normalized === placeholder ||
+        (placeholder.length >= 12 && normalized.includes(placeholder) && normalized.length - placeholder.length <= 32)
+      );
+    })
+    .filter((line) => {
+      const normalized = normalizePlaceholder(line);
+      if (seen.has(normalized)) return false;
+      seen.add(normalized);
+      return true;
+    });
   return lines.join("\n").trim();
 }
 
@@ -536,11 +591,12 @@ function isAuthenticatedCaptureEvidenceHeader(line: string): boolean {
 }
 
 function summarizeSignals(signals: NoteSignals): string {
-  return shortSnippet(firstMeaningfulSentence(signals.contentText) ?? signals.contentExcerpt ?? signals.title, 180);
+  if (signals.summaryPoints.length > 0) return shortSnippet(signals.summaryPoints.slice(0, 2).join("; "), 260);
+  return shortSnippet(firstMeaningfulSentence(signals.contentText) ?? signals.contentExcerpt ?? signals.title, 220);
 }
 
 function distillSignals(signals: NoteSignals, summary: string): string {
-  const sentence = firstMeaningfulSentence(signals.contentText);
+  const sentence = rankedSemanticSentences(signals)[0];
   if (sentence) return shortSnippet(sentence, 220);
   return summary || `Review note: ${signals.title}`;
 }
@@ -556,21 +612,103 @@ function inferNextUse(destination: string, summary?: string): string {
 
 function inferUnresolvedQuestion(signals: NoteSignals): string {
   const question = signals.contentText
-    .split(/\n|(?<=[.!?])\s+/)
+    .split(/\n|(?<=[.!?。！？])\s*/)
     .map((line) => line.trim())
-    .find((line) => line.endsWith("?") || /^(question|q):/i.test(line));
-  return question ? shortSnippet(question.replace(/^(question|q):\s*/i, ""), 180) : "none";
+    .filter((line) => line.endsWith("?") || line.endsWith("？") || /^(question|q):/i.test(line))
+    .map((line) => line.replace(/^(question|q):\s*/i, ""))
+    .find((line) => line.length >= 20 && !/^(why|what|how|who|なぜ|何|どうして)[?？]$/i.test(line));
+  return question ? shortSnippet(question, 180) : "none";
 }
 
 function firstMeaningfulSentence(text: string): string | undefined {
+  const sentences = splitSemanticSentences(text);
+  return sentences.find((line) => line.length >= 24) ?? sentences[0];
+}
+
+function extractSummaryPoints(text: string): string[] {
+  const lines = text.split("\n").map((line) => line.trim()).filter(Boolean);
+  const marker = lines.findIndex((line) => /^(summary|key points?|要約|まとめ)\s*:?[：]?$/i.test(line));
+  if (marker < 0) return [];
+  return lines
+    .slice(marker + 1)
+    .map((line) => line.match(/^\d+[.)]\s*(.+)$/)?.[1]?.trim())
+    .filter((line): line is string => Boolean(line && line.length >= 24))
+    .slice(0, 12);
+}
+
+function rankedSemanticSentences(signals: NoteSignals): string[] {
+  const candidates = [...signals.summaryPoints, ...splitSemanticSentences(signals.contentText)]
+    .filter((sentence, index, values) => sentence.length >= 24 && values.indexOf(sentence) === index)
+    .map((sentence, index) => ({ sentence, index, score: semanticSentenceScore(sentence, signals.summaryPoints.includes(sentence)) }));
+  return candidates.sort((left, right) => right.score - left.score || left.index - right.index).map((candidate) => candidate.sentence);
+}
+
+function splitSemanticSentences(text: string): string[] {
   return text
-    .split(/\n|(?<=[.!?])\s+/)
+    .split(/\n|(?<=[.!?。！？])\s*/)
     .map((line) => line.replace(/^[-*]\s*/, "").trim())
-    .find((line) => line.length > 0);
+    .filter((line) => line.length > 0 && !/^(summary|key points?|要約|まとめ)\s*:?[：]?$/i.test(line));
+}
+
+function semanticSentenceScore(sentence: string, summaryPoint: boolean): number {
+  let score = summaryPoint ? 5 : 0;
+  if (/root cause|overstimulat|not (?:necessarily )?.{0,40}\bbut\b|fundamental|key (?:point|lesson)|one thing|in short|therefore|conclusion|結論|要するに|つまり|本質|重要|判断基準|再現性|ポイント|過刺激/i.test(sentence)) score += 8;
+  if (/not necessarily|rewarded for|caus(?:e|es)|because|〜ではなく|ではない|原因|報酬/i.test(sentence)) score += 4;
+  if (/should|need to|must|use |build|reduce|improve|create|〜する|すべき|必要|作る|減らす|活用|移植/i.test(sentence)) score += 3;
+  if (sentence.length >= 60 && sentence.length <= 260) score += 2;
+  if (/^\d+[.)]|^https?:|captured at|cookie|privacy|share|subscribe/i.test(sentence)) score -= 6;
+  if (/[?？]$/.test(sentence) || /^(question|q):/i.test(sentence)) score -= 10;
+  return score;
+}
+
+function inferDistillationQuality(signals: NoteSignals, summary: string): string {
+  if (signals.contentText.length < 120 || isPageTitleLike(summary, signals)) return "thin";
+  return rankedSemanticSentences(signals).some((sentence) => sentence.length >= 40) ? "substantive" : "thin";
+}
+
+function inferSkillCandidate(signals: NoteSignals, destination: string): boolean {
+  if (destination === "08_Runbooks") return true;
+  if (signals.contentText.length < 160) return false;
+  const procedure = "(?:step[- ]by[- ]step|procedure|workflow|runbook|skill|手順(?:書|化)?|ワークフロー|スキル)";
+  const judgment = "(?:judg(?:e|ment)|decision criteria|stop condition|source of truth|proof boundary|repeatab(?:le|ility)|reproducib(?:le|ility)|判断基準|停止条件|正本|証拠|再利用|再現性|反復)";
+  return new RegExp(`${procedure}.{0,180}${judgment}|${judgment}.{0,180}${procedure}`, "is").test(signals.contentText);
+}
+
+function isPageTitleLike(value: string, signals: NoteSignals): boolean {
+  const normalized = normalizeTitleComparison(value);
+  return [signals.title, signals.sourceTitle, signals.basename]
+    .filter((candidate): candidate is string => Boolean(candidate))
+    .map(normalizeTitleComparison)
+    .some((candidate) =>
+      normalized === candidate ||
+      (candidate.length >= 12 && normalized.includes(candidate) && normalized.length - candidate.length <= 32)
+    );
+}
+
+function normalizeTitleComparison(value: string): string {
+  return decodeHtmlEntities(value)
+    .replace(/\s+[|–—-]\s+[^|–—-]{2,40}$/u, "")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function decodeHtmlEntities(value: string): string {
+  const named: Record<string, string> = { amp: "&", apos: "'", gt: ">", lt: "<", nbsp: " ", quot: '"' };
+  return value.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (match, entity: string) => {
+    if (entity.startsWith("#x")) return String.fromCodePoint(Number.parseInt(entity.slice(2), 16));
+    if (entity.startsWith("#")) return String.fromCodePoint(Number.parseInt(entity.slice(1), 10));
+    return named[entity.toLowerCase()] ?? match;
+  });
+}
+
+function isCaptureBoilerplate(line: string): boolean {
+  return /^(skip to content|follow us on x|search for\.{0,3}|navigation menu|technology|health & wellness|politics|podcasts|geopolitics|shares?|share \d+|tweet|pinterest|email|want a summary of this talk\?|learn\. be inspired\.)$/i.test(line) || /^also read:/i.test(line);
 }
 
 function normalizePlaceholder(value: string | undefined): string {
-  return String(value ?? "")
+  return decodeHtmlEntities(String(value ?? ""))
     .replace(/[`*_#[\]()]/g, " ")
     .replace(/\s+/g, " ")
     .replace(/[.:;!?]+$/g, "")
@@ -658,10 +796,19 @@ function formatYamlScalar(value: string | boolean): string {
   return value;
 }
 
-function writeMarkdownAtomic(path: string, markdown: string): void {
+function writeMarkdownAtomic(path: string, markdown: string, expectedHash: string): boolean {
   const tmpPath = `${path}.${process.pid}.${Date.now()}.tmp`;
   writeFileSync(tmpPath, markdown.endsWith("\n") ? markdown : `${markdown}\n`);
+  if (markdownHash(readFileSync(path, "utf8")) !== expectedHash) {
+    rmSync(tmpPath, { force: true });
+    return false;
+  }
   renameSync(tmpPath, path);
+  return true;
+}
+
+function markdownHash(markdown: string): string {
+  return createHash("sha256").update(markdown).digest("hex");
 }
 
 function backupNoteBeforeUpdate(input: { vaultPath: string; vaultRealPath: string; path: string; processedAt: string }): string {

@@ -46,6 +46,7 @@ test("NisenPrints reconciliation CLI records partial readback without changing t
   const now = db.nowIso();
   db.insert("runs", {
     id: "run_mqtbe1en_dvqg94",
+    company_id: "project-a",
     name: "NisenPrints registered workflow billing-only proof gate full publish",
     status: "blocked",
     objective: "historical blocked NisenPrints run",
@@ -59,6 +60,19 @@ test("NisenPrints reconciliation CLI records partial readback without changing t
         missing: ["generation_manifest_verified", "etsy_listing_published", "pinterest_pin_url_verified", "etsy_visit_site_match_verified", "nisenprints_runner_exit_0"],
         present: ["nisenprints_registered_summary"]
       }
+    }
+  });
+  db.insert("runs", {
+    id: "run_nisenprints_other_company",
+    company_id: "project-b",
+    name: "NisenPrints registered workflow billing-only proof gate full publish",
+    status: "blocked",
+    objective: "same workflow in another company",
+    created_at: now,
+    updated_at: now,
+    metadata_json: {
+      registeredWorkflowId: "nisenprints-daily-product-canva-printify-etsy-pinterest",
+      registered_workflow_id: "nisenprints-daily-product-canva-printify-etsy-pinterest"
     }
   });
   db.insert("runs", {
@@ -78,7 +92,14 @@ test("NisenPrints reconciliation CLI records partial readback without changing t
 
   const output = execFileSync(
     process.execPath,
-    ["apps/server/dist/cli/reconcileNisenPrintsCompletion.js", `--manifest=${manifestPath}`, `--strict-proof=${strictProofPath}`, `--out-dir=${outDir}`, "--commit"],
+    [
+      "apps/server/dist/cli/reconcileNisenPrintsCompletion.js",
+      `--manifest=${manifestPath}`,
+      `--strict-proof=${strictProofPath}`,
+      `--out-dir=${outDir}`,
+      `--source-run-id=run_mqtbe1en_dvqg94`,
+      "--commit"
+    ],
     {
       cwd: process.cwd(),
       env: { ...process.env, AUTOMATION_OS_DB: process.env.AUTOMATION_OS_DB ?? "" },
@@ -127,8 +148,9 @@ test("NisenPrints reconciliation CLI records partial readback without changing t
 
   const sourceRun = db.querySql<{ status: string }>("SELECT status FROM runs WHERE id='run_mqtbe1en_dvqg94'")[0];
   assert.equal(sourceRun.status, "blocked");
-  const newRun = db.querySql<{ status: string; metadata_json: string }>(`SELECT status, metadata_json FROM runs WHERE id='${body.committedRun.runId}'`)[0];
+  const newRun = db.querySql<{ status: string; company_id: string | null; metadata_json: string }>(`SELECT status, company_id, metadata_json FROM runs WHERE id='${body.committedRun.runId}'`)[0];
   assert.equal(newRun.status, "partial");
+  assert.equal(newRun.company_id, "project-a");
   const metadata = JSON.parse(newRun.metadata_json) as {
     reconciliation_of_run_id: string;
     strict_registered_success_claimed: boolean;
@@ -148,8 +170,9 @@ test("NisenPrints reconciliation CLI records partial readback without changing t
   assert.equal(metadata.accepted_partial_reason, "historical_strict_runner_proof_gap");
   assert.equal(metadata.proof_gate.ok, false);
   assert.ok(metadata.proof_gate.missing.includes("nisenprints_runner_exit_0"));
-  const proof = db.querySql<{ proof_type: string; uri: string }>(`SELECT proof_type, uri FROM proofs WHERE id='${body.committedRun.proofId}'`)[0];
+  const proof = db.querySql<{ proof_type: string; company_id: string | null; uri: string }>(`SELECT proof_type, company_id, uri FROM proofs WHERE id='${body.committedRun.proofId}'`)[0];
   assert.equal(proof.proof_type, "nisenprints_completion_reconciliation_readback");
+  assert.equal(proof.company_id, "project-a");
   assert.match(proof.uri, /nisenprints-completion-reconciliation-receipt\.json$/);
   const event = db.querySql<{ event_type: string }>(`SELECT event_type FROM worker_events WHERE run_id='${body.committedRun.runId}'`)[0];
   assert.equal(event.event_type, "worker_blocked");
@@ -186,6 +209,7 @@ test("NisenPrints reconciliation keeps proof gate partial when strict stage evid
   const now = db.nowIso();
   db.insert("runs", {
     id: "run_mqtbe1en_dvqg94",
+    company_id: "project-a",
     name: "NisenPrints registered workflow billing-only proof gate full publish",
     status: "blocked",
     objective: "historical blocked NisenPrints run",
@@ -196,10 +220,30 @@ test("NisenPrints reconciliation keeps proof gate partial when strict stage evid
       registered_workflow_id: "nisenprints-daily-product-canva-printify-etsy-pinterest"
     }
   });
+  db.insert("runs", {
+    id: "run_nisenprints_other_company",
+    company_id: "project-b",
+    name: "NisenPrints registered workflow billing-only proof gate full publish",
+    status: "blocked",
+    objective: "same workflow in another company",
+    created_at: now,
+    updated_at: now,
+    metadata_json: {
+      registeredWorkflowId: "nisenprints-daily-product-canva-printify-etsy-pinterest",
+      registered_workflow_id: "nisenprints-daily-product-canva-printify-etsy-pinterest"
+    }
+  });
 
   const output = execFileSync(
     process.execPath,
-    ["apps/server/dist/cli/reconcileNisenPrintsCompletion.js", `--manifest=${manifestPath}`, `--strict-proof=${strictProofPath}`, `--out-dir=${outDir}`, "--commit"],
+    [
+      "apps/server/dist/cli/reconcileNisenPrintsCompletion.js",
+      `--manifest=${manifestPath}`,
+      `--strict-proof=${strictProofPath}`,
+      `--out-dir=${outDir}`,
+      `--source-run-id=run_mqtbe1en_dvqg94`,
+      "--commit"
+    ],
     {
       cwd: process.cwd(),
       env: { ...process.env, AUTOMATION_OS_DB: process.env.AUTOMATION_OS_DB ?? "" },
@@ -279,9 +323,23 @@ test("NisenPrints reconciliation rejects mismatched manifest and strict proof id
   const now = db.nowIso();
   db.insert("runs", {
     id: "run_mqtbe1en_dvqg94",
+    company_id: "project-a",
     name: "NisenPrints registered workflow billing-only proof gate full publish",
     status: "blocked",
     objective: "historical blocked NisenPrints run",
+    created_at: now,
+    updated_at: now,
+    metadata_json: {
+      registeredWorkflowId: "nisenprints-daily-product-canva-printify-etsy-pinterest",
+      registered_workflow_id: "nisenprints-daily-product-canva-printify-etsy-pinterest"
+    }
+  });
+  db.insert("runs", {
+    id: "run_nisenprints_other_company",
+    company_id: "project-b",
+    name: "NisenPrints registered workflow billing-only proof gate full publish",
+    status: "blocked",
+    objective: "same workflow in another company",
     created_at: now,
     updated_at: now,
     metadata_json: {
@@ -294,7 +352,14 @@ test("NisenPrints reconciliation rejects mismatched manifest and strict proof id
     () =>
       execFileSync(
         process.execPath,
-        ["apps/server/dist/cli/reconcileNisenPrintsCompletion.js", `--manifest=${manifestPath}`, `--strict-proof=${strictProofPath}`, `--out-dir=${outDir}`, "--commit"],
+        [
+          "apps/server/dist/cli/reconcileNisenPrintsCompletion.js",
+          `--manifest=${manifestPath}`,
+          `--strict-proof=${strictProofPath}`,
+          `--out-dir=${outDir}`,
+          `--source-run-id=run_mqtbe1en_dvqg94`,
+          "--commit"
+        ],
         {
           cwd: process.cwd(),
           env: { ...process.env, AUTOMATION_OS_DB: process.env.AUTOMATION_OS_DB ?? "" },

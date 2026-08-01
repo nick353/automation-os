@@ -362,6 +362,7 @@ test("exportObsidianVault writes wiki-linked run, proof, and docs markdown", () 
   const dailyBrief = readFileSync(join(vaultPath, "00_Start Here", "Codex Daily Brief.md"), "utf8");
   const projectCockpit = readFileSync(join(vaultPath, "00_Start Here", "Project Cockpit.md"), "utf8");
   const resumeCurrentWork = readFileSync(join(vaultPath, "00_Start Here", "Resume Current Work.md"), "utf8");
+  const autonomyOpsMemo = readFileSync(join(vaultPath, "00_Start Here", "Obsidian Autonomy Ops Memo.md"), "utf8");
   const resumeContractNote = readFileSync(join(vaultPath, "00_Start Here", "Resume Contract.md"), "utf8");
   assert.ok(result.resumeContractJsonFile);
   const userAgentsPath = join(homedir(), "AGENTS.md");
@@ -462,10 +463,11 @@ test("exportObsidianVault writes wiki-linked run, proof, and docs markdown", () 
   assert.ok(result.missionFiles.some((file) => file.endsWith(join("07_Decisions", "Decision Log.md"))));
   assert.ok(result.missionFiles.some((file) => file.endsWith(join("07_Decisions", "Failure Fix Log.md"))));
   assert.ok(result.missionFiles.some((file) => file.endsWith(join("00_Start Here", "Weekly Review.md"))));
-  assert.equal(result.secondBrainFiles.length, 3);
+  assert.equal(result.secondBrainFiles.length, 4);
   assert.ok(result.secondBrainFiles.some((file) => file.endsWith(join("01_Control Panel", "Second Brain Intake.md"))));
   assert.ok(result.secondBrainFiles.some((file) => file.endsWith(join("01_Control Panel", "Second Brain Auto Processor.md"))));
   assert.ok(result.secondBrainFiles.some((file) => file.endsWith(join("00_Start Here", "Second Brain Weekly Digest.md"))));
+  assert.ok(result.secondBrainFiles.some((file) => file.endsWith(join("01_Control Panel", "Skill Candidates.md"))));
   assert.match(today, /generated_by: automation-os/);
   assert.match(today, /# Today/);
   assert.match(today, /Project Cockpit/);
@@ -480,8 +482,14 @@ test("exportObsidianVault writes wiki-linked run, proof, and docs markdown", () 
   assert.match(dailyBrief, /Open command queue items: 2/);
   assert.match(projectCockpit, /generated_by: automation-os/);
   assert.match(projectCockpit, /# Project Cockpit/);
+  assert.doesNotMatch(projectCockpit, /sk-[A-Za-z0-9_-]{20,}/);
+  assert.match(autonomyOpsMemo, /locator-only candidates/);
+  assert.match(autonomyOpsMemo, /atomic lock/);
+  assert.match(autonomyOpsMemo, /private Git backup/);
   assert.match(selfDiagnosis, /generated_by: automation-os/);
   assert.match(selfDiagnosis, /Current score:/);
+  assert.match(selfDiagnosis, /DB completion proofs:/);
+  assert.match(selfDiagnosis, /Project artifact locators: \d+ \(locator only; not proof\)/);
   assert.match(weeklyCheck, /generated_by: automation-os/);
   assert.match(weeklyCheck, /Current score:/);
   assert.match(projectCockpit, /全project横断/);
@@ -496,13 +504,14 @@ test("exportObsidianVault writes wiki-linked run, proof, and docs markdown", () 
   assert.match(resumeCurrentWork, /Latest system check: ok - Local UI verified/);
   assert.match(resumeCurrentWork, /Latest bridge execution: blocked\/not_connected - Approved but executor is not connected/);
   assert.match(resumeCurrentWork, /Latest knowledge: Trusted Bridge execution and billing-only boundary/);
-  assert.match(resumeCurrentWork, /Latest Codex session: 019eb511-0e2c-71a0-ba4b-aaee602a347a/);
+  assert.match(resumeCurrentWork, /Latest current-project Codex session: 019eb511-0e2c-71a0-ba4b-aaee602a347a/);
+  assert.match(resumeCurrentWork, /Latest global user-owned session locator: session_11/);
   assert.match(resumeCurrentWork, /## Auto Resume Triggers/);
   assert.match(resumeCurrentWork, /AutomationOSは何をやっていた/);
   assert.match(resumeCurrentWork, /This applies to every project/);
   assert.match(resumeCurrentWork, /## Source Of Truth Ladder/);
   assert.match(resumeCurrentWork, /Chat\/session memory: hint only/);
-  assert.doesNotMatch(resumeCurrentWork, /Latest Codex session: session_11/);
+  assert.doesNotMatch(resumeCurrentWork, /Latest current-project Codex session: session_11/);
   assert.match(resumeCurrentWork, /\[redacted-auth\]/);
   assert.match(resumeCurrentWork, /AWS_SECRET_ACCESS_KEY=\[redacted\]/);
   assert.match(resumeCurrentWork, /\[redacted-jwt\]/);
@@ -546,6 +555,8 @@ test("exportObsidianVault writes wiki-linked run, proof, and docs markdown", () 
   assert.equal(result.proofInboxFile, join(vaultPath, "04_Proof Pointers", "Proof Inbox.md"));
   assert.match(proofInbox, /generated_by: automation-os/);
   assert.match(proofInbox, /file:\/\/\/tmp\/export\.json/);
+  assert.match(proofInbox, /## Project-Owned Artifact Locators/);
+  assert.match(proofInbox, /They do not satisfy a proof gate by themselves/);
   assert.equal(result.dashboardFiles.length, 7);
   assert.ok(result.dashboardFiles.some((file) => file.endsWith(join("10_Dashboards", "Automation Dashboard.base"))));
   assert.ok(result.dashboardFiles.some((file) => file.endsWith(join("10_Dashboards", "Second Brain Review.base"))));
@@ -704,7 +715,7 @@ test("exportObsidianVault writes wiki-linked run, proof, and docs markdown", () 
   assert.match(projectMemoryMap, /### demo-automation/);
   assert.match(projectMemoryMap, /Path: `.*demo-automation\/automation\.toml`/);
   assert.match(projectMemoryMap, /Memory hints: .*demo-automation/);
-  assert.equal(projectMemoryMap.split("\n").some((line) => line.startsWith("- Memory hints:") && line.includes(currentProjectRoot)), true);
+  assert.equal(projectMemoryMap.split("\n").some((line) => line.startsWith("- Memory hints:") && (line.includes(currentProjectRoot) || line.includes("[redacted-token]"))), true);
   assert.match(projectMemoryMap, /\[redacted-token\]/);
   assert.match(projectMemoryMap, /\[redacted-auth\]/);
   assert.doesNotMatch(projectMemoryMap, /supersecret/);
@@ -1237,12 +1248,115 @@ test("exportObsidianVault does not promote unrelated Codex sessions into resume 
   const projectMemoryMap = readFileSync(join(vaultPath, "00_Start Here", "Project Memory Map.md"), "utf8");
   const activeSessions = readFileSync(join(vaultPath, "01_Control Panel", "Active Sessions.md"), "utf8");
 
-  assert.match(resumeCurrentWork, /Latest Codex session: none \(no current-project Codex session found/);
-  assert.doesNotMatch(resumeCurrentWork, /Latest Codex session: global_latest/);
+  assert.match(resumeCurrentWork, /Latest current-project Codex session: none \(no current-project Codex session found/);
+  assert.match(resumeCurrentWork, /Latest global user-owned session locator: global_latest/);
+  assert.match(resumeCurrentWork, /Latest global locator only: global_latest/);
+  assert.match(resumeCurrentWork, /Do not use this other-project locator to choose the current project's Next Codex Move/);
+  assert.doesNotMatch(resumeCurrentWork, /Latest current-project Codex session: global_latest/);
   assert.match(projectMemoryMap, /# Project Memory Map/);
   assert.match(projectMemoryMap, /### \/tmp\/other-project/);
   assert.match(projectMemoryMap, /Latest session id: global_latest/);
   assert.match(activeSessions, /## global_latest/);
+});
+
+test("exportObsidianVault normalizes user-owned Codex sessions and excludes subagents", () => {
+  const docsDir = join(tempRoot, "normalized-session-docs");
+  const vaultPath = join(tempRoot, "Normalized Session Vault");
+  const codexSessionsDir = join(tempRoot, "normalized-codex-sessions", "2026", "07", "15");
+  mkdirSync(docsDir, { recursive: true });
+  mkdirSync(codexSessionsDir, { recursive: true });
+  writeFileSync(join(docsDir, "06-control-panel.md"), "# Control Panel\n");
+
+  const writeSession = (name: string, lines: string[], second: number) => {
+    const path = join(codexSessionsDir, name);
+    writeFileSync(path, lines.join("\n"));
+    const mtime = new Date(Date.UTC(2026, 6, 15, 0, 0, second));
+    utimesSync(path, mtime, mtime);
+  };
+
+  writeSession(
+    "rollout-subagent.jsonl",
+    [
+      JSON.stringify({ type: "session_meta", payload: { id: "subagent_session", cwd: currentProjectRoot, thread_source: "subagent", source: { subagent: { role: "reviewer" } } } }),
+      JSON.stringify({ type: "event_msg", payload: { type: "user_message", message: "<recommended_plugins>synthetic plugin block</recommended_plugins>" } })
+    ],
+    9
+  );
+  writeSession(
+    "rollout-automation.jsonl",
+    [
+      JSON.stringify({ type: "session_meta", payload: { id: "automation_session", cwd: currentProjectRoot, thread_source: "automation" } }),
+      JSON.stringify({ type: "event_msg", payload: { type: "user_message", message: "Scheduled synthetic request" } })
+    ],
+    10
+  );
+  writeSession(
+    "rollout-unknown-source.jsonl",
+    [
+      JSON.stringify({ type: "session_meta", payload: { id: "unknown_source_session", cwd: currentProjectRoot, thread_source: "future_internal" } }),
+      JSON.stringify({ type: "event_msg", payload: { type: "user_message", message: "Unknown internal source request" } })
+    ],
+    11
+  );
+  writeSession(
+    "rollout-duplicate-old.jsonl",
+    [
+      JSON.stringify({ type: "session_meta", payload: { id: "duplicate_session", cwd: currentProjectRoot, thread_source: "user" } }),
+      JSON.stringify({ type: "event_msg", payload: { type: "user_message", message: "Old duplicate request" } })
+    ],
+    1
+  );
+  writeSession(
+    "rollout-duplicate-new.jsonl",
+    [
+      JSON.stringify({ type: "session_meta", payload: { id: "duplicate_session", cwd: currentProjectRoot, thread_source: "user" } }),
+      "{malformed-json",
+      JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "<recommended_plugins>ignore this synthetic block</recommended_plugins>" }] } }),
+      JSON.stringify({ type: "event_msg", payload: { type: "user_message", message: "<hook_prompt hook_run_id=\"stop:1\">synthetic stop hook</hook_prompt>" } }),
+      JSON.stringify({ type: "event_msg", payload: { type: "user_message", message: "<environment_context>synthetic environment</environment_context>" } }),
+      JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "# AGENTS.md instructions for /tmp/project\nsynthetic instructions" }] } }),
+      JSON.stringify({ type: "event_msg", payload: { type: "user_message", message: "Newest real user request" } }),
+      JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "Newest assistant response" }] } })
+    ],
+    8
+  );
+  writeSession(
+    "rollout-legacy.jsonl",
+    [
+      JSON.stringify({ session_meta: { payload: { id: "legacy_session", cwd: "/tmp/legacy-project" } } }),
+      JSON.stringify({ type: "response_item", item: { type: "message", role: "user", content: [{ type: "input_text", text: "Legacy user request" }] } })
+    ],
+    7
+  );
+  writeSession(
+    "rollout-large.jsonl",
+    [
+      JSON.stringify({ type: "session_meta", payload: { id: "large_session", cwd: "/tmp/large-project", thread_source: "user" } }),
+      "x".repeat(3 * 1024 * 1024 + 128),
+      JSON.stringify({ type: "event_msg", payload: { type: "user_message", message: "Tail user request survives bounded read" } })
+    ],
+    6
+  );
+
+  obsidian.exportObsidianVault({ vaultPath, docsDir, codexSessionsDir: join(tempRoot, "normalized-codex-sessions") });
+  const activeSessions = readFileSync(join(vaultPath, "01_Control Panel", "Active Sessions.md"), "utf8");
+  const resumeCurrentWork = readFileSync(join(vaultPath, "00_Start Here", "Resume Current Work.md"), "utf8");
+
+  assert.equal((activeSessions.match(/## duplicate_session/g) ?? []).length, 1);
+  assert.match(activeSessions, /Newest real user request/);
+  assert.doesNotMatch(activeSessions, /Old duplicate request/);
+  assert.doesNotMatch(activeSessions, /recommended_plugins/);
+  assert.doesNotMatch(activeSessions, /hook_prompt/);
+  assert.doesNotMatch(activeSessions, /environment_context/);
+  assert.doesNotMatch(activeSessions, /AGENTS\.md instructions/);
+  assert.doesNotMatch(activeSessions, /subagent_session/);
+  assert.doesNotMatch(activeSessions, /automation_session/);
+  assert.doesNotMatch(activeSessions, /unknown_source_session/);
+  assert.match(activeSessions, /## legacy_session/);
+  assert.match(activeSessions, /Thread source: legacy/);
+  assert.match(activeSessions, /## large_session/);
+  assert.match(activeSessions, /Tail user request survives bounded read/);
+  assert.match(resumeCurrentWork, /Latest current-project Codex session: duplicate_session/);
 });
 
 test("Codex App Parity Ledger keeps the latest blocked Browser Use proof visible", () => {

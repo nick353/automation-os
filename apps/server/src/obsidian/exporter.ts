@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { getCodexCapabilities } from "../codex/capabilities.js";
@@ -8,6 +8,7 @@ import { buildResumeContract, renderResumeContractMarkdown, resolveResumeContrac
 import { selectActionQueueRuns, selectAttentionRuns, selectResumeCandidateRun } from "../runs/selectors.js";
 import { auditProjects, writeProjectAuditStatus, type ProjectAuditItem, type ProjectAuditResult } from "../projects/projectAuditor.js";
 import { defaultObsidianVaultPath, resolveConfiguredObsidianVaultPath } from "./vaultGuard.js";
+import { withVaultWriteLockSync } from "./vaultWriteLock.js";
 
 const defaultOutputSubdir = join("02_Systems", "automation-os");
 const defaultStartHereSubdir = "00_Start Here";
@@ -34,8 +35,10 @@ const activeSessionsFilename = "Active Sessions.md";
 const conversationMemoryCardsFilename = "Conversation Memory Cards.md";
 const userSignalsFilename = "User Signals.md";
 const skillRegistryFilename = "Skill Registry.md";
+const skillCandidatesFilename = "Skill Candidates.md";
 const codexAppParityLedgerFilename = "Codex App Parity Ledger.md";
 const projectMemoryMapFilename = "Project Memory Map.md";
+const knowledgeReuseLedgerFilename = "Knowledge Reuse Ledger.md";
 const obsidianCodexSelfDiagnosisFilename = "Obsidian x Codex Self Diagnosis.md";
 const obsidianCodexWeeklyCheckFilename = "Obsidian x Codex Weekly Check.md";
 const obsidianAutonomyOpsMemoFilename = "Obsidian Autonomy Ops Memo.md";
@@ -395,6 +398,28 @@ type SecondBrainDigestNote = {
   sourceOfTruth: string;
 };
 
+type KnowledgeUseReceipt = {
+  usedAt: string;
+  projectId: string;
+  projectLabel: string;
+  projectRoot: string;
+  match: string;
+  contextPackPath: string | null;
+  contextPackAvailable: boolean;
+  authorityFilesAvailable: number;
+  sourceOfTruthAvailable: number;
+};
+
+type SkillCandidateNote = {
+  file: string;
+  title: string;
+  kind: string;
+  reason: string;
+  knowledgeReuseStatus: string;
+  distillation: string;
+  nextUse: string;
+};
+
 type CodexSessionSummary = {
   file: string;
   sessionId: string;
@@ -402,6 +427,17 @@ type CodexSessionSummary = {
   cwd: string;
   lastUser: string;
   lastAssistant: string;
+  threadSource: string;
+  parentThreadId: string | null;
+};
+
+type ProjectProofPointer = {
+  id: string;
+  projectId: string;
+  projectLabel: string;
+  artifactRoot: string;
+  path: string;
+  mtime: string;
 };
 
 type MemoryProjectHint = {
@@ -429,6 +465,7 @@ export type ObsidianExportOptions = {
   docsDir?: string;
   codexSessionsDir?: string;
   codexMemoryFile?: string;
+  knowledgeUseLedgerFile?: string;
   resumeContractPath?: string;
 };
 
@@ -465,6 +502,10 @@ export function resolveObsidianVaultPath(input?: string): string {
 
 export function exportObsidianVault(options: ObsidianExportOptions = {}): ObsidianExportResult {
   const vaultPath = resolveObsidianVaultPath(options.vaultPath);
+  return withVaultWriteLockSync(vaultPath, "automation-os-export", () => exportObsidianVaultUnlocked(options, vaultPath));
+}
+
+function exportObsidianVaultUnlocked(options: ObsidianExportOptions, vaultPath: string): ObsidianExportResult {
   const startHereSubdir = options.startHereSubdir ?? defaultStartHereSubdir;
   const outputDir = join(vaultPath, options.outputSubdir ?? defaultOutputSubdir);
   const startHereDir = join(vaultPath, startHereSubdir);
@@ -504,6 +545,7 @@ export function exportObsidianVault(options: ObsidianExportOptions = {}): Obsidi
     generatedAt: exportTimestamp
   });
   const projectAudit = auditProjects({ obsidianVaultPath: vaultPath, generatedAt: exportTimestamp });
+  const projectProofPointers = collectProjectProofPointers(projectAudit);
   const projectAuditStatusFile = writeProjectAuditStatus(projectAudit);
   const filenames = ["Automation OS Index.md", "Runs.md", "Proofs.md", "Knowledge.md", "Docs.md", runLedgerFilename];
   assertGeneratedTargets(outputDir, filenames);
@@ -514,6 +556,7 @@ export function exportObsidianVault(options: ObsidianExportOptions = {}): Obsidi
     resumeCurrentWorkFilename,
     resumeContractFilename,
     projectMemoryMapFilename,
+    knowledgeReuseLedgerFilename,
     weeklyReviewFilename,
     secondBrainWeeklyDigestFilename
   ]);
@@ -529,6 +572,7 @@ export function exportObsidianVault(options: ObsidianExportOptions = {}): Obsidi
     secondBrainAutoProcessorFilename,
     activeSessionsFilename,
     skillRegistryFilename,
+    skillCandidatesFilename,
     codexAppParityLedgerFilename
   ]);
   assertGeneratedTargets(join(vaultPath, "07_Decisions"), [decisionLogFilename, failureFixLogFilename]);
@@ -543,6 +587,8 @@ export function exportObsidianVault(options: ObsidianExportOptions = {}): Obsidi
   const commandQueue = readCommandQueue(vaultPath);
   const secondBrainCandidates = readSecondBrainClassificationCandidates(vaultPath);
   const secondBrainDigestNotes = readSecondBrainDigestNotes(vaultPath);
+  const skillCandidates = readSkillCandidateNotes(vaultPath);
+  const knowledgeUseReceipts = readKnowledgeUseReceipts(options.knowledgeUseLedgerFile);
   const resumeContractJsonFile = writeResumeContract(resumeContract, resumeContractJsonPath);
 
   const files = [
@@ -572,7 +618,7 @@ export function exportObsidianVault(options: ObsidianExportOptions = {}): Obsidi
   const proofInboxFile = writeMarkdown(
     proofPointerDir,
     proofInboxFilename,
-    renderProofInbox({ runs, proofs, bridgeExecutions, generatedAt: exportTimestamp }),
+    renderProofInbox({ runs, proofs, projectProofPointers, bridgeExecutions, generatedAt: exportTimestamp }),
     exportTimestamp
   );
   const missionFiles = [
@@ -586,6 +632,7 @@ export function exportObsidianVault(options: ObsidianExportOptions = {}): Obsidi
         bridgeExecutions,
         commandQueue,
         projectAudit,
+        projectProofPointers,
         codexSessions,
         generatedAt: exportTimestamp
       }),
@@ -704,6 +751,12 @@ export function exportObsidianVault(options: ObsidianExportOptions = {}): Obsidi
     ),
     writeMarkdown(
       startHereDir,
+      knowledgeReuseLedgerFilename,
+      renderKnowledgeReuseLedger({ receipts: knowledgeUseReceipts, generatedAt: exportTimestamp }),
+      exportTimestamp
+    ),
+    writeMarkdown(
+      startHereDir,
       obsidianAutonomyOpsMemoFilename,
       renderObsidianAutonomyOpsMemo({ generatedAt: exportTimestamp }),
       exportTimestamp
@@ -715,6 +768,7 @@ export function exportObsidianVault(options: ObsidianExportOptions = {}): Obsidi
         projectAudit,
         commandQueue,
         proofs,
+        projectProofPointers,
         runs,
         generatedAt: exportTimestamp
       }),
@@ -727,6 +781,7 @@ export function exportObsidianVault(options: ObsidianExportOptions = {}): Obsidi
         projectAudit,
         commandQueue,
         proofs,
+        projectProofPointers,
         runs,
         generatedAt: exportTimestamp
       }),
@@ -747,7 +802,7 @@ export function exportObsidianVault(options: ObsidianExportOptions = {}): Obsidi
     writeMarkdown(
       startHereDir,
       weeklyReviewFilename,
-      renderWeeklyReview({ runs, proofs, bridgeExecutions, commandQueue, projectAudit, generatedAt: exportTimestamp }),
+      renderWeeklyReview({ runs, proofs, projectProofPointers, bridgeExecutions, commandQueue, projectAudit, generatedAt: exportTimestamp }),
       exportTimestamp
     )
   ];
@@ -772,6 +827,12 @@ export function exportObsidianVault(options: ObsidianExportOptions = {}): Obsidi
         candidates: secondBrainCandidates,
         generatedAt: exportTimestamp
       }),
+      exportTimestamp
+    ),
+    writeMarkdown(
+      controlPanelDir,
+      skillCandidatesFilename,
+      renderSkillCandidates({ candidates: skillCandidates, receipts: knowledgeUseReceipts, generatedAt: exportTimestamp }),
       exportTimestamp
     )
   ];
@@ -1161,6 +1222,7 @@ function renderKnowledge(input: {
 }
 
 function renderDocs(docs: DocRow[]): string {
+  const docsByPath = new Map(docs.map((doc) => [resolve(process.cwd(), doc.file), doc]));
   return [
     "---",
     "system: automation-os",
@@ -1177,8 +1239,29 @@ function renderDocs(docs: DocRow[]): string {
     ...docs.map((doc) => `- [[Docs#${anchor(doc.title)}|${doc.title}]] (${doc.file})`),
     docs.length === 0 ? "- No docs found." : "",
     "",
-    ...docs.flatMap((doc) => [`## ${doc.title}`, "", `Source: \`${doc.file}\``, "", doc.body.trim(), ""])
+    ...docs.flatMap((doc) => [
+      `## ${doc.title}`,
+      "",
+      `Source: \`${doc.file}\``,
+      "",
+      normalizeEmbeddedDocLinks(doc, docsByPath).trim(),
+      ""
+    ])
   ].join("\n");
+}
+
+function normalizeEmbeddedDocLinks(doc: DocRow, docsByPath: Map<string, DocRow>): string {
+  return doc.body.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, label: string, rawTarget: string) => {
+    const target = rawTarget.trim();
+    if (/^(?:https?:|mailto:|#)/i.test(target)) return match;
+    const pathPart = target.split("#", 1)[0];
+    if (pathPart.endsWith(".md")) {
+      const absoluteTarget = resolve(process.cwd(), dirname(doc.file), pathPart);
+      const targetDoc = docsByPath.get(absoluteTarget);
+      if (targetDoc) return `[[Docs#${anchor(targetDoc.title)}|${label}]]`;
+    }
+    return `${label} (\`${target}\`)`;
+  });
 }
 
 function renderAutomationControlPanel(input: {
@@ -1320,6 +1403,90 @@ function renderSkillRegistryItems(skills: ReturnType<typeof getCodexCapabilities
   );
 }
 
+function renderKnowledgeReuseLedger(input: { receipts: KnowledgeUseReceipt[]; generatedAt: string }): string {
+  const recent = [...input.receipts].sort((left, right) => right.usedAt.localeCompare(left.usedAt));
+  const sevenDaysAgo = Date.parse(input.generatedAt) - 7 * 24 * 60 * 60 * 1000;
+  const recentWeek = recent.filter((receipt) => Date.parse(receipt.usedAt) >= sevenDaysAgo);
+  const projectCounts = countBy(recent, (receipt) => receipt.projectId || "unknown");
+  return [
+    "---",
+    "system: automation-os",
+    "generated_by: automation-os",
+    "kind: knowledge-reuse-ledger",
+    "status: active",
+    "source_of_truth: data/obsidian-knowledge-use-ledger.jsonl",
+    `generated_at: ${input.generatedAt}`,
+    "---",
+    "",
+    "# Knowledge Reuse Ledger",
+    "",
+    "CodexがObsidian project memoryを実際に解決したread receiptです。ユーザーの検索文や会話本文は保存しません。",
+    "",
+    "## Summary",
+    "",
+    `- Total resolutions: ${recent.length}`,
+    `- Last 7 days: ${recentWeek.length}`,
+    `- Projects used: ${Object.keys(projectCounts).length}`,
+    `- Project mix: ${formatCounts(projectCounts)}`,
+    "",
+    "## Recent Uses",
+    "",
+    ...(recent.length
+      ? recent.slice(0, 50).map((receipt) =>
+          `- ${receipt.usedAt} | ${receipt.projectLabel || receipt.projectId} | match=${receipt.match} | authority=${receipt.authorityFilesAvailable} | source_of_truth=${receipt.sourceOfTruthAvailable} | context_pack=${receipt.contextPackAvailable ? "available" : "missing"}`
+        )
+      : ["- No project-memory use has been recorded yet."]),
+    "",
+    "## Boundary",
+    "",
+    "This receipt proves that a locator was used. It does not prove task completion, correctness, approval, or that generated Obsidian text was treated as authority. Fresh-read project-owned truth remains required."
+  ].join("\n");
+}
+
+function renderSkillCandidates(input: { candidates: SkillCandidateNote[]; receipts: KnowledgeUseReceipt[]; generatedAt: string }): string {
+  return [
+    "---",
+    "system: automation-os",
+    "generated_by: automation-os",
+    "kind: skill-candidates",
+    "status: active",
+    "source_of_truth: handwritten notes with skill_candidate true",
+    `generated_at: ${input.generatedAt}`,
+    "---",
+    "",
+    "# Skill Candidates",
+    "",
+    "Second Brainが検出した反復可能な判断・手順の候補です。このページはSkillを作成、更新、実行、インストールしません。",
+    "",
+    "## Summary",
+    "",
+    `- Candidates: ${input.candidates.length}`,
+    `- Project-memory resolutions recorded: ${input.receipts.length}`,
+    "",
+    "## Candidates",
+    "",
+    ...(input.candidates.length
+      ? input.candidates.map((candidate) =>
+          [
+            `### [[${candidate.file.replace(/\.md$/, "")}|${candidate.title}]]`,
+            "",
+            `- File: \`${candidate.file}\``,
+            `- Kind: ${candidate.kind}`,
+            `- Knowledge reuse status: ${candidate.knowledgeReuseStatus}`,
+            `- Candidate reason: ${shortSnippet(candidate.reason, 220)}`,
+            `- Distillation: ${shortSnippet(candidate.distillation, 260)}`,
+            `- Next use: ${shortSnippet(candidate.nextUse, 220)}`,
+            ""
+          ].join("\n")
+        )
+      : ["No Skill candidates are currently marked in handwritten notes."]),
+    "",
+    "## Promotion Rule",
+    "",
+    "Promote a candidate only after the same judgment or procedure is reused in real work, its source-of-truth and stop conditions are explicit, and a user-requested Skill creation or an existing Skill maintenance task authorizes the change. Never auto-install from this page."
+  ].join("\n");
+}
+
 function renderCodexAppParityLedger(input: { items: CodexAppParityLedgerItem[]; generatedAt: string }): string {
   return [
     "---",
@@ -1358,6 +1525,7 @@ function renderCodexAppParityLedger(input: { items: CodexAppParityLedgerItem[]; 
 function renderProofInbox(input: {
   runs: RunRow[];
   proofs: ProofRow[];
+  projectProofPointers: ProjectProofPointer[];
   bridgeExecutions: BridgeExecutionRow[];
   generatedAt: string;
 }): string {
@@ -1389,6 +1557,18 @@ function renderProofInbox(input: {
         ""
       ].join("\n")
     );
+  const projectItems = input.projectProofPointers.slice(0, 40).map((pointer) =>
+    [
+      `### ${pointer.projectLabel}`,
+      "",
+      `- Project: ${pointer.projectId}`,
+      `- Artifact root: ${redactSensitive(pointer.artifactRoot)}`,
+      `- Latest file locator: ${redactSensitive(pointer.path)}`,
+      `- Modified: ${pointer.mtime}`,
+      `- Classification: locator only; not DB proof or completion proof`,
+      ""
+    ].join("\n")
+  );
   return [
     "---",
     "system: automation-os",
@@ -1407,6 +1587,12 @@ function renderProofInbox(input: {
     "## Proof Pointers",
     "",
     proofItems.length ? proofItems.join("\n") : "No proof pointers indexed yet.",
+    "",
+    "## Project-Owned Artifact Locators",
+    "",
+    "These are fresh-read entrypoints from registered project artifact roots. They do not satisfy a proof gate by themselves.",
+    "",
+    projectItems.length ? projectItems.join("\n") : "No project-owned artifact locators indexed yet.",
     "",
     "## Bridge / Blocker Pointers",
     "",
@@ -1514,6 +1700,7 @@ function renderObsidianCodexSelfDiagnosis(input: {
   projectAudit: ProjectAuditResult;
   commandQueue: CommandQueueItem[];
   proofs: ProofRow[];
+  projectProofPointers: ProjectProofPointer[];
   runs: RunRow[];
   generatedAt: string;
 }): string {
@@ -1539,6 +1726,8 @@ function renderObsidianCodexSelfDiagnosis(input: {
     `- Current score: \`${diagnosis.score}/5\``,
     `- Weakest item: \`${diagnosis.weakestItem}\``,
     `- Why: ${diagnosis.why}`,
+    `- DB completion proofs: ${input.proofs.length}`,
+    `- Project artifact locators: ${input.projectProofPointers.length} (locator only; not proof)`,
     "",
     "## Read First",
     "",
@@ -1558,6 +1747,7 @@ function renderObsidianCodexWeeklyCheck(input: {
   projectAudit: ProjectAuditResult;
   commandQueue: CommandQueueItem[];
   proofs: ProofRow[];
+  projectProofPointers: ProjectProofPointer[];
   runs: RunRow[];
   generatedAt: string;
 }): string {
@@ -1581,6 +1771,8 @@ function renderObsidianCodexWeeklyCheck(input: {
     "",
     `- Current score: \`${diagnosis.score} / 5\``,
     `- Weakest item: \`${diagnosis.weakestItem}\``,
+    `- DB completion proofs: ${input.proofs.length}`,
+    `- Project artifact locators: ${input.projectProofPointers.length}`,
     `- One fix for this week: ${diagnosis.weakestItem === "なし" ? "none needed" : "focus on the weakest item only"}`,
     "",
     "## Short Review",
@@ -1603,6 +1795,7 @@ function renderTodayDashboard(input: {
   bridgeExecutions: BridgeExecutionRow[];
   commandQueue: CommandQueueItem[];
   projectAudit: ProjectAuditResult;
+  projectProofPointers: ProjectProofPointer[];
   codexSessions: CodexSessionSummary[];
   generatedAt: string;
 }): string {
@@ -1644,7 +1837,8 @@ function renderTodayDashboard(input: {
     `- Resume candidate: ${formatRunBrief(resumeCandidate)}`,
     `- Project attention: ${input.projectAudit.summary.attention}; blocked: ${input.projectAudit.summary.blocked}`,
     `- Open command queue items: ${input.commandQueue.length}`,
-    `- Proof pointers indexed: ${input.proofs.length}`,
+    `- DB proof pointers indexed: ${input.proofs.length}`,
+    `- Project artifact locators indexed: ${input.projectProofPointers.length}`,
     `- Latest local check: ${latestCheck ? `${latestCheck.status} - ${shortSnippet(latestCheck.summary, 120)}` : "none"}`,
     `- Latest session locator: ${latestSession ? `${latestSession.cwd} / ${latestSession.sessionId}` : "none"}`,
     "",
@@ -2453,9 +2647,13 @@ function renderResumeCurrentWork(input: {
   const latestBridgeExecution = input.bridgeExecutions[0];
   const latestKnowledge = input.knowledgeNotes[0];
   const latestSession = selectResumeCodexSession(input.codexSessions);
+  const latestGlobalSession = input.codexSessions[0];
   const sessionSummary = latestSession
     ? `${latestSession.sessionId} (${latestSession.cwd})`
     : "none (no current-project Codex session found; see Active Sessions for latest global locators)";
+  const globalSessionSummary = latestGlobalSession
+    ? `${latestGlobalSession.sessionId} (${latestGlobalSession.cwd})`
+    : "none";
   return [
     "---",
     "system: automation-os",
@@ -2483,7 +2681,8 @@ function renderResumeCurrentWork(input: {
         : "none"
     }`,
     `- Latest knowledge: ${latestKnowledge ? `${latestKnowledge.title} - ${shortSnippet(latestKnowledge.body, 160)}` : "none"}`,
-    `- Latest Codex session: ${sessionSummary}`,
+    `- Latest current-project Codex session: ${sessionSummary}`,
+    `- Latest global user-owned session locator: ${globalSessionSummary}`,
     "",
     "## Next Codex Move",
     "",
@@ -2518,11 +2717,19 @@ function renderResumeCurrentWork(input: {
     "",
     latestSession
       ? [
+          "- Scope: current project",
           `- Modified: ${latestSession.mtime}`,
           `- Last user: ${shortSnippet(latestSession.lastUser, 180)}`,
           `- Last assistant: ${shortSnippet(latestSession.lastAssistant, 180)}`
         ].join("\n")
-      : "- No recent Codex session summary indexed.",
+      : latestGlobalSession
+        ? [
+            "- No current-project Codex session summary indexed.",
+            `- Latest global locator only: ${latestGlobalSession.sessionId} (${latestGlobalSession.cwd})`,
+            `- Modified: ${latestGlobalSession.mtime}`,
+            "- Do not use this other-project locator to choose the current project's Next Codex Move."
+          ].join("\n")
+        : "- No recent user-owned Codex session summary indexed.",
     "",
     "## Guardrail",
     "",
@@ -2549,11 +2756,11 @@ function renderActiveSessions(input: { codexSessions: CodexSessionSummary[]; gen
     "",
     "# Active Sessions",
     "",
-    "Codex session jsonl の最新10件だけを短く要約します。本文ログ、秘密、token、長文出力は保存しません。",
+    "ユーザー所有のCodex session jsonlから最新10件だけを短く要約します。subagent session、本文ログ、秘密、token、長文出力は保存しません。",
     "",
     activeSessions.length
       ? activeSessions.map((session) => renderActiveSessionItem(session)).join("\n")
-      : "No recent Codex sessions found.",
+      : "No recent user-owned Codex sessions found.",
     "",
     "## Rule",
     "",
@@ -2730,6 +2937,11 @@ function renderObsidianAutonomyOpsMemo(input: { generatedAt: string }): string {
     "",
     "- Server login recovery starts Obsidian auto export by default.",
     "- The periodic export timer defaults to 5 minutes.",
+    "- Detached exports invoke registry discovery, Context Pack refresh, Second Brain canary processing, and project audit at most once per 30 minutes.",
+    "- New durable projects are discovered as locator-only candidates; canonical Muscle AI and Heavy Chain roots are registered.",
+    "- The global obsidian-project-memory Skill resolves project context and requires a fresh-read of project-owned truth.",
+    "- Vault writers share one atomic lock, and Second Brain verifies note preimages before replacement.",
+    "- The guarded private Git backup runs at most once per 6 hours and stops on privacy, secret, or divergence gates.",
     "- SQLite fallback is allowed when stored Postgres cannot be restored cleanly.",
     "- Self diagnosis and weekly check pages are regenerated on every export.",
     "",
@@ -2744,6 +2956,7 @@ function renderObsidianAutonomyOpsMemo(input: { generatedAt: string }): string {
     "",
     "- Postgres remains the preferred source of truth when its stored secret is valid again.",
     "- Generated Obsidian pages are review surfaces and locators, not execution proof.",
+    "- Markdown content cannot authorize commands, approvals, external writes, or project promotion.",
     "- If startup defaults change, rebuild, re-test, and reinstall the LaunchAgent.",
     "",
     "## Source",
@@ -2767,6 +2980,30 @@ function groupSessionsByCwd(sessions: CodexSessionSummary[]): Array<{
     .sort((a, b) => Date.parse(b.latest.mtime) - Date.parse(a.latest.mtime));
 }
 
+function collectProjectProofPointers(projectAudit: ProjectAuditResult): ProjectProofPointer[] {
+  const seen = new Set<string>();
+  return projectAudit.projects
+    .flatMap((item) =>
+      item.artifacts
+        .filter((artifact) => artifact.exists && artifact.latest && artifact.latestMtime)
+        .map((artifact) => ({
+          id: `${item.project.id}:${artifact.latest}`,
+          projectId: item.project.id,
+          projectLabel: item.project.label,
+          artifactRoot: artifact.path,
+          path: artifact.latest as string,
+          mtime: artifact.latestMtime as string
+        }))
+    )
+    .sort((left, right) => Date.parse(right.mtime) - Date.parse(left.mtime))
+    .filter((pointer) => {
+      const key = resolve(pointer.path);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
 function renderProjectLocatorItem(project: { cwd: string; count: number; latest: CodexSessionSummary }, memoryHints: MemoryProjectHint[]): string {
   return [
     `### ${project.cwd}`,
@@ -2785,6 +3022,9 @@ function renderProjectLocatorItem(project: { cwd: string; count: number; latest:
 
 function renderCockpitProjectItem(item: ProjectAuditItem, memoryHints: MemoryProjectHint[]): string {
   const latestArtifact = item.artifacts.find((artifact) => artifact.latest) ?? item.artifacts[0];
+  const latestArtifactPointer = latestArtifact
+    ? redactSensitive(`${latestArtifact.path} latest=${latestArtifact.latest ?? "none"} mtime=${latestArtifact.latestMtime ?? "unknown"}`)
+    : "none";
   return [
     `### ${item.project.label}`,
     "",
@@ -2793,7 +3033,7 @@ function renderCockpitProjectItem(item: ProjectAuditItem, memoryHints: MemoryPro
     `- Root: \`${item.project.root}\` (${item.rootExists ? "exists" : "missing"})`,
     `- STATE.md: ${item.stateExists ? `present (${item.stateMtime})` : "missing"}`,
     `- Source of truth: ${item.project.source_of_truth.map((source) => `\`${source}\``).join(", ")}`,
-    `- Latest artifact pointer: ${latestArtifact ? `${latestArtifact.path} latest=${latestArtifact.latest ?? "none"} mtime=${latestArtifact.latestMtime ?? "unknown"}` : "none"}`,
+    `- Latest artifact pointer: ${latestArtifactPointer}`,
     `- Memory hints: ${formatMemoryHints(memoryHints, item.project.root)}`,
     `- Next action: ${item.nextAction}`,
     `- Issues: ${item.issues.length ? item.issues.map((issue) => `${issue.severity}:${issue.code}`).join(", ") : "none"}`,
@@ -2916,6 +3156,7 @@ function renderActiveSessionItem(session: CodexSessionSummary): string {
     `- Modified: ${session.mtime}`,
     `- File: \`${session.file}\``,
     `- CWD: ${session.cwd}`,
+    `- Thread source: ${session.threadSource}`,
     `- Last user: ${session.lastUser}`,
     `- Last assistant: ${session.lastAssistant}`,
     ""
@@ -3093,6 +3334,7 @@ function renderFailureFixLog(input: {
 function renderWeeklyReview(input: {
   runs: RunRow[];
   proofs: ProofRow[];
+  projectProofPointers: ProjectProofPointer[];
   bridgeExecutions: BridgeExecutionRow[];
   commandQueue: CommandQueueItem[];
   projectAudit: ProjectAuditResult;
@@ -3129,6 +3371,7 @@ function renderWeeklyReview(input: {
     "",
     `- Runs updated in 7 days: ${recentRuns.length}`,
     `- Proofs created in 7 days: ${recentProofs.length}`,
+    `- Project artifact locators indexed: ${input.projectProofPointers.length} (locator only)`,
     `- Bridge executions updated in 7 days: ${recentBridge.length}`,
     `- Open command queue items: ${input.commandQueue.length}`,
     `- Status mix: ${Object.entries(statusMix)
@@ -3474,6 +3717,73 @@ function readSecondBrainDigestNoteFromFile(vaultPath: string, folder: string, pa
   };
 }
 
+function readKnowledgeUseReceipts(configuredPath?: string): KnowledgeUseReceipt[] {
+  const ledgerPath = resolve(
+    configuredPath ??
+      process.env.AUTOMATION_OS_OBSIDIAN_KNOWLEDGE_USE_LEDGER ??
+      join(process.cwd(), "data", "obsidian-knowledge-use-ledger.jsonl")
+  );
+  if (!existsSync(ledgerPath)) return [];
+  return readJsonlEdges(ledgerPath)
+    .map((line) => parseKnowledgeUseReceipt(line))
+    .filter((receipt): receipt is KnowledgeUseReceipt => Boolean(receipt))
+    .sort((left, right) => right.usedAt.localeCompare(left.usedAt))
+    .slice(0, 500);
+}
+
+function parseKnowledgeUseReceipt(line: string): KnowledgeUseReceipt | undefined {
+  try {
+    const value = JSON.parse(line) as Record<string, unknown>;
+    const usedAt = firstPresentString(value.usedAt);
+    const projectId = firstPresentString(value.projectId);
+    const projectRoot = firstPresentString(value.projectRoot);
+    if (!usedAt || !projectId || !projectRoot || !Number.isFinite(Date.parse(usedAt))) return undefined;
+    return {
+      usedAt,
+      projectId: shortSnippet(projectId, 120),
+      projectLabel: shortSnippet(firstPresentString(value.projectLabel) ?? projectId, 160),
+      projectRoot: redactSensitive(projectRoot),
+      match: shortSnippet(firstPresentString(value.match) ?? "unknown", 80),
+      contextPackPath: firstPresentString(value.contextPackPath) ? redactSensitive(String(value.contextPackPath)) : null,
+      contextPackAvailable: value.contextPackAvailable === true,
+      authorityFilesAvailable: safeNonNegativeInteger(value.authorityFilesAvailable),
+      sourceOfTruthAvailable: safeNonNegativeInteger(value.sourceOfTruthAvailable)
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function safeNonNegativeInteger(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 0;
+}
+
+function readSkillCandidateNotes(vaultPath: string): SkillCandidateNote[] {
+  const folders = ["05_Projects", "06_Research", "07_Decisions", "08_Runbooks", "09_Inbox"];
+  return folders
+    .flatMap((folder) => readMarkdownFilesIfExists(join(vaultPath, folder)))
+    .map((path) => readSkillCandidateNote(vaultPath, path))
+    .filter((candidate): candidate is SkillCandidateNote => Boolean(candidate))
+    .sort((left, right) => left.file.localeCompare(right.file));
+}
+
+function readSkillCandidateNote(vaultPath: string, path: string): SkillCandidateNote | undefined {
+  if (!existsSync(path) || !statSync(path).isFile()) return undefined;
+  const body = readFileSync(path, "utf8");
+  const frontmatter = parseFrontmatter(body);
+  if (frontmatter.generated_by === "automation-os" || !frontmatterFlagIsTrue(frontmatter.skill_candidate)) return undefined;
+  return {
+    file: relative(vaultPath, path),
+    title: firstPresentString(frontmatter.title, frontmatter.source_title, frontmatter.sourceTitle) ?? basename(path, ".md"),
+    kind: firstPresentString(frontmatter.kind) ?? "note",
+    reason: firstPresentString(frontmatter.skill_candidate_reason) ?? "repeatable judgment or procedure detected",
+    knowledgeReuseStatus: firstPresentString(frontmatter.knowledge_reuse_status) ?? "unknown",
+    distillation: firstPresentString(frontmatter.distillation) ?? "none",
+    nextUse: firstPresentString(frontmatter.next_use) ?? "review before promotion"
+  };
+}
+
 function normalizeSecondBrainSuggestedDestination(value: string): { destination: string; reason: string } {
   const destination = normalizeSecondBrainDestination(value);
   if (destination === "unknown") {
@@ -3519,7 +3829,7 @@ function readCodexSessions(inputDir?: string): CodexSessionSummary[] {
   const sessionsDir = resolve(inputDir ?? process.env.AUTOMATION_OS_CODEX_SESSIONS_DIR ?? join(homedir(), ".codex", "sessions"));
   if (!existsSync(sessionsDir)) return [];
   try {
-    return listJsonlFiles(sessionsDir)
+    const candidates = listJsonlFiles(sessionsDir)
       .flatMap((path) => {
         try {
           return [{ path, stat: statSync(path) }];
@@ -3528,8 +3838,19 @@ function readCodexSessions(inputDir?: string): CodexSessionSummary[] {
         }
       })
       .sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs)
-      .slice(0, 50)
-      .map(({ path, stat }) => summarizeCodexSession(path, sessionsDir, stat.mtime));
+      .slice(0, 300);
+    const sessions: CodexSessionSummary[] = [];
+    const seen = new Set<string>();
+    for (const { path, stat } of candidates) {
+      const metadata = readCodexSessionMetadata(path);
+      if (!["user", "legacy"].includes(metadata.threadSource) || metadata.hasSubagentSource) continue;
+      const session = summarizeCodexSession(path, sessionsDir, stat.mtime, metadata);
+      if (seen.has(session.sessionId)) continue;
+      seen.add(session.sessionId);
+      sessions.push(session);
+      if (sessions.length >= 50) break;
+    }
+    return sessions;
   } catch {
     return [];
   }
@@ -3631,21 +3952,25 @@ function listJsonlFiles(dir: string): string[] {
   }
 }
 
-function summarizeCodexSession(path: string, sessionsDir: string, mtime: Date): CodexSessionSummary {
+type CodexSessionMetadata = {
+  sessionId: string | null;
+  cwd: string | null;
+  threadSource: string;
+  parentThreadId: string | null;
+  hasSubagentSource: boolean;
+};
+
+function summarizeCodexSession(path: string, sessionsDir: string, mtime: Date, metadata = readCodexSessionMetadata(path)): CodexSessionSummary {
   const rel = relative(sessionsDir, path);
   const fallbackId = basename(path, ".jsonl").replace(/^rollout-/, "");
-  let sessionId = fallbackId;
-  let cwd = "unknown";
+  const sessionId = metadata.sessionId ?? fallbackId;
+  const cwd = metadata.cwd ?? "unknown";
   let lastUser = "none";
   let lastAssistant = "none";
-  const lines = safeReadText(path).split("\n").filter(Boolean);
+  const lines = readJsonlEdges(path);
   for (const line of lines) {
     const parsed = parseJson<Record<string, unknown>>(line, {});
-    const foundSessionId = findFirstStringByKey(parsed, ["id", "thread_id", "threadId", "session_id", "sessionId"]);
-    if (foundSessionId && sessionId === fallbackId) sessionId = shortSnippet(foundSessionId, 80);
-    const foundCwd = findFirstStringByKey(parsed, ["cwd", "workdir", "working_directory", "current_dir", "currentDirectory"]);
-    if (foundCwd) cwd = shortSnippet(foundCwd, 120);
-    const message = extractCodexMessage(parsed);
+    const message = extractCodexTranscriptMessage(parsed);
     if (message?.role === "user") lastUser = shortSnippet(message.text, 180);
     if (message?.role === "assistant") lastAssistant = shortSnippet(message.text, 180);
   }
@@ -3655,8 +3980,82 @@ function summarizeCodexSession(path: string, sessionsDir: string, mtime: Date): 
     mtime: mtime.toISOString(),
     cwd,
     lastUser,
-    lastAssistant
+    lastAssistant,
+    threadSource: metadata.threadSource,
+    parentThreadId: metadata.parentThreadId
   };
+}
+
+function readCodexSessionMetadata(path: string): CodexSessionMetadata {
+  for (const line of readJsonlSegment(path, 0, 1024 * 1024, false)) {
+    const parsed = parseJson<Record<string, unknown>>(line, {});
+    const metadata = extractCodexSessionMetadata(parsed);
+    if (metadata) return metadata;
+  }
+  return { sessionId: null, cwd: null, threadSource: "legacy", parentThreadId: null, hasSubagentSource: false };
+}
+
+function extractCodexSessionMetadata(value: unknown): CodexSessionMetadata | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  let payload: Record<string, unknown> | undefined;
+  if (record.type === "session_meta" && record.payload && typeof record.payload === "object") {
+    payload = record.payload as Record<string, unknown>;
+  } else if (record.session_meta && typeof record.session_meta === "object") {
+    const wrapped = record.session_meta as Record<string, unknown>;
+    payload = wrapped.payload && typeof wrapped.payload === "object" ? (wrapped.payload as Record<string, unknown>) : wrapped;
+  }
+  if (!payload) return undefined;
+  const source = payload.source;
+  return {
+    sessionId: firstString(payload.id, payload.thread_id, payload.threadId, payload.session_id, payload.sessionId),
+    cwd: firstString(payload.cwd, payload.workdir, payload.working_directory, payload.current_dir, payload.currentDirectory),
+    threadSource: firstString(payload.thread_source, payload.threadSource) ?? "legacy",
+    parentThreadId: firstString(payload.parent_thread_id, payload.parentThreadId),
+    hasSubagentSource: Boolean(source && typeof source === "object" && "subagent" in (source as Record<string, unknown>))
+  };
+}
+
+function firstString(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function readJsonlEdges(path: string): string[] {
+  let size = 0;
+  try {
+    size = statSync(path).size;
+  } catch {
+    return [];
+  }
+  const headBytes = 1024 * 1024;
+  const tailBytes = 2 * 1024 * 1024;
+  if (size <= headBytes + tailBytes) return readJsonlSegment(path, 0, size, false);
+  return [
+    ...readJsonlSegment(path, 0, headBytes, false),
+    ...readJsonlSegment(path, Math.max(0, size - tailBytes), tailBytes, true)
+  ];
+}
+
+function readJsonlSegment(path: string, start: number, length: number, dropFirstPartialLine: boolean): string[] {
+  if (length <= 0) return [];
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, "r");
+    const buffer = Buffer.alloc(length);
+    const bytesRead = readSync(fd, buffer, 0, length, start);
+    const text = buffer.subarray(0, bytesRead).toString("utf8");
+    const lines = text.split("\n");
+    if (dropFirstPartialLine && start > 0) lines.shift();
+    if (start + bytesRead < statSync(path).size) lines.pop();
+    return lines.filter((line) => line.trim().length > 0 && line.length <= 4 * 1024 * 1024);
+  } catch {
+    return [];
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
 }
 
 function safeReadText(path: string): string {
@@ -3667,20 +4066,31 @@ function safeReadText(path: string): string {
   }
 }
 
-function extractCodexMessage(value: unknown): { role: "user" | "assistant"; text: string } | undefined {
+function extractCodexTranscriptMessage(value: unknown): { role: "user" | "assistant"; text: string } | undefined {
   if (!value || typeof value !== "object") return undefined;
   const record = value as Record<string, unknown>;
-  if (record.type === "response_item" && record.item) return extractCodexMessage(record.item);
-  const role = typeof record.role === "string" ? record.role : undefined;
-  if (role !== "user" && role !== "assistant") {
-    for (const key of ["message", "payload", "item"]) {
-      const nested = extractCodexMessage(record[key]);
-      if (nested) return nested;
+  if (record.type === "event_msg" && record.payload && typeof record.payload === "object") {
+    const payload = record.payload as Record<string, unknown>;
+    if (payload.type === "user_message") {
+      const text = extractText(payload.message);
+      if (text && !isSyntheticSessionUserText(text)) return { role: "user", text };
     }
-    return undefined;
   }
+  if (record.type === "response_item") {
+    const nested = record.payload ?? record.item;
+    if (nested && typeof nested === "object") return extractCodexTranscriptMessage(nested);
+  }
+  const role = typeof record.role === "string" ? record.role : undefined;
+  if (role !== "user" && role !== "assistant") return undefined;
   const text = extractText(record.content) || extractText(record.text) || extractText(record.message);
+  if (role === "user" && isSyntheticSessionUserText(text)) return undefined;
   return text ? { role, text } : undefined;
+}
+
+function isSyntheticSessionUserText(text: string): boolean {
+  return /^(?:\s*<(?:recommended_plugins|subagent_notification|codex_delegation|hook_prompt|permissions instructions|skills_instructions|environment_context|apps_instructions|plugins_instructions)(?:\s|>)|\s*# AGENTS\.md instructions for\b)/i.test(
+    text
+  );
 }
 
 function extractText(value: unknown): string {

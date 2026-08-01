@@ -1,9 +1,9 @@
-import Database from "better-sqlite3";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { dbBackend, dbPath, insert, makeId, nowIso } from "../db/client.js";
+import { insert, makeId, nowIso } from "../db/client.js";
 import { buildCanonicalExecutionRoutingMetadataForCommand } from "../codex/executionRouting.js";
+import { resolveExactSourceRunBinding } from "./sourceRunBinding.js";
 import { evaluateDailyAiRegisteredSummary } from "../runs/dailyAiRegisteredRunner.js";
 
 const defaultSummaryPath =
@@ -13,24 +13,23 @@ const outDir = resolve(readArgValue("--out-dir") ?? `data/artifacts/daily-ai-res
 const commitRequested = process.argv.includes("--commit");
 const proofType = "daily_ai_completion_reconciliation_readback";
 
-type RunRow = {
-  id: string;
-  name: string;
-  status: string;
-  created_at: string;
-  updated_at: string;
-  metadata_json: string;
-};
-
 type JsonRecord = Record<string, unknown>;
 
 const summary = readJson(summaryPath);
 const evaluation = evaluateDailyAiRegisteredSummary(summaryPath);
-const latestDailyAiRun = readLatestDailyAiRun();
+const sourceRun = resolveExactSourceRunBinding({
+  expectedWorkflowId: "daily-ai-research-publish-run",
+  explicitSourceRunId: readArgValue("--source-run-id"),
+  artifactAutomationOsRunId: stringValue(summary.automation_os_run_id),
+  artifactAutomationOsRunIdCamel: stringValue(summary.automationOsRunId)
+});
+const sourceRunCompanyId = normalizeCompanyId(sourceRun.company_id);
+if (!sourceRunCompanyId) throw new Error("source_run_company_id_missing");
 const fullFlow = recordValue(summary.full_flow_completion);
 const proofGate = {
   ok: evaluation.status === "complete" && evaluation.proof_gate.ok,
-  missing: evaluation.status === "complete" ? [] : evaluation.proof_gate.missing,
+  missing:
+    evaluation.status === "complete" ? [] : evaluation.proof_gate.missing,
   present: [...new Set([...evaluation.proof_gate.present, proofType])]
 };
 const ok = evaluation.status === "complete" && proofGate.ok;
@@ -52,16 +51,17 @@ const receipt = {
       : "project_owned_completion_ready_for_reconciliation_readback"
     : "blocked",
   registered_workflow_id: "daily-ai-research-publish-run",
-  automation_os_latest_run: latestDailyAiRun
-    ? {
-        id: latestDailyAiRun.id,
-        status: latestDailyAiRun.status,
-        created_at: latestDailyAiRun.created_at,
-        updated_at: latestDailyAiRun.updated_at
-      }
-    : null,
+  automation_os_latest_run: {
+    id: sourceRun.id,
+    company_id: sourceRun.company_id,
+    status: sourceRun.status,
+    created_at: sourceRun.created_at,
+    updated_at: sourceRun.updated_at
+  },
   project_run: {
     run_id: stringValue(summary.run_id),
+    source_run_company_id: sourceRunCompanyId,
+    exact_blocker: null,
     summary_path: summaryPath,
     status: evaluation.status,
     proof_summary: evaluation.proof_summary,
@@ -126,6 +126,8 @@ console.log(
       latestAutomationOsRun: receipt.automation_os_latest_run,
       projectRun: {
         run_id: receipt.project_run.run_id,
+        source_run_company_id: receipt.project_run.source_run_company_id,
+        exact_blocker: receipt.project_run.exact_blocker,
         proof_gate: receipt.project_run.proof_gate,
         proof_summary: receipt.project_run.proof_summary,
         posted_count: receipt.project_run.posted_count,
@@ -142,7 +144,6 @@ console.log(
 process.exitCode = ok ? 0 : 1;
 
 function commitCompletionReadback(receiptPath: string): { runId: string; proofId: string } {
-  if (!latestDailyAiRun) throw new Error("automation_os_latest_daily_ai_run_missing");
   const runId = makeId("run_daily_ai_completion");
   const stepId = `${runId}_step_1`;
   const proofId = makeId("proof_daily_ai_completion");
@@ -153,7 +154,8 @@ function commitCompletionReadback(receiptPath: string): { runId: string; proofId
     registered_workflow_id: "daily-ai-research-publish-run",
     reconciliation_run: true,
     reconciliation_kind: "daily_ai_completion",
-    reconciliation_of_run_id: latestDailyAiRun.id,
+    reconciliation_of_run_id: sourceRun.id,
+    source_run_company_id: sourceRunCompanyId,
     project_run_id: stringValue(summary.run_id),
     project_summary_path: summaryPath,
     external_actions_performed: false,
@@ -166,6 +168,7 @@ function commitCompletionReadback(receiptPath: string): { runId: string; proofId
   };
   insert("runs", {
     id: runId,
+    company_id: sourceRunCompanyId,
     name: "Daily AI completion reconciliation readback",
     status: "complete",
     objective: "Record project-owned Daily AI completion proof as Automation OS reconciliation readback without posting",
@@ -176,6 +179,7 @@ function commitCompletionReadback(receiptPath: string): { runId: string; proofId
   insert("run_steps", {
     id: stepId,
     run_id: runId,
+    company_id: sourceRunCompanyId,
     name: "Record Daily AI completion reconciliation readback",
     status: "completed",
     lane_id: null,
@@ -194,6 +198,7 @@ function commitCompletionReadback(receiptPath: string): { runId: string; proofId
   });
   insert("proofs", {
     id: proofId,
+    company_id: sourceRunCompanyId,
     run_id: runId,
     step_id: stepId,
     proof_type: proofType,
@@ -207,6 +212,7 @@ function commitCompletionReadback(receiptPath: string): { runId: string; proofId
     id: eventId,
     run_id: runId,
     step_id: stepId,
+    company_id: sourceRunCompanyId,
     lane_id: null,
     event_type: "worker_completed",
     message: metadata.proof_summary,
@@ -214,29 +220,6 @@ function commitCompletionReadback(receiptPath: string): { runId: string; proofId
     metadata_json: metadata
   });
   return { runId, proofId };
-}
-
-function readLatestDailyAiRun(): RunRow | null {
-  if (dbBackend !== "sqlite") throw new Error("daily_ai_completion_reconciliation_requires_local_sqlite_readback");
-  const db = new Database(dbPath, { readonly: true, fileMustExist: true });
-  try {
-    return (
-      db
-        .prepare(
-          `
-          SELECT id, name, status, created_at, updated_at, metadata_json
-          FROM runs
-          WHERE COALESCE(json_extract(metadata_json,'$.registeredWorkflowId'), json_extract(metadata_json,'$.registered_workflow_id'))='daily-ai-research-publish-run'
-            AND COALESCE(json_extract(metadata_json,'$.reconciliation_run'), 0) != 1
-          ORDER BY created_at DESC
-          LIMIT 1;
-        `
-        )
-        .get() as RunRow | undefined
-    ) ?? null;
-  } finally {
-    db.close();
-  }
 }
 
 function readJson(path: string): JsonRecord {
@@ -267,4 +250,9 @@ function numberValue(value: unknown): number {
     return Number.isFinite(parsed) ? parsed : 0;
   }
   return 0;
+}
+
+function normalizeCompanyId(value: unknown): string | null {
+  const companyId = stringValue(value).trim();
+  return companyId ? companyId : null;
 }

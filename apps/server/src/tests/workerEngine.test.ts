@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
-import { buildExecutionRoutingSnapshot } from "../codex/executionRouting.js";
 import { type CodexCapabilitiesSummary } from "../codex/capabilities.js";
 
 const tempRoot = mkdtempSync(join(tmpdir(), "automation-os-worker-engine-"));
@@ -12,25 +11,70 @@ process.env.AUTOMATION_OS_DB = join(tempRoot, "automation-os.sqlite");
 process.env.AUTOMATION_OS_ARTIFACT_ROOT = join(tempRoot, "artifacts");
 process.env.AUTOMATION_OS_NISENPRINTS_PLAYWRIGHT_OUTPUT_ROOT = join(tempRoot, "nisenprints-node-runs");
 
+const { buildExecutionRoutingSnapshot } = await import("../codex/executionRouting.js");
 const db = await import("../db/client.js");
 const worker = await import("../runs/workerEngine.js");
 const snsRunner = await import("../runs/snsMultiPosterRegisteredRunner.js");
 const api = await import("../index.js");
 const { execSql, initDb, querySql, resetDemoData, sqlValue } = db;
-const {
-  approvalsAllowProtectedSteps,
-  buildWorkerCommand,
-  chooseWorkerAdapter,
-  classifyWorkerCommandSpec,
-  deriveRunStatus,
-  planCommandRun,
-  resolveWorkerAdapterPolicy,
-  resumeRunAfterApproval,
-  runWorkerOnce,
-  workerModeForAdapter,
-  startCommandRun
-} = worker;
+  const {
+    approvalsAllowProtectedSteps,
+    buildWorkerCommand,
+    chooseWorkerAdapter,
+    classifyWorkerCommandSpec,
+    deriveRunStatus,
+    planCommandRun,
+    resolveWorkerAdapterPolicy,
+    resumeRunAfterApproval,
+    runWorkerCycle,
+    runWorkerOnce,
+    workerModeForAdapter,
+    startCommandRun
+  } = worker;
 const { evaluateSnsMultiPosterSummary } = snsRunner;
+
+test("prepareOnly command runs reject explicit worker claims without changing status", async () => {
+  initDb();
+  resetDemoData();
+  const prepared = await startCommandRun("Research plan prepared execution", {
+    companyId: "project-a",
+    deferWorker: true,
+    prepareOnly: true,
+    metadata: {
+      research_plan_id: "research_plan_prepare_only_test",
+      research_plan_start_phase: "prepared_unlinked"
+    }
+  });
+  assert.ok("run" in prepared, "prepared run summary is required");
+  if (!("run" in prepared)) throw new Error("prepared_run_summary_missing");
+  assert.equal(prepared.run.status, "preparing");
+  assert.ok(prepared.steps.length > 0);
+  assert.ok(prepared.steps.every((step) => step.status === "preparing"));
+  const lanes = querySql<{ status: string; health: string }>(`
+    SELECT status, health FROM lanes WHERE run_id=${sqlValue(prepared.runId)} ORDER BY id ASC
+  `);
+  assert.ok(lanes.length > 0);
+  assert.ok(lanes.every((lane) => lane.status === "blocked" && lane.health === "preparing"));
+
+  await runWorkerCycle(prepared.runId);
+  const picked = await runWorkerOnce(prepared.runId);
+  assert.equal(picked.length, 1);
+  const runAfter = querySql<{ status: string }>(`SELECT status FROM runs WHERE id=${sqlValue(prepared.runId)} LIMIT 1`)[0];
+  assert.equal(runAfter.status, "preparing");
+  const stepStatuses = querySql<{ status: string }>(`
+    SELECT status FROM run_steps WHERE run_id=${sqlValue(prepared.runId)} ORDER BY id ASC
+  `);
+  assert.ok(stepStatuses.every((step) => step.status === "preparing"));
+  const approvals = querySql<{ status: string }>(`
+    SELECT status FROM approvals WHERE run_id=${sqlValue(prepared.runId)} ORDER BY created_at ASC
+  `);
+  assert.deepEqual(approvals, []);
+  const workerEvents = querySql<{ event_type: string }>(`
+    SELECT event_type FROM worker_events
+    WHERE run_id=${sqlValue(prepared.runId)} AND event_type IN ('worker_started', 'worker_completed', 'worker_blocked')
+  `);
+  assert.deepEqual(workerEvents, []);
+});
 
 test("getRunWorkerProgressState treats worker_started, started steps, terminal events, and proofs as progress", () => {
   initDb();
@@ -263,6 +307,7 @@ function seedLegacyAdapterRouteBlockRun(input: {
   taskName: string;
   lane?: { cdp_port: number; profile_dir: string; workdir: string };
   capabilities?: ReturnType<typeof fixtureCapabilities>;
+  metadata?: Record<string, unknown>;
 }) {
   initDb();
   resetDemoData();
@@ -285,6 +330,7 @@ function seedLegacyAdapterRouteBlockRun(input: {
     created_at: now,
     updated_at: now,
     metadata_json: {
+      ...(input.metadata ?? {}),
       command: input.taskName,
       route_decision: routeDecision,
       route_decision_fingerprint: routeDecision.fingerprint,
@@ -316,6 +362,7 @@ function seedLegacyAdapterRouteBlockRun(input: {
     started_at: null,
     completed_at: null,
     metadata_json: {
+      ...(input.metadata ?? {}),
       adapter: input.adapter,
       command,
       command_display: command.display
@@ -829,7 +876,7 @@ test("builds worker commands without OpenAI API keys", () => {
   for (const [key] of previousOpenAiEnv) delete process.env[key];
   try {
     assert.equal(chooseWorkerAdapter({ name: "Daily AI publish full flow", resources: ["social_publish"] }), "daily_ai_registered");
-    assert.equal(chooseWorkerAdapter({ name: "Browser Useで画面確認", resources: ["local_worker"] }), "playwright_cli");
+    assert.equal(chooseWorkerAdapter({ name: "Browser Useで画面確認", resources: ["local_worker"] }), "browser_use_cli");
     assert.equal(
       chooseWorkerAdapter({ name: "NisenPrints registered workflow billing-only proof gate full publish", resources: ["commerce_publish"] }),
       "nisenprints_registered"
@@ -905,7 +952,7 @@ test("builds worker commands without OpenAI API keys", () => {
     assert.match(nisenprintsCommand.display, /AUTOMATION_STAGE_TIMEOUT_MS="900000"/);
     assert.doesNotMatch(nisenprintsCommand.display, /BROWSER_USE_/);
     assert.equal(resolveWorkerAdapterPolicy("nisenprints_registered").classification, "legacy_browser_backed");
-    assert.ok(resolveWorkerAdapterPolicy("nisenprints_registered").evidence.some((item) => item.includes("NISENPRINTS_BROWSER_DRIVER=playwright_cli")));
+    assert.ok(resolveWorkerAdapterPolicy("nisenprints_registered").evidence.some((item) => item.includes("browser_surface=in_app_browser")));
     assert.match(
       buildWorkerCommand({ adapter: "nisenprints_registered", taskName: "NisenPrints", nisenprintsDefaultRunnerPath: join(tempRoot, "missing-nisenprints-runner.mjs") }).display,
       /NisenPrints Playwright CLI runner is not configured/
@@ -931,11 +978,11 @@ test("builds worker commands without OpenAI API keys", () => {
     assert.equal(resolveWorkerAdapterPolicy("sns_multi_poster_registered").classification, "legacy_browser_backed");
     assert.equal(classifyWorkerCommandSpec(snsCommand).classification, "legacy_browser_backed");
     assert.ok(classifyWorkerCommandSpec(snsCommand).signals.includes("playwright"));
-    assert.match(browserUseCommand.display, /playwright-cli open/);
-    assert.equal(classifyWorkerCommandSpec(browserUseCommand).classification, "legacy_browser_backed");
-    assert.ok(classifyWorkerCommandSpec(browserUseCommand).signals.includes("browser-use"));
-    assert.ok(classifyWorkerCommandSpec(browserUseCommand).signals.includes("cdp"));
-    assert.ok(classifyWorkerCommandSpec(browserUseCommand).signals.includes("profile"));
+    assert.match(browserUseCommand.display, /browser-use-cli-stage-adapter\.mjs/);
+    assert.equal(browserUseCommand.env?.AUTOMATION_OS_BROWSER_SURFACE, "browser_use_cli");
+    assert.equal(browserUseCommand.env?.AUTOMATION_OS_BROWSER_NO_FALLBACK, "1");
+    assert.equal(classifyWorkerCommandSpec(browserUseCommand).classification, "browser_use_cli");
+    assert.ok(classifyWorkerCommandSpec(browserUseCommand).signals.includes("shared-adapter"));
     assert.match(playwrightCommand.bin, /playwright_cli\.sh|playwright-cli/);
     assert.equal(playwrightCommand.env?.PLAYWRIGHT_CLI_CDP_URL, "http://127.0.0.1:9335");
     assert.equal(playwrightCommand.env?.PLAYWRIGHT_CLI_PROFILE, "/tmp/profile-a");
@@ -960,16 +1007,15 @@ test("builds worker commands without OpenAI API keys", () => {
   }
 });
 
-test("routes explicit Browser Use QA to Playwright CLI unless it is code maintenance", () => {
-  assert.equal(chooseWorkerAdapter({ name: "Browser Use QA", resources: ["local_worker"] }), "playwright_cli");
-  assert.equal(chooseWorkerAdapter({ name: "Browser Useで画面確認", resources: ["local_worker"] }), "playwright_cli");
+test("routes explicit Browser Use QA to the canonical Browser Use CLI adapter unless it is code maintenance", () => {
+  assert.equal(chooseWorkerAdapter({ name: "Browser Use QA", resources: ["local_worker"] }), "browser_use_cli");
+  assert.equal(chooseWorkerAdapter({ name: "Browser Useで画面確認", resources: ["local_worker"] }), "browser_use_cli");
   assert.equal(chooseWorkerAdapter({ name: "Browser Use workerEngine修正", resources: ["local_worker"] }), "child_codex");
 });
 
-test("classifies worker adapter policies exhaustively and preserves the chrome_extension_required fail-closed set", () => {
+test("classifies worker adapter policies exhaustively and preserves the in_app_browser_required fail-closed set", () => {
   const legacyAdapters: Array<ReturnType<typeof resolveWorkerAdapterPolicy>["adapter"]> = [
     "playwright_cli",
-    "browser_use_cli",
     "daily_ai_registered",
     "nisenprints_registered",
     "job_submit_registered",
@@ -981,14 +1027,19 @@ test("classifies worker adapter policies exhaustively and preserves the chrome_e
   for (const adapter of legacyAdapters) {
     const policy = resolveWorkerAdapterPolicy(adapter);
     assert.equal(policy.classification, "legacy_browser_backed");
-    assert.equal(policy.exactBlocker, "chrome_extension_required");
+    assert.equal(policy.exactBlocker, "in_app_browser_required");
     assert.ok(policy.evidence.length > 0);
   }
+
+  const browserUsePolicy = resolveWorkerAdapterPolicy("browser_use_cli");
+  assert.equal(browserUsePolicy.classification, "browser_use_cli");
+  assert.equal(browserUsePolicy.exactBlocker, null);
+  assert.ok(browserUsePolicy.evidence.some((item) => item.includes("browser-use-cli-stage-adapter.mjs")));
 
   const extensionPolicy = resolveWorkerAdapterPolicy("x_authenticated_browser_lane_registered");
   assert.equal(extensionPolicy.classification, "extension_backed");
   assert.equal(extensionPolicy.exactBlocker, null);
-  assert.ok(extensionPolicy.evidence.some((item) => item.includes("Chrome Extension")));
+  assert.ok(extensionPolicy.evidence.some((item) => item.includes("Codex In-app Browser")));
 
   assert.equal(resolveWorkerAdapterPolicy("child_codex").classification, "non_browser");
   assert.equal(resolveWorkerAdapterPolicy("codex_cli").classification, "non_browser");
@@ -1091,9 +1142,9 @@ test("SNS Multi Poster registered workflow blocks when image or caption input is
     assert.equal(approvals.length, 0);
     assert.equal(run.status, "blocked");
     assert.equal(step.status, "blocked");
-    assert.equal(runMetadata.stop_reason, "chrome_extension_required");
-    assert.equal(runMetadata.route_readback?.exactBlocker, "chrome_extension_required");
-    assert.deepEqual(runMetadata.proof_gate.missing, ["chrome_extension_required"]);
+    assert.equal(runMetadata.stop_reason, "in_app_browser_required");
+    assert.equal(runMetadata.route_readback?.exactBlocker, "in_app_browser_required");
+    assert.deepEqual(runMetadata.proof_gate.missing, ["in_app_browser_required"]);
     assert.equal(proofs.length, 0);
     assert.equal(events.some((event) => event.event_type === "worker_started"), false);
     assert.equal(events.some((event) => event.event_type === "worker_completed"), false);
@@ -1131,9 +1182,9 @@ test("SNS Multi Poster registered workflow resolves latest completed NisenPrints
 
     assert.equal(approvals.length, 0);
     assert.equal(run.status, "blocked");
-    assert.equal(runMetadata.stop_reason, "chrome_extension_required");
-    assert.equal(runMetadata.route_readback?.exactBlocker, "chrome_extension_required");
-    assert.deepEqual(runMetadata.proof_gate.missing, ["chrome_extension_required"]);
+    assert.equal(runMetadata.stop_reason, "in_app_browser_required");
+    assert.equal(runMetadata.route_readback?.exactBlocker, "in_app_browser_required");
+    assert.deepEqual(runMetadata.proof_gate.missing, ["in_app_browser_required"]);
     assert.equal(proofs.length, 0);
     assert.equal(runMetadata.external_action_executed, false);
     assert.equal(events.some((event) => event.event_type === "worker_started"), false);
@@ -1178,9 +1229,9 @@ test("SNS Multi Poster registered workflow executes approved runner and records 
     assert.equal(approvals.length, 0);
     assert.equal(run.status, "blocked");
     assert.equal(step.status, "blocked");
-    assert.equal(runMetadata.stop_reason, "chrome_extension_required");
-    assert.equal(runMetadata.route_readback?.exactBlocker, "chrome_extension_required");
-    assert.deepEqual(runMetadata.proof_gate.missing, ["chrome_extension_required"]);
+    assert.equal(runMetadata.stop_reason, "in_app_browser_required");
+    assert.equal(runMetadata.route_readback?.exactBlocker, "in_app_browser_required");
+    assert.deepEqual(runMetadata.proof_gate.missing, ["in_app_browser_required"]);
     assert.equal(proofs.length, 0);
     assert.equal(events.some((event) => event.event_type === "worker_started"), false);
     assert.equal(events.some((event) => event.event_type === "worker_completed"), false);
@@ -1382,9 +1433,9 @@ test("Prompt Transfer registered workflow saves Sheets immediately with commit f
     assert.equal(runMetadata.worker_mode, "execute_prompt_transfer_registered");
     assert.equal(stepMetadata.execution_mode, "execute_prompt_transfer_registered");
     assert.equal(runMetadata.command_display, stepMetadata.command_display);
-    assert.equal(runMetadata.stop_reason, "chrome_extension_required");
-    assert.equal(runMetadata.route_readback?.exactBlocker, "chrome_extension_required");
-    assert.deepEqual(runMetadata.proof_gate.missing, ["chrome_extension_required"]);
+    assert.equal(runMetadata.stop_reason, "in_app_browser_required");
+    assert.equal(runMetadata.route_readback?.exactBlocker, "in_app_browser_required");
+    assert.deepEqual(runMetadata.proof_gate.missing, ["in_app_browser_required"]);
     assert.equal(proof, undefined);
     assert.equal(events.some((event) => event.event_type === "worker_started"), false);
     assert.equal(events.some((event) => event.event_type === "worker_completed"), false);
@@ -1396,7 +1447,7 @@ test("Prompt Transfer registered workflow saves Sheets immediately with commit f
     const rerunMetadata = JSON.parse(rerun.metadata_json);
     assert.equal(rerun.status, "blocked");
     assert.equal(rerunMetadata.worker_mode, "execute_prompt_transfer_registered");
-    assert.deepEqual(rerunMetadata.proof_gate.missing, ["chrome_extension_required"]);
+    assert.deepEqual(rerunMetadata.proof_gate.missing, ["in_app_browser_required"]);
   } finally {
     restoreRunner();
   }
@@ -1427,10 +1478,10 @@ test("Prompt Transfer legacy runner pre-blocks when Playwright/Sheets runner is 
     assert.equal(stepMetadata.execution_mode, "execute_prompt_transfer_registered");
     assert.equal(runMetadata.command_display, expectedCommandDisplay);
     assert.equal(stepMetadata.command_display, expectedCommandDisplay);
-    assert.equal(runMetadata.stop_reason, "chrome_extension_required");
-    assert.equal(runMetadata.route_readback?.exactBlocker, "chrome_extension_required");
+    assert.equal(runMetadata.stop_reason, "in_app_browser_required");
+    assert.equal(runMetadata.route_readback?.exactBlocker, "in_app_browser_required");
     assert.equal(runMetadata.proof_gate.ok, false);
-    assert.deepEqual(runMetadata.proof_gate.missing, ["chrome_extension_required"]);
+    assert.deepEqual(runMetadata.proof_gate.missing, ["in_app_browser_required"]);
     assert.equal(runMetadata.external_action_executed, false);
   } finally {
     if (previousRunner === undefined) delete process.env.AUTOMATION_OS_PROMPT_TRANSFER_UKIYOE_RUNNER;
@@ -1463,9 +1514,9 @@ test("Prompt Transfer legacy runner pre-blocks when runner exits nonzero even wi
     assert.equal(runMetadata.worker_mode, "execute_prompt_transfer_registered");
     assert.equal(stepMetadata.execution_mode, "execute_prompt_transfer_registered");
     assert.equal(runMetadata.command_display, stepMetadata.command_display);
-    assert.equal(runMetadata.stop_reason, "chrome_extension_required");
-    assert.equal(runMetadata.route_readback?.exactBlocker, "chrome_extension_required");
-    assert.deepEqual(runMetadata.proof_gate.missing, ["chrome_extension_required"]);
+    assert.equal(runMetadata.stop_reason, "in_app_browser_required");
+    assert.equal(runMetadata.route_readback?.exactBlocker, "in_app_browser_required");
+    assert.deepEqual(runMetadata.proof_gate.missing, ["in_app_browser_required"]);
     assert.equal(proofs.length, 0);
     assert.equal(events.some((event) => event.event_type === "worker_started"), false);
     assert.equal(events.some((event) => event.event_type === "worker_completed"), false);
@@ -1549,6 +1600,77 @@ test("stores execution routing metadata when starting a command run", async () =
   assert.equal(metadata.execution_routing?.controller?.status, "connected");
 });
 
+test("persists authorized company_id on tenant runs and approvals", async () => {
+  initDb();
+  resetDemoData();
+
+  const companyId = "company_tenant_a";
+  const command = "billing purchase save";
+
+  assert.equal(planCommandRun(command).approvalRequired, true);
+
+  const summary = await startCommandRun(command, { companyId });
+  const run = querySql<{ company_id: string | null; status: string }>(
+    `SELECT company_id, status FROM runs WHERE id=${sqlValue(summary.runId)} LIMIT 1`
+  )[0];
+  const approval = querySql<{ company_id: string | null; run_id: string }>(
+    `SELECT company_id, run_id FROM approvals WHERE run_id=${sqlValue(summary.runId)} LIMIT 1`
+  )[0];
+
+  assert.equal(run.company_id, companyId);
+  assert.equal(run.status, "waiting_approval");
+  assert.equal(approval.company_id, companyId);
+  assert.equal(approval.run_id, summary.runId);
+});
+
+test("persists authorized company_id on worker proofs from the stored run context", async () =>
+  withChildCodexExecutionEnv(async () => {
+    initDb();
+    resetDemoData();
+
+    const companyId = "company_tenant_b";
+    const summary = await startCommandRun("CodexでworkerEngineをread-only確認", { companyId });
+    await waitForRunStatus(summary.runId, "complete");
+
+    const run = querySql<{ company_id: string | null }>(`SELECT company_id FROM runs WHERE id=${sqlValue(summary.runId)} LIMIT 1`)[0];
+    const proof = querySql<{ company_id: string | null; proof_type: string }>(
+      `SELECT company_id, proof_type FROM proofs WHERE run_id=${sqlValue(summary.runId)} LIMIT 1`
+    )[0];
+
+    assert.equal(run.company_id, companyId);
+    assert.equal(proof.company_id, companyId);
+    assert.equal(proof.proof_type, "child_codex_result");
+  }));
+
+test("does not infer company_id from metadata without an authorized company context", async () =>
+  withChildCodexExecutionEnv(async () => {
+    initDb();
+    resetDemoData();
+
+    const summary = await startCommandRun("CodexでworkerEngineをread-only確認", {
+      metadata: { company_id: "company_from_metadata_only" }
+    });
+    await waitForRunStatus(summary.runId, "complete");
+
+    const run = querySql<{ company_id: string | null }>(`SELECT company_id FROM runs WHERE id=${sqlValue(summary.runId)} LIMIT 1`)[0];
+    const proof = querySql<{ company_id: string | null; proof_type: string }>(
+      `SELECT company_id, proof_type FROM proofs WHERE run_id=${sqlValue(summary.runId)} LIMIT 1`
+    )[0];
+
+    assert.equal(run.company_id, null);
+    assert.equal(proof.company_id, null);
+    assert.equal(proof.proof_type, "child_codex_result");
+  }));
+
+test("rejects blank authorized company_id when tenant context is requested", async () => {
+  initDb();
+  resetDemoData();
+
+  await assert.rejects(() => startCommandRun("billing purchase save", { companyId: "   " }), /company_id_required/);
+  const runs = querySql<{ count: number }>("SELECT COUNT(*) AS count FROM runs")[0];
+  assert.equal(runs.count, 0);
+});
+
 test("blocks browser adapters before worker command spawn and persists canonical route metadata", async () => {
   initDb();
   resetDemoData();
@@ -1593,25 +1715,25 @@ test("blocks browser adapters before worker command spawn and persists canonical
 
     assert.equal(run.status, "blocked");
     assert.equal(step.status, "blocked");
-    assert.equal(stepMetadata.adapter, "playwright_cli");
-    assert.equal(runMetadata.adapter_policy?.classification, "legacy_browser_backed");
-    assert.equal(stepMetadata.adapter_policy?.classification, "legacy_browser_backed");
-    assert.equal(runMetadata.adapter_policy?.exactBlocker, "chrome_extension_required");
-    assert.equal(stepMetadata.adapter_policy?.exactBlocker, "chrome_extension_required");
+    assert.equal(stepMetadata.adapter, "browser_use_cli");
+    assert.equal(runMetadata.adapter_policy?.classification, "browser_use_cli");
+    assert.equal(stepMetadata.adapter_policy?.classification, "browser_use_cli");
+    assert.equal(runMetadata.adapter_policy?.exactBlocker, null);
+    assert.equal(stepMetadata.adapter_policy?.exactBlocker, null);
     assert.equal(runMetadata.route_decision_fingerprint, runMetadata.route_decision?.fingerprint ?? null);
     assert.equal(stepMetadata.route_decision_fingerprint, runMetadata.route_decision?.fingerprint ?? null);
     assert.equal(runMetadata.route_readback?.phase, "route_readback");
     assert.equal(stepMetadata.route_readback?.phase, "route_readback");
-    assert.equal(runMetadata.route_readback?.exactBlocker, "chrome_extension_required");
-    assert.equal(stepMetadata.route_readback?.exactBlocker, "chrome_extension_required");
+    assert.equal(runMetadata.route_readback?.exactBlocker, "in_app_browser_required");
+    assert.equal(stepMetadata.route_readback?.exactBlocker, "in_app_browser_required");
     assert.equal(runMetadata.route_readback_fingerprint, runMetadata.route_readback?.fingerprint ?? null);
     assert.equal(stepMetadata.route_readback_fingerprint, runMetadata.route_readback?.fingerprint ?? null);
     assert.equal(runMetadata.execution_routing?.fingerprint, runMetadata.route_readback?.fingerprint);
     assert.equal(runMetadata.execution_routing?.phase, "route_readback");
     assert.match(runMetadata.route_readback?.evidence?.join(" ") ?? "", /phase=route_readback/);
-    assert.match(runMetadata.route_readback?.evidence?.join(" ") ?? "", /exactBlocker=chrome_extension_required/);
-    assert.equal(runMetadata.stop_reason, "chrome_extension_required");
-    assert.equal(stepMetadata.stop_reason, "chrome_extension_required");
+    assert.match(runMetadata.route_readback?.evidence?.join(" ") ?? "", /exactBlocker=in_app_browser_required/);
+    assert.equal(runMetadata.stop_reason, "in_app_browser_required");
+    assert.equal(stepMetadata.stop_reason, "in_app_browser_required");
     assert.equal(existsSync(sentinelMarker), false);
     assert.deepEqual(proofs.map((proof) => proof.proof_type), []);
     assert.ok(!events.some((event) => event.event_type === "worker_started"));
@@ -1630,11 +1752,6 @@ test("blocks every legacy browser-backed adapter before worker command spawn and
       adapter: "playwright_cli" as const,
       taskName: "Playwright legacy browser block",
       lane: { cdp_port: 9338, profile_dir: "/tmp/playwright-profile", workdir: "/tmp/playwright-workdir" }
-    },
-    {
-      adapter: "browser_use_cli" as const,
-      taskName: "Browser Use legacy browser block",
-      lane: { cdp_port: 9444, profile_dir: "/tmp/browser-use-profile", workdir: "/tmp/browser-use-workdir" }
     },
     { adapter: "daily_ai_registered" as const, taskName: "Daily AI legacy browser block" },
     { adapter: "nisenprints_registered" as const, taskName: "NisenPrints legacy browser block" },
@@ -1699,22 +1816,22 @@ test("blocks every legacy browser-backed adapter before worker command spawn and
       assert.equal(stepMetadata.command_display, command.display, `${item.adapter} connected=${chromeConnected}`);
       assert.equal(runMetadata.adapter_policy?.classification, "legacy_browser_backed", `${item.adapter} connected=${chromeConnected}`);
       assert.equal(stepMetadata.adapter_policy?.classification, "legacy_browser_backed", `${item.adapter} connected=${chromeConnected}`);
-      assert.equal(runMetadata.adapter_policy?.exactBlocker, "chrome_extension_required", `${item.adapter} connected=${chromeConnected}`);
-      assert.equal(stepMetadata.adapter_policy?.exactBlocker, "chrome_extension_required", `${item.adapter} connected=${chromeConnected}`);
+      assert.equal(runMetadata.adapter_policy?.exactBlocker, "in_app_browser_required", `${item.adapter} connected=${chromeConnected}`);
+      assert.equal(stepMetadata.adapter_policy?.exactBlocker, "in_app_browser_required", `${item.adapter} connected=${chromeConnected}`);
       assert.ok((runMetadata.adapter_policy?.evidence ?? []).length > 0, `${item.adapter} connected=${chromeConnected}`);
-      assert.equal(runMetadata.route_readback?.exactBlocker, "chrome_extension_required", `${item.adapter} connected=${chromeConnected}`);
-      assert.equal(stepMetadata.route_readback?.exactBlocker, "chrome_extension_required", `${item.adapter} connected=${chromeConnected}`);
-      assert.equal(runMetadata.route_readback?.fallbackReason, "blocked:chrome_extension_required", `${item.adapter} connected=${chromeConnected}`);
-      assert.equal(stepMetadata.route_readback?.fallbackReason, "blocked:chrome_extension_required", `${item.adapter} connected=${chromeConnected}`);
-      assert.match(runMetadata.route_readback?.evidence?.join(" ") ?? "", /exactBlocker=chrome_extension_required/, `${item.adapter} connected=${chromeConnected}`);
+      assert.equal(runMetadata.route_readback?.exactBlocker, "in_app_browser_required", `${item.adapter} connected=${chromeConnected}`);
+      assert.equal(stepMetadata.route_readback?.exactBlocker, "in_app_browser_required", `${item.adapter} connected=${chromeConnected}`);
+      assert.equal(runMetadata.route_readback?.fallbackReason, "blocked:in_app_browser_required", `${item.adapter} connected=${chromeConnected}`);
+      assert.equal(stepMetadata.route_readback?.fallbackReason, "blocked:in_app_browser_required", `${item.adapter} connected=${chromeConnected}`);
+      assert.match(runMetadata.route_readback?.evidence?.join(" ") ?? "", /exactBlocker=in_app_browser_required/, `${item.adapter} connected=${chromeConnected}`);
       assert.match(runMetadata.route_readback?.evidence?.join(" ") ?? "", /adapter_policy=legacy_browser_backed/, `${item.adapter} connected=${chromeConnected}`);
       assert.equal(runMetadata.proof_gate?.ok, false, `${item.adapter} connected=${chromeConnected}`);
-      assert.deepEqual(runMetadata.proof_gate?.missing, ["chrome_extension_required"], `${item.adapter} connected=${chromeConnected}`);
-      assert.deepEqual(stepMetadata.proof_gate?.missing, ["chrome_extension_required"], `${item.adapter} connected=${chromeConnected}`);
-      assert.equal(runMetadata.proof_summary, "blocked: chrome_extension_required", `${item.adapter} connected=${chromeConnected}`);
-      assert.equal(stepMetadata.proof_summary, "blocked: chrome_extension_required", `${item.adapter} connected=${chromeConnected}`);
-      assert.equal(runMetadata.stop_reason, "chrome_extension_required", `${item.adapter} connected=${chromeConnected}`);
-      assert.equal(stepMetadata.stop_reason, "chrome_extension_required", `${item.adapter} connected=${chromeConnected}`);
+      assert.deepEqual(runMetadata.proof_gate?.missing, ["in_app_browser_required"], `${item.adapter} connected=${chromeConnected}`);
+      assert.deepEqual(stepMetadata.proof_gate?.missing, ["in_app_browser_required"], `${item.adapter} connected=${chromeConnected}`);
+      assert.equal(runMetadata.proof_summary, "blocked: in_app_browser_required", `${item.adapter} connected=${chromeConnected}`);
+      assert.equal(stepMetadata.proof_summary, "blocked: in_app_browser_required", `${item.adapter} connected=${chromeConnected}`);
+      assert.equal(runMetadata.stop_reason, "in_app_browser_required", `${item.adapter} connected=${chromeConnected}`);
+      assert.equal(stepMetadata.stop_reason, "in_app_browser_required", `${item.adapter} connected=${chromeConnected}`);
       assert.equal(runMetadata.external_action_executed, false, `${item.adapter} connected=${chromeConnected}`);
       assert.equal(stepMetadata.external_action_executed, false, `${item.adapter} connected=${chromeConnected}`);
       assert.equal(events.some((event) => event.event_type === "worker_started"), false, `${item.adapter} connected=${chromeConnected}`);
@@ -1722,6 +1839,120 @@ test("blocks every legacy browser-backed adapter before worker command spawn and
       assert.equal(events.some((event) => event.event_type === "worker_blocked"), true, `${item.adapter} connected=${chromeConnected}`);
       assert.deepEqual(proofs.map((proof) => proof.proof_type), [], `${item.adapter} connected=${chromeConnected}`);
     }
+  }
+});
+
+test("browser_use_cli adapter contract guard blocks before helper/process invocation", async () => {
+  const runId = "run_browser_use_contract_guard";
+  const marker = join(tempRoot, "browser-use-contract-guard-marker");
+  const restoreBrowserUse = installFakeBrowserUse("browser-use-contract-guard");
+  try {
+    const { stepId } = seedLegacyAdapterRouteBlockRun({
+      runId,
+      adapter: "browser_use_cli",
+      taskName: "Browser Use authorized contract guard",
+      metadata: {
+        browser_surface: "browser_use_cli",
+        browser_adapter: "/Users/nichikatanaka/.codex/skills/automation-kernel-run/scripts/browser-use-cli-stage-adapter.mjs",
+        browser_no_fallback: true,
+        // Deliberately omit the contract and all binding facts.
+        adapter_process_marker: marker
+      }
+    });
+    await runWorkerOnce(runId);
+    const step = querySql<{ status: string; metadata_json: string }>(`SELECT status, metadata_json FROM run_steps WHERE id=${sqlValue(stepId)} LIMIT 1`)[0];
+    const proofs = querySql<{ metadata_json: string }>(`SELECT metadata_json FROM proofs WHERE run_id=${sqlValue(runId)} ORDER BY created_at ASC`);
+    assert.equal(step.status, "blocked");
+    assert.equal(JSON.parse(step.metadata_json).browser_use_exact_blocker, "p6_authorized_browser_use_cli_adapter_contract_unverified");
+    assert.equal(JSON.parse(proofs.at(-1)?.metadata_json ?? "{}").exact_blocker, "p6_authorized_browser_use_cli_adapter_contract_unverified");
+    assert.equal(existsSync(marker), false);
+
+    const validRunId = "run_browser_use_contract_guard_valid";
+    const validStepId = `${validRunId}_step_1`;
+    const validAttempt = "attempt-browser-use-contract-1";
+    const validSession = "session-browser-use-contract-1";
+    const validDigest = "a".repeat(64);
+    const validOrigin = "https://example.com";
+    const validContract = {
+      schema: "browser_use_authorized_adapter_contract.v1",
+      browser_surface: "browser_use_cli",
+      mode: "authorized",
+      adapter_identity: "browser-use-cli-stage-adapter.v1",
+      authorized_scheduled_lifecycle: true,
+      structured_start_descriptor: true,
+      pre_open_descriptor_validation: true,
+      run_stage_attempt_session_binding: true,
+      authority_digest_binding: true,
+      allowed_origin_action_binding: true,
+      artifact_binding: true,
+      runtime_home_binding: true,
+      bounded_result_format: true,
+      no_fallback: true,
+      run_id: validRunId,
+      stage_id: validStepId,
+      attempt_id: validAttempt,
+      session_id: validSession,
+      authority_digest: validDigest,
+      allowed_origin: validOrigin,
+      external_action_executed: false,
+      legacy_surfaces_forbidden: true,
+      prior_receipt_reuse: false
+    };
+    seedLegacyAdapterRouteBlockRun({
+      runId: validRunId,
+      adapter: "browser_use_cli",
+      taskName: "Browser Use valid-looking contract guard",
+      metadata: {
+        browser_surface: "browser_use_cli",
+        browser_adapter: "/Users/nichikatanaka/.codex/skills/automation-kernel-run/scripts/browser-use-cli-stage-adapter.mjs",
+        browser_no_fallback: true,
+        stage_id: validStepId,
+        attempt_id: validAttempt,
+        session_id: validSession,
+        authority_digest: validDigest,
+        allowed_origin: validOrigin,
+        browser_use_authorized_adapter_contract: validContract
+      }
+    });
+    await runWorkerOnce(validRunId);
+    const validStep = querySql<{ metadata_json: string }>(`SELECT metadata_json FROM run_steps WHERE run_id=${sqlValue(validRunId)} LIMIT 1`)[0];
+    assert.equal(JSON.parse(validStep.metadata_json).browser_use_exact_blocker, "p6_authorized_browser_use_cli_adapter_contract_unverified");
+    assert.equal(existsSync(marker), false);
+
+    for (const [index, field] of ["run_id", "stage_id", "attempt_id", "session_id", "allowed_origin", "authority_digest"] .entries()) {
+      const wrongRunId = `run_browser_use_contract_guard_wrong_${index}`;
+      const wrongContract = {
+        ...validContract,
+        run_id: field === "run_id" ? "wrong-run" : wrongRunId,
+        stage_id: field === "stage_id" ? "wrong-stage" : validStepId,
+        attempt_id: field === "attempt_id" ? "wrong-attempt" : validAttempt,
+        session_id: field === "session_id" ? "wrong-session" : validSession,
+        allowed_origin: field === "allowed_origin" ? "https://other.example" : validOrigin,
+        authority_digest: field === "authority_digest" ? "b".repeat(64) : validDigest
+      };
+      seedLegacyAdapterRouteBlockRun({
+        runId: wrongRunId,
+        adapter: "browser_use_cli",
+        taskName: `Browser Use wrong ${field} contract guard`,
+        metadata: {
+          browser_surface: "browser_use_cli",
+          browser_adapter: "/Users/nichikatanaka/.codex/skills/automation-kernel-run/scripts/browser-use-cli-stage-adapter.mjs",
+          browser_no_fallback: true,
+          stage_id: validStepId,
+          attempt_id: validAttempt,
+          session_id: validSession,
+          authority_digest: validDigest,
+          allowed_origin: validOrigin,
+          browser_use_authorized_adapter_contract: wrongContract
+        }
+      });
+      await runWorkerOnce(wrongRunId);
+      const wrongStep = querySql<{ metadata_json: string }>(`SELECT metadata_json FROM run_steps WHERE run_id=${sqlValue(wrongRunId)} LIMIT 1`)[0];
+      assert.equal(JSON.parse(wrongStep.metadata_json).browser_use_exact_blocker, "p6_authorized_browser_use_cli_adapter_contract_unverified");
+      assert.equal(existsSync(marker), false);
+    }
+  } finally {
+    restoreBrowserUse();
   }
 });
 
@@ -1747,12 +1978,13 @@ test("worker adapter policy keeps the extension-backed X lane separate from lega
   }
 
   assert.equal(resolveWorkerAdapterPolicy("playwright_cli").classification, "legacy_browser_backed");
-  assert.equal(resolveWorkerAdapterPolicy("browser_use_cli").classification, "legacy_browser_backed");
+  assert.equal(resolveWorkerAdapterPolicy("browser_use_cli").classification, "browser_use_cli");
+  assert.equal(resolveWorkerAdapterPolicy("browser_use_cli").exactBlocker, null);
   assert.equal(resolveWorkerAdapterPolicy("child_codex").classification, "non_browser");
   assert.equal(resolveWorkerAdapterPolicy("codex_cli").classification, "non_browser");
   assert.equal(resolveWorkerAdapterPolicy("local_worker").classification, "non_browser");
-  assert.equal(resolveWorkerAdapterPolicy("job_submit_registered").exactBlocker, "chrome_extension_required");
-  assert.equal(resolveWorkerAdapterPolicy("job_followup_registered").exactBlocker, "chrome_extension_required");
+  assert.equal(resolveWorkerAdapterPolicy("job_submit_registered").exactBlocker, "in_app_browser_required");
+  assert.equal(resolveWorkerAdapterPolicy("job_followup_registered").exactBlocker, "in_app_browser_required");
 });
 
 test("classifies unclassified worker commands without legacy browser tokens", () => {
@@ -2087,11 +2319,11 @@ test("Daily AI registered workflow records billing-only runner safety metadata",
 
     assert.equal(run.status, "blocked");
     assert.equal(step.status, "blocked");
-    assert.equal(runMetadata.stop_reason, "chrome_extension_required");
-    assert.equal(runMetadata.route_readback?.exactBlocker, "chrome_extension_required");
-    assert.deepEqual(runMetadata.proof_gate.missing, ["chrome_extension_required"]);
-    assert.equal(stepMetadata.stop_reason, "chrome_extension_required");
-    assert.equal(stepMetadata.route_readback?.exactBlocker, "chrome_extension_required");
+    assert.equal(runMetadata.stop_reason, "in_app_browser_required");
+    assert.equal(runMetadata.route_readback?.exactBlocker, "in_app_browser_required");
+    assert.deepEqual(runMetadata.proof_gate.missing, ["in_app_browser_required"]);
+    assert.equal(stepMetadata.stop_reason, "in_app_browser_required");
+    assert.equal(stepMetadata.route_readback?.exactBlocker, "in_app_browser_required");
     assert.equal(stepMetadata.daily_ai_exit_status, undefined);
     assert.equal(events.some((event) => event.event_type === "worker_started"), false);
     assert.equal(events.some((event) => event.event_type === "worker_completed"), false);
@@ -2119,11 +2351,11 @@ test("NisenPrints legacy runner pre-blocks when Playwright CLI runner exits nonz
     assert.equal(run.status, "blocked");
     assert.equal(runMetadata.worker_mode, "execute_nisenprints_registered");
     assert.equal(step.status, "blocked");
-    assert.equal(runMetadata.stop_reason, "chrome_extension_required");
-    assert.equal(runMetadata.route_readback?.exactBlocker, "chrome_extension_required");
-    assert.deepEqual(runMetadata.proof_gate.missing, ["chrome_extension_required"]);
-    assert.equal(stepMetadata.stop_reason, "chrome_extension_required");
-    assert.equal(stepMetadata.route_readback?.exactBlocker, "chrome_extension_required");
+    assert.equal(runMetadata.stop_reason, "in_app_browser_required");
+    assert.equal(runMetadata.route_readback?.exactBlocker, "in_app_browser_required");
+    assert.deepEqual(runMetadata.proof_gate.missing, ["in_app_browser_required"]);
+    assert.equal(stepMetadata.stop_reason, "in_app_browser_required");
+    assert.equal(stepMetadata.route_readback?.exactBlocker, "in_app_browser_required");
     assert.equal(stepMetadata.nisenprints_exit_status, undefined);
     assert.equal(events.some((event) => event.event_type === "worker_started"), false);
     assert.equal(events.some((event) => event.event_type === "worker_completed"), false);
@@ -2179,13 +2411,13 @@ for (const scenario of [
       assert.equal(runMetadata.worker_mode, expectedWorkerMode);
       assert.equal(stepMetadata.execution_mode, expectedWorkerMode);
       assert.equal(stepMetadata.command_display, expectedCommandDisplay);
-      assert.equal(runMetadata.stop_reason, "chrome_extension_required");
-      assert.equal(runMetadata.route_readback?.exactBlocker, "chrome_extension_required");
-      assert.equal(runMetadata.route_readback?.fallbackReason, "blocked:chrome_extension_required");
-      assert.deepEqual(runMetadata.proof_gate.missing, ["chrome_extension_required"]);
-      assert.equal(stepMetadata.stop_reason, "chrome_extension_required");
-      assert.equal(stepMetadata.route_readback?.exactBlocker, "chrome_extension_required");
-      assert.equal(stepMetadata.route_readback?.fallbackReason, "blocked:chrome_extension_required");
+      assert.equal(runMetadata.stop_reason, "in_app_browser_required");
+      assert.equal(runMetadata.route_readback?.exactBlocker, "in_app_browser_required");
+      assert.equal(runMetadata.route_readback?.fallbackReason, "blocked:in_app_browser_required");
+      assert.deepEqual(runMetadata.proof_gate.missing, ["in_app_browser_required"]);
+      assert.equal(stepMetadata.stop_reason, "in_app_browser_required");
+      assert.equal(stepMetadata.route_readback?.exactBlocker, "in_app_browser_required");
+      assert.equal(stepMetadata.route_readback?.fallbackReason, "blocked:in_app_browser_required");
       assert.equal(stepMetadata.registered_codex_exit_status, undefined);
       assert.equal(runMetadata.external_action_executed, false);
       assert.equal(events.some((event) => event.event_type === "worker_started"), false);
@@ -2224,11 +2456,11 @@ test("Job Followup registered workflow blocks directly with a distinct worker mo
   assert.equal(runMetadata.command_display, command.display);
   assert.equal(stepMetadata.execution_mode, "execute_job_followup_registered");
   assert.equal(stepMetadata.command_display, command.display);
-  assert.equal(runMetadata.adapter_policy?.exactBlocker, "chrome_extension_required");
-  assert.equal(runMetadata.route_readback?.exactBlocker, "chrome_extension_required");
-  assert.equal(runMetadata.route_readback?.fallbackReason, "blocked:chrome_extension_required");
-  assert.equal(runMetadata.proof_summary, "blocked: chrome_extension_required");
-  assert.deepEqual(runMetadata.proof_gate.missing, ["chrome_extension_required"]);
+  assert.equal(runMetadata.adapter_policy?.exactBlocker, "in_app_browser_required");
+  assert.equal(runMetadata.route_readback?.exactBlocker, "in_app_browser_required");
+  assert.equal(runMetadata.route_readback?.fallbackReason, "blocked:in_app_browser_required");
+  assert.equal(runMetadata.proof_summary, "blocked: in_app_browser_required");
+  assert.deepEqual(runMetadata.proof_gate.missing, ["in_app_browser_required"]);
   assert.equal(runMetadata.external_action_executed, false);
   assert.equal(events.some((event) => event.event_type === "worker_started"), false);
   assert.equal(events.some((event) => event.event_type === "worker_completed"), false);
@@ -2596,13 +2828,13 @@ test("reconciles stale running Daily AI registered step from existing summary ar
     assert.equal(stepMetadata.worker_mode, "execute_daily_ai_registered");
     assert.equal(stepMetadata.execution_mode, "execute_daily_ai_registered");
     assert.equal(stepMetadata.adapter_policy?.classification, "legacy_browser_backed");
-    assert.equal(stepMetadata.adapter_policy?.exactBlocker, "chrome_extension_required");
-    assert.equal(stepMetadata.route_readback?.exactBlocker, "chrome_extension_required");
+    assert.equal(stepMetadata.adapter_policy?.exactBlocker, "in_app_browser_required");
+    assert.equal(stepMetadata.route_readback?.exactBlocker, "in_app_browser_required");
     assert.equal(stepMetadata.route_readback_fingerprint, stepMetadata.route_readback?.fingerprint ?? null);
     assert.equal(stepMetadata.route_decision_fingerprint, stepMetadata.route_decision?.fingerprint ?? null);
-    assert.deepEqual(stepMetadata.proof_gate.missing, ["chrome_extension_required"]);
-    assert.equal(stepMetadata.proof_summary, "blocked: chrome_extension_required");
-    assert.equal(stepMetadata.stop_reason, "chrome_extension_required");
+    assert.deepEqual(stepMetadata.proof_gate.missing, ["in_app_browser_required"]);
+    assert.equal(stepMetadata.proof_summary, "blocked: in_app_browser_required");
+    assert.equal(stepMetadata.stop_reason, "in_app_browser_required");
     assert.equal(stepMetadata.external_action_executed, false);
     assert.equal(stepMetadata.daily_ai_status, undefined);
     assert.equal(stepMetadata.daily_ai_summary_path, undefined);
@@ -2611,9 +2843,9 @@ test("reconciles stale running Daily AI registered step from existing summary ar
     assert.equal(stepMetadata.completion_claimed, undefined);
     assert.equal(stepMetadata.decoy_success_artifact, undefined);
     assert.equal(runMetadata.worker_mode, "execute_daily_ai_registered");
-    assert.equal(runMetadata.proof_gate.missing[0], "chrome_extension_required");
+    assert.equal(runMetadata.proof_gate.missing[0], "in_app_browser_required");
     assert.equal(runMetadata.command_display, stepMetadata.command_display);
-    assert.equal(runMetadata.route_readback?.exactBlocker, "chrome_extension_required");
+    assert.equal(runMetadata.route_readback?.exactBlocker, "in_app_browser_required");
     assert.equal(runMetadata.route_readback_fingerprint, runMetadata.route_readback?.fingerprint ?? null);
     assert.equal(runMetadata.route_decision_fingerprint, runMetadata.route_decision?.fingerprint ?? null);
     assert.equal(runMetadata.daily_ai_status, undefined);
@@ -2621,7 +2853,7 @@ test("reconciles stale running Daily AI registered step from existing summary ar
     assert.equal(runMetadata.completion_claimed, undefined);
     assert.equal(runMetadata.decoy_success_artifact, undefined);
     assert.equal(terminalEventMetadata.reconciled_from_stale_registered_summary, true);
-    assert.equal(terminalEventMetadata.stop_reason, "chrome_extension_required");
+    assert.equal(terminalEventMetadata.stop_reason, "in_app_browser_required");
     assert.equal(terminalEventMetadata.external_action_executed, false);
     assert.equal(terminalEventMetadata.route_readback_fingerprint, runMetadata.route_readback?.fingerprint ?? null);
     assert.equal(terminalEventMetadata.command_display, stepMetadata.command_display);
@@ -2755,13 +2987,13 @@ test("reconciles stale running Job Submit registered Codex step without rerunnin
   assert.equal(stepMetadata.worker_mode, "execute_job_submit_registered");
   assert.equal(stepMetadata.execution_mode, "execute_job_submit_registered");
   assert.equal(stepMetadata.adapter_policy?.classification, "legacy_browser_backed");
-  assert.equal(stepMetadata.adapter_policy?.exactBlocker, "chrome_extension_required");
-  assert.equal(stepMetadata.route_readback?.exactBlocker, "chrome_extension_required");
+  assert.equal(stepMetadata.adapter_policy?.exactBlocker, "in_app_browser_required");
+  assert.equal(stepMetadata.route_readback?.exactBlocker, "in_app_browser_required");
   assert.equal(stepMetadata.route_readback_fingerprint, stepMetadata.route_readback?.fingerprint ?? null);
   assert.equal(stepMetadata.route_decision_fingerprint, stepMetadata.route_decision?.fingerprint ?? null);
-  assert.equal(stepMetadata.proof_gate.missing[0], "chrome_extension_required");
-  assert.equal(stepMetadata.proof_summary, "blocked: chrome_extension_required");
-  assert.equal(stepMetadata.stop_reason, "chrome_extension_required");
+  assert.equal(stepMetadata.proof_gate.missing[0], "in_app_browser_required");
+  assert.equal(stepMetadata.proof_summary, "blocked: in_app_browser_required");
+  assert.equal(stepMetadata.stop_reason, "in_app_browser_required");
   assert.equal(stepMetadata.external_action_executed, false);
   assert.equal(stepMetadata.registered_codex_status, undefined);
   assert.equal(stepMetadata.registered_codex_artifact, undefined);
@@ -2770,8 +3002,8 @@ test("reconciles stale running Job Submit registered Codex step without rerunnin
   assert.equal(stepMetadata.completion_claimed, undefined);
   assert.equal(stepMetadata.decoy_success_artifact, undefined);
   assert.equal(runMetadata.worker_mode, "execute_job_submit_registered");
-  assert.equal(runMetadata.proof_gate.missing[0], "chrome_extension_required");
-  assert.equal(runMetadata.route_readback?.exactBlocker, "chrome_extension_required");
+  assert.equal(runMetadata.proof_gate.missing[0], "in_app_browser_required");
+  assert.equal(runMetadata.route_readback?.exactBlocker, "in_app_browser_required");
   assert.equal(runMetadata.route_decision_fingerprint, runMetadata.route_decision?.fingerprint ?? null);
   assert.equal(runMetadata.registered_codex_status, undefined);
   assert.equal(runMetadata.registered_codex_artifact, undefined);
@@ -2779,7 +3011,7 @@ test("reconciles stale running Job Submit registered Codex step without rerunnin
   assert.equal(runMetadata.decoy_success_artifact, undefined);
   assert.equal(runMetadata.command_display, stepMetadata.command_display);
   assert.equal(eventMetadata.reconciled_from_stale_registered_codex, true);
-  assert.equal(eventMetadata.stop_reason, "chrome_extension_required");
+  assert.equal(eventMetadata.stop_reason, "in_app_browser_required");
     assert.equal(eventMetadata.external_action_executed, false);
   assert.deepEqual(proofs, []);
   assert.equal(events.filter((event) => event.event_type === "worker_started").length, 0);
@@ -4125,23 +4357,23 @@ test("starts NisenPrints contract runs without non-billing approval and records 
   const stepMetadata = JSON.parse(step.metadata_json);
 
   assert.equal(metadata.proof_gate.ok, false);
-  assert.deepEqual(metadata.proof_gate.missing, ["chrome_extension_required"]);
+  assert.deepEqual(metadata.proof_gate.missing, ["in_app_browser_required"]);
   assert.deepEqual(metadata.proof_gate.present, []);
   assert.equal(metadata.adapter_policy?.classification, "legacy_browser_backed");
-  assert.equal(metadata.adapter_policy?.exactBlocker, "chrome_extension_required");
+  assert.equal(metadata.adapter_policy?.exactBlocker, "in_app_browser_required");
   assert.ok((metadata.adapter_policy?.evidence ?? []).length > 0);
   assert.equal(metadata.route_readback?.phase, "route_readback");
-  assert.equal(metadata.route_readback?.exactBlocker, "chrome_extension_required");
+  assert.equal(metadata.route_readback?.exactBlocker, "in_app_browser_required");
   assert.equal(metadata.route_readback_fingerprint, metadata.route_readback?.fingerprint ?? null);
-  assert.equal(metadata.proof_summary, "blocked: chrome_extension_required");
+  assert.equal(metadata.proof_summary, "blocked: in_app_browser_required");
   assert.equal(stepMetadata.proof_gate.ok, false);
-  assert.deepEqual(stepMetadata.proof_gate.missing, ["chrome_extension_required"]);
+  assert.deepEqual(stepMetadata.proof_gate.missing, ["in_app_browser_required"]);
   assert.deepEqual(stepMetadata.proof_gate.present, []);
   assert.equal(stepMetadata.adapter_policy?.classification, "legacy_browser_backed");
   assert.equal(stepMetadata.route_readback?.phase, "route_readback");
-  assert.equal(stepMetadata.route_readback?.exactBlocker, "chrome_extension_required");
+  assert.equal(stepMetadata.route_readback?.exactBlocker, "in_app_browser_required");
   assert.equal(stepMetadata.route_readback_fingerprint, metadata.route_readback?.fingerprint ?? null);
-  assert.equal(stepMetadata.proof_summary, "blocked: chrome_extension_required");
+  assert.equal(stepMetadata.proof_summary, "blocked: in_app_browser_required");
   assert.equal(approvals.length, 0);
   assert.equal(events.filter((event) => event.event_type === "worker_started").length, 0);
   assert.equal(proofs.length, 0);

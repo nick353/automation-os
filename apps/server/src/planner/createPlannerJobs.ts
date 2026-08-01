@@ -1,5 +1,6 @@
 import { insert, makeId, nowIso, querySql, sqlValue } from "../db/client.js";
-import { createPlannerResponse, type CreatePlannerMessage, type CreatePlannerResult } from "./createPlanner.js";
+import { CodexAppServerClient } from "../codex/appServerClient.js";
+import { createCodexAppServerPlannerResponse, createPlannerResponse, type CreatePlannerMessage, type CreatePlannerResult } from "./createPlanner.js";
 
 export type CreatePlannerJobStatus = "queued" | "running" | "completed" | "blocked";
 
@@ -30,6 +31,12 @@ type CreatePlannerJobRow = {
   completed_at?: string | null;
   metadata_json: string;
 };
+
+type CreatePlannerJobProcessOptions = {
+  appServerClient?: CodexAppServerClient;
+};
+
+let sharedAppServerClient: CodexAppServerClient | null = null;
 
 export function enqueueCreatePlannerJob(input: {
   messages: CreatePlannerMessage[];
@@ -62,18 +69,18 @@ export function getCreatePlannerJob(id: string): CreatePlannerJob | undefined {
   return row ? mapCreatePlannerJob(row) : undefined;
 }
 
-export async function processQueuedCreatePlannerJobs(limit = 1): Promise<CreatePlannerJob[]> {
+export async function processQueuedCreatePlannerJobs(limit = 1, options: CreatePlannerJobProcessOptions = {}): Promise<CreatePlannerJob[]> {
   const rows = querySql<CreatePlannerJobRow>(
     `SELECT * FROM create_planner_jobs WHERE status='queued' ORDER BY created_at ASC LIMIT ${Math.max(1, Math.min(10, Math.floor(limit))) || 1}`
   );
   const processed: CreatePlannerJob[] = [];
   for (const row of rows) {
-    processed.push(await processCreatePlannerJob(row));
+    processed.push(await processCreatePlannerJob(row, options));
   }
   return processed;
 }
 
-async function processCreatePlannerJob(row: CreatePlannerJobRow): Promise<CreatePlannerJob> {
+async function processCreatePlannerJob(row: CreatePlannerJobRow, options: CreatePlannerJobProcessOptions = {}): Promise<CreatePlannerJob> {
   const startedAt = nowIso();
   querySql(
     `UPDATE create_planner_jobs
@@ -84,10 +91,34 @@ async function processCreatePlannerJob(row: CreatePlannerJobRow): Promise<Create
 
   const messages = parseJson<CreatePlannerMessage[]>(row.messages_json, []);
   const currentDraft = row.current_draft ?? "";
+  const metadata = parseJson<Record<string, unknown>>(row.metadata_json, {});
+  const transport = metadata.transport === "codex_app_server" ? "codex_app_server" : "codex_exec";
   try {
-    const result = await createPlannerResponse({ messages, currentDraft, providerOverride: "codex" });
+    const resultWithMetadata = transport === "codex_app_server"
+      ? await createCodexAppServerPlannerResponse({
+          messages,
+          currentDraft,
+          threadId: typeof metadata.codexThreadId === "string" ? metadata.codexThreadId : undefined,
+          context: typeof metadata.contextSnapshot === "string" ? metadata.contextSnapshot : undefined,
+          client: options.appServerClient ?? getSharedAppServerClient()
+        })
+      : null;
+    const result = resultWithMetadata?.result ?? await createPlannerResponse({ messages, currentDraft, providerOverride: "codex" });
+    const nextMetadata = resultWithMetadata
+      ? {
+          ...metadata,
+          transport,
+          codexThreadId: resultWithMetadata.threadId,
+          codexTurnId: resultWithMetadata.turnId,
+          streamText: resultWithMetadata.streamText.slice(-24_000),
+          events: resultWithMetadata.events.slice(-160)
+        }
+      : { ...metadata, transport };
+    querySql(
+      `UPDATE create_planner_jobs SET metadata_json=${sqlValue(nextMetadata)}, updated_at=${sqlValue(nowIso())} WHERE id=${sqlValue(row.id)} RETURNING id`
+    );
     const completedAt = nowIso();
-    const status: CreatePlannerJobStatus = result.source === "local_codex" ? "completed" : "blocked";
+    const status: CreatePlannerJobStatus = result.source === "local_codex" || result.source === "codex_app_server" ? "completed" : "blocked";
     const blocker = status === "completed" ? "" : result.exactBlocker || "codex_planner_failed";
     querySql(
       `UPDATE create_planner_jobs
@@ -114,6 +145,11 @@ async function processCreatePlannerJob(row: CreatePlannerJobRow): Promise<Create
   }
 
   return getCreatePlannerJob(row.id) as CreatePlannerJob;
+}
+
+function getSharedAppServerClient(): CodexAppServerClient {
+  if (!sharedAppServerClient) sharedAppServerClient = new CodexAppServerClient();
+  return sharedAppServerClient;
 }
 
 function mapCreatePlannerJob(row: CreatePlannerJobRow): CreatePlannerJob {

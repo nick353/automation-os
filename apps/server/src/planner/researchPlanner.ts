@@ -1,4 +1,5 @@
 import { execSql, insert, makeId, nowIso, querySql, sqlValue, type SqlValue } from "../db/client.js";
+import { scopedCompanyPredicate } from "../companies/scopedResources.js";
 
 export type ResearchSourceKey = "web" | "x" | "reddit" | "youtube" | "mcp" | "api";
 
@@ -13,6 +14,7 @@ export type ResearchSourcePlan = {
 
 export type ResearchPlanSnapshot = {
   id: string;
+  companyId: string | null;
   title: string;
   status: string;
   command: string;
@@ -29,6 +31,7 @@ export type ResearchPlanSnapshot = {
 };
 
 export type CreateResearchPlanInput = {
+  companyId?: string | null;
   command?: string;
   title?: string;
   sources?: Partial<Record<ResearchSourceKey, boolean>>;
@@ -37,6 +40,7 @@ export type CreateResearchPlanInput = {
 
 type ResearchPlanRow = {
   id: string;
+  company_id: string | null;
   title: string;
   status: string;
   command: string;
@@ -117,6 +121,7 @@ export function createResearchPlan(input: CreateResearchPlanInput): ResearchPlan
   const command = normalizeCommand(input.command);
   const plan = buildResearchPlanSnapshot({
     id: makeId("research_plan"),
+    companyId: input.companyId ?? null,
     title: normalizeTitle(input.title, command),
     status: "planned",
     command,
@@ -138,8 +143,10 @@ export function listResearchPlans(limit = 8): ResearchPlanSnapshot[] {
   );
 }
 
-export function getResearchPlan(planId: string): ResearchPlanSnapshot | undefined {
-  const row = querySql<ResearchPlanRow>(`SELECT * FROM research_plans WHERE id=${sqlValue(planId)} LIMIT 1`)[0];
+export function getResearchPlan(planId: string, companyIds?: readonly string[]): ResearchPlanSnapshot | undefined {
+  const row = querySql<ResearchPlanRow>(companyIds
+    ? `SELECT * FROM research_plans WHERE id=${sqlValue(planId)} AND ${scopedCompanyPredicate("company_id", companyIds)} LIMIT 1`
+    : `SELECT * FROM research_plans WHERE id=${sqlValue(planId)} LIMIT 1`)[0];
   return row ? researchPlanFromRow(row) : undefined;
 }
 
@@ -163,9 +170,9 @@ export function markResearchPlanDemoed(planId: string, demoCheckId: string, demo
          demo_check_id=${sqlValue(demoCheckId)},
          updated_at=${sqlValue(updatedAt)},
          metadata_json=${sqlValue(metadata)}
-     WHERE id=${sqlValue(planId)};`
+     WHERE id=${sqlValue(planId)} AND ${researchPlanCompanyMatch(plan)};`
   );
-  return getResearchPlan(planId);
+  return getResearchPlan(planId, plan.companyId ? [plan.companyId] : undefined);
 }
 
 export function markResearchPlanStarted(planId: string, runId: string): ResearchPlanSnapshot | undefined {
@@ -183,9 +190,9 @@ export function markResearchPlanStarted(planId: string, runId: string): Research
          run_id=${sqlValue(runId)},
          updated_at=${sqlValue(updatedAt)},
          metadata_json=${sqlValue(metadata)}
-     WHERE id=${sqlValue(planId)};`
+     WHERE id=${sqlValue(planId)} AND ${researchPlanCompanyMatch(plan)};`
   );
-  return getResearchPlan(planId);
+  return getResearchPlan(planId, plan.companyId ? [plan.companyId] : undefined);
 }
 
 export function markResearchPlanSourceCapture(
@@ -221,13 +228,14 @@ export function markResearchPlanSourceCapture(
              }
            }
          })}
-     WHERE id=${sqlValue(planId)};`
+     WHERE id=${sqlValue(planId)} AND ${researchPlanCompanyMatch(plan)};`
   );
-  return getResearchPlan(planId);
+  return getResearchPlan(planId, plan.companyId ? [plan.companyId] : undefined);
 }
 
 export function buildResearchPlanSnapshot(input: {
   id: string;
+  companyId?: string | null;
   title: string;
   status: string;
   command: string;
@@ -252,6 +260,7 @@ export function buildResearchPlanSnapshot(input: {
   ];
   return {
     id: input.id,
+    companyId: input.companyId ?? null,
     title: input.title,
     status: input.status,
     command: input.command,
@@ -292,6 +301,7 @@ export function buildResearchPlanSnapshot(input: {
 export function researchPlanFromRow(row: ResearchPlanRow): ResearchPlanSnapshot {
   return {
     id: row.id,
+    companyId: row.company_id,
     title: row.title,
     status: row.status,
     command: row.command,
@@ -345,6 +355,7 @@ function normalizeResearchPlanApprovalBoundary(boundary: string[]): string[] {
 function toResearchPlanInsertRow(plan: ResearchPlanSnapshot): Record<string, SqlValue> {
   return {
     id: plan.id,
+    company_id: plan.companyId,
     title: plan.title,
     status: plan.status,
     command: plan.command,
@@ -359,6 +370,10 @@ function toResearchPlanInsertRow(plan: ResearchPlanSnapshot): Record<string, Sql
     created_at: plan.createdAt,
     updated_at: plan.updatedAt
   };
+}
+
+function researchPlanCompanyMatch(plan: ResearchPlanSnapshot): string {
+  return plan.companyId ? `company_id=${sqlValue(plan.companyId)}` : "company_id IS NULL";
 }
 
 function normalizeCommand(value: unknown): string {

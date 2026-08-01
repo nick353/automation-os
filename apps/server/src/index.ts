@@ -1,16 +1,23 @@
 import express, { type ErrorRequestHandler, type RequestHandler } from "express";
 import pg from "pg";
+import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { hostname } from "node:os";
 import { extname, isAbsolute, join, relative, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
-import { dbBackend, execSql, getDatabaseRuntimeInfo, initDb, insert, makeId, nowIso, querySql, querySqlBatch, sqlValue, upsert } from "./db/client.js";
+import { dbBackend, execSql, initDb, insert, makeId, nowIso, querySql, querySqlBatch, runSqlTransaction, sqlValue, upsert } from "./db/client.js";
 import { importCodexAssets } from "./ingest/codexAssets.js";
 import { seedDailyAiDemo } from "./seedDailyAiDemo.js";
 import { seedResearchKnowledge } from "./planner/advisor.js";
 import { sanitizeDashboardRows } from "./dashboardSanitizer.js";
 import { getBrowserHealth } from "./browser/health.js";
+import { buildBrowserUseRuntimeSnapshot } from "./browser/runtimeSnapshot.js";
+import { applyProjectPresentationProfileOverride, buildProjectPresentationProfile, parseProjectPresentationProfileOverride, type ProjectPresentationProfile } from "./projects/presentationProfile.js";
+import { readCanonicalIabOwnerDiagnostics } from "./browser/iabCanonicalLoader.js";
+import { readReferenceIabWorkflowAdaptersV1 } from "./serviceReadiness/workflowAdapters.js";
+import { buildBlockedCompanyReleaseReadinessV1 } from "./serviceReadiness/companyReleaseReadiness.js";
+import { buildBlockedCompanyReleaseEvidenceV1 } from "./serviceReadiness/releaseEvidence.js";
 import {
   runBrowserUseLocalCheck,
   runBrowserUseLocalCheckAsync,
@@ -51,12 +58,33 @@ import {
   getResearchPlan,
   markResearchPlanDemoed,
   markResearchPlanSourceCapture,
-  markResearchPlanStarted,
   researchPlanFromRow,
   type ResearchPlanSnapshot,
   type ResearchSourceKey
 } from "./planner/researchPlanner.js";
-import { getRunWorkerProgressState, startCommandRun, type RunWorkerProgressState } from "./runs/workerEngine.js";
+import {
+  commitResearchPlanCaptureAtomic,
+  commitResearchPlanStartedAtomic,
+  rollbackPreparedResearchPlanRunAtomic
+} from "./planner/researchPlanLineage.js";
+import { getRunWorkerProgressState, resolveWorkerAdapterPolicy, startCommandRun, type RunWorkerProgressState } from "./runs/workerEngine.js";
+import {
+  cancelDurableJob,
+  enqueueAutomationDryRun,
+  getDurableJob,
+  listDurableJobAttempts,
+  listDurableJobs,
+  listDurableScheduleOccurrences,
+  readRunArtifact,
+  retryDurableJob,
+  DurableQueueError
+} from "./runs/durableQueue.js";
+import {
+  BoundApprovalError,
+  createBoundApproval,
+  decideBoundApproval,
+  listBoundApprovals
+} from "./approvals/repository.js";
 import { registeredBrowserLaneForWorkflow, visibleBrowserLaneForRecordReplay } from "./runs/laneManager.js";
 import { selectActionQueueRuns, selectResumeCandidateRun } from "./runs/selectors.js";
 import { isSecretStorageOnlyText, listStoredSecrets, saveSecretsFromMessage } from "./secrets/secretStore.js";
@@ -77,10 +105,12 @@ import { runSecondBrainProcessor } from "./obsidian/secondBrainProcessor.js";
 import { customObsidianExportError, customObsidianExportSummary, guardObsidianVaultPath } from "./obsidian/vaultGuard.js";
 import {
   fixedRegisteredWorkflows,
+  getRegisteredWorkflowForCompanies,
   getRegisteredWorkflowStartCommand,
   getRegisteredWorkflowEffectiveSchedule,
   initRegisteredWorkflows,
   isRegisteredWorkflowSchedulePaused,
+  listRegisteredWorkflowsForCompanies,
   refreshRegisteredWorkflows,
   registerResearchPlanWorkflow,
   setRegisteredWorkflowScheduleOverride,
@@ -89,6 +119,49 @@ import {
   type RegisteredWorkflowRow
 } from "./registeredWorkflows.js";
 import { getResumeContract } from "./resumeContract.js";
+import {
+  createCompanyForActor,
+  currentActorUserId,
+  listActorCompanies,
+  recordCompanyAudit,
+  requireCompanyAccess,
+  requireExistingCompanyAccess,
+  requireExistingServiceIdentity,
+  updateCompanyForActor,
+  type CompanyRole
+} from "./companies/repository.js";
+import { findScopedApproval, findScopedProof, findScopedRun, scopedCompanyPredicate } from "./companies/scopedResources.js";
+import {
+  AutomationContractError,
+  parseAutomationCreate,
+  parseAutomationPatch,
+  parseAutomationSchedule,
+  parseCompanyConnectionAccountRef,
+  parseCompanyMemory,
+  requireIdempotencyKey
+} from "./automations/contracts.js";
+import {
+  AutomationRepositoryError,
+  archiveAutomationRecord,
+  createAutomationRecord,
+  getAutomationRecord,
+  listAutomationRecords,
+  listAutomationSchedules,
+  listAutomationVersions,
+  listCompanyConnectionRefs,
+  listCompanyMemory,
+  requestCompanyConnectionReconnect,
+  revokeCompanyConnectionRef,
+  saveAutomationSchedule,
+  saveCompanyConnectionRef,
+  saveCompanyMemory,
+  setAutomationSchedulePaused,
+  updateAutomationRecord,
+  type AutomationRecord
+} from "./automations/repository.js";
+import { IdempotencyError } from "./automations/idempotency.js";
+import { buildCompanyAnalytics, CompanyAnalyticsError } from "./analytics/companyAnalytics.js";
+import { computeNextAutomationOccurrence } from "./runs/automationScheduler.js";
 
 export const app = express();
 app.set("case sensitive routing", true);
@@ -116,84 +189,743 @@ app.use((req, res, next) => {
 });
 
 app.use(productionWriteGuard);
+app.use(ownerDiagnosticsGuard);
 
 app.get("/api/health", (_req, res) => {
   res.json({
     ok: true,
     service: "automation-os",
-    time: nowIso(),
-    database: getDatabaseRuntimeInfo(),
-    productionGuard: getProductionWriteGuardStatus(),
-    accessGuard: getProductionApiAccessGuardStatus(),
-    deployment: getDeploymentReadback()
+    time: nowIso()
   });
 });
 
-app.get("/api/mvp/feedback", (_req, res) => {
+app.get("/api/companies", (_req, res) => {
   initDb();
-  const rows = querySql<{
-    id: string;
-    feedback_id: string;
-    status: string;
-    route: string;
-    page_title: string;
-    comment: string;
-    artifact_uri: string;
-    has_screenshot: number;
-    viewport_json: string;
-    workflow_context_json: string;
-    category: string;
-    severity: string;
-    fix_target: string;
-    captured_at: string;
-    created_at: string;
-    payload_json: string;
-  }>(
-    "SELECT * FROM mvp_feedback ORDER BY created_at DESC LIMIT 500"
-  );
-  const feedbacks = rows.map((row) => ({
-    id: row.id,
-    feedback_id: row.feedback_id,
-    status: row.status,
-    route: row.route,
-    page_title: row.page_title,
-    comment: row.comment,
-    artifact_uri: row.artifact_uri,
-    has_screenshot: row.has_screenshot === 1,
-    viewport: safeJsonParse<Record<string, unknown>>(row.viewport_json, {}),
-    workflow_context: safeJsonParse<Record<string, unknown>>(row.workflow_context_json, {}),
-    category: row.category,
-    severity: row.severity,
-    fix_target: row.fix_target,
-    captured_at: row.captured_at,
-    created_at: row.created_at,
-    payload: safeJsonParse<Record<string, unknown>>(row.payload_json, {})
-  }));
-  res.json({
-    ok: true,
-    feedbacks,
-    count: feedbacks.length,
-    open_count: feedbacks.filter((item) => item.status === "open").length,
-    triaged: feedbacks.filter((item) => item.status === "triaged").length
-  });
+  const actor_user_id = currentActorUserId();
+  const companies = listActorCompanies(actor_user_id);
+  res.json({ ok: true, actor_user_id, companies, count: companies.length });
 });
 
-app.get("/api/mvp/state", (_req, res) => {
+app.post("/api/companies", (req, res) => {
+  try {
+    initDb();
+    const company = createCompanyForActor(req.body ?? {}, currentActorUserId(), req.header("idempotency-key")?.trim());
+    res.status(201).json({ ok: true, company, receipt: { action: "company.created", company_id: company.id } });
+  } catch (error) {
+    sendCompanyScopeError(res, error, "company_create_failed");
+  }
+});
+
+app.patch("/api/companies/:companyId", (req, res) => {
+  try {
+    initDb();
+    const company = updateCompanyForActor(String(req.params.companyId ?? "").trim(), req.body ?? {});
+    res.json({ ok: true, company, receipt: { action: "company.updated", company_id: company.id } });
+  } catch (error) {
+    sendCompanyScopeError(res, error, "company_update_failed");
+  }
+});
+
+app.get("/api/v1/companies/:companyId/automations", (req, res) => {
+  try {
+    initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    requireCompanyAccess(companyId);
+    const includeArchived = String(req.query.include_archived ?? "") === "true";
+    const automations = listAutomationRecords(companyId, includeArchived).map(automationApiView);
+    res.json({ ok: true, automations, count: automations.length, company_scope: { enforced: true, company_id: companyId } });
+  } catch (error) {
+    sendAutomationApiError(res, error, "automation_list_failed");
+  }
+});
+
+app.get("/api/v1/companies/:companyId/analytics/performance", (req, res) => {
+  try {
+    initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    requireCompanyAccess(companyId);
+    const now = new Date();
+    const from = typeof req.query.from === "string" && req.query.from.trim()
+      ? req.query.from
+      : new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    const to = typeof req.query.to === "string" && req.query.to.trim() ? req.query.to : now.toISOString();
+    const automationId = typeof req.query.automation_id === "string" && req.query.automation_id.trim()
+      ? req.query.automation_id.trim()
+      : null;
+    if (automationId && !getAutomationRecord(companyId, automationId, true)) {
+      res.status(404).json({ ok: false, error: "analytics_automation_not_found", exactBlocker: "analytics_automation_not_found" });
+      return;
+    }
+    const analytics = buildCompanyAnalytics({ companyId, from, to, automationId });
+    res.json({ ok: true, ...analytics, company_scope: { enforced: true, company_id: companyId }, external_action_executed: false });
+  } catch (error) {
+    const code = error instanceof CompanyAnalyticsError
+      ? error.code
+      : error instanceof Error && (error.message === "company_scope_forbidden" || error.message === "company_not_found")
+        ? error.message
+        : "company_analytics_read_failed";
+    if (code === "company_scope_forbidden" || code === "company_not_found") {
+      res.status(404).json({ ok: false, error: "company_analytics_not_found", exactBlocker: "company_analytics_not_found" });
+      return;
+    }
+    res.status(error instanceof CompanyAnalyticsError ? 400 : 500).json({ ok: false, error: code, exactBlocker: code });
+  }
+});
+
+app.post("/api/v1/companies/:companyId/automations", (req, res) => {
+  try {
+    initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    requireCompanyAccess(companyId, ["owner", "admin", "operator"]);
+    const idempotencyKey = requireIdempotencyKey(req.header("idempotency-key"));
+    const definition = parseAutomationCreate(req.body);
+    const automation = createAutomationRecord({
+      companyId,
+      actorUserId: currentActorUserId(),
+      definition,
+      idempotencyKey,
+      idempotencyRequest: req.body
+    });
+    res.status(201).json({
+      ok: true,
+      automation: automationApiView(automation),
+      receipt: automationReceipt("automation.created", automation),
+      external_action_executed: false
+    });
+  } catch (error) {
+    sendAutomationApiError(res, error, "automation_create_failed");
+  }
+});
+
+app.get("/api/v1/companies/:companyId/automations/:automationId", (req, res) => {
+  try {
+    initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    requireCompanyAccess(companyId);
+    const automation = getAutomationRecord(companyId, String(req.params.automationId ?? "").trim(), true);
+    if (!automation) throw new AutomationRepositoryError("automation_not_found");
+    res.json({
+      ok: true,
+      automation: automationApiView(automation),
+      schedule: listAutomationSchedules(companyId, automation.id)[0] ?? null,
+      deep_link: `#/projects/${encodeURIComponent(companyId)}/automations/${encodeURIComponent(automation.id)}/edit`,
+      company_scope: { enforced: true, company_id: companyId }
+    });
+  } catch (error) {
+    sendAutomationApiError(res, error, "automation_read_failed");
+  }
+});
+
+app.patch("/api/v1/companies/:companyId/automations/:automationId", (req, res) => {
+  try {
+    initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    requireCompanyAccess(companyId, ["owner", "admin", "operator"]);
+    const patch = parseAutomationPatch(req.body, req.header("if-match"));
+    const automation = updateAutomationRecord({
+      companyId,
+      actorUserId: currentActorUserId(),
+      automationId: String(req.params.automationId ?? "").trim(),
+      patch
+    });
+    res.json({ ok: true, automation: automationApiView(automation), receipt: automationReceipt("automation.updated", automation), external_action_executed: false });
+  } catch (error) {
+    sendAutomationApiError(res, error, "automation_patch_failed");
+  }
+});
+
+app.get("/api/v1/companies/:companyId/automations/:automationId/versions", (req, res) => {
+  try {
+    initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    requireCompanyAccess(companyId);
+    const versions = listAutomationVersions(companyId, String(req.params.automationId ?? "").trim());
+    res.json({ ok: true, versions, count: versions.length, company_scope: { enforced: true, company_id: companyId } });
+  } catch (error) {
+    sendAutomationApiError(res, error, "automation_versions_read_failed");
+  }
+});
+
+app.delete("/api/v1/companies/:companyId/automations/:automationId", (req, res) => {
+  try {
+    initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    requireCompanyAccess(companyId, ["owner", "admin"]);
+    const expectedRevision = expectedRevisionFrom(req);
+    const automation = archiveAutomationRecord({
+      companyId,
+      actorUserId: currentActorUserId(),
+      automationId: String(req.params.automationId ?? "").trim(),
+      expectedRevision
+    });
+    res.json({ ok: true, automation: automationApiView(automation), receipt: automationReceipt("automation.archived", automation), external_action_executed: false });
+  } catch (error) {
+    sendAutomationApiError(res, error, "automation_archive_failed");
+  }
+});
+
+app.put("/api/v1/companies/:companyId/automations/:automationId/schedule", (req, res) => {
+  try {
+    initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    requireCompanyAccess(companyId, ["owner", "admin", "operator"]);
+    const parsedSchedule = parseAutomationSchedule(req.body);
+    const nextRunAt = parsedSchedule.enabled && parsedSchedule.kind !== "manual"
+      ? computeNextAutomationOccurrence({
+          kind: parsedSchedule.kind,
+          expression: parsedSchedule.expression,
+          timezone: parsedSchedule.timezone
+        }, nowIso())
+      : null;
+    const savedSchedule = saveAutomationSchedule({
+      companyId,
+      actorUserId: currentActorUserId(),
+      automationId: String(req.params.automationId ?? "").trim(),
+      schedule: parsedSchedule
+    });
+    if (savedSchedule.nextRunAt !== nextRunAt) {
+      execSql(`UPDATE mvp_automation_schedules
+        SET next_run_at=${sqlValue(nextRunAt)}, updated_at=${sqlValue(nowIso())}
+        WHERE id=${sqlValue(savedSchedule.id)} AND company_id=${sqlValue(companyId)}
+          AND automation_id=${sqlValue(savedSchedule.automationId)} AND revision=${savedSchedule.revision}`);
+    }
+    const schedule = listAutomationSchedules(companyId, savedSchedule.automationId).find((item) => item.id === savedSchedule.id) ?? savedSchedule;
+    res.json({ ok: true, schedule, receipt: { action: "automation.schedule_saved", company_id: companyId, automation_id: schedule.automationId, schedule_id: schedule.id, pinned_version_id: schedule.automationVersionId, revision: schedule.revision } });
+  } catch (error) {
+    sendAutomationApiError(res, error, "automation_schedule_save_failed");
+  }
+});
+
+app.get("/api/v1/companies/:companyId/automations/:automationId/schedule", (req, res) => {
+  try {
+    initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    requireCompanyAccess(companyId);
+    const automationId = String(req.params.automationId ?? "").trim();
+    const automation = getAutomationRecord(companyId, automationId, true);
+    if (!automation) throw new AutomationRepositoryError("automation_not_found");
+    res.json({ ok: true, schedule: listAutomationSchedules(companyId, automationId)[0] ?? null, company_scope: { enforced: true, company_id: companyId } });
+  } catch (error) {
+    sendAutomationApiError(res, error, "automation_schedule_read_failed");
+  }
+});
+
+for (const paused of [true, false]) {
+  const action = paused ? "pause" : "resume";
+  app.post(`/api/v1/companies/:companyId/automations/:automationId/${action}`, (req, res) => {
+    try {
+      initDb();
+      const companyId = String(req.params.companyId ?? "").trim();
+      requireCompanyAccess(companyId, ["owner", "admin", "operator"]);
+      const schedule = setAutomationSchedulePaused({
+        companyId,
+        actorUserId: currentActorUserId(),
+        automationId: String(req.params.automationId ?? "").trim(),
+        scheduleId: requiredBodyString(req.body?.schedule_id, "automation_schedule_id_required"),
+        expectedRevision: expectedRevisionFrom(req),
+        paused
+      });
+      res.json({ ok: true, schedule, receipt: { action: `automation.schedule_${paused ? "paused" : "resumed"}`, company_id: companyId, automation_id: schedule.automationId, schedule_id: schedule.id, revision: schedule.revision } });
+    } catch (error) {
+      sendAutomationApiError(res, error, `automation_schedule_${action}_failed`);
+    }
+  });
+}
+
+app.post("/api/v1/companies/:companyId/automations/:automationId/dry-runs", (req, res) => {
+  try {
+    initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    requireCompanyAccess(companyId, ["owner", "admin", "operator"]);
+    const idempotencyHeader = req.header("idempotency-key");
+    if (!idempotencyHeader?.trim()) throw new AutomationContractError("idempotency_key_required");
+    const idempotencyKey = requireIdempotencyKey(idempotencyHeader);
+    const job = enqueueAutomationDryRun({
+      companyId,
+      actorUserId: currentActorUserId(),
+      automationId: String(req.params.automationId ?? "").trim(),
+      idempotencyKey,
+      payload: req.body ?? {}
+    });
+    res.status(202).json({
+      ok: true,
+      dry_run: true,
+      queued: true,
+      job: durableJobApiView(job),
+      run: {
+        id: job.runId,
+        status: "queued",
+        company_id: job.companyId,
+        automation_id: job.automationId,
+        automation_version_id: job.automationVersionId
+      },
+      receipt: durableJobReceipt("automation.dry_run.enqueued", job),
+      external_action_executed: false,
+      company_scope: { enforced: true, company_id: companyId }
+    });
+  } catch (error) {
+    sendAutomationApiError(res, error, "automation_dry_run_failed");
+  }
+});
+
+app.get("/api/v1/companies/:companyId/jobs", (req, res) => {
+  try {
+    initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    requireCompanyAccess(companyId, ["owner", "admin", "operator"]);
+    const rawLimit = req.query.limit;
+    const limit = rawLimit === undefined || rawLimit === ""
+      ? 200
+      : Number(rawLimit);
+    if (!Number.isFinite(limit)) throw new DurableQueueError("durable_job_limit_invalid");
+    const jobs = listDurableJobs(companyId, limit).map(durableJobApiView);
+    res.json({ ok: true, jobs, count: jobs.length, company_scope: { enforced: true, company_id: companyId } });
+  } catch (error) {
+    if (error instanceof Error && error.message === "company_scope_forbidden") {
+      res.status(404).json({ ok: false, error: "company_not_found", exactBlocker: "company_not_found" });
+      return;
+    }
+    sendDurableQueueError(res, error, "durable_job_list_failed");
+  }
+});
+
+app.get("/api/v1/companies/:companyId/jobs/:jobId", (req, res) => {
+  try {
+    initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    requireCompanyAccess(companyId, ["owner", "admin", "operator"]);
+    const job = getDurableJob(companyId, String(req.params.jobId ?? "").trim());
+    if (!job) throw new DurableQueueError("durable_job_not_found");
+    res.json({ ok: true, job: durableJobApiView(job), attempts: listDurableJobAttempts(companyId, job.id).map(durableAttemptApiView), company_scope: { enforced: true, company_id: companyId } });
+  } catch (error) {
+    if (error instanceof Error && error.message === "company_scope_forbidden") {
+      res.status(404).json({ ok: false, error: "durable_job_not_found", exactBlocker: "durable_job_not_found" });
+      return;
+    }
+    sendDurableQueueError(res, error, "durable_job_read_failed");
+  }
+});
+
+app.post("/api/v1/companies/:companyId/jobs/:jobId/retry", (req, res) => {
+  try {
+    initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    requireCompanyAccess(companyId, ["owner", "admin", "operator"]);
+    const idempotencyHeader = req.header("idempotency-key");
+    if (!idempotencyHeader?.trim()) throw new DurableQueueError("idempotency_key_required");
+    const job = retryDurableJob({
+      companyId,
+      actorUserId: currentActorUserId(),
+      jobId: String(req.params.jobId ?? "").trim(),
+      idempotencyKey: idempotencyHeader
+    });
+    res.json({ ok: true, job: durableJobApiView(job), receipt: durableJobReceipt("durable_job.retry_queued", job), company_scope: { enforced: true, company_id: companyId } });
+  } catch (error) {
+    if (error instanceof Error && error.message === "company_scope_forbidden") {
+      res.status(404).json({ ok: false, error: "durable_job_not_found", exactBlocker: "durable_job_not_found" });
+      return;
+    }
+    sendDurableQueueError(res, error, "durable_job_retry_failed");
+  }
+});
+
+app.get("/api/v1/companies/:companyId/artifacts/:artifactId", (req, res) => {
+  try {
+    initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    requireCompanyAccess(companyId);
+    const artifact = readRunArtifact(companyId, String(req.params.artifactId ?? "").trim());
+    if (!artifact) throw new DurableQueueError("artifact_not_found");
+    if (!new Set(["application/json", "text/plain"]).has(artifact.mimeType.toLowerCase())) {
+      throw new DurableQueueError("artifact_mime_not_viewable");
+    }
+    res.setHeader("content-type", artifact.mimeType);
+    res.setHeader("x-content-type-options", "nosniff");
+    res.setHeader("content-security-policy", "sandbox; default-src 'none'");
+    res.setHeader("x-artifact-id", artifact.id);
+    res.setHeader("x-artifact-sha256", artifact.checksumSha256);
+    res.setHeader("cache-control", "private, no-store");
+    res.status(200).send(artifact.contentText);
+  } catch (error) {
+    if (error instanceof Error && error.message === "company_scope_forbidden") {
+      res.status(404).json({ ok: false, error: "artifact_not_found", exactBlocker: "artifact_not_found" });
+      return;
+    }
+    sendDurableQueueError(res, error, "artifact_read_failed");
+  }
+});
+
+app.get("/api/v1/companies/:companyId/approvals", (req, res) => {
+  try {
+    initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    requireCompanyAccess(companyId);
+    res.json({ ok: true, approvals: listBoundApprovals(companyId).map(boundApprovalApiView), company_scope: { enforced: true, company_id: companyId } });
+  } catch (error) {
+    sendBoundApprovalError(res, error, "approval_list_failed");
+  }
+});
+
+app.post("/api/v1/companies/:companyId/approvals", (req, res) => {
+  try {
+    initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    requireCompanyAccess(companyId, ["owner", "admin", "operator"]);
+    const approval = createBoundApproval({
+      companyId,
+      requestedByUserId: currentActorUserId(),
+      jobId: requiredBodyString(req.body?.job_id, "durable_job_id_required"),
+      stepId: typeof req.body?.step_id === "string" ? req.body.step_id : null,
+      title: requiredBodyString(req.body?.title, "approval_title_required"),
+      actionKind: requiredBodyString(req.body?.action_kind, "approval_action_kind_required"),
+      targetAccountRefId: typeof req.body?.target_account_ref_id === "string" ? req.body.target_account_ref_id : null,
+      payloadHash: requiredBodyString(req.body?.payload_hash, "approval_payload_hash_required"),
+      policyVersion: requiredBodyString(req.body?.policy_version, "approval_policy_version_required"),
+      expiresAt: requiredBodyString(req.body?.expires_at, "approval_expiry_required"),
+      priority: typeof req.body?.priority === "string" ? req.body.priority : "normal"
+    });
+    res.status(201).json({ ok: true, approval: boundApprovalApiView(approval), company_scope: { enforced: true, company_id: companyId } });
+  } catch (error) {
+    sendBoundApprovalError(res, error, "approval_create_failed");
+  }
+});
+
+app.patch("/api/v1/companies/:companyId/approvals/:approvalId", (req, res) => {
+  try {
+    initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    requireCompanyAccess(companyId, ["owner", "admin", "approver"]);
+    const decision = req.body?.decision;
+    if (decision !== "approved" && decision !== "rejected") throw new BoundApprovalError("approval_decision_invalid");
+    const expectedRevision = Number(req.header("if-match") ?? req.body?.expected_revision);
+    if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) throw new BoundApprovalError("approval_expected_revision_required");
+    const approval = decideBoundApproval({ companyId, approvalId: String(req.params.approvalId ?? "").trim(), actorUserId: currentActorUserId(), decision, expectedRevision, note: typeof req.body?.note === "string" ? req.body.note : null });
+    res.json({ ok: true, approval: boundApprovalApiView(approval), company_scope: { enforced: true, company_id: companyId } });
+  } catch (error) {
+    sendBoundApprovalError(res, error, "approval_decision_failed");
+  }
+});
+
+app.post("/api/v1/companies/:companyId/jobs/:jobId/cancel", (req, res) => {
+  try {
+    initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    requireCompanyAccess(companyId, ["owner", "admin", "operator"]);
+    const job = cancelDurableJob({
+      companyId,
+      actorUserId: currentActorUserId(),
+      jobId: String(req.params.jobId ?? "").trim()
+    });
+    res.json({
+      ok: true,
+      job: durableJobApiView(job),
+      receipt: durableJobReceipt("durable_job.cancelled", job),
+      company_scope: { enforced: true, company_id: companyId }
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message === "company_scope_forbidden") {
+      res.status(404).json({ ok: false, error: "durable_job_not_found", exactBlocker: "durable_job_not_found" });
+      return;
+    }
+    sendDurableQueueError(res, error, "durable_job_cancel_failed");
+  }
+});
+
+app.get("/api/v1/companies/:companyId/memory", (req, res) => {
+  try {
+    initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    requireCompanyAccess(companyId);
+    const entries = listCompanyMemory(companyId);
+    res.json({ ok: true, entries, count: entries.length, company_scope: { enforced: true, company_id: companyId } });
+  } catch (error) {
+    sendAutomationApiError(res, error, "company_memory_read_failed");
+  }
+});
+
+app.get("/api/v1/companies/:companyId/presentation-profile", (req, res) => {
+  try {
+    initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    const company = requireCompanyAccess(companyId);
+    const profile = buildPersistedProjectPresentationProfile(company, readMvpAutomations([companyId]));
+    const memory = listCompanyMemory(companyId).find((entry) => entry.key === "project_profile");
+    res.json({
+      ok: true,
+      profile,
+      revision: memory?.revision ?? 0,
+      source: profile.source,
+      company_scope: { enforced: true, company_id: companyId }
+    });
+  } catch (error) {
+    sendAutomationApiError(res, error, "project_profile_read_failed");
+  }
+});
+
+app.put("/api/v1/companies/:companyId/presentation-profile", (req, res) => {
+  try {
+    initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    const company = requireCompanyAccess(companyId, ["owner", "admin", "operator"]);
+    const body = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body as Record<string, unknown> : {};
+    const override = parseProjectPresentationProfileOverride(body.profile ?? body.presentation_profile ?? {});
+    const existing = listCompanyMemory(companyId).find((entry) => entry.key === "project_profile");
+    const expectedRevision = body.expected_revision === undefined || body.expected_revision === null
+      ? null
+      : Number(body.expected_revision);
+    if (expectedRevision !== null && (!Number.isInteger(expectedRevision) || expectedRevision < 1)) throw new Error("project_profile_expected_revision_invalid");
+    let mergedOverride = override;
+    if (existing) {
+      let previousOverride: ReturnType<typeof parseProjectPresentationProfileOverride>;
+      try {
+        previousOverride = parseProjectPresentationProfileOverride(JSON.parse(existing.body));
+      } catch (error) {
+        const exactBlocker = error instanceof Error ? error.message : "project_profile_existing_invalid";
+        throw new Error(`project_profile_existing_invalid:${exactBlocker}`);
+      }
+      mergedOverride = { ...previousOverride, ...override };
+    }
+    const memory = saveCompanyMemory({
+      companyId,
+      actorUserId: currentActorUserId(),
+      memory: {
+        key: "project_profile",
+        kind: "custom",
+        title: "Project presentation profile",
+        body: JSON.stringify(mergedOverride),
+        expectedRevision
+      }
+    });
+    const profile = buildPersistedProjectPresentationProfile(company, readMvpAutomations([companyId]));
+    res.json({
+      ok: true,
+      profile,
+      revision: memory.revision,
+      receipt: { action: existing ? "project_profile.updated" : "project_profile.created", company_id: companyId, revision: memory.revision },
+      company_scope: { enforced: true, company_id: companyId },
+      external_action_executed: false
+    });
+  } catch (error) {
+    sendAutomationApiError(res, error, "project_profile_save_failed");
+  }
+});
+
+app.put("/api/v1/companies/:companyId/memory/:memoryKey", (req, res) => {
+  try {
+    initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    requireCompanyAccess(companyId, ["owner", "admin", "operator"]);
+    const memoryKey = String(req.params.memoryKey ?? "").trim();
+    const exists = listCompanyMemory(companyId).some((entry) => entry.key === memoryKey);
+    const memory = saveCompanyMemory({
+      companyId,
+      actorUserId: currentActorUserId(),
+      memory: parseCompanyMemory({ ...req.body, key: memoryKey }, exists)
+    });
+    res.json({ ok: true, memory, receipt: { action: exists ? "company_memory.updated" : "company_memory.created", company_id: companyId, memory_id: memory.id, revision: memory.revision } });
+  } catch (error) {
+    sendAutomationApiError(res, error, "company_memory_save_failed");
+  }
+});
+
+app.get("/api/v1/companies/:companyId/connection-account-refs", (req, res) => {
+  try {
+    initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    requireCompanyAccess(companyId, ["owner", "admin"]);
+    const refs = listCompanyConnectionRefs(companyId);
+    res.json({ ok: true, refs, count: refs.length, secret_material_included: false, company_scope: { enforced: true, company_id: companyId } });
+  } catch (error) {
+    sendAutomationApiError(res, error, "company_connection_refs_read_failed");
+  }
+});
+
+app.put("/api/v1/companies/:companyId/connection-account-refs/:platform/:accountRef", (req, res) => {
+  try {
+    initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    requireCompanyAccess(companyId, ["owner", "admin"]);
+    const platform = String(req.params.platform ?? "").trim();
+    const accountRef = String(req.params.accountRef ?? "").trim();
+    const exists = listCompanyConnectionRefs(companyId).some((item) => item.platform === platform && item.accountRef === accountRef);
+    const connection = saveCompanyConnectionRef({
+      companyId,
+      actorUserId: currentActorUserId(),
+      connection: parseCompanyConnectionAccountRef({ ...req.body, platform, account_ref: accountRef }, exists)
+    });
+    res.json({ ok: true, connection, receipt: { action: exists ? "company_connection.updated" : "company_connection.created", company_id: companyId, connection_id: connection.id, revision: connection.revision }, secret_material_included: false });
+  } catch (error) {
+    sendAutomationApiError(res, error, "company_connection_ref_save_failed");
+  }
+});
+
+app.post("/api/v1/companies/:companyId/connection-account-refs/:connectionId/reconnect", (req, res) => {
+  try {
+    initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    requireCompanyAccess(companyId, ["owner", "admin"]);
+    const connection = requestCompanyConnectionReconnect({
+      companyId,
+      actorUserId: currentActorUserId(),
+      connectionId: String(req.params.connectionId ?? "").trim(),
+      expectedRevision: connectionExpectedRevisionFrom(req)
+    });
+    res.json({
+      ok: true,
+      connection,
+      receipt: { action: "company_connection.reconnect_requested", company_id: companyId, connection_id: connection.id, revision: connection.revision },
+      human_gate: { required: true, reason: "oauth_reauthorization_required" },
+      external_oauth_action_executed: false,
+      secret_material_included: false
+    });
+  } catch (error) {
+    sendAutomationApiError(res, error, "company_connection_reconnect_failed");
+  }
+});
+
+app.post("/api/v1/companies/:companyId/connection-account-refs/:connectionId/revoke", (req, res) => {
+  try {
+    initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    requireCompanyAccess(companyId, ["owner", "admin"]);
+    const connection = revokeCompanyConnectionRef({
+      companyId,
+      actorUserId: currentActorUserId(),
+      connectionId: String(req.params.connectionId ?? "").trim(),
+      expectedRevision: connectionExpectedRevisionFrom(req)
+    });
+    res.json({
+      ok: true,
+      connection,
+      receipt: { action: "company_connection.revoked", company_id: companyId, connection_id: connection.id, revision: connection.revision },
+      revocation_scope: "local_connection_reference",
+      external_provider_revocation_executed: false,
+      secret_material_included: false
+    });
+  } catch (error) {
+    sendAutomationApiError(res, error, "company_connection_revoke_failed");
+  }
+});
+
+app.get("/api/v1/admin/diagnostics", (_req, res) => {
+  try {
+    initDb();
+    const ownerCompanies = listActorCompanies().filter((company) => company.role === "owner");
+    if (ownerCompanies.length === 0) throw new Error("owner_admin_required");
+    const { codexCapabilities, browserHealth } = getDashboardExpensiveSnapshot();
+    const systemChecks = sanitizeDashboardRows(querySql<Record<string, unknown>>("SELECT * FROM system_checks ORDER BY created_at DESC LIMIT 50"));
+    res.json({
+      ok: true,
+      actor_user_id: currentActorUserId(),
+      owner_company_ids: ownerCompanies.map((company) => company.id),
+      pc: { local_worker: buildLocalWorkerStatus(systemChecks), scheduler: getSchedulerStatus(), system_checks: systemChecks },
+      browser: browserHealth,
+      iab: readCanonicalIabOwnerDiagnostics({ enabled: true }),
+      workflow_adapters: readReferenceIabWorkflowAdaptersV1(),
+      company_release_readiness: buildBlockedCompanyReleaseReadinessV1(),
+      company_release_evidence: buildBlockedCompanyReleaseEvidenceV1(),
+      codex: {
+        summary: codexCapabilities.summary,
+        browser: codexCapabilities.capabilities.browser,
+        chrome: codexCapabilities.capabilities.chrome,
+        app_server: codexCapabilities.capabilities.appServer,
+        mcp: codexCapabilities.capabilities.mcp,
+        notes: codexCapabilities.notes
+      },
+      obsidian: getObsidianExportStatus(),
+      deployment: getDashboardDeploymentReadback(),
+      guards: { write: getProductionWriteGuardStatus(), access: getProductionApiAccessGuardStatus() },
+      external_action_executed: false
+    });
+  } catch (error) {
+    const code = error instanceof Error ? error.message : "owner_admin_read_failed";
+    res.status(code === "owner_admin_required" ? 403 : 500).json({ ok: false, error: code, exactBlocker: code });
+  }
+});
+
+app.get("/api/v1/companies/:companyId/feedback-artifacts/:artifactId", (req, res) => {
+  try {
+    initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    requireCompanyAccess(companyId, ["owner"]);
+    const artifact = readFeedbackArtifact(companyId, String(req.params.artifactId ?? "").trim());
+    if (!artifact) {
+      res.status(404).json({ ok: false, error: "feedback_artifact_not_found", exactBlocker: "feedback_artifact_not_found" });
+      return;
+    }
+    res.setHeader("content-type", artifact.mimeType);
+    res.setHeader("content-length", String(artifact.content.length));
+    res.setHeader("x-content-type-options", "nosniff");
+    res.setHeader("content-security-policy", "sandbox; default-src 'none'");
+    res.setHeader("x-artifact-id", artifact.id);
+    res.setHeader("x-artifact-sha256", artifact.checksumSha256);
+    res.setHeader("cache-control", "private, no-store");
+    res.status(200).send(artifact.content);
+  } catch (error) {
+    if (error instanceof Error && error.message === "company_scope_forbidden") {
+      res.status(404).json({ ok: false, error: "feedback_artifact_not_found", exactBlocker: "feedback_artifact_not_found" });
+      return;
+    }
+    const code = error instanceof Error ? error.message : "feedback_artifact_read_failed";
+    res.status(code.includes("invalid") ? 400 : code.includes("integrity") ? 409 : 500).json({ ok: false, error: code, exactBlocker: code });
+  }
+});
+
+app.get("/api/mvp/feedback", (req, res) => {
   initDb();
-  res.json(getMvpStateReadback());
+  try {
+    const scope = resolveCompanyScope(req, false);
+    const feedbacks = readMvpFeedbacks(scope.companyIds);
+    res.json({
+      ok: true,
+      feedbacks,
+      count: feedbacks.length,
+      open_count: feedbacks.filter((item) => item.status === "open").length,
+      triaged: feedbacks.filter((item) => item.status === "triaged").length,
+      company_scope: { enforced: true, company_ids: scope.companyIds }
+    });
+  } catch (error) {
+    sendCompanyScopeError(res, error, "feedback_read_failed");
+  }
+});
+
+app.get("/api/mvp/state", (req, res) => {
+  initDb();
+  try {
+    const scope = resolveCompanyScope(req, false);
+    res.json(getMvpStateReadback(scope.companyIds));
+  } catch (error) {
+    sendCompanyScopeError(res, error, "company_state_read_failed");
+  }
 });
 
 app.post("/api/mvp/worker/preview", (req, res) => {
   initDb();
   const projectId = typeof req.body?.project_id === "string" && req.body.project_id.trim() ? req.body.project_id.trim() : "all";
-  res.json(buildMvpWorkerPreview(projectId));
+  try {
+    const available = listActorCompanies();
+    if (projectId !== "all") requireCompanyAccess(projectId, ["owner", "admin", "operator"]);
+    const companyIds = projectId === "all" ? available.map((company) => company.id) : [projectId];
+    res.json(buildMvpWorkerPreview(projectId, getMvpStateReadback(companyIds)));
+  } catch (error) {
+    sendCompanyScopeError(res, error, "worker_preview_scope_failed");
+  }
 });
 
 app.post("/api/mvp/worker/once", (req, res) => {
   initDb();
   const projectId = typeof req.body?.project_id === "string" && req.body.project_id.trim() ? req.body.project_id.trim() : "all";
-  const state = getMvpStateReadback();
-  const worker = state.worker ?? buildMvpWorkerState(state);
+  let companyIds: string[];
+  try {
+    const available = listActorCompanies();
+    if (projectId !== "all") requireCompanyAccess(projectId, ["owner", "admin", "operator"]);
+    companyIds = projectId === "all" ? available.map((company) => company.id) : [projectId];
+  } catch (error) {
+    sendCompanyScopeError(res, error, "worker_once_scope_failed");
+    return;
+  }
+  const state = getMvpStateReadback(companyIds);
+  const worker = state.worker;
   const preview = buildMvpWorkerPreview(projectId, state);
   const exactBlocker = worker.exact_blocker ?? preview.exact_blocker ?? "mac_worker_state_missing";
   res.json({
@@ -210,9 +942,16 @@ app.post("/api/mvp/worker/once", (req, res) => {
   });
 });
 
-app.get("/api/mvp/automations", (_req, res) => {
+app.get("/api/mvp/automations", (req, res) => {
   initDb();
-  const automations = readMvpAutomations();
+  let companyIds: string[];
+  try {
+    companyIds = resolveCompanyScope(req, false).companyIds;
+  } catch (error) {
+    sendCompanyScopeError(res, error, "automation_list_scope_failed");
+    return;
+  }
+  const automations = readMvpAutomations(companyIds);
   res.json({
     ok: true,
     automations,
@@ -222,23 +961,35 @@ app.get("/api/mvp/automations", (_req, res) => {
       updated_at: item.updated_at,
       spec: item.builder_spec
     })),
-    state: getMvpStateReadback()
+    state: getMvpStateReadback(companyIds),
+    company_scope: { enforced: true, company_ids: companyIds }
   });
 });
 
 app.post("/api/mvp/automations", (req, res) => {
   try {
     initDb();
-    const automation = saveMvpAutomationDraft(req.body);
+    const companyId = requestedCompanyId(req);
+    requireCompanyAccess(companyId, ["owner", "admin", "operator"]);
+    const idempotencyKey = requireIdempotencyKey(req.header("idempotency-key"));
+    const requestedId = typeof req.body?.id === "string" && req.body.id.trim() ? req.body.id.trim() : undefined;
+    const automation = createAutomationRecord({
+      companyId,
+      actorUserId: currentActorUserId(),
+      definition: parseAutomationCreate(legacyAutomationDefinition(req.body)),
+      automationId: requestedId,
+      idempotencyKey,
+      idempotencyRequest: req.body
+    });
     res.status(201).json({
       ok: true,
-      automation,
-      state: getMvpStateReadback(),
+      automation: automationApiView(automation),
+      receipt: automationReceipt("automation.created", automation),
+      state: getMvpStateReadback(actorCompanyIds()),
       external_action_executed: false
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "automation_create_failed";
-    res.status(message === "automation_id_required" ? 400 : 500).json({ ok: false, error: message, exactBlocker: message });
+    sendAutomationApiError(res, error, "automation_create_failed");
   }
 });
 
@@ -250,16 +1001,28 @@ app.patch("/api/mvp/automations/:automationId", (req, res) => {
       res.status(400).json({ ok: false, error: "automation_id_required", exactBlocker: "automation_id_required" });
       return;
     }
-    const automation = saveMvpAutomationDraft(req.body, automationId);
+    const current = readMvpAutomationScope(automationId, actorCompanyIds(["owner", "admin", "operator"]));
+    if (!current) {
+      res.status(404).json({ ok: false, error: "automation_not_found", exactBlocker: "automation_not_found" });
+      return;
+    }
+    const requestedScope = requestedCompanyId(req, false);
+    if (requestedScope && requestedScope !== current.company_id) throw new Error("automation_company_mismatch");
+    const automation = updateAutomationRecord({
+      companyId: current.company_id,
+      actorUserId: currentActorUserId(),
+      automationId,
+      patch: parseAutomationPatch(legacyAutomationPatch(req.body), req.header("if-match"))
+    });
     res.json({
       ok: true,
-      automation,
-      state: getMvpStateReadback(),
+      automation: automationApiView(automation),
+      receipt: automationReceipt("automation.updated", automation),
+      state: getMvpStateReadback(actorCompanyIds()),
       external_action_executed: false
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "automation_patch_failed";
-    res.status(message === "automation_id_required" ? 400 : 500).json({ ok: false, error: message, exactBlocker: message });
+    sendAutomationApiError(res, error, "automation_patch_failed");
   }
 });
 
@@ -271,39 +1034,30 @@ app.put("/api/mvp/automations/:automationId/builder-spec", (req, res) => {
       res.status(400).json({ ok: false, error: "automation_id_required", exactBlocker: "automation_id_required" });
       return;
     }
-    const existing = querySql<{ created_at: string }>("SELECT created_at FROM mvp_automations WHERE id = " + sqlValue(automationId) + " LIMIT 1")[0];
-    const current = readMvpAutomations().find((item) => item.id === automationId);
-    const timestamp = nowIso();
-    const nextSpec = req.body && typeof req.body === "object" ? req.body : {};
-    upsert("mvp_automations", {
-      id: automationId,
-      project_id: current?.project_id ?? "project-a",
-      automation_type: current?.automation_type ?? "sns-post",
-      name: current?.name ?? "SNS投稿",
-      description: current?.description ?? "",
-      goal: current?.goal ?? "",
-      schedule: current?.schedule ?? "09:00",
-      cadence: current?.cadence ?? "daily",
-      lane: current?.lane ?? "Lane 1",
-      risk_level: current?.risk_level ?? "high",
-      approval_policy: current?.approval_policy ?? "required_before_external_post",
-      worker_command_kind: current?.worker_command_kind ?? "safe_local_demo",
-      create_approval: current?.create_approval ? 1 : 0,
-      status: current?.status ?? "draft",
-      builder_spec_json: JSON.stringify(nextSpec),
-      created_at: existing?.created_at ?? timestamp,
-      updated_at: timestamp
+    const current = readMvpAutomationScope(automationId, actorCompanyIds(["owner", "admin", "operator"]));
+    if (!current) {
+      res.status(404).json({ ok: false, error: "automation_not_found", exactBlocker: "automation_not_found" });
+      return;
+    }
+    const expectedRevision = expectedRevisionFrom(req);
+    const nextSpec = req.body?.spec && typeof req.body.spec === "object" ? req.body.spec : req.body?.builder_spec;
+    const automation = updateAutomationRecord({
+      companyId: current.company_id,
+      actorUserId: currentActorUserId(),
+      automationId,
+      patch: parseAutomationPatch({ expected_revision: expectedRevision, builder_spec: nextSpec })
     });
     res.json({
       ok: true,
       automation_id: automationId,
-      spec: nextSpec,
-      state: getMvpStateReadback(),
+      spec: automation.builderSpec,
+      automation: automationApiView(automation),
+      receipt: automationReceipt("automation.updated", automation),
+      state: getMvpStateReadback(actorCompanyIds()),
       external_action_executed: false
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "builder_spec_save_failed";
-    res.status(message === "automation_id_required" ? 400 : 500).json({ ok: false, error: message, exactBlocker: message });
+    sendAutomationApiError(res, error, "builder_spec_save_failed");
   }
 });
 
@@ -313,6 +1067,14 @@ const researchPlanSchedulerInFlightDueKeys = new Set<string>();
 app.post("/api/mvp/feedback", (req, res) => {
   initDb();
   const body = req.body ?? {};
+  let companyId: string;
+  try {
+    companyId = requestedCompanyId(req);
+    requireCompanyAccess(companyId, ["owner", "admin", "operator", "viewer"]);
+  } catch (error) {
+    sendCompanyScopeError(res, error, "feedback_create_failed");
+    return;
+  }
   const comment = typeof body.comment === "string" ? body.comment.trim() : "";
   if (!comment) {
     res.status(400).json({ ok: false, error: "feedback_comment_required", exactBlocker: "feedback_comment_required" });
@@ -320,20 +1082,40 @@ app.post("/api/mvp/feedback", (req, res) => {
   }
   const route = typeof body.route === "string" ? body.route : "#/";
   const pageTitle = typeof body.page_title === "string" ? body.page_title : "Automation OS";
-  const artifactUri = typeof body.capture?.artifact_uri === "string"
+  const requestedArtifactUri = typeof body.capture?.artifact_uri === "string"
     ? body.capture.artifact_uri
     : typeof body.capture?.url === "string"
       ? body.capture.url
       : `${route}#feedback`;
   const screenshotDataUrl = typeof body.screenshot_data_url === "string" ? body.screenshot_data_url : null;
+  if (screenshotDataUrl && body.sensitive_content_confirmed !== true) {
+    res.status(400).json({ ok: false, error: "feedback_screenshot_sensitive_confirmation_required", exactBlocker: "feedback_screenshot_sensitive_confirmation_required" });
+    return;
+  }
   const feedbackId = makeId("feedback");
+  let screenshot: ReturnType<typeof parseFeedbackScreenshotDataUrl> = null;
+  try {
+    screenshot = screenshotDataUrl ? parseFeedbackScreenshotDataUrl(screenshotDataUrl) : null;
+  } catch (error) {
+    const code = error instanceof Error ? error.message : "feedback_screenshot_invalid";
+    const status = code === "feedback_screenshot_too_large" ? 413 : code === "feedback_screenshot_mime_not_allowed" ? 415 : 400;
+    res.status(status).json({ ok: false, error: code, exactBlocker: code });
+    return;
+  }
+  const screenshotArtifactId = screenshot ? makeId("feedback_artifact") : null;
+  const artifactUri = screenshotArtifactId
+    ? `/api/v1/companies/${encodeURIComponent(companyId)}/feedback-artifacts/${encodeURIComponent(screenshotArtifactId)}`
+    : requestedArtifactUri;
   const createdAt = nowIso();
   const payload = {
+    company_id: companyId,
+    project_id: companyId,
     route,
     page_title: pageTitle,
     comment,
     artifact_uri: artifactUri,
-    has_screenshot: Boolean(screenshotDataUrl),
+    has_screenshot: Boolean(screenshot),
+    screenshot_artifact_id: screenshotArtifactId,
     viewport: body.capture?.viewport ?? null,
     workflow_context: body.workflow_context ?? null,
     category: typeof body.category === "string" ? body.category : "bug",
@@ -343,13 +1125,15 @@ app.post("/api/mvp/feedback", (req, res) => {
   };
   const feedback = {
     id: feedbackId,
+    company_id: companyId,
     feedback_id: feedbackId,
     status: "open",
     route,
     page_title: pageTitle,
     comment,
     artifact_uri: artifactUri,
-    has_screenshot: screenshotDataUrl ? 1 : 0,
+    has_screenshot: screenshot ? 1 : 0,
+    screenshot_artifact_id: screenshotArtifactId,
     viewport_json: JSON.stringify(body.capture?.viewport ?? {}),
     workflow_context_json: JSON.stringify(body.workflow_context ?? {}),
     category: payload.category,
@@ -359,22 +1143,36 @@ app.post("/api/mvp/feedback", (req, res) => {
     created_at: createdAt,
     payload_json: JSON.stringify(payload)
   };
-  insert("mvp_feedback", feedback);
+  runSqlTransaction([
+    ...(screenshot && screenshotArtifactId ? [{
+      sql: `INSERT INTO feedback_artifacts (id, company_id, feedback_id, kind, mime_type, checksum_sha256, size_bytes, content_base64, status, created_at, updated_at) VALUES (${sqlValue(screenshotArtifactId)}, ${sqlValue(companyId)}, ${sqlValue(feedbackId)}, 'screenshot', ${sqlValue(screenshot.mimeType)}, ${sqlValue(screenshot.checksumSha256)}, ${screenshot.sizeBytes}, ${sqlValue(screenshot.contentBase64)}, 'available', ${sqlValue(createdAt)}, ${sqlValue(createdAt)})`,
+      expectChanges: 1
+    }] : []),
+    {
+      sql: `INSERT INTO mvp_feedback (id, company_id, feedback_id, status, route, page_title, comment, artifact_uri, has_screenshot, screenshot_artifact_id, viewport_json, workflow_context_json, category, severity, fix_target, captured_at, created_at, payload_json) VALUES (${sqlValue(feedback.id)}, ${sqlValue(feedback.company_id)}, ${sqlValue(feedback.feedback_id)}, ${sqlValue(feedback.status)}, ${sqlValue(feedback.route)}, ${sqlValue(feedback.page_title)}, ${sqlValue(feedback.comment)}, ${sqlValue(feedback.artifact_uri)}, ${feedback.has_screenshot}, ${sqlValue(feedback.screenshot_artifact_id)}, ${sqlValue(feedback.viewport_json)}, ${sqlValue(feedback.workflow_context_json)}, ${sqlValue(feedback.category)}, ${sqlValue(feedback.severity)}, ${sqlValue(feedback.fix_target)}, ${sqlValue(feedback.captured_at)}, ${sqlValue(feedback.created_at)}, ${sqlValue(feedback.payload_json)})`,
+      expectChanges: 1
+    }
+  ]);
   res.status(201).json({
     ok: true,
     feedback: {
       ...feedback,
-      has_screenshot: screenshotDataUrl ? true : false
+      has_screenshot: Boolean(screenshot),
+      screenshot_artifact_id: screenshotArtifactId,
+      screenshot: screenshot ? { id: screenshotArtifactId, mime_type: screenshot.mimeType, checksum_sha256: screenshot.checksumSha256, size_bytes: screenshot.sizeBytes, view_url: artifactUri } : null
     },
-    state: getDashboard(),
+    state: getMvpStateReadback(actorCompanyIds()),
     inbox_forward: { status: "local", sink: "mvp_feedback" },
     external_action_executed: false
   });
 });
 
 app.post("/api/mvp/approvals", (req, res) => {
-  initDb();
-  const body = req.body ?? {};
+  try {
+    initDb();
+    const body = req.body ?? {};
+    const companyId = requestedCompanyId(req);
+    requireCompanyAccess(companyId, ["owner", "admin", "approver"]);
   const title = typeof body.title === "string" && body.title.trim() ? body.title.trim() : "MVP 承認待ち";
   const requestedBy = typeof body.requested_by === "string" && body.requested_by.trim() ? body.requested_by.trim() : "local-ui";
   const approvalGroupId = typeof body.approval_group_id === "string" && body.approval_group_id.trim() ? body.approval_group_id.trim() : `mvp_ui_${makeId("approval_group")}`;
@@ -383,10 +1181,18 @@ app.post("/api/mvp/approvals", (req, res) => {
     : [];
   const priority = typeof body.priority === "string" && body.priority.trim() ? body.priority.trim() : "normal";
   const runId = typeof body.run_id === "string" && body.run_id.trim() ? body.run_id.trim() : null;
+  if (runId) {
+    const run = findScopedRun(runId, [companyId]);
+    if (!run) {
+      res.status(404).json({ ok: false, error: "run_not_found", exactBlocker: "run_not_found" });
+      return;
+    }
+  }
   const approvalId = makeId("approval");
   const createdAt = nowIso();
   insert("approvals", {
     id: approvalId,
+    company_id: companyId,
     run_id: runId,
     title,
     requested_by: requestedBy,
@@ -402,6 +1208,7 @@ app.post("/api/mvp/approvals", (req, res) => {
     ok: true,
     approval: {
       id: approvalId,
+      company_id: companyId,
       run_id: runId,
       title,
       requested_by: requestedBy,
@@ -413,9 +1220,12 @@ app.post("/api/mvp/approvals", (req, res) => {
       decided_at: null,
       decision_note: null
     },
-    state: getMvpStateReadback(),
+    state: getMvpStateReadback(actorCompanyIds()),
     external_action_executed: false
   });
+  } catch (error) {
+    sendCompanyScopeError(res, error, "approval_create_failed");
+  }
 });
 
 app.patch("/api/mvp/feedback/:feedbackId", (req, res) => {
@@ -430,15 +1240,18 @@ app.patch("/api/mvp/feedback/:feedbackId", (req, res) => {
     res.status(400).json({ ok: false, error: "feedback_status_invalid", exactBlocker: "feedback_status_invalid" });
     return;
   }
-  const existingRows = querySql<{ id: string; feedback_id: string; status: string }>(
-    `SELECT id, feedback_id, status FROM mvp_feedback WHERE feedback_id = ${sqlValue(feedbackId)} LIMIT 1`
+  const existingRows = querySql<{ id: string; company_id: string; feedback_id: string; status: string }>(
+    `SELECT id, company_id, feedback_id, status FROM mvp_feedback
+     WHERE feedback_id=${sqlValue(feedbackId)}
+       AND ${scopedCompanyPredicate("company_id", actorCompanyIds(["owner"]))}
+     LIMIT 1`
   );
   const existing = existingRows[0];
   if (!existing) {
     res.status(404).json({ ok: false, error: "feedback_not_found", exactBlocker: "feedback_not_found" });
     return;
   }
-  execSql(`UPDATE mvp_feedback SET status = ${sqlValue(status)} WHERE feedback_id = ${sqlValue(feedbackId)};`);
+  execSql(`UPDATE mvp_feedback SET status=${sqlValue(status)} WHERE feedback_id=${sqlValue(feedbackId)} AND company_id=${sqlValue(existing.company_id)};`);
   res.json({
     ok: true,
     feedback_id: feedbackId,
@@ -460,44 +1273,63 @@ app.patch("/api/mvp/approvals/:approvalId", async (req, res, next) => {
       res.status(400).json({ ok: false, error: "approval_decision_invalid", exactBlocker: "approval_decision_invalid" });
       return;
     }
+    const allowedCompanyIds = actorCompanyIds(["owner", "admin", "approver"]);
+    const existing = findScopedApproval(approvalId, allowedCompanyIds);
+    if (!existing) {
+      res.status(404).json({ ok: false, error: "approval_not_found", exactBlocker: "approval_not_found" });
+      return;
+    }
     const status = decision === "approve" ? "approved" : "rejected";
-    const result = await decideStoredApproval(approvalId, status);
+    const result = await decideStoredApproval(approvalId, status, allowedCompanyIds);
     if (result.statusCode && result.statusCode !== 200) {
       res.status(result.statusCode).json(result.body);
       return;
     }
     if (note) {
-      execSql(`UPDATE approvals SET decision_note = ${sqlValue(note)} WHERE id = ${sqlValue(approvalId)};`);
+      execSql(`UPDATE approvals SET decision_note = ${sqlValue(note)} WHERE id = ${sqlValue(approvalId)} AND company_id=${sqlValue(existing.company_id)};`);
     }
     res.json({
       ok: true,
       approval_id: approvalId,
       decision,
-      state: getMvpStateReadback(),
-      approval: querySql(`SELECT * FROM approvals WHERE id=${sqlValue(approvalId)} LIMIT 1`)[0] ?? null,
+      state: getMvpStateReadback(actorCompanyIds()),
+      approval: querySql(`SELECT * FROM approvals WHERE id=${sqlValue(approvalId)} AND company_id=${sqlValue(existing.company_id)} LIMIT 1`)[0] ?? null,
       external_action_executed: false
     });
   } catch (error) {
+    if (error instanceof Error && error.message.startsWith("company_")) {
+      sendTenantResourceError(res, error, "approval_not_found", "approval_update_failed");
+      return;
+    }
     next(error);
   }
 });
 
-app.get("/api/mvp/registered-automations", (_req, res) => {
-  initDb();
-  res.json(buildProjectARegisteredAutomationReadback("project-a"));
+app.get("/api/mvp/registered-automations", (req, res) => {
+  try {
+    initDb();
+    const companyId = requestedCompanyId(req);
+    requireCompanyAccess(companyId);
+    res.json(buildCompanyRegisteredAutomationReadback(companyId));
+  } catch (error) {
+    sendCompanyScopeError(res, error, "registered_automation_read_failed");
+  }
 });
 
 app.post("/api/mvp/registered-automations/:id/run", (req, res) => {
-  initDb();
-  const projectId = typeof req.body?.project_id === "string" && req.body.project_id.trim()
-    ? req.body.project_id.trim()
-    : "project-a";
-  const result = buildProjectARegisteredAutomationRunResponse(req.params.id, projectId);
-  if (result.statusCode) {
-    res.status(result.statusCode).json(result.body);
-    return;
+  try {
+    initDb();
+    const projectId = requestedCompanyId(req);
+    requireCompanyAccess(projectId, ["owner", "admin", "operator"]);
+    const result = buildCompanyRegisteredAutomationRunResponse(req.params.id, projectId);
+    if (result.statusCode) {
+      res.status(result.statusCode).json(result.body);
+      return;
+    }
+    res.json(result.body);
+  } catch (error) {
+    sendCompanyScopeError(res, error, "registered_automation_run_failed");
   }
-  res.json(result.body);
 });
 
 app.get("/api/dashboard", (_req, res) => {
@@ -578,6 +1410,35 @@ app.post("/api/create/plan/jobs", (req, res, next) => {
   }
 });
 
+app.post("/api/create/chat", (req, res, next) => {
+  try {
+    initDb();
+    const messages = normalizeCreatePlannerRequestMessages(req.body);
+    if (messages.length === 0) {
+      res.status(400).json({ ok: false, error: "chat_message_required", exactBlocker: "chat_message_required" });
+      return;
+    }
+    const requested = requestedCompanyId(req, false);
+    const companyIds = requested ? [requireCompanyAccess(requested).id] : actorCompanyIds();
+    const contextSnapshot = buildAutomationOsChatSnapshot(companyIds);
+    const job = enqueueCreatePlannerJob({
+      messages,
+      currentDraft: typeof req.body?.currentDraft === "string" ? req.body.currentDraft : "",
+      metadata: {
+        route: "mac_worker_codex_app_server",
+        transport: "codex_app_server",
+        companyIds,
+        codexThreadId: typeof req.body?.codex_thread_id === "string" ? req.body.codex_thread_id.trim() : undefined,
+        contextCapturedAt: new Date().toISOString(),
+        contextSnapshot
+      }
+    });
+    res.status(202).json({ ok: true, job: sanitizeCreatePlannerJobForApi(job), external_action_executed: false });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/create/plan/jobs/:id", (req, res) => {
   const job = getCreatePlannerJob(req.params.id);
   if (!job) {
@@ -617,23 +1478,31 @@ app.post("/api/codex/capabilities", (_req, res) => {
 });
 
 app.get("/api/registered-workflows", (_req, res) => {
-  if (dbBackend === "postgres") {
-    res.json({ workflows: filterRegisteredWorkflowList(fixedRegisteredWorkflows).map(publicFixedRegisteredWorkflowFast) });
-    return;
-  }
   initDb();
-  res.json({ workflows: publicRegisteredWorkflowRows(initRegisteredWorkflows()) });
+  initRegisteredWorkflows();
+  res.json({ workflows: publicRegisteredWorkflowRows(listRegisteredWorkflowsForCompanies(actorCompanyIds())) });
 });
 
 app.post("/api/registered-workflows/refresh", (_req, res) => {
   initDb();
-  res.json({ workflows: publicRegisteredWorkflowRows(refreshRegisteredWorkflows()) });
+  const companyIds = actorCompanyIds(["owner", "admin"]);
+  if (companyIds.length === 0) {
+    res.status(403).json({ error: "company_scope_forbidden" });
+    return;
+  }
+  refreshRegisteredWorkflows();
+  res.json({ workflows: publicRegisteredWorkflowRows(listRegisteredWorkflowsForCompanies(companyIds)) });
 });
 
 app.post("/api/registered-workflows/scheduler/run-once", async (_req, res, next) => {
   try {
     initDb();
-    const result = await runResearchPlanSchedulerOnce();
+    const companyIds = actorCompanyIds(["owner", "admin"]);
+    if (companyIds.length === 0) {
+      res.status(403).json({ error: "company_scope_forbidden" });
+      return;
+    }
+    const result = await runResearchPlanSchedulerOnce(new Date(), companyIds);
     res.json(result);
   } catch (error) {
     next(error);
@@ -642,13 +1511,20 @@ app.post("/api/registered-workflows/scheduler/run-once", async (_req, res, next)
 
 app.post("/api/registered-workflows/rehearsal/run-once", (_req, res) => {
   initDb();
-  res.json(runRegisteredWorkflowRehearsalCheck());
+  const companyIds = actorCompanyIds(["owner", "admin"]);
+  if (companyIds.length === 0) {
+    res.status(403).json({ error: "company_scope_forbidden" });
+    return;
+  }
+  res.json(runRegisteredWorkflowRehearsalCheck(companyIds));
 });
 
 app.post("/api/registered-workflows/:id/pause", (req, res) => {
   initDb();
   initRegisteredWorkflows();
-  const workflow = setRegisteredWorkflowSchedulePaused(req.params.id, true);
+  const fixedWorkflow = fixedRegisteredWorkflows.some((item) => item.id === req.params.id);
+  const companyIds = actorCompanyIds(fixedWorkflow ? ["owner", "admin"] : ["owner", "admin", "operator"]);
+  const workflow = setRegisteredWorkflowSchedulePaused(req.params.id, true, companyIds);
   if (!workflow) {
     res.status(404).json({ error: "registered_workflow_not_found" });
     return;
@@ -660,7 +1536,9 @@ app.post("/api/registered-workflows/:id/pause", (req, res) => {
 app.post("/api/registered-workflows/:id/resume", (req, res) => {
   initDb();
   initRegisteredWorkflows();
-  const workflow = setRegisteredWorkflowSchedulePaused(req.params.id, false);
+  const fixedWorkflow = fixedRegisteredWorkflows.some((item) => item.id === req.params.id);
+  const companyIds = actorCompanyIds(fixedWorkflow ? ["owner", "admin"] : ["owner", "admin", "operator"]);
+  const workflow = setRegisteredWorkflowSchedulePaused(req.params.id, false, companyIds);
   if (!workflow) {
     res.status(404).json({ error: "registered_workflow_not_found" });
     return;
@@ -673,7 +1551,9 @@ app.patch("/api/registered-workflows/:id/schedule", (req, res) => {
   try {
     initDb();
     initRegisteredWorkflows();
-    const workflow = setRegisteredWorkflowScheduleOverride(req.params.id, req.body);
+    const fixedWorkflow = fixedRegisteredWorkflows.some((item) => item.id === req.params.id);
+    const companyIds = actorCompanyIds(fixedWorkflow ? ["owner", "admin"] : ["owner", "admin", "operator"]);
+    const workflow = setRegisteredWorkflowScheduleOverride(req.params.id, req.body, companyIds);
     if (!workflow) {
       res.status(404).json({ error: "registered_workflow_not_found" });
       return;
@@ -692,41 +1572,11 @@ app.patch("/api/registered-workflows/:id/schedule", (req, res) => {
 
 app.post("/api/registered-workflows/:id/start", async (req, res, next) => {
   try {
-    if (dbBackend === "postgres" && req.params.id === "daily-ai-research-publish-run") {
-        const fixedWorkflow = fixedRegisteredWorkflows.find((workflow) => workflow.id === req.params.id);
-        if (fixedWorkflow) {
-          const workflowRow = await getPostgresRegisteredWorkflowRowFast(fixedWorkflow.id);
-          if (workflowRow && String(workflowRow.status).toLowerCase() !== "active") {
-          res.status(409).json({ error: "registered_workflow_inactive" });
-          return;
-        }
-        const command = startCommandFromRegisteredWorkflowRow(workflowRow) ?? fixedWorkflow.startCommand.command;
-        const executionRouting = buildExecutionRoutingSnapshot({ command, source: "manual" });
-        const fastStarted = await startRegisteredPostgresRunFast({
-          workflow: { id: fixedWorkflow.id, runner_kind: fixedWorkflow.runnerKind },
-          command,
-          metadata: registeredWorkflowStartMetadataFromDefinition(fixedWorkflow, { source: "manual", command, executionRouting })
-        });
-        res.status(202).json({
-          accepted: true,
-          runId: fastStarted.runId,
-          status: "queued",
-          workflow: publicFixedRegisteredWorkflowFast(fixedWorkflow),
-          run: {
-            runId: fastStarted.runId,
-            status: "queued",
-            name: command.slice(0, 72),
-            objective: command
-          },
-          workerProtocol: "mac_worker_polling_required",
-          nextAction: "本番DBに実行を保存しました。Mac worker loopが起動していれば自動で拾います。"
-        });
-        return;
-      }
-    }
     initDb();
-    const workflows = initRegisteredWorkflows();
-    const workflow = workflows.find((item) => item.id === req.params.id);
+    initRegisteredWorkflows();
+    const fixedWorkflow = fixedRegisteredWorkflows.find((item) => item.id === req.params.id);
+    const companyIds = actorCompanyIds(fixedWorkflow ? ["owner", "admin"] : ["owner", "admin", "operator"]);
+    const workflow = getRegisteredWorkflowForCompanies(req.params.id, companyIds);
     if (!workflow) {
       res.status(404).json({ error: "registered_workflow_not_found" });
       return;
@@ -735,12 +1585,15 @@ app.post("/api/registered-workflows/:id/start", async (req, res, next) => {
       res.status(409).json({ error: "registered_workflow_inactive" });
       return;
     }
-    const command = getRegisteredWorkflowStartCommand(req.params.id);
+    const command = getRegisteredWorkflowStartCommand(req.params.id, companyIds);
     if (!command) {
       res.status(404).json({ error: "registered_workflow_not_found" });
       return;
     }
-    const runMetadata = registeredWorkflowStartMetadata(workflow, { source: "manual", command });
+    const runMetadata = {
+      ...registeredWorkflowStartMetadata(workflow, { source: "manual", command }),
+      ...(fixedWorkflow ? { system_scope: "global", system_admin_actor_user_id: currentActorUserId() } : {})
+    };
     if (dbBackend === "postgres" && workflow.id === "daily-ai-research-publish-run") {
       const fastStarted = await startRegisteredPostgresRunFast({ workflow, command, metadata: runMetadata });
       clearRegisteredWorkflowSchedulerBlock(workflow);
@@ -761,26 +1614,32 @@ app.post("/api/registered-workflows/:id/start", async (req, res, next) => {
       return;
     }
     if (workflow.runner_kind === "research_plan_registered") {
+      if (!workflow.company_id) {
+        res.status(404).json({ error: "registered_workflow_not_found" });
+        return;
+      }
+      requireCompanyAccess(workflow.company_id, ["owner", "admin", "operator"]);
       const startCommand = parseJson<{ researchPlanId?: unknown }>(workflow.start_command_json, {});
       const researchPlanId = typeof startCommand.researchPlanId === "string" ? startCommand.researchPlanId : undefined;
       if (!researchPlanId) {
         res.status(409).json({ error: "registered_research_plan_missing_reference" });
         return;
       }
-      const plan = getResearchPlan(researchPlanId);
+      const plan = getResearchPlan(researchPlanId, [workflow.company_id]);
       if (!plan) {
         res.status(404).json({ error: "research_plan_not_found" });
         return;
       }
       const researchPlanMetadata = {
         ...runMetadata,
+        ...researchPlanPreparedRunMetadata(plan),
         execution_routing: buildExecutionRoutingSnapshot({
           command: plan.command,
           source: "manual"
         })
       };
       const started = await withTimeout(
-        researchPlanStartRunner(plan.command, { metadata: researchPlanMetadata, deferWorker: true }),
+        researchPlanStartRunner(plan.command, { metadata: researchPlanMetadata, deferWorker: true, prepareOnly: true, companyId: workflow.company_id }),
         researchPlanDirectStartTimeoutMs(),
         {
           operation: "research_plan_start",
@@ -852,6 +1711,7 @@ app.post("/api/registered-workflows/:id/start", async (req, res, next) => {
           })
     });
   } catch (error) {
+    if (sendResearchPlanScopeError(res, error)) return;
     next(error);
   }
 });
@@ -1225,9 +2085,9 @@ app.post("/api/obsidian/url-capture", async (req, res, next) => {
 
 app.get("/api/runs/:id", (req, res) => {
   initDb();
-  const detail = getRunDetail(req.params.id);
+  const detail = getRunDetail(req.params.id, actorCompanyIds());
   if (!detail) {
-    res.status(404).json({ error: "run_not_found", id: req.params.id });
+    res.status(404).json({ error: "run_not_found" });
     return;
   }
   res.json(detail);
@@ -1235,9 +2095,9 @@ app.get("/api/runs/:id", (req, res) => {
 
 app.get("/api/proofs/:id/view", (req, res) => {
   initDb();
-  const view = getProofView(req.params.id);
+  const view = getProofView(req.params.id, actorCompanyIds());
   if (view.status === "not_found") {
-    res.status(404).json(view);
+    res.status(404).json({ status: "not_found", error: "proof_not_found" });
     return;
   }
   res.json(view);
@@ -1266,6 +2126,8 @@ app.post("/api/runs/demo-daily-ai", (_req, res, next) => {
 app.post("/api/runs/start", async (req, res, next) => {
   try {
     initDb();
+    const companyId = requestedCompanyId(req);
+    requireCompanyAccess(companyId, ["owner", "admin", "operator"]);
     const rawCommand = typeof req.body?.command === "string" ? req.body.command : "";
     const { sanitizedText, stored } = saveSecretsFromMessage(rawCommand);
     if (isSecretStorageOnlyText(sanitizedText, stored)) {
@@ -1284,7 +2146,7 @@ app.post("/api/runs/start", async (req, res, next) => {
       res.status(400).json({ error: "command_required" });
       return;
     }
-    const body = await startCommandRun(command, { metadata: createSessionRunMetadata(req.body?.createSession), deferWorker: true });
+    const body = await startCommandRun(command, { metadata: createSessionRunMetadata(req.body?.createSession), deferWorker: true, companyId });
     const runId = extractRunId(body as Record<string, unknown>);
     const runStatus = extractRunStatus(body as Record<string, unknown>);
     const approvalRequired = runStatus === "waiting_approval";
@@ -1310,9 +2172,12 @@ app.post("/api/runs/start", async (req, res, next) => {
 app.post("/api/planner/research-plan", (req, res, next) => {
   try {
     initDb();
+    const companyId = requestedCompanyId(req);
+    requireCompanyAccess(companyId, ["owner", "admin", "operator"]);
     const rawCommand = typeof req.body?.command === "string" ? req.body.command : "";
     const { sanitizedText } = saveSecretsFromMessage(rawCommand);
     const plan = createResearchPlan({
+      companyId,
       command: sanitizedText.trim(),
       title: typeof req.body?.title === "string" ? req.body.title : undefined,
       sources: parseResearchSourceSelection(req.body?.sources),
@@ -1321,6 +2186,10 @@ app.post("/api/planner/research-plan", (req, res, next) => {
     maybeAutoExportObsidianAfterResponse("research-plan-created");
     res.status(201).json({ plan });
   } catch (error) {
+    if (error instanceof Error && (error.message.startsWith("company_") || error.message === "project_id_required")) {
+      sendCompanyScopeError(res, error, "research_plan_create_failed");
+      return;
+    }
     next(error);
   }
 });
@@ -1328,8 +2197,8 @@ app.post("/api/planner/research-plan", (req, res, next) => {
 app.post("/api/planner/:planId/demo", async (req, res, next) => {
   try {
     initDb();
-    const plan = getResearchPlan(req.params.planId);
-    if (!plan) {
+    const plan = getResearchPlan(req.params.planId, actorCompanyIds(["owner", "admin", "operator"]));
+    if (!plan || !plan.companyId) {
       res.status(404).json({ error: "research_plan_not_found" });
       return;
     }
@@ -1391,13 +2260,18 @@ app.post("/api/planner/:planId/demo", async (req, res, next) => {
 app.post("/api/planner/:planId/start", async (req, res, next) => {
   try {
     initDb();
-    const plan = getResearchPlan(req.params.planId);
-    if (!plan) {
+    const plan = getResearchPlan(req.params.planId, actorCompanyIds(["owner", "admin", "operator"]));
+    if (!plan || !plan.companyId) {
       res.status(404).json({ error: "research_plan_not_found" });
       return;
     }
     const started = await withTimeout(
-      researchPlanStartRunner(plan.command, { metadata: createSessionRunMetadata(req.body?.createSession), deferWorker: true }),
+      researchPlanStartRunner(plan.command, {
+        metadata: researchPlanPreparedRunMetadata(plan, createSessionRunMetadata(req.body?.createSession)),
+        deferWorker: true,
+        prepareOnly: true,
+        companyId: plan.companyId
+      }),
       researchPlanDirectStartTimeoutMs(),
       {
         operation: "research_plan_start",
@@ -1438,6 +2312,7 @@ app.post("/api/planner/:planId/start", async (req, res, next) => {
           })
     });
   } catch (error) {
+    if (sendResearchPlanScopeError(res, error)) return;
     next(error);
   }
 });
@@ -1445,7 +2320,7 @@ app.post("/api/planner/:planId/start", async (req, res, next) => {
 app.post("/api/planner/:planId/regularize", (req, res, next) => {
   try {
     initDb();
-    const plan = getResearchPlan(req.params.planId);
+    const plan = getResearchPlan(req.params.planId, actorCompanyIds(["owner", "admin", "operator"]));
     if (!plan) {
       res.status(404).json({ error: "research_plan_not_found" });
       return;
@@ -1465,7 +2340,7 @@ app.post("/api/planner/:planId/regularize", (req, res, next) => {
 app.post("/api/planner/:planId/capture/youtube-transcript", async (req, res, next) => {
   try {
     initDb();
-    const plan = getResearchPlan(req.params.planId);
+    const plan = getResearchPlan(req.params.planId, actorCompanyIds(["owner", "admin", "operator"]));
     if (!plan) {
       res.status(404).json({ error: "research_plan_not_found" });
       return;
@@ -1486,6 +2361,7 @@ app.post("/api/planner/:planId/capture/youtube-transcript", async (req, res, nex
       });
       return;
     }
+    assertResearchPlanRunCompanyMatch(plan.runId, plan.companyId);
     const runId = plan.runId;
     const captureInput = {
       url: nonEmptyString(req.body?.url) ?? nonEmptyString(req.body?.sourceUrl),
@@ -1514,6 +2390,7 @@ app.post("/api/planner/:planId/capture/youtube-transcript", async (req, res, nex
     }, 50);
     launchTimer.unref?.();
   } catch (error) {
+    if (sendResearchPlanScopeError(res, error)) return;
     next(error);
   }
 });
@@ -1521,7 +2398,7 @@ app.post("/api/planner/:planId/capture/youtube-transcript", async (req, res, nex
 app.post("/api/planner/:planId/capture/web-url", async (req, res, next) => {
   try {
     initDb();
-    const plan = getResearchPlan(req.params.planId);
+    const plan = getResearchPlan(req.params.planId, actorCompanyIds(["owner", "admin", "operator"]));
     if (!plan) {
       res.status(404).json({ error: "research_plan_not_found" });
       return;
@@ -1542,6 +2419,7 @@ app.post("/api/planner/:planId/capture/web-url", async (req, res, next) => {
       });
       return;
     }
+    assertResearchPlanRunCompanyMatch(plan.runId, plan.companyId);
     const result = await runUrlCapture({
       url: nonEmptyString(req.body?.url) ?? nonEmptyString(req.body?.sourceUrl),
       sourceTitle: nonEmptyString(req.body?.sourceTitle),
@@ -1560,15 +2438,17 @@ app.post("/api/planner/:planId/capture/web-url", async (req, res, next) => {
       res.status(result.status === "rejected" ? 400 : 202).json({ ok: false, status: result.status, plan: updatedPlan, capture: result });
       return;
     }
-    const proof = storeResearchPlanVisibleSourceProof(plan.runId, "web", result);
-    enforceResearchPlanCompletionBoundary(plan.runId, plan);
-    const updatedPlan = markResearchPlanSourceCapture(plan.id, "web", {
-      ok: true,
-      status: "captured",
-      proofId: proof.id,
+    const committed = commitResearchPlanCaptureAtomic({
+      plan,
+      sourceKey: "web",
+      uri: result.ingest.path,
+      label: "Web readable source snapshot",
+      sizeBytes: result.bytes,
+      proofMetadata: researchPlanCaptureProofMetadata("web", result),
       artifactPath: result.ingest.path,
       summary: result.sourceTitle
-    }) ?? getResearchPlan(plan.id) ?? plan;
+    });
+    const { proof, plan: updatedPlan } = committed;
     maybeAutoExportObsidianAfterResponse("research-web-url-captured");
     res.status(201).json({
       ok: true,
@@ -1580,6 +2460,7 @@ app.post("/api/planner/:planId/capture/web-url", async (req, res, next) => {
       run: querySql(`SELECT * FROM runs WHERE id=${sqlValue(plan.runId)} LIMIT 1`)[0]
     });
   } catch (error) {
+    if (sendResearchPlanScopeError(res, error)) return;
     next(error);
   }
 });
@@ -1611,6 +2492,59 @@ function readSmallJsonBody(req: Parameters<RequestHandler>[0], res: Parameters<R
   req.on("error", next);
 }
 
+type FeedbackScreenshot = {
+  mimeType: "image/jpeg" | "image/png" | "image/webp";
+  content: Buffer;
+  contentBase64: string;
+  checksumSha256: string;
+  sizeBytes: number;
+};
+
+function parseFeedbackScreenshotDataUrl(value: string): FeedbackScreenshot | null {
+  const match = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/]+={0,2})$/u.exec(value);
+  if (!match) {
+    if (/^data:image\//iu.test(value)) throw new Error("feedback_screenshot_mime_not_allowed");
+    throw new Error("feedback_screenshot_invalid");
+  }
+  const mimeType = match[1].toLowerCase() as FeedbackScreenshot["mimeType"];
+  const contentBase64 = match[2];
+  if (contentBase64.length % 4 !== 0) throw new Error("feedback_screenshot_invalid");
+  const content = Buffer.from(contentBase64, "base64");
+  if (content.length === 0 || content.toString("base64") !== contentBase64) throw new Error("feedback_screenshot_invalid");
+  if (content.length > 700 * 1024) throw new Error("feedback_screenshot_too_large");
+  if (!feedbackScreenshotMagicMatches(mimeType, content)) throw new Error("feedback_screenshot_invalid");
+  return {
+    mimeType,
+    content,
+    contentBase64,
+    checksumSha256: createHash("sha256").update(content).digest("hex"),
+    sizeBytes: content.length
+  };
+}
+
+function feedbackScreenshotMagicMatches(mimeType: FeedbackScreenshot["mimeType"], content: Buffer): boolean {
+  if (mimeType === "image/jpeg") return content.length >= 4 && content[0] === 0xff && content[1] === 0xd8 && content[2] === 0xff;
+  if (mimeType === "image/png") return content.length >= 8 && content.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  return content.length >= 12 && content.toString("ascii", 0, 4) === "RIFF" && content.toString("ascii", 8, 12) === "WEBP";
+}
+
+function readFeedbackArtifact(companyId: string, artifactId: string): { id: string; mimeType: string; checksumSha256: string; content: Buffer } | null {
+  if (!companyId || !artifactId) throw new Error("feedback_artifact_id_invalid");
+  const row = querySql<{ id: string; mime_type: string; checksum_sha256: string; size_bytes: number; content_base64: string }>(`
+    SELECT id, mime_type, checksum_sha256, size_bytes, content_base64
+    FROM feedback_artifacts
+    WHERE company_id=${sqlValue(companyId)} AND id=${sqlValue(artifactId)} AND status='available'
+    LIMIT 1
+  `)[0];
+  if (!row) return null;
+  const content = Buffer.from(row.content_base64, "base64");
+  const checksum = createHash("sha256").update(content).digest("hex");
+  if (content.length !== Number(row.size_bytes) || checksum !== row.checksum_sha256 || content.toString("base64") !== row.content_base64) {
+    throw new Error("feedback_artifact_integrity_mismatch");
+  }
+  return { id: row.id, mimeType: row.mime_type, checksumSha256: row.checksum_sha256, content };
+}
+
 async function runResearchPlanYouTubeTranscriptCapture(
   plan: ResearchPlanSnapshot,
   input: {
@@ -1637,6 +2571,7 @@ async function runResearchPlanYouTubeTranscriptCapture(
     }
 > {
   if (!plan.runId) throw new Error("research_plan_run_required");
+  assertResearchPlanRunCompanyMatch(plan.runId, plan.companyId);
   const result = await youtubeTranscriptCaptureRunner(input);
   if (!result.ok) {
     const updatedPlan = markResearchPlanSourceCapture(plan.id, "youtube", {
@@ -1646,19 +2581,21 @@ async function runResearchPlanYouTubeTranscriptCapture(
       exactBlocker: result.exactBlocker,
       summary: result.summary
     }) ?? plan;
-    annotateYouTubeCaptureFailure(plan.runId, result);
+    annotateYouTubeCaptureFailure(plan.runId, result, plan.companyId);
     maybeAutoExportObsidianAfterResponse(result.status === "rejected" ? "research-youtube-transcript-rejected" : "research-youtube-transcript-blocked");
     return { ok: false, status: result.status, plan: updatedPlan, capture: result };
   }
-  const proof = storeResearchPlanVisibleSourceProof(plan.runId, "youtube", result);
-  enforceResearchPlanCompletionBoundary(plan.runId, plan);
-  const updatedPlan = markResearchPlanSourceCapture(plan.id, "youtube", {
-    ok: true,
-    status: "captured",
-    proofId: proof.id,
+  const committed = commitResearchPlanCaptureAtomic({
+    plan,
+    sourceKey: "youtube",
+    uri: result.files.manifest,
+    label: "YouTube transcript visible source snapshot",
+    sizeBytes: result.transcriptBytes,
+    proofMetadata: researchPlanCaptureProofMetadata("youtube", result),
     artifactPath: result.files.manifest,
     summary: result.sourceTitle
-  }) ?? getResearchPlan(plan.id) ?? plan;
+  });
+  const { proof, plan: updatedPlan } = committed;
   maybeAutoExportObsidianAfterResponse("research-youtube-transcript-captured");
   return {
     ok: true,
@@ -1705,13 +2642,14 @@ function launchResearchPlanYouTubeTranscriptCapture(
       exactBlocker: "youtube_transcript_worker_launch_failed",
       summary: redactSensitiveText(error.message)
     };
+    const plan = getResearchPlan(planId);
     markResearchPlanSourceCapture(planId, "youtube", {
       ok: false,
       status: result.status,
       exactBlocker: result.exactBlocker,
       summary: result.summary
     });
-    annotateYouTubeCaptureFailure(runId, result);
+    annotateYouTubeCaptureFailure(runId, result, plan?.companyId);
   });
   child.unref();
   closeSync(out);
@@ -1769,7 +2707,7 @@ app.post("/api/knowledge/refresh", (_req, res, next) => {
 
 app.post("/api/approvals/:id/approve", async (req, res, next) => {
   try {
-    const result = await decideStoredApproval(req.params.id, "approved");
+    const result = await decideStoredApproval(req.params.id, "approved", actorCompanyIds(["owner", "admin", "approver"]));
     res.status(result.statusCode).json(result.body);
   } catch (error) {
     next(error);
@@ -1778,7 +2716,7 @@ app.post("/api/approvals/:id/approve", async (req, res, next) => {
 
 app.post("/api/approvals/:id/reject", async (req, res, next) => {
   try {
-    const result = await decideStoredApproval(req.params.id, "rejected");
+    const result = await decideStoredApproval(req.params.id, "rejected", actorCompanyIds(["owner", "admin", "approver"]));
     res.status(result.statusCode).json(result.body);
   } catch (error) {
     next(error);
@@ -1787,7 +2725,7 @@ app.post("/api/approvals/:id/reject", async (req, res, next) => {
 
 app.post("/api/approvals/:id/cancel", async (req, res, next) => {
   try {
-    const result = await decideStoredApproval(req.params.id, "cancelled");
+    const result = await decideStoredApproval(req.params.id, "cancelled", actorCompanyIds(["owner", "admin", "approver"]));
     res.status(result.statusCode).json(result.body);
   } catch (error) {
     next(error);
@@ -1834,18 +2772,20 @@ app.post("/api/advisor/research-ingest", (_req, res) => {
 });
 
 app.post("/api/skills/from-run/:runId", (req, res) => {
-  const run = querySql<{ id: string; name: string }>(`SELECT id, name FROM runs WHERE id=${sqlValue(req.params.runId)} LIMIT 1`)[0];
+  const run = findScopedRun(req.params.runId, actorCompanyIds(["owner", "admin", "operator"]));
   if (!run) {
     res.status(404).json({ error: "run_not_found" });
     return;
   }
   const steps = querySql<{ name: string; status: string }>(`SELECT name, status FROM run_steps WHERE run_id=${sqlValue(run.id)}`);
   const proofs = querySql<{ proofType: string; label: string }>(
-    `SELECT proof_type as proofType, label FROM proofs WHERE run_id=${sqlValue(run.id)}`
+    `SELECT proof_type as proofType, label FROM proofs
+     WHERE run_id=${sqlValue(run.id)} AND company_id=${sqlValue(run.company_id)}`
   );
   const draft = createSkillDraft({ runId: run.id, runName: run.name, steps, proofs });
   insert("skills", {
     id: draft.id,
+    company_id: run.company_id,
     run_id: draft.runId,
     name: draft.name,
     draft_markdown: draft.markdown,
@@ -1910,7 +2850,12 @@ function productionApiAccessGuard(req: Parameters<RequestHandler>[0], res: Param
     return;
   }
   const providedToken = readRequestWriteToken(req);
-  if (guard.tokenConfigured && providedToken === process.env.AUTOMATION_OS_WRITE_TOKEN) {
+  const readOnlyRequest = ["GET", "HEAD"].includes(req.method);
+  const readToken = readOnlyRequest ? readProductionReadToken() : "";
+  if (guard.tokenConfigured && (
+    providedToken === process.env.AUTOMATION_OS_WRITE_TOKEN
+    || (Boolean(readToken) && providedToken === readToken)
+  )) {
     next();
     return;
   }
@@ -1921,6 +2866,25 @@ function productionApiAccessGuard(req: Parameters<RequestHandler>[0], res: Param
     error,
     exactBlocker: error
   });
+}
+
+function ownerDiagnosticsGuard(req: Parameters<RequestHandler>[0], res: Parameters<RequestHandler>[1], next: Parameters<RequestHandler>[2]) {
+  const normalizedPath = normalizedRequestPath(req.path);
+  const ownerOnly = normalizedPath === "/api/dashboard"
+    || ["/api/codex/", "/api/capability-router/", "/api/browser/", "/api/bridge/", "/api/obsidian/"].some((prefix) => normalizedPath.startsWith(prefix));
+  if (!ownerOnly) {
+    next();
+    return;
+  }
+  try {
+    initDb();
+    const companies = listActorCompanies();
+    const testBootstrapWithoutMembership = process.env.NODE_TEST_CONTEXT === "1" && companies.length === 0;
+    if (!testBootstrapWithoutMembership && !companies.some((company) => company.role === "owner")) throw new Error("owner_admin_required");
+    next();
+  } catch {
+    res.status(403).json({ ok: false, error: "owner_admin_required", exactBlocker: "owner_admin_required" });
+  }
 }
 
 function normalizedRequestPath(path: string) {
@@ -1939,14 +2903,13 @@ function isReadOnlyPlanningEndpoint(req: Parameters<RequestHandler>[0]) {
   return (
     (req.method === "POST" && (
       req.path === "/api/create/plan"
+      || req.path === "/api/create/chat"
       || req.path === "/api/capability-router/plan"
       || req.path === "/api/mvp/feedback"
-      || req.path === "/api/mvp/approvals"
       || /^\/api\/mvp\/registered-automations\/[^/]+\/run$/u.test(req.path)
     ))
     || (req.method === "PATCH" && (
       /^\/api\/mvp\/feedback\/[^/]+$/u.test(req.path)
-      || /^\/api\/mvp\/approvals\/[^/]+$/u.test(req.path)
     ))
   );
 }
@@ -1959,6 +2922,362 @@ function safeJsonParse<T>(value: string, fallback: T): T {
   }
 }
 
+function requestedCompanyId(req: Parameters<RequestHandler>[0], required = true): string {
+  const hasBodyCompanyScope = Boolean(req.body && typeof req.body === "object" && (
+    Object.prototype.hasOwnProperty.call(req.body, "company_id") || Object.prototype.hasOwnProperty.call(req.body, "project_id")
+  ));
+  const bodyCompanyId = typeof req.body?.company_id === "string" ? req.body.company_id.trim() : "";
+  const bodyProjectId = typeof req.body?.project_id === "string" ? req.body.project_id.trim() : "";
+  if (hasBodyCompanyScope && !bodyCompanyId && !bodyProjectId) throw new Error("project_id_required");
+  if (bodyCompanyId && bodyProjectId && bodyCompanyId !== bodyProjectId) throw new Error("company_project_scope_mismatch");
+  const queryCompanyId = typeof req.query?.company_id === "string" ? req.query.company_id.trim() : "";
+  const queryProjectId = typeof req.query?.project_id === "string" ? req.query.project_id.trim() : "";
+  const headerCompanyId = req.header("x-automation-os-company-id")?.trim() ?? "";
+  const values = [bodyCompanyId || bodyProjectId, queryCompanyId || queryProjectId, headerCompanyId].filter(Boolean);
+  if (new Set(values).size > 1) throw new Error("company_project_scope_mismatch");
+  const companyId = values[0] ?? "";
+  if (!companyId && required) throw new Error("project_id_required");
+  return companyId;
+}
+
+function automationApiView(automation: AutomationRecord) {
+  return {
+    id: automation.id,
+    company_id: automation.companyId,
+    project_id: automation.companyId,
+    revision: automation.revision,
+    current_version_id: automation.currentVersionId,
+    automation_type: automation.automationType,
+    name: automation.name,
+    description: automation.description,
+    desc: automation.description,
+    goal: automation.goal,
+    schedule: "manual",
+    cadence: "manual",
+    lane: automation.lane,
+    risk_level: automation.riskLevel,
+    approval_policy: automation.approvalPolicy,
+    worker_command_kind: automation.workerCommandKind,
+    create_approval: automation.createApproval,
+    builder_spec: automation.builderSpec,
+    status: automation.status,
+    archived_at: automation.archivedAt,
+    created_at: automation.createdAt,
+    updated_at: automation.updatedAt,
+    deep_link: `#/projects/${encodeURIComponent(automation.companyId)}/automations/${encodeURIComponent(automation.id)}/edit`
+  };
+}
+
+function durableJobApiView(job: {
+  id: string;
+  companyId: string;
+  runId: string;
+  automationId: string;
+  automationVersionId: string;
+  scheduleOccurrenceId: string | null;
+  kind: string;
+  status: string;
+  payloadHash: string;
+  priority: number;
+  maxAttempts: number;
+  attemptCount: number;
+  availableAt: string;
+  concurrencyKey: string;
+  maxConcurrency: number;
+  leaseOwner: string | null;
+  leaseExpiresAt: string | null;
+  fencingToken: number;
+  heartbeatAt: string | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}) {
+  return {
+    id: job.id,
+    company_id: job.companyId,
+    run_id: job.runId,
+    automation_id: job.automationId,
+    automation_version_id: job.automationVersionId,
+    schedule_occurrence_id: job.scheduleOccurrenceId,
+    kind: job.kind,
+    status: job.status,
+    payload_hash: job.payloadHash,
+    priority: job.priority,
+    max_attempts: job.maxAttempts,
+    attempt_count: job.attemptCount,
+    available_at: job.availableAt,
+    concurrency_key: job.concurrencyKey,
+    max_concurrency: job.maxConcurrency,
+    lease_active: job.status === "leased" && Boolean(job.leaseExpiresAt),
+    heartbeat_at: job.heartbeatAt,
+    last_error: job.lastError,
+    created_at: job.createdAt,
+    updated_at: job.updatedAt
+  };
+}
+
+function durableAttemptApiView(attempt: {
+  id: string;
+  jobId: string;
+  attemptNo: number;
+  status: string;
+  startedAt: string;
+  heartbeatAt: string;
+  finishedAt: string | null;
+  errorCode: string | null;
+}) {
+  return {
+    id: attempt.id,
+    job_id: attempt.jobId,
+    attempt_no: attempt.attemptNo,
+    status: attempt.status,
+    started_at: attempt.startedAt,
+    heartbeat_at: attempt.heartbeatAt,
+    finished_at: attempt.finishedAt,
+    error: attempt.errorCode
+  };
+}
+
+function boundApprovalApiView(approval: {
+  id: string;
+  companyId: string;
+  runId: string;
+  jobId: string;
+  stepId: string | null;
+  title: string;
+  requestedBy: string;
+  status: string;
+  priority: string;
+  actionKind: string;
+  targetAccountRefId: string | null;
+  payloadHash: string;
+  policyVersion: string;
+  expiresAt: string;
+  decidedByUserId: string | null;
+  decisionRevision: number;
+  consumedAt: string | null;
+  consumedByAttemptId: string | null;
+  createdAt: string;
+  decidedAt: string | null;
+  decisionNote: string | null;
+}) {
+  return {
+    id: approval.id,
+    company_id: approval.companyId,
+    run_id: approval.runId,
+    job_id: approval.jobId,
+    step_id: approval.stepId,
+    title: approval.title,
+    requested_by: approval.requestedBy,
+    status: approval.status,
+    priority: approval.priority,
+    action_kind: approval.actionKind,
+    target_account_ref_id: approval.targetAccountRefId,
+    payload_hash: approval.payloadHash,
+    policy_version: approval.policyVersion,
+    expires_at: approval.expiresAt,
+    decided_by_user_id: approval.decidedByUserId,
+    decision_revision: approval.decisionRevision,
+    consumed_at: approval.consumedAt,
+    consumed_by_attempt_id: approval.consumedByAttemptId,
+    created_at: approval.createdAt,
+    decided_at: approval.decidedAt,
+    decision_note: approval.decisionNote
+  };
+}
+
+function legacyAutomationDefinition(body: any) {
+  return {
+    automation_type: body?.automation_type ?? "sns-post",
+    name: body?.name ?? "SNS投稿",
+    description: body?.description ?? body?.desc ?? "",
+    goal: body?.goal ?? "",
+    lane: body?.lane ?? "local",
+    risk_level: body?.risk_level ?? "high",
+    approval_policy: body?.approval_policy ?? "required_before_external_action",
+    worker_command_kind: body?.worker_command_kind ?? "safe_local_demo",
+    create_approval: body?.create_approval ?? true,
+    builder_spec: body?.builder_spec ?? {}
+  };
+}
+
+function legacyAutomationPatch(body: any) {
+  const patch: Record<string, unknown> = {};
+  const fields = ["automation_type", "name", "goal", "lane", "risk_level", "approval_policy", "worker_command_kind", "create_approval", "builder_spec", "expected_revision"];
+  for (const field of fields) {
+    if (body && Object.prototype.hasOwnProperty.call(body, field)) patch[field] = body[field];
+  }
+  if (body && (Object.prototype.hasOwnProperty.call(body, "description") || Object.prototype.hasOwnProperty.call(body, "desc"))) {
+    patch.description = body.description ?? body.desc;
+  }
+  return patch;
+}
+
+function automationReceipt(action: string, automation: AutomationRecord) {
+  return {
+    action,
+    company_id: automation.companyId,
+    automation_id: automation.id,
+    automation_version_id: automation.currentVersionId,
+    revision: automation.revision,
+    deep_link: `#/projects/${encodeURIComponent(automation.companyId)}/automations/${encodeURIComponent(automation.id)}/edit`
+  };
+}
+
+function durableJobReceipt(action: string, job: {
+  id: string;
+  companyId: string;
+  runId: string;
+  automationId: string;
+  automationVersionId: string;
+  status: string;
+}) {
+  return {
+    action,
+    company_id: job.companyId,
+    job_id: job.id,
+    run_id: job.runId,
+    automation_id: job.automationId,
+    automation_version_id: job.automationVersionId,
+    status: job.status
+  };
+}
+
+function expectedRevisionFrom(req: Parameters<RequestHandler>[0]): number {
+  const value = req.header("if-match") ?? req.body?.expected_revision ?? req.query?.expected_revision;
+  const revision = typeof value === "string" && /^\d+$/.test(value) ? Number(value) : value;
+  if (!Number.isSafeInteger(revision) || Number(revision) < 1) throw new AutomationContractError("automation_expected_revision_required");
+  return Number(revision);
+}
+
+function connectionExpectedRevisionFrom(req: Parameters<RequestHandler>[0]): number {
+  const value = req.header("if-match") ?? req.body?.expected_revision ?? req.query?.expected_revision;
+  const revision = typeof value === "string" && /^\d+$/.test(value) ? Number(value) : value;
+  if (!Number.isSafeInteger(revision) || Number(revision) < 1) throw new AutomationContractError("company_connection_ref_expected_revision_required");
+  return Number(revision);
+}
+
+function requiredBodyString(value: unknown, code: string): string {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  if (!normalized) throw new AutomationContractError(code);
+  return normalized;
+}
+
+function sendAutomationApiError(res: Parameters<RequestHandler>[1], error: unknown, fallback: string): void {
+  const code = error instanceof AutomationContractError
+    || error instanceof AutomationRepositoryError
+    || error instanceof IdempotencyError
+    ? error.code
+    : error instanceof Error ? error.message : fallback;
+  const status = code === "company_scope_forbidden"
+    ? 404
+    : code.endsWith("_not_found") || code === "automation_not_found"
+      ? 404
+      : code.includes("conflict") || code.includes("pending") || code.includes("incomplete") || code === "automation_archived"
+        ? 409
+        : code.includes("required") || code.includes("invalid") || code.includes("unknown_field") || code.includes("forbidden")
+          ? 400
+          : 500;
+  res.status(status).json({ ok: false, error: code, exactBlocker: code });
+}
+
+function sendDurableQueueError(res: Parameters<RequestHandler>[1], error: unknown, fallback: string): void {
+  const code = error instanceof DurableQueueError ? error.code : error instanceof Error ? error.message : fallback;
+  const status = code === "artifact_mime_not_viewable"
+    ? 415
+    : code === "durable_job_not_found" || code === "artifact_not_found" || code === "artifact_integrity_mismatch"
+    ? 404
+    : code.endsWith("_required") || code.endsWith("_invalid")
+      ? 400
+      : code.includes("conflict")
+        || code.includes("terminal")
+        || code.includes("expired")
+        || code.includes("fence")
+        || code.includes("retryable")
+        || code.includes("attempt_not_found")
+        || code.includes("kind_not_dry_run")
+        ? 409
+        : 500;
+  res.status(status).json({ ok: false, error: code, exactBlocker: code });
+}
+
+function sendBoundApprovalError(res: Parameters<RequestHandler>[1], error: unknown, fallback: string): void {
+  const code = error instanceof BoundApprovalError ? error.code : error instanceof Error ? error.message : fallback;
+  if (code === "company_scope_forbidden") {
+    res.status(404).json({ ok: false, error: "approval_not_found", exactBlocker: "approval_not_found" });
+    return;
+  }
+  const status = code === "company_scope_forbidden" || code.endsWith("_not_found")
+    ? 404
+    : code.includes("conflict") || code.includes("pending") || code.includes("expired") || code.includes("consumable") || code.includes("binding_mismatch")
+      ? 409
+      : code.includes("required") || code.includes("invalid") || code.includes("future")
+        ? 400
+        : 500;
+  res.status(status).json({ ok: false, error: code, exactBlocker: code });
+}
+
+function resolveCompanyScope(req: Parameters<RequestHandler>[0], requireSelected: boolean): { companyIds: string[]; roles: Record<string, CompanyRole> } {
+  const companies = listActorCompanies();
+  const requested = requestedCompanyId(req, requireSelected);
+  const selected = requested ? requireCompanyAccess(requested) : null;
+  const scoped = selected ? [selected] : companies;
+  return {
+    companyIds: scoped.map((company) => company.id),
+    roles: Object.fromEntries(scoped.map((company) => [company.id, company.role]))
+  };
+}
+
+function actorCompanyIds(allowedRoles?: readonly CompanyRole[]): string[] {
+  return listActorCompanies()
+    .filter((company) => !allowedRoles || allowedRoles.includes(company.role))
+    .map((company) => company.id);
+}
+
+function sendCompanyScopeError(
+  res: Parameters<RequestHandler>[1],
+  error: unknown,
+  fallback: string
+): void {
+  const message = error instanceof Error ? error.message : fallback;
+  const status = message === "company_scope_forbidden"
+    ? 403
+    : message === "company_slug_conflict" || message === "automation_company_mismatch" || message === "company_project_scope_mismatch" || message === "idempotency_key_payload_conflict" || message === "idempotency_request_pending" || message === "idempotency_request_incomplete"
+      ? 409
+      : message === "company_not_found" || message === "automation_not_found"
+        ? 404
+        : message === "project_id_required" || message.startsWith("company_") || message.startsWith("idempotency_")
+          ? 400
+          : 500;
+  res.status(status).json({ ok: false, error: message, exactBlocker: message });
+}
+
+function sendTenantResourceError(
+  res: Parameters<RequestHandler>[1],
+  error: unknown,
+  notFoundError: string,
+  fallback: string
+): void {
+  if (error instanceof Error && error.message === "company_scope_forbidden") {
+    res.status(404).json({ ok: false, error: notFoundError, exactBlocker: notFoundError });
+    return;
+  }
+  sendCompanyScopeError(res, error, fallback);
+}
+
+function sendResearchPlanScopeError(res: Parameters<RequestHandler>[1], error: unknown): boolean {
+  const message = error instanceof Error ? error.message : "";
+  if (
+    message === "research_plan_run_company_mismatch"
+    || message === "research_plan_run_not_found"
+    || message === "research_plan_run_company_required"
+  ) {
+    res.status(404).json({ error: "research_plan_not_found" });
+    return true;
+  }
+  return false;
+}
+
 function isCreateSessionEndpoint(req: Parameters<RequestHandler>[0]) {
   return req.path === "/api/create/session" && (req.method === "PATCH" || req.method === "POST");
 }
@@ -1966,6 +3285,7 @@ function isCreateSessionEndpoint(req: Parameters<RequestHandler>[0]) {
 function isCreatePlannerWorkflowEndpoint(req: Parameters<RequestHandler>[0]) {
   if (req.method !== "POST") return false;
   return req.path === "/api/create/plan/jobs"
+    || req.path === "/api/create/chat"
     || req.path === "/api/planner/research-plan"
     || /^\/api\/planner\/[^/]+\/(?:demo|start|regularize)$/u.test(req.path);
 }
@@ -1974,6 +3294,14 @@ function readRequestWriteToken(req: Parameters<RequestHandler>[0]) {
   const header = req.header("x-automation-os-token") || req.header("authorization");
   if (!header) return "";
   return header.replace(/^Bearer\s+/i, "").trim();
+}
+
+function readProductionReadToken(env = process.env) {
+  for (const name of ["AUTOMATION_OS_READ_TOKEN", "AUTOMATION_OS_QA_READ_TOKEN", "AUTOMATION_OS_REPLAY_READ_TOKEN"]) {
+    const token = env[name];
+    if (typeof token === "string" && token.trim()) return token.trim();
+  }
+  return "";
 }
 
 function getProductionWriteGuardStatus() {
@@ -1989,10 +3317,13 @@ function getProductionWriteGuardStatus() {
 function getProductionApiAccessGuardStatus() {
   const explicit = process.env.AUTOMATION_OS_REQUIRE_API_TOKEN;
   const required = explicit === "1" || (explicit !== "0" && !process.env.NODE_TEST_CONTEXT);
+  const writeTokenConfigured = Boolean(process.env.AUTOMATION_OS_WRITE_TOKEN);
+  const readTokenConfigured = Boolean(readProductionReadToken());
   return {
     required,
-    tokenConfigured: Boolean(process.env.AUTOMATION_OS_WRITE_TOKEN),
-    mode: required ? (process.env.AUTOMATION_OS_WRITE_TOKEN ? "token_required" : "locked") : "off"
+    tokenConfigured: writeTokenConfigured || readTokenConfigured,
+    readTokenConfigured,
+    mode: required ? (writeTokenConfigured || readTokenConfigured ? "read_or_write_token_required" : "locked") : "off"
   };
 }
 
@@ -2275,7 +3606,7 @@ function getDashboardExpensiveSnapshot() {
   return snapshot;
 }
 
-export function getDashboard() {
+export function getDashboard(companyIds?: string[]) {
   if (dbBackend === "postgres" && process.env.AUTOMATION_OS_DASHBOARD_FULL_POSTGRES !== "1") return getPostgresFastDashboard();
   normalizeReceiptOnlyRuns();
   const { codexCapabilities, browserHealth } = getDashboardExpensiveSnapshot();
@@ -2387,7 +3718,7 @@ export function getDashboard() {
     "SELECT id, run_id, name, draft_markdown, created_at FROM skills ORDER BY created_at DESC LIMIT 8",
     "SELECT * FROM research_plans ORDER BY updated_at DESC LIMIT 8",
     "SELECT id, kind, label, masked_value, updated_at FROM stored_secrets ORDER BY updated_at DESC",
-    "SELECT * FROM mvp_automations ORDER BY updated_at DESC LIMIT 500"
+    companyScopedAutomationSql(companyIds)
   ]);
   const approvalInboxRows = latestPendingApprovalInboxRows(rawApprovalInboxRows as ApprovalInboxSourceRow[]);
   const codexAutomationMigrationLedger = buildCodexAutomationMigrationLedger({
@@ -2434,6 +3765,7 @@ export function getDashboard() {
     registeredWorkflows: publicRegisteredWorkflows,
     automations: (rawMvpAutomations as Array<Record<string, unknown>>).map((row) => ({
       id: String(row.id ?? ""),
+      company_id: String(row.company_id ?? row.project_id ?? ""),
       project_id: String(row.project_id ?? "project-a"),
       automation_type: String(row.automation_type ?? "sns-post"),
       name: String(row.name ?? ""),
@@ -2492,19 +3824,152 @@ export function getDashboard() {
   return { ...body, nextActions: buildNextActions({ ...body, runs: actionQueueRuns }) };
 }
 
-function getMvpStateReadback() {
-  const dashboard = getDashboard();
+function buildPersistedProjectPresentationProfile(
+  company: { id: string; name: string },
+  automations: Array<Record<string, unknown>>
+): ProjectPresentationProfile {
+  const derived = buildProjectPresentationProfile({
+    id: company.id,
+    name: company.name,
+    automations: automations.filter((automation) => String(automation.company_id ?? automation.project_id ?? "") === company.id)
+  });
+  const memory = listCompanyMemory(company.id).find((entry) => entry.key === "project_profile");
+  if (!memory) return derived;
+  try {
+    const override = parseProjectPresentationProfileOverride(JSON.parse(memory.body));
+    return applyProjectPresentationProfileOverride(derived, override, memory.revision);
+  } catch (error) {
+    const exactBlocker = error instanceof Error ? error.message : "project_profile_invalid";
+    return { ...derived, source: "persisted_project_profile", revision: memory.revision, exactBlocker };
+  }
+}
+
+function getMvpStateReadback(companyIds: string[]) {
+  const allowed = listActorCompanies().filter((company) => companyIds.includes(company.id));
+  const scopedIds = allowed.map((company) => company.id);
+  const companyPredicate = scopedCompanyPredicate("company_id", scopedIds);
+  const runs = sanitizeDashboardRows(querySql(`SELECT * FROM runs WHERE ${companyPredicate} ORDER BY created_at DESC LIMIT 500`));
+  const runIds = runs.map((row) => sqlValue(String((row as Record<string, unknown>).id ?? ""))).filter((value) => value !== "''");
+  const runPredicate = runIds.length > 0 ? `run_id IN (${runIds.join(", ")})` : "1=0";
+  const approvals = sanitizeDashboardRows(querySql(`
+    SELECT approvals.* FROM approvals
+    LEFT JOIN runs ON runs.id=approvals.run_id AND runs.company_id=approvals.company_id
+    WHERE ${scopedCompanyPredicate("approvals.company_id", scopedIds)}
+      AND (approvals.run_id IS NULL OR runs.id IS NOT NULL)
+    ORDER BY approvals.created_at DESC LIMIT 500
+  `));
+  const proofs = sanitizeDashboardRows(querySql(`
+    SELECT proofs.* FROM proofs
+    JOIN runs ON runs.id=proofs.run_id AND runs.company_id=proofs.company_id
+    WHERE ${scopedCompanyPredicate("proofs.company_id", scopedIds)}
+    ORDER BY proofs.created_at DESC LIMIT 500
+  `));
+  const automations = readMvpAutomations(scopedIds);
+  const feedbacks = readMvpFeedbacks(scopedIds);
+  const presentationProfiles = allowed.map((company) => buildPersistedProjectPresentationProfile(company, automations));
+  const durableJobs = scopedIds.flatMap((companyId) => listDurableJobs(companyId, 500));
+  const durableAttempts = durableJobs.flatMap((job) => listDurableJobAttempts(job.companyId, job.id));
+  const scheduleOccurrences = scopedIds.flatMap((companyId) => listDurableScheduleOccurrences(companyId, 500));
+  const queuedJobs = durableJobs.filter((job) => job.status === "queued");
+  const leasedJobs = durableJobs.filter((job) => job.status === "leased");
+  const latestHeartbeat = durableJobs.map((job) => job.heartbeatAt).filter((value): value is string => Boolean(value)).sort().at(-1) ?? null;
   return {
-    ...dashboard,
-    worker: buildMvpWorkerState(dashboard),
-    feedbacks: readMvpFeedbacks()
+    projects: allowed.map((company) => ({ id: company.id, project_id: company.id, name: company.name, status: company.status, role: company.role })),
+    companies: allowed,
+    automations,
+    presentation_profiles: presentationProfiles,
+    builder_specs: automations.map((automation) => ({
+      automation_id: automation.id,
+      company_id: automation.company_id,
+      project_id: automation.project_id,
+      updated_at: automation.updated_at,
+      spec: automation.builder_spec
+    })),
+    schedules: scopedIds.flatMap((companyId) => listAutomationSchedules(companyId).map((schedule) => ({
+      ...schedule,
+      company_id: schedule.companyId,
+      project_id: schedule.companyId,
+      automation_id: schedule.automationId,
+      automation_version_id: schedule.automationVersionId,
+      next_run_at: schedule.nextRunAt,
+      last_run_at: schedule.lastRunAt,
+      paused_at: schedule.pausedAt,
+      created_at: schedule.createdAt,
+      updated_at: schedule.updatedAt
+    }))),
+    runs,
+    jobs: durableJobs.map(durableJobApiView),
+    job_attempts: durableAttempts.map(durableAttemptApiView),
+    schedule_occurrences: scheduleOccurrences.map((occurrence) => ({
+      id: occurrence.id,
+      company_id: occurrence.companyId,
+      schedule_id: occurrence.scheduleId,
+      occurrence_key: occurrence.occurrenceKey,
+      scheduled_for: occurrence.scheduledFor,
+      status: occurrence.status,
+      job_id: occurrence.jobId,
+      created_at: occurrence.createdAt,
+      updated_at: occurrence.updatedAt
+    })),
+    actionableRuns: sanitizeDashboardRows(selectActionQueueRuns(runs as Array<{ status?: unknown; metadata_json?: unknown; project_id?: unknown; objective?: unknown; name?: unknown }>)),
+    steps: sanitizeDashboardRows(querySql(`SELECT * FROM run_steps WHERE ${runPredicate} ORDER BY started_at DESC LIMIT 500`)),
+    lanes: sanitizeDashboardRows(querySql(`SELECT * FROM lanes WHERE ${runPredicate} ORDER BY updated_at DESC LIMIT 500`)),
+    approvals,
+    approvalInbox: approvals,
+    proofs,
+    childRuns: sanitizeDashboardRows(querySql(`SELECT * FROM child_runs WHERE parent_run_id IN (${runIds.length > 0 ? runIds.join(", ") : "''"}) ORDER BY created_at DESC LIMIT 500`)),
+    workerEvents: sanitizeDashboardRows(querySql(`SELECT * FROM worker_events WHERE ${runPredicate} ORDER BY created_at DESC LIMIT 500`)),
+    project_memory: scopedIds.flatMap((companyId) => listCompanyMemory(companyId).map((entry) => ({
+      ...entry,
+      company_id: entry.companyId,
+      project_id: entry.companyId,
+      memory_key: entry.key,
+      archived_at: entry.archivedAt,
+      created_at: entry.createdAt,
+      updated_at: entry.updatedAt
+    }))),
+    feedbacks,
+    feedback_summary: {
+      source: "mvp_feedback",
+      captured_at: feedbacks[0]?.created_at ?? nowIso(),
+      count: feedbacks.length,
+      open_count: feedbacks.filter((item) => item.status === "open").length,
+      triaged_count: feedbacks.filter((item) => item.status === "triaged").length
+    },
+    registeredWorkflows: [],
+    researchPlans: [],
+    knowledgeNotes: [],
+    assets: [],
+    assetSummary: [],
+    skills: [],
+    secrets: [],
+    bridgeActions: [],
+    bridgeExecutions: [],
+    advisorEvents: [],
+    company_scope: { enforced: true, company_ids: scopedIds, actor_user_id: currentActorUserId() },
+    worker: {
+      id: "durable-company-queue",
+      status: leasedJobs.length > 0 ? "running" : "idle",
+      label: "会社別durable queue",
+      detail: `queued ${queuedJobs.length} / leased ${leasedJobs.length}`,
+      queue_depth: queuedJobs.length,
+      active_leases: leasedJobs.length,
+      heartbeat_at: latestHeartbeat,
+      last_run_id: durableJobs[0]?.runId ?? null,
+      readback_status: "stored",
+      exact_blocker: null,
+      next_action: queuedJobs.length > 0 ? "登録済みservice workerのclaimを待っています。" : "待機中のjobはありません。",
+      external_action_executed: false
+    },
+    browser_use_runtime: buildBrowserUseRuntimeSnapshot()
   };
 }
 
-function readMvpFeedbacks() {
+function readMvpFeedbacks(companyIds: string[] = actorCompanyIds(["owner"])) {
   initDb();
   return querySql<{
     id: string;
+    company_id: string;
     feedback_id: string;
     status: string;
     route: string;
@@ -2512,6 +3977,7 @@ function readMvpFeedbacks() {
     comment: string;
     artifact_uri: string;
     has_screenshot: number;
+    screenshot_artifact_id: string | null;
     viewport_json: string;
     workflow_context_json: string;
     category: string;
@@ -2520,8 +3986,10 @@ function readMvpFeedbacks() {
     captured_at: string;
     created_at: string;
     payload_json: string;
-  }>("SELECT * FROM mvp_feedback ORDER BY created_at DESC LIMIT 500").map((row) => ({
+  }>(`SELECT * FROM mvp_feedback WHERE ${scopedCompanyPredicate("company_id", companyIds)} ORDER BY created_at DESC LIMIT 500`).map((row) => ({
     id: row.id,
+    company_id: row.company_id,
+    project_id: row.company_id,
     feedback_id: row.feedback_id,
     status: row.status,
     route: row.route,
@@ -2529,6 +3997,7 @@ function readMvpFeedbacks() {
     comment: row.comment,
     artifact_uri: row.artifact_uri,
     has_screenshot: row.has_screenshot === 1,
+    screenshot_artifact_id: row.screenshot_artifact_id,
     viewport: safeJsonParse<Record<string, unknown>>(row.viewport_json, {}),
     workflow_context: safeJsonParse<Record<string, unknown>>(row.workflow_context_json, {}),
     category: row.category,
@@ -2540,113 +4009,43 @@ function readMvpFeedbacks() {
   }));
 }
 
-function readMvpAutomations() {
+function readMvpAutomations(companyIds?: string[]) {
   initDb();
-  return querySql<{
-    id: string;
-    project_id: string;
-    automation_type: string;
-    name: string;
-    description: string;
-    goal: string;
-    schedule: string;
-    cadence: string;
-    lane: string;
-    risk_level: string;
-    approval_policy: string;
-    worker_command_kind: string;
-    create_approval: number;
-    status: string;
-    builder_spec_json: string;
-    created_at: string;
-    updated_at: string;
-  }>("SELECT * FROM mvp_automations ORDER BY updated_at DESC LIMIT 500").map((row) => ({
-    id: row.id,
-    project_id: row.project_id,
-    automation_type: row.automation_type,
-    name: row.name,
-    description: row.description,
-    desc: row.description,
-    goal: row.goal,
-    schedule: row.schedule,
-    cadence: row.cadence,
-    lane: row.lane,
-    risk_level: row.risk_level,
-    approval_policy: row.approval_policy,
-    worker_command_kind: row.worker_command_kind,
-    create_approval: row.create_approval === 1,
-    status: row.status,
-    builder_spec: safeJsonParse<Record<string, unknown>>(row.builder_spec_json, {}),
-    created_at: row.created_at,
-    updated_at: row.updated_at
-  }));
-}
-
-function automationDraftPayloadFromBody(body: any, fallbackId?: string) {
-  const id = typeof body?.id === "string" && body.id.trim()
-    ? body.id.trim()
-    : (typeof body?.automation_type === "string" && body.automation_type.trim()
-      ? body.automation_type.trim()
-      : (fallbackId ?? ""));
-  const project_id = typeof body?.project_id === "string" && body.project_id.trim() ? body.project_id.trim() : "project-a";
-  const automation_type = typeof body?.automation_type === "string" && body.automation_type.trim() ? body.automation_type.trim() : "sns-post";
-  const name = typeof body?.name === "string" && body.name.trim() ? body.name.trim() : "SNS投稿";
-  const desc = typeof body?.desc === "string" ? body.desc.trim() : "";
-  const goal = typeof body?.goal === "string" ? body.goal.trim() : "";
-  const schedule = typeof body?.schedule === "string" && body.schedule.trim() ? body.schedule.trim() : "09:00";
-  const cadence = typeof body?.cadence === "string" && body.cadence.trim() ? body.cadence.trim() : "daily";
-  const lane = typeof body?.lane === "string" && body.lane.trim() ? body.lane.trim() : "Lane 1";
-  const risk_level = typeof body?.risk_level === "string" && body.risk_level.trim() ? body.risk_level.trim() : "high";
-  const approval_policy = typeof body?.approval_policy === "string" && body.approval_policy.trim() ? body.approval_policy.trim() : "required_before_external_post";
-  const worker_command_kind = typeof body?.worker_command_kind === "string" && body.worker_command_kind.trim() ? body.worker_command_kind.trim() : "safe_local_demo";
-  const create_approval = body?.create_approval === false ? 0 : 1;
-  const builder_spec = body?.builder_spec && typeof body.builder_spec === "object" ? body.builder_spec : {};
-  return { id, project_id, automation_type, name, desc, goal, schedule, cadence, lane, risk_level, approval_policy, worker_command_kind, create_approval, builder_spec };
-}
-
-function saveMvpAutomationDraft(body: any, fallbackId?: string) {
-  const payload = automationDraftPayloadFromBody(body, fallbackId);
-  if (!payload.id) throw new Error("automation_id_required");
-  const existing = querySql<{ created_at: string }>("SELECT created_at FROM mvp_automations WHERE id = " + sqlValue(payload.id) + " LIMIT 1")[0];
-  const timestamp = nowIso();
-  upsert("mvp_automations", {
-    id: payload.id,
-    project_id: payload.project_id,
-    automation_type: payload.automation_type,
-    name: payload.name,
-    description: payload.desc,
-    goal: payload.goal,
-    schedule: payload.schedule,
-    cadence: payload.cadence,
-    lane: payload.lane,
-    risk_level: payload.risk_level,
-    approval_policy: payload.approval_policy,
-    worker_command_kind: payload.worker_command_kind,
-    create_approval: payload.create_approval,
-    status: "draft",
-    builder_spec_json: JSON.stringify(payload.builder_spec),
-    created_at: existing?.created_at ?? timestamp,
-    updated_at: timestamp
+  const scopedIds = companyIds ?? actorCompanyIds();
+  return scopedIds.flatMap((companyId) => {
+    const schedules = new Map(listAutomationSchedules(companyId).map((schedule) => [schedule.automationId, schedule]));
+    return listAutomationRecords(companyId).map((automation) => {
+      const view = automationApiView(automation);
+      const schedule = schedules.get(automation.id);
+      return schedule ? {
+        ...view,
+        schedule: schedule.expression ?? schedule.kind,
+        cadence: schedule.kind,
+        schedule_status: schedule.status,
+        schedule_revision: schedule.revision,
+        pinned_schedule_version_id: schedule.automationVersionId,
+        next_run_at: schedule.nextRunAt,
+        last_run_at: schedule.lastRunAt
+      } : view;
+    });
   });
-  return {
-    id: payload.id,
-    project_id: payload.project_id,
-    automation_type: payload.automation_type,
-    name: payload.name,
-    description: payload.desc,
-    goal: payload.goal,
-    schedule: payload.schedule,
-    cadence: payload.cadence,
-    lane: payload.lane,
-    risk_level: payload.risk_level,
-    approval_policy: payload.approval_policy,
-    worker_command_kind: payload.worker_command_kind,
-    create_approval: Boolean(payload.create_approval),
-    status: "draft",
-    builder_spec: payload.builder_spec,
-    created_at: existing?.created_at ?? timestamp,
-    updated_at: timestamp
-  };
+}
+
+function companyScopedAutomationSql(companyIds?: string[]): string {
+  if (companyIds === undefined) return "SELECT * FROM mvp_automations ORDER BY updated_at DESC LIMIT 500";
+  if (companyIds.length === 0) return "SELECT * FROM mvp_automations WHERE 1=0";
+  const values = companyIds.map((companyId) => sqlValue(companyId)).join(", ");
+  return `SELECT * FROM mvp_automations WHERE company_id IN (${values}) ORDER BY updated_at DESC LIMIT 500`;
+}
+
+function readMvpAutomationScope(automationId: string, companyIds: readonly string[]): { id: string; company_id: string; project_id: string } | undefined {
+  const row = querySql<{ id: string; company_id: string; project_id: string }>(
+    `SELECT id, company_id, project_id FROM mvp_automations
+     WHERE id=${sqlValue(automationId)} AND ${scopedCompanyPredicate("company_id", companyIds)}
+     LIMIT 1`
+  )[0];
+  if (!row) return undefined;
+  return row;
 }
 
 function buildMvpWorkerState(dashboard: ReturnType<typeof getDashboard>) {
@@ -2697,7 +4096,10 @@ function buildMvpWorkerState(dashboard: ReturnType<typeof getDashboard>) {
   };
 }
 
-function buildMvpWorkerPreview(projectId = "all", dashboard = getDashboard()) {
+function buildMvpWorkerPreview(
+  projectId = "all",
+  dashboard: { runs?: Record<string, unknown>[]; worker?: { exact_blocker?: string | null; next_action?: string } } = getDashboard()
+) {
   const runs = Array.isArray(dashboard.runs) ? dashboard.runs : [];
   const actionQueueRuns = selectActionQueueRuns(runs as Array<{ status?: unknown; metadata_json?: unknown; project_id?: unknown; objective?: unknown; name?: unknown }>);
   const projectScopedRuns = projectId === "all"
@@ -2712,7 +4114,7 @@ function buildMvpWorkerPreview(projectId = "all", dashboard = getDashboard()) {
     const status = String((run as { status?: unknown }).status ?? "");
     return status === "blocked" || status === "waiting_approval" || status === "approval_required" || Boolean((run as { exact_blocker?: unknown }).exact_blocker);
   }).length;
-  const worker = buildMvpWorkerState(dashboard);
+  const worker = dashboard.worker ?? buildMvpWorkerState(dashboard as ReturnType<typeof getDashboard>);
   return {
     ok: true,
     read_only: true,
@@ -2726,8 +4128,10 @@ function buildMvpWorkerPreview(projectId = "all", dashboard = getDashboard()) {
   };
 }
 
-function deriveRunProjectId(run: { project_id?: unknown; metadata_json?: unknown; objective?: unknown; name?: unknown }): string {
-  const direct = typeof run.project_id === "string" ? run.project_id.trim() : "";
+function deriveRunProjectId(run: { company_id?: unknown; project_id?: unknown; metadata_json?: unknown; objective?: unknown; name?: unknown }): string {
+  const direct = typeof run.company_id === "string" && run.company_id.trim()
+    ? run.company_id.trim()
+    : typeof run.project_id === "string" ? run.project_id.trim() : "";
   if (direct) return direct;
   const metadata = safeJsonParse<Record<string, unknown>>(typeof run.metadata_json === "string" ? run.metadata_json : "{}", {});
   const metadataProject = firstStringValue(
@@ -3208,25 +4612,51 @@ function publicRegisteredWorkflowLastAction(input: {
   return { action: "前回の実行", result: "記録を確認中", next: "履歴で確認" };
 }
 
-function runRegisteredWorkflowRehearsalCheck() {
-  const workflows = initRegisteredWorkflows();
+function runRegisteredWorkflowRehearsalCheck(companyIds: readonly string[]) {
+  initRegisteredWorkflows();
+  const workflows = listRegisteredWorkflowsForCompanies(companyIds);
   const activeWorkflows = workflows.filter((workflow) => String(workflow.status).toLowerCase() === "active");
-  const runRows = querySql<CodexAutomationMigrationRunRow>("SELECT id, name, status, objective, created_at, updated_at, metadata_json FROM runs ORDER BY updated_at DESC LIMIT 500");
-  const proofRows = querySql<CodexAutomationMigrationProofRow & { uri?: string }>(
-    "SELECT run_id, proof_type, created_at, metadata_json, uri FROM proofs ORDER BY created_at DESC LIMIT 2000"
+  const actorUserId = currentActorUserId();
+  const companyRunRows = querySql<CodexAutomationMigrationRunRow>(
+    `SELECT id, name, status, objective, created_at, updated_at, metadata_json FROM runs WHERE ${scopedCompanyPredicate("company_id", companyIds)} ORDER BY updated_at DESC LIMIT 500`
   );
-  const approvalRows = querySql<CodexAutomationMigrationApprovalRow>("SELECT id, run_id, status, created_at FROM approvals ORDER BY created_at DESC LIMIT 2000");
+  const eligibleGlobalRunPredicate = `(
+    company_id IS NULL
+    AND json_extract(metadata_json, '$.system_scope')='global'
+    AND (
+      json_extract(metadata_json, '$.system_admin_actor_user_id')=${sqlValue(actorUserId)}
+      OR json_extract(metadata_json, '$.scheduler_service_identity.scope')='global_system'
+    )
+  )`;
+  const eligibleGlobalRunRows = querySql<CodexAutomationMigrationRunRow>(`
+    SELECT id, name, status, objective, created_at, updated_at, metadata_json
+    FROM runs
+    WHERE ${eligibleGlobalRunPredicate}
+    ORDER BY updated_at DESC
+    LIMIT 500
+  `);
+  const runRows = [...new Map([...companyRunRows, ...eligibleGlobalRunRows].map((run) => [run.id, run])).values()]
+    .sort((left, right) => right.updated_at.localeCompare(left.updated_at));
+  const scopedRunIds = runRows.map((run) => sqlValue(run.id));
+  const scopedRunPredicate = scopedRunIds.length > 0 ? `run_id IN (${scopedRunIds.join(", ")})` : "1=0";
+  const proofRows = querySql<CodexAutomationMigrationProofRow & { uri?: string }>(
+    `SELECT run_id, proof_type, created_at, metadata_json, uri FROM proofs WHERE ${scopedRunPredicate} ORDER BY created_at DESC LIMIT 2000`
+  );
+  const approvalRows = querySql<CodexAutomationMigrationApprovalRow>(
+    `SELECT id, run_id, status, created_at FROM approvals WHERE (${scopedCompanyPredicate("company_id", companyIds)} OR ${scopedRunPredicate}) ORDER BY created_at DESC LIMIT 2000`
+  );
   const ledger = buildCodexAutomationMigrationLedger({
     registeredWorkflows: activeWorkflows,
     runs: runRows,
     proofs: proofRows,
     approvals: approvalRows
   });
-  const stepRows = querySql<{ run_id: string; status: string; metadata_json: string }>("SELECT run_id, status, metadata_json FROM run_steps ORDER BY completed_at DESC LIMIT 2000");
+  const stepRows = querySql<{ run_id: string; status: string; metadata_json: string }>(
+    `SELECT run_id, status, metadata_json FROM run_steps WHERE ${scopedRunPredicate} ORDER BY completed_at DESC LIMIT 2000`
+  );
   const unsafeRunIds = unsafeExternalActionRunIds({ runs: runRows, steps: stepRows, proofs: proofRows });
   const ledgerByWorkflowId = indexMigrationLedgerByRegisteredWorkflowId(ledger.items);
   const runsById = new Map(runRows.map((run) => [run.id, run]));
-  const stepRowsByRunId = groupRowsByRunId(stepRows);
   const proofRowsByRunId = groupRowsByRunId(proofRows);
   const rows = activeWorkflows.map((workflow) => {
     const provenance = parseJson<{ safetyContract?: unknown }>(workflow.provenance_json, {});
@@ -3247,15 +4677,33 @@ function runRegisteredWorkflowRehearsalCheck() {
   });
   const failed = rows.filter((row) => row.status === "unsafe").length;
   const reviewRequired = rows.filter((row) => row.status === "review_required").length;
+  const referencePaths = buildSafeReferenceWorkflowPaths(activeWorkflows, ledgerByWorkflowId, runsById, proofRowsByRunId);
+  const safetyReferencePathsOk = referencePaths.every((path) => path.stages.safety_canary_verified);
+  const referencePathsComplete = referencePaths.every((path) => path.status === "complete");
   const result = {
-    ok: failed === 0 && reviewRequired === 0,
+    ok: failed === 0 && reviewRequired === 0 && safetyReferencePathsOk,
     checked: rows.length,
     failed,
     review_required: reviewRequired,
     labels: rows.map((row) => `${row.name}:${row.safety_label}`),
-    workflows: rows
+    workflows: rows,
+    safety_reference_paths_ok: safetyReferencePathsOk,
+    reference_paths_complete: referencePathsComplete,
+    reference_paths_ok: referencePathsComplete,
+    reference_paths: referencePaths,
+    external_action_executed: false
   };
-  const status = failed > 0 ? "blocked" : reviewRequired > 0 ? "review_required" : "ok";
+  const status = failed > 0 || !safetyReferencePathsOk ? "blocked" : reviewRequired > 0 ? "review_required" : "ok";
+  const systemCheckResult = {
+    ok: result.ok,
+    checked: result.checked,
+    failed: result.failed,
+    review_required: result.review_required,
+    safety_reference_paths_ok: result.safety_reference_paths_ok,
+    reference_paths_complete: result.reference_paths_complete,
+    reference_paths_ok: result.reference_paths_ok,
+    external_action_executed: false
+  };
   insert("system_checks", {
     id: makeId("registered_rehearsal"),
     kind: "registered_workflow_rehearsal",
@@ -3264,14 +4712,199 @@ function runRegisteredWorkflowRehearsalCheck() {
     summary:
       failed > 0
         ? "定期リハーサルで外部操作の確認が必要です"
+        : !safetyReferencePathsOk
+          ? "定期リハーサルで参照フローの安全境界が不足しています"
         : reviewRequired > 0
           ? "定期リハーサルに確認が必要です"
-          : "定期リハーサルは外部操作なしで確認しました",
+          : referencePathsComplete
+            ? "定期リハーサルと参照フローの実行証跡を確認しました"
+            : "定期リハーサルは外部操作なしで安全停止を確認しました。実運用完了は未確認です",
     artifact_uri: null,
     created_at: nowIso(),
-    metadata_json: result
+    metadata_json: systemCheckResult
   });
   return result;
+}
+
+function buildSafeReferenceWorkflowPaths(
+  workflows: RegisteredWorkflowRow[],
+  ledgerByWorkflowId: Map<string, CodexAutomationMigrationLedgerItem>,
+  runsById: Map<string, CodexAutomationMigrationRunRow>,
+  proofRowsByRunId: Map<string, Array<CodexAutomationMigrationProofRow & { uri?: string }>>
+) {
+  const references = [
+    { id: "daily-ai-research-publish-run", name: "Daily AI", adapter: "daily_ai_registered" as const, completion: "approved_publish_requires_readback" },
+    { id: "job-application-manager", name: "Job Application Manager", adapter: "job_submit_registered" as const, completion: "approved_submit_requires_readback" },
+    { id: "nisenprints-daily-product-canva-printify-etsy-pinterest", name: "NisenPrints", adapter: "nisenprints_registered" as const, completion: "approved_publish_requires_readback" }
+  ];
+  const canaryPaths = readFreshReferenceWorkflowCanary();
+  return references.map((reference) => {
+    const workflow = workflows.find((item) => item.id === reference.id);
+    const provenance = workflow ? parseJson<any>(workflow.provenance_json, {}) : {};
+    const safety = provenance.safetyContract ?? {};
+    const policy = resolveWorkerAdapterPolicy(reference.adapter);
+    const schedule = workflow ? parseJson<Record<string, unknown>>(workflow.schedule_json, {}) : {};
+    const ledgerItem = ledgerByWorkflowId.get(reference.id);
+    const currentDefinitionFingerprint = workflow
+      ? referenceWorkflowDefinitionFingerprint(workflow)
+      : null;
+    const currentScheduleFingerprint = workflow
+      ? referenceWorkflowScheduleFingerprint(workflow)
+      : null;
+    const canaryPath = canaryPaths?.get(reference.id);
+    const safetyCanaryVerified = Boolean(
+      canaryPath &&
+      canaryPath.definitionFingerprint === currentDefinitionFingerprint &&
+      canaryPath.scheduleFingerprint === currentScheduleFingerprint
+    );
+    const completionRun = ledgerItem?.latestRunId ? runsById.get(ledgerItem.latestRunId) : undefined;
+    const completionRunStart = completionRun
+      ? asRecord(parseJson<Record<string, unknown>>(completionRun.metadata_json, {}).registered_workflow_start)
+      : {};
+    const completionProofs = completionRun ? proofRowsByRunId.get(completionRun.id) ?? [] : [];
+    const completionLineageVerified = Boolean(
+      workflow &&
+      completionRun &&
+      completionRunStart.workflow_id === workflow.id &&
+      completionRunStart.definition_fingerprint === currentDefinitionFingerprint &&
+      completionRunStart.schedule_fingerprint === currentScheduleFingerprint &&
+      completionProofs.some((proof) => {
+        const proofStart = asRecord(parseJson<Record<string, unknown>>(proof.metadata_json ?? "{}", {}).registered_workflow_start);
+        return proofStart.workflow_id === workflow.id &&
+          proofStart.definition_fingerprint === currentDefinitionFingerprint &&
+          proofStart.schedule_fingerprint === currentScheduleFingerprint;
+      })
+    );
+    const completionVerified =
+      ledgerItem?.actualOperationConfirmed === true &&
+      ledgerItem.proofConfirmed === true &&
+      completionLineageVerified;
+    const stages = {
+      definition_registered: Boolean(workflow && workflow.status === "active"),
+      schedule_registered: schedule.kind === "cron" && typeof schedule.rrule === "string" && schedule.rrule.trim() !== "",
+      route_guarded: workflow?.runner_kind === reference.adapter && policy.exactBlocker === "in_app_browser_required",
+      approval_boundary: safety.externalActionBoundary === "billing_purchase_payment_checkout_hard_stop"
+        && Array.isArray(safety.humanInputRequiredWithEvidence)
+        && ["captcha", "otp", "security_code", "identity_verification"].every((item) => safety.humanInputRequiredWithEvidence.includes(item)),
+      completion_contract: provenance.completionBoundary === reference.completion,
+      no_external_action: safety.externalActionExecutedByRehearsal === false,
+      safety_canary_verified: safetyCanaryVerified,
+      worker_outcome_verified: ledgerItem?.actualOperationConfirmed === true,
+      operation_proof_verified: ledgerItem?.proofConfirmed === true,
+      completion_lineage_verified: completionLineageVerified,
+      completion_verified: completionVerified
+    };
+    const contractShapeReady =
+      stages.definition_registered &&
+      stages.schedule_registered &&
+      stages.route_guarded &&
+      stages.approval_boundary &&
+      stages.completion_contract &&
+      stages.no_external_action;
+    return {
+      id: reference.id,
+      name: reference.name,
+      status: !contractShapeReady
+        ? "blocked"
+        : completionVerified
+          ? stages.safety_canary_verified
+            ? "complete"
+            : "contract_shape_ready"
+          : stages.safety_canary_verified
+            ? "proof_backed_safe_stop_verified"
+            : "contract_shape_ready",
+      stages
+    };
+  });
+}
+
+function readFreshReferenceWorkflowCanary(): Map<string, { definitionFingerprint: string; scheduleFingerprint: string }> | undefined {
+  const receiptPath = process.env.AUTOMATION_OS_REFERENCE_CANARY_RECEIPT?.trim();
+  if (!receiptPath || !isAbsolute(receiptPath) || !existsSync(receiptPath)) return undefined;
+  try {
+    const receipt = parseJson<any>(readFileSync(receiptPath, "utf8"), {});
+    const generatedAt = Date.parse(String(receipt.generated_at ?? ""));
+    const maxAgeMs = Math.min(
+      boundedPositiveInteger(process.env.AUTOMATION_OS_REFERENCE_CANARY_MAX_AGE_MS, 24 * 60 * 60 * 1000),
+      24 * 60 * 60 * 1000
+    );
+    const ageMs = Date.now() - generatedAt;
+    if (
+      receipt.schema !== "automation_os_reference_workflow_canary.v2" ||
+      receipt.ok !== true ||
+      receipt.safety_reference_paths_ok !== true ||
+      receipt.reference_paths_complete !== false ||
+      receipt.external_action_executed !== false ||
+      receipt.mode !== "isolated_sqlite_proof_backed_safe_stop_canary" ||
+      receipt.scope?.database !== "ephemeral_tmp" ||
+      receipt.scope?.artifacts !== "ephemeral_tmp" ||
+      receipt.scope?.approval_model !== "billing_only_no_start_approval" ||
+      !Number.isFinite(generatedAt) ||
+      ageMs < -5 * 60 * 1000 ||
+      ageMs > maxAgeMs ||
+      !Array.isArray(receipt.paths) ||
+      receipt.paths.length !== 3
+    ) return undefined;
+    const expected = new Map([
+      ["daily-ai-research-publish-run", "daily_ai_registered"],
+      ["job-application-manager", "job_submit_registered"],
+      ["nisenprints-daily-product-canva-printify-etsy-pinterest", "nisenprints_registered"]
+    ]);
+    const verified = new Map<string, { definitionFingerprint: string; scheduleFingerprint: string }>();
+    const runIds = new Set<string>();
+    for (const path of receipt.paths) {
+      if (!path || typeof path !== "object") return undefined;
+      const id = String(path.id ?? "");
+      const runId = String(path.run_id ?? "").trim();
+      if (
+        expected.get(id) !== path.adapter ||
+        !runId ||
+        runIds.has(runId) ||
+        path.status !== "proof_backed_safe_stop_verified" ||
+        path.exact_blocker !== "in_app_browser_required" ||
+        path.run_blocked !== true ||
+        path.step_blocked !== true ||
+        path.proof_gate_ok !== false ||
+        path.runner_exit_status !== null ||
+        path.runner_started !== false ||
+        path.runner_completed !== false ||
+        path.external_action_executed !== false ||
+        path.idempotent_recheck !== true ||
+        path.approval_boundary_verified !== true ||
+        path.company_scope_verified !== true ||
+        path.start_lineage_verified !== true ||
+        path.worker_blocked_event_verified !== true ||
+        path.safety_proof_verified !== true ||
+        path.completion_claimed !== false ||
+        path.operation_proof_gate_ok !== false ||
+        !/^[a-f0-9]{64}$/.test(String(path.definition_fingerprint ?? "")) ||
+        !/^[a-f0-9]{64}$/.test(String(path.schedule_fingerprint ?? ""))
+      ) return undefined;
+      verified.set(id, {
+        definitionFingerprint: String(path.definition_fingerprint),
+        scheduleFingerprint: String(path.schedule_fingerprint)
+      });
+      runIds.add(runId);
+    }
+    return verified.size === expected.size && runIds.size === expected.size ? verified : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function referenceWorkflowDefinitionFingerprint(workflow: RegisteredWorkflowRow): string {
+  return createHash("sha256").update(JSON.stringify({
+    id: workflow.id,
+    status: workflow.status,
+    runner_kind: workflow.runner_kind,
+    start_command_json: workflow.start_command_json,
+    source_refs_json: workflow.source_refs_json,
+    provenance_json: workflow.provenance_json
+  })).digest("hex");
+}
+
+function referenceWorkflowScheduleFingerprint(workflow: RegisteredWorkflowRow): string {
+  return createHash("sha256").update(JSON.stringify({ schedule_json: workflow.schedule_json })).digest("hex");
 }
 
 function proofMetadataHasExternalAction(value: unknown): boolean {
@@ -3356,116 +4989,105 @@ function publicRegisteredWorkflowById(id: string) {
   return publicRegisteredWorkflow(workflow, ledgerByWorkflowId.get(workflow.id));
 }
 
-const PROJECT_A_REGISTERED_AUTOMATION_IDS = new Set([
-  "daily-ai-research-publish-run",
-  "job-application-manager",
-  "nisenprints-daily-product-canva-printify-etsy-pinterest"
-]);
+const REGISTERED_AUTOMATION_EXTERNAL_BOUNDARY = "external_post_send_delete_submit_publish_auth_captcha_otp_payment_gate";
 
-const PROJECT_A_REGISTERED_AUTOMATION_INVENTORY_RUN_ID = "20260702050000";
-const PROJECT_A_REGISTERED_AUTOMATION_PREFLIGHT_RUN_ID = "20260702051000";
-const PROJECT_A_REGISTERED_AUTOMATION_LATEST_PROOF_RUN_ID = "20260704T001357+0900";
-const PROJECT_A_REGISTERED_AUTOMATION_INVENTORY_SOURCE_REF = "data/registered-automation-inventory.json";
-const PROJECT_A_REGISTERED_AUTOMATION_PREFLIGHT_SOURCE_REF = "data/registered-automation-preflight.json";
-const PROJECT_A_REGISTERED_AUTOMATION_LATEST_PROOF_SOURCE_REF = "data/registered-automation-latest-proof.json";
+function buildScopedRegisteredAutomationLedger(companyId: string, workflows: ReturnType<typeof listRegisteredWorkflowsForCompanies>) {
+  const companyPredicate = scopedCompanyPredicate("company_id", [companyId]);
+  const runs = querySql<CodexAutomationMigrationRunRow>(`
+    SELECT id, name, status, objective, created_at, updated_at, metadata_json
+    FROM runs
+    WHERE ${companyPredicate}
+    ORDER BY updated_at DESC
+    LIMIT 500
+  `);
+  const runIds = runs.map((run) => sqlValue(run.id));
+  const runPredicate = runIds.length ? `run_id IN (${runIds.join(", ")})` : "1=0";
+  const proofs = querySql<CodexAutomationMigrationProofRow>(`
+    SELECT run_id, proof_type, created_at, metadata_json
+    FROM proofs
+    WHERE ${runPredicate} AND ${companyPredicate.replace("company_id", "proofs.company_id")}
+    ORDER BY created_at DESC
+    LIMIT 2000
+  `);
+  const approvals = querySql<CodexAutomationMigrationApprovalRow>(`
+    SELECT id, run_id, status, created_at
+    FROM approvals
+    WHERE ${companyPredicate.replace("company_id", "approvals.company_id")}
+    ORDER BY created_at DESC
+    LIMIT 2000
+  `);
+  return indexMigrationLedgerByRegisteredWorkflowId(buildCodexAutomationMigrationLedger({
+    registeredWorkflows: workflows,
+    runs,
+    proofs,
+    approvals
+  }).items);
+}
 
-type ProjectARegisteredAutomationSnapshot = {
-  run_id: string;
-  source_ref: string | null;
-  preflight_source_ref: string | null;
-  latest_proof_source_ref: string | null;
-  inventory_run_id: string;
-  preflight_run_id: string;
-  latest_proof_run_id: string;
-  safety_boundary: string;
-  exact_boundary: string;
-  checks: Array<{ id: string; status: string }>;
-  automations: Array<{
-    id: string;
-    name: string;
-    kind: string;
-    status: string;
-    execution_class: string;
-    allowed_action: string;
-    blocked_action: string;
-    preflight_status: string;
-    execution_environment: string;
-    toml_ref: string | null;
-    cwds: string[];
-    has_prompt: boolean;
-    can_run: boolean;
-    exact_blocker: string | null;
-    ui_action: string;
-    action_label: string;
-    resume_condition: string;
-    latest_proof: {
-      status: string;
-      checked_at: string;
-      source_ref: string | null;
-    } | null;
-  }>;
-};
-
-function buildProjectARegisteredAutomationReadback(projectId = "project-a"): { ok: boolean; read_only: boolean; project_id: string; external_action_executed: boolean; exact_boundary: string; source_ref: string | null; preflight_source_ref: string | null; latest_proof_source_ref: string | null; inventory_run_id: string | null; preflight_run_id: string | null; latest_proof_run_id: string | null; safety_boundary: string | null; automation_count: number; checks: Array<{ id: string; status: string }>; automations: ProjectARegisteredAutomationSnapshot["automations"] } {
-  if (projectId !== "project-a") {
+function buildCompanyRegisteredAutomationReadback(projectId: string) {
+  initRegisteredWorkflows();
+  const workflows = filterRegisteredWorkflowList(listRegisteredWorkflowsForCompanies([projectId]));
+  const ledgerByWorkflowId = buildScopedRegisteredAutomationLedger(projectId, workflows);
+  const automations = workflows.map((workflow) => {
+    const ledger = ledgerByWorkflowId.get(workflow.id);
+    const paused = isRegisteredWorkflowSchedulePaused(workflow);
+    const latestProof = ledger && ledger.latestProofTypes.length > 0 && ledger.evidenceUpdatedAt
+      ? {
+          status: ledger.proofConfirmed ? "confirmed" : "stored",
+          checked_at: ledger.evidenceUpdatedAt,
+          source_ref: null
+        }
+      : null;
     return {
-      ok: false,
-      read_only: true,
-      project_id: projectId,
-      external_action_executed: false,
-      exact_boundary: "registered_automation_project_scope_mismatch",
-      source_ref: null,
-      preflight_source_ref: null,
-      latest_proof_source_ref: null,
-      inventory_run_id: null,
-      preflight_run_id: null,
-      latest_proof_run_id: null,
-      safety_boundary: null,
-      automation_count: 0,
-      checks: [],
-      automations: []
+      id: workflow.id,
+      name: publicWorkflowName(workflow),
+      kind: workflow.schedule_json ? parseJson<{ kind?: unknown }>(workflow.schedule_json, {}).kind ?? "registered" : "registered",
+      status: paused ? "paused" : workflow.status,
+      execution_class: "registered_runner_readback",
+      allowed_action: "preflight_readiness_only",
+      blocked_action: REGISTERED_AUTOMATION_EXTERNAL_BOUNDARY,
+      preflight_status: paused ? "schedule_paused" : "readiness_pass_side_effect_blocked",
+      execution_environment: "local runner",
+      toml_ref: null,
+      cwds: [],
+      has_prompt: Boolean(workflow.start_command_json && workflow.start_command_json !== "{}"),
+      can_run: false,
+      exact_blocker: paused ? "registered_automation_schedule_paused" : "registered_automation_local_runner_not_wired_to_http",
+      ui_action: "read-only preflight",
+      action_label: "read-only preflight",
+      resume_condition: paused
+        ? "この定期実行を再開してから、local runnerのreadbackを確認してください。"
+        : "local runnerでpreflightを実行し、proof/readbackを確認してください。HTTP APIから外部作用は開始しません。",
+      latest_proof: latestProof
     };
-  }
-
-  const snapshot = loadProjectARegisteredAutomationSnapshot();
+  });
   return {
     ok: true,
     read_only: true,
-    project_id: "project-a",
+    project_id: projectId,
     external_action_executed: false,
-    exact_boundary: snapshot.exact_boundary,
-    source_ref: snapshot.source_ref,
-    preflight_source_ref: snapshot.preflight_source_ref,
-    latest_proof_source_ref: snapshot.latest_proof_source_ref,
-    inventory_run_id: snapshot.inventory_run_id,
-    preflight_run_id: snapshot.preflight_run_id,
-    latest_proof_run_id: snapshot.latest_proof_run_id,
-    safety_boundary: snapshot.safety_boundary,
-    automation_count: snapshot.automations.length,
-    checks: snapshot.checks,
-    automations: snapshot.automations
+    exact_boundary: REGISTERED_AUTOMATION_EXTERNAL_BOUNDARY,
+    source_ref: null,
+    preflight_source_ref: null,
+    latest_proof_source_ref: null,
+    inventory_run_id: null,
+    preflight_run_id: null,
+    latest_proof_run_id: null,
+    safety_boundary: "read-only preflight; 外部投稿・応募・削除・送信・公開・認証突破・課金はHTTPから開始しない",
+    automation_count: automations.length,
+    checks: [
+      { id: "company_scoped_registered_workflows", status: "pass" },
+      { id: "external_actions_http_blocked", status: "pass" }
+    ],
+    automations
   };
 }
 
-function buildProjectARegisteredAutomationRunResponse(automationId: string, projectId = "project-a"): { statusCode?: number; body: Record<string, unknown> } {
-  if (projectId !== "project-a") {
-    return {
-      statusCode: 403,
-      body: {
-        ok: false,
-        read_only: true,
-        project_id: projectId,
-        automation_id: automationId,
-        external_action_executed: false,
-        exact_blocker: "registered_automation_project_scope_mismatch",
-        resume_condition: "This readback is only exposed for project-a."
-      }
-    };
-  }
-
-  const snapshot = loadProjectARegisteredAutomationSnapshot();
-  const automation = snapshot.automations.find((item) => item.id === automationId);
-  if (!automation) {
+function buildCompanyRegisteredAutomationRunResponse(automationId: string, projectId: string): { statusCode?: number; body: Record<string, unknown> } {
+  initRegisteredWorkflows();
+  const workflows = filterRegisteredWorkflowList(listRegisteredWorkflowsForCompanies([projectId]));
+  const workflow = workflows.find((item) => item.id === automationId);
+  if (!workflow) {
     return {
       statusCode: 404,
       body: {
@@ -3478,23 +5100,7 @@ function buildProjectARegisteredAutomationRunResponse(automationId: string, proj
       }
     };
   }
-
-  if (!automation.can_run) {
-    return {
-      body: {
-        ok: false,
-        read_only: true,
-        project_id: projectId,
-        automation_id: automationId,
-        external_action_executed: false,
-        exact_blocker: automation.exact_blocker ?? automation.blocked_action,
-        resume_condition: automation.resume_condition,
-        ui_action: automation.ui_action,
-        latest_proof: automation.latest_proof
-      }
-    };
-  }
-
+  const paused = isRegisteredWorkflowSchedulePaused(workflow);
   return {
     body: {
       ok: false,
@@ -3502,283 +5108,13 @@ function buildProjectARegisteredAutomationRunResponse(automationId: string, proj
       project_id: projectId,
       automation_id: automationId,
       external_action_executed: false,
-      exact_blocker: "registered_automation_local_runner_not_wired_to_http",
-      resume_condition: "Use the local operator runner and artifact readback instead of server-side HTTP execution.",
-      ui_action: automation.ui_action,
-      latest_proof: automation.latest_proof
+      exact_blocker: paused ? "registered_automation_schedule_paused" : "registered_automation_local_runner_not_wired_to_http",
+      resume_condition: paused
+        ? "この定期実行を再開してから、local runnerのreadbackを確認してください。"
+        : "Use the local operator runner and artifact readback instead of server-side HTTP execution.",
+      ui_action: "read-only preflight"
     }
   };
-}
-
-function loadProjectARegisteredAutomationSnapshot(): ProjectARegisteredAutomationSnapshot {
-  const inventory = readJsonCandidate<Record<string, unknown>>([
-    join(process.cwd(), PROJECT_A_REGISTERED_AUTOMATION_INVENTORY_SOURCE_REF),
-    join(process.cwd(), "work/automation-os-new-deploy-repo/data/registered-automation-inventory.json")
-  ]);
-  const preflight = readJsonCandidate<Record<string, unknown>>([
-    join(process.cwd(), PROJECT_A_REGISTERED_AUTOMATION_PREFLIGHT_SOURCE_REF),
-    join(process.cwd(), "work/automation-os-new-deploy-repo/data/registered-automation-preflight.json")
-  ]);
-  const proof = readJsonCandidate<Record<string, unknown>>([
-    join(process.cwd(), PROJECT_A_REGISTERED_AUTOMATION_LATEST_PROOF_SOURCE_REF),
-    join(process.cwd(), "work/automation-os-new-deploy-repo/data/registered-automation-latest-proof.json")
-  ]);
-
-  const inventoryValue = inventory.value ?? {
-    run_id: PROJECT_A_REGISTERED_AUTOMATION_INVENTORY_RUN_ID,
-    checks: [
-      { id: "all_tomls_loaded", status: "pass" },
-      { id: "project_a_codex_app_registered_automations_only", status: "pass" },
-      { id: "exactly_one_safe_local_run_candidate", status: "pass" },
-      { id: "inactive_alias_not_runnable", status: "pass" },
-      { id: "external_automations_preflight_only", status: "pass" }
-    ],
-    automations: projectARegisteredAutomationInventoryRows()
-  };
-  const preflightValue = preflight.value ?? {
-    run_id: PROJECT_A_REGISTERED_AUTOMATION_PREFLIGHT_RUN_ID,
-    inventory_run_id: PROJECT_A_REGISTERED_AUTOMATION_INVENTORY_RUN_ID,
-    overall_status: "pass",
-    safety_boundary: "read-only preflight; no external post/send/delete/submit/publish, no auth bypass, no CAPTCHA/OTP/security-code, no payment/purchase, no raw secret read",
-    preflights: projectARegisteredAutomationPreflights()
-  };
-  const proofValue = proof.value ?? {
-    run_id: PROJECT_A_REGISTERED_AUTOMATION_LATEST_PROOF_RUN_ID,
-    checked_at: nowIso(),
-    proofs: []
-  };
-
-  const inventoryAutomations = Array.isArray(inventoryValue.automations) ? inventoryValue.automations : projectARegisteredAutomationInventoryRows();
-  const preflightRows = Array.isArray(preflightValue.preflights) ? preflightValue.preflights : projectARegisteredAutomationPreflights();
-  const proofRows = Array.isArray(proofValue.proofs) ? proofValue.proofs : [];
-  const proofEntries: Array<[
-    string,
-    {
-      status: string;
-      checked_at: string;
-      source_ref: string | null;
-    }
-  ]> = proofRows
-    .map((row): Record<string, unknown> | null => row && typeof row === "object" ? row as Record<string, unknown> : null)
-    .filter((row): row is Record<string, unknown> => Boolean(row))
-    .map((row): [
-      string,
-      {
-        status: string;
-        checked_at: string;
-        source_ref: string | null;
-      }
-    ] => [
-      String(row.automation_id ?? row.id ?? "").trim(),
-      {
-        status: String(row.status ?? "OK"),
-        checked_at: String(row.checked_at ?? proofValue.checked_at ?? nowIso()),
-        source_ref: typeof row.source_ref === "string" ? row.source_ref : PROJECT_A_REGISTERED_AUTOMATION_LATEST_PROOF_SOURCE_REF
-      }
-    ])
-    .filter(([id]) => Boolean(id));
-  const proofByAutomationId = new Map<string, (typeof proofEntries)[number][1]>(proofEntries);
-
-  const preflightEntries: Array<[
-    string,
-    {
-      preflight_status: string;
-      exact_blocker: string;
-      resume_condition: string;
-    }
-  ]> = preflightRows
-    .map((row): Record<string, unknown> | null => row && typeof row === "object" ? row as Record<string, unknown> : null)
-    .filter((row): row is Record<string, unknown> => Boolean(row))
-    .map((row): [
-      string,
-      {
-        preflight_status: string;
-        exact_blocker: string;
-        resume_condition: string;
-      }
-    ] => [
-      String(row.id ?? "").trim(),
-      {
-        preflight_status: String(row.preflight_status ?? "readiness_pass_side_effect_blocked"),
-        exact_blocker: typeof row.exact_blocker === "string" ? row.exact_blocker : "external_post_send_delete_submit_publish_auth_captcha_otp_payment_gate",
-        resume_condition: typeof row.resume_condition === "string"
-          ? row.resume_condition
-          : "Provide a specific sandbox/test account, approval receipt, auth state, and stop point before any external side effect."
-      }
-    ])
-    .filter(([id]) => Boolean(id));
-  const preflightById = new Map<string, (typeof preflightEntries)[number][1]>(preflightEntries);
-
-  const automations = inventoryAutomations
-    .map((item) => item && typeof item === "object" ? item as Record<string, unknown> : null)
-    .filter((item): item is Record<string, unknown> => Boolean(item))
-    .filter((item) => PROJECT_A_REGISTERED_AUTOMATION_IDS.has(String(item.id ?? "").trim()))
-    .map((item) => {
-      const id = String(item.id ?? "").trim();
-      const preflightRow = preflightById.get(id);
-      const latestProof = proofByAutomationId.get(id) ?? null;
-      return {
-        id,
-        name: String(item.name ?? id),
-        kind: String(item.kind ?? "cron"),
-        status: String(item.status ?? "PAUSED"),
-        execution_class: String(item.execution_class ?? "external_side_effect_preflight"),
-        allowed_action: String(item.allowed_action ?? "preflight_readiness_only"),
-        blocked_action: String(item.blocked_action ?? "external_post_send_delete_submit_publish_auth_captcha_otp_payment"),
-        preflight_status: preflightRow?.preflight_status ?? String(item.preflight_status ?? "readiness_pass_side_effect_blocked"),
-        execution_environment: String(item.execution_environment ?? "local"),
-        toml_ref: typeof item.toml_path === "string" ? item.toml_path : null,
-        cwds: Array.isArray(item.cwds) ? item.cwds.map((cwd) => String(cwd)) : projectARegisteredAutomationCwds(id),
-        has_prompt: item.has_prompt === true,
-        can_run: item.can_run === true ? true : false,
-        exact_blocker: preflightRow?.exact_blocker ?? (typeof item.exact_blocker === "string" ? item.exact_blocker : null),
-        ui_action: String(item.ui_action ?? preflightRow?.preflight_status ?? "read-only preflight"),
-        action_label: String(item.action_label ?? "read-only preflight"),
-        resume_condition: String(item.resume_condition ?? preflightRow?.resume_condition ?? "Provide a specific sandbox/test account, approval receipt, auth state, and stop point before any external side effect."),
-        latest_proof: latestProof ? {
-          status: latestProof.status,
-          checked_at: latestProof.checked_at,
-          source_ref: latestProof.source_ref
-        } : null
-      };
-    });
-
-  return {
-    run_id: String(inventoryValue.run_id ?? PROJECT_A_REGISTERED_AUTOMATION_INVENTORY_RUN_ID),
-    source_ref: PROJECT_A_REGISTERED_AUTOMATION_INVENTORY_SOURCE_REF,
-    preflight_source_ref: PROJECT_A_REGISTERED_AUTOMATION_PREFLIGHT_SOURCE_REF,
-    latest_proof_source_ref: PROJECT_A_REGISTERED_AUTOMATION_LATEST_PROOF_SOURCE_REF,
-    inventory_run_id: String(inventoryValue.run_id ?? PROJECT_A_REGISTERED_AUTOMATION_INVENTORY_RUN_ID),
-    preflight_run_id: String(preflightValue.run_id ?? PROJECT_A_REGISTERED_AUTOMATION_PREFLIGHT_RUN_ID),
-    latest_proof_run_id: String(proofValue.run_id ?? PROJECT_A_REGISTERED_AUTOMATION_LATEST_PROOF_RUN_ID),
-    safety_boundary: String(preflightValue.safety_boundary ?? "read-only preflight; no external post/send/delete/submit/publish, no auth bypass, no CAPTCHA/OTP/security-code, no payment/purchase, no raw secret read"),
-    exact_boundary: "read_only_inventory_no_run_update_delete",
-    checks: Array.isArray(inventoryValue.checks)
-      ? inventoryValue.checks
-        .map((check) => check && typeof check === "object" ? check as Record<string, unknown> : null)
-        .filter((check): check is Record<string, unknown> => Boolean(check))
-        .map((check) => ({
-          id: String(check.id ?? "").slice(0, 80),
-          status: String(check.status ?? "pass").slice(0, 40)
-        }))
-      : projectARegisteredAutomationChecks(),
-    automations
-  };
-}
-
-function readJsonCandidate<T>(candidates: string[]): { source: string | null; value: T | null } {
-  for (const candidate of candidates) {
-    if (!existsSync(candidate)) continue;
-    try {
-      return {
-        source: candidate,
-        value: JSON.parse(readFileSync(candidate, "utf8")) as T
-      };
-    } catch {
-      continue;
-    }
-  }
-  return { source: null, value: null };
-}
-
-function projectARegisteredAutomationInventoryRows() {
-  return [
-    {
-      id: "daily-ai-research-publish-run",
-      name: "Daily AI Research + Publish Run",
-      kind: "cron",
-      status: "PAUSED",
-      execution_class: "external_side_effect_preflight",
-      allowed_action: "preflight_readiness_only",
-      blocked_action: "external_post_send_delete_submit_publish_auth_captcha_otp_payment",
-      execution_environment: "local",
-      toml_path: null,
-      cwds: ["New project"],
-      has_prompt: true,
-      can_run: false,
-      exact_blocker: "external_post_send_delete_submit_publish_auth_captcha_otp_payment_gate",
-      ui_action: "read-only preflight",
-      action_label: "read-only preflight",
-      resume_condition: "Provide a specific sandbox/test account, approval receipt, auth state, and stop point before any external side effect.",
-      preflight_status: "readiness_pass_side_effect_blocked"
-    },
-    {
-      id: "job-application-manager",
-      name: "Job Application Manager",
-      kind: "cron",
-      status: "ACTIVE",
-      execution_class: "external_side_effect_preflight",
-      allowed_action: "preflight_readiness_only",
-      blocked_action: "external_post_send_delete_submit_publish_auth_captcha_otp_payment",
-      execution_environment: "local",
-      toml_path: null,
-      cwds: ["New project"],
-      has_prompt: true,
-      can_run: false,
-      exact_blocker: "external_post_send_delete_submit_publish_auth_captcha_otp_payment_gate",
-      ui_action: "read-only preflight",
-      action_label: "read-only preflight",
-      resume_condition: "Provide a specific sandbox/test account, approval receipt, auth state, and stop point before any external side effect.",
-      preflight_status: "readiness_pass_side_effect_blocked"
-    },
-    {
-      id: "nisenprints-daily-product-canva-printify-etsy-pinterest",
-      name: "NisenPrints Daily Product + Canva + Printify + Etsy + Pinterest",
-      kind: "cron",
-      status: "PAUSED",
-      execution_class: "external_side_effect_preflight",
-      allowed_action: "preflight_readiness_only",
-      blocked_action: "external_post_send_delete_submit_publish_auth_captcha_otp_payment",
-      execution_environment: "local",
-      toml_path: null,
-      cwds: ["Etsy"],
-      has_prompt: true,
-      can_run: false,
-      exact_blocker: "external_post_send_delete_submit_publish_auth_captcha_otp_payment_gate",
-      ui_action: "read-only preflight",
-      action_label: "read-only preflight",
-      resume_condition: "Provide a specific sandbox/test account, approval receipt, auth state, and stop point before any external side effect.",
-      preflight_status: "readiness_pass_side_effect_blocked"
-    }
-  ];
-}
-
-function projectARegisteredAutomationPreflights() {
-  return [
-    {
-      id: "daily-ai-research-publish-run",
-      preflight_status: "readiness_pass_side_effect_blocked",
-      exact_blocker: "external_post_send_delete_submit_publish_auth_captcha_otp_payment_gate",
-      resume_condition: "Provide a specific sandbox/test account, approval receipt, auth state, and stop point before any external side effect."
-    },
-    {
-      id: "job-application-manager",
-      preflight_status: "readiness_pass_side_effect_blocked",
-      exact_blocker: "external_post_send_delete_submit_publish_auth_captcha_otp_payment_gate",
-      resume_condition: "Provide a specific sandbox/test account, approval receipt, auth state, and stop point before any external side effect."
-    },
-    {
-      id: "nisenprints-daily-product-canva-printify-etsy-pinterest",
-      preflight_status: "readiness_pass_side_effect_blocked",
-      exact_blocker: "external_post_send_delete_submit_publish_auth_captcha_otp_payment_gate",
-      resume_condition: "Provide a specific sandbox/test account, approval receipt, auth state, and stop point before any external side effect."
-    }
-  ];
-}
-
-function projectARegisteredAutomationChecks() {
-  return [
-    { id: "all_tomls_loaded", status: "pass" },
-    { id: "project_a_codex_app_registered_automations_only", status: "pass" },
-    { id: "exactly_one_safe_local_run_candidate", status: "pass" },
-    { id: "inactive_alias_not_runnable", status: "pass" },
-    { id: "external_automations_preflight_only", status: "pass" }
-  ];
-}
-
-function projectARegisteredAutomationCwds(id: string) {
-  if (id === "nisenprints-daily-product-canva-printify-etsy-pinterest") return ["Etsy"];
-  return ["New project"];
 }
 
 function readRegisteredWorkflowRows(): ReturnType<typeof initRegisteredWorkflows> {
@@ -4024,10 +5360,12 @@ export function resetResearchPlanStartRunnerForTests(): void {
   researchPlanStartRunner = startCommandRun;
 }
 
-export function getRunDetail(runId: string) {
-  normalizeReceiptOnlyRuns();
-  const run = sanitizeDashboardRows(querySql(`SELECT * FROM runs WHERE id=${sqlValue(runId)} LIMIT 1`))[0];
+export function getRunDetail(runId: string, companyIds?: readonly string[]) {
+  if (!companyIds) normalizeReceiptOnlyRuns();
+  const rawRun = companyIds ? findScopedRun(runId, companyIds) : querySql(`SELECT * FROM runs WHERE id=${sqlValue(runId)} LIMIT 1`)[0];
+  const run = rawRun ? sanitizeDashboardRows([rawRun])[0] : undefined;
   if (!run) return undefined;
+  const companyId = String((rawRun as Record<string, unknown>).company_id ?? "");
   const metadata = parseJson<Record<string, unknown>>(typeof run.metadata_json === "string" ? run.metadata_json : "{}", {});
   const executionRouting =
     metadata.execution_routing && typeof metadata.execution_routing === "object" ? metadata.execution_routing : null;
@@ -4038,7 +5376,9 @@ export function getRunDetail(runId: string) {
     steps: sanitizeDashboardRows(
       querySql(`SELECT * FROM run_steps WHERE run_id=${sqlValue(runId)} ORDER BY COALESCE(started_at, completed_at, '') ASC LIMIT 500`)
     ),
-    proofs: sanitizeDashboardRows(querySql(`SELECT * FROM proofs WHERE run_id=${sqlValue(runId)} ORDER BY created_at ASC LIMIT 1000`)),
+    proofs: sanitizeDashboardRows(querySql(companyIds
+      ? `SELECT * FROM proofs WHERE run_id=${sqlValue(runId)} AND company_id=${sqlValue(companyId)} ORDER BY created_at ASC LIMIT 1000`
+      : `SELECT * FROM proofs WHERE run_id=${sqlValue(runId)} ORDER BY created_at ASC LIMIT 1000`)),
     children: sanitizeDashboardRows(querySql(`SELECT * FROM child_runs WHERE parent_run_id=${sqlValue(runId)} ORDER BY created_at ASC LIMIT 1000`)),
     workerEvents: sanitizeDashboardRows(
       querySql(`SELECT * FROM worker_events WHERE run_id=${sqlValue(runId)} ORDER BY created_at ASC LIMIT 2000`)
@@ -4049,6 +5389,7 @@ export function getRunDetail(runId: string) {
 type ProofViewStatus = "ok" | "blocked" | "not_found";
 type ProofViewRow = {
   id: string;
+  company_id: string;
   run_id: string;
   step_id: string | null;
   proof_type: string;
@@ -4066,8 +5407,10 @@ const proofTextMimeTypes = new Set(["application/json", "text/plain", "text/mark
 const proofImageMimeTypes = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 const proofArtifactRootNames = ["data/artifacts", "artifacts", "output/playwright", ".playwright-cli"];
 
-export function getProofView(proofId: string) {
-  const proof = querySql<ProofViewRow>(`SELECT * FROM proofs WHERE id=${sqlValue(proofId)} LIMIT 1`)[0];
+export function getProofView(proofId: string, companyIds?: readonly string[]) {
+  const proof = companyIds
+    ? findScopedProof(proofId, companyIds) as ProofViewRow | undefined
+    : querySql<ProofViewRow>(`SELECT * FROM proofs WHERE id=${sqlValue(proofId)} LIMIT 1`)[0];
   if (!proof) return { status: "not_found" as ProofViewStatus, id: proofId, error: "proof_not_found" };
 
   const base = publicProofViewBase(proof);
@@ -4946,9 +6289,17 @@ function browserUseDemoBlocker(result: BrowserUseLocalCheckResult): string {
     : result.summary || "research_plan_demo_blocked";
 }
 
-export async function runResearchPlanSchedulerOnce(now = new Date()): Promise<ResearchPlanSchedulerOnceResult> {
+export async function runResearchPlanSchedulerOnce(
+  now = new Date(),
+  allowedCompanyIds?: readonly string[]
+): Promise<ResearchPlanSchedulerOnceResult> {
   initDb();
-  const workflows = initRegisteredWorkflows().filter((workflow) => String(workflow.status).toLowerCase() === "active" && !isRegisteredWorkflowSchedulePaused(workflow));
+  const allowedCompanySet = allowedCompanyIds ? new Set(allowedCompanyIds) : null;
+  const workflows = initRegisteredWorkflows().filter((workflow) =>
+    String(workflow.status).toLowerCase() === "active"
+    && !isRegisteredWorkflowSchedulePaused(workflow)
+    && (!allowedCompanySet || (workflow.company_id ? allowedCompanySet.has(workflow.company_id) : fixedRegisteredWorkflows.some((fixed) => fixed.id === workflow.id)))
+  );
   const runIds: string[] = [];
   const blockedWorkflowIds: string[] = [];
   const blockedDueKeys: string[] = [];
@@ -4971,24 +6322,82 @@ export async function runResearchPlanSchedulerOnce(now = new Date()): Promise<Re
       continue;
     }
     try {
-      const runMetadata = registeredWorkflowStartMetadata(workflow, { source: "scheduler", dueKey: due.dueKey, command });
+      let runMetadata: Record<string, unknown> = registeredWorkflowStartMetadata(workflow, { source: "scheduler", dueKey: due.dueKey, command });
+      if (!workflow.company_id) {
+        const isFixedGlobalWorkflow = fixedRegisteredWorkflows.some((fixed) => fixed.id === workflow.id && fixed.runnerKind === workflow.runner_kind);
+        const globalServiceUserId = process.env.AUTOMATION_OS_GLOBAL_SYSTEM_SERVICE_USER_ID?.trim() ?? "";
+        let globalServiceBlocker = "";
+        if (!isFixedGlobalWorkflow) {
+          globalServiceBlocker = "registered_workflow_company_scope_missing";
+        } else if (!globalServiceUserId) {
+          globalServiceBlocker = "registered_workflow_global_service_identity_missing";
+        } else {
+          try {
+            requireExistingServiceIdentity(globalServiceUserId);
+          } catch {
+            globalServiceBlocker = "registered_workflow_global_service_identity_invalid";
+          }
+        }
+        if (globalServiceBlocker) {
+          blocked += 1;
+          blockedWorkflowIds.push(workflow.id);
+          blockedDueKeys.push(due.dueKey);
+          blockers.push({ workflowId: workflow.id, dueKey: due.dueKey, exactBlocker: globalServiceBlocker });
+          recordRegisteredWorkflowSchedulerBlock(workflow, due.dueKey, globalServiceBlocker, now);
+          continue;
+        }
+        runMetadata = {
+          ...runMetadata,
+          system_scope: "global",
+          scheduler_service_identity: { userId: globalServiceUserId, kind: "service", scope: "global_system" }
+        };
+      }
       if (workflow.runner_kind === "research_plan_registered") {
+        const serviceWorkerUserId = process.env.AUTOMATION_OS_SERVICE_WORKER_USER_ID?.trim() ?? "";
+        let serviceIdentityBlocker = "";
+        if (!workflow.company_id) {
+          serviceIdentityBlocker = "registered_workflow_company_scope_missing";
+        } else if (!serviceWorkerUserId) {
+          serviceIdentityBlocker = "registered_workflow_service_identity_missing";
+        } else {
+          try {
+            requireExistingServiceIdentity(serviceWorkerUserId);
+          } catch {
+            serviceIdentityBlocker = "registered_workflow_service_identity_invalid";
+          }
+          try {
+            if (serviceIdentityBlocker) throw new Error(serviceIdentityBlocker);
+            requireExistingCompanyAccess(workflow.company_id, ["operator"], serviceWorkerUserId);
+          } catch {
+            if (!serviceIdentityBlocker) serviceIdentityBlocker = "registered_workflow_service_membership_missing";
+          }
+        }
+        if (serviceIdentityBlocker) {
+          blocked += 1;
+          blockedWorkflowIds.push(workflow.id);
+          blockedDueKeys.push(due.dueKey);
+          blockers.push({ workflowId: workflow.id, dueKey: due.dueKey, exactBlocker: serviceIdentityBlocker });
+          recordRegisteredWorkflowSchedulerBlock(workflow, due.dueKey, serviceIdentityBlocker, now);
+          continue;
+        }
         const startCommand = parseJson<{ researchPlanId?: unknown }>(workflow.start_command_json, {});
         const researchPlanId = typeof startCommand.researchPlanId === "string" ? startCommand.researchPlanId : undefined;
-        const plan = researchPlanId ? getResearchPlan(researchPlanId) : undefined;
+        const plan = researchPlanId && workflow.company_id ? getResearchPlan(researchPlanId, [workflow.company_id]) : undefined;
         if (!plan) {
           skipped += 1;
           continue;
         }
         const researchPlanMetadata = {
           ...runMetadata,
+          ...researchPlanPreparedRunMetadata(plan),
+          scheduler_service_identity: { userId: serviceWorkerUserId, kind: "service", scope: "tenant", companyId: workflow.company_id },
           execution_routing: buildExecutionRoutingSnapshot({
             command: plan.command,
             source: "scheduler"
           })
         };
         const started = await withTimeout(
-          researchPlanStartRunner(plan.command, { metadata: researchPlanMetadata, deferWorker: true }),
+          researchPlanStartRunner(plan.command, { metadata: researchPlanMetadata, deferWorker: true, prepareOnly: true, companyId: workflow.company_id ?? undefined }),
           researchPlanSchedulerStartTimeoutMs(),
           {
             operation: "research_plan_scheduler_start",
@@ -5141,7 +6550,7 @@ function publicResearchPlanRunStartSummary(value: unknown) {
 }
 
 function registeredWorkflowStartMetadata(
-  workflow: { id: string; runner_kind: string },
+  workflow: RegisteredWorkflowRow,
   start: { source: "manual" | "scheduler"; dueKey?: string; command: string }
 ) {
   const routeDecision = buildExecutionRoutingSnapshot({
@@ -5156,6 +6565,9 @@ function registeredWorkflowStartMetadata(
     registered_workflow_start: {
       source: start.source,
       runnerKind: workflow.runner_kind,
+      workflow_id: workflow.id,
+      definition_fingerprint: referenceWorkflowDefinitionFingerprint(workflow),
+      schedule_fingerprint: referenceWorkflowScheduleFingerprint(workflow),
       ...(start.dueKey ? { dueKey: start.dueKey } : {})
     },
     ...buildCanonicalExecutionRoutingMetadata(routeDecision)
@@ -5278,32 +6690,41 @@ function commitResearchPlanStarted(
   if (!runId) {
     throw new Error("research_plan_start_missing_run");
   }
-  const updatedPlan = markResearchPlanStarted(plan.id, runId) ?? plan;
-  attachResearchPlanSnapshotToRun(runId, updatedPlan);
-  enforceResearchPlanCompletionBoundary(runId, updatedPlan);
-  return { ...summarizeResearchPlanRunBody(body, runId), plan: updatedPlan };
+  assertResearchPlanRunCompanyMatch(runId, plan.companyId);
+  try {
+    const updatedPlan = commitResearchPlanStartedAtomic(plan, runId);
+    return { ...summarizeResearchPlanRunBody(body, runId), plan: updatedPlan };
+  } catch (error) {
+    try {
+      rollbackPreparedResearchPlanRunAtomic({
+        planId: plan.id,
+        runId,
+        companyId: plan.companyId ?? ""
+      });
+    } catch (cleanupError) {
+      const commitMessage = error instanceof Error ? error.message : "research_plan_start_commit_failed";
+      const cleanupMessage = cleanupError instanceof Error ? cleanupError.message : "research_plan_prepared_run_cleanup_failed";
+      throw new Error(`${commitMessage};cleanup:${cleanupMessage}`);
+    }
+    throw error;
+  }
 }
 
-function attachResearchPlanSnapshotToRun(runId: string, plan: ReturnType<typeof getResearchPlan>) {
-  if (!plan) return;
-  const current = querySql<{ metadata_json: string }>(`SELECT metadata_json FROM runs WHERE id=${sqlValue(runId)} LIMIT 1`)[0];
-  const metadata = parseJson<Record<string, unknown>>(current?.metadata_json, {});
-  execSql(
-    `UPDATE runs
-     SET metadata_json=${sqlValue({
-       ...metadata,
-       research_plan_snapshot: {
-         ...plan,
-         snapshotRole: "pre_start_plan_evidence_not_completion_proof"
-       }
-     })},
-         updated_at=${sqlValue(nowIso())}
-     WHERE id=${sqlValue(runId)};`
-  );
+function researchPlanPreparedRunMetadata(
+  plan: Pick<ResearchPlanSnapshot, "id" | "companyId">,
+  metadata: Record<string, unknown> = {}
+): Record<string, unknown> {
+  return {
+    ...metadata,
+    research_plan_id: plan.id,
+    research_plan_company_id: plan.companyId,
+    research_plan_start_phase: "prepared_unlinked"
+  };
 }
 
-function annotateYouTubeCaptureFailure(runId: string, result: Extract<YouTubeTranscriptCaptureResult, { ok: false }>) {
-  const current = querySql<{ metadata_json: string }>(`SELECT metadata_json FROM runs WHERE id=${sqlValue(runId)} LIMIT 1`)[0];
+function annotateYouTubeCaptureFailure(runId: string, result: Extract<YouTubeTranscriptCaptureResult, { ok: false }>, companyId?: string | null) {
+  const companyClause = researchPlanRunCompanyClause(companyId);
+  const current = querySql<{ metadata_json: string }>(`SELECT metadata_json FROM runs WHERE id=${sqlValue(runId)}${companyClause} LIMIT 1`)[0];
   if (!current) return;
   const metadata = parseJson<Record<string, unknown>>(current.metadata_json, {});
   const nextAction = youtubeCaptureNextAction(result);
@@ -5314,15 +6735,28 @@ function annotateYouTubeCaptureFailure(runId: string, result: Extract<YouTubeTra
        youtube_capture: {
          status: result.status,
          exactBlocker: result.exactBlocker,
-           artifactDir: result.artifactDir,
+         artifactDir: result.artifactDir,
          requestedUrl: result.requestedUrl,
          summary: result.summary
        },
        public_next_action: nextAction
      })},
          updated_at=${sqlValue(nowIso())}
-     WHERE id=${sqlValue(runId)};`
+     WHERE id=${sqlValue(runId)}${companyClause};`
   );
+}
+
+function assertResearchPlanRunCompanyMatch(runId: string, companyId?: string | null): void {
+  const companyClause = researchPlanRunCompanyClause(companyId);
+  const current = querySql<{ company_id: string | null }>(`SELECT company_id FROM runs WHERE id=${sqlValue(runId)}${companyClause} LIMIT 1`)[0];
+  if (!current) {
+    throw new Error(companyClause ? "research_plan_run_company_mismatch" : "research_plan_run_not_found");
+  }
+}
+
+function researchPlanRunCompanyClause(companyId?: string | null): string {
+  const normalized = typeof companyId === "string" ? companyId.trim() : "";
+  return normalized ? ` AND company_id=${sqlValue(normalized)}` : "";
 }
 
 function youtubeCaptureNextAction(result: Extract<YouTubeTranscriptCaptureResult, { ok: false }>) {
@@ -5347,15 +6781,16 @@ function youtubeCaptureNextAction(result: Extract<YouTubeTranscriptCaptureResult
   };
 }
 
-export function enforceResearchPlanCompletionBoundary(runId: string, plan: ReturnType<typeof getResearchPlan>) {
+export function enforceResearchPlanCompletionBoundary(runId: string, plan: ReturnType<typeof getResearchPlan>, companyId?: string | null) {
   if (!plan) return;
   const requiredProofs = requiredResearchPlanProofs(plan);
   const approvalBoundarySources = billingRequiredResearchSourceKeys(plan);
   if (requiredProofs.length === 0 && approvalBoundarySources.length === 0) return;
-  const current = querySql<{ status: string; metadata_json: string }>(`SELECT status, metadata_json FROM runs WHERE id=${sqlValue(runId)} LIMIT 1`)[0];
+  const companyClause = researchPlanRunCompanyClause(companyId ?? plan.companyId ?? undefined);
+  const current = querySql<{ status: string; metadata_json: string }>(`SELECT status, metadata_json FROM runs WHERE id=${sqlValue(runId)}${companyClause} LIMIT 1`)[0];
   if (!current) return;
   const metadata = parseJson<Record<string, unknown>>(current.metadata_json, {});
-  const presentProofs = querySql<{ proof_type: string }>(`SELECT proof_type FROM proofs WHERE run_id=${sqlValue(runId)}`).map((proof) => proof.proof_type);
+  const presentProofs = querySql<{ proof_type: string }>(`SELECT proof_type FROM proofs WHERE run_id=${sqlValue(runId)}${companyClause}`).map((proof) => proof.proof_type);
   const missingProofs = requiredProofs.filter((proof) => !presentProofs.includes(proof));
   const boundaryMetadata = {
     ...metadata,
@@ -5379,15 +6814,21 @@ export function enforceResearchPlanCompletionBoundary(runId: string, plan: Retur
            ...boundaryMetadata,
            ...(shouldHoldPartial ? { stop_reason: "research_plan_visible_source_proof_missing" } : {})
          })}
-     WHERE id=${sqlValue(runId)};`
+     WHERE id=${sqlValue(runId)}${companyClause};`
   );
 }
 
 export function storeResearchPlanVisibleSourceProof(
   runId: string,
   sourceKey: ResearchSourceKey,
-  capture: Extract<YouTubeTranscriptCaptureResult, { ok: true }> | Extract<UrlCaptureResult, { ok: true }>
+  capture: Extract<YouTubeTranscriptCaptureResult, { ok: true }> | Extract<UrlCaptureResult, { ok: true }>,
+  companyId?: string | null
 ) {
+  const companyClause = researchPlanRunCompanyClause(companyId);
+  const run = querySql<{ company_id: string | null }>(`SELECT company_id FROM runs WHERE id=${sqlValue(runId)}${companyClause} LIMIT 1`)[0];
+  if (!run) throw new Error(companyId ? "research_plan_run_company_mismatch" : "research_plan_run_not_found");
+  const runCompanyId = run?.company_id?.trim() ?? "";
+  if (!runCompanyId) throw new Error("research_plan_run_company_required");
   const now = nowIso();
   const proofType = sourceKey === "web" ? "readable_source_snapshot:web" : `visible_source_snapshot:${sourceKey}`;
   const uri = "files" in capture ? capture.files.manifest : capture.ingest.path;
@@ -5396,6 +6837,7 @@ export function storeResearchPlanVisibleSourceProof(
   const existing = querySql<{ id: string; proof_type: string; uri: string }>(
     `SELECT id, proof_type, uri FROM proofs
      WHERE run_id=${sqlValue(runId)}
+       AND company_id=${sqlValue(runCompanyId)}
        AND proof_type=${sqlValue(proofType)}
        AND uri=${sqlValue(uri)}
      LIMIT 1`
@@ -5427,6 +6869,7 @@ export function storeResearchPlanVisibleSourceProof(
   };
   insert("proofs", {
     id: proof.id,
+    company_id: runCompanyId,
     run_id: runId,
     step_id: null,
     proof_type: proof.proofType,
@@ -5437,6 +6880,29 @@ export function storeResearchPlanVisibleSourceProof(
     metadata_json: proof.metadata
   });
   return proof;
+}
+
+function researchPlanCaptureProofMetadata(
+  sourceKey: Extract<ResearchSourceKey, "web" | "youtube">,
+  capture: Extract<YouTubeTranscriptCaptureResult, { ok: true }> | Extract<UrlCaptureResult, { ok: true }>
+): Record<string, unknown> {
+  return {
+    sourceKey,
+    captureId: capture.captureId,
+    artifactDir: "artifactDir" in capture ? capture.artifactDir : undefined,
+    currentUrl: "currentUrl" in capture ? capture.currentUrl : capture.finalUrl,
+    requestedUrl: "requestedUrl" in capture ? capture.requestedUrl : undefined,
+    finalUrl: "finalUrl" in capture ? capture.finalUrl : undefined,
+    sourceTitle: capture.sourceTitle,
+    segmentCount: "segmentCount" in capture ? capture.segmentCount : undefined,
+    transcriptBytes: "transcriptBytes" in capture ? capture.transcriptBytes : undefined,
+    contentBytes: "bytes" in capture ? capture.bytes : undefined,
+    contentType: "contentType" in capture ? capture.contentType : undefined,
+    ingestPath: "ingest" in capture ? capture.ingest.path : undefined,
+    lane: sourceKey === "youtube" ? "youtube_visible_transcript_cdp" : "web_url_capture_readonly",
+    apiBillingRequired: false,
+    readOnly: true
+  };
 }
 
 function summarizeResearchPlanRunBody(body: Record<string, unknown>, runId: string): Record<string, unknown> {
@@ -5711,9 +7177,10 @@ function storeSystemCheck(result: BrowserUseLocalCheckResult | BrowserBridgeChec
   });
 }
 
-async function decideStoredApproval(id: string, status: "approved" | "rejected" | "cancelled") {
-  const existing = querySql<{
+async function decideStoredApproval(id: string, status: "approved" | "rejected" | "cancelled", companyIds?: readonly string[]) {
+  const existing = companyIds ? findScopedApproval(id, companyIds) : querySql<{
     id: string;
+    company_id: string | null;
     run_id: string | null;
     status: string;
     requested_by: string;
@@ -5721,10 +7188,10 @@ async function decideStoredApproval(id: string, status: "approved" | "rejected" 
     resource_locks_json: string;
     created_at: string;
   }>(
-    `SELECT id, run_id, status, requested_by, approval_group_id, resource_locks_json, created_at FROM approvals WHERE id=${sqlValue(id)} LIMIT 1`
+    `SELECT id, company_id, run_id, status, requested_by, approval_group_id, resource_locks_json, created_at FROM approvals WHERE id=${sqlValue(id)} LIMIT 1`
   )[0];
   if (!existing) {
-    return { statusCode: 404, body: { error: "approval_not_found", id } };
+    return { statusCode: 404, body: { error: "approval_not_found" } };
   }
   if (existing.status !== "pending") {
     return { statusCode: 409, body: { error: "approval_already_decided", id, status: existing.status } };
@@ -5737,9 +7204,9 @@ async function decideStoredApproval(id: string, status: "approved" | "rejected" 
         : status === "cancelled"
           ? "Cancelled from Control Panel"
           : "Rejected from Control Panel"
-    )} WHERE id=${sqlValue(id)};`
+    )} WHERE id=${sqlValue(id)} AND company_id=${sqlValue(String(existing.company_id ?? ""))};`
   );
-  const approval = querySql(`SELECT * FROM approvals WHERE id=${sqlValue(id)} LIMIT 1`)[0];
+  const approval = querySql(`SELECT * FROM approvals WHERE id=${sqlValue(id)} AND company_id=${sqlValue(String(existing.company_id ?? ""))} LIMIT 1`)[0];
   if (status === "approved" && existing.run_id) {
     startWorkerOnceAfterApproval(existing.run_id);
   }
@@ -5868,8 +7335,8 @@ async function startRegisteredPostgresRunFast(input: {
   try {
     await client.query("BEGIN");
     await client.query(
-      `INSERT INTO runs (id, name, status, objective, created_at, updated_at, metadata_json)
-       VALUES ($1, $2, 'queued', $3, $4, $4, $5)`,
+      `INSERT INTO runs (id, company_id, name, status, objective, created_at, updated_at, metadata_json)
+       VALUES ($1, NULL, $2, 'queued', $3, $4, $4, $5)`,
       [runId, input.command.slice(0, 72) || "Daily AI registered workflow run", input.command, now, JSON.stringify(metadata)]
     );
     await client.query(
@@ -5894,8 +7361,8 @@ async function startRegisteredPostgresRunFast(input: {
       ]
     );
     await client.query(
-      `INSERT INTO run_steps (id, run_id, name, status, lane_id, started_at, completed_at, metadata_json)
-       VALUES ($1, $2, $3, 'queued', $4, $5, NULL, $6)`,
+      `INSERT INTO run_steps (id, run_id, company_id, name, status, lane_id, started_at, completed_at, metadata_json)
+       VALUES ($1, $2, NULL, $3, 'queued', $4, $5, NULL, $6)`,
       [
         stepId,
         runId,
@@ -5915,8 +7382,8 @@ async function startRegisteredPostgresRunFast(input: {
       ]
     );
     await client.query(
-      `INSERT INTO worker_events (id, run_id, step_id, lane_id, event_type, message, created_at, metadata_json)
-       VALUES ($1, $2, NULL, NULL, 'queued_for_mac_worker', $3, $4, $5)`,
+      `INSERT INTO worker_events (id, run_id, company_id, step_id, lane_id, event_type, message, created_at, metadata_json)
+       VALUES ($1, $2, NULL, NULL, NULL, 'queued_for_mac_worker', $3, $4, $5)`,
       [
         makeId("evt"),
         runId,
@@ -5985,6 +7452,11 @@ function recordRunAwaitingMacWorker(runId: string, launchReason: string) {
   recordRunAwaitingWorkerLoop(runId, launchReason);
 }
 
+function readRunCompanyId(runId: string): string | null {
+  const row = querySql<{ company_id: string | null }>(`SELECT company_id FROM runs WHERE id=${sqlValue(runId)} LIMIT 1`)[0];
+  return typeof row?.company_id === "string" && row.company_id.trim() ? row.company_id.trim() : null;
+}
+
 function recordRunAwaitingWorkerLoop(runId: string, launchReason: string) {
   const now = nowIso();
   const current = querySql<{ metadata_json: string }>(`SELECT metadata_json FROM runs WHERE id=${sqlValue(runId)} LIMIT 1`)[0];
@@ -6017,6 +7489,7 @@ function recordRunAwaitingWorkerLoop(runId: string, launchReason: string) {
   );
   insert("worker_events", {
     id: makeId("evt"),
+    company_id: readRunCompanyId(runId),
     run_id: runId,
     step_id: null,
     lane_id: null,
@@ -6077,6 +7550,7 @@ function markWorkerOnceLaunchBlocked(runId: string, exactBlocker: string, extra:
   );
   insert("worker_events", {
     id: makeId("evt"),
+    company_id: readRunCompanyId(runId),
     run_id: runId,
     step_id: null,
     lane_id: null,
@@ -6110,6 +7584,7 @@ function cancelRunAfterApprovalCancel(runId: string) {
   );
   insert("worker_events", {
     id: `evt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+    company_id: readRunCompanyId(runId),
     run_id: runId,
     step_id: null,
     lane_id: null,
@@ -6150,7 +7625,83 @@ function sanitizeCreatePlannerJobForApi(job: CreatePlannerJob) {
     completedAt: job.completedAt,
     metadata: {
       route: typeof job.metadata.route === "string" ? job.metadata.route : "mac_worker_subscription",
-      immediatePlanSource: typeof job.metadata.immediatePlanSource === "string" ? job.metadata.immediatePlanSource : undefined
+      immediatePlanSource: typeof job.metadata.immediatePlanSource === "string" ? job.metadata.immediatePlanSource : undefined,
+      transport: typeof job.metadata.transport === "string" ? job.metadata.transport : undefined,
+      codexThreadId: typeof job.metadata.codexThreadId === "string" ? job.metadata.codexThreadId : undefined,
+      codexTurnId: typeof job.metadata.codexTurnId === "string" ? job.metadata.codexTurnId : undefined,
+      contextCapturedAt: typeof job.metadata.contextCapturedAt === "string" ? job.metadata.contextCapturedAt : undefined,
+      streamText: typeof job.metadata.streamText === "string" ? job.metadata.streamText : undefined,
+      events: Array.isArray(job.metadata.events)
+        ? job.metadata.events.filter((event) => event && typeof event === "object").slice(-40)
+        : []
     }
   };
+}
+
+function buildAutomationOsChatSnapshot(companyIds: string[]): string {
+  const state = getMvpStateReadback(companyIds);
+  initRegisteredWorkflows();
+  const registeredWorkflows = publicRegisteredWorkflowRows(listRegisteredWorkflowsForCompanies(companyIds));
+  const capturedAt = new Date().toISOString();
+  return JSON.stringify({
+    capturedAt,
+    source: "automation_os_control_plane_readback",
+    companyScope: companyIds,
+    companies: state.companies.map((company) => ({ id: company.id, name: company.name, status: company.status, role: company.role })),
+    automations: state.automations.slice(0, 120).map((automation: Record<string, unknown>) => ({
+      id: automation.id,
+      company_id: automation.company_id,
+      name: automation.name,
+      goal: automation.goal,
+      status: automation.status,
+      revision: automation.revision,
+      schedule: automation.schedule,
+      schedule_status: automation.schedule_status,
+      next_run_at: automation.next_run_at,
+      last_run_at: automation.last_run_at,
+      lane: automation.lane,
+      risk_level: automation.risk_level,
+      approval_policy: automation.approval_policy
+    })),
+    presentationProfiles: state.presentation_profiles,
+    schedules: state.schedules.slice(0, 120).map((schedule: Record<string, unknown>) => ({
+      id: schedule.id,
+      company_id: schedule.company_id,
+      automation_id: schedule.automation_id,
+      expression: schedule.expression,
+      timezone: schedule.timezone,
+      enabled: schedule.enabled,
+      status: schedule.status,
+      revision: schedule.revision,
+      next_run_at: schedule.next_run_at,
+      last_run_at: schedule.last_run_at
+    })),
+    runs: state.runs.slice(0, 80).map((run: Record<string, unknown>) => ({
+      id: run.id,
+      company_id: run.company_id,
+      automation_id: run.automation_id,
+      name: run.name,
+      objective: run.objective,
+      status: run.status,
+      created_at: run.created_at,
+      updated_at: run.updated_at
+    })),
+    approvals: state.approvals.slice(0, 80).map((approval: Record<string, unknown>) => ({
+      id: approval.id,
+      run_id: approval.run_id,
+      status: approval.status,
+      title: approval.title,
+      created_at: approval.created_at
+    })),
+    worker: state.worker,
+    registeredWorkflows,
+    browserUse: buildBrowserUseRuntimeSnapshot(),
+    freshness: { capturedAt, stalePolicy: "show_stale_and_exact_blocker" },
+    boundaries: {
+      externalActionExecuted: false,
+      approvalRequired: true,
+      secretsIncluded: false,
+      rawPrivatePathsIncluded: false
+    }
+  }).slice(0, 64_000);
 }

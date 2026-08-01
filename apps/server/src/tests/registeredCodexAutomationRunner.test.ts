@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -31,6 +31,39 @@ function registeredSummary(overrides: Record<string, unknown> = {}): string {
     exact_blocker: null,
     source_of_truth_proofs: [],
     cleanup_proof: { owned_processes_remaining: [] },
+    ...overrides
+  });
+}
+
+function strictJobRegisteredSummary(runId: string, overrides: Record<string, unknown> = {}): string {
+  const summaryDir = join(process.env.AUTOMATION_OS_REGISTERED_SUMMARY_ROOT!, runId);
+  const auditPath = join(summaryDir, "completion-audit.json");
+  mkdirSync(summaryDir, { recursive: true });
+  writeFileSync(
+    auditPath,
+    JSON.stringify({
+      ok: true,
+      workflow_id: "job_submit_registered",
+      run_id: runId,
+      generated_at: new Date().toISOString(),
+      split_target_20_20_proven: true,
+      submitted_count_by_bucket: { japan_targeted: 20, overseas_global: 20 },
+      final_user_action_manifest_empty_for_run_contract: true,
+      unresolved_user_actions: []
+    })
+  );
+  return registeredSummary({
+    workflow: "job-applications",
+    workflow_id: "job_submit_registered",
+    run_id: runId,
+    status: "complete",
+    completion_claimed: true,
+    exact_blocker: null,
+    submitted_count_by_bucket: { japan_targeted: 20, overseas_global: 20 },
+    application_appends: 40,
+    source_of_truth_proofs: [{ type: "submitted_confirmed_readback", run_id: runId }],
+    cleanup_proof: { owned_processes_remaining: [] },
+    completion_audit_path: auditPath,
     ...overrides
   });
 }
@@ -95,12 +128,7 @@ test("blocks successful job registered execution when Gemini video QA contradict
       })
     );
     process.env.FAKE_CODEX_STDOUT = "submitted_confirmed=1\napplication_appends=1\n";
-    process.env.FAKE_CODEX_REGISTERED_SUMMARY = registeredSummary({
-      run_id: "job-gemini-mismatch",
-      workflow_id: "job_submit_registered",
-      submitted_confirmed: 20,
-      submitted_count_by_bucket: { japan_targeted: 20, overseas_global: 20 },
-      application_appends: 20,
+    process.env.FAKE_CODEX_REGISTERED_SUMMARY = strictJobRegisteredSummary("job-gemini-mismatch-run", {
       gemini_video_qa: {
         stages: [
           {
@@ -125,14 +153,17 @@ test("blocks successful job registered execution when Gemini video QA contradict
     assert.match(result.proof_summary, /Gemini video QA contradicts completion gate/);
     assert.equal(result.metadata.gemini_video_qa && typeof result.metadata.gemini_video_qa === "object", true);
     assert.deepEqual(result.command.args.slice(0, 5), ["exec", "--sandbox", "danger-full-access", "--cd", "/Users/nichikatanaka/Documents/New project"]);
-    assert.match(result.command.args[result.command.args.length - 1], /Browser\/UI stages must use Playwright CLI/);
-    assert.match(result.command.args[result.command.args.length - 1], /Capture Playwright artifacts/);
-    assert.match(result.command.args[result.command.args.length - 1], /workflow-owned source-of-truth proof remains required/);
+    assert.match(result.command.args[result.command.args.length - 1], /Browser\/UI stages must use Browser Use CLI through the canonical shared adapter/);
+    assert.match(result.command.args[result.command.args.length - 1], /Keep URL, DOM\/body text or snapshot/);
+    assert.match(result.command.args[result.command.args.length - 1], /Write durable artifacts and source-of-truth proof/);
     assert.match(result.command.args[result.command.args.length - 1], /--submit-authorized/);
-    assert.equal(result.command.env.AUTOMATION_OS_BROWSER_DRIVER, "playwright_cli");
-    assert.match(String(result.command.env.PLAYWRIGHT_CLI_WRAPPER), /playwright_cli\.sh/);
-    assert.equal(classifyWorkerCommandSpec(result.command).classification, "legacy_browser_backed");
-    assert.ok(classifyWorkerCommandSpec(result.command).signals.includes("playwright"));
+    assert.equal(result.command.env.AUTOMATION_OS_BROWSER_DRIVER, "browser_use_cli");
+    assert.equal(result.command.env.AUTOMATION_OS_BROWSER_SURFACE, "browser_use_cli");
+    assert.equal(result.command.env.AUTOMATION_OS_BROWSER_NO_FALLBACK, "1");
+    assert.equal(result.command.env.PLAYWRIGHT_CLI_WRAPPER, undefined);
+    assert.equal(classifyWorkerCommandSpec(result.command).classification, "browser_use_cli");
+    assert.ok(classifyWorkerCommandSpec(result.command).signals.includes("browser-use"));
+    assert.equal(classifyWorkerCommandSpec(result.command).signals.includes("playwright"), false);
     assert.equal(result.command.args.includes("--full-auto"), false);
     assert.doesNotMatch(result.command.display, /--full-auto/);
     assert.match(result.command.display, /--sandbox danger-full-access --cd "\/Users\/nichikatanaka\/Documents\/New project"/);
@@ -232,14 +263,7 @@ test("blocks job submit registered execution unless both split buckets reach 20"
 test("completes job submit registered execution with 20 submitted_confirmed proof and no optional Browser Use recording QA", async () =>
   withFakeCodex(async () => {
     process.env.FAKE_CODEX_STDOUT = "submitted_confirmed=1\napplication_appends=1\n";
-    process.env.FAKE_CODEX_REGISTERED_SUMMARY = registeredSummary({
-      workflow: "job-applications",
-      workflow_id: "job_submit_registered",
-      run_id: "job-submit-no-visual-qa",
-      status: "complete",
-      submitted_count_by_bucket: { japan_targeted: 20, overseas_global: 20 },
-      application_appends: 20
-    });
+    process.env.FAKE_CODEX_REGISTERED_SUMMARY = strictJobRegisteredSummary("job-submit-no-visual-qa-run");
 
     const result = runRegisteredCodexAutomation({ runId: "job-submit-no-visual-qa-run", workflowId: "job_submit_registered", automationRoot });
 
@@ -252,12 +276,7 @@ test("completes job submit registered execution with 20 submitted_confirmed proo
 test("completes job submit registered execution with 20 submitted_confirmed when optional Browser Use recording QA paths do not exist", async () =>
   withFakeCodex(async () => {
     process.env.FAKE_CODEX_STDOUT = "submitted_confirmed=1\napplication_appends=1\n";
-    process.env.FAKE_CODEX_REGISTERED_SUMMARY = registeredSummary({
-      workflow: "job-applications",
-      workflow_id: "job_submit_registered",
-      status: "complete",
-      submitted_count_by_bucket: { japan_targeted: 20, overseas_global: 20 },
-      application_appends: 20,
+    process.env.FAKE_CODEX_REGISTERED_SUMMARY = strictJobRegisteredSummary("job-submit-missing-qa-files-run", {
       gemini_video_qa: {
         stages: [
           {
@@ -299,12 +318,7 @@ test("completes job submit registered execution with 20 submitted_confirmed proo
       })
     );
     process.env.FAKE_CODEX_STDOUT = "submitted_confirmed=1\napplication_appends=1\n";
-    process.env.FAKE_CODEX_REGISTERED_SUMMARY = registeredSummary({
-      workflow_id: "job_submit_registered",
-      workflow: "job-applications",
-      status: "complete",
-      submitted_count_by_bucket: { japan_targeted: 20, overseas_global: 20 },
-      application_appends: 20,
+    process.env.FAKE_CODEX_REGISTERED_SUMMARY = strictJobRegisteredSummary("job-submit-valid-qa-run", {
       gemini_video_qa: {
         stages: [
           {
@@ -431,7 +445,7 @@ test("exposes Job registered issue ledger summary from sidecar metadata", async 
     assert.equal(issueSummary.resubmit_allowed, false);
   }));
 
-test("keeps legacy submitted_confirmed job summary compatible", async () =>
+test("blocks legacy submitted_confirmed-only job summary without split proof and run-owned audit", async () =>
   withFakeCodex(async () => {
     process.env.FAKE_CODEX_STDOUT = "submitted_confirmed=20\napplication_appends=20\n";
     process.env.FAKE_CODEX_REGISTERED_SUMMARY = registeredSummary({
@@ -443,6 +457,26 @@ test("keeps legacy submitted_confirmed job summary compatible", async () =>
 
     const result = runRegisteredCodexAutomation({ runId: "job-legacy-submitted-confirmed-run", workflowId: "job_submit_registered", automationRoot });
 
-    assert.equal(result.status, "complete");
-    assert.equal(result.proof_gate.ok, true);
+    assert.equal(result.status, "blocked");
+    assert.equal(result.proof_gate.ok, false);
+    assert.ok(result.proof_gate.missing.includes("submitted_confirmed_target_20_readback"));
+    assert.ok(result.proof_gate.missing.includes("job_completion_audit_run_owned"));
+  }));
+
+test("blocks a completion audit symlink that escapes the registered run directory", async () =>
+  withFakeCodex(async () => {
+    const runId = "job-submit-symlink-audit-run";
+    const summary = strictJobRegisteredSummary(runId);
+    const runAudit = join(process.env.AUTOMATION_OS_REGISTERED_SUMMARY_ROOT!, runId, "completion-audit.json");
+    const outsideAudit = join(tempRoot, `${runId}-outside-audit.json`);
+    writeFileSync(outsideAudit, readFileSync(runAudit));
+    unlinkSync(runAudit);
+    symlinkSync(outsideAudit, runAudit);
+    process.env.FAKE_CODEX_REGISTERED_SUMMARY = summary;
+
+    const result = runRegisteredCodexAutomation({ runId, workflowId: "job_submit_registered", automationRoot });
+
+    assert.equal(result.status, "blocked");
+    assert.equal(result.proof_gate.ok, false);
+    assert.ok(result.proof_gate.missing.includes("job_completion_audit_run_owned"));
   }));

@@ -1,6 +1,7 @@
 import { existsSync, lstatSync, mkdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { guardObsidianVaultPath } from "./vaultGuard.js";
+import { withVaultWriteLockSync } from "./vaultWriteLock.js";
 
 const inboxFolder = "09_Inbox";
 const defaultSourceType = "capture";
@@ -73,6 +74,8 @@ export function runObsidianIngest(input: ObsidianIngestInput): ObsidianIngestRes
   }
 
   const vaultPath = vaultGuard.vaultPath;
+  try {
+    return withVaultWriteLockSync(vaultPath, "obsidian-ingest", () => {
   mkdirSync(vaultPath, { recursive: true });
   const vaultRealPath = realpathSync(vaultPath);
   const inboxDir = join(vaultPath, inboxFolder);
@@ -162,6 +165,18 @@ export function runObsidianIngest(input: ObsidianIngestInput): ObsidianIngestRes
   };
   writeOptionalStatusFile(result, input.statusFile);
   return result;
+    });
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.startsWith("obsidian_vault_write_locked")) throw error;
+    const result: ObsidianIngestResult = {
+      ok: false,
+      vaultPath,
+      error: error.message,
+      summary: "Vault writer is busy"
+    };
+    writeOptionalStatusFile(result, input.statusFile);
+    return result;
+  }
 }
 
 function ensureInboxDirectory(input: { vaultRealPath: string; inboxDir: string }):

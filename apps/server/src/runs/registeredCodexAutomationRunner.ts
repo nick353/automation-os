@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { evaluateGeminiVideoQaAudit } from "./geminiVideoQa.js";
 import { issueLedgerMetadata } from "./issueLedger.js";
 import { Proof } from "./proofGate.js";
@@ -38,7 +38,9 @@ export type RegisteredCodexAutomationRunResult = {
 
 const defaultAutomationRoot = "/Users/nichikatanaka/.codex/automations";
 const defaultTimeoutMs = 90 * 60 * 1000;
-const defaultPlaywrightCliWrapper = "/Users/nichikatanaka/.codex/skills/playwright/scripts/playwright_cli.sh";
+const browserUseAdapterEntryPoint = "/Users/nichikatanaka/.codex/skills/automation-kernel-run/scripts/browser-use-cli-stage-adapter.mjs";
+const browserUseHelper = "/Users/nichikatanaka/.local/bin/codex-browser-use";
+const browserUseRuntimeConfig = "/Users/nichikatanaka/.codex/browser-use/browser-use-runtime.toml";
 
 type RegisteredWorkflowConfig = {
   cwd: string;
@@ -85,16 +87,16 @@ export function runRegisteredCodexAutomation(input: { runId: string; workflowId:
   mkdirSync(dirname(artifactPath), { recursive: true });
   mkdirSync(dirname(registeredSummaryPath), { recursive: true });
   const timeoutMs = runnerTimeoutMs();
-  const playwrightCli = process.env.AUTOMATION_OS_PLAYWRIGHT_CLI || defaultPlaywrightCliWrapper;
   const executablePrompt = [
     prompt,
     "",
     "Automation OS registered workflow execution:",
     `- automation_os_run_id=${input.runId}`,
     `- registered_workflow_id=${input.workflowId}`,
-    `- Browser/UI stages must use Playwright CLI. Use PLAYWRIGHT_CLI_WRAPPER="${playwrightCli}" or the project Playwright runner; do not start Browser Use, browser_use.skill_cli.daemon, or browser-use temporary Chrome sessions.`,
-    "- Capture Playwright artifacts for browser stages: screenshot, DOM/body text or snapshot, URL, attempt JSON, and cleanup/no-residual-process proof. Trace/video is useful when available, but workflow-owned source-of-truth proof remains required.",
-    "- Stop with exact blocker playwright_cli_callable_surface_missing only when Playwright CLI and the project Playwright runner are both unavailable.",
+    `- Browser/UI stages must use Browser Use CLI through the canonical shared adapter ${browserUseAdapterEntryPoint}. The runner owns the current-run stage binding; never pass a browser handle, cookie, token, credential, authority body, or stale receipt to a child worker.`,
+    `- The only permitted Browser Use transport is ${browserUseHelper} with runtime ${browserUseRuntimeConfig} through that adapter. Do not start IAB, Chrome/Profile 2, Playwright CLI, direct CDP, raw Browser Use binaries, or another browser surface.`,
+    "- Keep URL, DOM/body text or snapshot, screenshot, attempt JSON, exact blocker, and cleanup/no-residual-process proof as the browser artifact; never persist credentials, cookies, tokens, or authority contents.",
+    "- Stop with exact blocker browser_use_cli_runtime_unavailable when the canonical Browser Use helper, adapter, current-run authority, or same-session readback is unavailable.",
     "- Current Automation OS policy authorizes non-billing external actions for this registered workflow: save, post, publish, send, submit, delete-in-scope, authenticated-session use, and application flow actions may proceed when the workflow has the needed context and an existing session/credential is available.",
     "- Default hard stops are billing, purchase, payment, and checkout only. Do not start paid checkout, purchase, paid subscription, paid usage upgrade, or payment-method changes.",
     "- CAPTCHA, OTP/security-code, identity verification, auth callable-surface gaps, and uncertain PII are not default hard stops. Do not bypass or invent them; capture screenshot, URL, DOM/body text or snapshot, attempt JSON, exact blocker, and cleanup proof, then continue via a lawful human-input evidence path or the next safe candidate/stage.",
@@ -116,8 +118,12 @@ export function runRegisteredCodexAutomation(input: { runId: string; workflowId:
       AUTOMATION_OS_REGISTERED_WORKFLOW_ID: input.workflowId,
       AUTOMATION_OS_RUN_ID: input.runId,
       AUTOMATION_OS_REGISTERED_SUMMARY_PATH: registeredSummaryPath,
-      PLAYWRIGHT_CLI_WRAPPER: playwrightCli,
-      AUTOMATION_OS_BROWSER_DRIVER: "playwright_cli"
+      AUTOMATION_OS_BROWSER_SURFACE: "browser_use_cli",
+      AUTOMATION_OS_BROWSER_DRIVER: "browser_use_cli",
+      AUTOMATION_OS_BROWSER_ADAPTER: browserUseAdapterEntryPoint,
+      AUTOMATION_OS_BROWSER_HELPER: browserUseHelper,
+      AUTOMATION_OS_BROWSER_RUNTIME_CONFIG: browserUseRuntimeConfig,
+      AUTOMATION_OS_BROWSER_NO_FALLBACK: "1"
     }
   };
 
@@ -150,6 +156,8 @@ export function runRegisteredCodexAutomation(input: { runId: string; workflowId:
       });
   const workflowContract = evaluateRegisteredWorkflowContract({
     workflowId: input.workflowId,
+    runId: input.runId,
+    registeredSummaryPath,
     succeeded,
     stdoutTail,
     registeredSummary: registeredSummary.summary
@@ -170,8 +178,12 @@ export function runRegisteredCodexAutomation(input: { runId: string; workflowId:
     automation_toml: workflow.automationToml,
     cwd: workflow.cwd,
     registered_summary_path: registeredSummaryPath,
-    browser_driver: "playwright_cli",
-    playwright_cli_wrapper: playwrightCli,
+    browser_surface: "browser_use_cli",
+    browser_driver: "browser_use_cli",
+    browser_adapter: browserUseAdapterEntryPoint,
+    browser_helper: browserUseHelper,
+    browser_runtime_config: browserUseRuntimeConfig,
+    browser_no_fallback: true,
     registered_summary_present: Boolean(registeredSummary.summary),
     registered_summary_parse_error: registeredSummary.parseError,
     registered_summary_fallback_written: fallback.written,
@@ -386,6 +398,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function evaluateRegisteredWorkflowContract(input: {
   workflowId: string;
+  runId: string;
+  registeredSummaryPath: string;
   succeeded: boolean;
   stdoutTail: string;
   registeredSummary?: Record<string, unknown>;
@@ -394,12 +408,15 @@ function evaluateRegisteredWorkflowContract(input: {
   const missing: string[] = [];
   const summaryStatus = typeof input.registeredSummary?.status === "string" ? input.registeredSummary.status : "";
   const text = `${input.stdoutTail}\n${JSON.stringify(input.registeredSummary ?? {})}`;
-  const hasJobSubmitFullSuccessProof = input.workflowId === "job_submit_registered" && registeredSummaryHasJobSubmitFullSuccessProof(input.registeredSummary);
+  const jobProof = input.workflowId === "job_submit_registered"
+    ? evaluateJobSubmitFullSuccessProof(input.registeredSummary, input.runId, input.registeredSummaryPath)
+    : { ok: false, missing: [] as string[] };
+  const hasJobSubmitFullSuccessProof = input.workflowId === "job_submit_registered" && jobProof.ok;
   if ((!hasJobSubmitFullSuccessProof && /blocked|submitted_confirmed=0|application_appends=0|未応募|応募送信前停止|source-of-truth.*未更新/i.test(text)) || summaryStatus === "blocked") {
     missing.push("registered_workflow_reported_blocked");
   }
   if (input.workflowId === "job_submit_registered" && !hasJobSubmitFullSuccessProof) {
-    missing.push("submitted_confirmed_target_20_readback");
+    missing.push(...jobProof.missing);
   }
   if (!input.registeredSummary) {
     missing.push("registered_summary_present");
@@ -411,16 +428,101 @@ function registeredSummaryCompletionClaimed(summary: Record<string, unknown>): b
   return summary.completion_claimed === true;
 }
 
-function registeredSummaryHasJobSubmitFullSuccessProof(summary: Record<string, unknown> | undefined): boolean {
-  if (!summary) return false;
-  const status = stringValue(summary.status).toLowerCase();
-  if (status !== "complete" && status !== "partial_success") return false;
-  const bucketCounts = summary.submitted_count_by_bucket;
-  if (isRecord(bucketCounts)) {
-    return numberValue(bucketCounts.japan_targeted) >= 20 && numberValue(bucketCounts.overseas_global) >= 20;
+function evaluateJobSubmitFullSuccessProof(
+  summary: Record<string, unknown> | undefined,
+  expectedRunId: string,
+  summaryPath: string
+): { ok: boolean; missing: string[] } {
+  const missing: string[] = [];
+  if (!summary) {
+    return {
+      ok: false,
+      missing: [
+        "registered_summary_present",
+        "submitted_confirmed_target_20_readback",
+        "job_source_of_truth_proofs",
+        "job_cleanup_proof",
+        "job_completion_audit_run_owned"
+      ]
+    };
   }
-  if ("submitted_confirmed" in summary) return numberValue(summary.submitted_confirmed) >= 20;
-  return numberValue(summary.japan_targeted_submitted_confirmed) >= 20 && numberValue(summary.overseas_global_submitted_confirmed) >= 20;
+  if (stringValue(summary.status).toLowerCase() !== "complete") missing.push("job_completion_status_complete");
+  if (summary.completion_claimed !== true) missing.push("job_completion_claimed");
+  if (stringValue(summary.workflow_id) !== "job_submit_registered") missing.push("job_completion_workflow_identity");
+  if (stringValue(summary.run_id) !== expectedRunId) missing.push("job_completion_run_identity");
+  const bucketCounts = isRecord(summary.submitted_count_by_bucket) ? summary.submitted_count_by_bucket : {};
+  if (numberValue(bucketCounts.japan_targeted) < 20 || numberValue(bucketCounts.overseas_global) < 20) {
+    missing.push("submitted_confirmed_target_20_readback");
+  }
+  if (!Array.isArray(summary.source_of_truth_proofs) || summary.source_of_truth_proofs.length === 0) {
+    missing.push("job_source_of_truth_proofs");
+  }
+  if (!hasNonemptyProof(summary.cleanup_proof)) missing.push("job_cleanup_proof");
+
+  const auditPath = resolveRunOwnedCompletionAudit(summary.completion_audit_path, summaryPath);
+  if (!auditPath) {
+    missing.push("job_completion_audit_run_owned");
+  } else {
+    try {
+      const audit = JSON.parse(readFileSync(auditPath, "utf8")) as unknown;
+      if (!isRecord(audit)) throw new Error("completion_audit_root_invalid");
+      const generatedAt = Date.parse(stringValue(audit.generated_at));
+      const ageMs = Date.now() - generatedAt;
+      const auditBuckets = isRecord(audit.submitted_count_by_bucket) ? audit.submitted_count_by_bucket : {};
+      if (audit.ok !== true) missing.push("job_completion_audit_ok");
+      if (stringValue(audit.workflow_id) !== "job_submit_registered" || stringValue(audit.run_id) !== expectedRunId) {
+        missing.push("job_completion_audit_identity");
+      }
+      if (audit.split_target_20_20_proven !== true || numberValue(auditBuckets.japan_targeted) < 20 || numberValue(auditBuckets.overseas_global) < 20) {
+        missing.push("job_completion_audit_split_target");
+      }
+      if (audit.final_user_action_manifest_empty_for_run_contract !== true) {
+        missing.push("job_completion_audit_user_action_manifest");
+      }
+      if (!Array.isArray(audit.unresolved_user_actions) || audit.unresolved_user_actions.length !== 0) {
+        missing.push("job_completion_audit_unresolved_actions");
+      }
+      if (!Number.isFinite(generatedAt) || ageMs < -5 * 60 * 1000 || ageMs > 24 * 60 * 60 * 1000) {
+        missing.push("job_completion_audit_freshness");
+      }
+    } catch {
+      missing.push("job_completion_audit_valid");
+    }
+  }
+  return { ok: missing.length === 0, missing: [...new Set(missing)] };
+}
+
+function resolveRunOwnedCompletionAudit(value: unknown, summaryPath: string): string | undefined {
+  const raw = stringValue(value);
+  if (!raw) return undefined;
+  let candidate: string;
+  try {
+    candidate = raw.startsWith("file:") ? fileURLToPath(raw) : raw;
+  } catch {
+    return undefined;
+  }
+  if (!isAbsolute(candidate)) candidate = resolve(dirname(summaryPath), candidate);
+  const resolved = resolve(candidate);
+  const runDirectory = resolve(dirname(summaryPath));
+  const scopedRelative = relative(runDirectory, resolved);
+  if (!scopedRelative || scopedRelative.startsWith("..") || isAbsolute(scopedRelative) || basename(resolved) !== "completion-audit.json") return undefined;
+  if (!existsSync(resolved)) return undefined;
+  try {
+    if (lstatSync(resolved).isSymbolicLink()) return undefined;
+    const realRunDirectory = realpathSync(runDirectory);
+    const realAuditPath = realpathSync(resolved);
+    const realScopedRelative = relative(realRunDirectory, realAuditPath);
+    if (!realScopedRelative || realScopedRelative.startsWith("..") || isAbsolute(realScopedRelative)) return undefined;
+    return realAuditPath;
+  } catch {
+    return undefined;
+  }
+}
+
+function hasNonemptyProof(value: unknown): boolean {
+  if (Array.isArray(value)) return value.length > 0;
+  if (isRecord(value)) return Object.keys(value).length > 0;
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 function numberValue(value: unknown): number {

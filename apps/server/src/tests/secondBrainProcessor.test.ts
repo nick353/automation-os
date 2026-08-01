@@ -604,6 +604,95 @@ test("Second Brain processor preserves non-placeholder review metadata", () => {
   assert.match(updated, /review_cycle: quarterly/);
 });
 
+test("Second Brain processor replaces captured page-title metadata with substantive summary evidence", () => {
+  const vaultPath = createVault("captured-page-title-distillation");
+  const notePath = writeNote(
+    vaultPath,
+    "09_Inbox",
+    "Focus Transcript.md",
+    [
+      "---",
+      "title: Focus Transcript",
+      "auto_process: obsidian_internal_only",
+      "processing_status: review_ready",
+      "suggested_destination: 06_Research",
+      'source_title: "How to Get Your Brain to Focus: Chris Bailey full transcript"',
+      "source_type: url_capture",
+      "progressive_summary: How to Get Your Brain to Focus: Chris Bailey (Full Transcript) &#8211; The Singju Post",
+      "distillation: How to Get Your Brain to Focus: Chris Bailey (Full Transcript) &#8211; The Singju Post",
+      'next_use: "Use as research context: How to Get Your Brain to Focus"',
+      "unresolved_question: Why?",
+      "review_cycle: weekly",
+      "processed_by: automation-os-second-brain-processor",
+      'processed_at: "2026-06-14T03:19:00.000Z"',
+      "---",
+      "# Focus Transcript",
+      "",
+      "## Content",
+      "",
+      "```text",
+      "How to Get Your Brain to Focus: Chris Bailey (Full Transcript) &#8211; The Singju Post",
+      "Skip to content",
+      "Navigation Menu",
+      "Why?",
+      "How does technology influence our attention and our ability to focus?",
+      "SUMMARY:",
+      "1. Overstimulation by Screens: Constant exposure to screens led to fragmented attention and a lack of focus.",
+      "2. Experiment with Smartphone: Limiting phone use improved attention, creative ideas, and future planning.",
+      "3. The Craving for Distraction: Our brains are not necessarily distracted; they are overstimulated and rewarded for seeking novelty.",
+      "```",
+      ""
+    ].join("\n")
+  );
+
+  const result = runSecondBrainProcessor({ vaultPath, apply: true, processedAt: "2026-06-14T03:21:00.000Z" });
+  const updated = readFileSync(notePath, "utf8");
+
+  assert.equal(result.updated, 1);
+  assert.match(updated, /progressive_summary: "Overstimulation by Screens:/);
+  assert.match(updated, /distillation: "The Craving for Distraction: Our brains are not necessarily distracted; they are overstimulated/);
+  assert.match(updated, /unresolved_question: How does technology influence our attention and our ability to focus\?/);
+  assert.match(updated, /distillation_quality: substantive/);
+  assert.match(updated, /knowledge_reuse_status: ready/);
+  assert.doesNotMatch(updated, /progressive_summary: How to Get Your Brain to Focus/);
+  assert.doesNotMatch(updated, /unresolved_question: Why\?/);
+});
+
+test("Second Brain processor requires judgment-bearing procedure evidence for Skill candidates", () => {
+  const vaultPath = createVault("skill-candidate-evidence");
+  const thinPath = writeNote(
+    vaultPath,
+    "09_Inbox",
+    "Workflow Metadata.md",
+    "---\ntitle: Agent workflow\nauto_process: obsidian_internal_only\nsuggested_destination: 06_Research\n---\n# Agent workflow\n\nPublic metadata fallback capture.\n"
+  );
+  const substantivePath = writeNote(
+    vaultPath,
+    "09_Inbox",
+    "Judgment Skill.md",
+    [
+      "---",
+      "title: Judgment Skill",
+      "auto_process: obsidian_internal_only",
+      "suggested_destination: 06_Research",
+      "---",
+      "# Judgment Skill",
+      "",
+      "This repeatable workflow should become a Skill only after its decision criteria, stop condition, source of truth, and proof boundary are verified in real sessions.",
+      "The procedure must preserve the user's judgment and be improved after a reproducible failure rather than being installed from a captured note.",
+      ""
+    ].join("\n")
+  );
+
+  const result = runSecondBrainProcessor({ vaultPath, apply: true, processedAt: "2026-06-14T03:25:00.000Z" });
+
+  assert.equal(result.updated, 2);
+  assert.match(readFileSync(thinPath, "utf8"), /skill_candidate: false/);
+  assert.match(readFileSync(thinPath, "utf8"), /skill_candidate_reason: none/);
+  assert.match(readFileSync(substantivePath, "utf8"), /skill_candidate: true/);
+  assert.match(readFileSync(substantivePath, "utf8"), /skill_candidate_reason: repeatable judgment or procedure detected/);
+});
+
 test("Second Brain processor does not follow symlink files or directories outside the vault", () => {
   const vaultPath = createVault("symlink-escape");
   const externalRoot = join(tempRoot, "external-second-brain");

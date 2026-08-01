@@ -10,6 +10,7 @@ import test from "node:test";
 const tempRoot = mkdtempSync(join(tmpdir(), "automation-os-api-runs-start-"));
 process.env.AUTOMATION_OS_DB = join(tempRoot, "automation-os.sqlite");
 process.env.AUTOMATION_OS_SECRET_DIR = join(tempRoot, "secrets");
+process.env.AUTOMATION_OS_GLOBAL_SYSTEM_SERVICE_USER_ID = "user_test_global_service";
 
 const { app } = await import("../index.js");
 const db = await import("../db/client.js");
@@ -52,12 +53,49 @@ function stableCanonicalValue(value: unknown): unknown {
   return value;
 }
 
+function seedOwnerCompany(companyId = "project-a"): void {
+  const timestamp = db.nowIso();
+  db.upsert("users", {
+    id: "user_local_owner",
+    auth_provider: "legacy_operator_token",
+    auth_subject: "user_local_owner",
+    email: null,
+    display_name: "Test owner",
+    kind: "human",
+    status: "active",
+    created_at: timestamp,
+    updated_at: timestamp
+  });
+  db.upsert("companies", { id: companyId, slug: companyId, name: "Project A", status: "active", created_at: timestamp, updated_at: timestamp });
+  db.upsert("company_memberships", {
+    id: `membership_${companyId}_owner`,
+    company_id: companyId,
+    user_id: "user_local_owner",
+    role: "owner",
+    status: "active",
+    created_at: timestamp,
+    updated_at: timestamp
+  });
+  db.upsert("users", {
+    id: "user_test_global_service",
+    auth_provider: "test",
+    auth_subject: "user_test_global_service",
+    email: null,
+    display_name: "Test global system service",
+    kind: "service",
+    status: "active",
+    created_at: timestamp,
+    updated_at: timestamp
+  });
+}
+
 test("POST /api/runs/start sanitizes raw API keys before creating the run", async () => {
   db.initDb();
   db.resetDemoData();
+  seedOwnerCompany();
 
   const token = "sk-apiBoundary1234567890abcdefghijklmnopqrstuvwxyzABCD";
-  const response = await postJson("/api/runs/start", { command: `  X publish token=${token}  ` });
+  const response = await postJson("/api/runs/start", { company_id: "project-a", command: `  X publish token=${token}  ` });
   const body = JSON.parse(response.body) as { runId: string; workerProtocol?: string; run: { objective: string } };
 
   assert.equal(response.status, 202);
@@ -115,8 +153,9 @@ test("POST /api/runs/start sanitizes raw API keys before creating the run", asyn
 test("GET /api/runs/:id returns execution routing readback from stored metadata", async () => {
   db.initDb();
   db.resetDemoData();
+  seedOwnerCompany();
 
-  const startResponse = await postJson("/api/runs/start", { command: "Codex server backend readback test" });
+  const startResponse = await postJson("/api/runs/start", { company_id: "project-a", command: "Codex server backend readback test" });
   const startBody = JSON.parse(startResponse.body) as { runId: string };
   const detailResponse = await requestJson("GET", `/api/runs/${encodeURIComponent(startBody.runId)}`);
   const detailBody = JSON.parse(detailResponse.body) as {
@@ -172,9 +211,10 @@ test("production write guard allows state-changing API calls with the configured
   const previousToken = process.env.AUTOMATION_OS_WRITE_TOKEN;
   process.env.AUTOMATION_OS_REQUIRE_WRITE_TOKEN = "1";
   process.env.AUTOMATION_OS_WRITE_TOKEN = "test-write-token";
+  seedOwnerCompany();
 
   try {
-    const response = await postJson("/api/runs/start", { command: "safe local smoke" }, { "x-automation-os-token": "test-write-token" });
+    const response = await postJson("/api/runs/start", { company_id: "project-a", command: "safe local smoke" }, { "x-automation-os-token": "test-write-token" });
     const body = JSON.parse(response.body) as { runId: string };
     const runs = db.querySql<{ count: number }>("SELECT count(*) AS count FROM runs")[0].count;
 
@@ -218,12 +258,45 @@ test("production write guard and JSON parsing apply to early MVP automation rout
     assert.equal(blocked.status, 401);
     assert.equal(db.querySql<{ count: number }>("SELECT count(*) AS count FROM mvp_automations WHERE id='guarded-mvp-automation'")[0].count, 0);
 
-    const allowed = await postJson("/api/mvp/automations", request, { "x-automation-os-token": "test-write-token" });
+    const allowed = await postJson("/api/mvp/automations", request, { "x-automation-os-token": "test-write-token", "idempotency-key": "guarded-mvp-create" });
     const body = JSON.parse(allowed.body) as { automation: { id: string; name: string; builder_spec: Record<string, unknown> } };
     assert.equal(allowed.status, 201);
     assert.equal(body.automation.id, request.id);
     assert.equal(body.automation.name, request.name);
     assert.equal(body.automation.builder_spec.external_action_allowed, false);
+
+    const firstGenerated = await postJson("/api/mvp/automations", { ...request, id: undefined, name: "Template copy 1" }, { "x-automation-os-token": "test-write-token", "idempotency-key": "template-copy-create-1" });
+    const secondGenerated = await postJson("/api/mvp/automations", { ...request, id: undefined, name: "Template copy 2" }, { "x-automation-os-token": "test-write-token", "idempotency-key": "template-copy-create-2" });
+    const firstGeneratedBody = JSON.parse(firstGenerated.body) as { automation: { id: string } };
+    const secondGeneratedBody = JSON.parse(secondGenerated.body) as { automation: { id: string } };
+    assert.equal(firstGenerated.status, 201);
+    assert.equal(secondGenerated.status, 201);
+    assert.notEqual(firstGeneratedBody.automation.id, secondGeneratedBody.automation.id);
+    assert.equal(db.querySql<{ count: number }>("SELECT count(*) AS count FROM mvp_automations WHERE name IN ('Template copy 1','Template copy 2')")[0].count, 2);
+
+    const crossCompanyOverwrite = await postJson("/api/mvp/automations", { ...request, project_id: "project-b" }, { "x-automation-os-token": "test-write-token", "idempotency-key": "cross-company-create" });
+    const crossCompanyBody = JSON.parse(crossCompanyOverwrite.body) as { error: string };
+    assert.equal(crossCompanyOverwrite.status, 404);
+    assert.equal(crossCompanyBody.error, "company_scope_forbidden");
+    assert.equal(db.querySql<{ project_id: string }>("SELECT project_id FROM mvp_automations WHERE id='guarded-mvp-automation'")[0].project_id, "project-a");
+
+    const emptyProjectPatch = await requestJson("PATCH", "/api/mvp/automations/guarded-mvp-automation", { ...request, project_id: "" }, { "x-automation-os-token": "test-write-token" });
+    const emptyProjectPatchBody = JSON.parse(emptyProjectPatch.body) as { error: string };
+    assert.equal(emptyProjectPatch.status, 400);
+    assert.equal(emptyProjectPatchBody.error, "project_id_required");
+    assert.equal(db.querySql<{ project_id: string }>("SELECT project_id FROM mvp_automations WHERE id='guarded-mvp-automation'")[0].project_id, "project-a");
+
+    const missingProject = await postJson("/api/mvp/automations", { ...request, id: "missing-project-automation", project_id: "" }, { "x-automation-os-token": "test-write-token", "idempotency-key": "missing-project-create" });
+    const missingProjectBody = JSON.parse(missingProject.body) as { error: string };
+    assert.equal(missingProject.status, 400);
+    assert.equal(missingProjectBody.error, "project_id_required");
+    assert.equal(db.querySql<{ count: number }>("SELECT count(*) AS count FROM mvp_automations WHERE id='missing-project-automation'")[0].count, 0);
+
+    const missingBuilderTarget = await requestJson("PUT", "/api/mvp/automations/missing-builder-target/builder-spec", { source: "test" }, { "x-automation-os-token": "test-write-token" });
+    const missingBuilderBody = JSON.parse(missingBuilderTarget.body) as { error: string };
+    assert.equal(missingBuilderTarget.status, 404);
+    assert.equal(missingBuilderBody.error, "automation_not_found");
+    assert.equal(db.querySql<{ count: number }>("SELECT count(*) AS count FROM mvp_automations WHERE id='missing-builder-target'")[0].count, 0);
   } finally {
     if (previousRequire === undefined) delete process.env.AUTOMATION_OS_REQUIRE_WRITE_TOKEN;
     else process.env.AUTOMATION_OS_REQUIRE_WRITE_TOKEN = previousRequire;
@@ -237,8 +310,10 @@ test("production API access guard protects operator readbacks while health stays
   db.resetDemoData();
   const previousRequireApi = process.env.AUTOMATION_OS_REQUIRE_API_TOKEN;
   const previousToken = process.env.AUTOMATION_OS_WRITE_TOKEN;
+  const previousReadToken = process.env.AUTOMATION_OS_READ_TOKEN;
   process.env.AUTOMATION_OS_REQUIRE_API_TOKEN = "1";
   process.env.AUTOMATION_OS_WRITE_TOKEN = "test-operator-token";
+  process.env.AUTOMATION_OS_READ_TOKEN = "test-read-token";
 
   try {
     const health = await requestJson("GET", "/api/health");
@@ -246,14 +321,25 @@ test("production API access guard protects operator readbacks while health stays
     const blockedMixedCase = await requestJson("GET", "/API/mvp/state");
     const blockedBody = JSON.parse(blocked.body) as { error: string };
     const allowed = await requestJson("GET", "/api/mvp/state", {}, { "x-automation-os-token": "test-operator-token" });
+    const readTokenAllowed = await requestJson("GET", "/api/mvp/state", {}, { "x-automation-os-token": "test-read-token" });
+    const readTokenHead = await requestJson("HEAD", "/api/mvp/state", {}, { "x-automation-os-token": "test-read-token" });
+    const readTokenOptions = await requestJson("OPTIONS", "/api/mvp/state", {}, { "x-automation-os-token": "test-read-token" });
+    const readTokenPost = await postJson("/api/mvp/automations", { id: "read-token-must-not-write" }, { "x-automation-os-token": "test-read-token" });
     const mixedCaseWithToken = await requestJson("GET", "/API/mvp/state", {}, { "x-automation-os-token": "test-operator-token" });
     const mixedCasePost = await postJson("/API/mvp/automations", { id: "mixed-case-bypass" }, { "x-automation-os-token": "test-operator-token" });
 
     assert.equal(health.status, 200);
+    const healthBody = JSON.parse(health.body) as Record<string, unknown>;
+    assert.deepEqual(Object.keys(healthBody).sort(), ["ok", "service", "time"]);
+    assert.doesNotMatch(health.body, /database|deployment|\/Users\/|webDistDir|tokenConfigured/);
     assert.equal(blocked.status, 401);
     assert.equal(blockedMixedCase.status, 401);
     assert.equal(blockedBody.error, "production_api_token_required");
     assert.equal(allowed.status, 200);
+    assert.equal(readTokenAllowed.status, 200);
+    assert.equal(readTokenHead.status, 200);
+    assert.equal(readTokenOptions.status, 401);
+    assert.equal(readTokenPost.status, 401);
     assert.equal(mixedCaseWithToken.status, 404);
     assert.equal(mixedCasePost.status, 404);
     assert.equal(db.querySql<{ count: number }>("SELECT count(*) AS count FROM mvp_automations WHERE id='mixed-case-bypass'")[0].count, 0);
@@ -262,6 +348,8 @@ test("production API access guard protects operator readbacks while health stays
     else process.env.AUTOMATION_OS_REQUIRE_API_TOKEN = previousRequireApi;
     if (previousToken === undefined) delete process.env.AUTOMATION_OS_WRITE_TOKEN;
     else process.env.AUTOMATION_OS_WRITE_TOKEN = previousToken;
+    if (previousReadToken === undefined) delete process.env.AUTOMATION_OS_READ_TOKEN;
+    else process.env.AUTOMATION_OS_READ_TOKEN = previousReadToken;
   }
 });
 
@@ -325,12 +413,21 @@ test("POST /api/create/plan returns a planner result without OpenAI and bypasses
         { role: "user", text: "失敗したら30分後に再確認。URLとスクショとDBを証跡にして、投稿はURLが取れないなら止めます。" }
       ]
     });
-    const body = JSON.parse(response.body) as { ok: boolean; plan: { source: string; openQuestions: string[]; answered: string[]; executionDecision: string } };
+    const newAutomationResponse = await postJson("/api/create/plan", {
+      messages: [
+        { role: "user", text: "新しい自動化として、毎朝9時にGoogleで競合を調査してレポートを保存する。失敗時は30分後に再確認し、URLとスクショとDBを証跡にする。外部投稿はしない。" }
+      ]
+    });
+    const body = JSON.parse(response.body) as { ok: boolean; plan: { source: string; operation: string; openQuestions: string[]; answered: string[]; executionDecision: string } };
+    const newAutomationBody = JSON.parse(newAutomationResponse.body) as { plan: { operation: string } };
     const runs = db.querySql<{ count: number }>("SELECT count(*) AS count FROM runs")[0].count;
 
     assert.equal(response.status, 200);
     assert.equal(body.ok, true);
     assert.equal(body.plan.source, "local_fallback");
+    assert.equal(body.plan.operation, "manage_workflow");
+    assert.equal(newAutomationResponse.status, 200);
+    assert.equal(newAutomationBody.plan.operation, "create_automation");
     assert.equal(body.plan.answered.includes("実行タイミング"), true);
     assert.equal(body.plan.answered.includes("完了証拠"), true);
     assert.equal(Array.isArray(body.plan.openQuestions), true);
@@ -360,10 +457,11 @@ test("POST /api/create/plan accepts content-shaped chat messages", async () => {
         { role: "user", content: "Mac workerの説明文がスマホで折り返し崩れしています。どこを直して、どう検証すればいいですか？" }
       ]
     });
-    const body = JSON.parse(response.body) as { plan: { title: string; executionDecision: string; nextAction: string } };
+    const body = JSON.parse(response.body) as { plan: { title: string; operation: string; executionDecision: string; nextAction: string } };
 
     assert.equal(response.status, 200);
     assert.equal(body.plan.title, "Createチャットと画面表示を改善する");
+    assert.equal(body.plan.operation, "manage_workflow");
     assert.equal(body.plan.executionDecision, "demo_first");
     assert.match(body.plan.nextAction, /本番画面で会話を再現/);
   } finally {
@@ -957,6 +1055,7 @@ test("POST /api/create/plan handles Codex-like mixed chat intents without templa
 test("Create schedule adjustment covers registered workflow, Schedule, worker pickup, and readback boundaries", async () => {
   db.initDb();
   db.resetDemoData();
+  seedOwnerCompany();
   const previousPlannerProvider = process.env.AUTOMATION_OS_CREATE_PLANNER_PROVIDER;
   process.env.AUTOMATION_OS_CREATE_PLANNER_PROVIDER = "local";
 
@@ -1026,7 +1125,13 @@ test("Create schedule adjustment covers registered workflow, Schedule, worker pi
     )[0];
     const runMetadata = JSON.parse(run.metadata_json) as {
       registered_workflow_id?: string;
-      registered_workflow_start?: { source?: string; runnerKind?: string };
+      registered_workflow_start?: {
+        source?: string;
+        runnerKind?: string;
+        workflow_id?: string;
+        definition_fingerprint?: string;
+        schedule_fingerprint?: string;
+      };
       worker_protocol?: string;
       worker_mode?: string;
       worker_loop?: { status?: string; requiredCommand?: string };
@@ -1058,10 +1163,11 @@ test("Create schedule adjustment covers registered workflow, Schedule, worker pi
     assert.match(String(startBody.nextAction), /npm run worker:loop/);
     assert.equal(startBody.workflow.schedule_label, "毎日 08:00");
     assert.equal(runMetadata.registered_workflow_id, "daily-ai-research-publish-run");
-    assert.deepEqual(runMetadata.registered_workflow_start, {
-      source: "manual",
-      runnerKind: "daily_ai_registered"
-    });
+    assert.equal(runMetadata.registered_workflow_start?.source, "manual");
+    assert.equal(runMetadata.registered_workflow_start?.runnerKind, "daily_ai_registered");
+    assert.equal(runMetadata.registered_workflow_start?.workflow_id, "daily-ai-research-publish-run");
+    assert.match(String(runMetadata.registered_workflow_start?.definition_fingerprint), /^[a-f0-9]{64}$/);
+    assert.match(String(runMetadata.registered_workflow_start?.schedule_fingerprint), /^[a-f0-9]{64}$/);
     assert.equal(runMetadata.worker_protocol, "local_worker_loop_required");
     assert.equal(runMetadata.worker_mode, "queued_for_local_worker_loop");
     assert.equal(runMetadata.worker_loop?.status, "waiting_for_pickup");
@@ -1177,9 +1283,11 @@ test("Create planner schema allows answer-question intent for external planners"
   const schemaSource = source.slice(source.indexOf("function plannerJsonSchema"));
   const promptSource = source.slice(source.indexOf("function plannerSystemPrompt"), source.indexOf("function plannerJsonSchema"));
 
-  assert.match(schemaSource, /required: \["intent", "title", "reply"/);
+  assert.match(schemaSource, /required: \["intent", "operation", "title", "reply"/);
   assert.match(schemaSource, /intent: \{ type: "string", enum: \["answer_question", "plan_workflow"\] \}/);
+  assert.match(schemaSource, /operation: \{ type: "string", enum: \["create_automation", "manage_workflow", "answer_question"\] \}/);
   assert.match(promptSource, /intentをanswer_question/);
+  assert.match(promptSource, /operation=create_automation/);
 });
 
 test("POST /api/create/plan downgrades unsafe external planner schedule decisions", async () => {
@@ -1528,6 +1636,7 @@ test("GET /api/capability-router/backlog and POST /api/codex/capabilities/probe 
 test("POST /api/secrets/from-message returns immediately for non-secret chat text", async () => {
   db.initDb();
   db.resetDemoData();
+  seedOwnerCompany();
   db.execSql("DELETE FROM stored_secrets");
 
   const response = await postJson("/api/secrets/from-message", { text: "NisenPrintsの定期実行を設計したい" });
@@ -1546,7 +1655,7 @@ test("POST /api/runs/start stores secret-only commands without starting a run", 
   db.execSql("DELETE FROM stored_secrets");
   const token = "sk-startSecretOnly1234567890abcdefghijklmnopqrstuvwxyz";
 
-  const response = await postJson("/api/runs/start", { command: `OpenAI APIキーは ${token} です。保存だけ` });
+  const response = await postJson("/api/runs/start", { company_id: "project-a", command: `OpenAI APIキーは ${token} です。保存だけ` });
   const body = JSON.parse(response.body) as {
     status?: string;
     exactBlocker?: string;
@@ -1669,9 +1778,11 @@ test("PATCH /api/create/session persists sanitized conversation state without st
 test("POST /api/runs/start stores sanitized Create session context before any worker pickup", async () => {
   db.initDb();
   db.resetDemoData();
+  seedOwnerCompany();
   const rawSecret = "sk-createRun1234567890abcdefghijklmnopqrstuvwxyz";
 
   const response = await postJson("/api/runs/start", {
+    company_id: "project-a",
     command: "checkout payment approval smoke for saved Create session",
     createSession: {
       messages: [

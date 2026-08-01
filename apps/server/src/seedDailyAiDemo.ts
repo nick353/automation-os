@@ -1,4 +1,4 @@
-import { execSql, insert, makeId, nowIso, resetDemoData, sqlValue } from "./db/client.js";
+import { dbBackend, execSql, insert, makeId, nowIso, querySql, resetDemoData, sqlValue } from "./db/client.js";
 import { buildCanonicalExecutionRoutingMetadataForCommand } from "./codex/executionRouting.js";
 import { allocateParallelLanes } from "./runs/laneManager.js";
 import { createApprovalRequest } from "./runs/approvalGate.js";
@@ -7,8 +7,20 @@ import { decomposeGoal } from "./planner/decompose.js";
 import { seedResearchKnowledge } from "./planner/advisor.js";
 
 export function seedDailyAiDemo() {
+  assertDailyAiDemoSeedAllowed();
   resetDemoData();
   const now = nowIso();
+  const companyId = process.env.AUTOMATION_OS_DEMO_COMPANY_ID?.trim() || "company_demo_daily_ai";
+  if (!querySql(`SELECT id FROM companies WHERE id=${sqlValue(companyId)} LIMIT 1`)[0]) {
+    insert("companies", {
+      id: companyId,
+      slug: "daily-ai-demo",
+      name: "Daily AI Demo",
+      status: "active",
+      created_at: now,
+      updated_at: now
+    });
+  }
   const runId = "run_demo_daily_ai";
   const objective =
     "Collect Daily AI sources, publish one candidate to X and LinkedIn, study engagement, sync receipts, refresh buffer, and keep cleanup proof.";
@@ -20,6 +32,7 @@ export function seedDailyAiDemo() {
 
   insert("runs", {
     id: runId,
+    company_id: companyId,
     name: "Daily AI full-flow demo",
     status: "complete",
     objective,
@@ -72,6 +85,7 @@ export function seedDailyAiDemo() {
     insert("run_steps", {
       id: `step_demo_${index + 1}`,
       run_id: runId,
+      company_id: companyId,
       name: task.name,
       status: "completed",
       lane_id: lanePlan.lanes[index]?.id,
@@ -91,6 +105,7 @@ export function seedDailyAiDemo() {
   });
   insert("approvals", {
     id: approval.id,
+    company_id: companyId,
     run_id: approval.runId,
     title: approval.title,
     requested_by: approval.requestedBy,
@@ -116,6 +131,7 @@ export function seedDailyAiDemo() {
   for (const [proofType, label, uri, sizeBytes] of proofTypes) {
     insert("proofs", {
       id: makeId("proof"),
+      company_id: companyId,
       run_id: runId,
       step_id: null,
       proof_type: proofType,
@@ -151,5 +167,13 @@ export function seedDailyAiDemo() {
     })} WHERE id=${sqlValue(runId)};`
   );
 
-  return { runId, lanes: lanePlan.lanes.length, approvals: 1, proofs: proofTypes.length, advisorEvents: 3, proofGate };
+  return { runId, companyId, lanes: lanePlan.lanes.length, approvals: 1, proofs: proofTypes.length, advisorEvents: 3, proofGate };
+}
+
+function assertDailyAiDemoSeedAllowed(): void {
+  if (dbBackend !== "sqlite") throw new Error("daily_ai_demo_seed_sqlite_only");
+  if (process.env.NODE_TEST_CONTEXT === "1") return;
+  if (process.env.AUTOMATION_OS_ALLOW_DEMO_SEED !== "1" || !process.env.AUTOMATION_OS_DB?.trim()) {
+    throw new Error("daily_ai_demo_seed_disabled");
+  }
 }

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { Readable } from "node:stream";
 import test from "node:test";
 
@@ -11,6 +12,7 @@ process.env.AUTOMATION_OS_SECRET_DIR = join(tempRoot, "secrets");
 process.env.AUTOMATION_OS_OBSIDIAN_AUTO_EXPORT = "0";
 process.env.AUTOMATION_OS_OBSIDIAN_AUTO_EXPORT_DEFER_MS = "600000";
 process.env.NODE_TEST_CONTEXT = "1";
+process.env.AUTOMATION_OS_SERVICE_WORKER_USER_ID = "user_test_service_worker";
 
 const {
   app,
@@ -24,7 +26,12 @@ const {
   setYouTubeTranscriptCaptureRunnerForTests,
   storeResearchPlanVisibleSourceProof
 } = await import("../index.js");
+const { startCommandRun } = await import("../runs/workerEngine.js");
 const { createResearchPlan, getResearchPlan, markResearchPlanStarted } = await import("../planner/researchPlanner.js");
+const {
+  setResearchPlanLineageFaultAfterProofForTests,
+  setResearchPlanStartFaultAfterPlanUpdateForTests
+} = await import("../planner/researchPlanLineage.js");
 const { setUrlCaptureFetchImplForTests } = await import("../obsidian/urlCapture.js");
 const db = await import("../db/client.js");
 
@@ -33,6 +40,15 @@ process.env.AUTOMATION_OS_ALLOW_CUSTOM_OBSIDIAN_EXPORT = "1";
 let successfulResearchPlanStartCounter = 0;
 
 test.beforeEach(() => {
+  db.initDb();
+  db.execSql(`
+    INSERT OR IGNORE INTO users (id, auth_provider, auth_subject, display_name, kind, status, created_at, updated_at)
+    VALUES ('user_local_owner', 'test', 'user_local_owner', 'Test owner', 'human', 'active', '2026-06-16T00:00:00.000Z', '2026-06-16T00:00:00.000Z');
+    INSERT OR IGNORE INTO companies (id, slug, name, status, created_at, updated_at)
+    VALUES ('project-a', 'project-a', 'Project A', 'active', '2026-06-16T00:00:00.000Z', '2026-06-16T00:00:00.000Z');
+    INSERT OR IGNORE INTO company_memberships (id, company_id, user_id, role, status, created_at, updated_at)
+    VALUES ('membership_test_owner_project_a', 'project-a', 'user_local_owner', 'owner', 'active', '2026-06-16T00:00:00.000Z', '2026-06-16T00:00:00.000Z');
+  `);
   installSuccessfulResearchPlanStartRunner();
 });
 
@@ -45,6 +61,12 @@ test.after(() => {
 
 function deferFixedRegisteredWorkflowSchedulesForResearchTests() {
   db.execSql(`
+    INSERT OR IGNORE INTO users (id, auth_provider, auth_subject, display_name, kind, status, created_at, updated_at)
+    VALUES ('user_test_service_worker', 'test', 'user_test_service_worker', 'Test service worker', 'service', 'active', '2026-06-16T00:00:00.000Z', '2026-06-16T00:00:00.000Z');
+    INSERT OR IGNORE INTO company_memberships (id, company_id, user_id, role, status, created_at, updated_at)
+    VALUES ('membership_test_service_project_a', 'project-a', 'user_test_service_worker', 'operator', 'active', '2026-06-16T00:00:00.000Z', '2026-06-16T00:00:00.000Z');
+  `);
+  db.execSql(`
     UPDATE registered_workflows
     SET status='inactive',
         created_at='2099-01-01T00:00:00.000Z',
@@ -54,10 +76,11 @@ function deferFixedRegisteredWorkflowSchedulesForResearchTests() {
 }
 
 function installSuccessfulResearchPlanStartRunner() {
-  setResearchPlanStartRunnerForTests(async (command: string, options?: { metadata?: Record<string, unknown> }) => {
+  setResearchPlanStartRunnerForTests(async (command: string, options?: { metadata?: Record<string, unknown>; companyId?: string | null }) => {
     const runId = `run_research_test_success_${++successfulResearchPlanStartCounter}`;
     db.insert("runs", {
       id: runId,
+      company_id: options?.companyId ?? null,
       name: command,
       status: "running",
       objective: command,
@@ -292,6 +315,90 @@ test("Research Planner start waits for approval without advertising worker picku
   }
 });
 
+test("Research Planner start keeps approval invisible until the lineage commit completes", async () => {
+  db.initDb();
+  db.resetDemoData();
+  resetResearchPlanStartRunnerForTests();
+
+  setResearchPlanStartRunnerForTests(async (command: string, options?: { metadata?: Record<string, unknown>; companyId?: string | null }) => {
+    const started = await startCommandRun(command, {
+      metadata: options?.metadata,
+      deferWorker: true,
+      prepareOnly: true,
+      companyId: options?.companyId ?? null
+    });
+    const approvalsBeforeCommit = db.querySql<{ count: number }>(
+      `SELECT COUNT(*) AS count FROM approvals WHERE run_id=${db.sqlValue(started.runId)}`
+    )[0];
+    assert.equal(approvalsBeforeCommit.count, 0);
+    return started;
+  });
+
+  try {
+    const createResponse = await postJson("/api/planner/research-plan", {
+      command: "checkout payment approval smoke for pending approval visibility",
+      sources: { web: false, x: false, reddit: false, youtube: false, mcp: false, api: false }
+    });
+    assert.equal(createResponse.status, 201);
+    const created = JSON.parse(createResponse.body) as { plan: { id: string } };
+
+    const startResponse = await postJson(`/api/planner/${created.plan.id}/start`, {});
+    assert.equal(startResponse.status, 202);
+    const body = JSON.parse(startResponse.body) as { runId: string; status: string; plan: { status: string; runId: string | null } };
+    assert.equal(body.status, "waiting_approval");
+    assert.equal(body.plan.status, "started");
+    assert.equal(body.plan.runId, body.runId);
+
+    const approvalsAfterCommit = db.querySql<{ status: string; run_id: string | null }>(
+      `SELECT status, run_id FROM approvals WHERE run_id=${db.sqlValue(body.runId)} LIMIT 1`
+    )[0];
+    assert.equal(approvalsAfterCommit.status, "pending");
+    assert.equal(approvalsAfterCommit.run_id, body.runId);
+  } finally {
+    resetResearchPlanStartRunnerForTests();
+    installSuccessfulResearchPlanStartRunner();
+  }
+});
+
+test("Research Planner start commit failure removes the prepared run and every child row", async () => {
+  db.initDb();
+  db.resetDemoData();
+  resetResearchPlanStartRunnerForTests();
+  const tables = ["runs", "run_steps", "lanes", "approvals", "proofs", "child_runs", "worker_events"] as const;
+  const countsBefore = Object.fromEntries(tables.map((table) => [
+    table,
+    db.querySql<{ count: number }>(`SELECT count(*) AS count FROM ${table}`)[0].count
+  ]));
+
+  try {
+    const createResponse = await postJson("/api/planner/research-plan", {
+      command: "checkout payment approval rollback regression",
+      sources: { web: false, x: false, reddit: false, youtube: false, mcp: false, api: false }
+    });
+    assert.equal(createResponse.status, 201);
+    const created = JSON.parse(createResponse.body) as { plan: { id: string } };
+    const planBefore = db.querySql<{ status: string; run_id: string | null; metadata_json: string; updated_at: string }>(`
+      SELECT status, run_id, metadata_json, updated_at FROM research_plans WHERE id=${db.sqlValue(created.plan.id)} LIMIT 1
+    `)[0];
+
+    setResearchPlanStartFaultAfterPlanUpdateForTests(true);
+    const startResponse = await postJson(`/api/planner/${created.plan.id}/start`, {});
+    assert.equal(startResponse.status, 500, startResponse.body);
+
+    const planAfter = db.querySql<{ status: string; run_id: string | null; metadata_json: string; updated_at: string }>(`
+      SELECT status, run_id, metadata_json, updated_at FROM research_plans WHERE id=${db.sqlValue(created.plan.id)} LIMIT 1
+    `)[0];
+    assert.deepEqual(planAfter, planBefore);
+    for (const table of tables) {
+      const countAfter = db.querySql<{ count: number }>(`SELECT count(*) AS count FROM ${table}`)[0].count;
+      assert.equal(countAfter, countsBefore[table], `${table} must not retain prepared research-plan rows`);
+    }
+  } finally {
+    setResearchPlanStartFaultAfterPlanUpdateForTests(false);
+    installSuccessfulResearchPlanStartRunner();
+  }
+});
+
 test("Research Planner direct start timeout returns blocked without marking the plan started", async () => {
   db.initDb();
   db.resetDemoData();
@@ -400,6 +507,59 @@ test("Research Planner direct start ignores delayed success after timeout", asyn
     resetResearchPlanStartRunnerForTests();
     if (previousTimeout === undefined) delete process.env.AUTOMATION_OS_RESEARCH_PLAN_START_TIMEOUT_MS;
     else process.env.AUTOMATION_OS_RESEARCH_PLAN_START_TIMEOUT_MS = previousTimeout;
+  }
+});
+
+test("Research Planner direct start fails closed when the runner returns a foreign-company run", async () => {
+  db.initDb();
+  db.resetDemoData();
+  db.execSql(`
+    INSERT OR IGNORE INTO companies (id, slug, name, status, created_at, updated_at)
+    VALUES ('project-b', 'project-b', 'Project B', 'active', '2026-06-16T00:00:00.000Z', '2026-06-16T00:00:00.000Z');
+  `);
+
+  const createResponse = await postJson("/api/planner/research-plan", {
+    command: "Research Planner foreign-company start regression",
+    sources: { web: true, x: false, reddit: false, youtube: false, mcp: false, api: false }
+  });
+  assert.equal(createResponse.status, 201);
+  const created = JSON.parse(createResponse.body) as { plan: { id: string } };
+
+  const foreignRunId = "run_research_foreign_company_start";
+  db.insert("runs", {
+    id: foreignRunId,
+    company_id: "project-b",
+    name: "Foreign company run",
+    status: "running",
+    objective: "Foreign company run",
+    created_at: "2026-06-16T10:01:00.000Z",
+    updated_at: "2026-06-16T10:01:00.000Z",
+    metadata_json: {}
+  });
+  setResearchPlanStartRunnerForTests(async () => ({
+    runId: foreignRunId,
+    run: {},
+    steps: [],
+    approvals: [],
+    proofs: [],
+    children: []
+  }));
+
+  try {
+    const startResponse = await postJson(`/api/planner/${created.plan.id}/start`, {});
+    assert.equal(startResponse.status, 404);
+    assert.deepEqual(JSON.parse(startResponse.body), { error: "research_plan_not_found" });
+
+    const plan = getResearchPlan(created.plan.id);
+    assert.equal(plan?.status, "planned");
+    assert.equal(plan?.runId, null);
+    const foreignRun = db.querySql<{ status: string; metadata_json: string }>(`SELECT status, metadata_json FROM runs WHERE id=${db.sqlValue(foreignRunId)} LIMIT 1`)[0];
+    assert.equal(foreignRun.status, "running");
+    assert.deepEqual(JSON.parse(foreignRun.metadata_json), {});
+    assert.equal(db.querySql<{ count: number }>("SELECT count(*) AS count FROM proofs")[0].count, 0);
+  } finally {
+    resetResearchPlanStartRunnerForTests();
+    installSuccessfulResearchPlanStartRunner();
   }
 });
 
@@ -632,7 +792,7 @@ test("Research Planner regularizes demoed plans into registered workflows and ca
     registered_workflow_id?: string;
     workflowId?: string;
     workflow_id?: string;
-    registered_workflow_start?: { source?: string; runnerKind?: string };
+    registered_workflow_start?: { source?: string; runnerKind?: string; workflow_id?: string; definition_fingerprint?: string; schedule_fingerprint?: string };
     research_plan_snapshot?: { visibleFlow: string[]; snapshotRole: string };
     worker_protocol?: string;
     worker_loop?: { status?: string; launchReason?: string; requiredCommand?: string };
@@ -641,10 +801,11 @@ test("Research Planner regularizes demoed plans into registered workflows and ca
   assert.equal(metadata.registered_workflow_id, regularized.workflow.id);
   assert.equal(metadata.workflowId, regularized.workflow.id);
   assert.equal(metadata.workflow_id, regularized.workflow.id);
-  assert.deepEqual(metadata.registered_workflow_start, {
-    source: "manual",
-    runnerKind: "research_plan_registered"
-  });
+  assert.equal(metadata.registered_workflow_start?.source, "manual");
+  assert.equal(metadata.registered_workflow_start?.runnerKind, "research_plan_registered");
+  assert.equal(metadata.registered_workflow_start?.workflow_id, regularized.workflow.id);
+  assert.match(String(metadata.registered_workflow_start?.definition_fingerprint), /^[a-f0-9]{64}$/);
+  assert.match(String(metadata.registered_workflow_start?.schedule_fingerprint), /^[a-f0-9]{64}$/);
   assert.deepEqual(metadata.research_plan_snapshot?.visibleFlow, ["Gmailを確認", "返信するものを見つける", "自動で状況を把握、記録"]);
   assert.equal(metadata.research_plan_snapshot?.snapshotRole, "pre_start_plan_evidence_not_completion_proof");
   assert.equal(metadata.worker_protocol, "local_worker_loop_required");
@@ -845,17 +1006,18 @@ test("Research Planner scheduler starts due registered plans once", async () => 
     registered_workflow_id?: string;
     workflowId?: string;
     workflow_id?: string;
-    registered_workflow_start?: { source?: string; runnerKind?: string; dueKey?: string };
+    registered_workflow_start?: { source?: string; runnerKind?: string; workflow_id?: string; definition_fingerprint?: string; schedule_fingerprint?: string; dueKey?: string };
   };
   assert.equal(metadata.registeredWorkflowId, regularized.workflow.id);
   assert.equal(metadata.registered_workflow_id, regularized.workflow.id);
   assert.equal(metadata.workflowId, regularized.workflow.id);
   assert.equal(metadata.workflow_id, regularized.workflow.id);
-  assert.deepEqual(metadata.registered_workflow_start, {
-    source: "scheduler",
-    runnerKind: "research_plan_registered",
-    dueKey: "2026-06-16T09:00"
-  });
+  assert.equal(metadata.registered_workflow_start?.source, "scheduler");
+  assert.equal(metadata.registered_workflow_start?.runnerKind, "research_plan_registered");
+  assert.equal(metadata.registered_workflow_start?.workflow_id, regularized.workflow.id);
+  assert.match(String(metadata.registered_workflow_start?.definition_fingerprint), /^[a-f0-9]{64}$/);
+  assert.match(String(metadata.registered_workflow_start?.schedule_fingerprint), /^[a-f0-9]{64}$/);
+  assert.equal(metadata.registered_workflow_start?.dueKey, "2026-06-16T09:00");
 });
 
 test("Research Planner scheduler uses runtime schedule override for due checks", async () => {
@@ -1111,9 +1273,10 @@ test("Research Planner scheduler clears current blocker after a later successful
 
     delete process.env.AUTOMATION_OS_RESEARCH_PLAN_SCHEDULER_START_TIMEOUT_MS;
     const successfulRunId = "run_research_scheduler_clear_blocker_success";
-    setResearchPlanStartRunnerForTests(async () => {
+    setResearchPlanStartRunnerForTests(async (_command, options) => {
       db.insert("runs", {
         id: successfulRunId,
+        company_id: options?.companyId ?? null,
         name: command,
         status: "running",
         objective: command,
@@ -1272,17 +1435,171 @@ test("Research Planner refuses regular scheduling before demo", async () => {
   assert.equal(db.querySql<{ count: number }>("SELECT count(*) AS count FROM registered_workflows WHERE runner_kind='research_plan_registered';")[0].count, 0);
 });
 
+test("Research Planner scheduler fails closed without a pre-existing operator service membership", async () => {
+  db.initDb();
+  db.resetDemoData();
+  db.execSql("DELETE FROM registered_workflows WHERE runner_kind='research_plan_registered';");
+  const createResponse = await postJson("/api/planner/research-plan", {
+    command: "Service membership fail-closed research plan",
+    sources: { web: false, x: false, reddit: false, youtube: false, mcp: false, api: false }
+  });
+  assert.equal(createResponse.status, 201, createResponse.body);
+  const created = JSON.parse(createResponse.body) as { plan: { id: string } };
+  db.execSql(`
+    UPDATE research_plans
+    SET status='demoed', demo_check_id='system_check_service_membership'
+    WHERE id=${db.sqlValue(created.plan.id)};
+  `);
+  const regularizedResponse = await postJson(`/api/planner/${created.plan.id}/regularize`, {});
+  assert.equal(regularizedResponse.status, 201, regularizedResponse.body);
+  const workflow = JSON.parse(regularizedResponse.body).workflow as { id: string };
+  db.execSql(`
+    UPDATE registered_workflows
+    SET created_at='2026-06-16T00:00:00.000Z', updated_at='2026-06-16T00:00:00.000Z'
+    WHERE id=${db.sqlValue(workflow.id)};
+    UPDATE registered_workflows SET status='inactive' WHERE runner_kind!='research_plan_registered';
+    DELETE FROM company_memberships WHERE user_id='user_test_service_worker' AND company_id='project-a';
+  `);
+  const runCountBefore = db.querySql<{ count: number }>("SELECT count(*) AS count FROM runs")[0].count;
+  const result = await runResearchPlanSchedulerOnce(new Date("2026-06-16T09:01:00"));
+  assert.equal(result.started, 0);
+  assert.equal(result.blocked, 1);
+  assert.deepEqual(result.blockers, [{
+    workflowId: workflow.id,
+    dueKey: "2026-06-16T09:00",
+    exactBlocker: "registered_workflow_service_membership_missing"
+  }]);
+  assert.equal(db.querySql<{ count: number }>("SELECT count(*) AS count FROM runs")[0].count, runCountBefore);
+});
+
+test("Research Planner scheduler rejects human and wrong-company identities before accepting the tenant service", async () => {
+  db.initDb();
+  db.resetDemoData();
+  db.execSql("DELETE FROM registered_workflows WHERE runner_kind='research_plan_registered';");
+  const createResponse = await postJson("/api/planner/research-plan", {
+    command: "Tenant service identity matrix research plan",
+    sources: { web: false, x: false, reddit: false, youtube: false, mcp: false, api: false }
+  });
+  assert.equal(createResponse.status, 201, createResponse.body);
+  const created = JSON.parse(createResponse.body) as { plan: { id: string } };
+  db.execSql(`
+    UPDATE research_plans
+    SET status='demoed', demo_check_id='system_check_service_identity_matrix'
+    WHERE id=${db.sqlValue(created.plan.id)};
+  `);
+  const regularizedResponse = await postJson(`/api/planner/${created.plan.id}/regularize`, {});
+  assert.equal(regularizedResponse.status, 201, regularizedResponse.body);
+  const workflow = JSON.parse(regularizedResponse.body).workflow as { id: string };
+  const timestamp = "2026-06-16T00:00:00.000Z";
+  db.execSql(`
+    UPDATE registered_workflows
+    SET created_at=${db.sqlValue(timestamp)}, updated_at=${db.sqlValue(timestamp)}
+    WHERE id=${db.sqlValue(workflow.id)};
+    UPDATE registered_workflows SET status='inactive' WHERE runner_kind!='research_plan_registered';
+  `);
+
+  db.upsert("users", {
+    id: "user_test_service_worker",
+    auth_provider: "test",
+    auth_subject: "user_test_service_worker",
+    email: null,
+    display_name: "Human must not schedule",
+    kind: "human",
+    status: "active",
+    created_at: timestamp,
+    updated_at: timestamp
+  });
+  db.upsert("company_memberships", {
+    id: "membership_test_service_project_a",
+    company_id: "project-a",
+    user_id: "user_test_service_worker",
+    role: "operator",
+    status: "active",
+    created_at: timestamp,
+    updated_at: timestamp
+  });
+  const human = await runResearchPlanSchedulerOnce(new Date("2026-06-16T09:01:00"));
+  assert.equal(human.started, 0);
+  assert.deepEqual(human.blockers, [{
+    workflowId: workflow.id,
+    dueKey: "2026-06-16T09:00",
+    exactBlocker: "registered_workflow_service_identity_invalid"
+  }]);
+
+  db.upsert("users", {
+    id: "user_test_service_worker",
+    auth_provider: "test",
+    auth_subject: "user_test_service_worker",
+    email: null,
+    display_name: "Tenant service worker",
+    kind: "service",
+    status: "active",
+    created_at: timestamp,
+    updated_at: timestamp
+  });
+  db.upsert("companies", {
+    id: "project-b-service-only",
+    slug: "project-b-service-only",
+    name: "Project B service only",
+    status: "active",
+    created_at: timestamp,
+    updated_at: timestamp
+  });
+  db.execSql("DELETE FROM company_memberships WHERE user_id='user_test_service_worker';");
+  db.upsert("company_memberships", {
+    id: "membership_test_service_project_b_only",
+    company_id: "project-b-service-only",
+    user_id: "user_test_service_worker",
+    role: "operator",
+    status: "active",
+    created_at: timestamp,
+    updated_at: timestamp
+  });
+  const wrongCompany = await runResearchPlanSchedulerOnce(new Date("2026-06-17T09:01:00"));
+  assert.equal(wrongCompany.started, 0);
+  assert.deepEqual(wrongCompany.blockers, [{
+    workflowId: workflow.id,
+    dueKey: "2026-06-17T09:00",
+    exactBlocker: "registered_workflow_service_membership_missing"
+  }]);
+
+  db.upsert("company_memberships", {
+    id: "membership_test_service_project_a",
+    company_id: "project-a",
+    user_id: "user_test_service_worker",
+    role: "operator",
+    status: "active",
+    created_at: timestamp,
+    updated_at: timestamp
+  });
+  const service = await runResearchPlanSchedulerOnce(new Date("2026-06-18T09:01:00"));
+  assert.equal(service.started, 1);
+  assert.equal(service.blocked, 0);
+  const run = db.querySql<{ company_id: string; metadata_json: string }>(`
+    SELECT company_id, metadata_json FROM runs WHERE id=${db.sqlValue(service.runIds[0])} LIMIT 1
+  `)[0];
+  assert.equal(run.company_id, "project-a");
+  assert.deepEqual((JSON.parse(run.metadata_json) as { scheduler_service_identity?: unknown }).scheduler_service_identity, {
+    userId: "user_test_service_worker",
+    kind: "service",
+    scope: "tenant",
+    companyId: "project-a"
+  });
+});
+
 test("Research Planner YouTube transcript capture proof satisfies connected YouTube proof", async () => {
   db.initDb();
   db.resetDemoData();
 
   const plan = createResearchPlan({
+    companyId: "project-a",
     command: "X and YouTube visible research",
     sources: { web: false, x: true, reddit: false, youtube: true, mcp: false, api: false }
   });
   const runId = "run_research_youtube_test";
   db.insert("runs", {
     id: runId,
+    company_id: "project-a",
     name: plan.command,
     status: "running",
     objective: plan.command,
@@ -1320,12 +1637,14 @@ test("Research Planner YouTube transcript capture proof satisfies connected YouT
     segmentCount: 2,
     transcriptBytes: 123
   } as const;
-  const proof = storeResearchPlanVisibleSourceProof(runId, "youtube", capture as any);
+  const proof = storeResearchPlanVisibleSourceProof(runId, "youtube", capture as any, "project-a");
   assert.equal(proof.proofType, "visible_source_snapshot:youtube");
-  enforceResearchPlanCompletionBoundary(runId, getResearchPlan(plan.id));
+  enforceResearchPlanCompletionBoundary(runId, getResearchPlan(plan.id), "project-a");
 
   const proofs = db.querySql<{ proof_type: string }>(`SELECT proof_type FROM proofs WHERE run_id=${db.sqlValue(runId)} ORDER BY proof_type ASC`);
   assert.deepEqual(proofs.map((candidate) => candidate.proof_type), ["visible_source_snapshot:youtube"]);
+  const proofWithCompany = db.querySql<{ proof_type: string; company_id: string | null }>(`SELECT proof_type, company_id FROM proofs WHERE run_id=${db.sqlValue(runId)} LIMIT 1`)[0];
+  assert.equal(proofWithCompany.company_id, "project-a");
 
   const run = db.querySql<{ metadata_json: string }>(`SELECT metadata_json FROM runs WHERE id=${db.sqlValue(runId)} LIMIT 1`)[0];
   const metadata = JSON.parse(run.metadata_json) as {
@@ -1338,17 +1657,135 @@ test("Research Planner YouTube transcript capture proof satisfies connected YouT
   assert.ok(metadata.proof_gate?.present.includes("visible_source_snapshot:youtube"));
 });
 
+test("Research Planner capture refuses a foreign-company run before capture side effects", async () => {
+  db.initDb();
+  db.resetDemoData();
+  db.execSql(`
+    INSERT OR IGNORE INTO companies (id, slug, name, status, created_at, updated_at)
+    VALUES ('project-b', 'project-b', 'Project B', 'active', '2026-06-16T00:00:00.000Z', '2026-06-16T00:00:00.000Z');
+  `);
+  const vaultPath = createVault("research-plan-foreign-capture");
+  const plan = createResearchPlan({
+    companyId: "project-a",
+    command: "Research Planner foreign-company capture regression",
+    sources: { web: true, x: false, reddit: false, youtube: true, mcp: false, api: false }
+  });
+  const foreignRunId = "run_research_foreign_company_capture";
+  db.insert("runs", {
+    id: foreignRunId,
+    company_id: "project-b",
+    name: plan.command,
+    status: "running",
+    objective: plan.command,
+    created_at: "2026-06-16T13:00:00.000Z",
+    updated_at: "2026-06-16T13:00:00.000Z",
+    metadata_json: {}
+  });
+  db.execSql(`
+    UPDATE research_plans
+    SET status='started',
+        run_id=${db.sqlValue(foreignRunId)}
+    WHERE id=${db.sqlValue(plan.id)};
+  `);
+
+  let fetchCalled = false;
+  setUrlCaptureFetchImplForTests(async () => {
+    fetchCalled = true;
+    throw new Error("web_capture_fetch_should_not_run_for_foreign_company");
+  }, async () => ["93.184.216.34"]);
+  let youtubeRunnerCalled = false;
+  setYouTubeTranscriptCaptureRunnerForTests(async () => {
+    youtubeRunnerCalled = true;
+    throw new Error("youtube_capture_runner_should_not_run_for_foreign_company");
+  });
+
+  try {
+    const webResponse = await postJson(`/api/planner/${plan.id}/capture/web-url`, {
+      url: "https://example.com/research-plan-foreign-capture",
+      vaultPath
+    });
+    assert.equal(webResponse.status, 404);
+    assert.deepEqual(JSON.parse(webResponse.body), { error: "research_plan_not_found" });
+
+    const youtubeResponse = await postJson(`/api/planner/${plan.id}/capture/youtube-transcript`, {
+      url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+    });
+    assert.equal(youtubeResponse.status, 404);
+    assert.deepEqual(JSON.parse(youtubeResponse.body), { error: "research_plan_not_found" });
+
+    assert.equal(fetchCalled, false);
+    assert.equal(youtubeRunnerCalled, false);
+
+    const planAfter = getResearchPlan(plan.id);
+    assert.equal(planAfter?.status, "started");
+    assert.equal(planAfter?.runId, foreignRunId);
+    const foreignRun = db.querySql<{ status: string; metadata_json: string }>(`SELECT status, metadata_json FROM runs WHERE id=${db.sqlValue(foreignRunId)} LIMIT 1`)[0];
+    assert.equal(foreignRun.status, "running");
+    assert.deepEqual(JSON.parse(foreignRun.metadata_json), {});
+    assert.equal(db.querySql<{ count: number }>("SELECT count(*) AS count FROM proofs")[0].count, 0);
+  } finally {
+    setUrlCaptureFetchImplForTests(undefined, undefined);
+    resetYouTubeTranscriptCaptureRunnerForTests();
+  }
+});
+
+test("Research Planner YouTube transcript capture CLI fails closed when source run company id is missing", () => {
+  db.initDb();
+  db.resetDemoData();
+
+  const plan = createResearchPlan({
+    companyId: "project-a",
+    command: "YouTube visible research missing source company",
+    sources: { web: false, x: false, reddit: false, youtube: true, mcp: false, api: false }
+  });
+  const runId = "run_research_youtube_missing_company";
+  db.insert("runs", {
+    id: runId,
+    company_id: null,
+    name: plan.command,
+    status: "running",
+    objective: plan.command,
+    created_at: "2026-06-16T13:15:00.000Z",
+    updated_at: "2026-06-16T13:15:00.000Z",
+    metadata_json: {}
+  });
+  markResearchPlanStarted(plan.id, runId);
+  const proofsBefore = db.querySql<{ count: number }>("SELECT count(*) AS count FROM proofs")[0].count;
+  const result = spawnSync(
+    process.execPath,
+    [
+      "apps/server/dist/cli/researchPlanYoutubeTranscriptCapture.js",
+      `--plan-id=${plan.id}`,
+      `--input-json-b64=${Buffer.from(JSON.stringify({})).toString("base64")}`
+    ],
+    {
+      cwd: process.cwd(),
+      env: { ...process.env, AUTOMATION_OS_DB: process.env.AUTOMATION_OS_DB ?? "" },
+      encoding: "utf8"
+    }
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /research_plan_company_id_mismatch/);
+  assert.equal(db.querySql<{ count: number }>("SELECT count(*) AS count FROM proofs")[0].count, proofsBefore);
+  const planAfter = getResearchPlan(plan.id);
+  const latestCaptures = planAfter?.metadata.latestCaptures as Record<string, unknown> | undefined;
+  assert.equal(latestCaptures?.youtube, undefined);
+});
+
 test("Research Planner Web URL capture API saves a readable source proof", async () => {
   db.initDb();
   db.resetDemoData();
   const vaultPath = createVault("research-web-capture-success");
   const plan = createResearchPlan({
+    companyId: "project-a",
     command: "Web URL readable research",
     sources: { web: true, x: false, reddit: false, youtube: false, mcp: false, api: false }
   });
   const runId = "run_research_web_capture";
   db.insert("runs", {
     id: runId,
+    company_id: "project-a",
     name: plan.command,
     status: "running",
     objective: plan.command,
@@ -1384,10 +1821,75 @@ test("Research Planner Web URL capture API saves a readable source proof", async
   }
 });
 
+test("Research Planner capture rolls back proof, run boundary, and plan lineage together", async () => {
+  db.initDb();
+  db.resetDemoData();
+  const vaultPath = createVault("research-web-capture-atomic-rollback");
+  const plan = createResearchPlan({
+    companyId: "project-a",
+    command: "Web URL atomic lineage rollback",
+    sources: { web: true, x: false, reddit: false, youtube: false, mcp: false, api: false }
+  });
+  const runId = "run_research_web_capture_atomic_rollback";
+  db.insert("runs", {
+    id: runId,
+    company_id: "project-a",
+    name: plan.command,
+    status: "running",
+    objective: plan.command,
+    created_at: "2026-06-16T14:05:00.000Z",
+    updated_at: "2026-06-16T14:05:00.000Z",
+    metadata_json: { existing: "preserved" }
+  });
+  markResearchPlanStarted(plan.id, runId);
+  const planBefore = db.querySql<{ status: string; run_id: string | null; metadata_json: string; updated_at: string }>(`
+    SELECT status, run_id, metadata_json, updated_at FROM research_plans WHERE id=${db.sqlValue(plan.id)} LIMIT 1
+  `)[0];
+  const runBefore = db.querySql<{ status: string; metadata_json: string; updated_at: string }>(`
+    SELECT status, metadata_json, updated_at FROM runs WHERE id=${db.sqlValue(runId)} LIMIT 1
+  `)[0];
+  const proofCountBefore = db.querySql<{ count: number }>(`
+    SELECT count(*) AS count FROM proofs WHERE run_id=${db.sqlValue(runId)}
+  `)[0].count;
+
+  setUrlCaptureFetchImplForTests(
+    async () => new Response("<html><head><title>Atomic Rollback</title></head><body><article><p>Rollback proof content.</p></article></body></html>", {
+      status: 200,
+      headers: { "content-type": "text/html" }
+    }),
+    async () => ["93.184.216.34"]
+  );
+  setResearchPlanLineageFaultAfterProofForTests(true);
+  try {
+    const response = await postJson(`/api/planner/${plan.id}/capture/web-url`, {
+      url: "https://example.com/planner-web-atomic-rollback",
+      vaultPath
+    });
+    assert.equal(response.status, 500, response.body);
+  } finally {
+    setResearchPlanLineageFaultAfterProofForTests(false);
+    setUrlCaptureFetchImplForTests(undefined, undefined);
+  }
+
+  const planAfter = db.querySql<{ status: string; run_id: string | null; metadata_json: string; updated_at: string }>(`
+    SELECT status, run_id, metadata_json, updated_at FROM research_plans WHERE id=${db.sqlValue(plan.id)} LIMIT 1
+  `)[0];
+  const runAfter = db.querySql<{ status: string; metadata_json: string; updated_at: string }>(`
+    SELECT status, metadata_json, updated_at FROM runs WHERE id=${db.sqlValue(runId)} LIMIT 1
+  `)[0];
+  const proofCountAfter = db.querySql<{ count: number }>(`
+    SELECT count(*) AS count FROM proofs WHERE run_id=${db.sqlValue(runId)}
+  `)[0].count;
+  assert.deepEqual(planAfter, planBefore);
+  assert.deepEqual(runAfter, runBefore);
+  assert.equal(proofCountAfter, proofCountBefore);
+});
+
 test("Research Planner YouTube transcript capture API passes URL and records saved proof", async () => {
   db.initDb();
   db.resetDemoData();
   const plan = createResearchPlan({
+    companyId: "project-a",
     command: "YouTube URL direct capture",
     sources: { web: false, x: false, reddit: false, youtube: true, mcp: false, api: false }
   });
@@ -1395,6 +1897,7 @@ test("Research Planner YouTube transcript capture API passes URL and records sav
   const detectedUrl = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
   db.insert("runs", {
     id: runId,
+    company_id: "project-a",
     name: plan.command,
     status: "running",
     objective: plan.command,
@@ -1463,12 +1966,14 @@ test("Research Planner Web URL capture API rejects caller-controlled artifact pa
   db.initDb();
   db.resetDemoData();
   const plan = createResearchPlan({
+    companyId: "project-a",
     command: "Web URL artifact guard",
     sources: { web: true, x: false, reddit: false, youtube: false, mcp: false, api: false }
   });
   const runId = "run_research_web_artifact_guard";
   db.insert("runs", {
     id: runId,
+    company_id: "project-a",
     name: plan.command,
     status: "running",
     objective: plan.command,
@@ -1504,12 +2009,14 @@ test("Research Planner YouTube transcript capture API rejects caller-controlled 
   db.initDb();
   db.resetDemoData();
   const plan = createResearchPlan({
+    companyId: "project-a",
     command: "YouTube visible transcript capture",
     sources: { web: false, x: false, reddit: false, youtube: true, mcp: false, api: false }
   });
   const runId = "run_research_youtube_artifact_guard";
   db.insert("runs", {
     id: runId,
+    company_id: "project-a",
     name: plan.command,
     status: "running",
     objective: plan.command,
@@ -1548,7 +2055,9 @@ function createVault(name: string): string {
 }
 
 function postJson(path: string, payload: Record<string, unknown>) {
-  return requestJson("POST", path, payload);
+  return requestJson("POST", path, path === "/api/planner/research-plan" && payload.company_id === undefined && payload.project_id === undefined
+    ? { ...payload, company_id: "project-a" }
+    : payload);
 }
 
 function patchJson(path: string, payload: Record<string, unknown>) {

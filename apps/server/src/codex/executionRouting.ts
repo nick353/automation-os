@@ -7,7 +7,7 @@ export type ExecutionRoutingSource = "manual" | "scheduler" | "create_view" | "r
 export type ExecutionRoutingController = "automation_os_api";
 export type ExecutionRoutingSurface = "browser_lane" | "codex_cli" | "registered_runner" | "worker_loop";
 export type ExecutionRoutingPhase = "route_decision" | "route_readback";
-export type ExecutionRoutingExactBlocker = "chrome_extension_required" | "route_readback_mismatch" | "route_decision_missing" | null;
+export type ExecutionRoutingExactBlocker = "chrome_extension_required" | "in_app_browser_required" | "route_readback_mismatch" | "route_decision_missing" | null;
 
 export type ExecutionRoutingSnapshot = {
   generatedAt: string;
@@ -271,7 +271,7 @@ function determineExecutionSurface(route: CapabilityRoute | undefined, command: 
 }
 
 function buildPlannedAdapters(executionSurface: ExecutionRoutingSurface, selectedRoute: CapabilityRoute | undefined): string[] {
-  if (executionSurface === "browser_lane") return ["playwright_cli", "browser_use_cli"];
+  if (executionSurface === "browser_lane") return ["codex_in_app_browser"];
   if (executionSurface === "codex_cli") return ["codex_cli", "child_codex"];
   if (executionSurface === "registered_runner") return selectedRoute?.lane ? [selectedRoute.lane] : ["registered_runner"];
   return ["local_worker"];
@@ -306,11 +306,11 @@ function determineExactBlocker(
     if (currentFingerprint !== decisionFingerprint) return "route_readback_mismatch";
   }
   if (selectedAdapter === "playwright_cli" || selectedAdapter === "browser_use_cli") {
-    return "chrome_extension_required";
+    return "in_app_browser_required";
   }
-  const chromeConnected = Boolean(capabilities.capabilities.chrome.state.connected);
+  const inAppBrowserConnected = Boolean(capabilities.capabilities.browser.state.connected);
   const browserLaneSelected = determineExecutionSurface(route, command) === "browser_lane";
-  if (browserLaneSelected && !chromeConnected) return "chrome_extension_required";
+  if (browserLaneSelected && !inAppBrowserConnected) return "in_app_browser_required";
   return null;
 }
 
@@ -334,7 +334,7 @@ function buildEvidence(input: {
   exactBlocker: ExecutionRoutingExactBlocker;
   selectedAdapter: string | null;
 }): string[] {
-  const adapterPolicy = input.selectedAdapter === "playwright_cli" || input.selectedAdapter === "browser_use_cli" ? "chrome_extension_only" : "default";
+  const adapterPolicy = input.selectedAdapter === "playwright_cli" || input.selectedAdapter === "browser_use_cli" ? "in_app_browser_only" : "default";
   return [
     "schema=route_decision",
     `controller=${input.controller.name}`,
@@ -406,5 +406,5 @@ function isRouteDecisionAuthority(value: unknown): value is CapabilityRouteAutho
 }
 
 function isExecutionRoutingExactBlocker(value: unknown): value is ExecutionRoutingExactBlocker {
-  return value === null || value === "chrome_extension_required" || value === "route_readback_mismatch" || value === "route_decision_missing";
+  return value === null || value === "chrome_extension_required" || value === "in_app_browser_required" || value === "route_readback_mismatch" || value === "route_decision_missing";
 }

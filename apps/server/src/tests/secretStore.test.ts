@@ -36,7 +36,8 @@ test("stores secret values outside the database payload", () => {
   assert.equal(rows.length, 1);
   assert.ok(existsSync(rows[0].storage_ref));
   assert.doesNotMatch(JSON.stringify(rows[0]), /abcdefghijklmnopqrstuvwxyz/);
-  assert.match(rows[0].masked_value, /^prin\.\.\./);
+  assert.equal(rows[0].masked_value, "保存済み（値は非表示）");
+  assert.doesNotMatch(rows[0].masked_value, /printify|sample|1234567890|ABCDEF/i);
 });
 
 test("detects Japanese API key labels from beginner chat text", () => {

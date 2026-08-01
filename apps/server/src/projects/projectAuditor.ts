@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 import { buildDefaultProjectRegistry } from "./defaultProjectRegistry.js";
 
@@ -21,6 +21,7 @@ export type ProjectRegistry = {
 export type ProjectRegistryProject = {
   id: string;
   label: string;
+  aliases?: string[];
   root: string;
   owner_layer: string;
   obsidian: boolean;
@@ -32,6 +33,11 @@ export type ProjectRegistryProject = {
   approval_required: string[];
   human_only: string[];
   context_pack?: string;
+  discovery?: {
+    mode: "automatic" | "manual";
+    status: "locator_only_candidate" | "registered";
+    markers?: string[];
+  };
 };
 
 export type ProjectAuditIssue = {
@@ -329,14 +335,28 @@ function auditProject(project: ProjectRegistryProject, obsidianVaultPath?: strin
   });
   const artifacts = project.artifact_roots.map((relativePath) => {
     const path = join(project.root, relativePath);
-    const latest = newestEntry(path, 2);
-    return { path, exists: existsSync(path), latest: latest?.path ?? null, latestMtime: latest?.mtime ?? null };
+    const safeRoot = existsSync(path) && pathIsInsideProject(path, project.root);
+    const latest = safeRoot ? newestEntry(path, 2, (candidate) => !isAutomationGeneratedStatus(candidate)) : null;
+    return { path, exists: safeRoot, latest: latest?.path ?? null, latestMtime: latest?.mtime ?? null };
   });
   const issues: ProjectAuditIssue[] = [];
   if (!rootExists) issues.push({ severity: "blocked", code: "project_root_missing", message: "Project root path does not exist." });
   if (!stateExists) issues.push({ severity: "blocked", code: "state_missing", message: "STATE.md is required before this project can be treated as a durable execution target." });
   if (stateMtime && hoursSince(stateMtime) > staleStateHours) {
-    issues.push({ severity: "warning", code: "state_stale", message: `STATE.md is older than ${staleStateHours}h; fresh-read before acting.` });
+    const newerActivity = collectNewerProjectActivity({ project, statePath, stateMtime, authority, artifacts });
+    if (newerActivity.length > 0) {
+      issues.push({
+        severity: "warning",
+        code: "state_stale",
+        message: `STATE.md is older than ${staleStateHours}h and newer project-owned activity exists: ${newerActivity[0]}`
+      });
+    } else {
+      issues.push({
+        severity: "info",
+        code: "state_aged_without_newer_project_activity",
+        message: `STATE.md is older than ${staleStateHours}h, but no newer project-owned authority or artifact file was found.`
+      });
+    }
   }
   for (const file of authority.filter((file) => !file.exists)) {
     issues.push({ severity: file.path.endsWith("STATE.md") ? "blocked" : "warning", code: "authority_file_missing", message: `Missing authority file: ${file.path}` });
@@ -352,6 +372,13 @@ function auditProject(project: ProjectRegistryProject, obsidianVaultPath?: strin
   }
   if (project.human_only.length === 0) {
     issues.push({ severity: "warning", code: "human_only_boundary_missing", message: "No human_only operations are registered." });
+  }
+  if (project.owner_layer === "locator_only_candidate" || project.discovery?.status === "locator_only_candidate") {
+    issues.push({
+      severity: "warning",
+      code: "auto_discovered_locator_requires_registration_review",
+      message: "Automatically discovered projects remain locator-only until project-owned authority and boundaries are reviewed."
+    });
   }
 
   const safeFixes = suggestSafeFixes(project, { stateExists, contextPackExists, contextPackHasLocatorBoundary });
@@ -423,8 +450,78 @@ function hoursSince(iso: string): number {
   return Math.max(0, (Date.now() - Date.parse(iso)) / 36e5);
 }
 
-function newestEntry(root: string, depth: number): { path: string; mtime: string; mtimeMs: number } | null {
+function collectNewerProjectActivity(input: {
+  project: ProjectRegistryProject;
+  statePath: string;
+  stateMtime: string;
+  authority: Array<{ path: string; exists: boolean; mtime: string | null }>;
+  artifacts: Array<{ path: string; exists: boolean; latest: string | null; latestMtime: string | null }>;
+}): string[] {
+  const stateTime = Date.parse(input.stateMtime);
+  const candidates = [
+    ...input.authority
+      .filter((item) => item.exists && item.mtime && resolve(item.path) !== resolve(input.statePath))
+      .map((item) => ({ path: item.path, mtime: item.mtime as string })),
+    ...input.artifacts
+      .filter((item) => item.latest && item.latestMtime)
+      .map((item) => ({ path: item.latest as string, mtime: item.latestMtime as string }))
+  ];
+  return candidates
+    .filter((item) => !isAutomationGeneratedStatus(item.path))
+    .filter((item) => pathIsInsideProject(item.path, input.project.root))
+    .filter((item) => Date.parse(item.mtime) > stateTime)
+    .sort((left, right) => Date.parse(right.mtime) - Date.parse(left.mtime))
+    .map((item) => item.path);
+}
+
+function isAutomationGeneratedStatus(path: string): boolean {
+  const basename = path.split("/").at(-1)?.toLowerCase() ?? "";
+  const generatedStatusStems = [
+    "project-audit-status",
+    "obsidian-export-status",
+    "obsidian-maintenance-status",
+    "second-brain-processor-status",
+    "obsidian-git-sync-status"
+  ];
+  if (generatedStatusStems.some((stem) => basename === `${stem}.json` || basename === `${stem}.md`)) return true;
+  if (!basename.endsWith(".md")) return false;
+  try {
+    return /(?:^|\n)generated_by:\s*automation-os\s*(?:\n|$)/i.test(readFileSync(path, "utf8").slice(0, 4096));
+  } catch {
+    return false;
+  }
+}
+
+function pathIsInsideProject(path: string, projectRoot: string): boolean {
+  try {
+    const root = realpathSync(projectRoot);
+    const target = realpathSync(path);
+    const rel = relative(root, target);
+    return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+  } catch {
+    return false;
+  }
+}
+
+function newestEntry(
+  root: string,
+  depth: number,
+  includeFile: (path: string) => boolean = () => true
+): { path: string; mtime: string; mtimeMs: number } | null {
   if (!existsSync(root)) return null;
+  let rootStats;
+  let realRoot: string;
+  try {
+    rootStats = lstatSync(root);
+    if (rootStats.isSymbolicLink()) return null;
+    realRoot = realpathSync(root);
+    if (rootStats.isFile()) {
+      return includeFile(realRoot) ? { path: realRoot, mtime: rootStats.mtime.toISOString(), mtimeMs: rootStats.mtimeMs } : null;
+    }
+    if (!rootStats.isDirectory()) return null;
+  } catch {
+    return null;
+  }
   const found: Array<{ path: string; mtime: string; mtimeMs: number }> = [];
   function walk(dir: string, remainingDepth: number): void {
     if (remainingDepth < 0) return;
@@ -439,11 +536,14 @@ function newestEntry(root: string, depth: number): { path: string; mtime: string
       const path = join(dir, entry.name);
       let stats;
       try {
-        stats = statSync(path);
+        stats = lstatSync(path);
       } catch {
         continue;
       }
-      found.push({ path, mtime: stats.mtime.toISOString(), mtimeMs: stats.mtimeMs });
+      if (stats.isSymbolicLink()) continue;
+      if (stats.isFile() && includeFile(path) && pathIsInsideProject(path, realRoot)) {
+        found.push({ path: realpathSync(path), mtime: stats.mtime.toISOString(), mtimeMs: stats.mtimeMs });
+      }
       if (entry.isDirectory()) walk(path, remainingDepth - 1);
     }
   }

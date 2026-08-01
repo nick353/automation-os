@@ -1,5 +1,7 @@
-import { execSql, initDb, insert, makeId, nowIso, querySql, sqlValue } from "../db/client.js";
-import { getResearchPlan, markResearchPlanSourceCapture, type ResearchPlanSnapshot } from "../planner/researchPlanner.js";
+import { execSql, initDb, nowIso, querySql, sqlValue } from "../db/client.js";
+import { scopedCompanyPredicate } from "../companies/scopedResources.js";
+import { getResearchPlan, markResearchPlanSourceCapture } from "../planner/researchPlanner.js";
+import { commitResearchPlanCaptureAtomic } from "../planner/researchPlanLineage.js";
 import { runObsidianAutoExportBestEffort } from "../obsidian/autoExport.js";
 import { redactSensitiveText } from "../obsidian/redaction.js";
 import { runYouTubeTranscriptCapture, type YouTubeTranscriptCaptureInput, type YouTubeTranscriptCaptureResult } from "../obsidian/youtubeTranscriptCapture.js";
@@ -15,6 +17,10 @@ try {
   if (!args.planId) throw new Error("plan_id_required");
   const plan = getResearchPlan(args.planId);
   if (!plan?.runId) throw new Error("research_plan_run_required");
+  const planCompanyId = normalizeCompanyId(plan.companyId);
+  const sourceRunCompanyId = readSourceRunCompanyId(plan.runId, planCompanyId);
+  if (!sourceRunCompanyId) throw new Error(planCompanyId ? "research_plan_company_id_mismatch" : "source_run_company_id_missing");
+  if (planCompanyId !== sourceRunCompanyId) throw new Error("research_plan_company_id_mismatch");
   const input = parseInput(args.inputJsonB64);
   const result = await runYouTubeTranscriptCapture(input);
   if (!result.ok) {
@@ -25,21 +31,36 @@ try {
       exactBlocker: result.exactBlocker,
       summary: result.summary
     }) ?? plan;
-    annotateYouTubeCaptureFailure(plan.runId, result);
+    annotateYouTubeCaptureFailure(plan.runId, result, sourceRunCompanyId);
     runObsidianAutoExportBestEffort(result.status === "rejected" ? "research-youtube-transcript-rejected" : "research-youtube-transcript-blocked");
     console.log(JSON.stringify({ ok: false, status: result.status, plan: updatedPlan, capture: result }, null, 2));
     process.exit(0);
   }
 
-  const proof = storeYouTubeVisibleSourceProof(plan.runId, result);
-  enforceResearchPlanCompletionBoundary(plan.runId, plan);
-  const updatedPlan = markResearchPlanSourceCapture(plan.id, "youtube", {
-    ok: true,
-    status: "captured",
-    proofId: proof.id,
+  const committed = commitResearchPlanCaptureAtomic({
+    plan,
+    sourceKey: "youtube",
+    uri: result.files.manifest,
+    label: "YouTube transcript visible source snapshot",
+    sizeBytes: result.transcriptBytes,
+    proofMetadata: {
+      sourceKey: "youtube",
+      captureId: result.captureId,
+      artifactDir: result.artifactDir,
+      currentUrl: result.currentUrl,
+      requestedUrl: result.requestedUrl,
+      sourceTitle: result.sourceTitle,
+      segmentCount: result.segmentCount,
+      transcriptBytes: result.transcriptBytes,
+      ingestPath: result.ingest.path,
+      lane: "youtube_visible_transcript_cdp",
+      apiBillingRequired: false,
+      readOnly: true
+    },
     artifactPath: result.files.manifest,
     summary: result.sourceTitle
-  }) ?? getResearchPlan(plan.id) ?? plan;
+  });
+  const { proof, plan: updatedPlan } = committed;
   runObsidianAutoExportBestEffort("research-youtube-transcript-captured");
   console.log(JSON.stringify({ ok: true, status: "captured", runId: plan.runId, plan: updatedPlan, proof, capture: result }, null, 2));
 } catch (error) {
@@ -74,8 +95,9 @@ function stringOrUndefined(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
 }
 
-function annotateYouTubeCaptureFailure(runId: string, result: Extract<YouTubeTranscriptCaptureResult, { ok: false }>) {
-  const current = querySql<{ metadata_json: string }>(`SELECT metadata_json FROM runs WHERE id=${sqlValue(runId)} LIMIT 1`)[0];
+function annotateYouTubeCaptureFailure(runId: string, result: Extract<YouTubeTranscriptCaptureResult, { ok: false }>, companyId?: string | null) {
+  const companyClause = researchPlanRunCompanyClause(companyId);
+  const current = querySql<{ metadata_json: string }>(`SELECT metadata_json FROM runs WHERE id=${sqlValue(runId)}${companyClause} LIMIT 1`)[0];
   if (!current) return;
   const metadata = parseJson<Record<string, unknown>>(current.metadata_json, {});
   const nextAction = youtubeCaptureNextAction(result);
@@ -87,13 +109,13 @@ function annotateYouTubeCaptureFailure(runId: string, result: Extract<YouTubeTra
          status: result.status,
          exactBlocker: result.exactBlocker,
          artifactDir: result.artifactDir,
-          requestedUrl: result.requestedUrl,
-          summary: result.summary
-        },
+         requestedUrl: result.requestedUrl,
+         summary: result.summary
+       },
        public_next_action: nextAction
      })},
          updated_at=${sqlValue(nowIso())}
-     WHERE id=${sqlValue(runId)};`
+     WHERE id=${sqlValue(runId)}${companyClause};`
   );
 }
 
@@ -119,97 +141,15 @@ function youtubeCaptureNextAction(result: Extract<YouTubeTranscriptCaptureResult
   };
 }
 
-function storeYouTubeVisibleSourceProof(runId: string, capture: Extract<YouTubeTranscriptCaptureResult, { ok: true }>) {
-  const proofType = "visible_source_snapshot:youtube";
-  const existing = querySql<{ id: string; proof_type: string; uri: string }>(
-    `SELECT id, proof_type, uri FROM proofs
-     WHERE run_id=${sqlValue(runId)}
-       AND proof_type=${sqlValue(proofType)}
-       AND uri=${sqlValue(capture.files.manifest)}
-     LIMIT 1`
-  )[0];
-  if (existing) return { id: existing.id, proofType: existing.proof_type, uri: existing.uri };
-  const now = nowIso();
-  const proof = {
-    id: makeId("proof"),
-    proofType,
-    uri: capture.files.manifest,
-    createdAt: now
-  };
-  insert("proofs", {
-    id: proof.id,
-    run_id: runId,
-    step_id: null,
-    proof_type: proof.proofType,
-    label: "YouTube transcript visible source snapshot",
-    uri: proof.uri,
-    size_bytes: capture.transcriptBytes,
-    created_at: proof.createdAt,
-    metadata_json: {
-      sourceKey: "youtube",
-      captureId: capture.captureId,
-      artifactDir: capture.artifactDir,
-      currentUrl: capture.currentUrl,
-      requestedUrl: capture.requestedUrl,
-      sourceTitle: capture.sourceTitle,
-      segmentCount: capture.segmentCount,
-      transcriptBytes: capture.transcriptBytes,
-      ingestPath: capture.ingest.path,
-      lane: "youtube_visible_transcript_cdp",
-      apiBillingRequired: false,
-      readOnly: true
-    }
-  });
-  return proof;
+function readSourceRunCompanyId(runId: string, companyId?: string | null): string | null {
+  const companyClause = researchPlanRunCompanyClause(companyId);
+  const row = querySql<{ company_id: string | null }>(`SELECT company_id FROM runs WHERE id=${sqlValue(runId)}${companyClause} LIMIT 1`)[0];
+  return normalizeCompanyId(row?.company_id);
 }
 
-function enforceResearchPlanCompletionBoundary(runId: string, plan: ResearchPlanSnapshot) {
-  const requiredProofs = requiredResearchPlanProofs(plan);
-  const approvalBoundarySources = billingRequiredResearchSourceKeys(plan);
-  const current = querySql<{ status: string; metadata_json: string }>(`SELECT status, metadata_json FROM runs WHERE id=${sqlValue(runId)} LIMIT 1`)[0];
-  if (!current) return;
-  const metadata = parseJson<Record<string, unknown>>(current.metadata_json, {});
-  const presentProofs = querySql<{ proof_type: string }>(`SELECT proof_type FROM proofs WHERE run_id=${sqlValue(runId)}`).map((proof) => proof.proof_type);
-  const missingProofs = requiredProofs.filter((proof) => !presentProofs.includes(proof));
-  const shouldHoldPartial = (missingProofs.length > 0 || approvalBoundarySources.length > 0) && current.status === "complete";
-  execSql(
-    `UPDATE runs
-     SET status=${sqlValue(shouldHoldPartial ? "partial" : current.status)},
-         updated_at=${sqlValue(nowIso())},
-         metadata_json=${sqlValue({
-           ...metadata,
-           research_plan_required_proofs: requiredProofs,
-           research_plan_missing_proofs: missingProofs,
-           research_plan_billing_boundary_sources: approvalBoundarySources,
-           proof_gate: {
-             ...(typeof metadata.proof_gate === "object" && metadata.proof_gate ? metadata.proof_gate : {}),
-             ok: missingProofs.length === 0 && approvalBoundarySources.length === 0,
-             missing: missingProofs,
-             present: presentProofs,
-             reason: "research_plan_visible_source_proof_required"
-           },
-           ...(shouldHoldPartial ? { stop_reason: "research_plan_visible_source_proof_missing" } : {})
-         })}
-     WHERE id=${sqlValue(runId)};`
-  );
-}
-
-function requiredResearchPlanProofs(plan: ResearchPlanSnapshot): string[] {
-  return enabledResearchSourceKeys(plan).flatMap((key) => {
-    if (key === "web") return ["readable_source_snapshot:web"];
-    if (key === "youtube") return ["visible_source_snapshot:youtube"];
-    return [];
-  });
-}
-
-function enabledResearchSourceKeys(plan: ResearchPlanSnapshot): string[] {
-  return plan.sources.filter((source) => source.enabled).map((source) => source.key);
-}
-
-function billingRequiredResearchSourceKeys(plan: ResearchPlanSnapshot): string[] {
-  return plan.sources
-    .filter((source) => source.enabled && (source.metadata?.apiBillingRequired === true || source.metadata?.billingRequired === true))
-    .map((source) => source.key);
+function researchPlanRunCompanyClause(companyId?: string | null): string {
+  const normalized = normalizeCompanyId(companyId);
+  return normalized ? ` AND ${scopedCompanyPredicate("company_id", [normalized])}` : "";
 }
 
 function parseJson<T>(value: string | undefined, fallback: T): T {
@@ -219,4 +159,8 @@ function parseJson<T>(value: string | undefined, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+function normalizeCompanyId(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }

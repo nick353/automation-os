@@ -1,5 +1,6 @@
 import { initDb } from "../db/client.js";
 import { runObsidianExportNow } from "../obsidian/autoExport.js";
+import { runObsidianMaintenance } from "../obsidian/maintenance.js";
 import { guardObsidianVaultPath } from "../obsidian/vaultGuard.js";
 
 const vaultArg = process.argv.find((arg) => arg.startsWith("--vault="))?.slice("--vault=".length);
@@ -12,7 +13,8 @@ if (!vaultGuard.ok) {
   process.exitCode = 1;
 } else {
   initDb();
+  const maintenance = vaultArg ? undefined : runObsidianMaintenance();
   const result = runObsidianExportNow(reason, { vaultPath: vaultArg });
-  console.log(JSON.stringify(result, null, 2));
+  console.log(JSON.stringify({ ...result, maintenance }, null, 2));
   if (result.ok === false) process.exitCode = 1;
 }

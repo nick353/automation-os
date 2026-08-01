@@ -323,20 +323,253 @@ test("frontend preserves the current route-page shell instead of restoring legac
   assert.match(source, /function HomePage/);
   assert.match(source, /function ChatPage/);
   assert.match(source, /function RunsPage/);
-  assert.match(source, /function ProductionStatusPage/);
-  assert.doesNotMatch(source, /function DashboardView|function CreateView|function RunsView|function SourcesView/);
+  assert.match(source, /function TruthfulProductionStatusPage/);
+  assert.match(source, /function TruthfulRecoveryPage/);
+  assert.match(source, /function TruthfulLanesPage/);
+  assert.match(source, /function TruthfulArtifactsPage/);
+  assert.match(source, /function TruthfulPluginsPage/);
+  assert.doesNotMatch(source, /function DashboardView|function CreateView|function RunsView|function SourcesView|function ProductionStatusPage|function RecoveryPage|function LanesPage|function ArtifactsPage|function PluginsPage/);
 });
 
 test("frontend sends only sanitized planning text to the server planner", () => {
   const source = readAppSource();
-  const chatSource = appSection(source, "function ChatPage", "function AutomationsPage");
+  const chatSource = appSection(source, "function ChatPage", "function BuilderPage");
 
   assert.match(chatSource, /const redactedActivePrompt = redactSensitiveText\(activePrompt\)/);
-  assert.match(chatSource, /requestChatPlan\(redactedActivePrompt, selectedPlatforms\)/);
-  assert.match(chatSource, /const redactedDraft = redactSensitiveText\(draftPrompt\)/);
-  assert.match(chatSource, /requestChatPlan\(redactedDraft, selectedPlatforms\)/);
+  assert.match(chatSource, /requestChatPlan\(redactedActivePrompt, selectedPlatforms, \{/);
+  assert.doesNotMatch(chatSource, /requestChatPlan\(activePrompt, selectedPlatforms/);
+  assert.doesNotMatch(chatSource, /requestChatPlan\(draftPrompt, selectedPlatforms/);
   assert.match(chatSource, /external_action_allowed: false/);
   assert.match(chatSource, /create_approval: true/);
+});
+
+test("frontend planner uses the supported server contract and never turns API failure into success", () => {
+  const source = readAppSource();
+  const plannerSource = appSection(source, "async function requestChatPlan", "function App()");
+  const chatSource = appSection(source, "function ChatPage", "function BuilderPage");
+
+  assert.match(plannerSource, /mvpFetch\("\/api\/create\/chat"/);
+  assert.match(plannerSource, /messages: conversation/);
+  assert.match(plannerSource, /codex_thread_id: options\.threadId/);
+  assert.match(plannerSource, /throw new Error\("planner_readback_unavailable"\)/);
+  assert.doesNotMatch(source, /\/api\/mvp\/chat\/plan|client_fallback_deterministic|api_unavailable_fallback/);
+  assert.match(chatSource, /setPlannerError\("プランAPIの結果を確認できませんでした/);
+  assert.match(chatSource, /setPlanVisible\(false\)/);
+  assert.match(plannerSource, /serverPlan\.intent === "plan_workflow"/);
+  assert.match(plannerSource, /serverPlan\.operation === "create_automation"/);
+  assert.match(plannerSource, /serverPlan\.executionDecision !== "ask_more"/);
+  assert.match(chatSource, /disabled=\{!canCreatePlan(?: \|\| creating)?\}/);
+  assert.match(chatSource, /publicBlockerSummary\(plannerReadback\.exact_blocker\)/);
+  assert.doesNotMatch(chatSource, /` \/ \$\{plannerReadback\.exact_blocker\}`/);
+});
+
+test("frontend starts without demo automations and global sync performs an API readback", () => {
+  const source = readAppSource();
+  const appSource = appSection(source, "function App()", "function Sidebar");
+  const headerSource = appSection(source, "function TopHeader", "function ProjectTabs");
+
+  assert.doesNotMatch(source, /seedAutomations/);
+  assert.match(appSource, /useState<AutomationRow\[]>\(\[\]\)/);
+  assert.match(appSource, /setFeedbackReadback\(state\.feedbacks \?\? \[\]\)/);
+  assert.match(appSource, /const syncState = async \(\) =>/);
+  assert.match(appSource, /const state = await readMvpState\(\)/);
+  assert.match(appSource, /<TopHeader[\s\S]*onSync=\{syncState\}/);
+  assert.match(headerSource, /void onSync\(\)/);
+});
+
+test("frontend feedback readback uses an explicit empty state instead of silently assuming success", () => {
+  const source = readAppSource();
+  const appSource = appSection(source, "function App()", "function Sidebar");
+  const feedbackSource = appSection(source, "function FeedbackFixQueue", "function TruthfulLanesPage");
+
+  assert.match(appSource, /Feedback readbackに失敗しました。空のキューとは断定せず、直前の表示を維持します。/);
+  assert.match(feedbackSource, /open feedbackなし/);
+  assert.match(feedbackSource, /現在のreadbackでは未処理feedbackはありません/);
+});
+
+test("frontend project switcher is derived from API state records", () => {
+  const source = readAppSource();
+  const optionSource = appSection(source, "function projectOptionsFromState", "async function fetchApiJson");
+  const tabsSource = appSection(source, "function ProjectTabs", "function PageTitle");
+  const templatesSource = appSection(source, "function TemplatesPage", "function Panel");
+  const builderSource = appSection(source, "function BuilderPage", "function ApprovalsPage");
+
+  assert.match(optionSource, /canonicalCompanies = state\.companies \?\? state\.projects \?\? \[\]/);
+  assert.match(optionSource, /for \(const project of canonicalCompanies\)/);
+  assert.match(optionSource, /role: String\(project\?\.role \?\? "viewer"\)/);
+  assert.doesNotMatch(optionSource, /state\.automations \?\? \[\]/);
+  assert.doesNotMatch(optionSource, /row\?\.project_id/);
+  assert.doesNotMatch(optionSource, /options\.set\("project-a"/);
+  assert.match(tabsSource, /projectOptionsFromState\(mvpState\)/);
+  assert.match(tabsSource, /会社はまだ登録されていません/);
+  assert.doesNotMatch(tabsSource, /projectSlugs\.map/);
+  assert.doesNotMatch(tabsSource, /\[\{ id: activeProject/);
+  assert.match(source, /function ProjectUnavailablePage/);
+  assert.match(source, /type MvpLoadStatus = "loading" \| "ready" \| "error"/);
+  assert.match(source, /route === "#\/projects"/);
+  assert.match(source, /projectOptions\.some\(\(project\) => project\.id === requestedProject\)/);
+  assert.match(templatesSource, /aria-label="テンプレートの保存先会社"/);
+  assert.match(templatesSource, /disabled=\{!selectedProjectIsVerified(?: \|\| saving)?\}/);
+  assert.match(templatesSource, /project_id: selectedProjectId/);
+  assert.doesNotMatch(templatesSource, /project_id: rememberedProject\(\)/);
+  assert.match(builderSource, /company_id: activeProject/);
+  assert.match(builderSource, /project_id: activeProject/);
+  assert.match(builderSource, /approval_group_id: activeProject/);
+  const approvalsSource = appSection(source, "function ApprovalsPage", "function RunsPage");
+  const runsSource = appSection(source, "function RunsPage", "function PcStatusPage");
+  assert.match(approvalsSource, /canDecideApproval = \["owner", "admin", "approver"\]\.includes/);
+  assert.match(approvalsSource, /approvals\.read-only/);
+  assert.match(runsSource, /canMutateJob = \["owner", "admin", "operator"\]\.includes/);
+  assert.match(runsSource, /runs\.job\.read-only/);
+  assert.doesNotMatch(runsSource, /\["failed", "timed_out", "reconciliation_required"\]\.includes\(selectedJob\.status\)/);
+});
+
+test("frontend company pages and successful empty states use canonical API truth", () => {
+  const source = readAppSource();
+  const optionSource = appSection(source, "function projectOptionsFromState", "async function fetchApiJson");
+  const homeSource = appSection(source, "function HomePage", "function ChatPage");
+  const companyPages = appSection(source, "function TruthfulLanesPage", "function TruthfulRunDetailPage");
+  const automationsSource = appSection(source, "function AutomationsPage", "function BuilderPage");
+  const builderSource = appSection(source, "function BuilderPage", "function ApprovalsPage");
+
+  assert.match(optionSource, /function projectLabelFromState\(state: MvpState, id: string\)/);
+  assert.match(optionSource, /projectOptionsFromState\(state\)\.find\(\(project\) => project\.id === id\)\?\.label/);
+  assert.match(homeSource, /projectLabelFromState\(mvpState, item\.project_id\)/);
+  assert.match(homeSource, /自動化はまだ登録されていません/);
+  assert.match(homeSource, /会社がまだ登録されていません/);
+  assert.doesNotMatch(homeSource, /API readbackで自動化を確認できません/);
+  assert.doesNotMatch(companyPages, /const companyName = projectLabelFromId\(/);
+  assert.doesNotMatch(automationsSource, /const projectName = projectLabelFromId\(/);
+  assert.doesNotMatch(builderSource, /const projectName = projectLabelFromId\(/);
+  assert.match(source, /ProjectScopeNotice projectId=\{activeProject\} mvpState=\{mvpState\}/);
+});
+
+test("frontend first use creates and confirms a canonical company before automation setup", () => {
+  const source = readAppSource();
+  const setupSource = appSection(source, "function ProjectDirectoryPage", "function ProjectUnavailablePage");
+  const selectionSource = appSection(source, "function rememberedProject", "function projectSlugFromPrompt");
+  const homeSource = appSection(source, "function HomePage", "function ChatPage");
+  const chatSource = appSection(source, "function ChatPage", "function BuilderPage");
+  const templatesSource = appSection(source, "function TemplatesPage", "function Panel");
+  const headerSource = appSection(source, "function TopHeader", "function ProjectTabs");
+  const sidebarSource = appSection(source, "function Sidebar", "function TopHeader");
+  const appSource = appSection(source, "function App()", "function Sidebar");
+
+  assert.match(setupSource, /mvpLoadStatus === "loading"/);
+  assert.match(setupSource, /mvpLoadStatus === "error"/);
+  assert.match(setupSource, /mvpFetch\("\/api\/companies", \{[\s\S]*method: "POST"/);
+  assert.match(setupSource, /stableIdempotencyKey\(companyCreateIdempotencyRef, "company-create", name\)/);
+  assert.match(setupSource, /"idempotency-key": createKey/);
+  assert.match(setupSource, /body: JSON\.stringify\(\{ name \}\)/);
+  assert.match(setupSource, /if \(!response\.ok \|\| result\.ok === false\) throw/);
+  assert.match(setupSource, /const state = await readMvpState\(\)/);
+  assert.match(setupSource, /!projectOptionsFromState\(state\)\.some\(\(project\) => project\.id === createdCompanyId\)/);
+  assert.match(setupSource, /model\.setMvpState\(state\)/);
+  assert.match(setupSource, /model\.setAutomationRows\(toAutomationRows\(state\.automations \?\? \[\]\)\)/);
+  assert.match(setupSource, /model\.setFeedbackReadback\(state\.feedbacks \?\? \[\]\)/);
+  assert.match(setupSource, /rememberProject\(createdCompanyId\);[\s\S]*go\("#\/chat"\)/);
+  assert.match(setupSource, /disabled=\{creatingCompany \|\| !companyName\.trim\(\)\}/);
+  assert.doesNotMatch(source, /会社登録APIの実装後/);
+
+  assert.match(selectionSource, /options\.length === 1 \? options\[0\]\.id : ""/);
+  assert.match(chatSource, /setSelectedProjectId\(\(current\) => \{[\s\S]*resolveProjectSelection\(mvpState, current\)/);
+  assert.match(templatesSource, /setSelectedProjectId\(\(current\) => \{[\s\S]*resolveProjectSelection\(model\.mvpState, current\)/);
+  assert.match(chatSource, /controlId="chat\.company-required\.open"/);
+  assert.match(templatesSource, /controlId="templates\.company-required\.open"/);
+  assert.match(homeSource, /controlId="home\.first-use\.register"/);
+  assert.match(homeSource, /controlId="home\.first-use\.templates"/);
+  assert.match(homeSource, /pristineCompany && companyOptions\.length === 1/);
+  assert.match(homeSource, /controlId="home\.first-use\.company-picker\.panel"/);
+  assert.match(homeSource, /rememberProject\(project\.id\); go\("#\/chat"\)/);
+  assert.match(headerSource, /openAutomationCreator\(mvpState, setReceipt\)/);
+  assert.match(headerSource, /if \(mvpLoadStatus !== "ready"\)/);
+  assert.match(headerSource, /placeholder="画面を検索"/);
+  assert.match(headerSource, /className="top-receipt" role="status"/);
+  assert.match(sidebarSource, /aria-label=\{label\}/);
+  assert.match(sidebarSource, /className="nav-label"/);
+  assert.match(appSource, /<form className="access-form" onSubmit=/);
+  assert.match(appSource, /autoFocus aria-describedby="operator-token-help operator-token-status"/);
+  assert.match(chatSource, /targetProjectIsVerified = model\.mvpLoadStatus === "ready"/);
+});
+
+test("frontend hides static operational charts and decorative panel menus", () => {
+  const source = readAppSource();
+  const performanceSource = appSection(source, "function TruthfulPerformancePage", "function TruthfulArtifactsPage");
+  const panelSource = appSection(source, "function Panel", "function MetricCard");
+
+  assert.doesNotMatch(source, /function LineChart|function Bars/);
+  assert.match(performanceSource, /analytics\/performance/);
+  assert.match(performanceSource, /new AbortController\(\)/);
+  assert.match(performanceSource, /analyticsRequestGeneration\.current !== requestGeneration/);
+  assert.match(performanceSource, /analyticsStatus === "loading"/);
+  assert.match(performanceSource, /analyticsStatus === "error"/);
+  assert.match(performanceSource, /analytics\?\.data_state === "empty"/);
+  assert.match(performanceSource, /集計の来歴/);
+  assert.match(performanceSource, /未計測指標/);
+  assert.doesNotMatch(performanceSource, /const runs = \(model\.mvpState\.runs/);
+  assert.doesNotMatch(panelSource, /panel-menu-static|MoreHorizontal/);
+});
+
+test("frontend exposes only the versioned archive action backed by its server contract", () => {
+  const source = readAppSource();
+  const automationsSource = appSection(source, "function AutomationsPage", "function BuilderPage");
+
+  assert.doesNotMatch(automationsSource, /\/api\/mvp\/automations\/\$\{encodeURIComponent\(id\)\}\/run/);
+  assert.match(automationsSource, /\/api\/v1\/companies\/\$\{encodeURIComponent\(activeProject\)\}\/automations/);
+  assert.match(automationsSource, /method: "DELETE"/);
+  assert.match(automationsSource, /"if-match": String\(automation\.revision\)/);
+  assert.match(automationsSource, /projects\.automation\.archive\.\$\{a\.id\}/);
+  assert.doesNotMatch(automationsSource, /projects\.automation\.(?:run|delete|detail)\./);
+  assert.doesNotMatch(automationsSource, /projects\.delete\.(?:confirm|cancel)/);
+});
+
+test("frontend moves worker diagnostics to the owner-only Admin surface", () => {
+  const source = readAppSource();
+  const runsSource = appSection(source, "function RunsPage", "function PcStatusPage");
+  const adminSource = appSection(source, "function OwnerAdminPage", "function renderPage");
+
+  assert.doesNotMatch(runsSource, /\/api\/mvp\/worker\/preview|Mac接続|workerSummary/);
+  assert.match(adminSource, /\/api\/v1\/admin\/diagnostics/);
+  assert.match(adminSource, /hasOwnerAdminAccess/);
+  assert.match(runsSource, /外部操作なし/);
+  assert.doesNotMatch(runsSource, /\/api\/mvp\/worker\/once|workerを実行|runWorkerOnce/);
+});
+
+test("frontend keeps company pages free of internal diagnostics and uses persisted integrations", () => {
+  const source = readAppSource();
+  const homeSource = appSection(source, "function HomePage", "function ChatPage");
+  const memorySource = appSection(source, "function TruthfulMemoryPage", "function TruthfulIntegrationsPage");
+  const integrationsSource = appSection(source, "function TruthfulIntegrationsPage", "function TruthfulPerformancePage");
+  const runDetailSource = appSection(source, "function TruthfulRunDetailPage", "function TruthfulRecoveryPage");
+  const adminSource = appSection(source, "function OwnerAdminPage", "function renderPage");
+
+  assert.doesNotMatch(homeSource, /"Port"|ObsidianSyncCard|workerSummary|exact_blocker/);
+  assert.doesNotMatch(memorySource, /secret_ref|two_factor|account_refs/);
+  assert.match(integrationsSource, /oauth_state/);
+  assert.match(integrationsSource, /last_verified_at/);
+  assert.match(integrationsSource, /item\.account_ref \?\? item\.accountRef/);
+  assert.match(integrationsSource, /Date\.parse\(expiresAt\) <= Date\.now\(\)/);
+  assert.match(integrationsSource, /connection-account-refs/);
+  assert.match(integrationsSource, /inventoryStatus/);
+  assert.match(integrationsSource, /integrations\.reconnect/);
+  assert.match(integrationsSource, /integrations\.revoke/);
+  assert.match(runDetailSource, /publicBlockerSummary\(run\.exact_blocker\)/);
+  assert.doesNotMatch(runDetailSource, /run\.exact_blocker \?\?/);
+  assert.match(adminSource, /PC・Browser・Codex・Obsidian・Worker・Deployment/);
+});
+
+test("frontend serializes planner requests and prevents stale responses from overwriting current state", () => {
+  const source = readAppSource();
+  const chatSource = appSection(source, "function ChatPage", "function BuilderPage");
+
+  assert.match(chatSource, /const \[planning, setPlanning\] = useState\(false\)/);
+  assert.match(chatSource, /const plannerRequestGeneration = useRef\(0\)/);
+  assert.match(chatSource, /plannerRequestGeneration\.current !== requestGeneration/);
+  assert.match(chatSource, /disabled=\{!draftPrompt \|\| planning(?: \|\| creating)?\}/);
+  assert.match(chatSource, /disabled=\{!activePrompt \|\| planning(?: \|\| creating)?\}/);
+  assert.match(chatSource, /controlId="chat\.reset"[\s\S]*disabled=\{planning \|\| creating\}/);
+  assert.match(chatSource, /chat\.platform\.toggle[\s\S]*disabled=\{planning \|\| creating\}/);
+  assert.match(chatSource, /controlId="chat\.create"[\s\S]*disabled=\{!canCreatePlan \|\| creating\}/);
 });
 
 test("frontend attaches the session-only operator token to API requests", () => {
@@ -366,11 +599,8 @@ test("frontend fails closed behind an operator-token gate on protected productio
 
 test("frontend selects actionable runs and repairs stale selections on refresh and polling", () => {
   const source = readAppSource();
-  const helperSource = appSection(source, "function runDispositionRank", "function newerRunSnapshot");
-  const runsSource = appSection(source, "function RunsPage", "function LanesPage");
+  const runsSource = appSection(source, "function RunsPage", "function PcStatusPage");
 
-  assert.match(helperSource, /actionableRuns\.length \? actionableRuns : runs/);
-  assert.match(helperSource, /runDispositionRank\(a\) - runDispositionRank\(b\)/);
   assert.match(runsSource, /setSelectedRunId\(\(current\) => resolveSelectedRunId\(current, state\.runs \?\? \[\], state\.actionableRuns \?\? \[\]\)\)/);
   assert.match(runsSource, /window\.setInterval/);
   assert.match(runsSource, /30000/);
@@ -378,7 +608,7 @@ test("frontend selects actionable runs and repairs stale selections on refresh a
 
 test("frontend loads run-scoped details and prefers the newest run snapshot", () => {
   const source = readAppSource();
-  const runsSource = appSection(source, "function RunsPage", "function LanesPage");
+  const runsSource = appSection(source, "function RunsPage", "function PcStatusPage");
 
   assert.match(source, /function newerRunSnapshot/);
   assert.match(runsSource, /fetchApiJson<RunDetail>\(`\/api\/runs\/\$\{encodeURIComponent\(currentRunId\)\}`\)/);
@@ -391,7 +621,7 @@ test("frontend loads run-scoped details and prefers the newest run snapshot", ()
 
 test("frontend opens proofs only through the id-based viewer", () => {
   const source = readAppSource();
-  const runsSource = appSection(source, "function RunsPage", "function LanesPage");
+  const runsSource = appSection(source, "function RunsPage", "function PcStatusPage");
 
   assert.match(runsSource, /`\/api\/proofs\/\$\{encodeURIComponent\(selectedProofId\)\}\/view`/);
   assert.match(runsSource, /fetchApiJson<ProofView>\(viewerUrl\)/);
@@ -403,7 +633,7 @@ test("frontend opens proofs only through the id-based viewer", () => {
 test("frontend redacts local paths URLs and secrets before run-detail display", () => {
   const source = readAppSource();
   const redactionSource = appSection(source, "function redactDisplayPaths", "function publicRunStatus");
-  const runsSource = appSection(source, "function RunsPage", "function LanesPage");
+  const runsSource = appSection(source, "function RunsPage", "function PcStatusPage");
 
   assert.match(redactionSource, /redactSensitiveText/);
   assert.match(redactionSource, /\/Users/);
@@ -417,7 +647,7 @@ test("frontend redacts local paths URLs and secrets before run-detail display", 
 
 test("frontend history uses public status and blocker labels", () => {
   const source = readAppSource();
-  const runsSource = appSection(source, "function RunsPage", "function LanesPage");
+  const runsSource = appSection(source, "function RunsPage", "function PcStatusPage");
 
   assert.match(source, /function publicRunStatus/);
   assert.match(source, /function publicBlockerSummary/);
@@ -429,7 +659,7 @@ test("frontend history uses public status and blocker labels", () => {
 
 test("frontend normal history hides worker diagnostics and raw preview objects", () => {
   const source = readAppSource();
-  const runsSource = appSection(source, "function RunsPage", "function LanesPage");
+  const runsSource = appSection(source, "function RunsPage", "function PcStatusPage");
 
   assert.match(runsSource, /title="実行前の安全確認"/);
   assert.match(runsSource, /外部操作なし/);
@@ -450,7 +680,7 @@ test("frontend approval screen preserves the human decision boundary", () => {
 
 test("frontend create reset starts a clean consultation and creation remains approval gated", () => {
   const source = readAppSource();
-  const chatSource = appSection(source, "function ChatPage", "function AutomationsPage");
+  const chatSource = appSection(source, "function ChatPage", "function BuilderPage");
 
   assert.match(chatSource, /const resetChat = \(\) =>/);
   assert.match(chatSource, /setPrompt\(""\)/);
@@ -459,6 +689,17 @@ test("frontend create reset starts a clean consultation and creation remains app
   assert.match(chatSource, /setPlannerReadback\(null\)/);
   assert.match(chatSource, /approval_policy: plan\.approvalPolicy/);
   assert.match(chatSource, /external_action_allowed: false/);
+});
+
+test("frontend approval flows preserve canonical company scope", () => {
+  const source = readAppSource();
+  const approvalsSource = appSection(source, "function ApprovalsPage", "function RunsPage");
+  const builderSource = appSection(source, "function BuilderPage", "function ApprovalsPage");
+
+  assert.match(approvalsSource, /approval\.company_id \?\? approval\.project_id \?\? ""/);
+  assert.match(builderSource, /company_id: activeProject/);
+  assert.match(builderSource, /project_id: activeProject/);
+  assert.match(builderSource, /approval_group_id: activeProject/);
 });
 
 test("frontend create secret-only helper clears commands only for credential-only input", () => {
@@ -478,6 +719,13 @@ test("server worker heartbeat accounting and same-host pid checks remain fail cl
 
   assert.match(loopSource, /lastProcessed = summaries\.length/);
   assert.match(loopSource, /lastRunIds = summaries\.map/);
+  assert.match(loopSource, /materializeDueAutomationOccurrences/);
+  assert.match(loopSource, /runDurableDryRunWorkerOnce/);
+  assert.match(loopSource, /AUTOMATION_OS_DURABLE_SERVICE_USER_ID/);
+  assert.match(loopSource, /durable_service_user_id_missing_with_pending_work/);
+  assert.match(loopSource, /durableWorkerCoverageBlocker/);
+  assert.match(loopSource, /durable_service_user_invalid_or_unscoped_for_pending_work/);
+  assert.match(loopSource, /durable_service_user_scope_incomplete_for_pending_work/);
   assert.match(loopSource, /host: hostname\(\)/);
   assert.match(workerStatusSource, /sameHostHeartbeat/);
   assert.match(workerStatusSource, /heartbeatHost === hostname\(\)/);
@@ -513,12 +761,16 @@ test("server caches expensive dashboard scans and health readback omits secrets"
   const source = readFileSync(resolve(process.cwd(), "apps/server/src/index.ts"), "utf8");
   const cacheSource = appSection(source, "let dashboardExpensiveSnapshotCache", "export function getDashboard");
   const deploymentSource = appSection(source, "function getPackageVersion", "let dashboardExpensiveSnapshotCache");
-  const healthSource = appSection(source, 'app.get("/api/health"', "let researchPlanSchedulerTimer");
+  const healthSource = appSection(source, 'app.get("/api/health"', 'app.get("/api/companies"');
+  const adminSource = appSection(source, 'app.get("/api/v1/admin/diagnostics"', 'app.get("/api/v1/companies/:companyId/feedback-artifacts');
 
   assert.match(cacheSource, /getCodexCapabilities\(\)/);
   assert.match(cacheSource, /getBrowserHealth\(\)/);
   assert.match(cacheSource, /AUTOMATION_OS_DASHBOARD_CAPABILITY_CACHE_MS/);
-  assert.match(healthSource, /deployment: getDeploymentReadback\(\)/);
+  assert.doesNotMatch(healthSource, /database:|deployment:|productionGuard:|accessGuard:/);
+  assert.match(healthSource, /service: "automation-os"/);
+  assert.match(adminSource, /deployment: getDashboardDeploymentReadback\(\)/);
+  assert.match(adminSource, /ownerCompanies\.length === 0/);
   assert.match(deploymentSource, /AUTOMATION_OS_DEPLOY_COMMIT/);
   assert.match(deploymentSource, /getServedAssetNames\(\)/);
   assert.doesNotMatch(deploymentSource, /process\.env\.(?:DATABASE_URL|POSTGRES_URI|PASSWORD|SECRET|TOKEN|API_KEY)/);
@@ -534,6 +786,15 @@ test("production QA keeps deployment asset and limited-write evidence", () => {
   assert.match(qaSource, /sanitizeDeploymentReadback/);
   assert.match(qaSource, /checkServedAssets/);
   assert.match(qaSource, /missing_js_asset/);
+  assert.match(qaSource, /readProductionReadToken/);
+  assert.match(qaSource, /buildReadbackHeaders/);
+  assert.match(qaSource, /installScopedReadbackRoute/);
+  assert.match(qaSource, /redactHarFile/);
+  assert.doesNotMatch(qaSource, /extraHTTPHeaders/);
+  assert.match(replaySource, /readProductionReadToken/);
+  assert.match(replaySource, /installScopedReadbackRoute/);
+  assert.match(replaySource, /const failureStart = result\.failures\.length/);
+  assert.doesNotMatch(replaySource, /extraHTTPHeaders/);
   assert.match(replaySource, /AUTOMATION_OS_REPLAY_ALLOW_WRITE/);
   assert.match(replaySource, /production_write_guard_did_not_block_without_token/);
   assert.match(replaySource, /write_workflow_allowlist_missing/);

@@ -1,0 +1,25 @@
+{
+  "schema": "browser_use_cli_start_descriptor.v1",
+  "browser_surface": "browser_use_cli",
+  "mode": "public",
+  "lifecycle": "single-use",
+  "automation_id": "automation-os-iab",
+  "run_id": "fixture-run-20260727",
+  "stage_id": "workflow",
+  "requested_session": "automation-os-iab-fixture",
+  "effective_session": "automation-os-iab-fixture",
+  "nonce": "0123456789abcdef0123456789abcdef",
+  "profile": "/Users/nichikatanaka/.codex/browser-use/profiles/single-use/fixture-run-20260727-0123456789abcdef0123456789abcdef",
+  "download_dir": "/Users/nichikatanaka/.codex/browser-use/downloads/fixture-run-20260727-0123456789abcdef0123456789abcdef",
+  "port": 19980,
+  "lock_paths": [
+    "/Users/nichikatanaka/.codex/browser-use/locks/profile-d5058f79c4e865d01bd40529.lock",
+    "/Users/nichikatanaka/.codex/browser-use/locks/port-19980.lock"
+  ],
+  "process": {"pid": 4242, "start_time": 1753614000.0, "root_pid": 4242, "root_start_time": 1753614000.0, "owner_uid": 501, "cmdline_digest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
+  "loopback_listener": {"host": "127.0.0.1", "port": 19980, "verified": true},
+  "recording": {"active": true, "recording_dir": "/Users/nichikatanaka/.codex/browser-use/recordings/fixture-run-20260727", "status_path": "/Users/nichikatanaka/.codex/browser-use/recordings/fixture-run-20260727/.recording-status.json"},
+  "allowed_origins": ["https://example.com"],
+  "authority_digest": "public-manifest-envelope-digest",
+  "expires_at": "2099-07-27T19:30:00+08:00"
+}
