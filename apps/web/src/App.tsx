@@ -2696,6 +2696,7 @@ function ChatPage({ model }: { model: AppModel }) {
     });
   }, [model.mvpLoadStatus, mvpState]);
   const platformOptions = ["Instagram", "TikTok", "Facebook"];
+  const allPlatformsSelected = selectedPlatforms.length === platformOptions.length;
   const draftPrompt = prompt.trim();
   const safePrompt = requestText.trim();
   const activePrompt = draftPrompt || safePrompt;
@@ -2760,14 +2761,15 @@ function ChatPage({ model }: { model: AppModel }) {
     createIdempotencyRef.current = null;
   };
   const selectAllPlatforms = () => {
-    setSelectedPlatforms(platformOptions);
+    const next = allPlatformsSelected ? [] : platformOptions;
+    setSelectedPlatforms(next);
     setPlanVisible(false);
     setPlannerReadback(null);
     setPlannerProgress(null);
     setPlannerError(null);
     setCreated(false);
     createIdempotencyRef.current = null;
-    setChatNote(`投稿先を一括選択: ${platformOptions.join(" / ")} / ${actionStamp()}`);
+    setChatNote(`投稿先を${allPlatformsSelected ? "全解除" : "一括選択"}: ${next.length ? next.join(" / ") : "未選択"} / ${actionStamp()}`);
   };
   const startPlan = async () => {
     if (!activePrompt) {
@@ -3121,12 +3123,12 @@ function ChatPage({ model }: { model: AppModel }) {
             {messages.map((message) => <Bubble key={message.id} side={message.role === "user" ? "user" : undefined}>{message.text}</Bubble>)}
           </div>
           <ChatProgressPanel progress={plannerProgress} planning={planning} />
-          <div className="choice-row">
+          <div className="choice-row" aria-label={`投稿先サービス（${selectedPlatforms.length}件選択）`}>
             {platformOptions.map((platform) => (
-              <button data-control-id={`chat.platform.toggle.${platform}`} disabled={planning || creating} className={selectedPlatforms.includes(platform) ? "selected" : ""} onClick={() => togglePlatform(platform)} key={platform}>{platform}</button>
+              <button type="button" data-control-id={`chat.platform.toggle.${platform}`} aria-pressed={selectedPlatforms.includes(platform)} disabled={planning || creating} className={selectedPlatforms.includes(platform) ? "selected" : ""} onClick={() => togglePlatform(platform)} key={platform}>{platform}</button>
             ))}
-            <button data-control-id="chat.platform.select-all" disabled={planning || creating} className={selectedPlatforms.length === platformOptions.length ? "selected" : ""} onClick={selectAllPlatforms}>Instagram / TikTok / Facebook</button>
-            <button data-control-id="chat.details.focus" disabled={planning || creating} onClick={() => { setChatNote(`詳細入力へフォーカスしました / ${actionStamp()}`); promptRef.current?.focus(); }}>詳細を書く</button>
+            <button type="button" data-control-id="chat.platform.select-all" aria-pressed={allPlatformsSelected} disabled={planning || creating} className={allPlatformsSelected ? "selected" : ""} onClick={selectAllPlatforms}>{allPlatformsSelected ? "全て解除" : "全て選択"}</button>
+            <button type="button" data-control-id="chat.details.focus" disabled={planning || creating} onClick={() => { setChatNote(`詳細入力へフォーカスしました / ${actionStamp()}`); promptRef.current?.focus(); }}>詳細を書く</button>
           </div>
           <label className="chat-input">
             自動化リクエスト
