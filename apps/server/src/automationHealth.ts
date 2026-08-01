@@ -524,9 +524,18 @@ function detectVideoQa(automation: AutomationTomlRecord): AutomationHealthEntry[
   const lower = `${automation.id}\n${automation.name}\n${automation.status}\n${prompt}`.toLowerCase();
   const wordingFound = VIDEO_QA_TERMS.filter((term) => lower.includes(term.toLowerCase()));
   if (automation.status !== "ACTIVE") return { likely_required: false, wording_found: wordingFound, status: "not_required" };
+  const hasPositiveEffectInstruction = prompt.split(/\r?\n/u).some((line) => {
+    const normalized = line.toLowerCase();
+    const effectTerm = /(publish|post|posting|pinterest|etsy|printify|linkedin|direct_publish|write|writes|send|submit|calendar|sheets)/.test(normalized);
+    const prohibition = /(never|do not|don't|without|no external|しない|行わない|実行しない|禁止)/.test(normalized);
+    const readOnlyMarker = /(read[- ]only|読み取り専用)/.test(normalized);
+    const mixedPositive = /(?:then|after|also|and)\s+(?:[^.!?]*\s+)?(publish|post|posting|write|writes|send|submit|calendar|sheets)/.test(normalized);
+    return effectTerm && !prohibition && (!readOnlyMarker || mixedPositive);
+  });
   const likelyRequired =
     /(publish|post|posting|pinterest|etsy|printify|linkedin|direct_publish|write|writes|send|submit|calendar|sheets)/.test(lower) &&
-    !/(inactive|historical proof only|do not run)/.test(lower);
+    !/(inactive|historical proof only|do not run)/.test(lower) &&
+    hasPositiveEffectInstruction;
   if (!likelyRequired) return { likely_required: false, wording_found: wordingFound, status: "not_required" };
   if (wordingFound.length >= 3) return { likely_required: true, wording_found: wordingFound, status: "ok" };
   return {

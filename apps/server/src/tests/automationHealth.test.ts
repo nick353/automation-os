@@ -230,6 +230,20 @@ test("read-only discovery wording does not suppress video QA for write/send work
   assert.equal(issue?.severity, "blocker");
 });
 
+test("read-only canary wording does not require video QA when effects are explicitly prohibited", () => {
+  const fixture = tempFixture();
+  const id = "demo-readonly-canary";
+  const prompt = "Run a read-only canary. Never post, apply, send, publish, write, or submit. Capture state and cleanup only.";
+  const body = toml({ id, cwd: fixture.cwd, prompt });
+  writeAutomation(fixture.automationRoot, id, body);
+  createDb(fixture.dbPath, [{ id, prompt, status: "ACTIVE", rrule: "FREQ=DAILY;BYHOUR=9;BYMINUTE=0;BYSECOND=0", cwds: [fixture.cwd] }]);
+
+  const report = runAutomationHealth({ automationRoot: fixture.automationRoot, dbPath: fixture.dbPath, outputRoot: fixture.outputRoot, psText: "" });
+
+  assert.equal(report.summary.video_qa_issues, 0);
+  assert.equal(report.automations[0]?.video_qa.status, "not_required");
+});
+
 test("parser supports multiline prompt and singular cwd TOML shape", () => {
   const parsed = parseAutomationToml(
     [
