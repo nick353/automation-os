@@ -1401,7 +1401,9 @@ app.post("/api/create/plan/jobs", (req, res, next) => {
       currentDraft,
       metadata: {
         route: "mac_worker_subscription",
-        immediatePlanSource: fallbackPlan.source
+        immediatePlanSource: fallbackPlan.source,
+        actorUserId: currentActorUserId(),
+        companyIds: actorCompanyIds()
       }
     });
     res.json({ ok: true, job: sanitizeCreatePlannerJobForApi(job), plan: fallbackPlan });
@@ -1420,6 +1422,8 @@ app.post("/api/create/chat", (req, res, next) => {
     }
     const requested = requestedCompanyId(req, false);
     const companyIds = requested ? [requireCompanyAccess(requested).id] : actorCompanyIds();
+    const requestedThreadId = typeof req.body?.codex_thread_id === "string" ? req.body.codex_thread_id.trim() : "";
+    if (requestedThreadId) assertCreatePlannerThreadAccess(requestedThreadId, companyIds, currentActorUserId());
     const contextSnapshot = buildAutomationOsChatSnapshot(companyIds);
     const job = enqueueCreatePlannerJob({
       messages,
@@ -1427,14 +1431,21 @@ app.post("/api/create/chat", (req, res, next) => {
       metadata: {
         route: "mac_worker_codex_app_server",
         transport: "codex_app_server",
+        actorUserId: currentActorUserId(),
         companyIds,
-        codexThreadId: typeof req.body?.codex_thread_id === "string" ? req.body.codex_thread_id.trim() : undefined,
+        codexThreadId: requestedThreadId || undefined,
         contextCapturedAt: new Date().toISOString(),
+        contextSnapshotHash: createHash("sha256").update(contextSnapshot).digest("hex"),
         contextSnapshot
       }
     });
     res.status(202).json({ ok: true, job: sanitizeCreatePlannerJobForApi(job), external_action_executed: false });
   } catch (error) {
+    const exact = error instanceof Error ? error.message : "create_chat_failed";
+    if (exact === "codex_thread_scope_forbidden") {
+      res.status(404).json({ ok: false, error: "codex_thread_not_found", exactBlocker: "codex_thread_not_found" });
+      return;
+    }
     next(error);
   }
 });
@@ -1443,6 +1454,12 @@ app.get("/api/create/plan/jobs/:id", (req, res) => {
   const job = getCreatePlannerJob(req.params.id);
   if (!job) {
     res.status(404).json({ ok: false, error: "create_planner_job_not_found" });
+    return;
+  }
+  try {
+    assertCreatePlannerJobAccess(job);
+  } catch {
+    res.status(404).json({ ok: false, error: "create_planner_job_not_found", exactBlocker: "create_planner_job_not_found" });
     return;
   }
   res.json({ ok: true, job: sanitizeCreatePlannerJobForApi(job), plan: job.result });
@@ -7630,12 +7647,45 @@ function sanitizeCreatePlannerJobForApi(job: CreatePlannerJob) {
       codexThreadId: typeof job.metadata.codexThreadId === "string" ? job.metadata.codexThreadId : undefined,
       codexTurnId: typeof job.metadata.codexTurnId === "string" ? job.metadata.codexTurnId : undefined,
       contextCapturedAt: typeof job.metadata.contextCapturedAt === "string" ? job.metadata.contextCapturedAt : undefined,
+      contextSnapshotHash: typeof job.metadata.contextSnapshotHash === "string" ? job.metadata.contextSnapshotHash : undefined,
       streamText: typeof job.metadata.streamText === "string" ? job.metadata.streamText : undefined,
       events: Array.isArray(job.metadata.events)
         ? job.metadata.events.filter((event) => event && typeof event === "object").slice(-40)
         : []
     }
   };
+}
+
+function plannerJobCompanyIds(job: CreatePlannerJob): string[] {
+  return Array.isArray(job.metadata.companyIds)
+    ? job.metadata.companyIds.filter((value): value is string => typeof value === "string" && Boolean(value.trim()))
+    : [];
+}
+
+function assertCreatePlannerJobAccess(job: CreatePlannerJob): void {
+  const owner = typeof job.metadata.actorUserId === "string" ? job.metadata.actorUserId : "";
+  if (owner && owner !== currentActorUserId()) throw new Error("create_planner_job_not_found");
+  const companyIds = plannerJobCompanyIds(job);
+  if (companyIds.length > 0 && !companyIds.some((companyId) => actorCompanyIds().includes(companyId))) {
+    throw new Error("create_planner_job_not_found");
+  }
+}
+
+function assertCreatePlannerThreadAccess(threadId: string, companyIds: readonly string[], actorUserId: string): void {
+  const normalized = threadId.trim();
+  if (!normalized) return;
+  const rows = querySql<{ metadata_json: string }>("SELECT metadata_json FROM create_planner_jobs ORDER BY created_at DESC LIMIT 1000");
+  const allowed = rows.some((row) => {
+    const metadata = parseJson<Record<string, unknown>>(row.metadata_json, {});
+    const owner = typeof metadata.actorUserId === "string" ? metadata.actorUserId : "";
+    const boundCompanies = Array.isArray(metadata.companyIds)
+      ? metadata.companyIds.filter((value): value is string => typeof value === "string")
+      : [];
+    return metadata.codexThreadId === normalized
+      && owner === actorUserId
+      && (boundCompanies.length === 0 || boundCompanies.some((companyId) => companyIds.includes(companyId)));
+  });
+  if (!allowed) throw new Error("codex_thread_scope_forbidden");
 }
 
 function buildAutomationOsChatSnapshot(companyIds: string[]): string {

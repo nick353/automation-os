@@ -82,6 +82,7 @@ class FakeAppServerChild implements AppServerChildLike {
 
 test("CodexAppServerClient completes a read-only turn and resumes the same thread", async () => {
   const events: string[] = [];
+  const turnEvents: string[] = [];
   let child: FakeAppServerChild | undefined;
   const client = new CodexAppServerClient({
     processFactory: () => {
@@ -92,7 +93,7 @@ test("CodexAppServerClient completes a read-only turn and resumes the same threa
   });
 
   const threadId = await client.startOrResumeThread();
-  const first = await client.startTurn({ threadId, text: "システム全体を確認" });
+  const first = await client.startTurn({ threadId, text: "システム全体を確認", onEvent: (event) => turnEvents.push(event.method) });
   const resumed = await client.startOrResumeThread(threadId);
   assert.equal(resumed, threadId);
   assert.equal(first.status, "completed");
@@ -101,6 +102,8 @@ test("CodexAppServerClient completes a read-only turn and resumes the same threa
   assert.match(first.text, /状態確認/u);
   assert.ok(events.includes("item/agentMessage/delta"));
   assert.ok(events.includes("turn/completed"));
+  assert.ok(turnEvents.includes("item/agentMessage/delta"));
+  assert.ok(turnEvents.includes("turn/completed"));
   client.close();
   assert.ok(child);
 });

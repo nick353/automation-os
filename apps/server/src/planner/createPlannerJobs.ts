@@ -1,5 +1,6 @@
 import { insert, makeId, nowIso, querySql, sqlValue } from "../db/client.js";
 import { CodexAppServerClient } from "../codex/appServerClient.js";
+import { redactSensitiveText } from "../obsidian/redaction.js";
 import { createCodexAppServerPlannerResponse, createPlannerResponse, type CreatePlannerMessage, type CreatePlannerResult } from "./createPlanner.js";
 
 export type CreatePlannerJobStatus = "queued" | "running" | "completed" | "blocked";
@@ -45,11 +46,15 @@ export function enqueueCreatePlannerJob(input: {
 }): CreatePlannerJob {
   const now = nowIso();
   const id = makeId("create_planner_job");
+  const messages = input.messages.map((message) => ({
+    role: message.role,
+    text: redactSensitiveText(message.text).slice(0, 12_000)
+  }));
   insert("create_planner_jobs", {
     id,
     status: "queued",
-    messages_json: input.messages,
-    current_draft: input.currentDraft ?? "",
+    messages_json: messages,
+    current_draft: redactSensitiveText(input.currentDraft ?? "").slice(0, 12_000),
     result_json: {},
     exact_blocker: null,
     created_at: now,
@@ -93,6 +98,27 @@ async function processCreatePlannerJob(row: CreatePlannerJobRow, options: Create
   const currentDraft = row.current_draft ?? "";
   const metadata = parseJson<Record<string, unknown>>(row.metadata_json, {});
   const transport = metadata.transport === "codex_app_server" ? "codex_app_server" : "codex_exec";
+  let progressText = typeof metadata.streamText === "string" ? redactSensitiveText(metadata.streamText).slice(-24_000) : "";
+  let progressEvents = Array.isArray(metadata.events) ? metadata.events.filter((event) => event && typeof event === "object").slice(-160) : [];
+  let lastProgressWriteAt = 0;
+  const persistProgress = (event: { method: string; threadId?: string; turnId?: string; itemId?: string; delta?: string; status?: string; capturedAt: string }) => {
+    if (event.delta) progressText = `${progressText}${redactSensitiveText(event.delta)}`.slice(-24_000);
+    progressEvents = [...progressEvents, event].slice(-160);
+    const now = Date.now();
+    if (event.method !== "turn/completed" && now - lastProgressWriteAt < 250) return;
+    lastProgressWriteAt = now;
+    const progressMetadata = {
+      ...metadata,
+      transport,
+      ...(event.threadId ? { codexThreadId: event.threadId } : {}),
+      ...(event.turnId ? { codexTurnId: event.turnId } : {}),
+      streamText: progressText,
+      events: progressEvents
+    };
+    querySql(
+      `UPDATE create_planner_jobs SET metadata_json=${sqlValue(progressMetadata)}, updated_at=${sqlValue(nowIso())} WHERE id=${sqlValue(row.id)} AND status='running' RETURNING id`
+    );
+  };
   try {
     const resultWithMetadata = transport === "codex_app_server"
       ? await createCodexAppServerPlannerResponse({
@@ -100,7 +126,8 @@ async function processCreatePlannerJob(row: CreatePlannerJobRow, options: Create
           currentDraft,
           threadId: typeof metadata.codexThreadId === "string" ? metadata.codexThreadId : undefined,
           context: typeof metadata.contextSnapshot === "string" ? metadata.contextSnapshot : undefined,
-          client: options.appServerClient ?? getSharedAppServerClient()
+          client: options.appServerClient ?? getSharedAppServerClient(),
+          onEvent: persistProgress
         })
       : null;
     const result = resultWithMetadata?.result ?? await createPlannerResponse({ messages, currentDraft, providerOverride: "codex" });

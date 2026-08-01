@@ -22,7 +22,8 @@ test("POST /api/create/chat queues a project-scoped Codex App Server turn withou
 
   const response = await requestJson("POST", "/api/create/chat", {
     project_id: "project-a",
-    messages: [{ role: "user", text: "システム全体を確認して" }]
+    currentDraft: "token=secret-planner-input",
+    messages: [{ role: "user", text: "システム全体を確認して token=secret-planner-message" }]
   });
   assert.equal(response.status, 202);
   const body = JSON.parse(response.body) as { ok: boolean; job: { id: string; status: string; metadata: Record<string, unknown> } };
@@ -35,6 +36,18 @@ test("POST /api/create/chat queues a project-scoped Codex App Server turn withou
   assert.equal(readback.status, 200);
   assert.equal(readbackBody.job.metadata.transport, "codex_app_server");
   assert.equal(JSON.stringify(readbackBody).includes("DATABASE_URL"), false);
+  const stored = db.querySql<{ messages_json: string; current_draft: string }>("SELECT messages_json, current_draft FROM create_planner_jobs WHERE id=" + db.sqlValue(body.job.id))[0];
+  assert.ok(stored);
+  assert.equal(stored.messages_json.includes("secret-planner-message"), false);
+  assert.equal(stored.current_draft.includes("secret-planner-input"), false);
+
+  const foreignThread = await requestJson("POST", "/api/create/chat", {
+    project_id: "project-a",
+    codex_thread_id: "thread-from-another-scope",
+    messages: [{ role: "user", text: "続き" }]
+  });
+  assert.equal(foreignThread.status, 404);
+  assert.equal(JSON.parse(foreignThread.body).exactBlocker, "codex_thread_not_found");
 });
 
 function requestJson(method: string, path: string, payload: Record<string, unknown> = {}) {

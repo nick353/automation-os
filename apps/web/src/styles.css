@@ -759,6 +759,45 @@ tr:hover td {
   font-size: 12px;
 }
 
+.chat-progress {
+  border: 1px solid #dfe7f4;
+  background: #f7faff;
+  border-radius: 8px;
+  padding: 12px;
+  margin: 10px 0;
+  font-size: 12px;
+}
+
+.chat-progress-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.chat-progress p {
+  margin: 7px 0 0;
+}
+
+.chat-progress-events {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 9px;
+}
+
+.chat-progress-events span {
+  border: 1px solid #c9d8ee;
+  border-radius: 999px;
+  padding: 3px 8px;
+  background: #fff;
+  color: #34577f;
+}
+
+.chat-progress details {
+  margin-top: 8px;
+}
+
 .step-line,
 .workflow-row,
 .timeline-row {

@@ -93,6 +93,8 @@ export class CodexAppServerClient {
   private readonly turnEvents = new Map<string, CodexAppServerEvent[]>();
   private readonly turnText = new Map<string, string>();
   private readonly turnToThread = new Map<string, string>();
+  private readonly turnListeners = new Map<string, (event: CodexAppServerEvent) => void>();
+  private readonly pendingTurnListeners = new Map<string, (event: CodexAppServerEvent) => void>();
 
   constructor(private readonly options: {
     command?: string;
@@ -145,6 +147,7 @@ export class CodexAppServerClient {
     threadId: string;
     text: string;
     outputSchema?: Record<string, unknown>;
+    onEvent?: (event: CodexAppServerEvent) => void;
   }): Promise<CodexAppServerTurnResult> {
     const threadId = input.threadId.trim();
     const text = redactSensitiveText(input.text).trim();
@@ -152,6 +155,7 @@ export class CodexAppServerClient {
     if (!text) throw new Error("codex_app_server_turn_text_required");
     await this.start();
 
+    if (input.onEvent) this.pendingTurnListeners.set(threadId, input.onEvent);
     const responsePromise = this.request("turn/start", {
       threadId,
       input: [{ type: "text", text, text_elements: [] }],
@@ -159,7 +163,12 @@ export class CodexAppServerClient {
       sandboxPolicy: { type: "readOnly", networkAccess: false },
       ...(input.outputSchema ? { outputSchema: input.outputSchema } : {})
     });
-    const response = await responsePromise;
+    let response: Record<string, unknown>;
+    try {
+      response = await responsePromise;
+    } finally {
+      if (this.pendingTurnListeners.get(threadId) === input.onEvent) this.pendingTurnListeners.delete(threadId);
+    }
     const turn = response.result && typeof response.result === "object"
       ? (response.result as Record<string, unknown>).turn
       : undefined;
@@ -170,22 +179,27 @@ export class CodexAppServerClient {
 
     const key = turnKey(threadId, turnId);
     this.turnToThread.set(turnId, threadId);
-    const completed = await this.waitForCompletion(key);
-    const turnEvents = this.turnEvents.get(key) ?? [];
-    const textOutput = this.turnText.get(key) ?? "";
-    const status = completionStatus(completed);
-    const exactBlocker = status === "blocked" || status === "failed"
-      ? completionError(completed) ?? "codex_app_server_turn_failed"
-      : undefined;
-    return {
-      threadId,
-      turnId,
-      status,
-      text: redactSensitiveText(textOutput).slice(0, 24_000),
-      structured: parseStructuredText(textOutput),
-      events: turnEvents.slice(-maxEventsPerTurn),
-      exactBlocker
-    };
+    if (input.onEvent) this.turnListeners.set(key, input.onEvent);
+    try {
+      const completed = await this.waitForCompletion(key);
+      const turnEvents = this.turnEvents.get(key) ?? [];
+      const textOutput = this.turnText.get(key) ?? "";
+      const status = completionStatus(completed);
+      const exactBlocker = status === "blocked" || status === "failed"
+        ? completionError(completed) ?? "codex_app_server_turn_failed"
+        : undefined;
+      return {
+        threadId,
+        turnId,
+        status,
+        text: redactSensitiveText(textOutput).slice(0, 24_000),
+        structured: parseStructuredText(textOutput),
+        events: turnEvents.slice(-maxEventsPerTurn),
+        exactBlocker
+      };
+    } finally {
+      this.turnListeners.delete(key);
+    }
   }
 
   close(): void {
@@ -361,7 +375,17 @@ export class CodexAppServerClient {
         }
       }
     }
-    this.options.onEvent?.(event);
+    this.emitEvent(this.options.onEvent, event);
+    if (key) this.emitEvent(this.turnListeners.get(key) ?? this.pendingTurnListeners.get(threadId ?? ""), event);
+  }
+
+  private emitEvent(listener: ((event: CodexAppServerEvent) => void) | undefined, event: CodexAppServerEvent): void {
+    if (!listener) return;
+    try {
+      listener(event);
+    } catch {
+      // Progress observers must not break the worker-owned protocol stream.
+    }
   }
 
   private handleServerRequest(message: JsonRpcMessage): void {

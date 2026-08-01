@@ -9,6 +9,13 @@ export type CreatePlannerMessage = {
 
 export type CreatePlannerProvider = "auto" | "codex" | "codex_app_server" | "openai" | "local";
 
+export type CreatePlannerChange = {
+  target: string;
+  field: string;
+  before?: string;
+  after: string;
+};
+
 export type CreatePlannerResult = {
   source: "local_codex" | "codex_app_server" | "openai" | "local_fallback";
   intent?: "answer_question" | "plan_workflow";
@@ -25,6 +32,8 @@ export type CreatePlannerResult = {
   nextAction: string;
   executionDecision: "ask_more" | "save_plan" | "demo_first" | "ready_to_start" | "ready_to_schedule";
   confidence: "low" | "medium" | "high";
+  proposedChanges?: CreatePlannerChange[];
+  requiresConfirmation?: string[];
 };
 
 const fallbackQuestions = {
@@ -82,6 +91,7 @@ export async function createCodexAppServerPlannerResponse(input: {
   threadId?: string;
   context?: string;
   client?: CodexAppServerClient;
+  onEvent?: (event: CodexAppServerEvent) => void;
 }): Promise<{
   result: CreatePlannerResult;
   threadId: string;
@@ -107,7 +117,8 @@ export async function createCodexAppServerPlannerResponse(input: {
   const turn = await client.startTurn({
     threadId,
     text: prompt,
-    outputSchema: plannerJsonSchema()
+    outputSchema: plannerJsonSchema(),
+    onEvent: input.onEvent
   });
   if (turn.status !== "completed") throw new Error(turn.exactBlocker ?? "codex_app_server_turn_blocked");
   if (!turn.structured) throw new Error("codex_app_server_structured_output_missing");
@@ -745,8 +756,23 @@ function sanitizePlannerResult(result: CreatePlannerResult, messages?: CreatePla
     openQuestions: shouldUseFallbackSafety ? fallback.openQuestions : stringArrayOr(result.openQuestions, fallback.openQuestions, 5, 180),
     nextAction: shouldUseFallbackSafety ? fallback.nextAction : stringOr(result.nextAction, fallback.nextAction, 240),
     executionDecision,
-    confidence
+    confidence,
+    ...(sanitizePlannerChanges(result.proposedChanges).length ? { proposedChanges: sanitizePlannerChanges(result.proposedChanges) } : {}),
+    ...(stringArrayOr(result.requiresConfirmation, [], 8, 180).length ? { requiresConfirmation: stringArrayOr(result.requiresConfirmation, [], 8, 180) } : {})
   };
+}
+
+function sanitizePlannerChanges(value: unknown): CreatePlannerChange[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => {
+    const record = item && typeof item === "object" ? item as Record<string, unknown> : {};
+    return {
+      target: stringOr(record.target, "対象未確認", 120),
+      field: stringOr(record.field, "変更項目未確認", 120),
+      ...(typeof record.before === "string" ? { before: redactSensitiveText(record.before).slice(0, 240) } : {}),
+      after: stringOr(record.after, "変更後未確認", 240)
+    };
+  }).filter((item) => item.target !== "対象未確認" || item.field !== "変更項目未確認").slice(0, 8);
 }
 
 function externallyStablePlannerResult(result: CreatePlannerResult, fallback: CreatePlannerResult): CreatePlannerResult | null {
@@ -830,7 +856,9 @@ function plannerJsonSchema() {
       openQuestions: { type: "array", items: { type: "string" } },
       nextAction: { type: "string" },
       executionDecision: { type: "string", enum: ["ask_more", "save_plan", "demo_first", "ready_to_start", "ready_to_schedule"] },
-      confidence: { type: "string", enum: ["low", "medium", "high"] }
+      confidence: { type: "string", enum: ["low", "medium", "high"] },
+      proposedChanges: { type: "array", items: { type: "object", additionalProperties: false, required: ["target", "field", "after"], properties: { target: { type: "string" }, field: { type: "string" }, before: { type: "string" }, after: { type: "string" } } } },
+      requiresConfirmation: { type: "array", items: { type: "string" } }
     }
   };
 }

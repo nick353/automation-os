@@ -452,6 +452,35 @@ type PlannerReadback = {
   chat_turn_id?: string | null;
   chat_status?: string;
   chat_stream_text?: string;
+  chat_events?: PlannerEvent[];
+  proposed_changes?: PlannerChange[];
+  requires_confirmation?: string[];
+};
+
+type PlannerChange = {
+  target: string;
+  field: string;
+  before?: string;
+  after: string;
+};
+
+type PlannerEvent = {
+  method: string;
+  threadId?: string;
+  turnId?: string;
+  itemId?: string;
+  delta?: string;
+  status?: string;
+  capturedAt?: string;
+};
+
+type PlannerProgress = {
+  jobId: string;
+  status: string;
+  threadId?: string;
+  turnId?: string;
+  streamText: string;
+  events: PlannerEvent[];
 };
 
 type ServerPlannerResult = {
@@ -466,6 +495,8 @@ type ServerPlannerResult = {
   openQuestions?: string[];
   nextAction?: string;
   executionDecision?: string;
+  proposedChanges?: PlannerChange[];
+  requiresConfirmation?: string[];
 };
 
 type ChatMessage = {
@@ -488,11 +519,32 @@ function normalizeApprovalStatus(status: string): Status {
   return "approved";
 }
 
+function isApprovalWaiting(status: unknown): boolean {
+  return status === "waiting" || status === "pending";
+}
+
 function detectSchedule(text: string) {
   const hourMatch = text.match(/(\d{1,2})\s*時/);
   const hour = hourMatch ? Math.max(0, Math.min(23, Number(hourMatch[1]))) : text.includes("夕方") ? 18 : text.includes("夜") ? 20 : 9;
   const cadence = text.includes("毎週") ? "weekly" : text.includes("毎月") ? "monthly" : "daily";
+  if (cadence === "monthly") return { schedule: `0 ${hour} 1 * *`, cadence };
+  if (cadence === "weekly") {
+    const weekday = /(?:毎週|週).*(?:日曜|日曜日)/u.test(text) ? "SUN"
+      : /(?:毎週|週).*(?:月曜|月曜日)/u.test(text) ? "MON"
+        : /(?:毎週|週).*(?:火曜|火曜日)/u.test(text) ? "TUE"
+          : /(?:毎週|週).*(?:水曜|水曜日)/u.test(text) ? "WED"
+            : /(?:毎週|週).*(?:木曜|木曜日)/u.test(text) ? "THU"
+              : /(?:毎週|週).*(?:金曜|金曜日)/u.test(text) ? "FRI"
+                : /(?:毎週|週).*(?:土曜|土曜日)/u.test(text) ? "SAT" : "MON";
+    return { schedule: `${weekday} ${String(hour).padStart(2, "0")}:00`, cadence };
+  }
   return { schedule: `${String(hour).padStart(2, "0")}:00`, cadence };
+}
+
+function scheduleKindForPlan(plan: AutomationPlan): ScheduleKind {
+  if (plan.cadence === "weekly") return "weekly";
+  if (plan.cadence === "monthly") return "cron";
+  return "daily";
 }
 
 function buildAutomationPlan(prompt: string, selectedPlatforms: string[]): AutomationPlan {
@@ -759,7 +811,7 @@ function builderConfigForAutomationType(type: string): BuilderConfig {
 async function requestChatPlan(
   prompt: string,
   selectedPlatforms: string[],
-  options: { projectId?: string; messages?: ChatMessage[]; threadId?: string } = {}
+  options: { projectId?: string; messages?: ChatMessage[]; threadId?: string; onProgress?: (progress: PlannerProgress) => void } = {}
 ): Promise<PlannerReadback> {
   const conversation = (options.messages?.length ? options.messages : [{ id: "current", role: "user" as const, text: prompt }])
     .map((message) => ({ role: message.role, text: message.text }));
@@ -775,18 +827,20 @@ async function requestChatPlan(
   });
   const body = await response.json().catch(() => null) as {
     ok?: boolean;
-    job?: { id?: string; status?: string; result?: ServerPlannerResult; exactBlocker?: string; metadata?: Record<string, unknown> };
+    job?: PlannerJobReadback;
   } | null;
   if (!response.ok || body?.ok !== true || !body.job?.id) {
     throw new Error("planner_readback_unavailable");
   }
   let job = body.job;
+  options.onProgress?.(plannerProgressFromJob(body.job.id!, job));
   for (let attempt = 0; attempt < 90 && job.status !== "completed" && job.status !== "blocked"; attempt += 1) {
     await new Promise((resolve) => window.setTimeout(resolve, 1_000));
     const poll = await mvpFetch(`/api/create/plan/jobs/${encodeURIComponent(body.job.id)}`, { cache: "no-store" });
-    const pollBody = await poll.json().catch(() => null) as { ok?: boolean; job?: typeof job } | null;
+    const pollBody = await poll.json().catch(() => null) as { ok?: boolean; job?: PlannerJobReadback } | null;
     if (!poll.ok || pollBody?.ok !== true || !pollBody.job) throw new Error("planner_job_readback_unavailable");
     job = pollBody.job;
+    options.onProgress?.(plannerProgressFromJob(body.job.id!, job));
   }
   if (job.status !== "completed" || !job.result || typeof job.result.title !== "string") {
     throw new Error(job.exactBlocker || "codex_app_server_unavailable");
@@ -839,8 +893,81 @@ async function requestChatPlan(
     chat_thread_id: typeof job.metadata?.codexThreadId === "string" ? job.metadata.codexThreadId : null,
     chat_turn_id: typeof job.metadata?.codexTurnId === "string" ? job.metadata.codexTurnId : null,
     chat_status: job.status,
-    chat_stream_text: typeof job.metadata?.streamText === "string" ? job.metadata.streamText : ""
+    chat_stream_text: typeof job.metadata?.streamText === "string" ? job.metadata.streamText : "",
+    chat_events: plannerProgressFromJob(body.job.id!, job).events,
+    proposed_changes: Array.isArray(serverPlan.proposedChanges) ? serverPlan.proposedChanges : [],
+    requires_confirmation: Array.isArray(serverPlan.requiresConfirmation) ? serverPlan.requiresConfirmation : []
   };
+}
+
+type PlannerJobReadback = {
+  id?: string;
+  status?: string;
+  result?: ServerPlannerResult;
+  exactBlocker?: string;
+  metadata?: Record<string, unknown>;
+};
+
+function plannerProgressFromJob(jobId: string, job: PlannerJobReadback): PlannerProgress {
+  const events = Array.isArray(job.metadata?.events)
+    ? job.metadata.events
+      .filter((event): event is Record<string, unknown> => Boolean(event) && typeof event === "object")
+      .map((event) => ({
+        method: typeof event.method === "string" ? event.method : "unknown",
+        ...(typeof event.threadId === "string" ? { threadId: event.threadId } : {}),
+        ...(typeof event.turnId === "string" ? { turnId: event.turnId } : {}),
+        ...(typeof event.itemId === "string" ? { itemId: event.itemId } : {}),
+        ...(typeof event.delta === "string" ? { delta: event.delta } : {}),
+        ...(typeof event.status === "string" ? { status: event.status } : {}),
+        ...(typeof event.capturedAt === "string" ? { capturedAt: event.capturedAt } : {})
+      }))
+      .slice(-8)
+    : [];
+  return {
+    jobId,
+    status: typeof job.status === "string" ? job.status : "unknown",
+    threadId: typeof job.metadata?.codexThreadId === "string" ? job.metadata.codexThreadId : undefined,
+    turnId: typeof job.metadata?.codexTurnId === "string" ? job.metadata.codexTurnId : undefined,
+    streamText: typeof job.metadata?.streamText === "string" ? job.metadata.streamText : "",
+    events
+  };
+}
+
+function plannerProgressLabel(status: string): string {
+  if (status === "queued") return "Mac worker待機中";
+  if (status === "running") return "Codex App Serverで処理中";
+  if (status === "completed") return "回答を受信しました";
+  if (status === "blocked") return "処理が停止しました";
+  return "状態を確認中";
+}
+
+function plannerEventLabel(method: string): string {
+  if (method === "item/agentMessage/delta") return "回答を受信中";
+  if (method === "item/completed") return "回答項目を完了";
+  if (method === "turn/completed") return "turn完了";
+  if (method === "thread/started") return "thread開始";
+  return method;
+}
+
+function ChatProgressPanel({ progress, planning }: { progress: PlannerProgress | null; planning: boolean }) {
+  if (!progress && !planning) return null;
+  const status = progress?.status ?? "queued";
+  return (
+    <div className="chat-progress" data-control-id="chat.progress.panel" role="status" aria-live="polite">
+      <div className="chat-progress-heading">
+        <strong>{plannerProgressLabel(status)}</strong>
+        {progress?.jobId && <span className="muted">job: {progress.jobId}</span>}
+      </div>
+      <p className="muted">{progress?.threadId ? `thread: ${progress.threadId}` : "threadを割り当て中"}{progress?.turnId ? ` / turn: ${progress.turnId}` : ""}</p>
+      {progress?.events.length ? (
+        <div className="chat-progress-events">
+          {progress.events.slice(-5).map((event, index) => <span key={`${event.method}-${event.capturedAt ?? index}`}>{plannerEventLabel(event.method)}</span>)}
+        </div>
+      ) : <p className="muted">workerから進捗を待っています。</p>}
+      {progress?.streamText && <details><summary>受信進捗（内部JSONは表示しません）</summary><p className="muted">Codexから {progress.streamText.length.toLocaleString("ja-JP")} 文字を受信しました。</p></details>}
+      {!planning && status === "completed" && <p className="muted">外部操作は実行していません。内容確認後に保存へ進みます。</p>}
+    </div>
+  );
 }
 
 function toAutomationRows(items: any[]): AutomationRow[] {
@@ -1530,7 +1657,7 @@ function FeedbackFixQueue({ feedbacks, state, setReceipt, setFeedbackReadback }:
       }}>対象を開く</Button>
       <Button controlId={`home.feedback.queue.triage.${item.id}`} variant="primary" onClick={() => updateFeedbackStatus(item.id, "triaged")}>triaged にする</Button>
     </div>
-  ]) : [["open feedbackなし", "-", "-", "-", "現在のreadbackでは未処理feedbackはありません", <StatusBadge status="approved" label="完了" />]];
+  ]) : [["open feedbackなし", "-", "-", "-", "現在のreadbackでは未処理feedbackはありません", <StatusBadge status="waiting" label="未処理なし" />]];
   return (
     <Panel title="Feedback修正キュー" controlId="home.feedback.queue.panel">
       <div className="feedback-summary">
@@ -2078,7 +2205,9 @@ function renderPage(route: string, model: AppModel) {
   if (route === "#/runs") return <RunsPage model={model} />;
   if (route === "#/templates") return <TemplatesPage model={model} />;
   if (route === "#/admin") return <OwnerAdminPage model={model} />;
-  if (["#/plugins", "#/production/status", "#/system/pc-status"].includes(route)) return hasOwnerAdminAccess(model.mvpState) ? <OwnerAdminPage model={model} /> : <ProjectUnavailablePage reason="この診断画面はOwner専用Adminへ移動しました。" />;
+  if (route === "#/plugins") return <TruthfulPluginsPage model={model} />;
+  if (route === "#/production/status") return hasOwnerAdminAccess(model.mvpState) ? <TruthfulProductionStatusPage model={model} /> : <ProjectUnavailablePage reason="本番状態はOwner専用です。" />;
+  if (route === "#/system/pc-status") return <PcStatusPage model={model} />;
   if (route === "#/projects" || route === "#/projects/") return <ProjectDirectoryPage model={model} />;
   if (route.includes("/projects/")) {
     if (model.mvpLoadStatus === "loading") return <ProjectUnavailablePage reason="会社一覧をAPIから確認しています。" />;
@@ -2562,8 +2691,10 @@ function ChatPage({ model }: { model: AppModel }) {
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>([]);
   const [planVisible, setPlanVisible] = useState(false);
   const [plannerReadback, setPlannerReadback] = useState<PlannerReadback | null>(null);
+  const [plannerProgress, setPlannerProgress] = useState<PlannerProgress | null>(null);
   const [plannerError, setPlannerError] = useState<string | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState(rememberedProject());
+  const [selectedAutomationId, setSelectedAutomationId] = useState("");
   const [chatThreadId, setChatThreadId] = useState(() => rememberedChatThread(rememberedProject()));
   const [planning, setPlanning] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -2593,12 +2724,19 @@ function ChatPage({ model }: { model: AppModel }) {
   const plan = plannerReadback?.plan ?? fallbackPlan;
   const targetProject = selectedProjectId;
   const presentationProfile = mvpState.presentation_profiles?.find((profile) => profile.id === targetProject);
+  const targetAutomations = (mvpState.automations ?? []).filter((automation) => String(automation.project_id ?? automation.company_id ?? "") === targetProject);
+  const selectedAutomation = targetAutomations.find((automation) => automation.id === selectedAutomationId) ?? targetAutomations[0];
   const plannerAdapter = plannerReadback?.planner_adapter ?? "client_deterministic_preview";
   const plannerMode = plannerReadback?.planner_mode ?? "not_requested";
   const plannerPublicBlocker = plannerReadback?.exact_blocker ? publicBlockerSummary(plannerReadback.exact_blocker) : null;
   const targetProjectIsVerified = model.mvpLoadStatus === "ready" && Boolean(targetProject) && canonicalProjects.some((project) => project.id === targetProject);
   const canCreatePlan = plannerReadback?.can_create === true && targetProjectIsVerified;
   const isCreateAutomationPlan = plannerReadback?.planner_operation === "create_automation";
+  const isManageWorkflowPlan = plannerReadback?.planner_operation === "manage_workflow";
+  const canAdjustSchedule = isManageWorkflowPlan
+    && plannerReadback?.planner_mode === "ready_to_schedule"
+    && targetProjectIsVerified
+    && Boolean(selectedAutomation?.id);
   const resetChat = () => {
     plannerRequestGeneration.current += 1;
     setPlanning(false);
@@ -2608,6 +2746,7 @@ function ChatPage({ model }: { model: AppModel }) {
     setSelectedPlatforms([]);
     setPlanVisible(false);
     setPlannerReadback(null);
+    setPlannerProgress(null);
     setPlannerError(null);
     setCreated(false);
     createIdempotencyRef.current = null;
@@ -2620,7 +2759,13 @@ function ChatPage({ model }: { model: AppModel }) {
   };
   React.useEffect(() => {
     setChatThreadId(rememberedChatThread(selectedProjectId));
+    setSelectedAutomationId("");
   }, [selectedProjectId]);
+  React.useEffect(() => {
+    if (!selectedAutomationId || !targetAutomations.some((automation) => automation.id === selectedAutomationId)) {
+      setSelectedAutomationId(targetAutomations[0]?.id ?? "");
+    }
+  }, [selectedAutomationId, targetAutomations.map((automation) => automation.id).join("|")]);
   const togglePlatform = (platform: string) => {
     setSelectedPlatforms((items) => {
       const next = items.includes(platform) ? items.filter((item) => item !== platform) : [...items, platform];
@@ -2629,6 +2774,7 @@ function ChatPage({ model }: { model: AppModel }) {
     });
     setPlanVisible(false);
     setPlannerReadback(null);
+    setPlannerProgress(null);
     setPlannerError(null);
     setCreated(false);
     createIdempotencyRef.current = null;
@@ -2637,6 +2783,7 @@ function ChatPage({ model }: { model: AppModel }) {
     setSelectedPlatforms(platformOptions);
     setPlanVisible(false);
     setPlannerReadback(null);
+    setPlannerProgress(null);
     setPlannerError(null);
     setCreated(false);
     createIdempotencyRef.current = null;
@@ -2657,7 +2804,10 @@ function ChatPage({ model }: { model: AppModel }) {
       const readback = await requestChatPlan(redactedActivePrompt, selectedPlatforms, {
         projectId: selectedProjectId,
         threadId: plannerReadback?.chat_thread_id ?? chatThreadId ?? undefined,
-        messages: [...messages, { id: "current", role: "user", text: redactedActivePrompt }]
+        messages: [...messages, { id: "current", role: "user", text: redactedActivePrompt }],
+        onProgress: (progress) => {
+          if (plannerRequestGeneration.current === requestGeneration) setPlannerProgress(progress);
+        }
       });
       if (plannerRequestGeneration.current !== requestGeneration) return;
       setPlannerReadback(readback);
@@ -2704,7 +2854,10 @@ function ChatPage({ model }: { model: AppModel }) {
       const readback = await requestChatPlan(redactedDraft, selectedPlatforms, {
         projectId: selectedProjectId,
         threadId: plannerReadback?.chat_thread_id ?? chatThreadId ?? undefined,
-        messages: [...messages, { id: "current", role: "user", text: redactedDraft }]
+        messages: [...messages, { id: "current", role: "user", text: redactedDraft }],
+        onProgress: (progress) => {
+          if (plannerRequestGeneration.current === requestGeneration) setPlannerProgress(progress);
+        }
       });
       if (plannerRequestGeneration.current !== requestGeneration) return;
       const currentPlan = readback.plan;
@@ -2756,6 +2909,47 @@ function ChatPage({ model }: { model: AppModel }) {
     setChatNote(`詳細設定へ移動: project=${targetProject} / kind=${plan.kind} / ${actionStamp()}`);
     rememberProject(targetProject);
     go(`#/projects/${targetProject}/automations/${automationSlugForKind(plan.kind)}/edit`);
+  };
+  const saveAdjustedSchedule = async () => {
+    if (!canAdjustSchedule || !selectedAutomation?.id) {
+      setReceipt("対象自動化と、保存可能な定期実行案を確認してください。外部操作は実行していません。");
+      return;
+    }
+    const currentSchedule = (mvpState.schedules ?? []).find((schedule) => String(schedule.automation_id ?? schedule.automationId ?? "") === selectedAutomation.id);
+    const kind = scheduleKindForPlan(plan);
+    const expression = plan.schedule.trim();
+    if (!expression) {
+      setReceipt("定期実行の式が未確定です。チャットで時刻・曜日を指定してください。");
+      return;
+    }
+    setCreating(true);
+    try {
+      const response = await mvpFetch(`/api/v1/companies/${encodeURIComponent(targetProject)}/automations/${encodeURIComponent(selectedAutomation.id)}/schedule`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          kind,
+          expression,
+          timezone: String(currentSchedule?.timezone ?? "Asia/Tokyo"),
+          enabled: currentSchedule?.enabled !== false,
+          expected_revision: Number(currentSchedule?.revision ?? 1)
+        })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.exactBlocker || body.exact_blocker || body.error || `schedule_adjust_http_${response.status}`);
+      const freshState = await readMvpState();
+      setMvpState(freshState);
+      setAutomationRows(toAutomationRows(freshState.automations ?? []));
+      const saved = (freshState.schedules ?? []).find((schedule: any) => String(schedule.automation_id ?? schedule.automationId ?? "") === selectedAutomation.id);
+      setReceipt(`既存自動化の定期実行を保存しました。automation=${selectedAutomation.id} / kind=${saved?.kind ?? kind} / revision=${saved?.revision ?? "?"} / next=${saved?.next_run_at ?? "未計算"} / external_action=false`);
+      setChatNote(`定期実行の調整を保存しました: ${selectedAutomation.name ?? selectedAutomation.id} / ${actionStamp()}`);
+    } catch (error) {
+      const exact = error instanceof Error ? error.message : "schedule_adjust_failed";
+      setReceipt(`定期実行の調整は未確認です: ${exact}。revisionを再読込してから再試行してください。`);
+      setChatNote(`定期実行の調整停止: ${exact} / ${actionStamp()}`);
+    } finally {
+      setCreating(false);
+    }
   };
   const createFromChat = async () => {
     if (!activePrompt) {
@@ -2827,20 +3021,21 @@ function ChatPage({ model }: { model: AppModel }) {
       createdAutomationId = String(result.automation?.id ?? "");
       let freshState = result.state;
       let scheduleNote = "定期実行はBuilderの実設定で確認してください。";
-      if (plan.cadence === "daily") {
+      if (["daily", "weekly", "monthly"].includes(plan.cadence)) {
         const scheduleUrl = `/api/v1/companies/${encodeURIComponent(targetProject)}/automations/${encodeURIComponent(result.automation.id)}/schedule`;
         const scheduleRead = await mvpFetch(scheduleUrl, { cache: "no-store" });
         const scheduleReadBody = await scheduleRead.json().catch(() => ({}));
         if (!scheduleRead.ok) throw new Error(scheduleReadBody.exactBlocker || scheduleReadBody.error || `schedule_read_http_${scheduleRead.status}`);
         let savedSchedule = scheduleReadBody.schedule;
-        if (savedSchedule && (savedSchedule.kind !== "daily" || String(savedSchedule.expression ?? "") !== String(plan.schedule))) {
+        const scheduleKind = scheduleKindForPlan(plan);
+        if (savedSchedule && (savedSchedule.kind !== scheduleKind || String(savedSchedule.expression ?? "") !== String(plan.schedule))) {
           throw new Error("schedule_existing_mismatch");
         }
         if (!savedSchedule) {
           const scheduleResponse = await mvpFetch(scheduleUrl, {
             method: "PUT",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ kind: "daily", expression: plan.schedule, timezone: "Asia/Tokyo", enabled: true, expected_revision: 1 })
+            body: JSON.stringify({ kind: scheduleKind, expression: plan.schedule, timezone: "Asia/Tokyo", enabled: true, expected_revision: 1 })
           });
           const scheduleResult = await scheduleResponse.json().catch(() => ({}));
           if (!scheduleResponse.ok) throw new Error(scheduleResult.exactBlocker || scheduleResult.exact_blocker || scheduleResult.error || `schedule_save_http_${scheduleResponse.status}`);
@@ -2910,6 +3105,16 @@ function ChatPage({ model }: { model: AppModel }) {
           {canonicalProjects.map((project) => <option key={project.id} value={project.id}>{project.label}</option>)}
         </select>
       </label>
+      {isManageWorkflowPlan && (
+        <label className="chat-input">
+          調整対象の自動化
+          <select data-control-id="chat.automation-select" aria-label="調整対象の自動化" value={selectedAutomation?.id ?? ""} disabled={planning || creating || !targetAutomations.length} onChange={(event) => setSelectedAutomationId(event.target.value)}>
+            <option value="">自動化を選択してください</option>
+            {targetAutomations.map((automation) => <option key={automation.id} value={automation.id}>{automation.name ?? automation.id}</option>)}
+          </select>
+          {!targetAutomations.length && <small>この会社に保存済みの自動化がありません。</small>}
+        </label>
+      )}
       <div className="action-note" role="status">{chatNote}</div>
       {plannerError && <div className="notice-row" role="alert">{plannerError}</div>}
       {presentationProfile && <div className="notice-row" role="status">
@@ -2924,6 +3129,7 @@ function ChatPage({ model }: { model: AppModel }) {
             setPrompt(shortcut);
             setPlanVisible(false);
             setPlannerReadback(null);
+            setPlannerProgress(null);
             setChatNote(`${shortcut}を入力欄にセットしました / ${actionStamp()}`);
             promptRef.current?.focus();
           }}>{shortcut}</button>
@@ -2934,6 +3140,7 @@ function ChatPage({ model }: { model: AppModel }) {
           <div className="message-list" aria-live="polite">
             {messages.map((message) => <Bubble key={message.id} side={message.role === "user" ? "user" : undefined}>{message.text}</Bubble>)}
           </div>
+          <ChatProgressPanel progress={plannerProgress} planning={planning} />
           <div className="choice-row">
             {platformOptions.map((platform) => (
               <button data-control-id={`chat.platform.toggle.${platform}`} disabled={planning || creating} className={selectedPlatforms.includes(platform) ? "selected" : ""} onClick={() => togglePlatform(platform)} key={platform}>{platform}</button>
@@ -2987,17 +3194,22 @@ function ChatPage({ model }: { model: AppModel }) {
             <p className="muted">source: {plannerAdapter} / mode: {plannerMode}{plannerPublicBlocker ? ` / ${plannerPublicBlocker}` : ""}</p>
             {plannerReadback?.chat_job_id && <p className="muted">job: {plannerReadback.chat_job_id} / thread: {plannerReadback.chat_thread_id ?? "未接続"} / turn: {plannerReadback.chat_turn_id ?? "未確定"}</p>}
             <p>{plannerReadback?.server_reply}</p>
+            {plannerReadback?.proposed_changes?.length ? <div className="question-box"><strong>保存候補の変更</strong>{plannerReadback.proposed_changes.map((change) => <p key={`${change.target}-${change.field}`}>{change.target} / {change.field}: {change.before ? `${change.before} → ` : ""}{change.after}</p>)}</div> : null}
+            {plannerReadback?.requires_confirmation?.length ? <div className="question-box"><strong>確認が必要なこと</strong>{plannerReadback.requires_confirmation.map((item) => <p key={item}>{item}</p>)}</div> : null}
             {plan.steps.map((s, i) => <div className="step-line" key={s}><span>{i + 1}</span>{s}</div>)}
             <div className="question-box">
               <strong>確認したいこと</strong>
               {plan.questions.map((question) => <p key={question}>{question}</p>)}
             </div>
             <div className="button-row">
-              <Button controlId="chat.create" variant="primary" onClick={createFromChat} disabled={!canCreatePlan || creating}>{creating ? "保存確認中" : "この内容で作成"}</Button>
+              {isCreateAutomationPlan && <Button controlId="chat.create" variant="primary" onClick={createFromChat} disabled={!canCreatePlan || creating}>{creating ? "保存確認中" : "この内容で作成"}</Button>}
+              {isManageWorkflowPlan && <Button controlId="chat.adjust-schedule" variant="primary" onClick={saveAdjustedSchedule} disabled={!canAdjustSchedule || creating}>{creating ? "調整を保存中" : "定期実行を調整して保存"}</Button>}
               <Button controlId="chat.edit" onClick={editPlan} disabled={creating}>内容を修正</Button>
               <Button controlId="chat.open-details" onClick={openDetails} disabled={!canCreatePlan || creating}>詳細設定を開く</Button>
             </div>
-            {!canCreatePlan && <p className="muted">{plannerReadback?.can_create && !targetProjectIsVerified ? "保存先の会社を会社一覧から選択してください" : plannerReadback?.creation_blocker}</p>}
+            {isManageWorkflowPlan
+              ? <p className="muted">{canAdjustSchedule ? "このボタンは選択した自動化のschedule APIだけをrevision付きで更新します。外部投稿・送信は実行しません。" : "既存自動化を選び、時刻・曜日などを具体化すると保存できます。"}</p>
+              : !canCreatePlan && <p className="muted">{plannerReadback?.can_create && !targetProjectIsVerified ? "保存先の会社を会社一覧から選択してください" : plannerReadback?.creation_blocker}</p>}
           </div>
           )}
           {created && <Bubble>作成済みです。Automation Builder で仕様を編集できます。</Bubble>}
@@ -3227,28 +3439,30 @@ function BuilderPage({ model }: { model: AppModel }) {
   const builderKind = builderConfig.kindLabel;
   const builderTitle = `${builderKind} 自動化仕様`;
   const automationName = persistedAutomation?.name ?? builderConfig.automationName;
+  const persistedStepRecords: Array<{ title: string; enabled: boolean }> = Array.isArray(persistedSpec?.spec?.steps)
+    ? persistedSpec.spec.steps
+      .map((step: any) => ({ title: typeof step === "string" ? step : step?.title, enabled: typeof step === "string" ? true : step?.enabled !== false }))
+      .filter((step: { title?: unknown }): step is { title: string; enabled: boolean } => typeof step.title === "string" && Boolean(step.title.trim()))
+    : [];
   const [builderDraft, setBuilderDraft] = useState({
     name: automationName,
-    lane: persistedAutomation?.lane ?? "Lane 1",
-    schedule: persistedSpec?.spec?.schedule_hint ?? "09:00",
+    lane: persistedAutomation?.lane ?? "未設定",
+    schedule: persistedSpec?.spec?.schedule_hint ?? "",
     approval_policy: persistedAutomation?.approval_policy ?? builderConfig.approvalPolicy,
-    retry_rule: persistedSpec?.spec?.retry_rule ?? "最大3回 / 5分間隔"
+    retry_rule: persistedSpec?.spec?.retry_rule ?? ""
   });
-  const [enabled] = useState([true, true, true, true, true, false, true]);
+  const enabled = persistedStepRecords.length ? persistedStepRecords.map((step) => step.enabled) : builderConfig.steps.map(() => true);
   const [saving, setSaving] = useState(false);
   const [scheduleSaving, setScheduleSaving] = useState(false);
   const [scheduleDraft, setScheduleDraft] = useState<ScheduleDraft>({
     kind: normalizeScheduleKind(persistedSchedule?.kind),
-    expression: String(persistedSchedule?.expression ?? persistedSpec?.spec?.schedule_hint ?? "09:00"),
+    expression: String(persistedSchedule?.expression ?? persistedSpec?.spec?.schedule_hint ?? ""),
     timezone: String(persistedSchedule?.timezone ?? "Asia/Tokyo"),
     enabled: persistedSchedule ? persistedSchedule.enabled !== false : true
   });
   const builderCreateIdempotencyRef = useRef<{ fingerprint: string; key: string } | null>(null);
   const [builderNotice, setBuilderNotice] = useState("外部投稿・送信・公開はまだ実行していません。");
-  const persistedSteps: string[] = Array.isArray(persistedSpec?.spec?.steps)
-    ? persistedSpec.spec.steps.map((step: any) => typeof step === "string" ? step : step?.title).filter(Boolean)
-    : [];
-  const steps: string[] = persistedSteps.length ? persistedSteps : builderConfig.steps;
+  const steps: string[] = persistedStepRecords.length ? persistedStepRecords.map((step) => step.title) : builderConfig.steps;
   const builderInputSources = builderConfig.inputSources;
   const builderOutputs = builderConfig.outputs;
   const builderRiskBoundary = builderConfig.riskBoundary;
@@ -3259,16 +3473,16 @@ function BuilderPage({ model }: { model: AppModel }) {
   React.useEffect(() => {
     setBuilderDraft({
       name: automationName,
-      lane: persistedAutomation?.lane ?? "Lane 1",
-      schedule: persistedSpec?.spec?.schedule_hint ?? "09:00",
+      lane: persistedAutomation?.lane ?? "未設定",
+      schedule: persistedSpec?.spec?.schedule_hint ?? "",
       approval_policy: persistedAutomation?.approval_policy ?? builderConfig.approvalPolicy,
-      retry_rule: persistedSpec?.spec?.retry_rule ?? "最大3回 / 5分間隔"
+      retry_rule: persistedSpec?.spec?.retry_rule ?? ""
     });
   }, [automationId, persistedAutomation?.updated_at, persistedSpec?.updated_at, automationName, builderConfig.approvalPolicy]);
   React.useEffect(() => {
     setScheduleDraft({
       kind: normalizeScheduleKind(persistedSchedule?.kind),
-      expression: String(persistedSchedule?.expression ?? persistedSpec?.spec?.schedule_hint ?? builderDraft.schedule ?? "09:00"),
+      expression: String(persistedSchedule?.expression ?? persistedSpec?.spec?.schedule_hint ?? builderDraft.schedule ?? ""),
       timezone: String(persistedSchedule?.timezone ?? "Asia/Tokyo"),
       enabled: persistedSchedule ? persistedSchedule.enabled !== false : true
     });
@@ -3430,7 +3644,7 @@ function BuilderPage({ model }: { model: AppModel }) {
             }
           }}
         >
-          公開
+          承認キューへ送る
         </Button>
       </PageTitle>
       <ProjectScopeNotice projectId={activeProject} mvpState={mvpState} />
@@ -3750,7 +3964,7 @@ function RunsPage({ model }: { model: AppModel }) {
         </div>
         <DataTable controlId="runs.preview.table" headers={["項目", "状態", "意味"]} rows={[
           ["処理候補", String(activeRunsForProject.length), "選択中の会社にあるqueued/running Run"],
-          ["承認待ち", String((mvpState.approvals ?? []).filter((approval) => approval.status === "pending").length), "外部操作の前に人間確認が必要な件数"],
+          ["承認待ち", String((mvpState.approvals ?? []).filter((approval) => isApprovalWaiting(approval.status)).length), "外部操作の前に人間確認が必要な件数"],
           ["安全境界", "外部操作なし", "投稿・送信・削除・認証・課金は承認なしに実行しません"]
         ]} />
       </Panel>
