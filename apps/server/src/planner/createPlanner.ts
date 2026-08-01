@@ -835,15 +835,16 @@ function plannerSystemPrompt() {
     "外部投稿、送信、応募、公開、削除、保存は必要な文脈と証跡設計がある時だけ計画に入れます。",
     "課金、購入、支払い、決済、checkoutだけはhard stopです。",
     "秘密値、token、API key、cookie、個人情報は出力しません。",
+    "proposedChangesの各要素はtarget、field、before、afterを必ず含め、変更前が不明な場合はbeforeを空文字にします。",
     "画面に出るreplyとvisibleStepsは人間の言葉にし、内部用語はbackendChecksだけに入れます。"
   ].join("\n");
 }
 
-function plannerJsonSchema() {
+export function plannerJsonSchema() {
   return {
     type: "object",
     additionalProperties: false,
-    required: ["intent", "operation", "title", "reply", "command", "visibleSteps", "backendChecks", "answered", "openQuestions", "nextAction", "executionDecision", "confidence"],
+    required: ["intent", "operation", "title", "reply", "command", "visibleSteps", "backendChecks", "answered", "openQuestions", "nextAction", "executionDecision", "confidence", "proposedChanges", "requiresConfirmation"],
     properties: {
       intent: { type: "string", enum: ["answer_question", "plan_workflow"] },
       operation: { type: "string", enum: ["create_automation", "manage_workflow", "answer_question"] },
@@ -857,7 +858,7 @@ function plannerJsonSchema() {
       nextAction: { type: "string" },
       executionDecision: { type: "string", enum: ["ask_more", "save_plan", "demo_first", "ready_to_start", "ready_to_schedule"] },
       confidence: { type: "string", enum: ["low", "medium", "high"] },
-      proposedChanges: { type: "array", items: { type: "object", additionalProperties: false, required: ["target", "field", "after"], properties: { target: { type: "string" }, field: { type: "string" }, before: { type: "string" }, after: { type: "string" } } } },
+      proposedChanges: { type: "array", items: { type: "object", additionalProperties: false, required: ["target", "field", "before", "after"], properties: { target: { type: "string" }, field: { type: "string" }, before: { type: "string" }, after: { type: "string" } } } },
       requiresConfirmation: { type: "array", items: { type: "string" } }
     }
   };

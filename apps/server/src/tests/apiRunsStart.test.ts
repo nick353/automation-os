@@ -15,6 +15,7 @@ process.env.AUTOMATION_OS_GLOBAL_SYSTEM_SERVICE_USER_ID = "user_test_global_serv
 const { app } = await import("../index.js");
 const db = await import("../db/client.js");
 const secrets = await import("../secrets/secretStore.js");
+const { plannerJsonSchema } = await import("../planner/createPlanner.js");
 
 function canonicalUserTableHash(): string {
   const tables = db.querySql<{ name: string; sql: string | null }>(
@@ -1284,10 +1285,29 @@ test("Create planner schema allows answer-question intent for external planners"
   const promptSource = source.slice(source.indexOf("function plannerSystemPrompt"), source.indexOf("function plannerJsonSchema"));
 
   assert.match(schemaSource, /required: \["intent", "operation", "title", "reply"/);
+  assert.match(schemaSource, /"confidence", "proposedChanges", "requiresConfirmation"\]/);
   assert.match(schemaSource, /intent: \{ type: "string", enum: \["answer_question", "plan_workflow"\] \}/);
   assert.match(schemaSource, /operation: \{ type: "string", enum: \["create_automation", "manage_workflow", "answer_question"\] \}/);
+  assert.match(schemaSource, /required: \["target", "field", "before", "after"\]/);
+  assert.match(promptSource, /beforeを空文字/);
   assert.match(promptSource, /intentをanswer_question/);
   assert.match(promptSource, /operation=create_automation/);
+});
+
+test("Codex App Server planner schema supplies required keys for strict response validation", () => {
+  const schema = plannerJsonSchema() as {
+    required?: string[];
+    properties?: Record<string, unknown>;
+  };
+  assert.deepEqual(
+    [...(schema.required ?? [])].sort(),
+    Object.keys(schema.properties ?? {}).sort()
+  );
+  const changes = (schema.properties?.proposedChanges as { items?: { required?: string[]; properties?: Record<string, unknown> } } | undefined)?.items;
+  assert.deepEqual(
+    [...(changes?.required ?? [])].sort(),
+    Object.keys(changes?.properties ?? {}).sort()
+  );
 });
 
 test("POST /api/create/plan downgrades unsafe external planner schedule decisions", async () => {
