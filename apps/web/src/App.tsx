@@ -1100,26 +1100,11 @@ function captureAppScreenshotWithTimeout(timeoutMs = 3500): Promise<{ dataUrl: s
   ]);
 }
 
-type ApprovalRow = {
-  kind: string;
-  project: string;
-  lane: string;
-  content: string;
-  actionLabel: string;
-  targetLabel: string;
-  executionLabel: string;
-  risk: string;
-  due: string;
-  status: Status;
-};
-
 function approvalDueLabel(value: unknown): string {
   if (typeof value !== "string" || !value.trim()) return "期限未設定（承認前に確認）";
   const normalized = value.trim();
   return normalized.includes("T") ? normalized.replace("T", " ").replace(/\.\d{3}Z$/u, "").replace(/Z$/u, "") : normalized;
 }
-const seedApprovalItems: ApprovalRow[] = [];
-
 const templates = [
   ["SNS毎日投稿", "SNS運用", "Instagram / X / LinkedIn", "Lane 1", "承認必須"],
   ["Instagramストーリー投稿", "SNS運用", "Instagram", "Lane 1", "初回承認"],
@@ -1237,7 +1222,6 @@ function App() {
   const [receipt, setReceipt] = useState("Local Agent は待機中です。");
   const [writeToken, setWriteToken] = useState(readWriteToken());
   const [automationRows, setAutomationRows] = useState<AutomationRow[]>([]);
-  const [approvalRows, setApprovalRows] = useState(seedApprovalItems);
   const [createdTemplates, setCreatedTemplates] = useState<string[]>([]);
   const [mvpState, setMvpState] = useState<MvpState>({});
   const [mvpLoadStatus, setMvpLoadStatus] = useState<MvpLoadStatus>("loading");
@@ -1282,8 +1266,6 @@ function App() {
     setWriteToken,
     automationRows,
     setAutomationRows,
-    approvalRows,
-    setApprovalRows,
     createdTemplates,
     setCreatedTemplates,
     mvpState,
@@ -1291,7 +1273,7 @@ function App() {
     mvpLoadStatus,
     feedbackReadback,
     setFeedbackReadback
-  }), [route, writeToken, automationRows, approvalRows, createdTemplates, mvpState, mvpLoadStatus, feedbackReadback]);
+  }), [route, writeToken, automationRows, createdTemplates, mvpState, mvpLoadStatus, feedbackReadback]);
 
   const unlockOperatorAccess = async () => {
     if (!writeToken.trim()) {
@@ -1689,8 +1671,6 @@ type AppModel = {
   setWriteToken: React.Dispatch<React.SetStateAction<string>>;
   automationRows: AutomationRow[];
   setAutomationRows: React.Dispatch<React.SetStateAction<AutomationRow[]>>;
-  approvalRows: ApprovalRow[];
-  setApprovalRows: React.Dispatch<React.SetStateAction<ApprovalRow[]>>;
   createdTemplates: string[];
   setCreatedTemplates: React.Dispatch<React.SetStateAction<string[]>>;
   mvpState: MvpState;
@@ -3691,7 +3671,7 @@ function BuilderPage({ model }: { model: AppModel }) {
 }
 
 function ApprovalsPage({ model }: { model: AppModel }) {
-  const { setReceipt, approvalRows, mvpState, setMvpState } = model;
+  const { setReceipt, mvpState, setMvpState } = model;
   const [selected, setSelected] = useState(0);
   const [editing, setEditing] = useState(false);
   const [approvalNote, setApprovalNote] = useState("");
