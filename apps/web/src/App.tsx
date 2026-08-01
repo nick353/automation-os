@@ -2486,15 +2486,15 @@ function FeedbackWidget({ route, setReceipt, setMvpState }: { route: string; set
             <Button controlId="feedback.panel.screenshot-retake" disabled={busy || screenshotStatus === "capturing"} onClick={() => runCapture(route)}>スクショ再取得</Button>
             <Button controlId="feedback.panel.skip-screenshot" disabled={busy} onClick={skipScreenshot}>スクショなしで送る</Button>
           </div>
-          <label>
+          <label htmlFor="feedback-panel-comment">
             コメント
-            <textarea ref={commentRef} data-control-id="feedback.panel.comment" value={comment} disabled={busy} onChange={(event) => setComment(event.target.value)} placeholder="どこが使いにくいか、期待した動き、実際の動きを書いてください。" />
+            <textarea id="feedback-panel-comment" ref={commentRef} data-control-id="feedback.panel.comment" aria-describedby="feedback-panel-comment-help" value={comment} disabled={busy} onChange={(event) => setComment(event.target.value)} placeholder="どこが使いにくいか、期待した動き、実際の動きを書いてください。" />
           </label>
-          <label className="feedback-confirm">
-            <input data-control-id="feedback.panel.sensitive-confirm" type="checkbox" checked={sensitiveConfirmed} onChange={(event) => setSensitiveConfirmed(event.target.checked)} />
+          <label className="feedback-confirm" htmlFor="feedback-panel-sensitive-confirm">
+            <input id="feedback-panel-sensitive-confirm" data-control-id="feedback.panel.sensitive-confirm" type="checkbox" checked={sensitiveConfirmed} onChange={(event) => setSensitiveConfirmed(event.target.checked)} />
             secret、password、token、本人確認コードが画面に映っていないことを確認しました
           </label>
-          <p className="muted">password、token、private key、本人確認コードが画面に映っている時は送らないでください。</p>
+          <p id="feedback-panel-comment-help" className="muted">password、token、private key、本人確認コードが画面に映っている時は送らないでください。</p>
           <div className="button-row">
             <Button controlId="feedback.panel.submit" variant="primary" icon={<MessageSquare size={14} />} disabled={busy || !sensitiveConfirmed} onClick={submit}>{busy ? "送信中..." : "送信"}</Button>
           </div>
