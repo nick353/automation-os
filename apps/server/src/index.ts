@@ -4123,7 +4123,7 @@ function buildMvpWorkerPreview(
     ? actionQueueRuns
     : actionQueueRuns.filter((run) => deriveRunProjectId(run) === projectId);
   const byProject = projectScopedRuns.reduce<Record<string, number>>((acc, run) => {
-    const key = deriveRunProjectId(run);
+    const key = deriveRunProjectId(run) || "unassigned";
     acc[key] = (acc[key] ?? 0) + 1;
     return acc;
   }, {});
