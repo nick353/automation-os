@@ -58,6 +58,8 @@ export function buildBrowserUseRuntimeSnapshot() {
       id: lane.id,
       workflowId: lane.workflowId,
       runnerKind: lane.runnerKind,
+      canonicalBrowserSurface: "browser_use_cli",
+      executionContract: "workflow_owned_runner",
       visibility: lane.laneVisibility,
       status: "registered"
     }))

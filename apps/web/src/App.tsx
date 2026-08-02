@@ -1816,8 +1816,8 @@ function TruthfulLanesPage({ model }: { model: AppModel }) {
       <PageTitle title={companyName} desc="Lane readback" />
       <ProjectScopeNotice projectId={companyId} mvpState={model.mvpState} />
       <Panel title="登録済みLane定義" controlId="truthful.lanes.registry.panel">
-        <p className="muted">これはworkflow registryの定義です。プロセス起動中・ログイン済み・実行可能とは解釈しません。実際の会社Runで観測されたLaneは下の表に分けて表示します。</p>
-        {registeredLanes.length ? <DataTable controlId="truthful.lanes.registry.table" headers={["Lane", "Workflow", "Runner", "表示", "定義状態"]} rows={registeredLanes.map((lane: any) => [lane.id ?? "-", lane.workflowId ?? "-", lane.runnerKind ?? "-", lane.visibility ?? "-", lane.status ?? "registered"])} /> : <p className="muted">登録済みLane定義はありません。</p>}
+        <p className="muted">Browser Use CLIがAutomation OSの正規ブラウザ面です。下表のrunnerはworkflow固有の実行契約で、プロセス起動中・ログイン済み・実行可能とは解釈しません。Playwright等のrunner名が残る行は、Browser Use CLIへ移行済みという意味ではありません。実際の会社Runで観測されたLaneは下の表に分けて表示します。</p>
+        {registeredLanes.length ? <DataTable controlId="truthful.lanes.registry.table" headers={["Lane", "Workflow", "Runner契約", "正規ブラウザ面", "表示", "定義状態"]} rows={registeredLanes.map((lane: any) => [lane.id ?? "-", lane.workflowId ?? "-", lane.runnerKind ?? lane.executionContract ?? "-", lane.canonicalBrowserSurface ?? "browser_use_cli", lane.visibility ?? "-", lane.status ?? "registered"])} /> : <p className="muted">登録済みLane定義はありません。</p>}
       </Panel>
       <Panel title="永続化済みLane情報" controlId="truthful.lanes.panel">
         {observedLanes.length ? (

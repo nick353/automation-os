@@ -100,6 +100,6 @@ Before publishing or pushing, run a secret scan against the staged files and ver
 
 Generated Obsidian pages and handoff notes are locators, not proof. Before resuming work, read `data/resume-contract.json`, the Obsidian handoff index/current-work notes, then this repository's `STATE.md`, DB rows, and latest workflow artifacts.
 
-Playwright CLI is the primary browser verification lane. Browser Use artifacts are historical or diagnostic unless a workflow explicitly requires them.
+Browser Use CLI is the canonical Automation OS browser surface. Workflow-owned runners may remain Playwright or another explicit contract until that workflow is migrated; those runner receipts must not be presented as Browser Use CLI proof.
 
 Billing, purchase, payment, checkout, paid subscription, invoice, or billing-equivalent screens are the hard stops. Non-billing post, publish, submit, send, save, and in-scope delete actions require workflow-owned evidence and readback rather than a generic approval stop.
