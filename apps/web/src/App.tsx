@@ -2397,7 +2397,10 @@ function OwnerAdminPage({ model }: { model: AppModel }) {
         <Panel title="PC / Worker" controlId="admin.pc.panel"><pre>{diagnosticText(diagnostics.pc)}</pre></Panel>
         <Panel title="Browser / Codex" controlId="admin.browser-codex.panel"><pre>{diagnosticText({ browser: diagnostics.browser, codex: diagnostics.codex })}</pre></Panel>
         <Panel title="IAB / Root capability" controlId="admin.iab.panel"><pre>{diagnosticText(diagnostics.iab)}</pre></Panel>
-        <Panel title="IAB workflow adapters" controlId="admin.workflow-adapters.panel"><pre>{diagnosticText(diagnostics.workflow_adapters)}</pre></Panel>
+        <Panel title="Browser Use / workflow adapters" controlId="admin.workflow-adapters.panel">
+          <p className="muted">正規実行面はBrowser Use CLIです。旧IAB互換情報は安全停止・非実行の参照として分離表示します。</p>
+          <pre>{diagnosticText(diagnostics.workflow_adapters)}</pre>
+        </Panel>
         <Panel title="Company SaaS release readiness" controlId="admin.company-release-readiness.panel"><pre>{diagnosticText(diagnostics.company_release_readiness)}</pre></Panel>
         <Panel title="Company SaaS evidence gates" controlId="admin.company-release-evidence.panel"><pre>{diagnosticText(diagnostics.company_release_evidence)}</pre></Panel>
         <Panel title="Obsidian" controlId="admin.obsidian.panel"><pre>{diagnosticText(diagnostics.obsidian)}</pre></Panel>

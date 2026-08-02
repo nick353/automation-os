@@ -15,7 +15,10 @@ import { getBrowserHealth } from "./browser/health.js";
 import { buildBrowserUseRuntimeSnapshot } from "./browser/runtimeSnapshot.js";
 import { applyProjectPresentationProfileOverride, buildProjectPresentationProfile, parseProjectPresentationProfileOverride, type ProjectPresentationProfile } from "./projects/presentationProfile.js";
 import { readCanonicalIabOwnerDiagnostics } from "./browser/iabCanonicalLoader.js";
-import { readReferenceIabWorkflowAdaptersV1 } from "./serviceReadiness/workflowAdapters.js";
+import {
+  readReferenceBrowserUseWorkflowAdaptersV1,
+  readReferenceIabWorkflowAdaptersV1
+} from "./serviceReadiness/workflowAdapters.js";
 import { buildBlockedCompanyReleaseReadinessV1 } from "./serviceReadiness/companyReleaseReadiness.js";
 import { buildBlockedCompanyReleaseEvidenceV1 } from "./serviceReadiness/releaseEvidence.js";
 import {
@@ -821,7 +824,10 @@ app.get("/api/v1/admin/diagnostics", (_req, res) => {
       pc: { local_worker: buildLocalWorkerStatus(systemChecks), scheduler: getSchedulerStatus(), system_checks: systemChecks },
       browser: browserHealth,
       iab: readCanonicalIabOwnerDiagnostics({ enabled: true }),
-      workflow_adapters: readReferenceIabWorkflowAdaptersV1(),
+      workflow_adapters: {
+        canonical_browser_use: readReferenceBrowserUseWorkflowAdaptersV1(),
+        legacy_iab_compatibility: readReferenceIabWorkflowAdaptersV1()
+      },
       company_release_readiness: buildBlockedCompanyReleaseReadinessV1(),
       company_release_evidence: buildBlockedCompanyReleaseEvidenceV1(),
       codex: {
