@@ -123,6 +123,37 @@ test("active automation with matching DB row reports parity OK and writes report
   assert.match(readFileSync(report.report_path, "utf8"), /"summary"/);
 });
 
+test("same-run contract prose is not reported as a missing executable entrypoint", () => {
+  const fixture = tempFixture();
+  const id = "demo-same-run-prose";
+  const prompt = [
+    "Run node scripts/run_demo.mjs.",
+    "The workflow requires same-run source-of-truth readback before completion.",
+    "no-post-preflight recommendation_status=pass anomaly_detected=false completion veto."
+  ].join("\\n");
+  const body = toml({ id, cwd: fixture.cwd, prompt });
+  writeAutomation(fixture.automationRoot, id, body);
+  createDb(fixture.dbPath, [
+    {
+      id,
+      prompt,
+      status: "ACTIVE",
+      rrule: "FREQ=DAILY;BYHOUR=9;BYMINUTE=0;BYSECOND=0",
+      cwds: [fixture.cwd]
+    }
+  ]);
+
+  const report = runAutomationHealth({
+    automationRoot: fixture.automationRoot,
+    dbPath: fixture.dbPath,
+    outputRoot: fixture.outputRoot,
+    psText: ""
+  });
+
+  assert.equal(report.summary.missing_entrypoints, 0);
+  assert.deepEqual(report.automations[0]?.entrypoints.map((entrypoint) => entrypoint.target), ["scripts/run_demo.mjs"]);
+});
+
 test("DB drift is reported as a blocker", () => {
   const fixture = tempFixture();
   const id = "demo-drift";

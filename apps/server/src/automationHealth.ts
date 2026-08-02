@@ -363,7 +363,10 @@ function parseShellCommandLine(line: string, inEntrypointBlock: boolean): string
   const command = tokens[0];
   if (!command) return null;
   if (/^[A-Z]/.test(command)) return null;
-  if (/^(no-post-preflight|recommendation_status|anomaly_detected|safe|completion)$/i.test(command)) return null;
+  // Contract prose such as "same-run source-of-truth readback" is not an
+  // executable path. Keep the shell heuristic conservative for these
+  // hyphenated lifecycle terms so they do not become false blockers.
+  if (/^(no-post-preflight|recommendation_status|anomaly_detected|safe|completion|same-run)$/i.test(command)) return null;
   if (!inEntrypointBlock && !/^[./A-Za-z0-9_-]*-[A-Za-z0-9_.-]+$/.test(command)) return null;
   if (/^(Run|Use|First|Fresh-read|Do|Keep|Current|Before|After|If|When|For|Hard|Done|Authority)$/i.test(command)) return null;
   return cleanToken(command);
