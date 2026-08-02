@@ -213,7 +213,7 @@ test("production write guard allows state-changing API calls with the configured
   const previousRequire = process.env.AUTOMATION_OS_REQUIRE_WRITE_TOKEN;
   const previousToken = process.env.AUTOMATION_OS_WRITE_TOKEN;
   process.env.AUTOMATION_OS_REQUIRE_WRITE_TOKEN = "1";
-  process.env.AUTOMATION_OS_WRITE_TOKEN = "test-write-token";
+  process.env.AUTOMATION_OS_WRITE_TOKEN = "  test-write-token  ";
   seedOwnerCompany();
 
   try {
@@ -315,7 +315,7 @@ test("production API access guard protects operator readbacks while health stays
   const previousToken = process.env.AUTOMATION_OS_WRITE_TOKEN;
   const previousReadToken = process.env.AUTOMATION_OS_READ_TOKEN;
   process.env.AUTOMATION_OS_REQUIRE_API_TOKEN = "1";
-  process.env.AUTOMATION_OS_WRITE_TOKEN = "test-operator-token";
+  process.env.AUTOMATION_OS_WRITE_TOKEN = "  test-operator-token  ";
   process.env.AUTOMATION_OS_READ_TOKEN = "test-read-token";
 
   try {

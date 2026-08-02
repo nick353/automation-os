@@ -1438,9 +1438,16 @@ function App() {
       setFeedbackReadback(state.feedbacks ?? []);
       setApiAccessRequired(false);
       setReceipt("operator token を確認しました。このタブでAutomation OSを利用できます。");
-    } catch {
+    } catch (error) {
       clearWriteToken();
-      setReceipt("operator token を確認できませんでした。値を確認してください。");
+      const message = error instanceof Error ? error.message : "";
+      if (message === "mvp_state_http_401") {
+        setReceipt("認証に失敗しました（401）。Zeabur Variablesの現在のAUTOMATION_OS_WRITE_TOKENを確認してください。値はこの画面へ入力するだけで、チャットには送らないでください。");
+      } else if (message === "mvp_state_http_423") {
+        setReceipt("本番の認証トークンが未設定です（423）。Zeabur VariablesにAUTOMATION_OS_WRITE_TOKENを設定して再デプロイしてください。");
+      } else {
+        setReceipt("operator token を確認できませんでした。値と公開先を確認してください。");
+      }
     } finally {
       setAccessChecking(false);
     }

@@ -2868,7 +2868,7 @@ function productionWriteGuard(req: Parameters<RequestHandler>[0], res: Parameter
     return;
   }
   const providedToken = readRequestWriteToken(req);
-  if (guard.tokenConfigured && providedToken === process.env.AUTOMATION_OS_WRITE_TOKEN) {
+  if (guard.tokenConfigured && providedToken === readProductionWriteToken()) {
     next();
     return;
   }
@@ -2897,7 +2897,7 @@ function productionApiAccessGuard(req: Parameters<RequestHandler>[0], res: Param
   const readOnlyRequest = ["GET", "HEAD"].includes(req.method);
   const readToken = readOnlyRequest ? readProductionReadToken() : "";
   if (guard.tokenConfigured && (
-    providedToken === process.env.AUTOMATION_OS_WRITE_TOKEN
+    providedToken === readProductionWriteToken()
     || (Boolean(readToken) && providedToken === readToken)
   )) {
     next();
@@ -3340,6 +3340,10 @@ function readRequestWriteToken(req: Parameters<RequestHandler>[0]) {
   return header.replace(/^Bearer\s+/i, "").trim();
 }
 
+function readProductionWriteToken(env = process.env) {
+  return typeof env.AUTOMATION_OS_WRITE_TOKEN === "string" ? env.AUTOMATION_OS_WRITE_TOKEN.trim() : "";
+}
+
 function readProductionReadToken(env = process.env) {
   for (const name of ["AUTOMATION_OS_READ_TOKEN", "AUTOMATION_OS_QA_READ_TOKEN", "AUTOMATION_OS_REPLAY_READ_TOKEN"]) {
     const token = env[name];
@@ -3353,15 +3357,15 @@ function getProductionWriteGuardStatus() {
   const required = explicit === "1" || (explicit !== "0" && Boolean(process.env.PORT) && !process.env.NODE_TEST_CONTEXT);
   return {
     required,
-    tokenConfigured: Boolean(process.env.AUTOMATION_OS_WRITE_TOKEN),
-    mode: required ? (process.env.AUTOMATION_OS_WRITE_TOKEN ? "token_required" : "locked") : "off"
+    tokenConfigured: Boolean(readProductionWriteToken()),
+    mode: required ? (readProductionWriteToken() ? "token_required" : "locked") : "off"
   };
 }
 
 function getProductionApiAccessGuardStatus() {
   const explicit = process.env.AUTOMATION_OS_REQUIRE_API_TOKEN;
   const required = explicit === "1" || (explicit !== "0" && !process.env.NODE_TEST_CONTEXT);
-  const writeTokenConfigured = Boolean(process.env.AUTOMATION_OS_WRITE_TOKEN);
+  const writeTokenConfigured = Boolean(readProductionWriteToken());
   const readTokenConfigured = Boolean(readProductionReadToken());
   return {
     required,
