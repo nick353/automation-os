@@ -1492,8 +1492,9 @@ function App() {
           <PageTitle title="Automation OS" desc="この画面は管理者専用です。" />
           <Panel title="オペレーター確認" controlId="shell.operator.panel">
             <form className="access-form" onSubmit={(event) => { event.preventDefault(); void unlockOperatorAccess(); }}>
-              <label>Operator token（Zeaburの <code>AUTOMATION_OS_WRITE_TOKEN</code>）<input data-control-id="shell.operator.token-input" type="password" value={writeToken} onChange={(event) => setWriteToken(event.target.value)} autoComplete="current-password" autoFocus aria-describedby="operator-token-help operator-token-status" /></label>
+              <label className="operator-token-label" htmlFor="shell.operator.token-input">Operator token</label>
               <p id="operator-token-help" className="muted">ZeaburのVariablesにある <code>AUTOMATION_OS_WRITE_TOKEN</code> の値を入力してください。値はこのタブだけに保存し、タブを閉じると破棄します。</p>
+              <input id="shell.operator.token-input" data-control-id="shell.operator.token-input" type="password" value={writeToken} onChange={(event) => setWriteToken(event.target.value)} autoComplete="current-password" autoFocus aria-describedby="operator-token-help operator-token-status" />
               <div className="button-row"><Button controlId="shell.operator.open" type="submit" variant="primary" disabled={accessChecking}>{accessChecking ? "確認中" : "開く"}</Button></div>
               <div id="operator-token-status" className="action-note" role="status">{receipt}</div>
             </form>
