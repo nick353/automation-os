@@ -946,6 +946,30 @@ async function requestChatPlan(
   };
 }
 
+async function storeChatSecrets(rawText: string, projectId?: string): Promise<{ sanitizedText: string; storedCount: number }> {
+  const fallback = redactSensitiveText(rawText);
+  if (!projectId) return { sanitizedText: fallback, storedCount: 0 };
+  const response = await mvpFetch("/api/secrets/from-message", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ project_id: projectId, text: rawText })
+  });
+  const body = await response.json().catch(() => ({})) as {
+    sanitizedText?: unknown;
+    stored?: unknown;
+    exactBlocker?: unknown;
+    error?: unknown;
+  };
+  if (!response.ok) {
+    const blocker = typeof body.exactBlocker === "string" ? body.exactBlocker : typeof body.error === "string" ? body.error : `secret_storage_http_${response.status}`;
+    throw new Error(blocker);
+  }
+  return {
+    sanitizedText: typeof body.sanitizedText === "string" ? body.sanitizedText : fallback,
+    storedCount: Array.isArray(body.stored) ? body.stored.length : 0
+  };
+}
+
 async function requestChatThreads(projectId: string): Promise<ChatThreadReadback[]> {
   if (!projectId) return [];
   const response = await mvpFetch(`/api/create/chat/threads?project_id=${encodeURIComponent(projectId)}&limit=20`, { cache: "no-store" });
@@ -3068,10 +3092,14 @@ function ChatPage({ model }: { model: AppModel }) {
     createIdempotencyRef.current = null;
     setPlanning(true);
     try {
-      const readback = await requestChatPlan(redactedActivePrompt, selectedPlatforms, {
+      const secretReadback = await storeChatSecrets(activePrompt, selectedProjectId);
+      const safePrompt = secretReadback.sanitizedText.trim();
+      if (!safePrompt) throw new Error("chat_prompt_empty_after_secret_redaction");
+      setPrompt(safePrompt);
+      const readback = await requestChatPlan(safePrompt, selectedPlatforms, {
         projectId: selectedProjectId,
         threadId: plannerReadback?.chat_thread_id ?? chatThreadId ?? undefined,
-        messages: [...messages, { id: "current", role: "user", text: redactedActivePrompt }],
+        messages: [...messages, { id: "current", role: "user", text: safePrompt }],
         onProgress: (progress) => {
           if (plannerRequestGeneration.current === requestGeneration) setPlannerProgress(progress);
         }
@@ -3083,16 +3111,16 @@ function ChatPage({ model }: { model: AppModel }) {
         rememberChatThread(selectedProjectId, readback.chat_thread_id);
       }
       setPlannerError(null);
-      setRequestText(redactedActivePrompt);
-      submittedPromptRef.current = activePrompt.trim();
+      setRequestText(safePrompt);
+      submittedPromptRef.current = safePrompt;
       setPlanVisible(true);
       setCreated(false);
       setMessages((items) => [
         ...items,
         { id: nextChatId("assistant-plan"), role: "assistant", text: readback.server_reply }
       ]);
-      setReceipt(`plannerの回答を確認しました。planner=${readback.planner_adapter} / external_action=false`);
-      setChatNote(`planner回答完了: ${readback.plan.title} / ${actionStamp()}`);
+      setReceipt(`plannerの回答を確認しました。planner=${readback.planner_adapter} / secret=${secretReadback.storedCount}件を非表示保存 / external_action=false`);
+      setChatNote(`planner回答完了: ${readback.plan.title} / secret=${secretReadback.storedCount}件を安全保存 / ${actionStamp()}`);
     } catch {
       if (plannerRequestGeneration.current !== requestGeneration) return;
       setPlannerReadback(null);
@@ -3112,16 +3140,18 @@ function ChatPage({ model }: { model: AppModel }) {
       setChatNote(`送信待ち: 入力が必要です / ${actionStamp()}`);
       return;
     }
-    const redactedDraft = redactSensitiveText(draftPrompt);
     const requestGeneration = plannerRequestGeneration.current + 1;
     plannerRequestGeneration.current = requestGeneration;
     createIdempotencyRef.current = null;
     setPlanning(true);
     try {
-      const readback = await requestChatPlan(redactedDraft, selectedPlatforms, {
+      const secretReadback = await storeChatSecrets(draftPrompt, selectedProjectId);
+      const safePrompt = secretReadback.sanitizedText.trim();
+      if (!safePrompt) throw new Error("chat_prompt_empty_after_secret_redaction");
+      const readback = await requestChatPlan(safePrompt, selectedPlatforms, {
         projectId: selectedProjectId,
         threadId: plannerReadback?.chat_thread_id ?? chatThreadId ?? undefined,
-        messages: [...messages, { id: "current", role: "user", text: redactedDraft }],
+        messages: [...messages, { id: "current", role: "user", text: safePrompt }],
         onProgress: (progress) => {
           if (plannerRequestGeneration.current === requestGeneration) setPlannerProgress(progress);
         }
@@ -3134,18 +3164,18 @@ function ChatPage({ model }: { model: AppModel }) {
         rememberChatThread(selectedProjectId, readback.chat_thread_id);
       }
       setPlannerError(null);
-      setRequestText(redactedDraft);
-      submittedPromptRef.current = draftPrompt;
+      setRequestText(safePrompt);
+      submittedPromptRef.current = safePrompt;
       setPrompt("");
       setMessages((items) => [
         ...items,
-        { id: nextChatId("user"), role: "user", text: redactedDraft },
+        { id: nextChatId("user"), role: "user", text: safePrompt },
         { id: nextChatId("assistant"), role: "assistant", text: readback.server_reply }
       ]);
       setPlanVisible(true);
       setCreated(false);
-      setReceipt(`plannerの会話結果を更新しました。planner=${readback.planner_adapter} / mode=${readback.planner_mode}`);
-      setChatNote(`送信完了: ${currentPlan.title} / ${actionStamp()}`);
+      setReceipt(`plannerの会話結果を更新しました。planner=${readback.planner_adapter} / secret=${secretReadback.storedCount}件を非表示保存 / mode=${readback.planner_mode}`);
+      setChatNote(`送信完了: ${currentPlan.title} / secret=${secretReadback.storedCount}件を安全保存 / ${actionStamp()}`);
     } catch {
       if (plannerRequestGeneration.current !== requestGeneration) return;
       setPlannerReadback(null);

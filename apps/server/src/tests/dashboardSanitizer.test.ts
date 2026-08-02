@@ -336,9 +336,16 @@ test("frontend sends only sanitized planning text to the server planner", () => 
   const chatSource = appSection(source, "function ChatPage", "function BuilderPage");
 
   assert.match(chatSource, /const redactedActivePrompt = redactSensitiveText\(activePrompt\)/);
-  assert.match(chatSource, /requestChatPlan\(redactedActivePrompt, selectedPlatforms, \{/);
+  assert.match(source, /async function storeChatSecrets/);
+  assert.match(source, /mvpFetch\("\/api\/secrets\/from-message"/);
+  assert.match(source, /body: JSON\.stringify\(\{ project_id: projectId, text: rawText \}\)/);
+  assert.match(chatSource, /storeChatSecrets\(activePrompt, selectedProjectId\)/);
+  assert.match(chatSource, /storeChatSecrets\(draftPrompt, selectedProjectId\)/);
+  assert.match(chatSource, /requestChatPlan\(safePrompt, selectedPlatforms, \{/);
   assert.doesNotMatch(chatSource, /requestChatPlan\(activePrompt, selectedPlatforms/);
   assert.doesNotMatch(chatSource, /requestChatPlan\(draftPrompt, selectedPlatforms/);
+  assert.doesNotMatch(chatSource, /requestChatPlan\(redactedActivePrompt, selectedPlatforms/);
+  assert.match(chatSource, /const safePrompt = secretReadback\.sanitizedText\.trim\(\)/);
   assert.match(chatSource, /external_action_allowed: false/);
   assert.match(chatSource, /create_approval: true/);
 });
