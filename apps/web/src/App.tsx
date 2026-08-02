@@ -1324,8 +1324,8 @@ function statusLabel(status: Status) {
   }[status];
 }
 
-function Button({ children, icon, variant = "secondary", onClick, disabled = false, controlId, type = "button" }: { children: React.ReactNode; icon?: React.ReactNode; variant?: "primary" | "secondary" | "danger"; onClick?: () => void; disabled?: boolean; controlId?: string; type?: "button" | "submit" }) {
-  return <button type={type} data-control-id={controlId} className={`btn ${variant}`} onClick={onClick} disabled={disabled}>{icon}{children}</button>;
+function Button({ children, icon, variant = "secondary", onClick, disabled = false, controlId, type = "button", ariaLabel }: { children: React.ReactNode; icon?: React.ReactNode; variant?: "primary" | "secondary" | "danger"; onClick?: () => void; disabled?: boolean; controlId?: string; type?: "button" | "submit"; ariaLabel?: string }) {
+  return <button type={type} data-control-id={controlId} className={`btn ${variant}`} aria-label={ariaLabel} title={ariaLabel} onClick={onClick} disabled={disabled}>{icon}{children}</button>;
 }
 
 function IconButton({ children, onClick, label, controlId, disabled = false }: { children: React.ReactNode; onClick?: () => void; label: string; controlId?: string; disabled?: boolean }) {
@@ -1572,7 +1572,7 @@ function TopHeader({ receipt, setReceipt, onSync, isOwner, mvpState, mvpLoadStat
       </div>
       <div className="top-actions">
         <IconButton controlId="shell.top-header.sync" label="同期" onClick={() => { void onSync(); }}><RefreshCw size={16} /></IconButton>
-        <Button controlId="shell.top-header.new-automation" variant="primary" icon={<Plus size={15} />} disabled={mvpLoadStatus !== "ready"} onClick={() => openAutomationCreator(mvpState, setReceipt)}>{canStartAutomation ? "新しい自動化" : companyCount === 0 && mvpLoadStatus === "ready" ? "会社を登録" : "確認中"}</Button>
+        <Button controlId="shell.top-header.new-automation" ariaLabel={canStartAutomation ? "新しい自動化" : companyCount === 0 && mvpLoadStatus === "ready" ? "会社を登録" : "確認中"} variant="primary" icon={<Plus size={15} />} disabled={mvpLoadStatus !== "ready"} onClick={() => openAutomationCreator(mvpState, setReceipt)}>{canStartAutomation ? "新しい自動化" : companyCount === 0 && mvpLoadStatus === "ready" ? "会社を登録" : "確認中"}</Button>
       </div>
     </header>
   );
