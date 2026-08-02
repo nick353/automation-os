@@ -330,6 +330,10 @@ function runIdempotentMigrations(): void {
   ensureColumn("create_planner_jobs", "started_at", "TEXT");
   ensureColumn("create_planner_jobs", "completed_at", "TEXT");
   ensureColumn("create_planner_jobs", "metadata_json", "TEXT NOT NULL DEFAULT '{}'");
+  ensureColumn("create_planner_jobs", "lease_owner", "TEXT");
+  ensureColumn("create_planner_jobs", "lease_expires_at", "TEXT");
+  ensureColumn("create_planner_jobs", "attempt_count", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("stored_secrets", "company_id", "TEXT");
   ensureColumn("worker_events", "company_id", "TEXT");
   ensureColumn("runs", "automation_id", "TEXT");
   ensureColumn("runs", "automation_version_id", "TEXT");
@@ -632,6 +636,8 @@ function runIdempotentMigrations(): void {
     CREATE INDEX IF NOT EXISTS idx_research_plans_status ON research_plans(status);
     CREATE INDEX IF NOT EXISTS idx_create_planner_jobs_status ON create_planner_jobs(status);
     CREATE INDEX IF NOT EXISTS idx_create_planner_jobs_updated ON create_planner_jobs(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_create_planner_jobs_lease ON create_planner_jobs(status, lease_expires_at, created_at);
+    CREATE INDEX IF NOT EXISTS idx_stored_secrets_company_kind ON stored_secrets(company_id, kind, updated_at DESC);
   `);
   execSql(`
     CREATE TABLE IF NOT EXISTS service_readiness_effect_ledger (

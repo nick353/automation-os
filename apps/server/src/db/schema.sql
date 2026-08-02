@@ -208,6 +208,7 @@ CREATE TABLE IF NOT EXISTS skills (
 
 CREATE TABLE IF NOT EXISTS stored_secrets (
   id TEXT PRIMARY KEY,
+  company_id TEXT,
   kind TEXT NOT NULL,
   label TEXT NOT NULL,
   storage_ref TEXT NOT NULL,
@@ -613,7 +614,10 @@ CREATE TABLE IF NOT EXISTS create_planner_jobs (
   updated_at TEXT NOT NULL,
   started_at TEXT,
   completed_at TEXT,
-  metadata_json TEXT NOT NULL DEFAULT '{}'
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  lease_owner TEXT,
+  lease_expires_at TEXT,
+  attempt_count INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_steps_run ON run_steps(run_id);

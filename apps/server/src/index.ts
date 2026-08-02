@@ -51,7 +51,7 @@ import {
 } from "./codex/automationMigrationLedger.js";
 import { refreshKnowledgeNotes } from "./knowledge/refresh.js";
 import { createPlannerResponse, buildLocalPlanner, type CreatePlannerMessage } from "./planner/createPlanner.js";
-import { enqueueCreatePlannerJob, getCreatePlannerJob, type CreatePlannerJob } from "./planner/createPlannerJobs.js";
+import { enqueueCreatePlannerJob, getCreatePlannerJob, listCreateChatThreads, type CreatePlannerJob } from "./planner/createPlannerJobs.js";
 import { createSkillDraft } from "./planner/skillFactory.js";
 import {
   createResearchPlan,
@@ -1450,6 +1450,22 @@ app.post("/api/create/chat", (req, res, next) => {
   }
 });
 
+app.get("/api/create/chat/threads", (req, res, next) => {
+  try {
+    initDb();
+    const requested = requestedCompanyId(req, false);
+    const companyIds = requested ? [requireCompanyAccess(requested).id] : actorCompanyIds();
+    const threads = listCreateChatThreads({
+      companyIds,
+      actorUserId: currentActorUserId(),
+      limit: typeof req.query?.limit === "string" ? Number(req.query.limit) : 20
+    });
+    res.json({ ok: true, company_ids: companyIds, threads });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/create/plan/jobs/:id", (req, res) => {
   const job = getCreatePlannerJob(req.params.id);
   if (!job) {
@@ -2146,7 +2162,7 @@ app.post("/api/runs/start", async (req, res, next) => {
     const companyId = requestedCompanyId(req);
     requireCompanyAccess(companyId, ["owner", "admin", "operator"]);
     const rawCommand = typeof req.body?.command === "string" ? req.body.command : "";
-    const { sanitizedText, stored } = saveSecretsFromMessage(rawCommand);
+    const { sanitizedText, stored } = saveSecretsFromMessage(rawCommand, companyId);
     if (isSecretStorageOnlyText(sanitizedText, stored)) {
       res.status(200).json({
         ok: true,
@@ -2192,7 +2208,7 @@ app.post("/api/planner/research-plan", (req, res, next) => {
     const companyId = requestedCompanyId(req);
     requireCompanyAccess(companyId, ["owner", "admin", "operator"]);
     const rawCommand = typeof req.body?.command === "string" ? req.body.command : "";
-    const { sanitizedText } = saveSecretsFromMessage(rawCommand);
+    const { sanitizedText } = saveSecretsFromMessage(rawCommand, companyId);
     const plan = createResearchPlan({
       companyId,
       command: sanitizedText.trim(),
@@ -2689,26 +2705,31 @@ function resolveResearchPlanYouTubeTranscriptCaptureEntrypoint(): string {
   throw new Error("research_plan_youtube_transcript_capture_entrypoint_missing");
 }
 
-app.get("/api/secrets/summary", (_req, res, next) => {
+app.get("/api/secrets/summary", (req, res) => {
   try {
     initDb();
-    res.json({ secrets: listStoredSecrets() });
+    const companyId = requestedCompanyId(req);
+    const company = requireCompanyAccess(companyId);
+    res.json({ secrets: listStoredSecrets(company.id), company_scope: { enforced: true, company_id: company.id } });
   } catch (error) {
-    next(error);
+    sendCompanyScopeError(res, error, "secret_summary_read_failed");
   }
 });
 
-app.post("/api/secrets/from-message", (req, res, next) => {
+app.post("/api/secrets/from-message", (req, res) => {
   try {
+    initDb();
+    const companyId = requestedCompanyId(req);
+    const company = requireCompanyAccess(companyId, ["owner", "admin", "operator"]);
     const text = typeof req.body?.text === "string" ? req.body.text : "";
-    const result = saveSecretsFromMessage(text);
+    const result = saveSecretsFromMessage(text, company.id);
     if (result.stored.length > 0) {
       refreshKnowledgeNotes();
       maybeAutoExportObsidianAfterResponse("secrets-updated");
     }
-    res.json(result);
+    res.json({ ...result, company_scope: { enforced: true, company_id: company.id } });
   } catch (error) {
-    next(error);
+    sendCompanyScopeError(res, error, "secret_write_failed");
   }
 });
 
@@ -2888,7 +2909,7 @@ function productionApiAccessGuard(req: Parameters<RequestHandler>[0], res: Param
 function ownerDiagnosticsGuard(req: Parameters<RequestHandler>[0], res: Parameters<RequestHandler>[1], next: Parameters<RequestHandler>[2]) {
   const normalizedPath = normalizedRequestPath(req.path);
   const ownerOnly = normalizedPath === "/api/dashboard"
-    || ["/api/codex/", "/api/capability-router/", "/api/browser/", "/api/bridge/", "/api/obsidian/"].some((prefix) => normalizedPath.startsWith(prefix));
+    || ["/api/codex/", "/api/capability-router/", "/api/browser/", "/api/bridge/", "/api/obsidian/", "/api/secrets/"].some((prefix) => normalizedPath.startsWith(prefix));
   if (!ownerOnly) {
     next();
     return;
@@ -3864,6 +3885,7 @@ function buildPersistedProjectPresentationProfile(
 function getMvpStateReadback(companyIds: string[]) {
   const allowed = listActorCompanies().filter((company) => companyIds.includes(company.id));
   const scopedIds = allowed.map((company) => company.id);
+  const capturedAt = nowIso();
   const companyPredicate = scopedCompanyPredicate("company_id", scopedIds);
   const runs = sanitizeDashboardRows(querySql(`SELECT * FROM runs WHERE ${companyPredicate} ORDER BY created_at DESC LIMIT 500`));
   const runIds = runs.map((row) => sqlValue(String((row as Record<string, unknown>).id ?? ""))).filter((value) => value !== "''");
@@ -3882,6 +3904,8 @@ function getMvpStateReadback(companyIds: string[]) {
     ORDER BY proofs.created_at DESC LIMIT 500
   `));
   const automations = readMvpAutomations(scopedIds);
+  initRegisteredWorkflows();
+  const registeredWorkflows = listRegisteredWorkflowsForCompanies(scopedIds);
   const feedbacks = readMvpFeedbacks(scopedIds);
   const presentationProfiles = allowed.map((company) => buildPersistedProjectPresentationProfile(company, automations));
   const durableJobs = scopedIds.flatMap((companyId) => listDurableJobs(companyId, 500));
@@ -3954,6 +3978,17 @@ function getMvpStateReadback(companyIds: string[]) {
       triaged_count: feedbacks.filter((item) => item.status === "triaged").length
     },
     registeredWorkflows: [],
+    registered_workflow_ids: registeredWorkflows.map((workflow) => workflow.id),
+    sync_readback: {
+      schema: "mvp_sync_readback.v1",
+      captured_at: capturedAt,
+      company_ids: scopedIds,
+      automation_ids: automations.map((automation) => automation.id),
+      registered_workflow_ids: registeredWorkflows.map((workflow) => workflow.id),
+      automation_count: automations.length,
+      registered_workflow_count: registeredWorkflows.length,
+      runs_count: runs.length
+    },
     researchPlans: [],
     knowledgeNotes: [],
     assets: [],
@@ -3978,7 +4013,8 @@ function getMvpStateReadback(companyIds: string[]) {
       next_action: queuedJobs.length > 0 ? "登録済みservice workerのclaimを待っています。" : "待機中のjobはありません。",
       external_action_executed: false
     },
-    browser_use_runtime: buildBrowserUseRuntimeSnapshot()
+    browser_use_runtime: buildBrowserUseRuntimeSnapshot(),
+    updated_at: capturedAt
   };
 }
 
@@ -7635,6 +7671,7 @@ function sanitizeCreatePlannerJobForApi(job: CreatePlannerJob) {
     updatedAt: job.updatedAt,
     startedAt: job.startedAt,
     completedAt: job.completedAt,
+    attemptCount: job.attemptCount,
     metadata: {
       route: typeof job.metadata.route === "string" ? job.metadata.route : "mac_worker_subscription",
       immediatePlanSource: typeof job.metadata.immediatePlanSource === "string" ? job.metadata.immediatePlanSource : undefined,

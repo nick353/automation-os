@@ -113,6 +113,18 @@ test("initDb adds Browser Use lane columns to an existing lanes table", () => {
     INSERT INTO skills (id, run_id, name, draft_markdown, created_at)
     VALUES ('skill_legacy', 'run_legacy', 'Legacy Skill', '# legacy', '2026-06-11T00:00:00.000Z');
 
+    CREATE TABLE stored_secrets (
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      label TEXT NOT NULL,
+      storage_ref TEXT NOT NULL,
+      masked_value TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      metadata_json TEXT NOT NULL DEFAULT '{}'
+    );
+
     CREATE TABLE lanes (
       id TEXT PRIMARY KEY,
       run_id TEXT,
@@ -129,6 +141,20 @@ test("initDb adds Browser Use lane columns to an existing lanes table", () => {
     );
     INSERT INTO lanes (id, run_id, role, cdp_port, profile_dir, workdir, status, current_task, progress, health, resource_locks_json, updated_at)
     VALUES ('lane_legacy', 'run_legacy', 'browser', 9333, '/tmp/profile', '/tmp/workdir', 'active', 'legacy', 10, 'good', '[]', '2026-06-11T00:00:00.000Z');
+
+    CREATE TABLE create_planner_jobs (
+      id TEXT PRIMARY KEY,
+      status TEXT NOT NULL,
+      messages_json TEXT NOT NULL DEFAULT '[]',
+      current_draft TEXT NOT NULL DEFAULT '',
+      result_json TEXT NOT NULL DEFAULT '{}',
+      exact_blocker TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      started_at TEXT,
+      completed_at TEXT,
+      metadata_json TEXT NOT NULL DEFAULT '{}'
+    );
 
     CREATE TABLE mvp_automations (
       id TEXT PRIMARY KEY,
@@ -169,6 +195,13 @@ test("initDb adds Browser Use lane columns to an existing lanes table", () => {
   assert.equal(legacyLane.profile_strategy, "cdp_profile_lane");
   assert.equal(legacyLane.lane_visibility, "visible");
 
+  const plannerColumns = db.querySql<{ name: string }>("PRAGMA table_info(create_planner_jobs)").map((row) => row.name);
+  assert.ok(plannerColumns.includes("lease_owner"));
+  assert.ok(plannerColumns.includes("lease_expires_at"));
+  assert.ok(plannerColumns.includes("attempt_count"));
+  const plannerIndexes = db.querySql<{ name: string }>("PRAGMA index_list(create_planner_jobs)").map((row) => row.name);
+  assert.ok(plannerIndexes.includes("idx_create_planner_jobs_lease"));
+
   const childColumns = db.querySql<{ name: string }>("PRAGMA table_info(child_runs)").map((row) => row.name);
   assert.ok(childColumns.includes("parent_run_id"));
   assert.ok(childColumns.includes("step_id"));
@@ -198,6 +231,11 @@ test("initDb adds Browser Use lane columns to an existing lanes table", () => {
   assert.ok(tenancyColumns.registeredWorkflows.includes("company_id"));
   assert.ok(tenancyColumns.researchPlans.includes("company_id"));
   assert.ok(tenancyColumns.skills.includes("company_id"));
+
+  const storedSecretColumns = db.querySql<{ name: string }>("PRAGMA table_info(stored_secrets)").map((row) => row.name);
+  assert.ok(storedSecretColumns.includes("company_id"));
+  const storedSecretIndexes = db.querySql<{ name: string }>("PRAGMA index_list(stored_secrets)").map((row) => row.name);
+  assert.ok(storedSecretIndexes.includes("idx_stored_secrets_company_kind"));
 
   const tenancyIndexes = {
     runs: db.querySql<{ name: string }>("PRAGMA index_list(runs)").map((row) => row.name),

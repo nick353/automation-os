@@ -363,6 +363,29 @@ test("frontend planner uses the supported server contract and never turns API fa
   assert.doesNotMatch(chatSource, /` \/ \$\{plannerReadback\.exact_blocker\}`/);
 });
 
+test("frontend Chat shortcuts and platform selection expose independent truthful state", () => {
+  const source = readAppSource();
+  const chatSource = appSection(source, "function ChatPage", "function BuilderPage");
+
+  assert.match(chatSource, /\["システム全体を確認", "定期実行を作成", "既存定期実行を調整", "失敗を確認"\]\.map/);
+  assert.match(chatSource, /setPrompt\(shortcut\)/);
+  assert.match(chatSource, /setChatNote\(`\$\{shortcut\}を入力欄にセットしました/);
+  assert.match(chatSource, /aria-label=\{`投稿先サービス（\$\{selectedPlatforms\.length\}件選択）`\}/);
+  assert.match(chatSource, /const next = allPlatformsSelected \? \[\] : platformOptions/);
+  assert.match(chatSource, /allPlatformsSelected \? "全て解除" : "全て選択"/);
+  assert.match(chatSource, /aria-pressed=\{allPlatformsSelected\}/);
+});
+
+test("frontend sync receipt distinguishes company automations from registered workflows", () => {
+  const source = readAppSource();
+  assert.match(source, /state\.sync_readback/);
+  assert.match(source, /company automations=\$\{automationCount\}/);
+  assert.match(source, /registered workflows=\$\{registeredCount\}/);
+  assert.match(source, /scope=\$\{scope\}/);
+  assert.match(source, /capturedAt/);
+  assert.doesNotMatch(source, /同期しました。automations=\$\{state\.automations/);
+});
+
 test("frontend starts without demo automations and global sync performs an API readback", () => {
   const source = readAppSource();
   const appSource = appSection(source, "function App()", "function Sidebar");

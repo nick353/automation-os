@@ -101,7 +101,9 @@ test("POST /api/runs/start sanitizes raw API keys before creating the run", asyn
 
   assert.equal(response.status, 202);
   assert.equal(body.workerProtocol, "local_worker_loop_required");
-  assert.equal(secrets.readStoredSecret("secret_openai_api_key"), token);
+  assert.equal(secrets.readStoredSecretByKind("openai", "project-a"), token);
+  assert.equal(secrets.readStoredSecret("secret_openai_api_key"), undefined);
+  assert.equal(db.querySql<{ company_id: string }>("SELECT company_id FROM stored_secrets WHERE kind='openai' ORDER BY updated_at DESC LIMIT 1")[0].company_id, "project-a");
 
   const run = db.querySql<{ name: string; objective: string; metadata_json: string }>(
     `SELECT name, objective, metadata_json FROM runs WHERE id=${db.sqlValue(body.runId)} LIMIT 1`
@@ -1659,7 +1661,7 @@ test("POST /api/secrets/from-message returns immediately for non-secret chat tex
   seedOwnerCompany();
   db.execSql("DELETE FROM stored_secrets");
 
-  const response = await postJson("/api/secrets/from-message", { text: "NisenPrintsの定期実行を設計したい" });
+  const response = await postJson("/api/secrets/from-message", { project_id: "project-a", text: "NisenPrintsの定期実行を設計したい" });
   const body = JSON.parse(response.body) as { sanitizedText?: string; stored?: unknown[] };
   const secretsCount = db.querySql<{ count: number }>("SELECT count(*) AS count FROM stored_secrets")[0].count;
 
@@ -1667,6 +1669,40 @@ test("POST /api/secrets/from-message returns immediately for non-secret chat tex
   assert.equal(body.sanitizedText, "NisenPrintsの定期実行を設計したい");
   assert.deepEqual(body.stored, []);
   assert.equal(secretsCount, 0);
+});
+
+test("secret summary and storage remain isolated by project scope", async () => {
+  db.initDb();
+  db.resetDemoData();
+  seedOwnerCompany("project-a");
+  seedOwnerCompany("project-b");
+
+  const unscopedWrite = await requestJson("POST", "/api/secrets/from-message", { text: "OpenAI APIキーは unscoped_secret_1234567890abcdefghijklmnopqrstuvwxyz です" });
+  const unscopedRead = await requestJson("GET", "/api/secrets/summary");
+  assert.equal(unscopedWrite.status, 400, unscopedWrite.body);
+  assert.equal(JSON.parse(unscopedWrite.body).error, "project_id_required");
+  assert.equal(unscopedRead.status, 400, unscopedRead.body);
+  assert.equal(JSON.parse(unscopedRead.body).error, "project_id_required");
+
+  const tokenA = "openai_project_a_1234567890abcdefghijklmnopqrstuvwxyz";
+  const tokenB = "openai_project_b_1234567890abcdefghijklmnopqrstuvwxyz";
+  const savedA = await postJson("/api/secrets/from-message", { project_id: "project-a", text: `OpenAI APIキーは ${tokenA} です` });
+  const savedB = await postJson("/api/secrets/from-message", { project_id: "project-b", text: `OpenAI APIキーは ${tokenB} です` });
+  assert.equal(savedA.status, 200, savedA.body);
+  assert.equal(savedB.status, 200, savedB.body);
+
+  const summaryA = await requestJson("GET", "/api/secrets/summary?project_id=project-a");
+  const summaryB = await requestJson("GET", "/api/secrets/summary?project_id=project-b");
+  assert.equal(summaryA.status, 200, summaryA.body);
+  assert.equal(summaryB.status, 200, summaryB.body);
+  assert.equal(JSON.parse(summaryA.body).secrets.length, 1);
+  assert.equal(JSON.parse(summaryB.body).secrets.length, 1);
+  assert.equal(secrets.readStoredSecretByKind("openai", "project-a"), tokenA);
+  assert.equal(secrets.readStoredSecretByKind("openai", "project-b"), tokenB);
+  assert.equal(secrets.readStoredSecretByKind("openai", "project-c"), undefined);
+  assert.notEqual(JSON.parse(savedA.body).stored[0].id, JSON.parse(savedB.body).stored[0].id);
+  assert.doesNotMatch(summaryA.body, /project_b|abcdefghijklmnopqrstuvwxyz/);
+  assert.doesNotMatch(summaryB.body, /project_a|abcdefghijklmnopqrstuvwxyz/);
 });
 
 test("POST /api/runs/start stores secret-only commands without starting a run", async () => {

@@ -9,6 +9,7 @@ const serviceName = "Automation OS";
 
 export type StoredSecretSummary = {
   id: string;
+  companyId?: string;
   kind: string;
   label: string;
   maskedValue: string;
@@ -52,18 +53,21 @@ const providerLabels: Record<string, string> = {
   recovery_code: "Recovery code"
 };
 
-export function listStoredSecrets(): StoredSecretSummary[] {
+export function listStoredSecrets(companyId?: string): StoredSecretSummary[] {
+  const where = companyId ? ` WHERE company_id=${sqlValue(companyId)}` : "";
   return querySql<{
     id: string;
+    company_id: string | null;
     kind: string;
     label: string;
     masked_value: string;
     updated_at: string;
     metadata_json: string;
-  }>("SELECT id, kind, label, masked_value, updated_at, metadata_json FROM stored_secrets ORDER BY updated_at DESC").map((row) => {
+  }>(`SELECT id, company_id, kind, label, masked_value, updated_at, metadata_json FROM stored_secrets${where} ORDER BY updated_at DESC`).map((row) => {
     const metadata = parseSecretMetadata(row.metadata_json);
     return {
       id: row.id,
+      companyId: row.company_id ?? undefined,
       kind: row.kind,
       label: row.label,
       maskedValue: row.masked_value,
@@ -76,9 +80,9 @@ export function listStoredSecrets(): StoredSecretSummary[] {
   });
 }
 
-export function saveSecretsFromMessage(text: string): SaveSecretsResult {
+export function saveSecretsFromMessage(text: string, companyId?: string): SaveSecretsResult {
   const candidates = dedupeCandidates(detectSecretsInText(text));
-  const stored = candidates.map((candidate) => storeSecret(candidate));
+  const stored = candidates.map((candidate) => storeSecret(candidate, companyId));
   return {
     sanitizedText: redactSecrets(text, candidates),
     stored
@@ -131,15 +135,17 @@ export function redactSecrets(text: string, candidates: SecretCandidate[]): stri
   return redacted;
 }
 
-export function readStoredSecret(id: string): string | undefined {
-  const row = querySql<{ storage_ref: string }>(`SELECT storage_ref FROM stored_secrets WHERE id=${sqlValue(id)} LIMIT 1`)[0];
+export function readStoredSecret(id: string, companyId?: string): string | undefined {
+  const scope = companyId ? ` AND company_id=${sqlValue(companyId)}` : "";
+  const row = querySql<{ storage_ref: string }>(`SELECT storage_ref FROM stored_secrets WHERE id=${sqlValue(id)}${scope} LIMIT 1`)[0];
   if (!row) return undefined;
   return decryptStoredSecret(row.storage_ref);
 }
 
-export function readStoredSecretByKind(kind: string): string | undefined {
-  const id = `secret_${kind}_api_key`;
-  return readStoredSecret(id);
+export function readStoredSecretByKind(kind: string, companyId?: string): string | undefined {
+  if (!companyId) return readStoredSecret(`secret_${kind}_api_key`);
+  const row = querySql<{ storage_ref: string }>(`SELECT storage_ref FROM stored_secrets WHERE kind=${sqlValue(kind)} AND company_id=${sqlValue(companyId)} ORDER BY updated_at DESC LIMIT 1`)[0];
+  return row ? decryptStoredSecret(row.storage_ref) : undefined;
 }
 
 export function isSecretStorageOnlyText(sanitizedText: string, stored: StoredSecretSummary[]): boolean {
@@ -156,13 +162,14 @@ export function isSecretStorageOnlyText(sanitizedText: string, stored: StoredSec
   return stripped.length === 0;
 }
 
-function storeSecret(candidate: SecretCandidate): StoredSecretSummary {
-  const id = `secret_${candidate.kind}_api_key`;
+function storeSecret(candidate: SecretCandidate, companyId?: string): StoredSecretSummary {
+  const id = scopedSecretId(candidate.kind, companyId);
   const now = nowIso();
   const existing = querySql<{ created_at: string }>(`SELECT created_at FROM stored_secrets WHERE id=${sqlValue(id)} LIMIT 1`)[0];
   const storageRef = writeEncryptedSecret(id, candidate.value);
   const summary = {
     id,
+    companyId,
     kind: candidate.kind,
     label: candidate.label,
     maskedValue: maskSecret(candidate.value),
@@ -174,6 +181,7 @@ function storeSecret(candidate: SecretCandidate): StoredSecretSummary {
   };
   upsert("stored_secrets", {
     id,
+    company_id: companyId ?? null,
     kind: candidate.kind,
     label: candidate.label,
     storage_ref: storageRef,
@@ -192,6 +200,12 @@ function storeSecret(candidate: SecretCandidate): StoredSecretSummary {
     }
   });
   return summary;
+}
+
+function scopedSecretId(kind: string, companyId?: string): string {
+  if (!companyId) return `secret_${kind}_api_key`;
+  const scopeHash = createHash("sha256").update(companyId).digest("hex").slice(0, 16);
+  return `secret_${scopeHash}_${kind}_api_key`;
 }
 
 function dedupeCandidates(candidates: SecretCandidate[]): SecretCandidate[] {

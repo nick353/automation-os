@@ -341,6 +341,13 @@ test("viewer membership is read-only and unscoped tenant writes fail closed", as
   const list = await request("GET", `/api/mvp/automations?company_id=${encodeURIComponent(company.id)}`);
   assert.equal(list.status, 200, list.body);
 
+  const secretSummary = await request("GET", "/api/secrets/summary");
+  assert.equal(secretSummary.status, 403, secretSummary.body);
+  assert.equal(JSON.parse(secretSummary.body).error, "owner_admin_required");
+  const secretWrite = await request("POST", "/api/secrets/from-message", { text: "token=viewer_must_not_store_12345678901234567890" });
+  assert.equal(secretWrite.status, 403, secretWrite.body);
+  assert.equal(JSON.parse(secretWrite.body).error, "owner_admin_required");
+
   const write = await request("POST", "/api/mvp/automations", { project_id: company.id, name: "must not write" }, { "idempotency-key": "viewer-write-blocked" });
   assert.equal(write.status, 404, write.body);
   assert.equal(querySql<{ count: number }>(`SELECT count(*) AS count FROM mvp_automations WHERE company_id='${company.id}'`)[0].count, 0);

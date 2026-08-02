@@ -48,7 +48,9 @@ const subTabLabels = [
   ["Lane", "lanes"],
   ["パフォーマンス", "performance"],
   ["連携", "integrations"],
-  ["成果物 / KPI", "artifacts"]
+  ["Security", "security"],
+  ["成果物 / KPI", "artifacts"],
+  ["復旧", "recovery"]
 ];
 
 const writeTokenStorageKey = "automation-os-write-token";
@@ -151,6 +153,14 @@ function publicBlockerSummary(value: unknown) {
   return "詳細確認が必要です";
 }
 
+function publicBrowserUseRuntimeStatus(runtime: MvpState["browser_use_runtime"]) {
+  if (!runtime) return "未確認";
+  if (runtime.status === "verified") return "確認済み";
+  if (runtime.status === "readback_pending") return "Mac worker確認待ち";
+  if (runtime.status === "blocked") return "要確認";
+  return "未確認";
+}
+
 function runDispositionRank(run: any) {
   const status = String(run?.status ?? "");
   if (status === "blocked" || status === "waiting_approval" || status === "approval_required") return 0;
@@ -229,8 +239,19 @@ type MvpState = {
   projects?: any[];
   companies?: any[];
   automations?: any[];
+  registered_workflow_ids?: string[];
+  sync_readback?: {
+    schema?: string;
+    captured_at?: string;
+    company_ids?: string[];
+    automation_ids?: string[];
+    registered_workflow_ids?: string[];
+    automation_count?: number;
+    registered_workflow_count?: number;
+    runs_count?: number;
+  };
   presentation_profiles?: Array<{ id: string; kind: string; label: string; source?: string; revision?: number; exactBlocker?: string | null; purpose?: string; freshnessSlaMinutes?: number; browserUseLane?: string; stopBoundary?: string; primaryMetrics?: string[]; widgets?: string[]; preferredGrouping?: string; explanation?: string }>;
-  browser_use_runtime?: { surface?: string; helper?: string; status?: string; exactBlocker?: string | null; fallbackPolicy?: string; contract?: string[]; lanes?: any[] };
+  browser_use_runtime?: { surface?: string; helper?: string; runtimeRole?: string; status?: string; exactBlocker?: string | null; readbackStatus?: string; summary?: string; nextAction?: string; fallbackPolicy?: string; contract?: string[]; lanes?: any[] };
   schedules?: any[];
   runs?: any[];
   jobs?: any[];
@@ -376,6 +397,20 @@ function getCapabilitySurfaceStatus(surface?: CapabilitySurface) {
   return state.connected ? "connected" : state.verified ? "verified" : "requires_bridge";
 }
 
+function publicCapabilityBlocker(surface?: { status?: string; exactBlocker?: string | null }) {
+  const exactBlocker = String(surface?.exactBlocker ?? "").trim();
+  if (exactBlocker) return exactBlocker;
+  if (surface?.status === "ready" || surface?.status === "available") return "なし";
+  return "未確認";
+}
+
+function publicCapabilityStatus(surface?: { status?: string }) {
+  if (surface?.status === "ready") return "確認済み";
+  if (surface?.status === "blocked") return "停止中";
+  if (surface?.status === "available") return "利用可能";
+  return "未確認";
+}
+
 type RegisteredAutomationReadback = {
   ok?: boolean;
   read_only?: boolean;
@@ -503,6 +538,17 @@ type ChatMessage = {
   id: string;
   role: "assistant" | "user";
   text: string;
+};
+
+type ChatThreadReadback = {
+  threadId: string;
+  latestJobId: string;
+  latestStatus: string;
+  updatedAt: string;
+  companyIds: string[];
+  messages: Array<{ role: "assistant" | "user"; text: string }>;
+  serverReply?: string;
+  resultTitle?: string;
 };
 
 function nextChatId(prefix: string) {
@@ -898,6 +944,14 @@ async function requestChatPlan(
     proposed_changes: Array.isArray(serverPlan.proposedChanges) ? serverPlan.proposedChanges : [],
     requires_confirmation: Array.isArray(serverPlan.requiresConfirmation) ? serverPlan.requiresConfirmation : []
   };
+}
+
+async function requestChatThreads(projectId: string): Promise<ChatThreadReadback[]> {
+  if (!projectId) return [];
+  const response = await mvpFetch(`/api/create/chat/threads?project_id=${encodeURIComponent(projectId)}&limit=20`, { cache: "no-store" });
+  const body = await response.json().catch(() => ({})) as { ok?: boolean; threads?: ChatThreadReadback[]; exactBlocker?: string };
+  if (!response.ok || body.ok !== true) throw new Error(body.exactBlocker || `chat_threads_http_${response.status}`);
+  return Array.isArray(body.threads) ? body.threads : [];
 }
 
 type PlannerJobReadback = {
@@ -1307,7 +1361,13 @@ function App() {
       setMvpLoadStatus("ready");
       setAutomationRows(toAutomationRows(state.automations ?? []));
       setFeedbackReadback(state.feedbacks ?? []);
-      setReceipt(`同期しました。automations=${state.automations?.length ?? 0} / runs=${state.runs?.length ?? 0} / ${state.updated_at ?? "更新時刻未取得"}`);
+      const sync = state.sync_readback;
+      const scope = sync?.company_ids?.join(",") || "スコープ未取得";
+      const automationCount = sync?.automation_count ?? "未取得";
+      const registeredCount = sync?.registered_workflow_count ?? "未取得";
+      const runCount = sync?.runs_count ?? state.runs?.length ?? "未取得";
+      const capturedAt = sync?.captured_at ?? state.updated_at ?? "取得時刻未取得";
+      setReceipt(`同期しました。scope=${scope} / company automations=${automationCount} / registered workflows=${registeredCount} / runs=${runCount} / ${capturedAt}`);
     } catch {
       setMvpLoadStatus("error");
       setReceipt("同期に失敗しました。表示中の値は最新と断定できません。");
@@ -1686,15 +1746,20 @@ function TruthfulLanesPage({ model }: { model: AppModel }) {
   const companyName = projectLabelFromState(model.mvpState, companyId);
   const companyRuns = (model.mvpState.runs ?? []).filter((run) => (run.company_id ?? run.project_id) === companyId);
   const observedLanes = [...new Set(companyRuns.map((run) => String(run.lane ?? "").trim()).filter(Boolean))];
+  const registeredLanes = model.mvpState.browser_use_runtime?.lanes ?? [];
   return (
     <section>
       <ProjectTabs mvpState={model.mvpState} />
       <PageTitle title={companyName} desc="Lane readback" />
       <ProjectScopeNotice projectId={companyId} mvpState={model.mvpState} />
+      <Panel title="登録済みLane定義" controlId="truthful.lanes.registry.panel">
+        <p className="muted">これはworkflow registryの定義です。プロセス起動中・ログイン済み・実行可能とは解釈しません。実際の会社Runで観測されたLaneは下の表に分けて表示します。</p>
+        {registeredLanes.length ? <DataTable controlId="truthful.lanes.registry.table" headers={["Lane", "Workflow", "Runner", "表示", "定義状態"]} rows={registeredLanes.map((lane: any) => [lane.id ?? "-", lane.workflowId ?? "-", lane.runnerKind ?? "-", lane.visibility ?? "-", lane.status ?? "registered"])} /> : <p className="muted">登録済みLane定義はありません。</p>}
+      </Panel>
       <Panel title="永続化済みLane情報" controlId="truthful.lanes.panel">
         {observedLanes.length ? (
           <DataTable controlId="truthful.lanes.table" headers={["Lane", "Run数"]} rows={observedLanes.map((lane) => [lane, String(companyRuns.filter((run) => run.lane === lane).length)])} />
-        ) : <p className="muted">この会社には永続化済みのLane情報がありません。Lane作成・ブラウザ起動・ロック解除APIは未実装のため、操作ボタンは表示しません。</p>}
+        ) : <p className="muted">この会社のRunで観測された永続化Lane情報はありません。Lane作成・ブラウザ起動・ロック解除APIは未実装のため、操作ボタンは表示しません。</p>}
       </Panel>
     </section>
   );
@@ -1719,6 +1784,7 @@ function TruthfulMemoryPage({ model }: { model: AppModel }) {
 
 function TruthfulIntegrationsPage({ model }: { model: AppModel }) {
   const route = useRoute();
+  const isSecurity = route.includes("/security");
   const companyId = projectSlugFromRoute(route);
   const companyName = projectLabelFromState(model.mvpState, companyId);
   const role = projectOptionsFromState(model.mvpState).find((company) => company.id === companyId)?.role ?? "viewer";
@@ -1768,9 +1834,9 @@ function TruthfulIntegrationsPage({ model }: { model: AppModel }) {
   return (
     <section>
       <ProjectTabs mvpState={model.mvpState} />
-      <PageTitle title={companyName} desc="会社別Integrations inventory" />
+      <PageTitle title={companyName} desc={isSecurity ? "Security / 接続境界" : "会社別Integrations inventory"} />
       <ProjectScopeNotice projectId={companyId} mvpState={model.mvpState} />
-      <Panel title="会社別接続inventory" controlId="truthful.integrations.refs.panel">
+      <Panel title={isSecurity ? "Security / 会社別接続境界" : "会社別接続inventory"} controlId={isSecurity ? "truthful.security.refs.panel" : "truthful.integrations.refs.panel"}>
         {canManage && inventoryStatus === "loading" ? <p className="muted">接続inventoryを会社別APIから確認しています。</p> : canManage && inventoryStatus === "error" ? <p className="muted">接続inventoryを確認できませんでした。未確認状態を接続済みとして表示しません。</p> : canManage && accountRefs.length ? <DataTable controlId="truthful.integrations.refs.table" headers={["サービス", "アカウント参照", "OAuth", "Scope", "期限", "最終検証", "状態", "操作"]} rows={accountRefs.map((item) => [
           item.platform,
           item.account_ref ?? item.accountRef,
@@ -1785,7 +1851,7 @@ function TruthfulIntegrationsPage({ model }: { model: AppModel }) {
           </div>
         ])} /> : canManage ? <p className="muted">この会社に保存された接続参照はありません。未確認サービスや架空の接続状態は表示しません。</p> : <p className="muted">Integrations inventoryはOwner/Adminだけが閲覧できます。</p>}
       </Panel>
-      <Panel title="適用中の境界" controlId="truthful.integrations.boundary.panel">
+      <Panel title={isSecurity ? "Security guard" : "適用中の境界"} controlId={isSecurity ? "truthful.security.boundary.panel" : "truthful.integrations.boundary.panel"}>
         <CheckList items={["password・access token・refresh tokenはinventory APIへ保存しない", "再接続は再認証要求の永続化まで。OAuth認証は人間gate", "無効化はローカル接続参照のみ。外部provider失効を実行済みとは表示しない", "会社membershipとRBACをserver側で検証"]} />
       </Panel>
     </section>
@@ -2093,8 +2159,109 @@ function TruthfulRunDetailPage({ model }: { model: AppModel }) {
   );
 }
 
-function TruthfulRecoveryPage() {
-  return <ProjectUnavailablePage reason="durable recovery APIは未実装です。架空のLane競合や実行可能に見える復旧操作は表示しません。" />;
+function TruthfulRecoveryPage({ model }: { model: AppModel }) {
+  const route = useRoute();
+  const companyId = projectSlugFromRoute(route);
+  const companyName = projectLabelFromState(model.mvpState, companyId);
+  const jobs = (model.mvpState.jobs ?? []).filter((job) => String(job.company_id ?? "") === companyId);
+  const attempts = model.mvpState.job_attempts ?? [];
+  const canMutateJob = ["owner", "admin", "operator"].includes(projectOptionsFromState(model.mvpState).find((company) => company.id === companyId)?.role ?? "viewer");
+  const [mutatingJobId, setMutatingJobId] = useState<string | null>(null);
+  const [note, setNote] = useState("会社別のdurable job readbackから復旧候補を確認しています。");
+  const retryIdempotencyRef = useRef<Record<string, string>>({});
+  const refresh = async () => {
+    try {
+      const state = await readMvpState();
+      model.setMvpState(state);
+      model.setAutomationRows(toAutomationRows(state.automations ?? []));
+      const scopedJobs = (state.jobs ?? []).filter((job: any) => String(job.company_id ?? "") === companyId);
+      model.setReceipt(`Recovery readback 済みです。company=${companyId} / jobs=${scopedJobs.length}`);
+      setNote(`再読込完了: jobs=${scopedJobs.length} / ${actionStamp()}`);
+    } catch {
+      model.setReceipt("Recovery readbackに失敗しました。最新状態は確認できていません。");
+      setNote(`再読込失敗: 現在の表示は最新と断定できません / ${actionStamp()}`);
+    }
+  };
+  const mutateJob = async (job: any, action: "cancel" | "retry") => {
+    if (mutatingJobId === job.id) return;
+    setMutatingJobId(job.id);
+    try {
+      const headers: Record<string, string> = { "content-type": "application/json" };
+      if (action === "retry") {
+        const fingerprint = `${job.company_id}:${job.id}:${job.status}:${job.attempt_count ?? 0}`;
+        headers["idempotency-key"] = retryIdempotencyRef.current[fingerprint]
+          ?? (retryIdempotencyRef.current[fingerprint] = newIdempotencyKey("ui-recovery-retry"));
+      }
+      const response = await mvpFetch(`/api/v1/companies/${encodeURIComponent(companyId)}/jobs/${encodeURIComponent(job.id)}/${action}`, {
+        method: "POST",
+        headers,
+        body: "{}"
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error ?? `${action}_failed`);
+      model.setReceipt(`${job.id}: ${action === "retry" ? "再試行キュー登録" : "キャンセル"}を保存しました。`);
+      setNote(`${job.id}: ${action} / status=${body.job?.status ?? "unknown"} / ${actionStamp()}`);
+      await refresh();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : `${action}_failed`;
+      model.setReceipt(`${job.id}: 操作に失敗しました（${publicBlockerSummary(message)}）。`);
+      setNote(`${job.id}: ${action}失敗 / ${publicBlockerSummary(message)} / ${actionStamp()}`);
+    } finally {
+      setMutatingJobId(null);
+    }
+  };
+  const attemptsByJob = new Map<string, any[]>();
+  for (const attempt of attempts) {
+    const jobId = String(attempt.job_id ?? "");
+    if (!jobId) continue;
+    const current = attemptsByJob.get(jobId) ?? [];
+    current.push(attempt);
+    attemptsByJob.set(jobId, current);
+  }
+  const recoveryJobs = jobs.filter((job) => ["failed", "timed_out", "reconciliation_required"].includes(String(job.status)));
+  const pendingJobs = jobs.filter((job) => ["queued", "leased"].includes(String(job.status)));
+  return (
+    <section>
+      <ProjectTabs mvpState={model.mvpState} />
+      <PageTitle title={`${companyName} / 復旧`} desc="永続化されたdurable jobの状態確認と、許可された再試行・キャンセル" >
+        <Button controlId="truthful.recovery.refresh" icon={<RefreshCw size={15} />} onClick={() => { void refresh(); }}>再読込</Button>
+      </PageTitle>
+      <ProjectScopeNotice projectId={companyId} mvpState={model.mvpState} />
+      <div className="action-note" role="status">{note}</div>
+      <div className="cards four">
+        <MetricCard controlId="truthful.recovery.metric.recovery" title="要確認Job" value={String(recoveryJobs.length)} sub="failed / timeout / reconciliation" status={recoveryJobs.length ? "blocked" : "enabled"} />
+        <MetricCard controlId="truthful.recovery.metric.pending" title="待機Job" value={String(pendingJobs.length)} sub="queued / leased" status={pendingJobs.length ? "waiting" : "enabled"} />
+        <MetricCard controlId="truthful.recovery.metric.attempts" title="試行記録" value={String(attempts.filter((attempt) => String(attempt.company_id ?? "") === companyId || jobs.some((job) => job.id === attempt.job_id)).length)} sub="保存済みattempt" status="enabled" />
+        <MetricCard controlId="truthful.recovery.metric.external" title="外部操作" value="実行しない" sub="復旧画面の安全境界" status="enabled" />
+      </div>
+      <Panel title="復旧候補" controlId="truthful.recovery.jobs.panel">
+        <p className="muted">ここで行うのは会社別durable jobの状態遷移だけです。外部投稿・送信・再ログイン・Browser Useの起動は実行しません。再試行はサーバー側のidempotencyと権限検証を通ります。</p>
+        {recoveryJobs.length ? <DataTable controlId="truthful.recovery.jobs.table" headers={["Job", "状態", "試行", "最後のエラー", "更新", "操作"]} rows={recoveryJobs.map((job) => {
+          const jobAttempts = attemptsByJob.get(String(job.id)) ?? [];
+          const canCancel = ["reconciliation_required", "timed_out"].includes(String(job.status));
+          const canRetry = ["failed", "timed_out"].includes(String(job.status));
+          return [
+            <a data-control-id={`truthful.recovery.job.${job.id}`} href={`#/projects/${encodeURIComponent(companyId)}/runs/${encodeURIComponent(job.run_id)}`}>{job.id}</a>,
+            <StatusBadge status={job.status === "failed" || job.status === "timed_out" || job.status === "reconciliation_required" ? "blocked" : "waiting"} label={publicRunStatus(job.status)} />,
+            `${job.attempt_count ?? 0}/${job.max_attempts ?? "-"} (${jobAttempts.length})`,
+            job.last_error ? publicBlockerSummary(job.last_error) : "なし",
+            job.updated_at ?? "-",
+            canMutateJob ? <div className="button-row">
+              {canRetry && <Button controlId={`truthful.recovery.retry.${job.id}`} variant="primary" disabled={mutatingJobId === job.id} onClick={() => { void mutateJob(job, "retry"); }}>{mutatingJobId === job.id ? "保存確認中" : "再試行"}</Button>}
+              {canCancel && <Button controlId={`truthful.recovery.cancel.${job.id}`} variant="danger" disabled={mutatingJobId === job.id} onClick={() => { void mutateJob(job, "cancel"); }}>{mutatingJobId === job.id ? "保存確認中" : "キャンセル"}</Button>}
+            </div> : <span data-control-id={`truthful.recovery.read-only.${job.id}`}>閲覧のみ</span>
+          ];
+        })} /> : <p className="muted">この会社に復旧候補はありません。未確認のjobや架空のLane競合は表示しません。</p>}
+      </Panel>
+      <Panel title="復旧できない状態" controlId="truthful.recovery.boundary.panel">
+        <DataTable controlId="truthful.recovery.boundary.table" headers={["状態", "扱い", "理由"]} rows={[
+          ["reconciliation_required", "外部readback待ち", "外部効果の有無を確認せず再実行しない"],
+          ["completed / cancelled", "操作なし", "終端状態のため変更しない"],
+          ["Lane起動 / lock解除", "未提供", "会社別の実Runner契約がまだない"]
+        ]} />
+      </Panel>
+    </section>
+  );
 }
 
 function TruthfulPluginsPage({ model }: { model: AppModel }) {
@@ -2106,7 +2273,7 @@ function TruthfulPluginsPage({ model }: { model: AppModel }) {
       <Panel title="Codex surface readback" controlId="truthful.plugins.surfaces.panel">
         {surfaces.length ? <DataTable controlId="truthful.plugins.surfaces.table" headers={["Surface", "Kind", "Status", "Configured", "Enabled", "Connected"]} rows={surfaces.map((surface) => [surface.name, surface.kind, getCapabilitySurfaceStatus(surface), getCapabilitySurfaceState(surface).configured ? "yes" : "no", getCapabilitySurfaceState(surface).enabled ? "yes" : "no", getCapabilitySurfaceState(surface).connected ? "yes" : "no"])} /> : <p className="muted">capability readbackはありません。静的なPlugin候補や同期済みに見える操作は表示しません。</p>}
       </Panel>
-      <Panel title="Chrome Extension readback" controlId="truthful.plugins.chrome.panel"><p>{model.mvpState.browserHealth?.chromeExtension?.status ?? "未確認"} / blocker={model.mvpState.browserHealth?.chromeExtension?.exactBlocker ?? "none"}</p><p className="muted">{model.mvpState.browserHealth?.chromeExtension?.summary ?? "readbackなし"}</p></Panel>
+      <Panel title="Chrome Extension readback" controlId="truthful.plugins.chrome.panel"><p>{publicCapabilityStatus(model.mvpState.browserHealth?.chromeExtension)} / blocker={publicCapabilityBlocker(model.mvpState.browserHealth?.chromeExtension)}</p><p className="muted">{model.mvpState.browserHealth?.chromeExtension?.summary ?? "readbackなし"}</p></Panel>
     </section>
   );
 }
@@ -2121,9 +2288,9 @@ function TruthfulProductionStatusPage({ model }: { model: AppModel }) {
     <section>
       <PageTitle title="本番状態" desc="現在のAPI readback。deployや外部検証は実行しません。" />
       <div className="cards four">
-        <MetricCard controlId="truthful.production.metric.persistence" title="Persistence" value={String(model.mvpState.persistence?.adapter ?? "unknown")} sub="current API readback" status={model.mvpState.persistence?.adapter ? "enabled" : "waiting"} />
-        <MetricCard controlId="truthful.production.metric.worker" title="Worker" value={model.mvpState.worker?.status ?? "unknown"} sub={workerStatusSummary(model.mvpState.worker).label} status={model.mvpState.worker?.heartbeat_fresh ? "enabled" : model.mvpState.worker?.readback_status === "stored" ? "draft" : "blocked"} />
-        <MetricCard controlId="truthful.production.metric.chrome" title="Chrome lane" value={browser?.chromeExtension?.status ?? "unknown"} sub={browser?.chromeExtension?.exactBlocker ?? "no blocker reported"} status={browser?.chromeExtension?.status === "ready" ? "enabled" : "blocked"} />
+        <MetricCard controlId="truthful.production.metric.persistence" title="Persistence" value={String(model.mvpState.persistence?.adapter ?? "未確認")} sub="現在のAPI readback" status={model.mvpState.persistence?.adapter ? "enabled" : "waiting"} />
+        <MetricCard controlId="truthful.production.metric.worker" title="Worker" value={model.mvpState.worker?.status ?? "未確認"} sub={workerStatusSummary(model.mvpState.worker).label} status={model.mvpState.worker?.heartbeat_fresh ? "enabled" : model.mvpState.worker?.readback_status === "stored" ? "draft" : "blocked"} />
+        <MetricCard controlId="truthful.production.metric.chrome" title="Chrome lane" value={publicCapabilityStatus(browser?.chromeExtension)} sub={publicCapabilityBlocker(browser?.chromeExtension)} status={browser?.chromeExtension?.status === "ready" ? "enabled" : "blocked"} />
         <MetricCard controlId="truthful.production.metric.goal" title="Goal Complete" value={readiness?.goal_complete === true ? "true" : "false"} sub="readbackがtrueになるまで未完了" status={readiness?.goal_complete === true ? "approved" : "blocked"} />
       </div>
       <Panel title="Production readiness readback" controlId="truthful.production.readback.panel">{readinessRows.length ? <DataTable controlId="truthful.production.readback.table" headers={["項目", "値"]} rows={readinessRows} /> : <p className="muted">production readiness readbackはありません。過去の固定run IDや確認件数は現在値として表示しません。</p>}</Panel>
@@ -2203,7 +2370,7 @@ function renderPage(route: string, model: AppModel) {
   if (route.includes("/memory")) return <TruthfulMemoryPage model={model} />;
   if (route.includes("/integrations") || route.includes("/security")) return <TruthfulIntegrationsPage model={model} />;
   if (route.includes("/artifacts")) return <TruthfulArtifactsPage model={model} />;
-  if (route.includes("/recovery")) return <TruthfulRecoveryPage />;
+  if (route.includes("/recovery")) return <TruthfulRecoveryPage model={model} />;
   if (route.includes("/runs/")) return <TruthfulRunDetailPage model={model} />;
   if (route.includes("/automations")) return <AutomationsPage model={model} />;
   return <HomePage model={model} />;
@@ -2676,6 +2843,8 @@ function ChatPage({ model }: { model: AppModel }) {
   const [selectedProjectId, setSelectedProjectId] = useState(rememberedProject());
   const [selectedAutomationId, setSelectedAutomationId] = useState("");
   const [chatThreadId, setChatThreadId] = useState(() => rememberedChatThread(rememberedProject()));
+  const [chatThreads, setChatThreads] = useState<ChatThreadReadback[]>([]);
+  const [chatHistoryLoading, setChatHistoryLoading] = useState(false);
   const [planning, setPlanning] = useState(false);
   const [creating, setCreating] = useState(false);
   const [chatNote, setChatNote] = useState("新しい自動化リクエストを入力できます。");
@@ -2741,7 +2910,28 @@ function ChatPage({ model }: { model: AppModel }) {
   React.useEffect(() => {
     setChatThreadId(rememberedChatThread(selectedProjectId));
     setSelectedAutomationId("");
-  }, [selectedProjectId]);
+    let stale = false;
+    if (!selectedProjectId || model.mvpLoadStatus !== "ready") {
+      setChatThreads([]);
+      setChatHistoryLoading(false);
+      return () => { stale = true; };
+    }
+    setChatHistoryLoading(true);
+    requestChatThreads(selectedProjectId)
+      .then((threads) => {
+        if (!stale) setChatThreads(threads);
+      })
+      .catch((error) => {
+        if (!stale) {
+          setChatThreads([]);
+          setChatNote(`チャット履歴を確認できませんでした: ${error instanceof Error ? error.message : "chat_history_unavailable"} / ${actionStamp()}`);
+        }
+      })
+      .finally(() => {
+        if (!stale) setChatHistoryLoading(false);
+      });
+    return () => { stale = true; };
+  }, [selectedProjectId, model.mvpLoadStatus]);
   React.useEffect(() => {
     if (!selectedAutomationId || !targetAutomations.some((automation) => automation.id === selectedAutomationId)) {
       setSelectedAutomationId(targetAutomations[0]?.id ?? "");
@@ -2759,6 +2949,26 @@ function ChatPage({ model }: { model: AppModel }) {
     setPlannerError(null);
     setCreated(false);
     createIdempotencyRef.current = null;
+  };
+  const resumeChat = (thread: ChatThreadReadback) => {
+    if (planning || creating) return;
+    const restoredMessages = thread.messages
+      .filter((message) => message.text.trim())
+      .map((message, index) => ({ id: `restored-${thread.threadId}-${index}`, role: message.role, text: message.text }));
+    const lastUserMessage = [...thread.messages].reverse().find((message) => message.role === "user");
+    setChatThreadId(thread.threadId);
+    rememberChatThread(selectedProjectId, thread.threadId);
+    setMessages(restoredMessages.length ? restoredMessages : [{ id: "welcome", role: "assistant", text: "この会話には表示できるメッセージがありません。" }]);
+    setRequestText(lastUserMessage?.text ?? "");
+    setPrompt("");
+    setPlanVisible(false);
+    setPlannerReadback(null);
+    setPlannerProgress(null);
+    setPlannerError(null);
+    setCreated(false);
+    createIdempotencyRef.current = null;
+    setReceipt(`Codex App Serverの会話を再開しました。thread=${thread.threadId.slice(0, 12)}… / 最新job=${thread.latestJobId}`);
+    setChatNote(`履歴から再開: ${thread.resultTitle ?? "会話"} / ${actionStamp()}`);
   };
   const selectAllPlatforms = () => {
     const next = allPlatformsSelected ? [] : platformOptions;
@@ -3103,7 +3313,7 @@ function ChatPage({ model }: { model: AppModel }) {
         表示プロファイル: {presentationProfile.label} / {presentationProfile.explanation ?? "このプロジェクトのreadbackに合わせて表示します。"}
       </div>}
       {mvpState.browser_use_runtime && <div className="notice-row" role="status">
-        Browser Use: {mvpState.browser_use_runtime.status ?? "unknown"}{mvpState.browser_use_runtime.exactBlocker ? " / canonical Browser Use helperの確認が必要です" : ""} / {mvpState.browser_use_runtime.fallbackPolicy ?? "readback待ち"} / registered lanes {mvpState.browser_use_runtime.lanes?.length ?? 0}
+        Browser Use: {publicBrowserUseRuntimeStatus(mvpState.browser_use_runtime)} / {mvpState.browser_use_runtime.summary ?? "runtime readback待ち"} / {mvpState.browser_use_runtime.fallbackPolicy ?? "readback待ち"} / registered lanes {mvpState.browser_use_runtime.lanes?.length ?? 0}
       </div>}
       <div className="choice-row" aria-label="司令室ショートカット">
         {["システム全体を確認", "定期実行を作成", "既存定期実行を調整", "失敗を確認"].map((shortcut) => (
@@ -3117,6 +3327,20 @@ function ChatPage({ model }: { model: AppModel }) {
           }}>{shortcut}</button>
         ))}
       </div>
+      <Panel title="最近のチャット" controlId="chat.history.panel">
+        <p className="muted">会社別に保存されたCodex App Serverのthreadをreadbackします。再開して送ると同じthreadで続きます。</p>
+        {chatHistoryLoading ? <p className="muted">チャット履歴を確認しています。</p> : chatThreads.length ? (
+          <div className="status-grid">
+            {chatThreads.map((thread, index) => (
+              <div key={thread.threadId}>
+                <strong>{thread.resultTitle ?? "Automation OSの会話"}</strong>
+                <span>{thread.latestStatus} / {thread.updatedAt} / {thread.messages.length} messages</span>
+                <Button controlId={`chat.history.resume.${index}`} onClick={() => resumeChat(thread)} disabled={planning || creating}>この会話を再開</Button>
+              </div>
+            ))}
+          </div>
+        ) : <p className="muted">この会社に保存済みのチャット履歴はありません。</p>}
+      </Panel>
       <div className="chat-shell">
         <div className="chat-thread">
           <div className="message-list" aria-live="polite">
@@ -3634,12 +3858,12 @@ function BuilderPage({ model }: { model: AppModel }) {
         <div>
           <Panel title="基本設定" controlId="builder.basic.panel">
             <div className="form-grid">
-              <label>自動化名<input data-control-id="builder.name" value={builderDraft.name} onChange={(event) => setBuilderDraft((draft) => ({ ...draft, name: event.target.value }))} /></label>
-              <label>プロジェクト<input data-control-id="builder.project" value={projectName} readOnly /></label>
-              <label>Lane<input data-control-id="builder.lane" value={builderDraft.lane} onChange={(event) => setBuilderDraft((draft) => ({ ...draft, lane: event.target.value }))} /></label>
-              <label>スケジュール希望（仕様メモ）<input data-control-id="builder.schedule" value={builderDraft.schedule} onChange={(event) => setBuilderDraft((draft) => ({ ...draft, schedule: event.target.value }))} /></label>
-              <label>承認ポリシー<input data-control-id="builder.approval-policy" value={builderDraft.approval_policy} onChange={(event) => setBuilderDraft((draft) => ({ ...draft, approval_policy: event.target.value }))} /></label>
-              <label>リトライルール<input data-control-id="builder.retry-rule" value={builderDraft.retry_rule} onChange={(event) => setBuilderDraft((draft) => ({ ...draft, retry_rule: event.target.value }))} /></label>
+              <label>自動化名<input data-control-id="builder.name" aria-label="自動化名" value={builderDraft.name} onChange={(event) => setBuilderDraft((draft) => ({ ...draft, name: event.target.value }))} /></label>
+              <label>プロジェクト<input data-control-id="builder.project" aria-label="プロジェクト" value={projectName} readOnly /></label>
+              <label>Lane<input data-control-id="builder.lane" aria-label="Lane" value={builderDraft.lane} onChange={(event) => setBuilderDraft((draft) => ({ ...draft, lane: event.target.value }))} /></label>
+              <label>スケジュール希望（仕様メモ）<input data-control-id="builder.schedule" aria-label="スケジュール希望（仕様メモ）" value={builderDraft.schedule} onChange={(event) => setBuilderDraft((draft) => ({ ...draft, schedule: event.target.value }))} /></label>
+              <label>承認ポリシー<input data-control-id="builder.approval-policy" aria-label="承認ポリシー" value={builderDraft.approval_policy} onChange={(event) => setBuilderDraft((draft) => ({ ...draft, approval_policy: event.target.value }))} /></label>
+              <label>リトライルール<input data-control-id="builder.retry-rule" aria-label="リトライルール" value={builderDraft.retry_rule} onChange={(event) => setBuilderDraft((draft) => ({ ...draft, retry_rule: event.target.value }))} /></label>
             </div>
           </Panel>
           <Panel title="ワークフロー手順" controlId="builder.steps.panel">
@@ -3648,12 +3872,12 @@ function BuilderPage({ model }: { model: AppModel }) {
           <Panel title="定期実行の実設定" controlId="builder.schedule.panel">
             <p className="muted">仕様メモではなく、会社スコープのschedule APIへrevision付きで保存します。次回実行が未計算の場合は成功と扱いません。</p>
             <div className="form-grid">
-              <label>実行種別<select data-control-id="builder.schedule.kind" value={scheduleDraft.kind} disabled={scheduleSaving || !persistedAutomation} onChange={(event) => setScheduleDraft((draft) => ({ ...draft, kind: normalizeScheduleKind(event.target.value) }))}>
+              <label>実行種別<select data-control-id="builder.schedule.kind" aria-label="定期実行の種別" value={scheduleDraft.kind} disabled={scheduleSaving || !persistedAutomation} onChange={(event) => setScheduleDraft((draft) => ({ ...draft, kind: normalizeScheduleKind(event.target.value) }))}>
                 <option value="manual">手動</option><option value="daily">毎日</option><option value="weekly">毎週</option><option value="cron">Cron</option>
               </select></label>
-              <label>実行式<input data-control-id="builder.schedule.expression" value={scheduleDraft.expression} disabled={scheduleSaving || !persistedAutomation || scheduleDraft.kind === "manual"} placeholder={scheduleDraft.kind === "cron" ? "0 9 * * *" : "09:00"} onChange={(event) => setScheduleDraft((draft) => ({ ...draft, expression: event.target.value }))} /></label>
-              <label>Timezone<input data-control-id="builder.schedule.timezone" value={scheduleDraft.timezone} disabled={scheduleSaving || !persistedAutomation} onChange={(event) => setScheduleDraft((draft) => ({ ...draft, timezone: event.target.value }))} /></label>
-              <label className="checkbox-label"><input data-control-id="builder.schedule.enabled" type="checkbox" checked={scheduleDraft.enabled} disabled={scheduleSaving || !persistedAutomation} onChange={(event) => setScheduleDraft((draft) => ({ ...draft, enabled: event.target.checked }))} /> 有効にする</label>
+              <label>実行式<input data-control-id="builder.schedule.expression" aria-label="定期実行の実行式" value={scheduleDraft.expression} disabled={scheduleSaving || !persistedAutomation || scheduleDraft.kind === "manual"} placeholder={scheduleDraft.kind === "cron" ? "0 9 * * *" : "09:00"} onChange={(event) => setScheduleDraft((draft) => ({ ...draft, expression: event.target.value }))} /></label>
+              <label>Timezone<input data-control-id="builder.schedule.timezone" aria-label="定期実行のTimezone" value={scheduleDraft.timezone} disabled={scheduleSaving || !persistedAutomation} onChange={(event) => setScheduleDraft((draft) => ({ ...draft, timezone: event.target.value }))} /></label>
+              <label className="checkbox-label"><input data-control-id="builder.schedule.enabled" aria-label="定期実行を有効にする" type="checkbox" checked={scheduleDraft.enabled} disabled={scheduleSaving || !persistedAutomation} onChange={(event) => setScheduleDraft((draft) => ({ ...draft, enabled: event.target.checked }))} /> 有効にする</label>
             </div>
             <div className="button-row">
               <Button controlId="builder.schedule.save" variant="primary" onClick={saveSchedule} disabled={scheduleSaving || !persistedAutomation}>{scheduleSaving ? "定期実行を保存中" : "定期実行を保存"}</Button>
@@ -3940,7 +4164,7 @@ function RunsPage({ model }: { model: AppModel }) {
       <Panel title="実行前の安全確認" controlId="runs.safety.panel">
         <div className="filter-row">
           {[
-            ["all", "全Project"],
+            ["all", "全プロジェクト"],
             ...projectOptionsFromState(mvpState).map((option) => [option.id, option.label])
             ].map(([key, label]) => <button data-control-id={`runs.project-filter.${key}`} key={key} className={projectFilter === key ? "selected" : ""} onClick={() => { setProjectFilter(key); setActionNote(`Project filter: ${label} を選択しました / ${actionStamp()}`); }}>{label}</button>)}
         </div>
@@ -4054,7 +4278,7 @@ function TemplatesPage({ model }: { model: AppModel }) {
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [saving, setSaving] = useState(false);
   const createIdempotencyRef = useRef<{ fingerprint: string; key: string } | null>(null);
-  const [templateNote, setTemplateNote] = useState("テンプレートを選ぶと詳細が表示されます。使用するを押すと保存結果をここに表示します。");
+  const [templateNote, setTemplateNote] = useState("テンプレートは保存可能な下書きカタログです。接続とLaneの実行可能性は別のreadbackで確認します。");
   const canonicalProjects = projectOptionsFromState(model.mvpState);
   React.useEffect(() => {
     if (model.mvpLoadStatus !== "ready") return;
@@ -4075,7 +4299,7 @@ function TemplatesPage({ model }: { model: AppModel }) {
     }
     if (saving) return;
     setSaving(true);
-    setTemplateNote(`${name}: 保存を開始しました。外部投稿・送信は実行しません。`);
+    setTemplateNote(`${name}: 下書き保存を開始しました。外部投稿・送信は実行しません。`);
     const automationType = name.includes("Gmail") || name.includes("DM") ? "gmail-reply" : category.includes("リサーチ") ? "research-report" : "sns-post";
     const createFingerprint = [selectedProjectId, String(selected), name, category, target, lane, approval].join("|");
     const createKey = stableIdempotencyKey(createIdempotencyRef, "template-automation-create", createFingerprint);
@@ -4111,11 +4335,11 @@ function TemplatesPage({ model }: { model: AppModel }) {
       setMvpState(result.state);
       setAutomationRows(toAutomationRows(result.state.automations ?? []));
       setCreatedTemplates((items) => items.includes(name) ? items : [...items, name]);
-      setReceipt(`${name} から自動化案を保存しました。automation=${result.automation.id} / 外部操作は未実行です。`);
-      setTemplateNote(`${name}: 保存完了 automation=${result.automation.id} / 外部操作は未実行です。`);
+      setReceipt(`${name} の自動化案の下書きを保存しました。automation=${result.automation.id} / 外部操作は未実行です。`);
+      setTemplateNote(`${name}: 下書き保存完了 automation=${result.automation.id} / 接続・Laneの実行可能性は未確認です。`);
     } catch {
-      setReceipt(`${name} のAPI保存は未確認です。作成済みには追加していません。外部操作は未実行です。`);
-      setTemplateNote(`${name}: API保存は未確認です。作成済みには追加していません。外部操作は未実行です。`);
+      setReceipt(`${name} の下書きAPI保存は未確認です。作成済みには追加していません。外部操作は未実行です。`);
+      setTemplateNote(`${name}: 下書きAPI保存は未確認です。作成済みには追加していません。`);
     } finally {
       setSaving(false);
     }
@@ -4135,8 +4359,9 @@ function TemplatesPage({ model }: { model: AppModel }) {
   }
   return (
     <section>
-      <PageTitle title="テンプレート / Skills" desc="再利用可能な自動化テンプレートから作成します。" />
+      <PageTitle title="テンプレート / Skills" desc="再利用可能な自動化の下書きカタログです。" />
       <div className="action-note" role="status">{templateNote}</div>
+      <div className="notice-row" role="status">表示される接続名とLaneはカタログ上の想定値です。保存は下書き作成だけで、実際の接続・ログイン・外部操作は行いません。</div>
       <label className="chat-input">
         保存先の会社
         <select data-control-id="templates.project-select" aria-label="テンプレートの保存先会社" value={selectedProjectId} disabled={model.mvpLoadStatus !== "ready"} onChange={(event) => setSelectedProjectId(event.target.value)}>
@@ -4145,8 +4370,8 @@ function TemplatesPage({ model }: { model: AppModel }) {
         </select>
       </label>
       <div className="split">
-        <div className="template-grid">{templates.map((t, i) => <button data-control-id={`templates.card.${i}`} key={t[0]} className={`template-card ${i === selected ? "selected" : ""}`} onClick={() => { setSelected(i); setTemplateNote(`${t[0]} を選択しました。必要接続=${t[2]} / 推奨Lane=${t[3]}`); }}><LayoutTemplate size={17} /><strong>{t[0]}</strong><span>{t[1]}</span><small>{t[2]} / {t[3]}</small></button>)}</div>
-        <aside className="side-panel wide"><h3>{templates[selected][0]}</h3><p>必要接続: {templates[selected][2]}</p><p>推奨Lane: {templates[selected][3]}</p><p>承認: {templates[selected][4]}</p><Button controlId="templates.use" variant="primary" onClick={useTemplate} disabled={!selectedProjectIsVerified || saving}>{saving ? "保存確認中" : "使用する"}</Button><h3>作成済み</h3><p>{createdTemplates.length ? createdTemplates.join(" / ") : "まだありません"}</p></aside>
+        <div className="template-grid">{templates.map((t, i) => <button data-control-id={`templates.card.${i}`} key={t[0]} className={`template-card ${i === selected ? "selected" : ""}`} onClick={() => { setSelected(i); setTemplateNote(`${t[0]} を選択しました。想定接続=${t[2]} / 推奨表示Lane=${t[3]}（実行可能性は未確認）`); }}><LayoutTemplate size={17} /><strong>{t[0]}</strong><span>{t[1]}</span><small>想定接続: {t[2]} / Lane表示: {t[3]}</small></button>)}</div>
+        <aside className="side-panel wide"><h3>{templates[selected][0]}</h3><p>想定接続: {templates[selected][2]}</p><p>推奨表示Lane: {templates[selected][3]}（実行可能性は未確認）</p><p>承認: {templates[selected][4]}</p><Button controlId="templates.use" variant="primary" onClick={useTemplate} disabled={!selectedProjectIsVerified || saving}>{saving ? "保存確認中" : "下書きを保存"}</Button><h3>作成済み</h3><p>{createdTemplates.length ? createdTemplates.join(" / ") : "まだありません"}</p></aside>
       </div>
     </section>
   );

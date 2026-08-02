@@ -4961,7 +4961,7 @@ test("topbar start API path defers Obsidian export until after the immediate das
 
   try {
     const token = "sk-topbarDeferred1234567890abcdefghijklmnopqrstuvwxyzABCD";
-    const secretsResponse = await postJson("/api/secrets/from-message", { text: `OpenAI API key: ${token}` });
+    const secretsResponse = await postJson("/api/secrets/from-message", { project_id: "project-a", text: `OpenAI API key: ${token}` });
     const runResponse = await postJson("/api/runs/start", { company_id: "project-a", command: "Daily AI run with saved key" });
     const dashboardResponse = await getJson("/api/dashboard");
     const dashboard = JSON.parse(dashboardResponse.body) as { knowledgeNotes: Array<{ id: string }>; runs: Array<{ id: string }> };

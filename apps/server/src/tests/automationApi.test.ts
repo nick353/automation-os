@@ -414,6 +414,12 @@ test("state reload includes schedules, memory, and account refs, and archive pau
   const state = await requestJson("GET", "/api/mvp/state?company_id=api_company_state");
   assert.equal(state.status, 200, state.raw);
   assert.deepEqual(state.json.company_scope.company_ids, ["api_company_state"]);
+  assert.equal(state.json.sync_readback.schema, "mvp_sync_readback.v1");
+  assert.deepEqual(state.json.sync_readback.company_ids, ["api_company_state"]);
+  assert.equal(state.json.sync_readback.automation_count, state.json.automations.length);
+  assert.equal(state.json.sync_readback.registered_workflow_count, state.json.registered_workflow_ids.length);
+  assert.equal(state.json.sync_readback.runs_count, state.json.runs.length);
+  assert.ok(typeof state.json.sync_readback.captured_at === "string");
   assert.equal("deployment" in state.json, false);
   assert.equal("productionGuard" in state.json, false);
   assert.equal("accessGuard" in state.json, false);
