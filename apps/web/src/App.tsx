@@ -1007,7 +1007,7 @@ function ChatProgressPanel({ progress, planning }: { progress: PlannerProgress |
   if (!progress && !planning) return null;
   const status = progress?.status ?? "queued";
   return (
-    <div className="chat-progress" data-control-id="chat.progress.panel" role="status" aria-live="polite">
+    <div className="chat-progress" data-control-id="chat.progress.panel" role="region" aria-live="off" aria-label={`Chat処理進捗。状態=${plannerProgressLabel(status)}${progress?.jobId ? ` / job=${progress.jobId}` : ""}${progress?.threadId ? ` / thread=${progress.threadId}` : ""}`}>
       <div className="chat-progress-heading">
         <strong>{plannerProgressLabel(status)}</strong>
         {progress?.jobId && <span className="muted">job: {progress.jobId}</span>}
@@ -1182,8 +1182,69 @@ function useRoute() {
   return route;
 }
 
+type ChatRouteContext = {
+  companyId: string;
+  projectId: string;
+  context: string;
+  runId: string;
+  scheduleId: string;
+  automationId: string;
+};
+
+function routePath(route: string) {
+  const hash = route.startsWith("#") ? route : `#${route}`;
+  const queryIndex = hash.indexOf("?");
+  return queryIndex >= 0 ? hash.slice(0, queryIndex) : hash;
+}
+
+function safeRouteValue(value: string | null, maxLength = 120) {
+  const normalized = value?.trim() ?? "";
+  return normalized && normalized.length <= maxLength && !/[\u0000-\u001f\u007f]/u.test(normalized) ? normalized : "";
+}
+
+function safeProjectId(value: string | null) {
+  const normalized = safeRouteValue(value, 120);
+  return normalized && /^[a-z0-9][a-z0-9_-]*$/i.test(normalized) ? normalized : "";
+}
+
+function chatRouteContext(route: string): ChatRouteContext {
+  const query = route.includes("?") ? route.slice(route.indexOf("?") + 1) : "";
+  const params = new URLSearchParams(query);
+  const companyId = safeProjectId(params.get("company"));
+  const projectId = safeProjectId(params.get("project"));
+  return {
+    companyId: companyId || projectId,
+    projectId: projectId || companyId,
+    context: safeRouteValue(params.get("context"), 80),
+    runId: safeRouteValue(params.get("run") || params.get("run_id")),
+    scheduleId: safeRouteValue(params.get("schedule") || params.get("schedule_id")),
+    automationId: safeRouteValue(params.get("automation") || params.get("automation_id"))
+  };
+}
+
+function chatHref({ companyId, projectId, context, runId, scheduleId, automationId }: Partial<ChatRouteContext> = {}) {
+  const params = new URLSearchParams();
+  const scopedProjectId = safeProjectId(companyId ?? null) || safeProjectId(projectId ?? null);
+  if (scopedProjectId) {
+    params.set("company", scopedProjectId);
+    params.set("project", scopedProjectId);
+  }
+  const values: Array<[string, string | undefined]> = [
+    ["context", context],
+    ["run", runId],
+    ["schedule", scheduleId],
+    ["automation", automationId]
+  ];
+  values.forEach(([key, value]) => {
+    const normalized = safeRouteValue(value ?? null);
+    if (normalized) params.set(key, normalized);
+  });
+  const query = params.toString();
+  return `#/chat${query ? `?${query}` : ""}`;
+}
+
 function projectSlugFromRoute(route: string) {
-  return route.match(/\/projects\/([^/]+)/)?.[1] ?? "";
+  return routePath(route).match(/\/projects\/([^/]+)/)?.[1] ?? "";
 }
 
 function automationIdFromRoute(route: string) {
@@ -1235,7 +1296,7 @@ function openAutomationCreator(state: MvpState, setReceipt?: (value: string) => 
   }
   const projectId = resolveProjectSelection(state);
   if (projectId) rememberProject(projectId);
-  go("#/chat");
+  go(chatHref({ companyId: projectId, context: "automation-create" }));
 }
 
 function projectSlugFromPrompt(prompt: string) {
@@ -1405,6 +1466,7 @@ function App() {
 }
 
 function Sidebar({ route, isOwner }: { route: string; isOwner: boolean }) {
+  const currentPath = routePath(route);
   const nav = [
     ["ホーム", "#/", Home],
     ["チャット", "#/chat", MessageSquare],
@@ -1430,7 +1492,7 @@ function Sidebar({ route, isOwner }: { route: string; isOwner: boolean }) {
                         : href === "#/templates" ? "shell.sidebar.templates"
                           : "shell.sidebar.admin"
             }
-            className={route === href || (href.includes("projects") && route.includes("projects")) ? "active" : ""}
+            className={currentPath === href || (href.includes("projects") && currentPath.includes("projects")) ? "active" : ""}
             href={href}
             aria-label={label}
             title={label}
@@ -1518,8 +1580,9 @@ function TopHeader({ receipt, setReceipt, onSync, isOwner, mvpState, mvpLoadStat
 
 function ProjectTabs({ mvpState }: { mvpState: MvpState }) {
   const route = useRoute();
+  const currentPath = routePath(route);
   const activeProject = projectSlugFromRoute(route);
-  const activeSection = subTabLabels.find(([, section]) => route.includes(`/${section}`))?.[1] ?? "automations";
+  const activeSection = subTabLabels.find(([, section]) => currentPath.includes(`/${section}`))?.[1] ?? "automations";
   const stateOptions = projectOptionsFromState(mvpState);
   const projectOptions = stateOptions;
   return (
@@ -1529,7 +1592,7 @@ function ProjectTabs({ mvpState }: { mvpState: MvpState }) {
         : <span className="muted">会社はまだ登録されていません</span>}</div>
       <div className="sub-tabs">{subTabLabels.map(([label, section]) => {
         const href = `#/projects/${activeProject}/${section}`;
-        return <a data-control-id={`projects.sections.${section}`} className={route === href ? "active" : ""} key={href} href={href}>{label}</a>;
+        return <a data-control-id={`projects.sections.${section}`} className={currentPath === href ? "active" : ""} key={href} href={href}>{label}</a>;
       })}</div>
     </div>
   );
@@ -1969,16 +2032,16 @@ function ProjectPresentationProfilePanel({ model, companyId }: { model: AppModel
       {canManage ? <details className="profile-editor">
         <summary>このプロジェクトの見せ方を調整</summary>
         <div className="builder-grid">
-          <label>種類<select value={draft.kind} onChange={(event) => update("kind", event.target.value)}><option value="research">調査</option><option value="jobs">応募</option><option value="commerce">商品</option><option value="social">SNS</option><option value="operations">運用</option></select></label>
-          <label>表示名<input value={draft.label} onChange={(event) => update("label", event.target.value)} /></label>
-          <label>鮮度SLA（分）<input type="number" min="1" value={draft.freshnessSlaMinutes} onChange={(event) => update("freshnessSlaMinutes", event.target.value)} placeholder="未設定" /></label>
-          <label>グルーピング<select value={draft.preferredGrouping} onChange={(event) => update("preferredGrouping", event.target.value)}><option value="day">日</option><option value="week">週</option><option value="workflow">workflow</option><option value="stage">stage</option></select></label>
-          <label className="span-2">主要KPI（カンマ区切り）<input value={draft.primaryMetrics} onChange={(event) => update("primaryMetrics", event.target.value)} /></label>
-          <label className="span-2">widget（カンマ区切り）<input value={draft.widgets} onChange={(event) => update("widgets", event.target.value)} placeholder="kpi, timeline, failure_table" /></label>
-          <label className="span-2">目的<textarea value={draft.purpose} onChange={(event) => update("purpose", event.target.value)} /></label>
-          <label className="span-2">Browser Use lane<textarea value={draft.browserUseLane} onChange={(event) => update("browserUseLane", event.target.value)} /></label>
-          <label className="span-2">停止境界<textarea value={draft.stopBoundary} onChange={(event) => update("stopBoundary", event.target.value)} /></label>
-          <label className="span-2">説明<textarea value={draft.explanation} onChange={(event) => update("explanation", event.target.value)} /></label>
+          <label><span className="field-label">種類</span><select aria-label="表示profileの種類" value={draft.kind} onChange={(event) => update("kind", event.target.value)}><option value="research">調査</option><option value="jobs">応募</option><option value="commerce">商品</option><option value="social">SNS</option><option value="operations">運用</option></select></label>
+          <label><span className="field-label">表示名</span><input aria-label="表示profileの表示名" value={draft.label} onChange={(event) => update("label", event.target.value)} /></label>
+          <label><span className="field-label">鮮度SLA（分）</span><input aria-label="表示profileの鮮度SLA（分）" type="number" min="1" value={draft.freshnessSlaMinutes} onChange={(event) => update("freshnessSlaMinutes", event.target.value)} placeholder="未設定" /></label>
+          <label><span className="field-label">グルーピング</span><select aria-label="表示profileのグルーピング" value={draft.preferredGrouping} onChange={(event) => update("preferredGrouping", event.target.value)}><option value="day">日</option><option value="week">週</option><option value="workflow">workflow</option><option value="stage">stage</option></select></label>
+          <label className="span-2"><span className="field-label">主要KPI（カンマ区切り）</span><input aria-label="表示profileの主要KPI" value={draft.primaryMetrics} onChange={(event) => update("primaryMetrics", event.target.value)} /></label>
+          <label className="span-2"><span className="field-label">widget（カンマ区切り）</span><input aria-label="表示profileのwidget" value={draft.widgets} onChange={(event) => update("widgets", event.target.value)} placeholder="kpi, timeline, failure_table" /></label>
+          <label className="span-2"><span className="field-label">目的</span><textarea aria-label="表示profileの目的" value={draft.purpose} onChange={(event) => update("purpose", event.target.value)} /></label>
+          <label className="span-2"><span className="field-label">Browser Use lane</span><textarea aria-label="表示profileのBrowser Use lane" value={draft.browserUseLane} onChange={(event) => update("browserUseLane", event.target.value)} /></label>
+          <label className="span-2"><span className="field-label">停止境界</span><textarea aria-label="表示profileの停止境界" value={draft.stopBoundary} onChange={(event) => update("stopBoundary", event.target.value)} /></label>
+          <label className="span-2"><span className="field-label">説明</span><textarea aria-label="表示profileの説明" value={draft.explanation} onChange={(event) => update("explanation", event.target.value)} /></label>
         </div>
         <div className="button-row"><Button controlId="truthful.performance.profile.save" variant="primary" onClick={() => { void save(); }} disabled={saving}>{saving ? "保存確認中" : "表示profileを保存"}</Button></div>
       </details> : <p className="muted">表示profileの保存はOwner/Admin/Operatorだけが行えます。</p>}
@@ -2347,16 +2410,17 @@ function OwnerAdminPage({ model }: { model: AppModel }) {
 
 function renderPage(route: string, model: AppModel) {
   const { setReceipt } = model;
-  if (route === "#/chat") return <ChatPage model={model} />;
-  if (route === "#/approvals") return <ApprovalsPage model={model} />;
-  if (route === "#/runs") return <RunsPage model={model} />;
-  if (route === "#/templates") return <TemplatesPage model={model} />;
-  if (route === "#/admin") return <OwnerAdminPage model={model} />;
-  if (route === "#/plugins") return <TruthfulPluginsPage model={model} />;
-  if (route === "#/production/status") return hasOwnerAdminAccess(model.mvpState) ? <TruthfulProductionStatusPage model={model} /> : <ProjectUnavailablePage reason="本番状態はOwner専用です。" />;
-  if (route === "#/system/pc-status") return <PcStatusPage model={model} />;
-  if (route === "#/projects" || route === "#/projects/") return <ProjectDirectoryPage model={model} />;
-  if (route.includes("/projects/")) {
+  const currentPath = routePath(route);
+  if (currentPath === "#/chat") return <ChatPage model={model} />;
+  if (currentPath === "#/approvals") return <ApprovalsPage model={model} />;
+  if (currentPath === "#/runs") return <RunsPage model={model} />;
+  if (currentPath === "#/templates") return <TemplatesPage model={model} />;
+  if (currentPath === "#/admin") return <OwnerAdminPage model={model} />;
+  if (currentPath === "#/plugins") return <TruthfulPluginsPage model={model} />;
+  if (currentPath === "#/production/status") return hasOwnerAdminAccess(model.mvpState) ? <TruthfulProductionStatusPage model={model} /> : <ProjectUnavailablePage reason="本番状態はOwner専用です。" />;
+  if (currentPath === "#/system/pc-status") return <PcStatusPage model={model} />;
+  if (currentPath === "#/projects" || currentPath === "#/projects/") return <ProjectDirectoryPage model={model} />;
+  if (currentPath.includes("/projects/")) {
     if (model.mvpLoadStatus === "loading") return <ProjectUnavailablePage reason="会社一覧をAPIから確認しています。" />;
     if (model.mvpLoadStatus === "error") return <ProjectUnavailablePage reason="会社一覧を確認できませんでした。同期してから再度お試しください。" />;
     const projectOptions = projectOptionsFromState(model.mvpState);
@@ -2364,15 +2428,15 @@ function renderPage(route: string, model: AppModel) {
     if (!projectOptions.length) return <ProjectUnavailablePage reason="会社はまだ登録されていません。API readbackで会社を確認してから自動化を作成してください。" />;
     if (!projectOptions.some((project) => project.id === requestedProject)) return <ProjectUnavailablePage reason="この会社は現在のAPI readbackでは確認できません。会社一覧から選び直してください。" />;
   }
-  if (route.includes("/performance")) return <TruthfulPerformancePage model={model} />;
-  if (route.includes("/automations/") && route.includes("/edit")) return <BuilderPage model={model} />;
-  if (route.includes("/lanes")) return <TruthfulLanesPage model={model} />;
-  if (route.includes("/memory")) return <TruthfulMemoryPage model={model} />;
-  if (route.includes("/integrations") || route.includes("/security")) return <TruthfulIntegrationsPage model={model} />;
-  if (route.includes("/artifacts")) return <TruthfulArtifactsPage model={model} />;
-  if (route.includes("/recovery")) return <TruthfulRecoveryPage model={model} />;
-  if (route.includes("/runs/")) return <TruthfulRunDetailPage model={model} />;
-  if (route.includes("/automations")) return <AutomationsPage model={model} />;
+  if (currentPath.includes("/performance")) return <TruthfulPerformancePage model={model} />;
+  if (currentPath.includes("/automations/") && currentPath.includes("/edit")) return <BuilderPage model={model} />;
+  if (currentPath.includes("/lanes")) return <TruthfulLanesPage model={model} />;
+  if (currentPath.includes("/memory")) return <TruthfulMemoryPage model={model} />;
+  if (currentPath.includes("/integrations") || currentPath.includes("/security")) return <TruthfulIntegrationsPage model={model} />;
+  if (currentPath.includes("/artifacts")) return <TruthfulArtifactsPage model={model} />;
+  if (currentPath.includes("/recovery")) return <TruthfulRecoveryPage model={model} />;
+  if (currentPath.includes("/runs/")) return <TruthfulRunDetailPage model={model} />;
+  if (currentPath.includes("/automations")) return <AutomationsPage model={model} />;
   return <HomePage model={model} />;
 }
 
@@ -2410,7 +2474,7 @@ function ProjectDirectoryPage({ model }: { model: AppModel }) {
       model.setFeedbackReadback(state.feedbacks ?? []);
       rememberProject(createdCompanyId);
       model.setReceipt(`${name} を登録しました。最初の自動化を作成できます。`);
-      go("#/chat");
+      go(chatHref({ companyId: createdCompanyId, context: "company-setup" }));
     } catch {
       setSetupNote("会社を登録できませんでした。入力内容とAPI接続を確認してください。");
       model.setReceipt("会社登録のreadbackを確認できなかったため、自動化作成画面には進みませんでした。");
@@ -2725,7 +2789,7 @@ function HomePage({ model }: { model: AppModel }) {
           <div className="first-use-content">
             <p>保存先の会社を選ぶと、その会社を選択した状態でチャットを開きます。</p>
             <div className="project-switcher">
-              {companyOptions.map((project) => <Button controlId={`home.first-use.company.${project.id}`} key={project.id} onClick={() => { rememberProject(project.id); go("#/chat"); }}>{project.label}で作る</Button>)}
+              {companyOptions.map((project) => <Button controlId={`home.first-use.company.${project.id}`} key={project.id} onClick={() => { rememberProject(project.id); go(chatHref({ companyId: project.id, context: "home-company-picker" })); }}>{project.label}で作る</Button>)}
             </div>
           </div>
         </Panel>
@@ -2832,6 +2896,9 @@ function HomePage({ model }: { model: AppModel }) {
 
 function ChatPage({ model }: { model: AppModel }) {
   const { setReceipt, setAutomationRows, mvpState, setMvpState } = model;
+  const route = useRoute();
+  const requestedChatContext = useMemo(() => chatRouteContext(route), [route]);
+  const requestedProjectId = requestedChatContext.companyId || requestedChatContext.projectId;
   const [created, setCreated] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [requestText, setRequestText] = useState("");
@@ -2840,9 +2907,9 @@ function ChatPage({ model }: { model: AppModel }) {
   const [plannerReadback, setPlannerReadback] = useState<PlannerReadback | null>(null);
   const [plannerProgress, setPlannerProgress] = useState<PlannerProgress | null>(null);
   const [plannerError, setPlannerError] = useState<string | null>(null);
-  const [selectedProjectId, setSelectedProjectId] = useState(rememberedProject());
+  const [selectedProjectId, setSelectedProjectId] = useState(requestedProjectId || rememberedProject());
   const [selectedAutomationId, setSelectedAutomationId] = useState("");
-  const [chatThreadId, setChatThreadId] = useState(() => rememberedChatThread(rememberedProject()));
+  const [chatThreadId, setChatThreadId] = useState(() => rememberedChatThread(requestedProjectId || rememberedProject()));
   const [chatThreads, setChatThreads] = useState<ChatThreadReadback[]>([]);
   const [chatHistoryLoading, setChatHistoryLoading] = useState(false);
   const [planning, setPlanning] = useState(false);
@@ -2859,11 +2926,14 @@ function ChatPage({ model }: { model: AppModel }) {
   React.useEffect(() => {
     if (model.mvpLoadStatus !== "ready") return;
     setSelectedProjectId((current) => {
-      const next = resolveProjectSelection(mvpState, current);
+      const requested = requestedProjectId && canonicalProjects.some((project) => project.id === requestedProjectId)
+        ? requestedProjectId
+        : "";
+      const next = resolveProjectSelection(mvpState, requested || current);
       if (next) rememberProject(next);
       return next;
     });
-  }, [model.mvpLoadStatus, mvpState]);
+  }, [model.mvpLoadStatus, mvpState, requestedProjectId]);
   const platformOptions = ["Instagram", "TikTok", "Facebook"];
   const allPlatformsSelected = selectedPlatforms.length === platformOptions.length;
   const draftPrompt = prompt.trim();
@@ -2879,6 +2949,8 @@ function ChatPage({ model }: { model: AppModel }) {
   const plannerAdapter = plannerReadback?.planner_adapter ?? "client_deterministic_preview";
   const plannerMode = plannerReadback?.planner_mode ?? "not_requested";
   const plannerPublicBlocker = plannerReadback?.exact_blocker ? publicBlockerSummary(plannerReadback.exact_blocker) : null;
+  const chatScopeLabel = targetProject ? projectLabelFromState(mvpState, targetProject) : "未選択";
+  const chatStatus = plannerProgress?.status ?? plannerReadback?.chat_status ?? (plannerReadback ? "completed" : "idle");
   const targetProjectIsVerified = model.mvpLoadStatus === "ready" && Boolean(targetProject) && canonicalProjects.some((project) => project.id === targetProject);
   const canCreatePlan = plannerReadback?.can_create === true && targetProjectIsVerified;
   const isCreateAutomationPlan = plannerReadback?.planner_operation === "create_automation";
@@ -3285,12 +3357,32 @@ function ChatPage({ model }: { model: AppModel }) {
       <PageTitle title="チャット" desc="自然言語から自動化を作成します。">
         <Button controlId="chat.reset" icon={<RefreshCw size={14} />} onClick={resetChat} disabled={planning || creating}>会話をリセット</Button>
       </PageTitle>
+      <div className="chat-context" role="region" aria-label="Chatの会社scopeと状態">
+        <strong>会社scope: {chatScopeLabel}</strong>
+        <span>status: {plannerProgress ? plannerProgressLabel(chatStatus) : chatStatus}</span>
+        {requestedChatContext.context && <span>context: {requestedChatContext.context}</span>}
+        {requestedChatContext.runId && <span>run: {requestedChatContext.runId}</span>}
+        {requestedChatContext.scheduleId && <span>schedule: {requestedChatContext.scheduleId}</span>}
+        {(plannerReadback?.chat_job_id || plannerProgress?.jobId) && <span>job: {plannerReadback?.chat_job_id ?? plannerProgress?.jobId}</span>}
+        {(plannerReadback?.chat_thread_id || chatThreadId || plannerProgress?.threadId) && <span>thread: {plannerReadback?.chat_thread_id ?? chatThreadId ?? plannerProgress?.threadId}</span>}
+      </div>
       <label className="chat-input">
         保存先の会社
         <select data-control-id="chat.project-select" aria-label="保存先の会社" value={selectedProjectId} disabled={planning || creating || model.mvpLoadStatus !== "ready"} onChange={(event) => {
           const projectId = event.target.value;
           setSelectedProjectId(projectId);
-          if (projectId) rememberProject(projectId);
+          if (projectId) {
+            rememberProject(projectId);
+            if (projectId !== requestedProjectId) {
+              go(chatHref({
+                companyId: projectId,
+                context: requestedChatContext.context || "chat",
+                runId: requestedChatContext.runId,
+                scheduleId: requestedChatContext.scheduleId,
+                automationId: requestedChatContext.automationId
+              }));
+            }
+          }
           setCreated(false);
         }}>
           <option value="">会社を選択してください</option>
@@ -3307,12 +3399,12 @@ function ChatPage({ model }: { model: AppModel }) {
           {!targetAutomations.length && <small>この会社に保存済みの自動化がありません。</small>}
         </label>
       )}
-      <div className="action-note" role="status">{chatNote}</div>
+      <div className="action-note" role="status" aria-live="off">{chatNote}</div>
       {plannerError && <div className="notice-row" role="alert">{plannerError}</div>}
-      {presentationProfile && <div className="notice-row" role="status">
+      {presentationProfile && <div className="notice-row" role="note">
         表示プロファイル: {presentationProfile.label} / {presentationProfile.explanation ?? "このプロジェクトのreadbackに合わせて表示します。"}
       </div>}
-      {mvpState.browser_use_runtime && <div className="notice-row" role="status">
+      {mvpState.browser_use_runtime && <div className="notice-row" role="note">
         Browser Use: {publicBrowserUseRuntimeStatus(mvpState.browser_use_runtime)} / {mvpState.browser_use_runtime.summary ?? "runtime readback待ち"} / {mvpState.browser_use_runtime.fallbackPolicy ?? "readback待ち"} / registered lanes {mvpState.browser_use_runtime.lanes?.length ?? 0}
       </div>}
       <div className="choice-row" aria-label="司令室ショートカット">
@@ -3342,8 +3434,8 @@ function ChatPage({ model }: { model: AppModel }) {
         ) : <p className="muted">この会社に保存済みのチャット履歴はありません。</p>}
       </Panel>
       <div className="chat-shell">
-        <div className="chat-thread">
-          <div className="message-list" aria-live="polite">
+        <div className="chat-thread" role="region" aria-label={`Chat司令室。会社scope=${chatScopeLabel} / status=${chatStatus}`}>
+          <div className="message-list" role="log" aria-live="polite" aria-relevant="additions text" aria-label="Chatメッセージ">
             {messages.map((message) => <Bubble key={message.id} side={message.role === "user" ? "user" : undefined}>{message.text}</Bubble>)}
           </div>
           <ChatProgressPanel progress={plannerProgress} planning={planning} />
@@ -3354,6 +3446,7 @@ function ChatPage({ model }: { model: AppModel }) {
             <button type="button" data-control-id="chat.platform.select-all" aria-pressed={allPlatformsSelected} disabled={planning || creating} className={allPlatformsSelected ? "selected" : ""} onClick={selectAllPlatforms}>{allPlatformsSelected ? "全て解除" : "全て選択"}</button>
             <button type="button" data-control-id="chat.details.focus" disabled={planning || creating} onClick={() => { setChatNote(`詳細入力へフォーカスしました / ${actionStamp()}`); promptRef.current?.focus(); }}>詳細を書く</button>
           </div>
+          <div className="chat-composer">
           <label className="chat-input">
             自動化リクエスト
             <textarea
@@ -3392,6 +3485,7 @@ function ChatPage({ model }: { model: AppModel }) {
             <Button controlId="chat.send" variant="primary" icon={<MessageSquare size={14} />} onClick={sendMessage} disabled={!draftPrompt || planning || creating}>{planning ? "確認中" : "送信して考える"}</Button>
             <Button controlId="chat.recreate" onClick={startPlan} disabled={!activePrompt || planning || creating}>プランを再作成</Button>
             <Button controlId="chat.reset-input" onClick={resetChat} disabled={planning || creating}>入力をリセット</Button>
+          </div>
           </div>
           {planVisible && (
           <div className="plan-card">
@@ -3566,7 +3660,7 @@ function AutomationsPage({ model }: { model: AppModel }) {
     <section>
       <ProjectTabs mvpState={mvpState} />
       <PageTitle title={projectName} desc="定期実行">
-        <Button controlId="projects.new" icon={<Plus size={15} />} variant="primary" onClick={() => { setPageNote(`新規追加: チャットへ移動します / ${actionStamp()}`); go("#/chat"); }}>新規追加</Button>
+        <Button controlId="projects.new" icon={<Plus size={15} />} variant="primary" onClick={() => { setPageNote(`新規追加: チャットへ移動します / ${actionStamp()}`); go(chatHref({ companyId: activeProject, context: "project-automations" })); }}>新規追加</Button>
       </PageTitle>
       <div className="action-note" role="status">{pageNote}</div>
       <ProjectScopeNotice projectId={activeProject} mvpState={mvpState} />
@@ -3582,7 +3676,7 @@ function AutomationsPage({ model }: { model: AppModel }) {
         </Panel>
       )}
       <Panel title="自動化一覧" controlId="projects.automation.panel">
-        <DataTable controlId="projects.automation.table" headers={["タスク名", "説明", "スケジュール", "Lane", "最終実行", "ステータス", "操作"]} rows={visibleAutomationRows.length ? visibleAutomationRows.map((a) => [a.name, a.desc, <div data-control-id={`projects.automation.schedule.${a.id}`}><strong>{a.schedule}</strong><small>next {a.next_run_at} / version {a.schedule_version}</small></div>, a.lane, a.last, <StatusBadge status={a.status} />, <div className="row-actions"><IconButton controlId={`projects.automation.edit.${a.id}`} label={`${a.name}を編集`} onClick={() => { setPageNote(`${a.name}: 編集画面へ移動します / ${actionStamp()}`); go(`#/projects/${activeProject}/automations/${a.id}/edit`); }}><Edit3 size={14} /></IconButton><IconButton controlId={`projects.automation.archive.${a.id}`} label={`${a.name}をアーカイブ`} disabled={Boolean(archivingId)} onClick={() => archiveAutomation(a)}>{archivingId === a.id ? <Clock size={14} /> : <Archive size={14} />}</IconButton></div>]) : [["このプロジェクトの自動化はまだありません", "チャットから追加できます", "-", "-", "-", <StatusBadge status="draft" />, <Button controlId="projects.automation.create" onClick={() => { setPageNote(`作成する: チャットへ移動します / ${actionStamp()}`); go("#/chat"); }}>作成する</Button>]]} />
+        <DataTable controlId="projects.automation.table" headers={["タスク名", "説明", "スケジュール", "Lane", "最終実行", "ステータス", "操作"]} rows={visibleAutomationRows.length ? visibleAutomationRows.map((a) => [a.name, a.desc, <div data-control-id={`projects.automation.schedule.${a.id}`}><strong>{a.schedule}</strong><small>next {a.next_run_at} / version {a.schedule_version}</small></div>, a.lane, a.last, <StatusBadge status={a.status} />, <div className="row-actions"><IconButton controlId={`projects.automation.edit.${a.id}`} label={`${a.name}を編集`} onClick={() => { setPageNote(`${a.name}: 編集画面へ移動します / ${actionStamp()}`); go(`#/projects/${activeProject}/automations/${a.id}/edit`); }}><Edit3 size={14} /></IconButton><IconButton controlId={`projects.automation.archive.${a.id}`} label={`${a.name}をアーカイブ`} disabled={Boolean(archivingId)} onClick={() => archiveAutomation(a)}>{archivingId === a.id ? <Clock size={14} /> : <Archive size={14} />}</IconButton></div>]) : [["このプロジェクトの自動化はまだありません", "チャットから追加できます", "-", "-", "-", <StatusBadge status="draft" />, <Button controlId="projects.automation.create" onClick={() => { setPageNote(`作成する: チャットへ移動します / ${actionStamp()}`); go(chatHref({ companyId: activeProject, context: "project-automations" })); }}>作成する</Button>]]} />
       </Panel>
       {activeProject && (
         <Panel title="Codex App登録済み自動化" controlId="projects.registered.panel">
@@ -3601,14 +3695,14 @@ function AutomationsPage({ model }: { model: AppModel }) {
                   type="button"
                   data-control-id={`projects.registered.open.${item.id}`}
                   className="icon-btn"
-                  aria-label={item.action_label ?? "確認"}
-                  title={item.action_label ?? "確認"}
+                  aria-label={`${item.name ?? item.id}: ${item.action_label ?? item.ui_action ?? "確認"}`}
+                  title={`${item.name ?? item.id}: ${item.action_label ?? item.ui_action ?? "確認"}`}
                   onClick={() => requestRegisteredRun(item)}
                   disabled={Boolean(registeredRequestingId)}
                 >
                   {registeredRequestingId === item.id ? <Clock size={14} /> : item.can_run ? <Play size={14} /> : <ShieldCheck size={14} />}
                 </button>
-                <IconButton controlId={`projects.registered.issue.${item.id}`} label="問題を送る" onClick={() => openFeedbackFor(`${item.name ?? item.id}: `, {
+                <IconButton controlId={`projects.registered.issue.${item.id}`} label={`${item.name ?? item.id}: 問題を送る`} onClick={() => openFeedbackFor(`${item.name ?? item.id}: `, {
                   source: "registered_automation",
                   automation_id: item.id,
                   automation_name: item.name ?? item.id,
@@ -3617,7 +3711,7 @@ function AutomationsPage({ model }: { model: AppModel }) {
                   exact_blocker: item.exact_blocker ?? item.blocked_action ?? "",
                   route: location.hash || `#/projects/${activeProject}/automations`
                 })}><AlertTriangle size={14} /></IconButton>
-                <IconButton controlId={`projects.registered.detail.${item.id}`} label="詳細" onClick={() => describeRegistered(item)}><MoreHorizontal size={14} /></IconButton>
+                <IconButton controlId={`projects.registered.detail.${item.id}`} label={`${item.name ?? item.id}: 詳細`} onClick={() => describeRegistered(item)}><MoreHorizontal size={14} /></IconButton>
                 {registeredReceipts[item.id] && <small className="inline-action-receipt">{registeredReceipts[item.id]}</small>}
               </div>
             ]) : [["Codex App登録自動化のreadbackがありません", registeredReadback.exact_boundary ?? "unavailable", "-", "-", "-", <StatusBadge status="waiting" label="read-only" />]]}
@@ -4155,6 +4249,22 @@ function RunsPage({ model }: { model: AppModel }) {
         <Button controlId="runs.refresh" icon={<RefreshCw size={15} />} onClick={refresh}>再読込</Button>
       </PageTitle>
       <div className="action-note" role="status">{actionNote}</div>
+      <div className="runs-status-toolbar" aria-label="実行履歴の状態フィルター">
+        <span className="field-label">履歴フィルター</span>
+        <div className="filter-row">
+          {[
+            ["active", `処理中 ${activeRuns.length}`],
+            ["blocked", `停止 ${blockedRuns.length}`],
+            ["completed", `完了 ${completedRuns.length}`],
+            ["all", `全て ${runs.length}`]
+          ].map(([key, label]) => <button aria-pressed={statusFilter === key} data-control-id={`runs.status-filter.${key}`} key={key} className={statusFilter === key ? "selected" : ""} onClick={() => { setStatusFilter(key); setActionNote(`Status filter: ${label} を選択しました。表示run=${runs.filter((run) => {
+            if (key === "active") return ["queued", "running"].includes(run.status);
+            if (key === "blocked") return run.status === "blocked";
+            if (key === "completed") return ["complete", "completed"].includes(run.status);
+            return true;
+          }).filter((run) => projectFilter === "all" || projectForRun(run) === projectFilter).length} / ${actionStamp()}`); }}>{label}</button>)}
+        </div>
+      </div>
       <div className="cards four">
         <MetricCard controlId="runs.metric.count" title="実行件数" value={String(runs.length)} sub="保存済みの履歴" status={runs.length ? "enabled" : "waiting"} />
         <MetricCard controlId="runs.metric.proofs" title="確認記録" value={String(proofs.length)} sub="安全に開ける記録" status={proofs.length ? "enabled" : "waiting"} />
@@ -4176,19 +4286,6 @@ function RunsPage({ model }: { model: AppModel }) {
       </Panel>
       <div className="split">
         <Panel title="履歴" className="list-panel" controlId="runs.history.panel">
-          <div className="filter-row">
-            {[
-              ["active", `処理中 ${activeRuns.length}`],
-              ["blocked", `停止 ${blockedRuns.length}`],
-              ["completed", `完了 ${completedRuns.length}`],
-              ["all", `全て ${runs.length}`]
-            ].map(([key, label]) => <button data-control-id={`runs.status-filter.${key}`} key={key} className={statusFilter === key ? "selected" : ""} onClick={() => { setStatusFilter(key); setActionNote(`Status filter: ${label} を選択しました。表示run=${runs.filter((run) => {
-              if (key === "active") return ["queued", "running"].includes(run.status);
-              if (key === "blocked") return run.status === "blocked";
-              if (key === "completed") return ["complete", "completed"].includes(run.status);
-              return true;
-            }).filter((run) => projectFilter === "all" || projectForRun(run) === projectFilter).length} / ${actionStamp()}`); }}>{label}</button>)}
-          </div>
           <DataTable controlId="runs.history.table" headers={["記録", "自動化", "状態", "開始待ち", "確認事項", "記録数"]} rows={filteredRuns.slice(0, 20).map((run) => [
             <button data-control-id={`runs.row.run-link.${run.id}`} className="link-button" onClick={() => { setSelectedRunId(run.id); setActionNote(`履歴を選択しました / ${publicRunStatus(run.status)} / ${actionStamp()}`); }}>{run.id}</button>,
             run.automation_name ?? run.automation_id,
