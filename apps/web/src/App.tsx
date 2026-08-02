@@ -2257,7 +2257,10 @@ function TruthfulRunDetailPage({ model }: { model: AppModel }) {
         <DataTable controlId="truthful.run-detail.run.table" headers={["Automation", "Status", "Queued", "Started", "確認事項"]} rows={[[run.automation_name ?? run.automation_id ?? "-", <StatusBadge status={run.status === "blocked" ? "blocked" : run.status === "running" ? "running" : "waiting"} label={run.status} />, run.queued_at ?? "-", run.started_at ?? "-", publicBlockerSummary(run.exact_blocker)]]} />
       </Panel>
       <Panel title="Proof" controlId="truthful.run-detail.proof.panel"><DataTable controlId="truthful.run-detail.proof.table" headers={["ID", "種類", "状態"]} rows={proofs.length ? proofs.map((proof) => [proof.id, proof.proof_type ?? proof.kind ?? "-", proof.status ?? "stored"]) : [["保存済みproofなし", "-", "-"]]} /></Panel>
-      <p className="muted">途中再開・復旧アクションのserver契約は未実装のため、操作ボタンは表示しません。</p>
+      <div className="button-row">
+        <Button controlId="truthful.run-detail.open-recovery" onClick={() => go(`#/projects/${encodeURIComponent(companyId)}/recovery`)}>会社別の復旧画面を開く</Button>
+      </div>
+      <p className="muted">再試行・キャンセルは会社別Recovery画面で、権限・idempotency・終端状態をサーバー確認した後に実行できます。</p>
     </section>
   );
 }
