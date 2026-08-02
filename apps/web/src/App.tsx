@@ -946,9 +946,9 @@ async function requestChatPlan(
   };
 }
 
-async function storeChatSecrets(rawText: string, projectId?: string): Promise<{ sanitizedText: string; storedCount: number }> {
+async function storeChatSecrets(rawText: string, projectId?: string): Promise<{ sanitizedText: string; storedCount: number; runnerPendingCount: number }> {
   const fallback = redactSensitiveText(rawText);
-  if (!projectId) return { sanitizedText: fallback, storedCount: 0 };
+  if (!projectId) return { sanitizedText: fallback, storedCount: 0, runnerPendingCount: 0 };
   const response = await mvpFetch("/api/secrets/from-message", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -956,7 +956,7 @@ async function storeChatSecrets(rawText: string, projectId?: string): Promise<{ 
   });
   const body = await response.json().catch(() => ({})) as {
     sanitizedText?: unknown;
-    stored?: unknown;
+    stored?: Array<{ availableToRunner?: unknown }>;
     exactBlocker?: unknown;
     error?: unknown;
   };
@@ -966,8 +966,17 @@ async function storeChatSecrets(rawText: string, projectId?: string): Promise<{ 
   }
   return {
     sanitizedText: typeof body.sanitizedText === "string" ? body.sanitizedText : fallback,
-    storedCount: Array.isArray(body.stored) ? body.stored.length : 0
+    storedCount: Array.isArray(body.stored) ? body.stored.length : 0,
+    runnerPendingCount: Array.isArray(body.stored)
+      ? body.stored.filter((item) => item?.availableToRunner === false).length
+      : 0
   };
+}
+
+function secretRunnerNote(readback: { runnerPendingCount: number }): string {
+  return readback.runnerPendingCount > 0
+    ? ` / Mac worker確認待ち=${readback.runnerPendingCount}件`
+    : "";
 }
 
 async function requestChatThreads(projectId: string): Promise<ChatThreadReadback[]> {
@@ -3119,8 +3128,9 @@ function ChatPage({ model }: { model: AppModel }) {
         ...items,
         { id: nextChatId("assistant-plan"), role: "assistant", text: readback.server_reply }
       ]);
-      setReceipt(`plannerの回答を確認しました。planner=${readback.planner_adapter} / secret=${secretReadback.storedCount}件を非表示保存 / external_action=false`);
-      setChatNote(`planner回答完了: ${readback.plan.title} / secret=${secretReadback.storedCount}件を安全保存 / ${actionStamp()}`);
+      const secretNote = secretRunnerNote(secretReadback);
+      setReceipt(`plannerの回答を確認しました。planner=${readback.planner_adapter} / secret=${secretReadback.storedCount}件を非表示保存${secretNote} / external_action=false`);
+      setChatNote(`planner回答完了: ${readback.plan.title} / secret=${secretReadback.storedCount}件を安全保存${secretNote} / ${actionStamp()}`);
     } catch {
       if (plannerRequestGeneration.current !== requestGeneration) return;
       setPlannerReadback(null);
@@ -3174,8 +3184,9 @@ function ChatPage({ model }: { model: AppModel }) {
       ]);
       setPlanVisible(true);
       setCreated(false);
-      setReceipt(`plannerの会話結果を更新しました。planner=${readback.planner_adapter} / secret=${secretReadback.storedCount}件を非表示保存 / mode=${readback.planner_mode}`);
-      setChatNote(`送信完了: ${currentPlan.title} / secret=${secretReadback.storedCount}件を安全保存 / ${actionStamp()}`);
+      const secretNote = secretRunnerNote(secretReadback);
+      setReceipt(`plannerの会話結果を更新しました。planner=${readback.planner_adapter} / secret=${secretReadback.storedCount}件を非表示保存${secretNote} / mode=${readback.planner_mode}`);
+      setChatNote(`送信完了: ${currentPlan.title} / secret=${secretReadback.storedCount}件を安全保存${secretNote} / ${actionStamp()}`);
     } catch {
       if (plannerRequestGeneration.current !== requestGeneration) return;
       setPlannerReadback(null);

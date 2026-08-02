@@ -167,6 +167,7 @@ function storeSecret(candidate: SecretCandidate, companyId?: string): StoredSecr
   const now = nowIso();
   const existing = querySql<{ created_at: string }>(`SELECT created_at FROM stored_secrets WHERE id=${sqlValue(id)} LIMIT 1`)[0];
   const storageRef = writeEncryptedSecret(id, candidate.value);
+  const runnerAvailability = secretRunnerAvailability(candidate);
   const summary = {
     id,
     companyId,
@@ -174,10 +175,10 @@ function storeSecret(candidate: SecretCandidate, companyId?: string): StoredSecr
     label: candidate.label,
     maskedValue: maskSecret(candidate.value),
     updatedAt: now,
-    state: candidate.state ?? "stored",
+    state: runnerAvailability.state ?? candidate.state ?? "stored",
     purpose: candidate.purpose ?? "general",
     accountLabel: candidate.accountLabel ?? "unknown",
-    availableToRunner: true
+    availableToRunner: runnerAvailability.availableToRunner
   };
   upsert("stored_secrets", {
     id,
@@ -200,6 +201,18 @@ function storeSecret(candidate: SecretCandidate, companyId?: string): StoredSecr
     }
   });
   return summary;
+}
+
+function secretRunnerAvailability(candidate: SecretCandidate): { state?: string; availableToRunner: boolean } {
+  if (candidate.kind !== "postgres") return { availableToRunner: true };
+  // A template may be valid on a particular Mac worker, but the control-plane
+  // process cannot prove that worker-local variables exist. Keep the encrypted
+  // value for the explicit worker lane while making the unresolved boundary
+  // visible to Chat and secret summaries instead of claiming readiness.
+  if (/\$\{[A-Za-z_][A-Za-z0-9_]*\}/u.test(candidate.value)) {
+    return { state: "template_reference_pending", availableToRunner: false };
+  }
+  return { availableToRunner: true };
 }
 
 function scopedSecretId(kind: string, companyId?: string): string {

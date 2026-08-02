@@ -83,6 +83,18 @@ test("detects PostgreSQL connection strings as hidden production database secret
   assert.doesNotMatch(JSON.stringify(result), /secret-password|zeabur\.internal/);
 });
 
+test("marks PostgreSQL template references as pending for the Mac worker", () => {
+  db.initDb();
+  const template = "postgresql://${POSTGRES_USERNAME}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DATABASE}";
+  const result = secrets.saveSecretsFromMessage(`DATABASE_URL=${template}`);
+
+  assert.equal(result.stored.length, 1);
+  assert.equal(result.stored[0].state, "template_reference_pending");
+  assert.equal(result.stored[0].availableToRunner, false);
+  assert.equal(result.sanitizedText, "DATABASE_URL=[保存済み: 本番PostgreSQL接続]");
+  assert.doesNotMatch(JSON.stringify(result), /POSTGRES_USERNAME|POSTGRES_PASSWORD|POSTGRES_HOST|POSTGRES_PORT|POSTGRES_DATABASE/);
+});
+
 test("stores multiline Google service account JSON with routing metadata and redacted chat text", () => {
   db.initDb();
   const serviceAccount = JSON.stringify({
