@@ -20,7 +20,7 @@ const manifestPath = "/Users/nichikatanaka/Documents/Codex/automation-os/.codex/
 const helperPath = "/Users/nichikatanaka/.local/bin/codex-browser-use";
 const adapterPath = "/Users/nichikatanaka/.codex/skills/automation-kernel-run/scripts/browser-use-cli-stage-adapter.mjs";
 const canaryPath = new URL(import.meta.url);
-const runtimeConfigPath = "/Users/nichikatanaka/.codex/browser-use/browser-use-runtime.toml";
+const runtimeConfigPath = "/Users/nichikatanaka/.browser-use-cli/browser-use-runtime.toml";
 const approvalAnchorPath = "/Users/nichikatanaka/Documents/Codex/automation-os/work/goal-orchestration/browser-use-runtime-approval-anchor-r18.v1.json";
 function fileDigest(filePath) {
   return fs.existsSync(filePath) ? crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex") : "";
@@ -298,7 +298,7 @@ if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,179}$/u.test(runId) || !artifactRoot.startsW
     && descriptor.port === reservedPort
     && descriptor.expires_at === expiresAt
     && descriptor.helper_sha256 === helperDigest
-    && descriptorProfile.startsWith(`/Users/nichikatanaka/.codex/browser-use/profiles/single-use/${runId}-`)
+    && descriptorProfile.startsWith(`/Users/nichikatanaka/.browser-use-cli/profiles/single-use/${runId}-`)
     && Number.isInteger(descriptorPid);
   const receiptValidation = validateCanaryReceipts({
     receipts: result?.receipts,

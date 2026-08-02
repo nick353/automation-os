@@ -63,9 +63,9 @@ function setup() {
       expected,
       workflow_id: "daily-ai" as const,
       attempt_id: "attempt-browser-use-admission-1",
-      profile_root: `/Users/nichikatanaka/.codex/browser-use/profiles/scheduled/${value.run_id}`,
+      profile_root: `/Users/nichikatanaka/.browser-use-cli/profiles/scheduled/${value.run_id}`,
       reserved_port: 19880,
-      lock_path: `/Users/nichikatanaka/.codex/browser-use/locks/${value.run_id}.lock`
+      lock_path: `/Users/nichikatanaka/.browser-use-cli/locks/${value.run_id}.lock`
     }
   };
 }

@@ -2848,8 +2848,11 @@ export const apiErrorHandler: ErrorRequestHandler = (error, _req, res, next) => 
     next(error);
     return;
   }
-  const message = error instanceof Error ? error.message : "unknown_error";
-  res.status(500).json({ error: message });
+  // Route handlers own the safe, typed 4xx contracts. Anything reaching this
+  // boundary is unclassified server failure; never reflect its message,
+  // cause, path, provider response, or credential-like text to the client.
+  void error;
+  res.status(500).json({ error: "internal_error", exactBlocker: "internal_error" });
 };
 
 function productionWriteGuard(req: Parameters<RequestHandler>[0], res: Parameters<RequestHandler>[1], next: Parameters<RequestHandler>[2]) {

@@ -1,4 +1,5 @@
 import { spawn, type SpawnOptionsWithoutStdio } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { redactSensitiveText } from "../obsidian/redaction.js";
 
 type WritableLike = {
@@ -115,16 +116,18 @@ export class CodexAppServerClient {
 
   async startOrResumeThread(threadId?: string): Promise<string> {
     await this.start();
+    const cwd = appServerCwd(this.options.cwd);
     const method = threadId?.trim() ? "thread/resume" : "thread/start";
     const params: Record<string, unknown> = threadId?.trim()
       ? {
           threadId: threadId.trim(),
+          cwd,
           approvalPolicy: "never",
           sandbox: "read-only",
           serviceName: "automation_os_chat"
         }
       : {
-          cwd: this.options.cwd ?? process.cwd(),
+          cwd,
           approvalPolicy: "never",
           sandbox: "read-only",
           serviceName: "automation_os_chat",
@@ -159,8 +162,9 @@ export class CodexAppServerClient {
     const responsePromise = this.request("turn/start", {
       threadId,
       input: [{ type: "text", text, text_elements: [] }],
+      cwd: appServerCwd(this.options.cwd),
       approvalPolicy: "never",
-      sandboxPolicy: { type: "readOnly", networkAccess: false },
+      sandboxPolicy: restrictedReadOnlySandbox(appServerCwd(this.options.cwd)),
       ...(input.outputSchema ? { outputSchema: input.outputSchema } : {})
     });
     let response: Record<string, unknown>;
@@ -224,16 +228,16 @@ export class CodexAppServerClient {
     let child: AppServerChildLike;
     try {
       child = factory(command, ["app-server", "--listen", "stdio://"], {
-        cwd: this.options.cwd ?? process.cwd(),
+        cwd: appServerCwd(this.options.cwd),
         env: safeAppServerEnvironment(process.env),
         stdio: ["pipe", "pipe", "pipe"]
       });
-    } catch (error) {
-      throw new Error(error instanceof Error ? error.message : "codex_app_server_spawn_failed");
+    } catch {
+      throw new Error("codex_app_server_spawn_failed");
     }
     this.child = child;
     const onData = (chunk: Buffer | string) => this.consumeStdout(chunk);
-    const onError = (error: Error) => this.failConnection(error instanceof Error ? error : new Error("codex_app_server_process_error"));
+    const onError = () => this.failConnection(new Error("codex_app_server_process_error"));
     const onClose = () => this.failConnection(new Error("codex_app_server_process_closed"));
     child.stdout.on("data", onData);
     child.stderr.on("data", () => {
@@ -268,7 +272,8 @@ export class CodexAppServerClient {
       } catch (error) {
         clearTimeout(timer);
         this.pending.delete(id);
-        reject(error instanceof Error ? error : new Error("codex_app_server_write_failed"));
+        void error;
+        reject(new Error("codex_app_server_write_failed"));
       }
     });
   }
@@ -326,7 +331,7 @@ export class CodexAppServerClient {
     this.pending.delete(message.id!);
     clearTimeout(pending.timer);
     if (message.error) {
-      pending.reject(new Error(`codex_app_server_${message.error.message ?? "request_rejected"}`));
+      pending.reject(new Error("codex_app_server_request_rejected"));
       return;
     }
     pending.resolve({ result: message.result, error: message.error });
@@ -445,6 +450,27 @@ function boundedTimeout(value: number | undefined): number {
   return Math.min(Math.floor(value), maxTimeoutMs);
 }
 
+function appServerCwd(value: string | undefined): string {
+  const candidate = value?.trim() || process.cwd();
+  try {
+    return realpathSync(candidate);
+  } catch {
+    return candidate;
+  }
+}
+
+function restrictedReadOnlySandbox(cwd: string): Record<string, unknown> {
+  return {
+    type: "readOnly",
+    access: {
+      type: "restricted",
+      includePlatformDefaults: true,
+      readableRoots: [cwd]
+    },
+    networkAccess: false
+  };
+}
+
 function turnKey(threadId: string, turnId: string): string {
   return `${threadId}:${turnId}`;
 }
@@ -469,7 +495,7 @@ function completionStatus(params: Record<string, unknown>): CodexAppServerTurnRe
 function completionError(params: Record<string, unknown>): string | undefined {
   const error = params.turn && typeof params.turn === "object" ? (params.turn as Record<string, unknown>).error : undefined;
   if (!error || typeof error !== "object") return undefined;
-  return stringValue((error as Record<string, unknown>).message);
+  return "codex_app_server_turn_failed";
 }
 
 function parseStructuredText(text: string): Record<string, unknown> | null {

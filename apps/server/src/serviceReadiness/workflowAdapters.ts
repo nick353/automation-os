@@ -4,6 +4,7 @@ import {
 import { parseDailyAiWorkflowContractV1 } from "./workflowContracts/dailyAi.js";
 import { parseJobManagerWorkflowContractV1 } from "./workflowContracts/jobManager.js";
 import { parseNisenPrintsServiceReadinessContractV1 } from "./workflowContracts/nisenPrints.js";
+import { BROWSER_USE_HELPER_PATH, BROWSER_USE_RUNTIME_CONFIG_PATH } from "./browserUseCanonical.js";
 
 /**
  * Owner-facing, non-executing projection of the reference workflow adapter
@@ -18,8 +19,8 @@ export type ReferenceBrowserUseWorkflowAdapterV1 = {
   workflow_id: "daily-ai" | "job-application-manager" | "nisenprints";
   browser_surface: "browser_use_cli";
   adapter_entrypoint: "/Users/nichikatanaka/.codex/skills/automation-kernel-run/scripts/browser-use-cli-stage-adapter.mjs";
-  helper_path: "/Users/nichikatanaka/.local/bin/codex-browser-use";
-  runtime_config_path: "/Users/nichikatanaka/.codex/browser-use/browser-use-runtime.toml";
+  helper_path: typeof BROWSER_USE_HELPER_PATH;
+  runtime_config_path: typeof BROWSER_USE_RUNTIME_CONFIG_PATH;
   no_fallback: true;
   receipt_discriminator: "browser_use_cli_stage_observation.v1";
   iab_receipt_substitution: "forbidden";
@@ -35,8 +36,8 @@ const browserUseAdapters: readonly ReferenceBrowserUseWorkflowAdapterV1[] = ( [
   workflow_id,
   browser_surface: "browser_use_cli",
   adapter_entrypoint: "/Users/nichikatanaka/.codex/skills/automation-kernel-run/scripts/browser-use-cli-stage-adapter.mjs",
-  helper_path: "/Users/nichikatanaka/.local/bin/codex-browser-use",
-  runtime_config_path: "/Users/nichikatanaka/.codex/browser-use/browser-use-runtime.toml",
+  helper_path: BROWSER_USE_HELPER_PATH,
+  runtime_config_path: BROWSER_USE_RUNTIME_CONFIG_PATH,
   no_fallback: true,
   receipt_discriminator: "browser_use_cli_stage_observation.v1",
   iab_receipt_substitution: "forbidden",

@@ -517,7 +517,7 @@ test("Browser Use metadata is canonical, origin-bound, and inert outside a match
     assert.throws(() => manifestCompiler.parseAutomationKernelManifestTextV1(JSON.stringify(copy)), code);
   };
   invalid((copy) => { copy.browser_use.helper_path = "/tmp/browser-use"; }, /browser_use_helper_noncanonical/);
-  invalid((copy) => { copy.browser_use.profile_root = "/Users/nichikatanaka/.codex/browser-use/profiles/scheduled-evil/profile"; }, /browser_use_profile_root_invalid/);
+  invalid((copy) => { copy.browser_use.profile_root = "/Users/nichikatanaka/.browser-use-cli/profiles/scheduled-evil/profile"; }, /browser_use_profile_root_invalid/);
   invalid((copy) => { copy.browser_use.allowed_origins = ["http://127.0.0.1"]; }, /browser_use_allowed_origin_private/);
   invalid((copy) => { copy.browser_use.reserved_port = 19980; }, /browser_use_reserved_port_invalid/);
   invalid((copy) => { copy.browser_use.authority_ref = "../authority.json"; }, /browser_use_authority_ref_invalid/);

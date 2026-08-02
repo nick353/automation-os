@@ -9,6 +9,12 @@ import {
   type JsonObject
 } from "./contracts.js";
 import { hashAutomationKernelValue } from "./reducer.js";
+import {
+  BROWSER_USE_HELPER_PATH,
+  BROWSER_USE_RUNTIME_CONFIG_PATH,
+  BROWSER_USE_SCHEDULED_PROFILE_ROOT,
+  BROWSER_USE_SINGLE_USE_PROFILE_ROOT
+} from "../serviceReadiness/browserUseCanonical.js";
 
 export type AutomationKernelRegisteredEntrypointV1 = { path: string; cwd: string; command?: string };
 export type AutomationKernelProfileV1 = "light" | "full";
@@ -77,10 +83,6 @@ const requiredResultFields = new Set([
   "exact_blocker", "restart_stage", "artifact_uris", "cleanup_proof"
 ]);
 const idPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,120}$/;
-const browserUseHelperPath = "/Users/nichikatanaka/.local/bin/codex-browser-use";
-const browserUseRuntimeConfigPath = "/Users/nichikatanaka/.codex/browser-use/browser-use-runtime.toml";
-const browserUseScheduledProfileRoot = "/Users/nichikatanaka/.codex/browser-use/profiles/scheduled";
-const browserUseSingleUseProfileRoot = "/Users/nichikatanaka/.codex/browser-use/profiles/single-use";
 const browserUseScheduledPortRange = { start: 19880, end: 19899 } as const;
 const browserUseSingleUsePortRange = { start: 19980, end: 19999 } as const;
 
@@ -330,10 +332,10 @@ function validateBrowserUseContract(contract: JsonObject): void {
   rejectUnknown(contract, allowed, "automation_kernel_manifest_browser_use_unknown_field");
   if (contract.surface !== "browser_use_cli") throw new AutomationKernelManifestError("automation_kernel_manifest_browser_use_surface_invalid");
   const helperPath = absolutePath(contract.helper_path, "automation_kernel_manifest_browser_use_helper_path");
-  if (helperPath !== browserUseHelperPath) throw new AutomationKernelManifestError("automation_kernel_manifest_browser_use_helper_noncanonical");
+  if (helperPath !== BROWSER_USE_HELPER_PATH) throw new AutomationKernelManifestError("automation_kernel_manifest_browser_use_helper_noncanonical");
   assertRegularFile(helperPath, "automation_kernel_manifest_browser_use_helper_missing");
   const runtimeConfigPath = absolutePath(contract.runtime_config_path, "automation_kernel_manifest_browser_use_runtime_config_path");
-  if (runtimeConfigPath !== browserUseRuntimeConfigPath) throw new AutomationKernelManifestError("automation_kernel_manifest_browser_use_runtime_config_noncanonical");
+  if (runtimeConfigPath !== BROWSER_USE_RUNTIME_CONFIG_PATH) throw new AutomationKernelManifestError("automation_kernel_manifest_browser_use_runtime_config_noncanonical");
   assertRegularFile(runtimeConfigPath, "automation_kernel_manifest_browser_use_runtime_config_missing");
   if (!(contract.mode === "authorized" || contract.mode === "public")) throw new AutomationKernelManifestError("automation_kernel_manifest_browser_use_mode_invalid");
   if (!(contract.lifecycle === "scheduled" || contract.lifecycle === "single-use")) throw new AutomationKernelManifestError("automation_kernel_manifest_browser_use_lifecycle_invalid");
@@ -344,7 +346,7 @@ function validateBrowserUseContract(contract: JsonObject): void {
   const profileRoot = absolutePath(contract.profile_root, "automation_kernel_manifest_browser_use_profile_root");
   if (profileRoot === "/" || profileRoot === "/Users" || profileRoot === "/Users/nichikatanaka") throw new AutomationKernelManifestError("automation_kernel_manifest_browser_use_profile_root_too_broad");
   if (String(contract.profile_root).split(sep).includes("..")) throw new AutomationKernelManifestError("automation_kernel_manifest_browser_use_profile_root_traversal");
-  const profileBase = contract.lifecycle === "scheduled" ? browserUseScheduledProfileRoot : browserUseSingleUseProfileRoot;
+  const profileBase = contract.lifecycle === "scheduled" ? BROWSER_USE_SCHEDULED_PROFILE_ROOT : BROWSER_USE_SINGLE_USE_PROFILE_ROOT;
   assertPathComponentInside(profileBase, profileRoot, "automation_kernel_manifest_browser_use_profile_root_invalid");
   if (existsSync(profileRoot)) {
     const profileStat = lstatSync(profileRoot);

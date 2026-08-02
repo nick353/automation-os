@@ -63,7 +63,7 @@ export function validateCanaryReceipts({
     try {
       const receipt = JSON.parse(fs.readFileSync(receiptPath, "utf8"));
       const profile = String(receipt?.paths?.profile || "");
-      const profileRoot = "/Users/nichikatanaka/.codex/browser-use/profiles/single-use";
+      const profileRoot = "/Users/nichikatanaka/.browser-use-cli/profiles/single-use";
       const lockPaths = Array.isArray(receipt?.cleanup?.locks_retained) ? receipt.cleanup.locks_retained : [];
       const locksRemoved = Array.isArray(receipt?.cleanup?.locks_removed) ? receipt.cleanup.locks_removed : [];
       const profileBound = profile.startsWith(`${profileRoot}/${expectedRunId}-`) && !profile.includes("..") && path.isAbsolute(profile);

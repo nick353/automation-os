@@ -2,12 +2,13 @@ import { createHash } from "node:crypto";
 import { lstatSync, readFileSync } from "node:fs";
 import { isIP } from "node:net";
 
+export { BROWSER_USE_HELPER_PATH, BROWSER_USE_RUNTIME_CONFIG_PATH } from "./browserUseCanonical.js";
+import { BROWSER_USE_HELPER_PATH, BROWSER_USE_RUNTIME_CONFIG_PATH } from "./browserUseCanonical.js";
+
 export const BROWSER_USE_AUTHORITY_SCHEMA_V1 = "browser_use_authority.v1" as const;
 export const BROWSER_USE_AUTHORITY_ENVELOPE_SCHEMA_V1 = "browser_use_authority_envelope.v1" as const;
 export const BROWSER_USE_MANIFEST_SCHEMA_V1 = "automation_kernel_manifest.v1" as const;
 export const BROWSER_USE_SURFACE = "browser_use_cli" as const;
-export const BROWSER_USE_HELPER_PATH = "/Users/nichikatanaka/.local/bin/codex-browser-use" as const;
-export const BROWSER_USE_RUNTIME_CONFIG_PATH = "/Users/nichikatanaka/.codex/browser-use/browser-use-runtime.toml" as const;
 
 const identifierPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u;
 const hashPattern = /^[a-f0-9]{64}$/u;

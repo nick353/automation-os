@@ -358,9 +358,9 @@ test("frontend planner uses the supported server contract and never turns API fa
   assert.match(plannerSource, /mvpFetch\("\/api\/create\/chat"/);
   assert.match(plannerSource, /messages: conversation/);
   assert.match(plannerSource, /codex_thread_id: options\.threadId/);
-  assert.match(plannerSource, /throw new Error\("planner_readback_unavailable"\)/);
+  assert.match(plannerSource, /throw new Error\(redactSensitiveText\(exact\)\.slice\(0, 180\) \|\| "planner_readback_unavailable"\)/);
   assert.doesNotMatch(source, /\/api\/mvp\/chat\/plan|client_fallback_deterministic|api_unavailable_fallback/);
-  assert.match(chatSource, /setPlannerError\("プランAPIの結果を確認できませんでした/);
+  assert.match(chatSource, /setPlannerError\(`プランAPIの結果を確認できませんでした/);
   assert.match(chatSource, /setPlanVisible\(false\)/);
   assert.match(plannerSource, /serverPlan\.intent === "plan_workflow"/);
   assert.match(plannerSource, /serverPlan\.operation === "create_automation"/);
@@ -436,7 +436,7 @@ test("frontend project switcher is derived from API state records", () => {
   assert.doesNotMatch(tabsSource, /\[\{ id: activeProject/);
   assert.match(source, /function ProjectUnavailablePage/);
   assert.match(source, /type MvpLoadStatus = "loading" \| "ready" \| "error"/);
-  assert.match(source, /route === "#\/projects"/);
+  assert.match(source, /currentPath === "#\/projects"/);
   assert.match(source, /projectOptions\.some\(\(project\) => project\.id === requestedProject\)/);
   assert.match(templatesSource, /aria-label="テンプレートの保存先会社"/);
   assert.match(templatesSource, /disabled=\{!selectedProjectIsVerified(?: \|\| saving)?\}/);
@@ -497,12 +497,12 @@ test("frontend first use creates and confirms a canonical company before automat
   assert.match(setupSource, /model\.setMvpState\(state\)/);
   assert.match(setupSource, /model\.setAutomationRows\(toAutomationRows\(state\.automations \?\? \[\]\)\)/);
   assert.match(setupSource, /model\.setFeedbackReadback\(state\.feedbacks \?\? \[\]\)/);
-  assert.match(setupSource, /rememberProject\(createdCompanyId\);[\s\S]*go\("#\/chat"\)/);
+  assert.match(setupSource, /rememberProject\(createdCompanyId\);[\s\S]*go\(chatHref\(\{ companyId: createdCompanyId, context: "company-setup" \}\)\)/);
   assert.match(setupSource, /disabled=\{creatingCompany \|\| !companyName\.trim\(\)\}/);
   assert.doesNotMatch(source, /会社登録APIの実装後/);
 
   assert.match(selectionSource, /options\.length === 1 \? options\[0\]\.id : ""/);
-  assert.match(chatSource, /setSelectedProjectId\(\(current\) => \{[\s\S]*resolveProjectSelection\(mvpState, current\)/);
+  assert.match(chatSource, /setSelectedProjectId\(\(current\) => \{[\s\S]*const requested = requestedProjectId[\s\S]*resolveProjectSelection\(mvpState, requested \|\| current\)/);
   assert.match(templatesSource, /setSelectedProjectId\(\(current\) => \{[\s\S]*resolveProjectSelection\(model\.mvpState, current\)/);
   assert.match(chatSource, /controlId="chat\.company-required\.open"/);
   assert.match(templatesSource, /controlId="templates\.company-required\.open"/);
@@ -510,7 +510,7 @@ test("frontend first use creates and confirms a canonical company before automat
   assert.match(homeSource, /controlId="home\.first-use\.templates"/);
   assert.match(homeSource, /pristineCompany && companyOptions\.length === 1/);
   assert.match(homeSource, /controlId="home\.first-use\.company-picker\.panel"/);
-  assert.match(homeSource, /rememberProject\(project\.id\); go\("#\/chat"\)/);
+  assert.match(homeSource, /rememberProject\(project\.id\); go\(chatHref\(\{ companyId: project\.id, context: "home-company-picker" \}\)\)/);
   assert.match(headerSource, /openAutomationCreator\(mvpState, setReceipt\)/);
   assert.match(headerSource, /if \(mvpLoadStatus !== "ready"\)/);
   assert.match(headerSource, /placeholder="画面を検索"/);

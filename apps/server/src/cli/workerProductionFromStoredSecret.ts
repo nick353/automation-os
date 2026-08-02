@@ -3,6 +3,7 @@ import { closeSync, fsyncSync, mkdirSync, openSync, renameSync, writeFileSync } 
 import { dirname, resolve } from "node:path";
 import { readStoredSecretByKind } from "../secrets/secretStore.js";
 import { validatePostgresUrl } from "./postgresUrlValidation.js";
+import { workerChildSpawnFailureSummary } from "./workerProductionErrors.js";
 
 const mode = readArgValue("--mode") ?? "proof";
 const statePath = process.env.AUTOMATION_OS_WORKER_STATE_PATH
@@ -11,10 +12,12 @@ const statePath = process.env.AUTOMATION_OS_WORKER_STATE_PATH
 let databaseUrl: string | undefined;
 try {
   databaseUrl = readStoredSecretByKind("postgres");
-} catch (error) {
+} catch {
   finishBlocked({
     blocker: "stored_postgres_secret_read_failed",
-    reason: error instanceof Error ? error.message : String(error),
+    // Storage/decryption errors can contain provider- or credential-derived
+    // text. Keep the worker readback actionable without echoing the exception.
+    reason: "secret_store_unavailable",
     nextAction: "Automation OSのsecret storeを確認してからworkerを再起動してください。secret値は表示しません。",
     secret: { kind: "postgres", configured: false }
   });
@@ -69,13 +72,8 @@ process.once("SIGTERM", () => relay("SIGTERM"));
 process.once("SIGINT", () => relay("SIGINT"));
 
 child.once("error", (error) => {
-  finish({
-    ok: false,
-    status: "blocked",
-    blocker: "worker_child_spawn_failed",
-    reason: error.message,
-    mode
-  }, 1);
+  void error;
+  finish(workerChildSpawnFailureSummary(mode), 1);
 });
 
 child.once("exit", (code, signal) => {

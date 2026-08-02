@@ -262,7 +262,8 @@ async function processCreatePlannerJob(row: CreatePlannerJobRow, options: Create
     if (terminal.length === 0) return getCreatePlannerJob(row.id) as CreatePlannerJob;
   } catch (error) {
     const completedAt = nowIso();
-    const blocker = error instanceof Error ? error.message : "codex_planner_failed";
+    void error;
+    const blocker = "codex_planner_failed";
     querySql(
       `UPDATE create_planner_jobs
        SET status='blocked',

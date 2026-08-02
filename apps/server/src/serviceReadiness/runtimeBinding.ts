@@ -6,6 +6,7 @@ import {
 import type { IabIdentity } from "../browser/iabReadOnlyBridge.js";
 import { createHash } from "node:crypto";
 import { isAbsolute, relative, resolve, sep } from "node:path";
+import { BROWSER_USE_LOCK_ROOT, BROWSER_USE_SCHEDULED_PROFILE_ROOT, BROWSER_USE_SINGLE_USE_PROFILE_ROOT } from "./browserUseCanonical.js";
 
 /**
  * Durable run/attempt identity for the service-readiness boundary.
@@ -146,10 +147,10 @@ export type ServiceReadinessRuntimeBindingExpectedV1 = Pick<
 const identifierPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 const hashPattern = /^[a-f0-9]{64}$/;
 const browserUseProfileRoots = [
-  "/Users/nichikatanaka/.codex/browser-use/profiles/scheduled",
-  "/Users/nichikatanaka/.codex/browser-use/profiles/single-use"
+  BROWSER_USE_SCHEDULED_PROFILE_ROOT,
+  BROWSER_USE_SINGLE_USE_PROFILE_ROOT
 ];
-const browserUseLockRoot = "/Users/nichikatanaka/.codex/browser-use/locks";
+const browserUseLockRoot = BROWSER_USE_LOCK_ROOT;
 const referenceWorkflows = new Set<ServiceReadinessReferenceWorkflowId>([
   "daily-ai",
   "job-application-manager",

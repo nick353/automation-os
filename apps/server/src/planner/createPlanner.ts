@@ -53,9 +53,8 @@ export async function createPlannerResponse(input: {
   if (provider === "codex") {
     try {
       return await callCodexPlanner(messages, input.currentDraft);
-    } catch (error) {
-      const blocker = error instanceof Error ? error.message : "codex_planner_failed";
-      return buildLocalPlanner(messages, blocker);
+    } catch {
+      return buildLocalPlanner(messages, "codex_planner_failed");
     }
   }
   if (provider === "codex_app_server") {
@@ -73,9 +72,7 @@ export async function createPlannerResponse(input: {
   } catch (error) {
     const blocker = error instanceof Error && error.name === "AbortError"
       ? "openai_planner_timeout"
-      : error instanceof Error
-        ? error.message
-        : "openai_planner_failed";
+      : "openai_planner_failed";
     return buildLocalPlanner(messages, blocker);
   }
 }
@@ -695,9 +692,9 @@ function runCodexPlanner(bin: string, args: string[], timeoutMs: number) {
     child.stderr.on("data", (chunk) => {
       stderr += String(chunk);
     });
-    child.on("error", (error) => {
+    child.on("error", () => {
       clearTimeout(timer);
-      reject(error);
+      reject(new Error("codex_planner_spawn_failed"));
     });
     child.on("close", (code) => {
       clearTimeout(timer);

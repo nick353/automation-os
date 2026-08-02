@@ -23,7 +23,7 @@ function receiptFile(overrides = {}) {
     finalized: true,
     authority_summary: { side_effect_scope: "bounded_recording" },
     exit: { code: 0, exact_blocker: null },
-    paths: { profile: `/Users/nichikatanaka/.codex/browser-use/profiles/single-use/${runId}-uuid` },
+    paths: { profile: `/Users/nichikatanaka/.browser-use-cli/profiles/single-use/${runId}-uuid` },
     cleanup: { status: "cleaned", profile_removed: true, download_dir_removed: true, locks_removed: ["profile", "port"], locks_retained: [] },
     guard_readback: { preflight: true, post_command_state_readback: true },
     ...overrides,
@@ -40,7 +40,7 @@ function validate(receipts, finalPath) {
     expectedEffectiveSession: effectiveSession,
     expectedPort: 19980,
     expectedFinalPath: finalPath,
-    expectedProfile: `/Users/nichikatanaka/.codex/browser-use/profiles/single-use/${runId}-uuid`,
+    expectedProfile: `/Users/nichikatanaka/.browser-use-cli/profiles/single-use/${runId}-uuid`,
     expectedPid: 12345,
   });
 }

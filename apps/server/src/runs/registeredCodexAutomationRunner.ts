@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { evaluateGeminiVideoQaAudit } from "./geminiVideoQa.js";
 import { issueLedgerMetadata } from "./issueLedger.js";
 import { Proof } from "./proofGate.js";
+import { BROWSER_USE_HELPER_PATH, BROWSER_USE_RUNTIME_CONFIG_PATH } from "../serviceReadiness/browserUseCanonical.js";
 
 export type RegisteredCodexAutomationStatus = "complete" | "blocked";
 
@@ -39,8 +40,8 @@ export type RegisteredCodexAutomationRunResult = {
 const defaultAutomationRoot = "/Users/nichikatanaka/.codex/automations";
 const defaultTimeoutMs = 90 * 60 * 1000;
 const browserUseAdapterEntryPoint = "/Users/nichikatanaka/.codex/skills/automation-kernel-run/scripts/browser-use-cli-stage-adapter.mjs";
-const browserUseHelper = "/Users/nichikatanaka/.local/bin/codex-browser-use";
-const browserUseRuntimeConfig = "/Users/nichikatanaka/.codex/browser-use/browser-use-runtime.toml";
+const browserUseHelper = BROWSER_USE_HELPER_PATH;
+const browserUseRuntimeConfig = BROWSER_USE_RUNTIME_CONFIG_PATH;
 
 type RegisteredWorkflowConfig = {
   cwd: string;

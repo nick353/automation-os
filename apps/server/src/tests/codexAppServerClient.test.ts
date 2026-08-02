@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { PassThrough, Writable } from "node:stream";
+import type { SpawnOptionsWithoutStdio } from "node:child_process";
 import { test } from "node:test";
 import { CodexAppServerClient, safeAppServerEnvironment, type AppServerChildLike } from "../codex/appServerClient.js";
 
@@ -122,4 +123,62 @@ test("safeAppServerEnvironment excludes API/database secrets", () => {
   assert.equal(env.OPENAI_API_KEY, undefined);
   assert.equal(env.DATABASE_URL, undefined);
   assert.equal(env.AUTOMATION_OS_OPERATOR_TOKEN, undefined);
+});
+
+test("Codex App Server child is started with an allowlisted environment and read-only no-network turn policy", async () => {
+  const requests: Array<{ method?: string; params?: Record<string, unknown> }> = [];
+  let spawnOptions: SpawnOptionsWithoutStdio | undefined;
+  const client = new CodexAppServerClient({
+    cwd: "/tmp/automation-os-chat-sandbox",
+    processFactory: (_command, _args, options) => {
+      spawnOptions = options;
+      const child = new FakeAppServerChild();
+      const originalReceive = (child as any).receive.bind(child);
+      (child as any).receive = (input: string) => {
+        for (const line of input.split(/\r?\n/u).map((value) => value.trim()).filter(Boolean)) {
+          const message = JSON.parse(line) as { method?: string; params?: Record<string, unknown> };
+          requests.push(message);
+        }
+        originalReceive(input);
+      };
+      return child;
+    }
+  });
+
+  const threadId = await client.startOrResumeThread();
+  await client.startTurn({ threadId, text: "read-only status" });
+
+  assert.equal(spawnOptions?.cwd, "/tmp/automation-os-chat-sandbox");
+  assert.equal(spawnOptions?.env?.OPENAI_API_KEY, undefined);
+  assert.equal(spawnOptions?.env?.DATABASE_URL, undefined);
+  const threadStart = requests.find((request) => request.method === "thread/start");
+  const turnStart = requests.find((request) => request.method === "turn/start");
+  assert.equal(threadStart?.params?.approvalPolicy, "never");
+  assert.equal(threadStart?.params?.sandbox, "read-only");
+  assert.equal(turnStart?.params?.approvalPolicy, "never");
+  assert.deepEqual(turnStart?.params?.sandboxPolicy, {
+    type: "readOnly",
+    access: {
+      type: "restricted",
+      includePlatformDefaults: true,
+      readableRoots: ["/tmp/automation-os-chat-sandbox"]
+    },
+    networkAccess: false
+  });
+  assert.equal(turnStart?.params?.cwd, "/tmp/automation-os-chat-sandbox");
+  client.close();
+});
+
+test("Codex App Server spawn failures use a stable blocker and never expose the thrown message", async () => {
+  const client = new CodexAppServerClient({
+    processFactory: () => {
+      throw new Error("credential-like-text /Users/private/config");
+    }
+  });
+
+  await assert.rejects(() => client.start(), (error: unknown) => {
+    assert.equal((error as Error).message, "codex_app_server_spawn_failed");
+    assert.doesNotMatch((error as Error).message, /credential-like-text|\/Users\/private\/config/u);
+    return true;
+  });
 });

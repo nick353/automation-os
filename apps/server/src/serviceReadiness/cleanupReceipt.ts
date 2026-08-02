@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { BROWSER_USE_LOCK_ROOT, BROWSER_USE_PROFILE_ROOT } from "./browserUseCanonical.js";
 
 export const SERVICE_READINESS_CLEANUP_RECEIPT_SCHEMA_V1 = "service_readiness_cleanup_receipt.v1" as const;
 export const SERVICE_READINESS_BROWSER_USE_CLEANUP_RECEIPT_SCHEMA_V1 = "service_readiness_browser_use_cleanup_receipt.v1" as const;
@@ -213,8 +214,8 @@ export function buildServiceReadinessBrowserUseCleanupReceiptV1(input: {
   if (!workflows.has(input.workflow_id)) throw new Error("service_readiness_browser_use_cleanup_workflow_id_invalid");
   const reservedPort = input.reserved_port;
   if (!Number.isSafeInteger(reservedPort) || reservedPort < 19880 || reservedPort > 19999) throw new Error("service_readiness_browser_use_cleanup_port_invalid");
-  const profile = browserUsePath(input.profile_root, "profile_root", "/Users/nichikatanaka/.codex/browser-use/profiles");
-  const lock = browserUsePath(input.lock_path, "lock_path", "/Users/nichikatanaka/.codex/browser-use/locks");
+  const profile = browserUsePath(input.profile_root, "profile_root", BROWSER_USE_PROFILE_ROOT);
+  const lock = browserUsePath(input.lock_path, "lock_path", BROWSER_USE_LOCK_ROOT);
   if (!identifiers.test(input.root_id) || !identifiers.test(input.run_id) || !identifiers.test(input.stage_id) || !identifiers.test(input.attempt_id) || !identifiers.test(input.requested_session_id) || !identifiers.test(input.effective_session_id) || !identifiers.test(input.process_identity)) {
     throw new Error("service_readiness_browser_use_cleanup_binding_invalid");
   }

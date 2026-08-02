@@ -33,6 +33,7 @@ import {
   SERVICE_READINESS_BROWSER_USE_AUTHORIZED_ADAPTER_CONTRACT_BLOCKER,
   type ServiceReadinessRuntimeBindingV1
 } from "../serviceReadiness/runtimeBinding.js";
+import { BROWSER_USE_HELPER_PATH, BROWSER_USE_RUNTIME_CONFIG_PATH } from "../serviceReadiness/browserUseCanonical.js";
 
 export type WorkerAdapter =
   | "child_codex"
@@ -130,8 +131,8 @@ type CodexProofRow = {
 };
 
 const browserUseAdapterEntryPoint = "/Users/nichikatanaka/.codex/skills/automation-kernel-run/scripts/browser-use-cli-stage-adapter.mjs";
-const browserUseHelper = "/Users/nichikatanaka/.local/bin/codex-browser-use";
-const browserUseRuntimeConfig = "/Users/nichikatanaka/.codex/browser-use/browser-use-runtime.toml";
+const browserUseHelper = BROWSER_USE_HELPER_PATH;
+const browserUseRuntimeConfig = BROWSER_USE_RUNTIME_CONFIG_PATH;
 
 type ChildRunRow = {
   id: string;

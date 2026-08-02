@@ -80,9 +80,9 @@ test("Browser Use runtime binding is a separate strict discriminator with same-r
     authority_digest: "a".repeat(64),
     requested_session_id: "requested-session-1",
     effective_session_id: "effective-session-1",
-    profile_root: "/Users/nichikatanaka/.codex/browser-use/profiles/scheduled/daily-ai",
+    profile_root: "/Users/nichikatanaka/.browser-use-cli/profiles/scheduled/daily-ai",
     reserved_port: 19880,
-    lock_path: "/Users/nichikatanaka/.codex/browser-use/locks/run-runtime-1.lock",
+    lock_path: "/Users/nichikatanaka/.browser-use-cli/locks/run-runtime-1.lock",
     process_identity: "pid:123",
     readback_status: "verified",
     mode: "authorized"
@@ -101,9 +101,9 @@ test("Browser Use runtime binding is a separate strict discriminator with same-r
       authority_digest: "a".repeat(64),
       requested_session_id: "requested-session-1",
       effective_session_id: "effective-session-1",
-      profile_root: "/Users/nichikatanaka/.codex/browser-use/profiles/scheduled-evil/daily-ai",
+      profile_root: "/Users/nichikatanaka/.browser-use-cli/profiles/scheduled-evil/daily-ai",
       reserved_port: 19880,
-      lock_path: "/Users/nichikatanaka/.codex/browser-use/locks/run-runtime-1.lock",
+      lock_path: "/Users/nichikatanaka/.browser-use-cli/locks/run-runtime-1.lock",
       process_identity: "pid:123",
       readback_status: "verified",
       mode: "authorized"

@@ -873,10 +873,17 @@ async function requestChatPlan(
   });
   const body = await response.json().catch(() => null) as {
     ok?: boolean;
+    error?: unknown;
+    exactBlocker?: unknown;
     job?: PlannerJobReadback;
   } | null;
   if (!response.ok || body?.ok !== true || !body.job?.id) {
-    throw new Error("planner_readback_unavailable");
+    const exact = typeof body?.exactBlocker === "string"
+      ? body.exactBlocker
+      : typeof body?.error === "string"
+        ? body.error
+        : "planner_readback_unavailable";
+    throw new Error(redactSensitiveText(exact).slice(0, 180) || "planner_readback_unavailable");
   }
   let job = body.job;
   options.onProgress?.(plannerProgressFromJob(body.job.id!, job));
@@ -1401,6 +1408,9 @@ function App() {
     mvpFetch("/api/mvp/feedback", { cache: "no-store" })
       .then(async (response) => {
         const json = await response.json().catch(() => ({}));
+        // The operator gate owns the unauthenticated/locked state. Do not let
+        // this secondary readback replace its actionable token guidance.
+        if (response.status === 401 || response.status === 423) return;
         if (!response.ok || json.ok === false) throw new Error("feedback_readback_failed");
         setFeedbackReadback(Array.isArray(json.feedbacks) ? json.feedbacks : []);
       })
@@ -3042,7 +3052,8 @@ function ChatPage({ model }: { model: AppModel }) {
       .catch((error) => {
         if (!stale) {
           setChatThreads([]);
-          setChatNote(`チャット履歴を確認できませんでした: ${error instanceof Error ? error.message : "chat_history_unavailable"} / ${actionStamp()}`);
+          const exact = error instanceof Error ? error.message : "chat_history_unavailable";
+          setChatNote(`チャット履歴を確認できませんでした: ${publicBlockerSummary(exact)} / ${actionStamp()}`);
         }
       })
       .finally(() => {
@@ -3141,14 +3152,16 @@ function ChatPage({ model }: { model: AppModel }) {
       const secretNote = secretRunnerNote(secretReadback);
       setReceipt(`plannerの回答を確認しました。planner=${readback.planner_adapter} / secret=${secretReadback.storedCount}件を非表示保存${secretNote} / external_action=false`);
       setChatNote(`planner回答完了: ${readback.plan.title} / secret=${secretReadback.storedCount}件を安全保存${secretNote} / ${actionStamp()}`);
-    } catch {
+    } catch (error) {
       if (plannerRequestGeneration.current !== requestGeneration) return;
+      const exact = error instanceof Error ? error.message : "planner_readback_unavailable";
+      const blocker = publicBlockerSummary(exact);
       setPlannerReadback(null);
       setPlanVisible(false);
       setCreated(false);
-      setPlannerError("プランAPIの結果を確認できませんでした。自動化の作成は確認されておらず、プラン送信の到達状態は不明です。");
-      setReceipt("プラン作成結果を確認できませんでした。自動化の作成は確認されていません。");
-      setChatNote(`プラン作成失敗: API接続を確認してください / ${actionStamp()}`);
+      setPlannerError(`プランAPIの結果を確認できませんでした（${blocker}）。自動化の作成は確認されておらず、プラン送信の到達状態は不明です。`);
+      setReceipt(`プラン作成結果を確認できませんでした（${blocker}）。自動化の作成は確認されていません。`);
+      setChatNote(`プラン作成停止: ${blocker} / ${actionStamp()}`);
     } finally {
       if (plannerRequestGeneration.current === requestGeneration) setPlanning(false);
     }
@@ -3197,14 +3210,16 @@ function ChatPage({ model }: { model: AppModel }) {
       const secretNote = secretRunnerNote(secretReadback);
       setReceipt(`plannerの会話結果を更新しました。planner=${readback.planner_adapter} / secret=${secretReadback.storedCount}件を非表示保存${secretNote} / mode=${readback.planner_mode}`);
       setChatNote(`送信完了: ${currentPlan.title} / secret=${secretReadback.storedCount}件を安全保存${secretNote} / ${actionStamp()}`);
-    } catch {
+    } catch (error) {
       if (plannerRequestGeneration.current !== requestGeneration) return;
+      const exact = error instanceof Error ? error.message : "planner_readback_unavailable";
+      const blocker = publicBlockerSummary(exact);
       setPlannerReadback(null);
       setPlanVisible(false);
       setCreated(false);
-      setPlannerError("プランAPIの結果を確認できませんでした。自動化の作成は確認されておらず、プラン送信の到達状態は不明です。");
-      setReceipt("送信結果を確認できませんでした。自動化の作成は確認されていません。");
-      setChatNote(`送信失敗: API接続を確認してください / ${actionStamp()}`);
+      setPlannerError(`プランAPIの結果を確認できませんでした（${blocker}）。自動化の作成は確認されておらず、送信の到達状態は不明です。`);
+      setReceipt(`送信結果を確認できませんでした（${blocker}）。自動化の作成は確認されていません。`);
+      setChatNote(`送信停止: ${blocker} / ${actionStamp()}`);
     } finally {
       if (plannerRequestGeneration.current === requestGeneration) setPlanning(false);
     }

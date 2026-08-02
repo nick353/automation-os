@@ -52,9 +52,9 @@ test("Browser Use cleanup proof requires finalized readback and owned lifecycle 
     authority_digest: "a".repeat(64),
     requested_session_id: "requested-session",
     effective_session_id: "effective-session",
-    profile_root: "/Users/nichikatanaka/.codex/browser-use/profiles/scheduled/daily-ai",
+    profile_root: "/Users/nichikatanaka/.browser-use-cli/profiles/scheduled/daily-ai",
     reserved_port: 19880,
-    lock_path: "/Users/nichikatanaka/.codex/browser-use/locks/run-cleanup-browser-use.lock",
+    lock_path: "/Users/nichikatanaka/.browser-use-cli/locks/run-cleanup-browser-use.lock",
     process_identity: "pid:456",
     artifact_uri: "file:///tmp/browser-use-cleanup-receipt.json",
     created_at: "2026-07-22T12:00:00.000Z"
