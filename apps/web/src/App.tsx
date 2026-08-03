@@ -2320,6 +2320,13 @@ function TruthfulPerformancePage({ model }: { model: AppModel }) {
     if (automationId && !automationOptions.some((item) => item.id === automationId)) setAutomationId("");
   }, [companyId, automationId, model.mvpState.automations]);
   React.useEffect(() => {
+    // A project switch must not carry the previous project's date window or
+    // automation filter into a new project's graph/readback.
+    setFromDate(dateInputValue(Date.now() - 29 * 24 * 60 * 60 * 1000));
+    setToDate(dateInputValue(Date.now()));
+    setAutomationId("");
+  }, [companyId]);
+  React.useEffect(() => {
     const controller = new AbortController();
     const requestGeneration = ++analyticsRequestGeneration.current;
     setAnalytics(null);
@@ -3201,6 +3208,15 @@ function ChatPage({ model }: { model: AppModel }) {
   const plannerMode = plannerReadback?.planner_mode ?? "not_requested";
   const plannerPublicBlocker = plannerReadback?.exact_blocker ? publicBlockerSummary(plannerReadback.exact_blocker) : null;
   const chatScopeLabel = targetProject ? projectLabelFromState(mvpState, targetProject) : "未選択";
+  const appServerSurface = mvpState.codexCapabilities?.appServer;
+  const appServerSurfaceState = getCapabilitySurfaceState(appServerSurface);
+  const appServerStatusLabel = appServerSurfaceState.connected
+    ? "接続済み"
+    : appServerSurfaceState.verified
+      ? "確認済み（接続待ち）"
+      : appServerSurface
+        ? "要確認"
+        : "未確認";
   const chatStatus = plannerProgress?.status ?? plannerReadback?.chat_status ?? (plannerReadback ? "completed" : "idle");
   const targetProjectIsVerified = model.mvpLoadStatus === "ready" && Boolean(targetProject) && canonicalProjects.some((project) => project.id === targetProject);
   const canCreatePlan = plannerReadback?.can_create === true && targetProjectIsVerified;
@@ -3602,7 +3618,10 @@ function ChatPage({ model }: { model: AppModel }) {
           kind,
           expression,
           timezone: String(currentSchedule?.timezone ?? "Asia/Tokyo"),
-          enabled: currentSchedule?.enabled !== false,
+          // A chat adjustment must not activate a schedule that does not yet
+          // have an explicit persisted enabled state. Keep an existing active
+          // schedule active, but save a new/unknown schedule as paused.
+          enabled: currentSchedule?.enabled === true,
           expected_revision: Number(currentSchedule?.revision ?? 1)
         })
       });
@@ -3706,14 +3725,16 @@ function ChatPage({ model }: { model: AppModel }) {
           const scheduleResponse = await mvpFetch(scheduleUrl, {
             method: "PUT",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ kind: scheduleKind, expression: plan.schedule, timezone: "Asia/Tokyo", enabled: true, expected_revision: 1 })
+            // Creating from chat produces a paused draft. Enabling a recurring
+            // run is a separate, explicit Builder action.
+            body: JSON.stringify({ kind: scheduleKind, expression: plan.schedule, timezone: "Asia/Tokyo", enabled: false, expected_revision: 1 })
           });
           const scheduleResult = await scheduleResponse.json().catch(() => ({}));
           if (!scheduleResponse.ok) throw new Error(scheduleResult.exactBlocker || scheduleResult.exact_blocker || scheduleResult.error || `schedule_save_http_${scheduleResponse.status}`);
           savedSchedule = scheduleResult.schedule;
         }
         freshState = await readMvpState();
-        scheduleNote = `定期実行を保存確認しました。schedule_revision=${savedSchedule?.revision ?? "?"} / next=${savedSchedule?.nextRunAt ?? savedSchedule?.next_run_at ?? "未計算"}`;
+        scheduleNote = `定期実行を停止中の下書きとして保存確認しました。schedule_revision=${savedSchedule?.revision ?? "?"} / next=${savedSchedule?.nextRunAt ?? savedSchedule?.next_run_at ?? "未計算"} / 有効化はBuilderで明示してください`;
       }
       setMvpState(freshState);
       setAutomationRows(toAutomationRows(freshState.automations ?? []));
@@ -3766,6 +3787,7 @@ function ChatPage({ model }: { model: AppModel }) {
       </PageTitle>
       <div className="chat-context" role="region" aria-label="Chatの会社scopeと状態">
         <strong>会社scope: {chatScopeLabel}</strong>
+        <span data-control-id="chat.app-server.status" aria-label={`Codex App Server接続状態: ${appServerStatusLabel}`}>Codex App Server: {appServerStatusLabel}</span>
         <span>status: {plannerProgress ? plannerProgressLabel(chatStatus) : chatStatus}</span>
         {requestedChatContext.context && <span>context: {requestedChatContext.context}</span>}
         {requestedChatContext.runId && <span>run: {requestedChatContext.runId}</span>}
@@ -4185,7 +4207,7 @@ function BuilderPage({ model }: { model: AppModel }) {
     kind: normalizeScheduleKind(persistedSchedule?.kind),
     expression: String(persistedSchedule?.expression ?? persistedSpec?.spec?.schedule_hint ?? ""),
     timezone: String(persistedSchedule?.timezone ?? "Asia/Tokyo"),
-    enabled: persistedSchedule ? persistedSchedule.enabled !== false : true
+    enabled: persistedSchedule ? persistedSchedule.enabled === true : false
   });
   const builderCreateIdempotencyRef = useRef<{ fingerprint: string; key: string } | null>(null);
   const [builderNotice, setBuilderNotice] = useState("外部投稿・送信・公開はまだ実行していません。");
@@ -4211,7 +4233,7 @@ function BuilderPage({ model }: { model: AppModel }) {
       kind: normalizeScheduleKind(persistedSchedule?.kind),
       expression: String(persistedSchedule?.expression ?? persistedSpec?.spec?.schedule_hint ?? builderDraft.schedule ?? ""),
       timezone: String(persistedSchedule?.timezone ?? "Asia/Tokyo"),
-      enabled: persistedSchedule ? persistedSchedule.enabled !== false : true
+      enabled: persistedSchedule ? persistedSchedule.enabled === true : false
     });
   }, [automationId, persistedSchedule?.revision, persistedSchedule?.kind, persistedSchedule?.expression, persistedSchedule?.timezone, persistedSchedule?.enabled, persistedSpec?.updated_at, builderDraft.schedule]);
   const saveBuilder = async () => {
@@ -4333,9 +4355,10 @@ function BuilderPage({ model }: { model: AppModel }) {
         kind: normalizeScheduleKind(savedSchedule?.kind ?? result.schedule?.kind),
         expression: String(savedSchedule?.expression ?? result.schedule?.expression ?? ""),
         timezone: String(savedSchedule?.timezone ?? result.schedule?.timezone ?? scheduleDraft.timezone),
-        enabled: savedSchedule ? savedSchedule.enabled !== false : result.schedule?.enabled !== false
+        enabled: savedSchedule ? savedSchedule.enabled === true : result.schedule?.enabled === true
       });
-      noteBuilder(`定期実行を保存しました。revision=${savedSchedule?.revision ?? result.schedule?.revision ?? "?"} / next=${savedSchedule?.next_run_at ?? result.schedule?.nextRunAt ?? "未計算"} / external_action=false`);
+      const enabled = savedSchedule ? savedSchedule.enabled === true : result.schedule?.enabled === true;
+      noteBuilder(`定期実行を${enabled ? "有効化" : "停止中の下書きとして"}保存しました。revision=${savedSchedule?.revision ?? result.schedule?.revision ?? "?"} / next=${savedSchedule?.next_run_at ?? result.schedule?.nextRunAt ?? "未計算"} / external_action=false`);
     } catch (error) {
       const exact = error instanceof Error ? error.message : "schedule_save_failed";
       noteBuilder(`定期実行の保存は未確認です: ${exact}。revisionを再読込してから再試行してください。`);
@@ -4408,12 +4431,12 @@ function BuilderPage({ model }: { model: AppModel }) {
               </select></label>
               <label>実行式<input data-control-id="builder.schedule.expression" aria-label="定期実行の実行式" value={scheduleDraft.expression} disabled={scheduleSaving || !persistedAutomation || scheduleDraft.kind === "manual"} placeholder={scheduleDraft.kind === "cron" ? "0 9 * * *" : "09:00"} onChange={(event) => setScheduleDraft((draft) => ({ ...draft, expression: event.target.value }))} /></label>
               <label>Timezone<input data-control-id="builder.schedule.timezone" aria-label="定期実行のTimezone" value={scheduleDraft.timezone} disabled={scheduleSaving || !persistedAutomation} onChange={(event) => setScheduleDraft((draft) => ({ ...draft, timezone: event.target.value }))} /></label>
-              <label className="checkbox-label"><input data-control-id="builder.schedule.enabled" aria-label="定期実行を有効にする" type="checkbox" checked={scheduleDraft.enabled} disabled={scheduleSaving || !persistedAutomation} onChange={(event) => setScheduleDraft((draft) => ({ ...draft, enabled: event.target.checked }))} /> 有効にする</label>
+              <label className="checkbox-label"><input data-control-id="builder.schedule.enabled" aria-label="定期実行を有効にする（明示的に次回実行を作成）" type="checkbox" checked={scheduleDraft.enabled} disabled={scheduleSaving || !persistedAutomation} onChange={(event) => setScheduleDraft((draft) => ({ ...draft, enabled: event.target.checked }))} /> 有効にする（明示的に次回実行を作成）</label>
             </div>
             <div className="button-row">
               <Button controlId="builder.schedule.save" variant="primary" onClick={saveSchedule} disabled={scheduleSaving || !persistedAutomation}>{scheduleSaving ? "定期実行を保存中" : "定期実行を保存"}</Button>
             </div>
-            <div className="action-note" role="status">{persistedAutomation ? `revision=${persistedSchedule?.revision ?? "新規(1)"} / status=${persistedSchedule?.status ?? "未保存"} / next=${persistedSchedule?.next_run_at ?? "未計算"}` : "自動化本体を保存すると、実設定を編集できます。"}</div>
+            <div className="action-note" role="status">{persistedAutomation ? `revision=${persistedSchedule?.revision ?? "新規(1)"} / status=${persistedSchedule?.status ?? (scheduleDraft.enabled ? "有効化前" : "停止中の下書き")} / next=${persistedSchedule?.next_run_at ?? "未計算"}` : "自動化本体を保存すると、実設定を編集できます。新規scheduleは停止中の下書きから始まります。"}</div>
           </Panel>
           <Panel title="実行契約" controlId="builder.execution-contract.panel">
             <p><strong>{executionLabel}</strong></p>

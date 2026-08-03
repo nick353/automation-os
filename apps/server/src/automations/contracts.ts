@@ -112,7 +112,9 @@ export function parseAutomationSchedule(value: unknown): AutomationScheduleInput
     kind: kind as AutomationScheduleInput["kind"],
     expression,
     timezone,
-    enabled: booleanValue(body.enabled ?? true, "automation_schedule_enabled"),
+    // Omitted enabled must be safe by default. Callers can still explicitly
+    // opt in with enabled=true after reviewing the schedule.
+    enabled: booleanValue(body.enabled ?? false, "automation_schedule_enabled"),
     expectedRevision: positiveInteger(body.expected_revision, "automation_expected_revision_required")
   };
 }

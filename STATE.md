@@ -1,5 +1,58 @@
 # Automation OS Current State
 
+## 2026-08-03 schedule safety and Chat/App Server status checkpoint
+
+The local UI/control-plane path was tightened without changing existing
+explicit `enabled=true` callers. `parseAutomationSchedule` now defaults an
+omitted `enabled` field to `false`; the Builder starts a new schedule as a
+paused draft, Chat-created recurring schedules are saved paused, and Chat
+schedule adjustment preserves `true` only when an existing persisted schedule
+is explicitly active. The Builder copy now says that enabling creates the next
+scheduled run, and receipts distinguish an active save from a paused draft.
+
+Project Performance now resets its date window and automation filter when the
+project changes, preventing a previous project's query scope from carrying
+into the next graph/readback. Chat also shows a read-only Codex App Server
+capability status (`接続済み` / `確認済み（接続待ち）` / `要確認` / `未確認`)
+from the current capability snapshot; it does not attempt an implicit
+connection. The static control manifest remains aligned.
+
+Fresh verification: targeted server API/repository/contract/analytics/profile
+tests `29/29` pass; web typecheck and production build pass; static UI
+preflight passes with `21` screen cases, `186` manifest entries, `235` rendered
+patterns, no duplicates, no unclassified controls, and no orphan entries.
+Runtime screen QA and per-screen recordings remain explicitly unverified until
+a fresh same-run Browser Use authority is admitted; the old unknown-effect
+operation and the separate task's Room were not replayed or touched.
+
+## 2026-08-03 public recording r26 finalized after deployed UI-copy readback
+
+Fresh public single-use recording `automation-os-public-qa-20260803-r26` used
+the canonical Browser Use helper against
+`https://automation-os.zeabur.app` with the same working target for `open` and
+semantic `state` readback. The readback showed the deployed operator gate copy
+`管理者用の利用キー` / `確認して開く`, Home navigation, summary cards, live
+execution, approvals, progress, and feedback surfaces. This was a public,
+read-only Home checkpoint; no authenticated input, token read, or protected
+business action was performed, so it is not proof of the remaining 21-screen
+authorized QA.
+
+The same run finalized with `external_effects=none`, exit code `0`, and a
+validated H.264 movie (`2400x1340`, `12fps`, `4 frames`, `0.333333s`, SHA-256
+`00680e1e7992541ea884c19b5d99cd41a1adfcd12e1d38dea3bab1ec29dcffc8`). Evidence:
+
+- video: `/Users/nichikatanaka/.browser-use-cli/recordings/automation-os-public-qa-20260803-r26/browser-recording.mp4`
+- manifest: `/Users/nichikatanaka/.browser-use-cli/recordings/automation-os-public-qa-20260803-r26/browser-use-recording-manifest.json`
+- receipt: `/Users/nichikatanaka/.browser-use-cli/receipts/automation-os-public-qa-20260803-r26/automation-os-public-qa-20260803-r26-a0b2653093cb4eed8d544066625af9e7.json`
+
+Cleanup readback for room `room-a6c46952cb4b4e3593ed4b7907f23364`, port
+`19984`, and Chrome PID `82564` is complete: listener and process are absent,
+profile was removed, and profile/port locks were removed. The separate live
+room on port `20084` remains outside this task and was not touched. The old
+owner-lane operation `d6c374d4bc824b0f9048c9ebf959a316` remains
+`external_effects=unknown` with one pending reconciliation; no click replay or
+outcome inference was made.
+
 ## 2026-08-03 public recording r25 and same-session login readback
 
 Fresh public single-use recording `automation-os-public-qa-20260803-r25` was
@@ -143,6 +196,14 @@ asset contains `管理者用の利用キー` and `確認して開く`, and no lo
 contains the old `管理者アクセスキー（Operator token）` label. Production
 `/api/health` returned 200 with `ok=true`. This proves deployment of the copy
 change, not authenticated screen QA.
+
+The stale owner run still retains `63` JPEG frame captures but no MP4. Sampled
+frames show the already-authenticated Project A KPI view, the Feedback modal,
+another project KPI view, and the explicit unavailable-company state. These
+frames are useful historical UI evidence for issue triage, but because the
+descriptor is stale and the movie is absent they are not accepted as completed
+screen-by-screen recording proof or as a source-of-truth reconciliation for
+operation `d6c374d4bc824b0f9048c9ebf959a316`.
 
 ## 2026-08-03 automation health authority-parser correction
 

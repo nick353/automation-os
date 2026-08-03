@@ -49,6 +49,7 @@ test("automation schedule is typed and revisioned", () => {
     enabled: true,
     expectedRevision: 3
   });
+  assert.equal(parseAutomationSchedule({ kind: "daily", expression: "09:00", timezone: "Asia/Tokyo", expected_revision: 1 }).enabled, false);
   assert.throws(() => parseAutomationSchedule({ kind: "daily", timezone: "UTC", expected_revision: 1 }), /automation_schedule_expression_required/);
   assert.throws(() => parseAutomationSchedule({ kind: "manual", expression: "09:00", expected_revision: 1 }), /automation_manual_schedule_expression_forbidden/);
 });
