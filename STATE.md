@@ -1,5 +1,23 @@
 # Automation OS Current State
 
+## 2026-08-03 authenticated QA temporary room released
+
+ユーザーの明示依頼により、認証済みQAを継続せず、同一run/sessionの一時roomを
+canonical Browser Use CLIで正規finalizeした。対象は
+`automation-os-authenticated-qa-20260803-r2` / `aos-auth-r2` / room
+`room-6ae2d36174e063beab48acf7f56f6a4c` / port `20086`。record-finalizeは
+`external_effects=none`、`finalized=true`でmanifest/receiptを生成し、roomは
+`released`、Chrome PID `70948`は終了、listenerなし、profile lock/port lockなし、
+temporary profile削除済みをfresh readbackした。録画はH.264、2400x1332、12fps、
+11 frames、0.916667秒。認証状態は評価・保存しておらず、認証済み21画面QAと
+画面別録画は未確認のまま停止した。
+
+同時点の公開readbackではlocal/public assetがともに
+`assets/index-DFWvKApy.js`でSHA-256
+`43033231400c1c03f3334d378d9c07e17700c041f70db73485db93efac9327a0`に一致。
+`/api/health=200`、protected `/api/browser/health=401` with
+`production_token_required`。
+
 ## 2026-08-03 Chat planner stop control checkpoint
 
 ChatのCodex App風planner処理に「停止」導線を追加した。停止は現在のread-only
