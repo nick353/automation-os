@@ -226,7 +226,7 @@ export class CodexAppServerClient {
 
   private async startInternal(): Promise<void> {
     this.closed = false;
-    const command = (this.options.command ?? process.env.AUTOMATION_OS_CODEX_APP_SERVER_COMMAND ?? "codex").trim();
+    const command = selectAppServerCommand(this.options);
     if (!command) throw new Error("codex_app_server_command_missing");
     const cwd = appServerCwd(this.options.cwd, this.options.workspaceRoot ?? process.env.AUTOMATION_OS_WORKER_WORKSPACE_ROOT);
     const factory = this.options.processFactory ?? (spawn as unknown as AppServerProcessFactory);
@@ -439,7 +439,7 @@ export class CodexAppServerClient {
 
 export function safeAppServerEnvironment(input: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const allowed = new Set([
-    "PATH", "HOME", "CODEX_HOME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "TERM",
+    "PATH", "HOME", "CODEX_HOME", "CODEX_CLI_PATH", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "TERM",
     "USER", "LOGNAME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME"
   ]);
   const output: NodeJS.ProcessEnv = {};
@@ -448,6 +448,17 @@ export function safeAppServerEnvironment(input: NodeJS.ProcessEnv): NodeJS.Proce
   }
   output.AUTOMATION_OS_CODEX_APP_SERVER_CHILD = "1";
   return output;
+}
+
+export function selectAppServerCommand(
+  options: { command?: string } = {},
+  env: NodeJS.ProcessEnv = process.env
+): string {
+  return options.command?.trim()
+    || env.AUTOMATION_OS_CODEX_APP_SERVER_COMMAND?.trim()
+    || env.AUTOMATION_OS_CODEX_BIN?.trim()
+    || env.CODEX_CLI_PATH?.trim()
+    || "codex";
 }
 
 function boundedTimeout(value: number | undefined): number {

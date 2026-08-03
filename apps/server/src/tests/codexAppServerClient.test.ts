@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { CodexAppServerClient, safeAppServerEnvironment, type AppServerChildLike } from "../codex/appServerClient.js";
+import { CodexAppServerClient, safeAppServerEnvironment, selectAppServerCommand, type AppServerChildLike } from "../codex/appServerClient.js";
 
 class FakeAppServerChild implements AppServerChildLike {
   readonly stdout = new PassThrough();
@@ -117,20 +117,37 @@ test("safeAppServerEnvironment excludes API/database secrets", () => {
     PATH: "/bin",
     HOME: "/tmp/home",
     CODEX_HOME: "/tmp/codex",
+    CODEX_CLI_PATH: "/opt/codex/bin/codex",
     OPENAI_API_KEY: "secret",
     DATABASE_URL: "postgres://secret",
     AUTOMATION_OS_OPERATOR_TOKEN: "secret"
   });
   assert.equal(env.PATH, "/bin");
   assert.equal(env.CODEX_HOME, "/tmp/codex");
+  assert.equal(env.CODEX_CLI_PATH, "/opt/codex/bin/codex");
   assert.equal(env.OPENAI_API_KEY, undefined);
   assert.equal(env.DATABASE_URL, undefined);
   assert.equal(env.AUTOMATION_OS_OPERATOR_TOKEN, undefined);
 });
 
+test("Codex App Server command selection ignores blanks and follows the configured CLI precedence", () => {
+  const env = {
+    AUTOMATION_OS_CODEX_APP_SERVER_COMMAND: "  /env/app-server  ",
+    AUTOMATION_OS_CODEX_BIN: " /env/automation-codex ",
+    CODEX_CLI_PATH: " /env/launch-agent-codex "
+  };
+  assert.equal(selectAppServerCommand({ command: "  /explicit/codex  " }, env), "/explicit/codex");
+  assert.equal(selectAppServerCommand({}, env), "/env/app-server");
+  assert.equal(selectAppServerCommand({}, { ...env, AUTOMATION_OS_CODEX_APP_SERVER_COMMAND: " " }), "/env/automation-codex");
+  assert.equal(selectAppServerCommand({}, { ...env, AUTOMATION_OS_CODEX_APP_SERVER_COMMAND: " ", AUTOMATION_OS_CODEX_BIN: " " }), "/env/launch-agent-codex");
+  assert.equal(selectAppServerCommand({}, {}), "codex");
+});
+
 test("Codex App Server child is started with an allowlisted environment and read-only no-network turn policy", async () => {
   const requests: Array<{ method?: string; params?: Record<string, unknown> }> = [];
   let spawnOptions: SpawnOptionsWithoutStdio | undefined;
+  const previousCodexCliPath = process.env.CODEX_CLI_PATH;
+  process.env.CODEX_CLI_PATH = "/opt/codex/bin/codex";
   const client = new CodexAppServerClient({
     cwd: "/tmp",
     workspaceRoot: "/tmp",
@@ -149,21 +166,27 @@ test("Codex App Server child is started with an allowlisted environment and read
     }
   });
 
-  const threadId = await client.startOrResumeThread();
-  await client.startTurn({ threadId, text: "read-only status" });
+  try {
+    const threadId = await client.startOrResumeThread();
+    await client.startTurn({ threadId, text: "read-only status" });
 
-  assert.equal(spawnOptions?.cwd, realpathSync("/tmp"));
-  assert.equal(spawnOptions?.env?.OPENAI_API_KEY, undefined);
-  assert.equal(spawnOptions?.env?.DATABASE_URL, undefined);
-  const threadStart = requests.find((request) => request.method === "thread/start");
-  const turnStart = requests.find((request) => request.method === "turn/start");
-  assert.equal(threadStart?.params?.approvalPolicy, "never");
-  assert.equal(threadStart?.params?.sandbox, "read-only");
-  assert.equal(turnStart?.params?.approvalPolicy, "never");
-  assert.equal(turnStart?.params?.permissionProfile, ":read-only");
-  assert.equal(turnStart?.params?.sandboxPolicy, undefined);
-  assert.equal(turnStart?.params?.cwd, realpathSync("/tmp"));
-  client.close();
+    assert.equal(spawnOptions?.cwd, realpathSync("/tmp"));
+    assert.equal(spawnOptions?.env?.CODEX_CLI_PATH, "/opt/codex/bin/codex");
+    assert.equal(spawnOptions?.env?.OPENAI_API_KEY, undefined);
+    assert.equal(spawnOptions?.env?.DATABASE_URL, undefined);
+    const threadStart = requests.find((request) => request.method === "thread/start");
+    const turnStart = requests.find((request) => request.method === "turn/start");
+    assert.equal(threadStart?.params?.approvalPolicy, "never");
+    assert.equal(threadStart?.params?.sandbox, "read-only");
+    assert.equal(turnStart?.params?.approvalPolicy, "never");
+    assert.equal(turnStart?.params?.permissionProfile, ":read-only");
+    assert.equal(turnStart?.params?.sandboxPolicy, undefined);
+    assert.equal(turnStart?.params?.cwd, realpathSync("/tmp"));
+  } finally {
+    client.close();
+    if (previousCodexCliPath === undefined) delete process.env.CODEX_CLI_PATH;
+    else process.env.CODEX_CLI_PATH = previousCodexCliPath;
+  }
 });
 
 test("Codex App Server rejects a cwd outside the explicit workspace root before spawn", async () => {
