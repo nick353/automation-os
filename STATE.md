@@ -1,5 +1,33 @@
 # Automation OS Current State
 
+## 2026-08-03 current productionization checkpoint
+
+Commit `f43503a` (`Harden worker environment and portable provenance`) was
+passed to `origin/main`. The full server regression after that change passed
+`931 total / 926 pass / 0 fail / 5 skip`; the five skips are the PostgreSQL
+fixture cases classified as `postgres_fixture_unavailable` because
+`AUTOMATION_OS_TEST_POSTGRES_URL` is not set. Focused worker/security checks
+passed `7/7`, and no secret value was printed or persisted.
+
+Fresh public deployment readback returned health `ok` for service
+`automation-os` and retained the expected Codex App Server, paused-schedule,
+and operator-key UI markers. This proves deployment health and UI marker
+parity, not live Mac-worker execution.
+
+The current authorized Browser Use recording run remains bound to the same
+run/session and is still active with `external_effects=none`, but same-session
+semantic readback continues to show the operator-key gate. Authenticated
+screen QA and per-screen recording therefore remain unverified; the run must
+not be finalized until the user completes the visible key entry or explicitly
+ends the QA.
+
+Fresh production readback shows no active service users, no active schedules,
+no queued durable jobs, and no queued planner jobs. There are six queued and
+one running legacy runs; they remain untouched and must not be replayed. The
+Mac worker continuous loop and live Codex App Server chat remain blocked until
+an owner-approved active service identity with complete operator scope exists.
+Receipt-only worker proof is not being treated as live worker completion.
+
 ## 2026-08-03 LaunchAgent installer safety checkpoint
 
 The server and worker LaunchAgent installers now retry `launchctl bootstrap`
