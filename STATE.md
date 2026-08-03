@@ -1,5 +1,37 @@
 # Automation OS Current State
 
+## 2026-08-03 release cfb87b8 public parity checkpoint
+
+The reviewed local implementation was committed as `cfb87b8` and pushed to
+`origin/main`. The full server regression is `891 total / 886 passed / 5
+skipped / 0 failed`; Web typecheck/build and `git diff --check` pass. The
+public health endpoint returns HTTP 200, and the served Web asset
+`assets/index-iIYhZXO9.js` is byte-for-byte identical to the local build
+(SHA-256 `9f92fea729e4ec6432579676f13ab1f64ef7eeb3125df8a1f3ae3c7ae7c5f7aa`,
+384553 bytes). The release files excluded `work/`, `outputs/`, and `.codex/`
+artifacts.
+
+Fresh public read-only recording
+`automation-os-public-release-cfb87b8-20260803` completed through the
+canonical Browser Use helper. Requested/effective session was
+`automation-os-public-release-cfb87b8-20260803` /
+`automation-os-public-rel-14c6aa6943`; semantic readback, final visual
+readback, and tab inventory share working target
+`8AED545E4A258D2AAC95D2EF0D5F7871`. Manifest:
+`work/recordings/automation-os-public-release-cfb87b8-20260803/browser-use-recording-manifest.json`.
+Receipt:
+`/Users/nichikatanaka/.browser-use-cli/receipts/automation-os-public-release-cfb87b8-20260803/automation-os-public-rel-14c6aa6943-5513fe9bd3d8447388cd414ab5f938bd.json`.
+The MP4 is H.264 2400x1332 at 12 fps with 6 frames and 0.5 seconds;
+`completion_blocker=null`, `external_effects=none`, `readback_exit=0`, and
+cleanup removed the profile/download directory/locks with no live listener.
+The visible surface is still the unauthenticated operator-token gate.
+
+Authenticated 21-screen recording, token rotation attestation, stored
+PostgreSQL Mac-worker execution, production schedule mutation/readback, and
+independent Graph verification remain unverified. Do not start a new
+authenticated recording until the previously exposed operator token has been
+rotated and a fresh authorized authority is available.
+
 ## 2026-08-03 live Mac-worker App Server chat smoke checkpoint
 
 The worker-owned `CodexAppServerClient` passed one fresh local live
