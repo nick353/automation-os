@@ -1411,6 +1411,32 @@ label textarea {
   line-height: 1.45;
 }
 
+.quick-action-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #ececec;
+}
+
+.quick-action-row > div:first-child {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.quick-action-row span {
+  color: #666;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.quick-action-row .button-row {
+  flex: 0 0 auto;
+}
+
 .feedback-confirm {
   display: flex;
   grid-template-columns: none;
@@ -1671,6 +1697,15 @@ label textarea {
   .status-grid,
   .feedback-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .quick-action-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .quick-action-row .button-row {
+    width: 100%;
   }
 
   .side-panel {

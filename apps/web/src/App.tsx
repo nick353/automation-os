@@ -4191,6 +4191,25 @@ function AutomationsPage({ model }: { model: AppModel }) {
       </PageTitle>
       <div className="action-note" role="status">{pageNote}</div>
       <ProjectScopeNotice projectId={activeProject} mvpState={mvpState} />
+      {activeProject && (registeredReadback.automations ?? []).some((item) => item.portable?.supported) && <div className="quick-action-row" data-control-id="projects.registered.quick-run.panel">
+        <div>
+          <strong>AOSで手動実行</strong>
+          <span>画面上部から対象を選び、同じcompany-scoped portable endpointへキュー登録します。</span>
+        </div>
+        <div className="button-row compact">
+          {(registeredReadback.automations ?? []).filter((item) => item.portable?.supported).map((item) => {
+            const name = item.name ?? item.id;
+            return <Button
+              key={`quick-run-${item.id}`}
+              controlId={`projects.registered.quick-run.${item.id}`}
+              ariaLabel={`${name}: AOSで今すぐ実行`}
+              onClick={() => requestPortableRun(item)}
+              disabled={Boolean(registeredRequestingId)}
+              icon={registeredRequestingId === item.id ? <Clock size={14} /> : <Play size={14} />}
+            >{name}: AOSで今すぐ実行</Button>;
+          })}
+        </div>
+      </div>}
       <ProjectPresentationProfileSummary model={model} companyId={activeProject} context="automations" />
       {activeProject && (
         <Panel title={`${projectName} 操作ガイド`} controlId="projects.guide.panel">
@@ -4222,8 +4241,8 @@ function AutomationsPage({ model }: { model: AppModel }) {
                   type="button"
                   data-control-id={`projects.registered.portable-run.${item.id}`}
                   className="icon-btn"
-                  aria-label={`${item.name ?? item.id}: AOSで今すぐ実行`}
-                  title={`${item.name ?? item.id}: AOSで今すぐ実行`}
+                  aria-label={`行内AOS実行: ${item.name ?? item.id}`}
+                  title={`行内AOS実行: ${item.name ?? item.id}`}
                   onClick={() => requestPortableRun(item)}
                   disabled={Boolean(registeredRequestingId)}
                 >
