@@ -15,6 +15,7 @@ test("safe worker environment omits inherited secret-shaped variables", () => {
     AWS_SECRET_ACCESS_KEY: "fixture-aws-secret",
     AUTOMATION_OS_CUSTOM_SECRET: "fixture-custom-secret",
     DATABASE_URL: "postgres://fixture:password@example.invalid/db",
+    CODEX_CLI_PATH: "/opt/codex/bin/codex",
     AUTOMATION_OS_SECRET_DIR: "/tmp/automation-os-secrets",
     AUTOMATION_OS_DB: "/tmp/automation-os.sqlite"
   });
@@ -22,6 +23,7 @@ test("safe worker environment omits inherited secret-shaped variables", () => {
   assert.equal(env.PATH, "/bin");
   assert.equal(env.AUTOMATION_OS_SECRET_DIR, "/tmp/automation-os-secrets");
   assert.equal(env.AUTOMATION_OS_DB, "/tmp/automation-os.sqlite");
+  assert.equal(env.CODEX_CLI_PATH, "/opt/codex/bin/codex");
   assert.equal(env.AUTOMATION_OS_WRITE_TOKEN, undefined);
   assert.equal(env.OPENAI_API_KEY, undefined);
   assert.equal(env.POSTGRES_PASSWORD, undefined);
