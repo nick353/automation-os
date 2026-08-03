@@ -1,5 +1,22 @@
 # Automation OS Current State
 
+## 2026-08-03 schedule/chat safety fix deployed
+
+Commit `7e2a3c6` (`Harden schedule drafts and project-scoped chat UI`) was
+pushed to `origin/main` and served by Zeabur. Fresh public readback initially
+returned the previous asset while the container rolled out; after polling the
+same URL, the root served `assets/index-Br3AgIH5.js`. The deployed JS contains
+the new markers `明示的に次回実行を作成` (2 occurrences) and `停止中の下書き`
+(4 occurrences). `/api/health` returned `200` with `ok=true` and
+`service=automation-os`. The remote asset was not claimed byte-identical to
+the local Vite artifact because the byte hashes differ after provider build
+processing; commit/asset/marker/health readback confirms the intended change.
+
+The pushed commit contains only the schedule safety, project-filter reset,
+Chat App Server status readback, manifest, contract test, and STATE updates.
+Unrelated working-tree changes for the portable worker canary remain
+unstaged and were not included.
+
 ## 2026-08-03 schedule safety and Chat/App Server status checkpoint
 
 The local UI/control-plane path was tightened without changing existing
