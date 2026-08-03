@@ -1,5 +1,27 @@
 # Automation OS Current State
 
+## 2026-08-03 direct production database guard checkpoint
+
+The backend database module now evaluates the canonical server startup policy
+before selecting a database backend. Direct imports therefore fail closed for
+production without valid PostgreSQL configuration and for invalid non-empty
+environment roles, instead of silently falling back to SQLite. The focused
+tests cover both direct-import blockers and keep the error output secret-free.
+
+Fresh verification passed: `npm run typecheck:web`, `npm run build:web`,
+`npm run build:server`, and the full suite with `914 total / 909 pass /
+0 fail / 5 skip`. The five skips are the explicit PostgreSQL fixture-unavailable
+tests because `AUTOMATION_OS_TEST_POSTGRES_URL` is not set. `git diff --check`
+passed. Commit `240c002` was pushed to `origin/main`.
+
+Fresh public readback after the push returned root `200`, asset
+`assets/index-lQVyT8bE.js`, and `/api/health` `200`. This confirms public
+deployment availability, not container commit/role/secret parity. The same
+temporary authorized Browser Use run/session remains held; a fresh same-session
+readback still shows the operator-token gate, so authenticated screen QA and
+per-screen recordings have not started. No token was read or persisted and no
+external effect occurred.
+
 ## 2026-08-03 fresh authorized recording r2 checkpoint
 
 The current temporary authorized recording is still held for the same run and
