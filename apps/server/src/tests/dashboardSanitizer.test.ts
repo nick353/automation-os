@@ -454,6 +454,16 @@ test("frontend project switcher is derived from API state records", () => {
   assert.doesNotMatch(runsSource, /\["failed", "timed_out", "reconciliation_required"\]\.includes\(selectedJob\.status\)/);
 });
 
+test("frontend template catalog preserves distinct automation types", () => {
+  const source = readAppSource();
+  const templatesSource = appSection(source, "function TemplatesPage", "function Panel");
+
+  assert.match(templatesSource, /name\.includes\("DM"\)[\s\S]*?"dm-reply"/);
+  assert.match(templatesSource, /name\.includes\("Runway"\)[\s\S]*?"creative-video"/);
+  assert.match(source, /["']creative-video["']:\s*\{/);
+  assert.match(source, /kind === "creative-video"[\s\S]*?return "creative-video"/);
+});
+
 test("frontend company pages and successful empty states use canonical API truth", () => {
   const source = readAppSource();
   const optionSource = appSection(source, "function projectOptionsFromState", "async function fetchApiJson");

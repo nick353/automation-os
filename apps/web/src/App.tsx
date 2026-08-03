@@ -730,6 +730,7 @@ function automationSlugForKind(kind: string) {
   if (kind === "research-report") return "research-report";
   if (kind === "情報収集・通知") return "research-notification";
   if (kind === "research-notification") return "research-notification";
+  if (kind === "creative-video" || kind === "Creative / Runway" || kind === "Runway広告動画生成") return "creative-video";
   if (kind === "Daily AI") return "daily-ai";
   if (kind === "daily-ai") return "daily-ai";
   if (kind === "NisenPrints") return "nisenprints";
@@ -835,6 +836,15 @@ const builderConfigs: Record<string, BuilderConfig> = {
     inputSources: "Google検索 / Web / Project Memory / LINE接続情報",
     outputs: "要約 / LINE通知下書き / 承認ログ / Artifact",
     riskBoundary: "LINE/Webhook/外部通知は承認まで実行しません。"
+  },
+  "creative-video": {
+    kindLabel: "Creative / Runway",
+    automationName: "Runway広告動画生成",
+    approvalPolicy: "required_before_external_publish",
+    steps: ["素材とブランド条件を確認", "動画プロンプトと尺を確認", "生成結果と利用権限を確認", "広告配信前に承認で停止", "承認後の公開Laneを割り当て", "生成物とreadbackを保存"],
+    inputSources: "Runway MCP / 素材manifest / ブランドガイドライン / Project Memory",
+    outputs: "動画生成下書き / 承認ログ / 生成物readback / Artifact",
+    riskBoundary: "動画生成、広告公開、支払い、削除は承認まで実行しません。"
   },
   "daily-ai": {
     kindLabel: "Daily AI",
@@ -4728,7 +4738,15 @@ function TemplatesPage({ model }: { model: AppModel }) {
     if (saving) return;
     setSaving(true);
     setTemplateNote(`${name}: 下書き保存を開始しました。外部投稿・送信は実行しません。`);
-    const automationType = name.includes("Gmail") || name.includes("DM") ? "gmail-reply" : category.includes("リサーチ") ? "research-report" : "sns-post";
+    const automationType = name.includes("Gmail")
+      ? "gmail-reply"
+      : name.includes("DM")
+        ? "dm-reply"
+        : category.includes("リサーチ")
+          ? "research-report"
+          : name.includes("Runway")
+            ? "creative-video"
+            : "sns-post";
     const createFingerprint = [selectedProjectId, String(selected), name, category, target, lane, approval].join("|");
     const createKey = stableIdempotencyKey(createIdempotencyRef, "template-automation-create", createFingerprint);
     try {
