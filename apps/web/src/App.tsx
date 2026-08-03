@@ -4431,7 +4431,7 @@ function BuilderPage({ model }: { model: AppModel }) {
               </select></label>
               <label>実行式<input data-control-id="builder.schedule.expression" aria-label="定期実行の実行式" value={scheduleDraft.expression} disabled={scheduleSaving || !persistedAutomation || scheduleDraft.kind === "manual"} placeholder={scheduleDraft.kind === "cron" ? "0 9 * * *" : "09:00"} onChange={(event) => setScheduleDraft((draft) => ({ ...draft, expression: event.target.value }))} /></label>
               <label>Timezone<input data-control-id="builder.schedule.timezone" aria-label="定期実行のTimezone" value={scheduleDraft.timezone} disabled={scheduleSaving || !persistedAutomation} onChange={(event) => setScheduleDraft((draft) => ({ ...draft, timezone: event.target.value }))} /></label>
-              <label className="checkbox-label"><input data-control-id="builder.schedule.enabled" aria-label="定期実行を有効にする（明示的に次回実行を作成）" type="checkbox" checked={scheduleDraft.enabled} disabled={scheduleSaving || !persistedAutomation} onChange={(event) => setScheduleDraft((draft) => ({ ...draft, enabled: event.target.checked }))} /> 有効にする（明示的に次回実行を作成）</label>
+              <label className="checkbox-label"><input data-control-id="builder.schedule.enabled" aria-label="定期実行を有効にする" type="checkbox" checked={scheduleDraft.enabled} disabled={scheduleSaving || !persistedAutomation} onChange={(event) => setScheduleDraft((draft) => ({ ...draft, enabled: event.target.checked }))} /> 有効にする（明示的に次回実行を作成）</label>
             </div>
             <div className="button-row">
               <Button controlId="builder.schedule.save" variant="primary" onClick={saveSchedule} disabled={scheduleSaving || !persistedAutomation}>{scheduleSaving ? "定期実行を保存中" : "定期実行を保存"}</Button>
