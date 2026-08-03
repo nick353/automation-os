@@ -17,6 +17,7 @@ delete process.env.AUTOMATION_OS_DATABASE_URL;
 delete process.env.DATABASE_URL;
 
 const db = await import("../db/client.js");
+const secrets = await import("../secrets/secretStore.js");
 
 test("workerProductionFromStoredSecret exits non-zero when the postgres secret is missing", () => {
   const result = spawnSync(
@@ -108,4 +109,42 @@ test("worker child spawn failure summary is stable and secret-free", () => {
     mode: "proof"
   });
   assert.doesNotMatch(JSON.stringify(summary), /credential-like-text|DATABASE_URL|\/Users\/private\/config/u);
+});
+
+test("workerProductionFromStoredSecret blocks unresolved postgres templates before spawning", () => {
+  const template = "postgresql://${POSTGRES_USERNAME}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DATABASE}";
+  secrets.saveSecretsFromMessage(`DATABASE_URL=${template}`);
+  const templateKeys = ["POSTGRES_USERNAME", "POSTGRES_PASSWORD", "POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_DATABASE"] as const;
+  const previous = Object.fromEntries(templateKeys.map((key) => [key, process.env[key]]));
+  for (const key of templateKeys) delete process.env[key];
+  try {
+    const result = spawnSync(
+      process.execPath,
+      ["apps/server/dist/cli/workerProductionFromStoredSecret.js", "--mode=proof"],
+      {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          AUTOMATION_OS_DB: process.env.AUTOMATION_OS_DB ?? "",
+          AUTOMATION_OS_SECRET_DIR: process.env.AUTOMATION_OS_SECRET_DIR ?? "",
+          AUTOMATION_OS_WORKER_STATE_PATH: statePath
+        },
+        encoding: "utf8"
+      }
+    );
+
+    assert.equal(result.status, 1);
+    assert.doesNotMatch(result.stdout, /postgresql:\/\/|credential-like-text/iu);
+    const stdout = JSON.parse(result.stdout.trim()) as { blocker: string; reason: string; secret: { configured: boolean; validUrl: boolean } };
+    assert.equal(stdout.blocker, "stored_postgres_secret_invalid_url");
+    assert.match(stdout.reason, /^template_reference_missing:/u);
+    assert.equal(stdout.secret.configured, true);
+    assert.equal(stdout.secret.validUrl, false);
+  } finally {
+    for (const key of templateKeys) {
+      const value = previous[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 });

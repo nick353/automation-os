@@ -1,6 +1,6 @@
 import { spawn, type SpawnOptionsWithoutStdio } from "node:child_process";
-import { realpathSync } from "node:fs";
 import { redactSensitiveText } from "../obsidian/redaction.js";
+import { resolveBoundedWorkspacePath } from "../security/processEnvironment.js";
 
 type WritableLike = {
   write(chunk: string): boolean;
@@ -100,6 +100,7 @@ export class CodexAppServerClient {
   constructor(private readonly options: {
     command?: string;
     cwd?: string;
+    workspaceRoot?: string;
     timeoutMs?: number;
     processFactory?: AppServerProcessFactory;
     onEvent?: (event: CodexAppServerEvent) => void;
@@ -116,7 +117,7 @@ export class CodexAppServerClient {
 
   async startOrResumeThread(threadId?: string): Promise<string> {
     await this.start();
-    const cwd = appServerCwd(this.options.cwd);
+    const cwd = appServerCwd(this.options.cwd, this.options.workspaceRoot ?? process.env.AUTOMATION_OS_WORKER_WORKSPACE_ROOT);
     const method = threadId?.trim() ? "thread/resume" : "thread/start";
     const params: Record<string, unknown> = threadId?.trim()
       ? {
@@ -162,7 +163,7 @@ export class CodexAppServerClient {
     const responsePromise = this.request("turn/start", {
       threadId,
       input: [{ type: "text", text, text_elements: [] }],
-      cwd: appServerCwd(this.options.cwd),
+      cwd: appServerCwd(this.options.cwd, this.options.workspaceRoot ?? process.env.AUTOMATION_OS_WORKER_WORKSPACE_ROOT),
       approvalPolicy: "never",
       // Codex CLI 0.145+ removed the legacy sandboxPolicy.access shape for
       // restricted reads. Keep the turn on the built-in read-only profile so
@@ -227,11 +228,12 @@ export class CodexAppServerClient {
     this.closed = false;
     const command = (this.options.command ?? process.env.AUTOMATION_OS_CODEX_APP_SERVER_COMMAND ?? "codex").trim();
     if (!command) throw new Error("codex_app_server_command_missing");
+    const cwd = appServerCwd(this.options.cwd, this.options.workspaceRoot ?? process.env.AUTOMATION_OS_WORKER_WORKSPACE_ROOT);
     const factory = this.options.processFactory ?? (spawn as unknown as AppServerProcessFactory);
     let child: AppServerChildLike;
     try {
       child = factory(command, ["app-server", "--listen", "stdio://"], {
-        cwd: appServerCwd(this.options.cwd),
+        cwd,
         env: safeAppServerEnvironment(process.env),
         stdio: ["pipe", "pipe", "pipe"]
       });
@@ -453,13 +455,12 @@ function boundedTimeout(value: number | undefined): number {
   return Math.min(Math.floor(value), maxTimeoutMs);
 }
 
-function appServerCwd(value: string | undefined): string {
-  const candidate = value?.trim() || process.cwd();
-  try {
-    return realpathSync(candidate);
-  } catch {
-    return candidate;
-  }
+function appServerCwd(value: string | undefined, workspaceRootValue: string | undefined): string {
+  return resolveBoundedWorkspacePath(value, workspaceRootValue, {
+    rootInvalid: "codex_app_server_workspace_root_invalid",
+    pathInvalid: "codex_app_server_cwd_invalid",
+    outside: "codex_app_server_cwd_outside_workspace"
+  });
 }
 
 function turnKey(threadId: string, turnId: string): string {

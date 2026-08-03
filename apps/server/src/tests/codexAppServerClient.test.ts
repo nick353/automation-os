@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { PassThrough, Writable } from "node:stream";
 import type { SpawnOptionsWithoutStdio } from "node:child_process";
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { CodexAppServerClient, safeAppServerEnvironment, type AppServerChildLike } from "../codex/appServerClient.js";
 
@@ -129,7 +132,8 @@ test("Codex App Server child is started with an allowlisted environment and read
   const requests: Array<{ method?: string; params?: Record<string, unknown> }> = [];
   let spawnOptions: SpawnOptionsWithoutStdio | undefined;
   const client = new CodexAppServerClient({
-    cwd: "/tmp/automation-os-chat-sandbox",
+    cwd: "/tmp",
+    workspaceRoot: "/tmp",
     processFactory: (_command, _args, options) => {
       spawnOptions = options;
       const child = new FakeAppServerChild();
@@ -148,7 +152,7 @@ test("Codex App Server child is started with an allowlisted environment and read
   const threadId = await client.startOrResumeThread();
   await client.startTurn({ threadId, text: "read-only status" });
 
-  assert.equal(spawnOptions?.cwd, "/tmp/automation-os-chat-sandbox");
+  assert.equal(spawnOptions?.cwd, realpathSync("/tmp"));
   assert.equal(spawnOptions?.env?.OPENAI_API_KEY, undefined);
   assert.equal(spawnOptions?.env?.DATABASE_URL, undefined);
   const threadStart = requests.find((request) => request.method === "thread/start");
@@ -158,8 +162,44 @@ test("Codex App Server child is started with an allowlisted environment and read
   assert.equal(turnStart?.params?.approvalPolicy, "never");
   assert.equal(turnStart?.params?.permissionProfile, ":read-only");
   assert.equal(turnStart?.params?.sandboxPolicy, undefined);
-  assert.equal(turnStart?.params?.cwd, "/tmp/automation-os-chat-sandbox");
+  assert.equal(turnStart?.params?.cwd, realpathSync("/tmp"));
   client.close();
+});
+
+test("Codex App Server rejects a cwd outside the explicit workspace root before spawn", async () => {
+  let spawned = false;
+  const client = new CodexAppServerClient({
+    cwd: "/tmp",
+    workspaceRoot: process.cwd(),
+    processFactory: () => {
+      spawned = true;
+      return new FakeAppServerChild();
+    }
+  });
+
+  await assert.rejects(() => client.start(), (error: unknown) => {
+    assert.equal((error as Error).message, "codex_app_server_cwd_outside_workspace");
+    return true;
+  });
+  assert.equal(spawned, false);
+});
+
+test("Codex App Server rejects a symlinked cwd that escapes the workspace root", async () => {
+  const root = mkdtempSync(join(tmpdir(), "automation-os-app-server-root-"));
+  const outside = mkdtempSync(join(tmpdir(), "automation-os-app-server-outside-"));
+  const link = join(root, "escape");
+  mkdirSync(join(root, "inside"));
+  symlinkSync(outside, link, "dir");
+  const client = new CodexAppServerClient({
+    cwd: link,
+    workspaceRoot: root,
+    processFactory: () => new FakeAppServerChild()
+  });
+
+  await assert.rejects(() => client.start(), (error: unknown) => {
+    assert.equal((error as Error).message, "codex_app_server_cwd_outside_workspace");
+    return true;
+  });
 });
 
 test("Codex App Server spawn failures use a stable blocker and never expose the thrown message", async () => {

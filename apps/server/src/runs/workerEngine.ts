@@ -34,6 +34,7 @@ import {
   type ServiceReadinessRuntimeBindingV1
 } from "../serviceReadiness/runtimeBinding.js";
 import { BROWSER_USE_HELPER_PATH, BROWSER_USE_RUNTIME_CONFIG_PATH } from "../serviceReadiness/browserUseCanonical.js";
+import { redactWorkerOutput, resolveWorkerWorkspacePath, safeWorkerEnvironment } from "../security/processEnvironment.js";
 
 export type WorkerAdapter =
   | "child_codex"
@@ -322,10 +323,14 @@ export function buildWorkerCommand(input: {
   nisenprintsDefaultRunnerPath?: string;
 }): WorkerCommandSpec {
   if (input.adapter === "child_codex") {
+    const childCwd = resolveWorkerWorkspacePath(
+      process.env.AUTOMATION_OS_CHILD_CODEX_CWD,
+      process.env.AUTOMATION_OS_WORKER_WORKSPACE_ROOT
+    );
     return {
       bin: process.env.AUTOMATION_OS_CHILD_CODEX_BIN || process.env.AUTOMATION_OS_CODEX_BIN || "codex",
-      args: ["exec", "--sandbox", "read-only", "--cd", process.env.AUTOMATION_OS_CHILD_CODEX_CWD || process.cwd(), input.taskName],
-      display: `codex exec --sandbox read-only --cd ${JSON.stringify(process.env.AUTOMATION_OS_CHILD_CODEX_CWD || process.cwd())} ${JSON.stringify(
+      args: ["exec", "--sandbox", "read-only", "--cd", childCwd, input.taskName],
+      display: `codex exec --sandbox read-only --cd ${JSON.stringify(childCwd)} ${JSON.stringify(
         input.taskName
       )}`
     };
@@ -2887,8 +2892,8 @@ async function runCodexReadonlyStep(input: {
 }): Promise<CodexReadonlyExecutionResult> {
   const timeoutMs = codexReadonlyTimeoutMs();
   const result = await runWorkerProcess(input.command, {
-    cwd: process.cwd(),
-    env: { ...process.env, ...(input.command.env ?? {}) },
+    cwd: resolveWorkerWorkspacePath(undefined, process.env.AUTOMATION_OS_WORKER_WORKSPACE_ROOT),
+    env: safeWorkerEnvironment(process.env, { overrides: input.command.env }),
     timeoutMs,
     onSpawn: (pid) => recordChildRunPid(input.childRunId, pid)
   });
@@ -2944,8 +2949,8 @@ async function runChildCodexReadonlyStep(input: {
 }): Promise<ChildCodexExecutionResult> {
   const timeoutMs = childCodexReadonlyTimeoutMs();
   const result = await runWorkerProcess(input.command, {
-    cwd: process.cwd(),
-    env: { ...process.env, ...(input.command.env ?? {}) },
+    cwd: resolveWorkerWorkspacePath(undefined, process.env.AUTOMATION_OS_WORKER_WORKSPACE_ROOT),
+    env: safeWorkerEnvironment(process.env, { overrides: input.command.env }),
     timeoutMs,
     onSpawn: (pid) => recordChildRunPid(input.childRunId, pid)
   });
@@ -3961,8 +3966,7 @@ function workerProcessKillGraceMs(): number {
 }
 
 function tail(value: string | Buffer | null | undefined, maxChars = 4_000): string {
-  const text = Buffer.isBuffer(value) ? value.toString("utf8") : value ?? "";
-  return text.length > maxChars ? text.slice(-maxChars) : text;
+  return redactWorkerOutput(value, maxChars);
 }
 
 function errorToMessage(error: unknown): string {

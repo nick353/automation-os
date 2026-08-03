@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { closeSync, fsyncSync, mkdirSync, openSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { readStoredSecretByKind } from "../secrets/secretStore.js";
+import { safeWorkerEnvironment } from "../security/processEnvironment.js";
 import { validatePostgresUrl } from "./postgresUrlValidation.js";
 import { workerChildSpawnFailureSummary } from "./workerProductionErrors.js";
 
@@ -48,12 +49,12 @@ const args = mode === "loop"
 
 const child = spawn(process.execPath, args, {
   cwd: process.cwd(),
-  env: {
-    ...process.env,
-    AUTOMATION_OS_DATABASE_URL: validatedDatabaseUrl,
-    DATABASE_URL: validatedDatabaseUrl,
-    AUTOMATION_OS_ASSUME_EXISTING_POSTGRES_SCHEMA: process.env.AUTOMATION_OS_ASSUME_EXISTING_POSTGRES_SCHEMA ?? "1"
-  },
+  env: safeWorkerEnvironment(process.env, {
+    databaseUrl: validatedDatabaseUrl,
+    overrides: {
+      AUTOMATION_OS_ASSUME_EXISTING_POSTGRES_SCHEMA: process.env.AUTOMATION_OS_ASSUME_EXISTING_POSTGRES_SCHEMA ?? "1"
+    }
+  }),
   stdio: ["ignore", "inherit", "inherit"]
 });
 

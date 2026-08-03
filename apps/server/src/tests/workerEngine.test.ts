@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -10,6 +10,7 @@ const tempRoot = mkdtempSync(join(tmpdir(), "automation-os-worker-engine-"));
 process.env.AUTOMATION_OS_DB = join(tempRoot, "automation-os.sqlite");
 process.env.AUTOMATION_OS_ARTIFACT_ROOT = join(tempRoot, "artifacts");
 process.env.AUTOMATION_OS_NISENPRINTS_PLAYWRIGHT_OUTPUT_ROOT = join(tempRoot, "nisenprints-node-runs");
+const fakeCodexControlPath = join(process.env.AUTOMATION_OS_ARTIFACT_ROOT, "fake-codex-control.json");
 
 const { buildExecutionRoutingSnapshot } = await import("../codex/executionRouting.js");
 const db = await import("../db/client.js");
@@ -140,25 +141,35 @@ function writeFakeCodex(): string {
   writeFileSync(
     path,
     `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
 const argv = process.argv.slice(2);
-if (process.env.FAKE_CODEX_REGISTERED_SUMMARY && process.env.AUTOMATION_OS_REGISTERED_SUMMARY_PATH) {
-  require("node:fs").writeFileSync(process.env.AUTOMATION_OS_REGISTERED_SUMMARY_PATH, process.env.FAKE_CODEX_REGISTERED_SUMMARY);
+const controlPath = path.join(process.env.AUTOMATION_OS_ARTIFACT_ROOT || process.cwd(), "fake-codex-control.json");
+const behavior = JSON.parse(fs.readFileSync(controlPath, "utf8"));
+if (typeof behavior.registeredSummary === "string" && process.env.AUTOMATION_OS_REGISTERED_SUMMARY_PATH) {
+  fs.writeFileSync(process.env.AUTOMATION_OS_REGISTERED_SUMMARY_PATH, behavior.registeredSummary);
 }
 const finish = () => {
   console.log(JSON.stringify({ argv, cwd: process.cwd(), task: argv.at(-1) }));
-  if (process.env.FAKE_CODEX_EXIT_STATUS) {
+  const exitStatus = Number(behavior.exitStatus ?? 0);
+  if (Number.isFinite(exitStatus) && exitStatus !== 0) {
     console.error("fake codex blocked");
-    process.exit(Number(process.env.FAKE_CODEX_EXIT_STATUS));
+    process.exit(exitStatus);
   }
   console.error("fake codex completed");
 };
-const delayMs = Number(process.env.FAKE_CODEX_DELAY_MS || "0");
+const delayMs = Number(behavior.delayMs ?? 0);
 if (Number.isFinite(delayMs) && delayMs > 0) setTimeout(finish, delayMs);
 else finish();
 `
   );
   chmodSync(path, 0o755);
   return path;
+}
+
+function setFakeCodexBehavior(behavior: { exitStatus?: number; delayMs?: number; registeredSummary?: string } = {}): void {
+  mkdirSync(process.env.AUTOMATION_OS_ARTIFACT_ROOT!, { recursive: true });
+  writeFileSync(fakeCodexControlPath, `${JSON.stringify(behavior)}\n`, "utf8");
 }
 
 function installFakeBrowserUse(name: string): () => void {
@@ -782,14 +793,12 @@ async function withCodexExecutionEnv<T>(fn: () => T | Promise<T>): Promise<T> {
   const previous = {
     executeCodex: process.env.AUTOMATION_OS_EXECUTE_CODEX,
     codexBin: process.env.AUTOMATION_OS_CODEX_BIN,
-    fakeExitStatus: process.env.FAKE_CODEX_EXIT_STATUS,
-    fakeRegisteredSummary: process.env.FAKE_CODEX_REGISTERED_SUMMARY,
-    fakeDelayMs: process.env.FAKE_CODEX_DELAY_MS,
     registeredSummaryRoot: process.env.AUTOMATION_OS_REGISTERED_SUMMARY_ROOT
   };
   process.env.AUTOMATION_OS_EXECUTE_CODEX = "1";
   process.env.AUTOMATION_OS_CODEX_BIN = writeFakeCodex();
   process.env.AUTOMATION_OS_REGISTERED_SUMMARY_ROOT = join(tempRoot, "registered-summaries");
+  setFakeCodexBehavior();
   try {
     return await fn();
   } finally {
@@ -797,39 +806,30 @@ async function withCodexExecutionEnv<T>(fn: () => T | Promise<T>): Promise<T> {
     else process.env.AUTOMATION_OS_EXECUTE_CODEX = previous.executeCodex;
     if (previous.codexBin === undefined) delete process.env.AUTOMATION_OS_CODEX_BIN;
     else process.env.AUTOMATION_OS_CODEX_BIN = previous.codexBin;
-    if (previous.fakeExitStatus === undefined) delete process.env.FAKE_CODEX_EXIT_STATUS;
-    else process.env.FAKE_CODEX_EXIT_STATUS = previous.fakeExitStatus;
-    if (previous.fakeRegisteredSummary === undefined) delete process.env.FAKE_CODEX_REGISTERED_SUMMARY;
-    else process.env.FAKE_CODEX_REGISTERED_SUMMARY = previous.fakeRegisteredSummary;
-    if (previous.fakeDelayMs === undefined) delete process.env.FAKE_CODEX_DELAY_MS;
-    else process.env.FAKE_CODEX_DELAY_MS = previous.fakeDelayMs;
     if (previous.registeredSummaryRoot === undefined) delete process.env.AUTOMATION_OS_REGISTERED_SUMMARY_ROOT;
     else process.env.AUTOMATION_OS_REGISTERED_SUMMARY_ROOT = previous.registeredSummaryRoot;
+    setFakeCodexBehavior();
   }
 }
 
 async function withChildCodexExecutionEnv<T>(fn: () => T | Promise<T>): Promise<T> {
   const previous = {
     childCodexBin: process.env.AUTOMATION_OS_CHILD_CODEX_BIN,
-    fakeExitStatus: process.env.FAKE_CODEX_EXIT_STATUS,
-    fakeDelayMs: process.env.FAKE_CODEX_DELAY_MS,
     childTimeoutMs: process.env.AUTOMATION_OS_CHILD_CODEX_TIMEOUT_MS,
     workerKillGraceMs: process.env.AUTOMATION_OS_WORKER_KILL_GRACE_MS
   };
   process.env.AUTOMATION_OS_CHILD_CODEX_BIN = writeFakeCodex();
+  setFakeCodexBehavior();
   try {
     return await fn();
   } finally {
     if (previous.childCodexBin === undefined) delete process.env.AUTOMATION_OS_CHILD_CODEX_BIN;
     else process.env.AUTOMATION_OS_CHILD_CODEX_BIN = previous.childCodexBin;
-    if (previous.fakeExitStatus === undefined) delete process.env.FAKE_CODEX_EXIT_STATUS;
-    else process.env.FAKE_CODEX_EXIT_STATUS = previous.fakeExitStatus;
-    if (previous.fakeDelayMs === undefined) delete process.env.FAKE_CODEX_DELAY_MS;
-    else process.env.FAKE_CODEX_DELAY_MS = previous.fakeDelayMs;
     if (previous.childTimeoutMs === undefined) delete process.env.AUTOMATION_OS_CHILD_CODEX_TIMEOUT_MS;
     else process.env.AUTOMATION_OS_CHILD_CODEX_TIMEOUT_MS = previous.childTimeoutMs;
     if (previous.workerKillGraceMs === undefined) delete process.env.AUTOMATION_OS_WORKER_KILL_GRACE_MS;
     else process.env.AUTOMATION_OS_WORKER_KILL_GRACE_MS = previous.workerKillGraceMs;
+    setFakeCodexBehavior();
   }
 }
 
@@ -1004,6 +1004,32 @@ test("builds worker commands without OpenAI API keys", () => {
     assert.equal(resolveWorkerAdapterPolicy("local_worker").classification, "non_browser");
   } finally {
     for (const [key, value] of previousOpenAiEnv) process.env[key] = value;
+  }
+});
+
+test("child Codex command rejects a cwd outside the worker workspace before execution", () => {
+  const previousRoot = process.env.AUTOMATION_OS_WORKER_WORKSPACE_ROOT;
+  const previousCwd = process.env.AUTOMATION_OS_CHILD_CODEX_CWD;
+  const workspaceRoot = mkdtempSync(join(tmpdir(), "automation-os-child-cwd-root-"));
+  const childCwd = mkdtempSync(join(workspaceRoot, "child-"));
+  try {
+    process.env.AUTOMATION_OS_WORKER_WORKSPACE_ROOT = workspaceRoot;
+    process.env.AUTOMATION_OS_CHILD_CODEX_CWD = childCwd;
+    const command = buildWorkerCommand({ adapter: "child_codex", taskName: "read-only check" });
+    assert.equal(command.args[3], "--cd");
+    assert.equal(command.args[4], realpathSync(childCwd));
+    assert.equal(command.args[5], "read-only check");
+
+    process.env.AUTOMATION_OS_CHILD_CODEX_CWD = join(workspaceRoot, "..");
+    assert.throws(
+      () => buildWorkerCommand({ adapter: "child_codex", taskName: "outside check" }),
+      /worker_cwd_outside_workspace/u
+    );
+  } finally {
+    if (previousRoot === undefined) delete process.env.AUTOMATION_OS_WORKER_WORKSPACE_ROOT;
+    else process.env.AUTOMATION_OS_WORKER_WORKSPACE_ROOT = previousRoot;
+    if (previousCwd === undefined) delete process.env.AUTOMATION_OS_CHILD_CODEX_CWD;
+    else process.env.AUTOMATION_OS_CHILD_CODEX_CWD = previousCwd;
   }
 });
 
@@ -2245,7 +2271,7 @@ test("records child_codex blocked with child_runs and blocked proof", async () =
   withChildCodexExecutionEnv(async () => {
     initDb();
     resetDemoData();
-    process.env.FAKE_CODEX_EXIT_STATUS = "7";
+    setFakeCodexBehavior({ exitStatus: 7 });
 
     const summary = await startCommandRun("CodexでworkerEngineをread-only確認");
     const run = await waitForRunStatus(summary.runId, "blocked");
@@ -2383,15 +2409,17 @@ for (const scenario of [
     withCodexExecutionEnv(async () => {
       initDb();
       resetDemoData();
-      process.env.FAKE_CODEX_EXIT_STATUS = "7";
-      process.env.FAKE_CODEX_REGISTERED_SUMMARY = JSON.stringify({
-        status: "blocked",
-        workflow_id: scenario.name === "Job Submit" ? "job_submit_registered" : "job_followup_registered",
-        run_id: "fake-job-runner-safety",
-        completion_claimed: false,
-        exact_blocker: "fake_registered_codex_blocked_before_external_action",
-        source_of_truth_proofs: [],
-        cleanup_proof: null
+      setFakeCodexBehavior({
+        exitStatus: 7,
+        registeredSummary: JSON.stringify({
+          status: "blocked",
+          workflow_id: scenario.name === "Job Submit" ? "job_submit_registered" : "job_followup_registered",
+          run_id: "fake-job-runner-safety",
+          completion_claimed: false,
+          exact_blocker: "fake_registered_codex_blocked_before_external_action",
+          source_of_truth_proofs: [],
+          cleanup_proof: null
+        })
       });
 
       const summary = await startCommandRun(scenario.command);
@@ -3614,7 +3642,7 @@ test("skips late child_codex finalize after stale repair without overwriting led
   withChildCodexExecutionEnv(async () => {
     initDb();
     resetDemoData();
-    process.env.FAKE_CODEX_DELAY_MS = "2000";
+    setFakeCodexBehavior({ delayMs: 2000 });
     process.env.AUTOMATION_OS_CHILD_CODEX_TIMEOUT_MS = "5000";
     process.env.AUTOMATION_OS_WORKER_KILL_GRACE_MS = "10";
 
@@ -3660,7 +3688,7 @@ test("does not apply child_codex late finalize skip guard to codex_cli finalize"
   withCodexExecutionEnv(async () => {
     initDb();
     resetDemoData();
-    process.env.FAKE_CODEX_DELAY_MS = "150";
+    setFakeCodexBehavior({ delayMs: 150 });
 
   const runId = "run_codex_cli_finalize_without_child_guard";
   const stepId = `${runId}_step_1`;

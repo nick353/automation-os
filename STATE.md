@@ -1,5 +1,119 @@
 # Automation OS Current State
 
+## 2026-08-03 worker workspace-boundary hardening checkpoint
+
+The local worker/App Server hardening is now covered by a shared canonical
+workspace-path resolver. It resolves the worker root and child `cwd` through
+realpath, rejects traversal and symlink escape with stable blockers, and is
+used by both child Codex command construction and Codex App Server startup.
+Worker child environments remain allowlisted; stored PostgreSQL URLs are
+injected only at the trusted production-worker boundary, and worker output
+tails redact database URLs and credential-shaped values before persistence.
+
+Focused verification passed: server build; chat/App Server/environment tests
+`17/17`; workerEngine `73/73`; Web typecheck; Web production build; and static
+all-page QA (`181` manifest entries, `230` rendered patterns, no issues).
+The full server suite passed `899` tests with `894` pass, `5` PostgreSQL
+integration skips, and `0` failures. The skips are caused by the absence of a
+target PostgreSQL URL, not by a test failure. `git diff --check` also passed.
+
+The production stored-secret proof remains blocked before worker spawn by
+`stored_postgres_secret_invalid_url`; the configured template is missing
+`POSTGRES_USERNAME`, `POSTGRES_PASSWORD`, `POSTGRES_HOST`, `POSTGRES_PORT`,
+and `POSTGRES_DATABASE`. No secret value was printed or changed. Production
+Mac-worker PostgreSQL/symlink/egress proof, authenticated 21-screen runtime
+QA and per-screen recordings, token rotation/fresh authority, production
+schedule mutation/readback, deployment, and independent Graph verification
+remain unverified.
+
+## 2026-08-03 local stored-secret PostgreSQL pickup proof
+
+An ephemeral local PostgreSQL instance was used only as a no-production
+fixture. The same `workerProductionFromStoredSecret --mode=proof` wrapper read
+an encrypted fixture secret from a temporary SQLite control store, validated
+it without printing the URL, injected it only into the child worker
+environment, and ran the real PostgreSQL pickup-proof path. Safe readback:
+`ok=true`, `database.backend=postgres`, child `worker.status=0`, heartbeat
+`processed=1`, and the picked run's first step was `completed`. The wrapper
+and temporary PostgreSQL process were cleaned up; no fixture data or secret
+was retained. The run status was `partial`, which is expected for this
+receipt-only proof and is not a production completion claim.
+
+This proves the local stored-secret-to-PostgreSQL worker wiring, but not the
+production Mac worker's actual database, workspace, symlink, egress, or
+runtime identity. The production template blocker and all authenticated
+runtime/browser requirements above remain unchanged.
+
+The unresolved-template fail-closed path is also regression-tested: the
+focused worker-production/environment/App Server suite passed `15/15`, with
+no PostgreSQL URL or credential-like value in the blocked wrapper readback.
+
+## 2026-08-03 fresh r15 semantic/video readback checkpoint
+
+Fresh public read-only recording
+`automation-os-public-surface-proof-r15-20260803` completed through the
+canonical Browser Use helper. The manifest binds requested session
+`automation-os-public-surface-proof-r15-20260803` to effective session
+`automation-os-public-sur-de1730cb05` and semantic/final-video target
+`5816480E1FBCD72FC93940612B13EAF5`. The same-session semantic state hash,
+final semantic hash, and URL/title hashes match; `semantic_readback_surface_match=true`,
+`completion_blocker=null`, `external_effects=none`, and `failed_operations=[]`.
+Manifest:
+`work/recordings/automation-os-public-surface-proof-r15-20260803/browser-use-recording-manifest.json`.
+Receipt:
+`/Users/nichikatanaka/.browser-use-cli/receipts/automation-os-public-surface-proof-r15-20260803/automation-os-public-sur-de1730cb05-43fe8d3aa5ce4fed8e82f13aee229ec5.json`.
+
+The MP4 is H.264 2400x1332, 12 fps, 6 frames, 0.5 s; video SHA-256
+`3a9c2f2dd487736aee7820c4a9d7fbbdfdd982b63e2a7e8f9d1ad5e20df1c4df` and
+decoded final-frame SHA-256
+`8da7ab43d438904ce5fd5d996e52c8eb0d18b2ca4b70a1d29e42c869213d3c61`.
+The frame-reader adaptive manifest sampled one base keyframe and six detail
+frames; visual inspection showed the same public operator-token gate. The
+receipt reports exit 0, `cleanup.status=cleaned`, no retained locks, removed
+profile/download directory, and the post-finalize room readback is released
+with `active=0` and no listener/process.
+
+Focused evidence: `node --test scripts/tests/browserUseCliSemanticReadback.test.mjs`
+passed `4/4`; helper validation and Python syntax validation passed; an
+independent manifest/receipt/video SHA binding assertion passed. This remains
+public gate evidence only; authenticated 21-screen QA and production gates are
+still unverified.
+
+## 2026-08-03 continuation: semantic/video binding and worker secret boundary checkpoint
+
+The semantic/video surface fix remains verified by fresh public read-only
+recording `automation-os-public-surface-proof-r14-20260803`. The manifest and
+receipt bind requested session
+`automation-os-public-surface-proof-r14-20260803` to effective session
+`automation-os-public-sur-a843413ff7` and target
+`A6B32B132B19BDE570668BB47C5BE411`. Semantic target, final visual target, and
+same-time URL/semantic hashes match; `completion_blocker=null` and
+`external_effects=none`. The MP4 is H.264 2400x1332, 12 fps, 6 frames, 0.5 s,
+video SHA-256
+`3a9c2f2dd487736aee7820c4a9d7fbbdfdd982b63e2a7e8f9d1ad5e20df1c4df`, final
+frame SHA-256
+`8da7ab43d438904ce5fd5d996e52c8eb0d18b2ca4b70a1d29e42c869213d3c61`.
+Receipt finalization reports exit 0, required post-command readback, removed
+profile/download directory/locks, and current Browser Use rooms are
+`active_count=0`, `held_count=0`.
+
+The current uncommitted local hardening adds an explicit worker environment
+allowlist, binds stored PostgreSQL URLs only at the trusted production worker
+boundary, and redacts worker stdout/stderr tails before artifact persistence.
+The child-Codex test fixture now uses an artifact-root control file instead of
+passing `FAKE_CODEX_*` variables through the production allowlist. Server and
+Web build/typecheck pass; the full server suite is `894 total / 889 passed / 5
+skipped / 0 failed`. The five skips remain real PostgreSQL integration tests
+because no test database URL is present.
+
+Fresh `worker:production-proof:stored` readback remains blocked without
+spawning a worker: `stored_postgres_secret_invalid_url`, with missing template
+variables `POSTGRES_USERNAME, POSTGRES_PASSWORD, POSTGRES_HOST, POSTGRES_PORT,
+POSTGRES_DATABASE`. No stored secret value was printed or changed. Authenticated
+21-screen recording, token rotation, live Mac worker PostgreSQL execution,
+production schedule mutation/readback, deployment, and independent Graph
+verification remain unverified.
+
 ## 2026-08-03 release cfb87b8 public parity checkpoint
 
 The reviewed local implementation was committed as `cfb87b8` and pushed to
