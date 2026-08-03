@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { evaluateServerStartupPolicy } from "../cli/serverStartupPolicy.js";
 
@@ -65,6 +66,50 @@ test("production uses the canonical Automation OS URL before DATABASE_URL", () =
     databaseAuthority: "postgres_required",
     databaseSource: "AUTOMATION_OS_DATABASE_URL"
   });
+});
+
+test("direct database imports reject production SQLite before initialization", () => {
+  const result = spawnSync(
+    process.execPath,
+    ["--input-type=module", "-e", "await import('./apps/server/dist/db/client.js')"],
+    {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        AUTOMATION_OS_ENV_ROLE: "production",
+        AUTOMATION_OS_DATABASE_URL: undefined,
+        DATABASE_URL: undefined,
+        AUTOMATION_OS_DB: `/tmp/automation-os-direct-production-${process.pid}.sqlite`
+      },
+      encoding: "utf8"
+    }
+  );
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /production_postgres_configuration_missing/u);
+  assert.doesNotMatch(result.stderr, /postgresql:\/\/|DATABASE_URL=/iu);
+});
+
+test("direct database imports reject an invalid non-empty environment role", () => {
+  const result = spawnSync(
+    process.execPath,
+    ["--input-type=module", "-e", "await import('./apps/server/dist/db/client.js')"],
+    {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        AUTOMATION_OS_ENV_ROLE: "unexpected",
+        AUTOMATION_OS_DATABASE_URL: undefined,
+        DATABASE_URL: undefined,
+        AUTOMATION_OS_DB: `/tmp/automation-os-direct-invalid-role-${process.pid}.sqlite`
+      },
+      encoding: "utf8"
+    }
+  );
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /automation_os_env_role_invalid/u);
+  assert.doesNotMatch(result.stderr, /postgresql:\/\/|DATABASE_URL=/iu);
 });
 
 test("production accepts a template URL using the supplied environment", () => {

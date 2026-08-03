@@ -3,9 +3,16 @@ import { execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { evaluateServerStartupPolicy } from "../cli/serverStartupPolicy.js";
 
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 const schemaPath = resolve(moduleDir, "schema.sql");
+const startupPolicy = evaluateServerStartupPolicy(process.env);
+if (!startupPolicy.ok) {
+  // Keep the backend boundary fail-closed even when a caller launches the
+  // server or a CLI directly without going through serverStartupGuard.
+  throw new Error(startupPolicy.exactBlocker);
+}
 const defaultDbPath = resolve(process.cwd(), "data", "automation-os.sqlite");
 const postgresUrl = process.env.AUTOMATION_OS_DATABASE_URL ?? process.env.DATABASE_URL;
 const postgresWorkerTimeoutMs = Number(process.env.AUTOMATION_OS_POSTGRES_WORKER_TIMEOUT_MS ?? 12000);
