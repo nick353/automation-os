@@ -1,5 +1,23 @@
 # Automation OS Current State
 
+## 2026-08-03 stored worker production-role binding checkpoint
+
+The stored-secret production worker now explicitly binds
+`AUTOMATION_OS_ENV_ROLE=production` in the child environment alongside the
+validated PostgreSQL URL. This prevents a valid stored-worker child from
+silently inheriting legacy/recovery SQLite semantics. The change is limited to
+`workerProductionFromStoredSecret.ts` plus the environment binding regression
+test.
+
+Fresh verification passed: worker-focused `10/10`, server build, full suite
+`915 total / 910 pass / 0 fail / 5 skip`, and `git diff --check`. The five
+skips remain the explicit PostgreSQL fixture-unavailable tests because
+`AUTOMATION_OS_TEST_POSTGRES_URL` is unset. Commit `4f2998c` is on
+`origin/main`. Public `/api/health` remains `200`; protected
+`/api/browser/health` remains the expected `401 production_token_required`.
+This is local/startup-boundary proof, not a live production worker or valid
+PostgreSQL proof.
+
 ## 2026-08-03 residual-gate audit r4 checkpoint
 
 Fresh static UI preflight passed with `21 screen cases / 184 manifest entries /
