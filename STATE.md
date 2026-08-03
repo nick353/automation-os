@@ -1,5 +1,16 @@
 # Automation OS Current State
 
+## 2026-08-03 LaunchAgent installer safety checkpoint
+
+The server and worker LaunchAgent installers now retry `launchctl bootstrap`
+once after a bounded one-second race window. The worker installer is
+executable (`100755`), and both scripts pass `zsh -n`; both LaunchAgent
+plists pass `plutil -lint`. The portable-worker canary admission documentation
+was updated to state that real execution still requires service identity,
+scope, approval, and provider readback. These changes were committed as
+`a441234` (`Harden LaunchAgent bootstrap and document canary admission`) and
+pushed to `origin/main`.
+
 ## 2026-08-03 portable worker canary deployment checkpoint
 
 The portable worker scheduler admission, same-run worker receipt path,
