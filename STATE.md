@@ -20,6 +20,13 @@ commit-level readback is not available through the current local surface.
 The local UI fix is therefore implemented and pushed, but not yet proven
 deployed.
 
+Fresh continuation readback at 2026-08-03T03:58Z reproduced the same result
+from the public origin and a cache-busting query URL. The remote source itself
+contains the new Japanese copy, while the served old asset still contains
+`Operator token` and `オペレーター確認`. No authenticated Zeabur dashboard
+operation or deploy API call was attempted because the current turn has no
+fresh authorized surface for that account.
+
 ## 2026-08-03 worker workspace-boundary hardening checkpoint
 
 The local worker/App Server hardening is now covered by a shared canonical
