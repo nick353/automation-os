@@ -1,5 +1,23 @@
 # Automation OS Current State
 
+## 2026-08-03 public asset parity recovery checkpoint
+
+Fresh public readback at `2026-08-03T04:03Z` now serves the current local
+Web build: `/assets/index-B7gRYnqg.js` and
+`/assets/index-Cf33YyzV.css`. After `npm run build:web`, the local JavaScript
+asset `dist/assets/index-B7gRYnqg.js` is 384729 bytes with SHA-256
+`0b66c73da55fd4e715563fb5ab9ab510013813ea2fb92d1faac05bc13edee41e`, and
+the public asset has the same size and SHA-256. The Japanese
+`管理者アクセスキー` copy is present in both, while the old
+`オペレーター確認` copy is absent from the public bundle.
+
+The public root and `/api/health` returned HTTP 200. The protected
+`/api/registered-workflows` request without a token returned HTTP 401, which
+is the expected unauthenticated boundary. This resolves the prior
+`zeabur_public_asset_stale_after_origin_push` readback blocker for the
+current UI bundle. No authenticated dashboard operation, token entry, or
+secret change was performed in this readback.
+
 ## 2026-08-03 UI operator-gate clarification checkpoint
 
 The public gate copy was clarified without changing authentication behavior:
