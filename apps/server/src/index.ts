@@ -167,6 +167,10 @@ import {
 import { IdempotencyError } from "./automations/idempotency.js";
 import { buildCompanyAnalytics, CompanyAnalyticsError } from "./analytics/companyAnalytics.js";
 import { computeNextAutomationOccurrence } from "./runs/automationScheduler.js";
+import {
+  PORTABLE_WORKER_CANARY_MODE,
+  portableWorkflowIdForWorkerAdapter
+} from "./runs/portableWorkflowWorker.js";
 
 export const app = express();
 app.set("case sensitive routing", true);
@@ -6717,9 +6721,20 @@ export async function runResearchPlanSchedulerOnce(
       let runMetadata: Record<string, unknown> = registeredWorkflowStartMetadata(workflow, { source: "scheduler", dueKey: due.dueKey, command });
       if (!workflow.company_id) {
         const isFixedGlobalWorkflow = fixedRegisteredWorkflows.some((fixed) => fixed.id === workflow.id && fixed.runnerKind === workflow.runner_kind);
+        const portableCanaryAdmission = isPortableCanarySchedulerAdmission(workflow);
         const globalServiceUserId = process.env.AUTOMATION_OS_GLOBAL_SYSTEM_SERVICE_USER_ID?.trim() ?? "";
         let globalServiceBlocker = "";
-        if (!isFixedGlobalWorkflow) {
+        if (portableCanaryAdmission) {
+          runMetadata = {
+            ...runMetadata,
+            portable_worker: {
+              mode: PORTABLE_WORKER_CANARY_MODE,
+              workflow_id: workflow.id,
+              external_action_executed: false,
+              admission: "no_effect_canary"
+            }
+          };
+        } else if (!isFixedGlobalWorkflow) {
           globalServiceBlocker = "registered_workflow_company_scope_missing";
         } else if (!globalServiceUserId) {
           globalServiceBlocker = "registered_workflow_global_service_identity_missing";
@@ -6833,6 +6848,12 @@ export async function runResearchPlanSchedulerOnce(
     }
   }
   return { checked: workflows.length, started: runIds.length, skipped, blocked, runIds, blockedWorkflowIds, blockedDueKeys, blockers };
+}
+
+function isPortableCanarySchedulerAdmission(workflow: Pick<RegisteredWorkflowRow, "id" | "runner_kind" | "company_id">): boolean {
+  if (process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE !== PORTABLE_WORKER_CANARY_MODE) return false;
+  if (workflow.company_id) return false;
+  return portableWorkflowIdForWorkerAdapter(workflow.runner_kind) === workflow.id;
 }
 
 function reserveResearchPlanSchedulerDueKey(workflowId: string, dueKey: string): boolean {

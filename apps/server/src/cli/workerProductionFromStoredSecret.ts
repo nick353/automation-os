@@ -67,7 +67,8 @@ const child = spawn(process.execPath, args, {
       // Keep the stored-secret worker on the production startup policy path;
       // the child must not silently inherit legacy SQLite semantics.
       AUTOMATION_OS_ENV_ROLE: "production",
-      AUTOMATION_OS_ASSUME_EXISTING_POSTGRES_SCHEMA: process.env.AUTOMATION_OS_ASSUME_EXISTING_POSTGRES_SCHEMA ?? "1"
+      AUTOMATION_OS_ASSUME_EXISTING_POSTGRES_SCHEMA: process.env.AUTOMATION_OS_ASSUME_EXISTING_POSTGRES_SCHEMA ?? "1",
+      AUTOMATION_OS_PORTABLE_WORKER_MODE: process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE ?? "canary"
     }
   }),
   stdio: ["ignore", "inherit", "inherit"]

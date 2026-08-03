@@ -3,6 +3,12 @@ import test from "node:test";
 
 import { runPortableWorkerCanary } from "../runs/portableWorkerCanary.js";
 import {
+  PORTABLE_EXTERNAL_EFFECTS_DISABLED_BLOCKER,
+  portableWorkerModeForAdapter,
+  portableWorkflowIdForWorkerAdapter,
+  runPortableWorkflowNoEffect
+} from "../runs/portableWorkflowWorker.js";
+import {
   createPortableRunManifestV1,
   portableWorkflowManifests,
   validatePortableRunManifestV1,
@@ -56,6 +62,23 @@ test("portable canary validates binding and proves no browser, connector, or ext
   assert.equal(receipt.connector_called, false);
   assert.equal(receipt.external_action_executed, false);
   assert.equal(receipt.exact_blocker, null);
+});
+
+test("portable worker adapter mapping stays canary-only and effect-free", () => {
+  assert.equal(portableWorkflowIdForWorkerAdapter("daily_ai_registered"), "daily-ai-research-publish-run");
+  assert.equal(portableWorkflowIdForWorkerAdapter("job_followup_registered"), "job-application-manager");
+  assert.equal(portableWorkerModeForAdapter("nisenprints_registered"), "execute_nisenprints_registered");
+  assert.throws(() => portableWorkerModeForAdapter("browser_use_cli"), /portable_worker_adapter_invalid/);
+
+  const result = runPortableWorkflowNoEffect({
+    runId: "run-portable-worker-canary",
+    workflowId: "job-application-manager",
+    sourceTrigger: "codex_app_bridge",
+    idempotencyKey: "portable-worker-canary:job"
+  });
+  assert.equal(result.blocker, PORTABLE_EXTERNAL_EFFECTS_DISABLED_BLOCKER);
+  assert.equal(result.external_action_executed, false);
+  assert.equal(result.receipt.external_action_executed, false);
 });
 
 test("portable run manifests reject App controller and secret-bearing fields", () => {

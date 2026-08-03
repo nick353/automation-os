@@ -36,6 +36,14 @@ import {
 import { BROWSER_USE_HELPER_PATH, BROWSER_USE_RUNTIME_CONFIG_PATH } from "../serviceReadiness/browserUseCanonical.js";
 import { redactWorkerOutput, resolveWorkerWorkspacePath, safeWorkerEnvironment } from "../security/processEnvironment.js";
 import { PORTABLE_EXECUTION_SOURCE } from "./portableWorkerIsolation.js";
+import {
+  PORTABLE_EXTERNAL_EFFECTS_DISABLED_BLOCKER,
+  PORTABLE_WORKER_CANARY_MODE,
+  portableWorkerModeForAdapter,
+  portableWorkflowIdForWorkerAdapter,
+  runPortableWorkflowNoEffect
+} from "./portableWorkflowWorker.js";
+import type { PortableWorkflowId } from "./portableWorkflowContract.js";
 
 export type WorkerAdapter =
   | "child_codex"
@@ -1936,12 +1944,123 @@ function deriveRegisteredExecutionRunStatus(input: {
   return input.registeredStatus;
 }
 
+function isPortableWorkerCanaryRun(runId: string): boolean {
+  if (process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE !== PORTABLE_WORKER_CANARY_MODE) return false;
+  return querySql<{ execution_source: string }>(
+    `SELECT execution_source FROM runs WHERE id=${sqlValue(runId)} LIMIT 1`
+  )[0]?.execution_source === PORTABLE_EXECUTION_SOURCE;
+}
+
+function completePortableWorkerCanaryStep(input: {
+  step: StepRow;
+  metadata: Record<string, unknown>;
+  selectedAdapter: WorkerAdapter;
+  workflowId: PortableWorkflowId;
+  now: string;
+}): RegisteredExecutionResult {
+  const registeredStart = input.metadata.registered_workflow_start;
+  const registeredStartRecord = typeof registeredStart === "object" && registeredStart !== null
+    ? registeredStart as Record<string, unknown>
+    : {};
+  const sourceTrigger = registeredStartRecord.source === "scheduler"
+    ? "automation_os_scheduler" as const
+    : "codex_app_bridge" as const;
+  const portable = runPortableWorkflowNoEffect({
+    runId: input.step.run_id,
+    workflowId: input.workflowId,
+    sourceTrigger,
+    idempotencyKey: typeof input.metadata.idempotency_key === "string" && input.metadata.idempotency_key.trim()
+      ? input.metadata.idempotency_key
+      : `automation-os:${input.workflowId}:${input.step.run_id}`
+  });
+  const artifact = writeWorkerArtifact(input.step.run_id, input.step.id, {
+    ...portable.receipt,
+    workflow_id: input.workflowId,
+    source_trigger: sourceTrigger,
+    exact_blocker: PORTABLE_EXTERNAL_EFFECTS_DISABLED_BLOCKER,
+    external_action_executed: false,
+    created_at: input.now
+  });
+  const proofGate = {
+    ok: false,
+    missing: [PORTABLE_EXTERNAL_EFFECTS_DISABLED_BLOCKER],
+    present: [portable.receipt.schema]
+  };
+  const proofSummary = `blocked: ${PORTABLE_EXTERNAL_EFFECTS_DISABLED_BLOCKER}`;
+  insertRunProof(input.step.run_id, {
+    id: makeId("proof"),
+    run_id: input.step.run_id,
+    step_id: input.step.id,
+    proof_type: "worker_receipt",
+    label: `${input.workflowId} portable worker canary receipt`,
+    uri: artifact.uri,
+    size_bytes: artifact.sizeBytes,
+    created_at: input.now,
+    metadata_json: {
+      adapter: input.selectedAdapter,
+      execution_mode: "portable_canary",
+      portable_workflow_id: input.workflowId,
+      source_trigger: sourceTrigger,
+      external_action_executed: false
+    }
+  });
+  execSql(
+    `UPDATE run_steps SET status='blocked', completed_at=${sqlValue(input.now)}, metadata_json=${sqlValue({
+      ...input.metadata,
+      adapter: input.selectedAdapter,
+      execution_mode: "portable_canary",
+      worker_mode: portableWorkerModeForAdapter(input.selectedAdapter),
+      portable_workflow_id: input.workflowId,
+      portable_canary_receipt: portable.receipt,
+      portable_canary_artifact: artifact.uri,
+      proof_gate: proofGate,
+      proof_summary: proofSummary,
+      exact_blocker: PORTABLE_EXTERNAL_EFFECTS_DISABLED_BLOCKER,
+      external_action_executed: false
+    })} WHERE id=${sqlValue(input.step.id)};
+     UPDATE lanes SET status='blocked', progress=50, health='blocked', updated_at=${sqlValue(input.now)} WHERE id=${sqlValue(input.step.lane_id)};`
+  );
+  logWorkerEvent({
+    runId: input.step.run_id,
+    stepId: input.step.id,
+    laneId: input.step.lane_id ?? undefined,
+    eventType: "worker_blocked",
+    message: proofSummary,
+    metadata: {
+      adapter: input.selectedAdapter,
+      execution_mode: "portable_canary",
+      portable_workflow_id: input.workflowId,
+      artifact_uri: artifact.uri,
+      external_action_executed: false
+    }
+  });
+  return {
+    workerMode: portableWorkerModeForAdapter(input.selectedAdapter),
+    status: "blocked",
+    proof_gate: proofGate,
+    proof_summary: proofSummary,
+    metadata: {
+      adapter: input.selectedAdapter,
+      execution_mode: "portable_canary",
+      portable_workflow_id: input.workflowId,
+      portable_canary_receipt: portable.receipt,
+      portable_canary_artifact: artifact.uri,
+      exact_blocker: PORTABLE_EXTERNAL_EFFECTS_DISABLED_BLOCKER,
+      external_action_executed: false
+    }
+  };
+}
+
 async function completeWorkerStep(
   step: StepRow,
   metadata: Record<string, unknown>
 ): Promise<RegisteredExecutionResult | undefined> {
   const now = nowIso();
   const selectedAdapter = String(metadata.adapter ?? "local_worker") as WorkerAdapter;
+  const portableWorkflowId = portableWorkflowIdForWorkerAdapter(selectedAdapter);
+  if (portableWorkflowId && isPortableWorkerCanaryRun(step.run_id)) {
+    return completePortableWorkerCanaryStep({ step, metadata, selectedAdapter, workflowId: portableWorkflowId, now });
+  }
   const routeContext = buildCanonicalRouteBlockContext({ step, metadata, adapter: selectedAdapter });
   if (!routeContext.routeDecision) {
     blockStepForRouting(step, metadata, now, "route_decision_missing");

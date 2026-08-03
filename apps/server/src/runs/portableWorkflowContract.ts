@@ -68,7 +68,7 @@ function fail(reason: string): never {
 }
 
 function identifier(value: unknown, field: string): string {
-  if (typeof value !== "string" || !/^[a-z0-9][a-z0-9._:-]*$/.test(value)) fail(`${field}_invalid`);
+  if (typeof value !== "string" || !/^[a-z0-9][a-z0-9._:-]*$/i.test(value)) fail(`${field}_invalid`);
   return value;
 }
 

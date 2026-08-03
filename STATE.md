@@ -1,5 +1,33 @@
 # Automation OS Current State
 
+## 2026-08-03 current portable worker hook and safety verification
+
+The existing portable-worker working-tree change now compiles and is covered
+by a focused canary contract. When
+`AUTOMATION_OS_PORTABLE_WORKER_MODE=canary` and a run is marked with the
+portable `execution_source`, the registered worker adapter resolves through
+the Automation OS portable contract, writes a bounded worker receipt, and
+stops with `portable_external_effects_disabled`; it does not start a browser,
+call a connector, or execute an external action. Legacy runs remain outside
+this path. The adapter mapping is covered for Daily AI, Job Followup, and
+NisenPrints, including invalid-adapter rejection.
+
+Fresh verification after the hook: `npm run build:server` passed; portable
+worker contract, scheduler, and isolation tests passed `8/8`; the broader
+workerEngine plus portable suite passed `81/81`; security, secret-store,
+PostgreSQL validation, Browser Use admission/readback, chat snapshot/API,
+worker environment, and stored-worker tests passed `44/44`. The full server
+regression then passed `930 total / 925 pass / 0 fail / 5 skip`; all five
+skips are the real PostgreSQL fixture cases classified as
+`postgres_fixture_unavailable:AUTOMATION_OS_TEST_POSTGRES_URL is not set`.
+
+`npm run worker:production-proof:stored` still stops before spawn with the
+sanitized blocker `stored_postgres_secret_invalid_url` because
+`POSTGRES_USERNAME`, `POSTGRES_PASSWORD`, `POSTGRES_HOST`, `POSTGRES_PORT`,
+and `POSTGRES_DATABASE` template references are unresolved. No secret value
+was printed. This is a safe pre-spawn proof, not live production worker or
+Codex App Server proof.
+
 ## 2026-08-03 current manifest and full regression checkpoint
 
 The Automation Kernel tests no longer depend on the retired

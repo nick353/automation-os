@@ -29,6 +29,8 @@
     <string>/Users/nichikatanaka/Documents/Codex/automation-os</string>
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>AUTOMATION_OS_PORTABLE_WORKER_MODE</key>
+    <string>canary</string>
   </dict>
 </dict>
 </plist>

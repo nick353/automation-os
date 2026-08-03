@@ -13,6 +13,7 @@ process.env.AUTOMATION_OS_OBSIDIAN_AUTO_EXPORT = "0";
 process.env.AUTOMATION_OS_OBSIDIAN_AUTO_EXPORT_DEFER_MS = "600000";
 process.env.NODE_TEST_CONTEXT = "1";
 process.env.AUTOMATION_OS_SERVICE_WORKER_USER_ID = "user_test_service_worker";
+process.env.AUTOMATION_OS_ARTIFACT_ROOT = join(tempRoot, "artifacts");
 
 const {
   app,
@@ -26,7 +27,7 @@ const {
   setYouTubeTranscriptCaptureRunnerForTests,
   storeResearchPlanVisibleSourceProof
 } = await import("../index.js");
-const { startCommandRun } = await import("../runs/workerEngine.js");
+const { runWorkerOnce, startCommandRun } = await import("../runs/workerEngine.js");
 const { createResearchPlan, getResearchPlan, markResearchPlanStarted } = await import("../planner/researchPlanner.js");
 const {
   setResearchPlanLineageFaultAfterProofForTests,
@@ -1018,6 +1019,56 @@ test("Research Planner scheduler starts due registered plans once", async () => 
   assert.match(String(metadata.registered_workflow_start?.definition_fingerprint), /^[a-f0-9]{64}$/);
   assert.match(String(metadata.registered_workflow_start?.schedule_fingerprint), /^[a-f0-9]{64}$/);
   assert.equal(metadata.registered_workflow_start?.dueKey, "2026-06-16T09:00");
+});
+
+test("portable scheduler canary admits a fixed global workflow without service identity and stops the same run before effects", async () => {
+  const previousMode = process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE;
+  const previousGlobalIdentity = process.env.AUTOMATION_OS_GLOBAL_SYSTEM_SERVICE_USER_ID;
+  process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE = "canary";
+  delete process.env.AUTOMATION_OS_GLOBAL_SYSTEM_SERVICE_USER_ID;
+  try {
+    db.initDb();
+    db.resetDemoData();
+    db.execSql(`
+      UPDATE registered_workflows
+      SET status='inactive', created_at='2099-01-01T00:00:00.000Z', updated_at='2099-01-01T00:00:00.000Z'
+      WHERE id!='daily-ai-research-publish-run';
+      UPDATE registered_workflows
+      SET status='active', created_at='2026-06-16T00:00:00.000Z', updated_at='2026-06-16T00:00:00.000Z'
+      WHERE id='daily-ai-research-publish-run';
+    `);
+
+    const scheduled = await runResearchPlanSchedulerOnce(new Date("2026-06-16T09:01:00"));
+    assert.equal(scheduled.started, 1);
+    assert.equal(scheduled.blocked, 0);
+    const runId = scheduled.runIds[0];
+    assert.ok(runId);
+    const before = db.querySql<{ execution_source: string; metadata_json: string }>(
+      `SELECT execution_source, metadata_json FROM runs WHERE id=${db.sqlValue(runId)} LIMIT 1`
+    )[0];
+    assert.equal(before.execution_source, "automation-os");
+    assert.equal((JSON.parse(before.metadata_json) as { portable_worker?: { admission?: string } }).portable_worker?.admission, "no_effect_canary");
+
+    const processed = await runWorkerOnce(runId);
+    assert.equal(processed.length, 1);
+    const after = db.querySql<{ status: string; metadata_json: string }>(
+      `SELECT status, metadata_json FROM runs WHERE id=${db.sqlValue(runId)} LIMIT 1`
+    )[0];
+    const metadata = JSON.parse(after.metadata_json) as { exact_blocker?: string; external_action_executed?: boolean; execution_mode?: string };
+    assert.equal(after.status, "blocked");
+    assert.equal(metadata.exact_blocker, "portable_external_effects_disabled");
+    assert.equal(metadata.external_action_executed, false);
+    assert.equal(metadata.execution_mode, "portable_canary");
+    assert.equal(
+      db.querySql<{ count: number }>(`SELECT count(*) AS count FROM proofs WHERE run_id=${db.sqlValue(runId)} AND proof_type='worker_receipt'`)[0].count,
+      1
+    );
+  } finally {
+    if (previousMode === undefined) delete process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE;
+    else process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE = previousMode;
+    if (previousGlobalIdentity === undefined) delete process.env.AUTOMATION_OS_GLOBAL_SYSTEM_SERVICE_USER_ID;
+    else process.env.AUTOMATION_OS_GLOBAL_SYSTEM_SERVICE_USER_ID = previousGlobalIdentity;
+  }
 });
 
 test("Research Planner scheduler uses runtime schedule override for due checks", async () => {
