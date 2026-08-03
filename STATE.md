@@ -1,5 +1,25 @@
 # Automation OS Current State
 
+## 2026-08-03 UI operator-gate clarification checkpoint
+
+The public gate copy was clarified without changing authentication behavior:
+`Operator token` is now shown as `管理者アクセスキー（Operator token）`, with
+an explanation that it is the admin-only `AUTOMATION_OS_WRITE_TOKEN`, is kept
+only in this tab's sessionStorage, and is discarded when the tab closes.
+The control-manifest label was updated to `管理者アクセスキー入力`.
+Web typecheck/build and static all-page QA passed; the focused frontend
+sanitizer suite passed `40/40`. Local Web output is
+`assets/index-B7gRYnqg.js`.
+
+Commit `391940f` was pushed to `origin/main`, but six public HTML readbacks
+including cache-busting query strings still served the previous
+`assets/index-iIYhZXO9.js`, whose content still contains the old gate copy.
+The current exact blocker is
+`zeabur_public_asset_stale_after_origin_push`; Zeabur deploy triggering or
+commit-level readback is not available through the current local surface.
+The local UI fix is therefore implemented and pushed, but not yet proven
+deployed.
+
 ## 2026-08-03 worker workspace-boundary hardening checkpoint
 
 The local worker/App Server hardening is now covered by a shared canonical
