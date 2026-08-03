@@ -1,5 +1,19 @@
 # Automation OS Current State
 
+## 2026-08-03 portable worker canary deployment checkpoint
+
+The portable worker scheduler admission, same-run worker receipt path,
+LaunchAgent canary environment, installer helper, and focused tests were
+committed as `b6ef5a5` (`Wire portable worker canary admission and launch
+contract`) and pushed to `origin/main`.
+
+Fresh public deployment readback after the push returned `/api/health` with
+`200` and `ok=true`, served `assets/index-MZePUI6J.js`, and retained the
+expected deployed markers for Codex App Server, paused schedule drafts, and
+the operator-token gate. This proves deployment health and UI asset parity;
+it does not prove a live Mac worker because the stored PostgreSQL proof still
+fails closed before spawn.
+
 ## 2026-08-03 current portable worker hook and safety verification
 
 The existing portable-worker working-tree change now compiles and is covered
@@ -47,6 +61,15 @@ This is source/test readiness proof only. Valid production PostgreSQL,
 live Mac-worker execution, and fresh authorized 21-screen Browser Use runtime
 QA with per-screen recordings remain unverified and are still required before
 the goal can be complete.
+
+The live launchd server now exports `AUTOMATION_OS_PORTABLE_WORKER_MODE=canary`
+and `AUTOMATION_OS_RESEARCH_PLAN_SCHEDULER_MS=60000`; launchd is running and
+`/api/health` returns 200. In this mode only, the scheduler admits the three
+fixed global portable workflows without a global service identity, and the
+same-run worker canary stops before Browser Use/MCP with
+`portable_external_effects_disabled`. The production worker LaunchAgent is
+not installed or kickstarted because the stored PostgreSQL proof still fails
+before spawn with `stored_postgres_secret_invalid_url`.
 
 Fresh portable canary readback on 2026-08-03 completed for the scheduler and
 all three portable workflows (`checked=3`, `completed=3`) with
