@@ -31,9 +31,20 @@ Fresh verification: canonical helper `py_compile` and `validate` passed;
 the focused watchdog cleanup test passed `2/2`; the full server suite passed
 `911 total / 906 pass / 0 fail / 5 skip`. The five skips are explicit missing
 `AUTOMATION_OS_TEST_POSTGRES_URL` fixtures. Authenticated 21-screen QA,
-per-screen recordings, Mac-worker live App Server proof, production schedule
-readback, and Zeabur deployment parity remain unverified because the operator
-token was not accepted on the visible gate.
+per-screen recordings, Mac-worker live App Server proof, and production
+schedule readback remain unverified because the operator token was not
+accepted on the visible gate.
+
+Fresh public read-only deployment parity was subsequently confirmed after
+`origin/main` advanced to commit `8a3c1e64e1b5801af98d294a47a6593c51d8d134`:
+`https://automation-os.zeabur.app/` returned the same Vite asset names as the
+local build, `assets/index-ddL98HTV.js` and `assets/index-BA1yLsFP.css`, with
+matching byte sizes and SHA-256 values (`c8d6189f...3058` and
+`c59e1d6c...0a46`). The public JS contains the new `chat_sessions`,
+`session_id`, and `nextRunAt` markers. Public `/api/health` returned 200;
+protected `/api/browser/health` and `/api/dashboard` correctly returned 401
+with `production_token_required`. This proves deployment parity and public
+health behavior only; it does not prove authenticated runtime behavior.
 
 Owner-bound post-cleanup recheck on 2026-08-03 confirmed the same target room
 `room-6b8171d751ebea1042bc6dc886daa8b4` is `released`; port `20098`, Chrome
