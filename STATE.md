@@ -1,5 +1,38 @@
 # Automation OS Current State
 
+## 2026-08-03 accessibility regression fix and full-suite checkpoint
+
+Commit `ce01e6d` (`Restore stable schedule checkbox accessibility label`) was
+pushed to `origin/main` and served by Zeabur. The Builder keeps the safer
+visible copy `有効にする（明示的に次回実行を作成）` while restoring the stable
+machine-readable label `定期実行を有効にする` required by keyboard/browser QA.
+Fresh public readback served `assets/index-Br3AgIH5.js` with one occurrence of
+the stable label and two occurrences of the explanatory copy; `/api/health`
+returned `200`, `ok=true`, and `service=automation-os`.
+
+Fresh server build, web typecheck/build, focused UI truthfulness tests `3/3`,
+and static UI preflight passed. Static preflight remains `21` screen cases,
+`186` control-manifest entries, `235` rendered patterns, zero duplicates,
+zero unclassified controls, zero orphan entries, and `issues=[]`. The full
+server suite read back `924 total / 915 pass / 4 fail / 5 skip`; the fixed UI
+failure is no longer present. The remaining three failures all stop while
+compiling a shared registry entry because the external legacy path
+`/Users/nichikatanaka/.codex/automations/automation-os-iab/automation.toml`
+does not exist. No legacy automation TOML or registry was created or edited.
+
+Portable worker canaries for the Automation OS scheduler, Codex App bridge,
+and launchd triggers all completed with manifest validation, run binding,
+readback, and cleanup, while proving `browser_started=false`,
+`connector_called=false`, and `external_action_executed=false`. These are
+no-effect contract proofs, not production Mac-worker execution proof.
+
+The authenticated 21-screen runtime QA and per-screen recordings remain
+unverified. The old owner-lane operation
+`d6c374d4bc824b0f9048c9ebf959a316` still has
+`external_effects=unknown` after cleanup, so it was not replayed or inferred;
+the safe restart point remains owner-lane source-of-truth reconciliation.
+The live Room on port `20084` belongs to another task and was not touched.
+
 ## 2026-08-03 schedule/chat safety fix deployed
 
 Commit `7e2a3c6` (`Harden schedule drafts and project-scoped chat UI`) was
