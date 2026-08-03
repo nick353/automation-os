@@ -19,24 +19,63 @@ The canary always sets `external_action_allowed: false`. It validates the
 binding and writes a receipt without starting Browser Use, calling a connector,
 or producing an external effect.
 
-The scheduler-level canary runs the same contract for all three portable
+The scheduler-level canary runs the same contract for all six fixed registered
 workflows with `source_trigger: automation_os_scheduler`:
 
 ```sh
 npm run portable:scheduler-canary
 ```
 
-It must report `checked: 3`, `completed: 3`, and
+It must report `checked: 6`, `completed: 6`, and
 `external_action_executed: false`. This proves the scheduler-to-worker
 contract is independent of the App; it does not claim that any live provider
 action is ready.
 
 When the local server and stored-secret worker are explicitly in
 `AUTOMATION_OS_PORTABLE_WORKER_MODE=canary`, the registered scheduler also
-admits the three fixed global workflows without a global service identity. The
+admits the six fixed global workflows without a global service identity. The
 admission is limited to the no-effect canary and writes a portable admission
-marker to the run. Real execution mode continues to require the existing
-service identity, scope, approval, and provider-readback gates.
+marker to the run. With the variable unset, existing legacy scheduler behavior
+is preserved; the UI's AOS manual endpoint still uses the portable canary
+contract by default.
+
+To enable a real external worker, configure both sides explicitly:
+
+```sh
+AUTOMATION_OS_PORTABLE_WORKER_MODE=external
+AUTOMATION_OS_PORTABLE_EXTERNAL_RUNNER=/absolute/path/to/portable-runner
+AUTOMATION_OS_PORTABLE_EXTERNAL_WORKDIR=/absolute/path/to/worker-workdir
+```
+
+The repository includes the common Mac-side dispatcher at
+`/Users/nichikatanaka/Documents/Codex/automation-os/scripts/portable-external-runner.mjs`.
+It starts a non-App `codex exec` process with the workflow-specific authority
+packet and requires the canonical Browser Use CLI/MCP contract in its prompt.
+The default is read-only; configure the Mac worker as follows before starting
+the stored-secret loop:
+
+```sh
+export AUTOMATION_OS_PORTABLE_WORKER_MODE=external
+export AUTOMATION_OS_PORTABLE_EXTERNAL_RUNNER=/Users/nichikatanaka/Documents/Codex/automation-os/scripts/portable-external-runner.mjs
+export AUTOMATION_OS_PORTABLE_EXTERNAL_WORKDIR=/Users/nichikatanaka/Documents/Codex/automation-os
+export AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS=read_only
+npm run worker:loop:stored
+```
+
+The six workflow IDs are dispatched by the same runner. `read_only` performs
+preflight/discovery and returns `external_action_executed=false`. Only after
+the workflow's current authority and provider readback have been verified may
+the operator explicitly set `AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS=enabled`.
+That setting is not required on the Zeabur server; it belongs to the Mac worker
+that owns Browser Use CLI and MCP credentials.
+
+The runner is invoked without a shell and receives `--workflow-id`, `--run-id`,
+`--step-id`, `--source-trigger`, and `--idempotency-key`. It must print one
+final JSON receipt such as `{"status":"complete","external_action_executed":false}`
+or a blocked receipt with `exact_blocker`. The runner is the place to call the
+canonical Browser Use CLI and the Codex Server/MCP plugin gateway; Codex App is
+not part of this process. If the runner is absent, the run stops with the exact
+blocker `portable_external_adapter_not_configured`.
 
 The same run contract can be started by an App bridge, launchd, GitHub Actions,
 or another scheduler through the shared entrypoint:
@@ -51,6 +90,15 @@ npm run portable:worker-start -- \
 The entrypoint is idempotent for the workflow, trigger, and key tuple and only
 creates an Automation OS run. The worker owns execution and readback; the
 canary worker stops before Browser Use CLI, MCP, or any external action.
+
+The AOS UI exposes the same contract for every fixed registered workflow:
+
+- `POST /api/portable-workflows/:id/run` queues a manual run from the UI with
+  `source_trigger: codex_app_bridge` and an idempotency key.
+- `POST /api/registered-workflows/:id/pause` and `/resume` control the AOS
+  schedule from the UI.
+- The run response reports `runId`, `workerProtocol`, execution mode, and
+  `external_action_executed`; it never treats queueing as business completion.
 
 ## Verification
 

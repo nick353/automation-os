@@ -9,6 +9,7 @@ import { workerChildSpawnFailureSummary } from "./workerProductionErrors.js";
 const mode = readArgValue("--mode") ?? "proof";
 const statePath = process.env.AUTOMATION_OS_WORKER_STATE_PATH
   ?? resolve(process.cwd(), "data/state/automation-os-worker.json");
+let childTimer: NodeJS.Timeout | undefined;
 
 let databaseUrl: string | undefined;
 try {
@@ -58,6 +59,12 @@ if (mode === "loop") {
 const args = mode === "loop"
   ? ["apps/server/dist/cli/workerLoop.js", ...forwardedArgs()]
   : ["apps/server/dist/cli/workerProductionPickupProof.js", ...forwardedArgs()];
+const proofTimeoutMs = mode === "proof"
+  ? boundedNumber(readArgValue("--worker-timeout-ms") ?? process.env.AUTOMATION_OS_WORKER_PICKUP_PROOF_TIMEOUT_MS, 120_000, {
+      min: 5_000,
+      max: 10 * 60_000
+    })
+  : null;
 
 const child = spawn(process.execPath, args, {
   cwd: process.cwd(),
@@ -74,6 +81,18 @@ const child = spawn(process.execPath, args, {
   stdio: ["ignore", "inherit", "inherit"]
 });
 
+let childTimedOut = false;
+if (proofTimeoutMs !== null) {
+  childTimer = setTimeout(() => {
+    childTimedOut = true;
+    if (childIsAlive()) child.kill("SIGTERM");
+    const killTimer = setTimeout(() => {
+      if (childIsAlive()) child.kill("SIGKILL");
+    }, 2_000);
+    killTimer.unref();
+  }, proofTimeoutMs + 30_000);
+}
+
 writeState({
   ok: true,
   status: "running",
@@ -83,7 +102,7 @@ writeState({
 });
 
 const relay = (signal: NodeJS.Signals) => {
-  if (!child.killed) child.kill(signal);
+  if (childIsAlive()) child.kill(signal);
 };
 process.once("SIGTERM", () => relay("SIGTERM"));
 process.once("SIGINT", () => relay("SIGINT"));
@@ -94,12 +113,15 @@ child.once("error", (error) => {
 });
 
 child.once("exit", (code, signal) => {
+  if (childTimer) clearTimeout(childTimer);
   const exitCode = code ?? (signal ? 1 : 0);
   finish({
     ok: exitCode === 0,
     status: exitCode === 0 ? "stopped" : "blocked",
-    blocker: exitCode === 0 ? null : "worker_child_exited_nonzero",
+    blocker: exitCode === 0 ? null : childTimedOut ? "worker_child_timeout" : "worker_child_exited_nonzero",
     mode,
+    timeoutMs: proofTimeoutMs,
+    timedOut: childTimedOut,
     childExitCode: code,
     childSignal: signal
   }, exitCode);
@@ -114,14 +136,26 @@ function readArgValue(name: string) {
   return match?.slice(name.length + 1);
 }
 
+function childIsAlive() {
+  return child.exitCode === null && child.signalCode === null;
+}
+
 function finishBlocked(summary: Record<string, unknown>): never {
   finish({ ok: false, status: "blocked", ...summary, mode }, 1);
 }
 
 function finish(summary: Record<string, unknown>, code: number): never {
+  if (childTimer) clearTimeout(childTimer);
   const record = writeState(summary);
   console.log(JSON.stringify(record));
   process.exit(code);
+}
+
+function boundedNumber(value: string | undefined, fallback: number, bounds: { min: number; max: number }) {
+  if (value === undefined || value.trim() === "") return fallback;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(bounds.min, Math.min(bounds.max, parsed));
 }
 
 function writeState(summary: Record<string, unknown>) {

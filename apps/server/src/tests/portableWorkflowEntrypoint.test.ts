@@ -20,7 +20,10 @@ test("portable entrypoint is shared by App bridge and other schedulers, with ide
   const cases = [
     { workflowId: "daily-ai-research-publish-run" as const, sourceTrigger: "codex_app_bridge" as const },
     { workflowId: "nisenprints-daily-product-canva-printify-etsy-pinterest" as const, sourceTrigger: "launchd" as const },
-    { workflowId: "job-application-manager" as const, sourceTrigger: "github_actions" as const }
+    { workflowId: "job-application-manager" as const, sourceTrigger: "github_actions" as const },
+    { workflowId: "prompt-transfer-ukiyoe" as const, sourceTrigger: "automation_os_scheduler" as const },
+    { workflowId: "sns-multi-poster-ukiyoe" as const, sourceTrigger: "codex_app_bridge" as const },
+    { workflowId: "x-authenticated-browser-lane" as const, sourceTrigger: "launchd" as const }
   ];
   for (const [index, item] of cases.entries()) {
     const idempotencyKey = `portable-entrypoint-test-${index + 1}`;

@@ -7,7 +7,7 @@ import {
 } from "../registeredWorkflows.js";
 import { startCommandRun } from "./workerEngine.js";
 import { PORTABLE_EXECUTION_SOURCE } from "./portableWorkerIsolation.js";
-import { portableWorkflowIdForWorkerAdapter } from "./portableWorkflowWorker.js";
+import { portableWorkflowIdForWorkerAdapter, portableWorkerExecutionMode } from "./portableWorkflowWorker.js";
 import {
   type PortableTrigger,
   type PortableWorkflowId
@@ -124,8 +124,9 @@ export async function startPortableWorkflowRun(input: PortableWorkflowStartInput
         external_action_executed: false
       },
       portable_worker: {
-        mode: "canary",
+        mode: portableWorkerExecutionMode(),
         workflow_id: workflow.id,
+        external_adapter_configured: Boolean(process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_RUNNER?.trim()),
         external_action_executed: false
       }
     }

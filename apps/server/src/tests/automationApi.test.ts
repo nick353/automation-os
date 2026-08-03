@@ -196,6 +196,29 @@ test("registered automation readback is company-scoped and HTTP execution remain
   assert.equal(run.json.external_action_executed, false);
   assert.match(run.json.exact_blocker, /registered_automation_/);
 
+  const portableKey = "api-portable-manual-dedup";
+  const portable = await requestJson(
+    "POST",
+    "/api/portable-workflows/daily-ai-research-publish-run/run?project_id=api_registered_company",
+    { project_id: "api_registered_company", idempotency_key: portableKey },
+    { "idempotency-key": portableKey }
+  );
+  assert.equal(portable.status, 202, portable.raw);
+  assert.equal(portable.json.ok, true);
+  assert.equal(portable.json.portable.app_dependency, false);
+  assert.equal(portable.json.portable.external_action_executed, false);
+  assert.equal(portable.json.workerProtocol, "mac_worker_polling_required");
+
+  const portableReplay = await requestJson(
+    "POST",
+    "/api/portable-workflows/daily-ai-research-publish-run/run?project_id=api_registered_company",
+    { project_id: "api_registered_company", idempotency_key: portableKey },
+    { "idempotency-key": portableKey }
+  );
+  assert.equal(portableReplay.status, 202, portableReplay.raw);
+  assert.equal(portableReplay.json.replayed, true);
+  assert.equal(portableReplay.json.runId, portable.json.runId);
+
   setActor("api_registered_other_owner");
   const forbidden = await requestJson("GET", "/api/mvp/registered-automations?project_id=api_registered_company");
   assert.equal(forbidden.status, 403, forbidden.raw);

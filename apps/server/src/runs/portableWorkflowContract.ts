@@ -4,7 +4,10 @@ export const PORTABLE_RUN_MANIFEST_SCHEMA_V1 = "automation_os_portable_run_manif
 export type PortableWorkflowId =
   | "job-application-manager"
   | "daily-ai-research-publish-run"
-  | "nisenprints-daily-product-canva-printify-etsy-pinterest";
+  | "nisenprints-daily-product-canva-printify-etsy-pinterest"
+  | "prompt-transfer-ukiyoe"
+  | "sns-multi-poster-ukiyoe"
+  | "x-authenticated-browser-lane";
 
 export type PortableTrigger = "automation_os_scheduler" | "codex_app_bridge" | "launchd" | "github_actions";
 export type PortableExternalEffectPolicy = "disabled" | "approval_required";
@@ -174,6 +177,39 @@ export const portableWorkflowManifests: Record<PortableWorkflowId, PortableWorkf
     stages: ["product_prepare", "asset_prepare", "approval", "external_publish"],
     external_effect_policy: "approval_required",
     source_refs: ["/Users/nichikatanaka/.codex/automations/nisenprints-daily-product-canva-printify-etsy-pinterest/automation.toml", "etsy-pinterest-poster"]
+  },
+  "prompt-transfer-ukiyoe": {
+    schema: PORTABLE_WORKFLOW_MANIFEST_SCHEMA_V1,
+    workflow_id: "prompt-transfer-ukiyoe",
+    version: 1,
+    name: "Prompt Transfer Ukiyoe",
+    schedule: { rrule: "FREQ=DAILY;BYHOUR=7;BYMINUTE=45;BYSECOND=0", timezone: "Asia/Tokyo" },
+    execution: { backend: "automation_os_worker", browser_surface: "browser_use_cli", connector_gateway: "mcp", app_dependency: false },
+    stages: ["prompt_read", "sheets_write", "readback"],
+    external_effect_policy: "approval_required",
+    source_refs: ["prompt-transfer-ukiyoe", "prompt-transfer"]
+  },
+  "sns-multi-poster-ukiyoe": {
+    schema: PORTABLE_WORKFLOW_MANIFEST_SCHEMA_V1,
+    workflow_id: "sns-multi-poster-ukiyoe",
+    version: 1,
+    name: "SNS Multi Poster Ukiyoe",
+    schedule: { rrule: "FREQ=DAILY;BYHOUR=18;BYMINUTE=0;BYSECOND=0", timezone: "Asia/Tokyo" },
+    execution: { backend: "automation_os_worker", browser_surface: "browser_use_cli", connector_gateway: "mcp", app_dependency: false },
+    stages: ["content_prepare", "approval", "external_post", "readback"],
+    external_effect_policy: "approval_required",
+    source_refs: ["sns-multi-poster-ukiyoe", "sns-multi-poster"]
+  },
+  "x-authenticated-browser-lane": {
+    schema: PORTABLE_WORKFLOW_MANIFEST_SCHEMA_V1,
+    workflow_id: "x-authenticated-browser-lane",
+    version: 1,
+    name: "X Authenticated Browser Lane",
+    schedule: { rrule: "FREQ=DAILY;BYHOUR=8;BYMINUTE=0;BYSECOND=0", timezone: "Asia/Tokyo" },
+    execution: { backend: "automation_os_worker", browser_surface: "browser_use_cli", connector_gateway: "mcp", app_dependency: false },
+    stages: ["authenticated_read", "approval", "external_post", "readback"],
+    external_effect_policy: "approval_required",
+    source_refs: ["automation-os:native:x-authenticated-browser-lane"]
   }
 };
 

@@ -36,9 +36,11 @@ import {
 import { BROWSER_USE_HELPER_PATH, BROWSER_USE_RUNTIME_CONFIG_PATH } from "../serviceReadiness/browserUseCanonical.js";
 import { redactWorkerOutput, resolveWorkerWorkspacePath, safeWorkerEnvironment } from "../security/processEnvironment.js";
 import { PORTABLE_EXECUTION_SOURCE } from "./portableWorkerIsolation.js";
+import { runPortableExternalWorker } from "./portableExternalWorker.js";
 import {
   PORTABLE_EXTERNAL_EFFECTS_DISABLED_BLOCKER,
   PORTABLE_WORKER_CANARY_MODE,
+  PORTABLE_WORKER_EXTERNAL_MODE,
   portableWorkerModeForAdapter,
   portableWorkflowIdForWorkerAdapter,
   runPortableWorkflowNoEffect
@@ -69,6 +71,7 @@ export type WorkerMode =
   | "execute_job_followup_registered"
   | "execute_prompt_transfer_registered"
   | "execute_sns_multi_poster_registered"
+  | "execute_x_authenticated_browser_lane_registered"
   | "execute_registered_codex_automation"
   | "human_input_required_with_evidence"
   | "receipt_only";
@@ -1945,10 +1948,163 @@ function deriveRegisteredExecutionRunStatus(input: {
 }
 
 function isPortableWorkerCanaryRun(runId: string): boolean {
-  if (process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE !== PORTABLE_WORKER_CANARY_MODE) return false;
-  return querySql<{ execution_source: string }>(
-    `SELECT execution_source FROM runs WHERE id=${sqlValue(runId)} LIMIT 1`
-  )[0]?.execution_source === PORTABLE_EXECUTION_SOURCE;
+  const run = querySql<{ execution_source: string; metadata_json: string }>(
+    `SELECT execution_source, metadata_json FROM runs WHERE id=${sqlValue(runId)} LIMIT 1`
+  )[0];
+  if (run?.execution_source !== PORTABLE_EXECUTION_SOURCE) return false;
+  const metadata = parseJson<Record<string, unknown>>(run.metadata_json, {});
+  const invocation = metadata.portable_workflow_invocation;
+  if (!invocation || typeof invocation !== "object" || Array.isArray(invocation)) return false;
+  if (process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE === PORTABLE_WORKER_CANARY_MODE) return true;
+  const portableWorker = metadata.portable_worker;
+  return Boolean(portableWorker && typeof portableWorker === "object" && !Array.isArray(portableWorker)
+    && (portableWorker as Record<string, unknown>).mode === PORTABLE_WORKER_CANARY_MODE);
+}
+
+function isPortableWorkerExternalRun(runId: string): boolean {
+  const run = querySql<{ execution_source: string; metadata_json: string }>(
+    `SELECT execution_source, metadata_json FROM runs WHERE id=${sqlValue(runId)} LIMIT 1`
+  )[0];
+  if (run?.execution_source !== PORTABLE_EXECUTION_SOURCE) return false;
+  const metadata = parseJson<Record<string, unknown>>(run.metadata_json, {});
+  const invocation = metadata.portable_workflow_invocation;
+  if (!invocation || typeof invocation !== "object" || Array.isArray(invocation)) return false;
+  if (process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE === PORTABLE_WORKER_EXTERNAL_MODE) return true;
+  const portableWorker = metadata.portable_worker;
+  return Boolean(portableWorker && typeof portableWorker === "object" && !Array.isArray(portableWorker)
+    && (portableWorker as Record<string, unknown>).mode === PORTABLE_WORKER_EXTERNAL_MODE);
+}
+
+async function completePortableExternalWorkerStep(input: {
+  step: StepRow;
+  metadata: Record<string, unknown>;
+  selectedAdapter: WorkerAdapter;
+  workflowId: PortableWorkflowId;
+  now: string;
+}): Promise<RegisteredExecutionResult> {
+  const runMetadataRow = querySql<{ metadata_json: string }>(
+    `SELECT metadata_json FROM runs WHERE id=${sqlValue(input.step.run_id)} LIMIT 1`
+  )[0];
+  const runMetadata = parseJson<Record<string, unknown>>(runMetadataRow?.metadata_json ?? "{}", {});
+  const invocation = typeof runMetadata.portable_workflow_invocation === "object"
+    && runMetadata.portable_workflow_invocation !== null
+    && !Array.isArray(runMetadata.portable_workflow_invocation)
+    ? runMetadata.portable_workflow_invocation as Record<string, unknown>
+    : {};
+  const sourceTrigger = typeof invocation.source_trigger === "string" ? invocation.source_trigger : "codex_app_bridge";
+  const idempotencyKey = typeof invocation.idempotency_key === "string" && invocation.idempotency_key.trim()
+    ? invocation.idempotency_key
+    : `automation-os:${input.workflowId}:${input.step.run_id}`;
+  const result = await runPortableExternalWorker({
+    workflowId: input.workflowId,
+    runId: input.step.run_id,
+    stepId: input.step.id,
+    sourceTrigger,
+    idempotencyKey
+  });
+  const artifact = writeWorkerArtifact(input.step.run_id, input.step.id, {
+    schema: "automation_os_portable_external_worker_receipt_v1",
+    workflow_id: input.workflowId,
+    run_id: input.step.run_id,
+    step_id: input.step.id,
+    source_trigger: sourceTrigger,
+    idempotency_key: idempotencyKey,
+    status: result.status,
+    exact_blocker: result.exactBlocker,
+    external_action_executed: result.externalActionExecuted,
+    exit_status: result.exitStatus,
+    signal: result.signal,
+    stdout_tail: result.stdoutTail,
+    stderr_tail: result.stderrTail,
+    created_at: input.now
+  });
+  const proofGate = {
+    ok: result.status === "complete" && !result.exactBlocker,
+    missing: result.exactBlocker ? [result.exactBlocker] : [],
+    present: ["automation_os_portable_external_worker_receipt_v1"]
+  };
+  const proofSummary = result.exactBlocker
+    ? `blocked: ${result.exactBlocker}`
+    : `${result.status}: portable external worker receipt captured`;
+  const stepStatus = result.status === "complete" && !result.exactBlocker ? "completed" : "blocked";
+  const laneStatus = stepStatus === "completed" ? "idle" : "blocked";
+  execSql(
+    `UPDATE run_steps SET status=${sqlValue(stepStatus)}, completed_at=${sqlValue(input.now)}, metadata_json=${sqlValue({
+      ...input.metadata,
+      adapter: input.selectedAdapter,
+      execution_mode: "portable_external",
+      portable_workflow_id: input.workflowId,
+      source_trigger: sourceTrigger,
+      idempotency_key: idempotencyKey,
+      portable_external_artifact: artifact.uri,
+      portable_external_receipt: {
+        status: result.status,
+        exact_blocker: result.exactBlocker,
+        external_action_executed: result.externalActionExecuted,
+        exit_status: result.exitStatus,
+        signal: result.signal
+      },
+      proof_gate: proofGate,
+      proof_summary: proofSummary,
+      exact_blocker: result.exactBlocker,
+      external_action_executed: result.externalActionExecuted
+    })} WHERE id=${sqlValue(input.step.id)};
+     UPDATE lanes SET status=${sqlValue(laneStatus)}, progress=${stepStatus === "completed" ? 100 : 50}, health=${sqlValue(laneStatus === "idle" ? "good" : "blocked")}, updated_at=${sqlValue(input.now)} WHERE id=${sqlValue(input.step.lane_id)};`
+  );
+  insertRunProof(input.step.run_id, {
+    id: makeId("proof"),
+    run_id: input.step.run_id,
+    step_id: input.step.id,
+    proof_type: "worker_receipt",
+    label: `${input.workflowId} portable external worker receipt`,
+    uri: artifact.uri,
+    size_bytes: artifact.sizeBytes,
+    created_at: input.now,
+    metadata_json: {
+      adapter: input.selectedAdapter,
+      execution_mode: "portable_external",
+      portable_workflow_id: input.workflowId,
+      source_trigger: sourceTrigger,
+      idempotency_key: idempotencyKey,
+      external_action_executed: result.externalActionExecuted,
+      exact_blocker: result.exactBlocker
+    }
+  });
+  logWorkerEvent({
+    runId: input.step.run_id,
+    stepId: input.step.id,
+    laneId: input.step.lane_id ?? undefined,
+    eventType: stepStatus === "completed" ? "worker_completed" : "worker_blocked",
+    message: proofSummary,
+    metadata: {
+      adapter: input.selectedAdapter,
+      execution_mode: "portable_external",
+      portable_workflow_id: input.workflowId,
+      artifact_uri: artifact.uri,
+      exact_blocker: result.exactBlocker,
+      external_action_executed: result.externalActionExecuted
+    }
+  });
+  return {
+    workerMode: portableWorkerModeForAdapter(input.selectedAdapter),
+    status: result.status,
+    proof_gate: proofGate,
+    proof_summary: proofSummary,
+    metadata: {
+      adapter: input.selectedAdapter,
+      execution_mode: "portable_external",
+      portable_workflow_id: input.workflowId,
+      portable_external_artifact: artifact.uri,
+      exact_blocker: result.exactBlocker,
+      external_action_executed: result.externalActionExecuted,
+      portable_external_worker: {
+        exit_status: result.exitStatus,
+        signal: result.signal,
+        stdout_tail: result.stdoutTail,
+        stderr_tail: result.stderrTail
+      }
+    }
+  };
 }
 
 function completePortableWorkerCanaryStep(input: {
@@ -2085,6 +2241,9 @@ async function completeWorkerStep(
   const portableWorkflowId = portableWorkflowIdForWorkerAdapter(selectedAdapter);
   if (portableWorkflowId && isPortableWorkerCanaryRun(step.run_id)) {
     return completePortableWorkerCanaryStep({ step, metadata, selectedAdapter, workflowId: portableWorkflowId, now });
+  }
+  if (portableWorkflowId && isPortableWorkerExternalRun(step.run_id)) {
+    return completePortableExternalWorkerStep({ step, metadata, selectedAdapter, workflowId: portableWorkflowId, now });
   }
   const routeContext = buildCanonicalRouteBlockContext({ step, metadata, adapter: selectedAdapter });
   if (!routeContext.routeDecision) {

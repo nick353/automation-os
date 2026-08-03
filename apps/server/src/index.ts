@@ -169,9 +169,12 @@ import { buildCompanyAnalytics, CompanyAnalyticsError } from "./analytics/compan
 import { computeNextAutomationOccurrence } from "./runs/automationScheduler.js";
 import {
   PORTABLE_WORKER_CANARY_MODE,
-  portableWorkflowIdForWorkerAdapter
+  PORTABLE_WORKER_EXTERNAL_MODE,
+  portableWorkflowIdForWorkerAdapter,
+  portableWorkerExecutionMode
 } from "./runs/portableWorkflowWorker.js";
 import { startPortableWorkflowRun } from "./runs/portableWorkflowEntrypoint.js";
+import { portableWorkflowManifests } from "./runs/portableWorkflowContract.js";
 
 export const app = express();
 app.set("case sensitive routing", true);
@@ -1337,6 +1340,69 @@ app.post("/api/mvp/registered-automations/:id/run", (req, res) => {
     res.json(result.body);
   } catch (error) {
     sendCompanyScopeError(res, error, "registered_automation_run_failed");
+  }
+});
+
+app.post("/api/portable-workflows/:id/run", async (req, res, next) => {
+  try {
+    initDb();
+    initRegisteredWorkflows();
+    const fixedWorkflow = fixedRegisteredWorkflows.find((item) => item.id === req.params.id);
+    if (!fixedWorkflow) {
+      res.status(404).json({ ok: false, error: "portable_workflow_not_found", exact_blocker: "portable_workflow_not_found", external_action_executed: false });
+      return;
+    }
+    const companyIds = actorCompanyIds(["owner", "admin", "operator"]);
+    if (companyIds.length === 0) {
+      res.status(403).json({ ok: false, error: "company_scope_forbidden", exact_blocker: "company_scope_forbidden", external_action_executed: false });
+      return;
+    }
+    const workflow = getRegisteredWorkflowForCompanies(req.params.id, companyIds);
+    if (!workflow) {
+      res.status(404).json({ ok: false, error: "registered_workflow_not_found", exact_blocker: "registered_workflow_not_found", external_action_executed: false });
+      return;
+    }
+    if (String(workflow.status).toLowerCase() !== "active") {
+      res.status(409).json({ ok: false, error: "registered_workflow_inactive", exact_blocker: "registered_workflow_inactive", external_action_executed: false });
+      return;
+    }
+    const requestedKey = typeof req.body?.idempotency_key === "string"
+      ? req.body.idempotency_key.trim()
+      : typeof req.get("idempotency-key") === "string" ? req.get("idempotency-key")!.trim() : "";
+    const idempotencyKey = requestedKey || `ui:${workflow.id}:${currentActorUserId()}:${Date.now()}`;
+    if (idempotencyKey.length > 240 || !/^[A-Za-z0-9._:-]+$/.test(idempotencyKey)) {
+      res.status(400).json({ ok: false, error: "portable_idempotency_key_invalid", exact_blocker: "portable_idempotency_key_invalid", external_action_executed: false });
+      return;
+    }
+    const started = await startPortableWorkflowRun({
+      workflowId: workflow.id as Parameters<typeof startPortableWorkflowRun>[0]["workflowId"],
+      sourceTrigger: "codex_app_bridge",
+      idempotencyKey
+    });
+    const mode = portableWorkerExecutionMode();
+    res.status(202).json({
+      ok: true,
+      accepted: true,
+      replayed: started.replayed,
+      runId: started.runId,
+      status: started.status ?? "queued",
+      workflow: publicRegisteredWorkflowById(workflow.id),
+      portable: {
+        workflow_id: workflow.id,
+        execution_mode: mode,
+        app_dependency: false,
+        browser_surface: "browser_use_cli",
+        connector_gateway: "mcp",
+        external_runner_configured: Boolean(process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_RUNNER?.trim()),
+        external_action_executed: false
+      },
+      workerProtocol: "mac_worker_polling_required",
+      nextAction: mode === PORTABLE_WORKER_EXTERNAL_MODE
+        ? "Mac worker loopが本番DBから拾い、portable external adapterのreceiptを保存します。"
+        : "canaryとしてrun binding/readbackを確認します。外部操作を開始するにはMac側portable external adapterの設定が必要です。"
+    });
+  } catch (error) {
+    next(error);
   }
 });
 
@@ -5414,7 +5480,25 @@ function buildCompanyRegisteredAutomationReadback(projectId: string) {
       resume_condition: paused
         ? "この定期実行を再開してから、local runnerのreadbackを確認してください。"
         : "local runnerでpreflightを実行し、proof/readbackを確認してください。HTTP APIから外部作用は開始しません。",
-      latest_proof: latestProof
+      latest_proof: latestProof,
+      portable: (() => {
+        const portableId = portableWorkflowIdForWorkerAdapter(workflow.runner_kind);
+        const manifest = portableId ? portableWorkflowManifests[portableId] : undefined;
+        return portableId && manifest
+          ? {
+              supported: true,
+              workflow_id: portableId,
+              execution_mode: portableWorkerExecutionMode(),
+              external_runner_configured: Boolean(process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_RUNNER?.trim()),
+              app_dependency: false,
+              browser_surface: manifest.execution.browser_surface,
+              connector_gateway: manifest.execution.connector_gateway,
+              external_effect_policy: manifest.external_effect_policy,
+              manual_endpoint: `/api/portable-workflows/${portableId}/run`,
+              schedule_admission: portableWorkerExecutionMode() === PORTABLE_WORKER_CANARY_MODE || portableWorkerExecutionMode() === PORTABLE_WORKER_EXTERNAL_MODE
+            }
+          : { supported: false, exact_blocker: "portable_workflow_manifest_missing" };
+      })()
     };
   });
   return {
@@ -6722,10 +6806,10 @@ export async function runResearchPlanSchedulerOnce(
       let runMetadata: Record<string, unknown> = registeredWorkflowStartMetadata(workflow, { source: "scheduler", dueKey: due.dueKey, command });
       if (!workflow.company_id) {
         const isFixedGlobalWorkflow = fixedRegisteredWorkflows.some((fixed) => fixed.id === workflow.id && fixed.runnerKind === workflow.runner_kind);
-        const portableCanaryAdmission = isPortableCanarySchedulerAdmission(workflow);
+        const portableAdmission = isPortableSchedulerAdmission(workflow);
         const globalServiceUserId = process.env.AUTOMATION_OS_GLOBAL_SYSTEM_SERVICE_USER_ID?.trim() ?? "";
         let globalServiceBlocker = "";
-        if (portableCanaryAdmission) {
+        if (portableAdmission) {
           const portableStarted = await startPortableWorkflowRun({
             workflowId: workflow.id as Parameters<typeof startPortableWorkflowRun>[0]["workflowId"],
             sourceTrigger: "automation_os_scheduler",
@@ -6850,8 +6934,9 @@ export async function runResearchPlanSchedulerOnce(
   return { checked: workflows.length, started: runIds.length, skipped, blocked, runIds, blockedWorkflowIds, blockedDueKeys, blockers };
 }
 
-function isPortableCanarySchedulerAdmission(workflow: Pick<RegisteredWorkflowRow, "id" | "runner_kind" | "company_id">): boolean {
-  if (process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE !== PORTABLE_WORKER_CANARY_MODE) return false;
+function isPortableSchedulerAdmission(workflow: Pick<RegisteredWorkflowRow, "id" | "runner_kind" | "company_id">): boolean {
+  const mode = process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE?.trim();
+  if (mode !== PORTABLE_WORKER_CANARY_MODE && mode !== PORTABLE_WORKER_EXTERNAL_MODE) return false;
   if (workflow.company_id) return false;
   return portableWorkflowIdForWorkerAdapter(workflow.runner_kind) === workflow.id;
 }

@@ -4066,6 +4066,71 @@ function AutomationsPage({ model }: { model: AppModel }) {
       setRegisteredRequestingId(null);
     }
   };
+  const requestPortableRun = async (item: any) => {
+    const name = item.name ?? item.id;
+    if (!item.portable?.supported) {
+      const message = `blocked / portable manifest未登録: ${publicBlockerSummary(item.portable?.exact_blocker ?? "portable_workflow_manifest_missing")}`;
+      setRegisteredReceipts((prev) => ({ ...prev, [item.id]: message }));
+      setReceipt(`${name}: ${message}`);
+      return;
+    }
+    if (registeredRequestInFlight.current) {
+      setRegisteredReceipts((prev) => ({ ...prev, [item.id]: "別のAOS実行が進行中です。完了後に再試行してください。" }));
+      return;
+    }
+    const idempotencyKey = `ui:${item.id}:${Date.now()}`;
+    try {
+      registeredRequestInFlight.current = true;
+      setRegisteredRequestingId(item.id);
+      setRegisteredReceipts((prev) => ({ ...prev, [item.id]: "AOSへキュー登録中..." }));
+      const response = await mvpFetch(`/api/portable-workflows/${encodeURIComponent(item.id)}/run?project_id=${encodeURIComponent(activeProject)}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "idempotency-key": idempotencyKey },
+        body: JSON.stringify({ project_id: activeProject, idempotency_key: idempotencyKey })
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.exact_blocker || result.error || `portable_workflow_http_${response.status}`);
+      const portable = result.portable ?? {};
+      const message = `AOS ${result.replayed ? "replay" : "queued"} / run=${result.runId ?? "?"} / mode=${portable.execution_mode ?? item.portable.execution_mode ?? "canary"} / worker=${result.workerProtocol ?? "mac_worker_polling_required"} / external_action=false`;
+      setRegisteredReceipts((prev) => ({ ...prev, [item.id]: message }));
+      setReceipt(`${name}: ${message}`);
+      setPageNote(`${name}: ${message} / ${actionStamp()}`);
+    } catch (error) {
+      const exact = error instanceof Error ? error.message : "portable_workflow_request_failed";
+      const message = `blocked / AOSキュー登録なし / ${publicBlockerSummary(exact)}`;
+      setRegisteredReceipts((prev) => ({ ...prev, [item.id]: message }));
+      setReceipt(`${name}: ${message}`);
+      setPageNote(`${name}: ${message} / ${actionStamp()}`);
+    } finally {
+      registeredRequestInFlight.current = false;
+      setRegisteredRequestingId(null);
+    }
+  };
+  const toggleRegisteredSchedule = async (item: any) => {
+    const paused = item.status === "paused";
+    const name = item.name ?? item.id;
+    try {
+      const response = await mvpFetch(`/api/registered-workflows/${encodeURIComponent(item.id)}/${paused ? "resume" : "pause"}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ project_id: activeProject })
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.exact_blocker || result.error || `registered_schedule_toggle_http_${response.status}`);
+      const nextStatus = result.workflow?.status ?? (paused ? "active" : "paused");
+      setRegisteredReadback((previous) => ({
+        ...previous,
+        automations: (previous.automations ?? []).map((current) => current.id === item.id ? { ...current, status: nextStatus } : current)
+      }));
+      const message = `定期実行を${nextStatus === "paused" ? "停止" : "再開"} / UI→AOS scheduler / external_action=false`;
+      setRegisteredReceipts((prev) => ({ ...prev, [item.id]: message }));
+      setReceipt(`${name}: ${message}`);
+      setPageNote(`${name}: ${message} / ${actionStamp()}`);
+    } catch (error) {
+      const exact = error instanceof Error ? error.message : "registered_schedule_toggle_failed";
+      setRegisteredReceipts((prev) => ({ ...prev, [item.id]: `blocked / 定期実行変更なし / ${publicBlockerSummary(exact)}` }));
+    }
+  };
   const describeRegistered = (item: any) => {
     const proof = item.latest_proof ? ` / proof=${item.latest_proof.status ?? "available"} ${item.latest_proof.checked_at ?? ""}` : " / proof=missing";
     const action = item.preflight_status ?? item.ui_action ?? "read-only";
@@ -4125,7 +4190,7 @@ function AutomationsPage({ model }: { model: AppModel }) {
       </Panel>
       {activeProject && (
         <Panel title="Codex App登録済み自動化" controlId="projects.registered.panel">
-          <p className="muted">{projectName}の会社スコープでreadbackします。外部投稿・応募・削除・認証突破はせず、押した操作はproof確認か exact blocker を返します。</p>
+          <p className="muted">{projectName}の登録6本をAOSで共通管理します。Codex AppはUI/トリガー、AOSがスケジュールとrunの正本、Mac workerがBrowser Use CLI/MCPの実行層です。外部作用の完了はworker receipt/readbackでのみ確認します。</p>
           <DataTable
             controlId="projects.registered.table"
             headers={["名前", "状態", "実行クラス", "判定", "Blocker / Proof", "操作"]}
@@ -4136,6 +4201,28 @@ function AutomationsPage({ model }: { model: AppModel }) {
               <StatusBadge status={item.can_run ? "enabled" : item.latest_proof ? "approved" : "blocked"} label={item.action_label ?? item.ui_action ?? "read-only"} />,
               item.latest_proof ? `${item.latest_proof.status ?? "proof"} / 保存済み記録あり` : publicBlockerSummary(item.exact_blocker ?? item.blocked_action),
               <div className="row-actions">
+                {item.portable?.supported && <button
+                  type="button"
+                  data-control-id={`projects.registered.portable-run.${item.id}`}
+                  className="icon-btn"
+                  aria-label={`${item.name ?? item.id}: AOSで今すぐ実行`}
+                  title={`${item.name ?? item.id}: AOSで今すぐ実行`}
+                  onClick={() => requestPortableRun(item)}
+                  disabled={Boolean(registeredRequestingId)}
+                >
+                  {registeredRequestingId === item.id ? <Clock size={14} /> : <Play size={14} />}
+                </button>}
+                {item.portable?.supported && <button
+                  type="button"
+                  data-control-id={`projects.registered.schedule-toggle.${item.id}`}
+                  className="icon-btn"
+                  aria-label={`${item.name ?? item.id}: 定期実行を${item.status === "paused" ? "再開" : "停止"}`}
+                  title={`${item.name ?? item.id}: 定期実行を${item.status === "paused" ? "再開" : "停止"}`}
+                  onClick={() => toggleRegisteredSchedule(item)}
+                  disabled={Boolean(registeredRequestingId)}
+                >
+                  <Clock size={14} />
+                </button>}
                 <button
                   type="button"
                   data-control-id={`projects.registered.open.${item.id}`}
