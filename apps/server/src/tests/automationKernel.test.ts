@@ -457,9 +457,10 @@ test("optional manifest stages require explicit selection while required stages 
 
 test("kernel profile is derived per stage and external stages are always full", () => {
   const source = JSON.parse(readFileSync(
-    "/Users/nichikatanaka/Documents/Codex/automation-os/.codex/automation-kernel/manifests/automation-os-iab.json",
+    "/Users/nichikatanaka/Documents/New project/.codex/automation-kernel/manifests/daily-ai-research-publish-run.json",
     "utf8"
   )) as Record<string, unknown> & { stages: Array<Record<string, unknown>> };
+  source.stages[0] = { ...source.stages[0], kernel_profile: "light" };
   const manifest = manifestCompiler.parseAutomationKernelManifestTextV1(JSON.stringify(source));
   const compiled = manifestCompiler.compileAutomationKernelManifestV1(manifest, "profile-run");
   assert.equal(manifest.stages[0]?.kernel_profile, "light");
@@ -476,7 +477,7 @@ test("kernel profile is derived per stage and external stages are always full", 
 
 test("Browser Use CLI is a strict manifest surface with no IAB or Chrome fallback", () => {
   const source = JSON.parse(readFileSync(
-    "/Users/nichikatanaka/Documents/Codex/automation-os/.codex/automation-kernel/manifests/automation-os-iab.json",
+    "/Users/nichikatanaka/Documents/New project/.codex/automation-kernel/manifests/job-application-manager.json",
     "utf8"
   )) as Record<string, unknown> & { stages: Array<Record<string, unknown>>; chrome_lease_contract: Record<string, unknown> };
   const manifest = manifestCompiler.parseAutomationKernelManifestTextV1(JSON.stringify(source));
@@ -491,7 +492,7 @@ test("Browser Use CLI is a strict manifest surface with no IAB or Chrome fallbac
   wrongLane.stages[0]!.lane = "in_app_browser";
   assert.throws(
     () => manifestCompiler.parseAutomationKernelManifestTextV1(JSON.stringify(wrongLane)),
-    /automation_kernel_manifest_browser_use_cli_stage_invalid:workflow/
+    /automation_kernel_manifest_browser_use_cli_stage_invalid:root_controller_bootstrap/
   );
 
   const mixedContract = structuredClone(source);

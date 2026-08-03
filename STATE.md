@@ -1,5 +1,34 @@
 # Automation OS Current State
 
+## 2026-08-03 current manifest and full regression checkpoint
+
+The Automation Kernel tests no longer depend on the retired
+`automation-os-iab.json` fixture. Browser Use surface assertions now read the
+current registered Browser Use CLI manifests and keep the IAB rejection tests
+as negative-contract coverage. Focused `automationKernel.test.ts` passed
+`19/19`.
+
+Fresh full server regression passed with `926 total / 921 pass / 0 fail / 5
+skip`. The five skips are the real PostgreSQL fixture cases blocked by the
+missing `AUTOMATION_OS_TEST_POSTGRES_URL`; no production secret was printed or
+changed. `git diff --check` is clean. The official global automation audit
+reports `6/6` compliant entries and `gaps=0`; stale identity/IAB registry
+references are absent from the current registry.
+
+This is source/test readiness proof only. Valid production PostgreSQL,
+live Mac-worker execution, and fresh authorized 21-screen Browser Use runtime
+QA with per-screen recordings remain unverified and are still required before
+the goal can be complete.
+
+Fresh portable canary readback on 2026-08-03 completed for the scheduler and
+all three portable workflows (`checked=3`, `completed=3`) with
+`browser_started=false`, `connector_called=false`, and
+`external_action_executed=false`. The stored production worker proof still
+stops before spawn with `stored_postgres_secret_invalid_url` because the
+required `POSTGRES_USERNAME`, `POSTGRES_PASSWORD`, `POSTGRES_HOST`,
+`POSTGRES_PORT`, and `POSTGRES_DATABASE` template references are missing.
+No secret value was printed.
+
 ## 2026-08-03 portable worker isolation and tenancy audit checkpoint
 
 Commit `fc24d2a` (`Isolate portable worker tenancy tests`) was pushed to
