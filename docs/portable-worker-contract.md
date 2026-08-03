@@ -31,6 +31,13 @@ It must report `checked: 3`, `completed: 3`, and
 contract is independent of the App; it does not claim that any live provider
 action is ready.
 
+When the local server and stored-secret worker are explicitly in
+`AUTOMATION_OS_PORTABLE_WORKER_MODE=canary`, the registered scheduler also
+admits the three fixed global workflows without a global service identity. The
+admission is limited to the no-effect canary and writes a portable admission
+marker to the run. Real execution mode continues to require the existing
+service identity, scope, approval, and provider-readback gates.
+
 ## Verification
 
 ```sh

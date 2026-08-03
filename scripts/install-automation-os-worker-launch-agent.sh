@@ -25,7 +25,10 @@ install_agent() {
   chmod +x "$HELPER_SCRIPT"
   cp "$SOURCE_PLIST" "$TARGET_PLIST"
   launchctl bootout "$DOMAIN/$LABEL" >/dev/null 2>&1 || true
-  launchctl bootstrap "$DOMAIN" "$TARGET_PLIST"
+  if ! launchctl bootstrap "$DOMAIN" "$TARGET_PLIST" >/dev/null 2>&1; then
+    sleep 1
+    launchctl bootstrap "$DOMAIN" "$TARGET_PLIST"
+  fi
   printf 'installed: %s\n' "$TARGET_PLIST"
   printf '安全確認後にworkerを起動するには: %s restart\n' "$0"
 }
