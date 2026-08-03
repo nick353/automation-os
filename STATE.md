@@ -20,6 +20,17 @@ token in this same visible room and then re-read the same target/session before
 authenticated QA. Until then the room must remain held and must not be
 finalized or replaced. No external effect occurred.
 
+The follow-up local verification after this checkpoint passed: web typecheck,
+server/web production build, and the static all-page preflight
+(`21 screen cases / 184 manifest entries / 233 rendered patterns / 0 issues`).
+The current `CodexAppServerClient` also completed a fresh read-only local
+thread/turn in `/tmp` with status `completed`, bounded text
+`AUTOMATION_OS_READONLY_SMOKE_OK`, 26 events, and no exact blocker; the
+client-owned child was closed and no new App Server child remained. This is
+local transport proof, not production worker proof. Commit `f754cea` was
+pushed to `origin/main`; public readback remains root `200`, health `200`, and
+protected browser/dashboard APIs `401`.
+
 ## 2026-08-03 authenticated handoff gate and terminal cleanup checkpoint
 
 Fresh same-run readback on the preserved temporary room
