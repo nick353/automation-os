@@ -40,6 +40,7 @@ import { buildCanonicalExecutionRoutingMetadata, buildExecutionRoutingSnapshot }
 import { getLatestCapabilityProbeSnapshot, probeCodexMcpSurface } from "./codex/capabilityProbe.js";
 import { getLatestAppServerProbeSnapshot, probeCodexAppServerSurface } from "./codex/appServerProbe.js";
 import { buildCapabilityRouterSnapshot } from "./codex/capabilityRouter.js";
+import { serializeAutomationOsChatSnapshot } from "./codex/chatSnapshot.js";
 import {
   buildCodexAppParityLedger,
   type CodexParityBridgeExecution,
@@ -91,6 +92,7 @@ import {
 import { registeredBrowserLaneForWorkflow, visibleBrowserLaneForRecordReplay } from "./runs/laneManager.js";
 import { selectActionQueueRuns, selectResumeCandidateRun } from "./runs/selectors.js";
 import { isSecretStorageOnlyText, listStoredSecrets, saveSecretsFromMessage } from "./secrets/secretStore.js";
+import { secureTokenEqual } from "./security/tokenComparison.js";
 import {
   getObsidianExportStatus,
   runObsidianAutoExportBestEffort,
@@ -1445,7 +1447,12 @@ app.post("/api/create/chat", (req, res, next) => {
         contextSnapshot
       }
     });
-    res.status(202).json({ ok: true, job: sanitizeCreatePlannerJobForApi(job), external_action_executed: false });
+    res.status(202).json({
+      ok: true,
+      job: sanitizeCreatePlannerJobForApi(job),
+      worker_readback: safeStoredWorkerStateForApi(),
+      external_action_executed: false
+    });
   } catch (error) {
     const exact = error instanceof Error ? error.message : "create_chat_failed";
     if (exact === "codex_thread_scope_forbidden") {
@@ -1484,7 +1491,7 @@ app.get("/api/create/plan/jobs/:id", (req, res) => {
     res.status(404).json({ ok: false, error: "create_planner_job_not_found", exactBlocker: "create_planner_job_not_found" });
     return;
   }
-  res.json({ ok: true, job: sanitizeCreatePlannerJobForApi(job), plan: job.result });
+  res.json({ ok: true, job: sanitizeCreatePlannerJobForApi(job), plan: job.result, worker_readback: safeStoredWorkerStateForApi() });
 });
 
 app.get("/api/create/session", (_req, res) => {
@@ -2871,12 +2878,12 @@ function productionWriteGuard(req: Parameters<RequestHandler>[0], res: Parameter
     return;
   }
   const providedToken = readRequestWriteToken(req);
-  if (guard.tokenConfigured && providedToken === readProductionWriteToken()) {
+  if (guard.tokenConfigured && secureTokenEqual(providedToken, readProductionWriteToken())) {
     next();
     return;
   }
-  const error = guard.tokenConfigured ? "production_write_token_required" : "production_write_locked";
-  res.status(guard.tokenConfigured ? 401 : 423).json({
+  const error = "production_token_required";
+  res.status(401).json({
     ok: false,
     status: "blocked",
     error,
@@ -2900,14 +2907,14 @@ function productionApiAccessGuard(req: Parameters<RequestHandler>[0], res: Param
   const readOnlyRequest = ["GET", "HEAD"].includes(req.method);
   const readToken = readOnlyRequest ? readProductionReadToken() : "";
   if (guard.tokenConfigured && (
-    providedToken === readProductionWriteToken()
-    || (Boolean(readToken) && providedToken === readToken)
+    secureTokenEqual(providedToken, readProductionWriteToken())
+    || (Boolean(readToken) && secureTokenEqual(providedToken, readToken))
   )) {
     next();
     return;
   }
-  const error = guard.tokenConfigured ? "production_api_token_required" : "production_api_locked";
-  res.status(guard.tokenConfigured ? 401 : 423).json({
+  const error = "production_token_required";
+  res.status(401).json({
     ok: false,
     status: "blocked",
     error,
@@ -2988,6 +2995,7 @@ function requestedCompanyId(req: Parameters<RequestHandler>[0], required = true)
 }
 
 function automationApiView(automation: AutomationRecord) {
+  const execution = automationExecutionContract(automation.workerCommandKind);
   return {
     id: automation.id,
     company_id: automation.companyId,
@@ -3005,6 +3013,7 @@ function automationApiView(automation: AutomationRecord) {
     risk_level: automation.riskLevel,
     approval_policy: automation.approvalPolicy,
     worker_command_kind: automation.workerCommandKind,
+    ...execution,
     create_approval: automation.createApproval,
     builder_spec: automation.builderSpec,
     status: automation.status,
@@ -3012,6 +3021,37 @@ function automationApiView(automation: AutomationRecord) {
     created_at: automation.createdAt,
     updated_at: automation.updatedAt,
     deep_link: `#/projects/${encodeURIComponent(automation.companyId)}/automations/${encodeURIComponent(automation.id)}/edit`
+  };
+}
+
+function automationExecutionContract(workerCommandKind: unknown): {
+  execution_mode: "control_plane_dry_run" | "registered_workflow_readback" | "unverified";
+  execution_label: string;
+  scheduler_effect: "queues_scheduled_dry_run" | "requires_registered_runner_readback" | "not_configured";
+  external_action_allowed: false;
+} {
+  const kind = typeof workerCommandKind === "string" ? workerCommandKind.trim().toLowerCase() : "";
+  if (kind === "safe_local_demo") {
+    return {
+      execution_mode: "control_plane_dry_run",
+      execution_label: "制御面の予約・dry-runのみ（外部処理なし）",
+      scheduler_effect: "queues_scheduled_dry_run",
+      external_action_allowed: false
+    };
+  }
+  if (kind.includes("registered")) {
+    return {
+      execution_mode: "registered_workflow_readback",
+      execution_label: "登録workflow契約（実行readback待ち）",
+      scheduler_effect: "requires_registered_runner_readback",
+      external_action_allowed: false
+    };
+  }
+  return {
+    execution_mode: "unverified",
+    execution_label: "実行契約未確認（保存のみ）",
+    scheduler_effect: "not_configured",
+    external_action_allowed: false
   };
 }
 
@@ -3814,26 +3854,30 @@ export function getDashboard(companyIds?: string[]) {
     assets: sanitizeDashboardRows(rawAssets),
     skills: sanitizeDashboardRows(rawSkills),
     registeredWorkflows: publicRegisteredWorkflows,
-    automations: (rawMvpAutomations as Array<Record<string, unknown>>).map((row) => ({
-      id: String(row.id ?? ""),
-      company_id: String(row.company_id ?? row.project_id ?? ""),
-      project_id: String(row.project_id ?? row.company_id ?? ""),
-      automation_type: String(row.automation_type ?? "sns-post"),
-      name: String(row.name ?? ""),
-      desc: String(row.description ?? row.desc ?? ""),
-      goal: String(row.goal ?? ""),
-      schedule: String(row.schedule ?? "09:00"),
-      cadence: String(row.cadence ?? "daily"),
-      lane: String(row.lane ?? "Lane 1"),
-      risk_level: String(row.risk_level ?? "high"),
-      approval_policy: String(row.approval_policy ?? "required_before_external_post"),
-      worker_command_kind: String(row.worker_command_kind ?? "safe_local_demo"),
-      create_approval: row.create_approval === 1 || row.create_approval === true,
-      status: String(row.status ?? "draft"),
-      builder_spec: safeJsonParse<Record<string, unknown>>(typeof row.builder_spec_json === "string" ? row.builder_spec_json : "{}", {}),
-      created_at: String(row.created_at ?? ""),
-      updated_at: String(row.updated_at ?? "")
-    })),
+    automations: (rawMvpAutomations as Array<Record<string, unknown>>).map((row) => {
+      const execution = automationExecutionContract(row.worker_command_kind);
+      return {
+        id: String(row.id ?? ""),
+        company_id: String(row.company_id ?? row.project_id ?? ""),
+        project_id: String(row.project_id ?? row.company_id ?? ""),
+        automation_type: String(row.automation_type ?? "sns-post"),
+        name: String(row.name ?? ""),
+        desc: String(row.description ?? row.desc ?? ""),
+        goal: String(row.goal ?? ""),
+        schedule: String(row.schedule ?? "09:00"),
+        cadence: String(row.cadence ?? "daily"),
+        lane: String(row.lane ?? "Lane 1"),
+        risk_level: String(row.risk_level ?? "high"),
+        approval_policy: String(row.approval_policy ?? "required_before_external_post"),
+        worker_command_kind: String(row.worker_command_kind ?? "safe_local_demo"),
+        ...execution,
+        create_approval: row.create_approval === 1 || row.create_approval === true,
+        status: String(row.status ?? "draft"),
+        builder_spec: safeJsonParse<Record<string, unknown>>(typeof row.builder_spec_json === "string" ? row.builder_spec_json : "{}", {}),
+        created_at: String(row.created_at ?? ""),
+        updated_at: String(row.updated_at ?? "")
+      };
+    }),
     builder_specs: (rawMvpAutomations as Array<Record<string, unknown>>).map((row) => ({
       automation_id: String(row.id ?? ""),
       project_id: String(row.project_id ?? row.company_id ?? ""),
@@ -3927,6 +3971,11 @@ function getMvpStateReadback(companyIds: string[]) {
   const queuedJobs = durableJobs.filter((job) => job.status === "queued");
   const leasedJobs = durableJobs.filter((job) => job.status === "leased");
   const latestHeartbeat = durableJobs.map((job) => job.heartbeatAt).filter((value): value is string => Boolean(value)).sort().at(-1) ?? null;
+  const storedWorkerState = readStoredWorkerState();
+  const storedWorkerStatus = storedWorkerState?.status === "blocked" || storedWorkerState?.status === "running"
+    ? storedWorkerState.status
+    : null;
+  const workerStatus = storedWorkerStatus ?? (leasedJobs.length > 0 ? "running" : "idle");
   return {
     projects: allowed.map((company) => ({ id: company.id, project_id: company.id, name: company.name, status: company.status, role: company.role })),
     companies: allowed,
@@ -4014,16 +4063,19 @@ function getMvpStateReadback(companyIds: string[]) {
     company_scope: { enforced: true, company_ids: scopedIds, actor_user_id: currentActorUserId() },
     worker: {
       id: "durable-company-queue",
-      status: leasedJobs.length > 0 ? "running" : "idle",
-      label: "会社別durable queue",
-      detail: `queued ${queuedJobs.length} / leased ${leasedJobs.length}`,
+      status: workerStatus,
+      label: workerStatus === "blocked" ? "Mac worker要確認" : "会社別durable queue",
+      detail: storedWorkerState?.exactBlocker
+        ? `Mac worker readback: ${storedWorkerState.exactBlocker}`
+        : `queued ${queuedJobs.length} / leased ${leasedJobs.length}`,
       queue_depth: queuedJobs.length,
       active_leases: leasedJobs.length,
-      heartbeat_at: latestHeartbeat,
+      heartbeat_at: storedWorkerState?.updatedAt ?? latestHeartbeat,
       last_run_id: durableJobs[0]?.runId ?? null,
       readback_status: "stored",
-      exact_blocker: null,
-      next_action: queuedJobs.length > 0 ? "登録済みservice workerのclaimを待っています。" : "待機中のjobはありません。",
+      exact_blocker: storedWorkerState?.exactBlocker ?? null,
+      next_action: storedWorkerState?.nextAction
+        ?? (queuedJobs.length > 0 ? "登録済みservice workerのclaimを待っています。" : "待機中のjobはありません。"),
       external_action_executed: false
     },
     browser_use_runtime: buildBrowserUseRuntimeSnapshot(),
@@ -4124,6 +4176,7 @@ function buildMvpWorkerState(dashboard: ReturnType<typeof getDashboard>) {
       updatedAt?: string | null;
       processed?: number;
       usesApiKey?: boolean;
+      exactBlocker?: string | null;
     }
     | undefined;
   const runs = Array.isArray(dashboard.runs) ? dashboard.runs : [];
@@ -4146,7 +4199,7 @@ function buildMvpWorkerState(dashboard: ReturnType<typeof getDashboard>) {
     || heartbeatAgeSeconds > staleAfterSeconds
   );
   const readbackStatus = missing ? "heartbeat_missing" : stale ? "heartbeat_stale" : "fresh";
-  const exactBlocker = missing ? "mac_worker_state_missing" : stale ? "mac_worker_heartbeat_stale" : null;
+  const exactBlocker = localWorker?.exactBlocker ?? (missing ? "mac_worker_state_missing" : stale ? "mac_worker_heartbeat_stale" : null);
   return {
     id: "local_codex_worker",
     status: localWorker?.status === "ok" ? "ok" : localWorker?.status === "running" ? "running" : localWorker?.status === "blocked" ? "blocked" : "unknown",
@@ -4316,25 +4369,29 @@ function getPostgresFastDashboard() {
     assets: [],
     skills: [],
     registeredWorkflows: publicRegisteredWorkflows,
-    automations: (rawMvpAutomations as Array<Record<string, unknown>>).map((row) => ({
-      id: String(row.id ?? ""),
-      project_id: String(row.project_id ?? row.company_id ?? ""),
-      automation_type: String(row.automation_type ?? "sns-post"),
-      name: String(row.name ?? ""),
-      desc: String(row.description ?? row.desc ?? ""),
-      goal: String(row.goal ?? ""),
-      schedule: String(row.schedule ?? "09:00"),
-      cadence: String(row.cadence ?? "daily"),
-      lane: String(row.lane ?? "Lane 1"),
-      risk_level: String(row.risk_level ?? "high"),
-      approval_policy: String(row.approval_policy ?? "required_before_external_post"),
-      worker_command_kind: String(row.worker_command_kind ?? "safe_local_demo"),
-      create_approval: row.create_approval === 1 || row.create_approval === true,
-      status: String(row.status ?? "draft"),
-      builder_spec: safeJsonParse<Record<string, unknown>>(typeof row.builder_spec_json === "string" ? row.builder_spec_json : "{}", {}),
-      created_at: String(row.created_at ?? ""),
-      updated_at: String(row.updated_at ?? "")
-    })),
+    automations: (rawMvpAutomations as Array<Record<string, unknown>>).map((row) => {
+      const execution = automationExecutionContract(row.worker_command_kind);
+      return {
+        id: String(row.id ?? ""),
+        project_id: String(row.project_id ?? row.company_id ?? ""),
+        automation_type: String(row.automation_type ?? "sns-post"),
+        name: String(row.name ?? ""),
+        desc: String(row.description ?? row.desc ?? ""),
+        goal: String(row.goal ?? ""),
+        schedule: String(row.schedule ?? "09:00"),
+        cadence: String(row.cadence ?? "daily"),
+        lane: String(row.lane ?? "Lane 1"),
+        risk_level: String(row.risk_level ?? "high"),
+        approval_policy: String(row.approval_policy ?? "required_before_external_post"),
+        worker_command_kind: String(row.worker_command_kind ?? "safe_local_demo"),
+        ...execution,
+        create_approval: row.create_approval === 1 || row.create_approval === true,
+        status: String(row.status ?? "draft"),
+        builder_spec: safeJsonParse<Record<string, unknown>>(typeof row.builder_spec_json === "string" ? row.builder_spec_json : "{}", {}),
+        created_at: String(row.created_at ?? ""),
+        updated_at: String(row.updated_at ?? "")
+      };
+    }),
     builder_specs: (rawMvpAutomations as Array<Record<string, unknown>>).map((row) => ({
       automation_id: String(row.id ?? ""),
       project_id: String(row.project_id ?? row.company_id ?? ""),
@@ -4386,14 +4443,81 @@ function registeredWorkflowDefinitionToRow(workflow: RegisteredWorkflowDefinitio
   };
 }
 
+type StoredWorkerStateReadback = {
+  status: string;
+  exactBlocker: string | null;
+  nextAction: string | null;
+  updatedAt: string | null;
+  processed: number;
+  usesApiKey: boolean;
+};
+
+type SafeStoredWorkerStateReadback = Omit<StoredWorkerStateReadback, "usesApiKey">;
+
+function readStoredWorkerState(): StoredWorkerStateReadback | null {
+  const statePath = process.env.AUTOMATION_OS_WORKER_STATE_PATH
+    ?? resolvePath(process.cwd(), "data", "state", "automation-os-worker.json");
+  try {
+    const file = statSync(statePath);
+    if (!file.isFile() || file.size > 64 * 1024) return null;
+    const state = parseJson<Record<string, unknown>>(readFileSync(statePath, "utf8"), {});
+    const blocker = typeof state.blocker === "string" && /^[A-Za-z0-9_.:-]{1,160}$/u.test(state.blocker)
+      ? state.blocker
+      : null;
+    const nextAction = typeof state.nextAction === "string"
+      ? redactSensitiveText(state.nextAction).slice(0, 500)
+      : null;
+    const updatedAt = typeof state.updated_at === "string" ? state.updated_at : null;
+    const processed = typeof state.processed === "number" && Number.isSafeInteger(state.processed) && state.processed >= 0
+      ? state.processed
+      : 0;
+    return {
+      status: typeof state.status === "string" ? state.status : "unknown",
+      exactBlocker: blocker,
+      nextAction,
+      updatedAt,
+      processed,
+      usesApiKey: state.usesApiKey === true
+    };
+  } catch {
+    return null;
+  }
+}
+
+function safeStoredWorkerStateForApi(): SafeStoredWorkerStateReadback | null {
+  const state = readStoredWorkerState();
+  if (!state) return null;
+  return {
+    status: state.status,
+    exactBlocker: state.exactBlocker,
+    nextAction: state.nextAction,
+    updatedAt: state.updatedAt,
+    processed: state.processed
+  };
+}
+
 function buildLocalWorkerStatus(checks: Array<Record<string, unknown>>) {
+  const storedState = readStoredWorkerState();
   const check = checks.find((row) => row.kind === "local_codex_worker");
   if (!check) {
+    if (storedState) {
+      return {
+        status: storedState.status,
+        label: storedState.status === "blocked" ? "要確認" : storedState.status === "running" ? "起動中" : "確認",
+        detail: storedState.exactBlocker ? `Mac worker readback: ${storedState.exactBlocker}` : "Mac workerの保存状態を読み取りました。",
+        nextAction: storedState.nextAction ?? "Mac workerの状態を確認してください。",
+        exactBlocker: storedState.exactBlocker,
+        updatedAt: storedState.updatedAt,
+        processed: storedState.processed,
+        usesApiKey: storedState.usesApiKey
+      };
+    }
     return {
       status: "missing",
       label: "未接続",
       detail: "Mac workerはまだ確認できていません。",
       nextAction: "本番PostgreSQL接続を保存し、npm run worker:production-proof:stored の後で npm run worker:loop:stored を起動してください。",
+      exactBlocker: "mac_worker_state_missing",
       updatedAt: null,
       processed: 0,
       usesApiKey: false
@@ -4407,6 +4531,10 @@ function buildLocalWorkerStatus(checks: Array<Record<string, unknown>>) {
   const staleRunningHeartbeat = recordedStatus === "ok" && metadata.lifecycle === "running" && sameHostHeartbeat && pid !== undefined && !processIsAlive(pid);
   const status = staleRunningHeartbeat ? "idle" : recordedStatus;
   const processed = typeof metadata.processed === "number" ? metadata.processed : 0;
+  const checkUpdatedAt = Date.parse(String(check.created_at ?? ""));
+  const storedUpdatedAt = storedState?.updatedAt ? Date.parse(storedState.updatedAt) : Number.NaN;
+  const storedStateIsNewer = Boolean(storedState && Number.isFinite(storedUpdatedAt) && (!Number.isFinite(checkUpdatedAt) || storedUpdatedAt >= checkUpdatedAt));
+  const exactBlocker = storedStateIsNewer ? storedState?.exactBlocker ?? null : null;
   const labels: Record<string, string> = {
     running: "起動中",
     ok: "待機中",
@@ -4422,8 +4550,9 @@ function buildLocalWorkerStatus(checks: Array<Record<string, unknown>>) {
   return {
     status,
     label: labels[status] ?? "確認",
-    detail: staleRunningHeartbeat ? "Mac worker loopは停止しています。" : String(check.summary ?? "Mac workerの状態を記録しました。"),
-    nextAction: nextActions[status] ?? "状態を確認してください。",
+    detail: exactBlocker ? `Mac worker readback: ${exactBlocker}` : staleRunningHeartbeat ? "Mac worker loopは停止しています。" : String(check.summary ?? "Mac workerの状態を記録しました。"),
+    nextAction: storedStateIsNewer && storedState?.nextAction ? storedState.nextAction : nextActions[status] ?? "状態を確認してください。",
+    exactBlocker,
     updatedAt: check.created_at ?? null,
     processed,
     usesApiKey: metadata.usesApiKey === true
@@ -7675,6 +7804,10 @@ function normalizeCreatePlannerRequestMessages(body: unknown): CreatePlannerMess
 }
 
 function sanitizeCreatePlannerJobForApi(job: CreatePlannerJob) {
+  const streamText = typeof job.metadata.streamText === "string" ? job.metadata.streamText : "";
+  const streamTextLength = typeof job.metadata.streamTextLength === "number" && Number.isFinite(job.metadata.streamTextLength)
+    ? Math.max(0, Math.min(24_000, Math.floor(job.metadata.streamTextLength)))
+    : Math.min(24_000, streamText.length);
   return {
     id: job.id,
     status: job.status,
@@ -7693,9 +7826,16 @@ function sanitizeCreatePlannerJobForApi(job: CreatePlannerJob) {
       codexTurnId: typeof job.metadata.codexTurnId === "string" ? job.metadata.codexTurnId : undefined,
       contextCapturedAt: typeof job.metadata.contextCapturedAt === "string" ? job.metadata.contextCapturedAt : undefined,
       contextSnapshotHash: typeof job.metadata.contextSnapshotHash === "string" ? job.metadata.contextSnapshotHash : undefined,
-      streamText: typeof job.metadata.streamText === "string" ? job.metadata.streamText : undefined,
+      streamTextLength,
       events: Array.isArray(job.metadata.events)
-        ? job.metadata.events.filter((event) => event && typeof event === "object").slice(-40)
+        ? job.metadata.events
+          .filter((event) => event && typeof event === "object")
+          .slice(-40)
+          .map((event) => {
+            const safeEvent = { ...(event as Record<string, unknown>) };
+            delete safeEvent.delta;
+            return safeEvent;
+          })
         : []
     }
   };
@@ -7738,7 +7878,7 @@ function buildAutomationOsChatSnapshot(companyIds: string[]): string {
   initRegisteredWorkflows();
   const registeredWorkflows = publicRegisteredWorkflowRows(listRegisteredWorkflowsForCompanies(companyIds));
   const capturedAt = new Date().toISOString();
-  return JSON.stringify({
+  return serializeAutomationOsChatSnapshot({
     capturedAt,
     source: "automation_os_control_plane_readback",
     companyScope: companyIds,
@@ -7798,5 +7938,5 @@ function buildAutomationOsChatSnapshot(companyIds: string[]): string {
       secretsIncluded: false,
       rawPrivatePathsIncluded: false
     }
-  }).slice(0, 64_000);
+  });
 }

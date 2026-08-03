@@ -194,9 +194,9 @@ test("production write guard blocks state-changing API calls without a configure
     const runs = db.querySql<{ count: number }>("SELECT count(*) AS count FROM runs")[0].count;
     const afterHash = canonicalUserTableHash();
 
-    assert.equal(response.status, 423);
-    assert.equal(body.error, "production_write_locked");
-    assert.equal(body.exactBlocker, "production_write_locked");
+    assert.equal(response.status, 401);
+    assert.equal(body.error, "production_token_required");
+    assert.equal(body.exactBlocker, "production_token_required");
     assert.equal(runs, 0);
     assert.equal(afterHash, beforeHash);
   } finally {
@@ -337,7 +337,7 @@ test("production API access guard protects operator readbacks while health stays
     assert.doesNotMatch(health.body, /database|deployment|\/Users\/|webDistDir|tokenConfigured/);
     assert.equal(blocked.status, 401);
     assert.equal(blockedMixedCase.status, 401);
-    assert.equal(blockedBody.error, "production_api_token_required");
+    assert.equal(blockedBody.error, "production_token_required");
     assert.equal(allowed.status, 200);
     assert.equal(readTokenAllowed.status, 200);
     assert.equal(readTokenHead.status, 200);
@@ -371,12 +371,12 @@ test("production API access guard defaults closed without PORT and resists path 
   try {
     const locked = await requestJson("GET", "/api/mvp/state");
     const lockedBody = JSON.parse(locked.body) as { error: string };
-    assert.equal(locked.status, 423);
-    assert.equal(lockedBody.error, "production_api_locked");
+    assert.equal(locked.status, 401);
+    assert.equal(lockedBody.error, "production_token_required");
 
     for (const path of ["/api", "/api/", "/api//mvp/state", "/api/%6dvp/state", "/%61pi/mvp/state"]) {
       const response = await requestJson("GET", path);
-      assert.equal(response.status, 423, `${path} must remain locked`);
+      assert.equal(response.status, 401, `${path} must remain locked`);
     }
 
     process.env.AUTOMATION_OS_WRITE_TOKEN = "default-closed-token";
@@ -1992,7 +1992,7 @@ test("Create planner jobs bypass production write guard because they only queue 
     assert.equal(queuedBody.job.status, "queued");
     assert.equal(queuedBody.plan.exactBlocker, "mac_worker_planner_queued");
     assert.equal(guardedResponse.status, 401);
-    assert.equal(guardedBody.error, "production_write_token_required");
+    assert.equal(guardedBody.error, "production_token_required");
   } finally {
     if (previousRequire === undefined) delete process.env.AUTOMATION_OS_REQUIRE_WRITE_TOKEN;
     else process.env.AUTOMATION_OS_REQUIRE_WRITE_TOKEN = previousRequire;

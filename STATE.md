@@ -1,6 +1,2003 @@
 # Automation OS Current State
 
-Updated: 2026-07-15
+## 2026-08-03 live Mac-worker App Server chat smoke checkpoint
+
+The worker-owned `CodexAppServerClient` passed one fresh local live
+read-only smoke against the installed `codex-cli 0.145.0`: it started a new
+thread, completed a turn in `/tmp`, and received the bounded response
+`AUTOMATION_OS_READONLY_SMOKE_OK`. The child process was closed by the client
+and no `codex app-server --listen stdio://` process remained. The existing
+host-owned App Server PID 33326 was not touched, and Browser Use active rooms
+remained zero.
+
+The proof artifact is
+`work/qa/codex-app-server-live-smoke-20260803.json`. This verifies local
+transport, thread/turn lifecycle, and cleanup only; it does not prove the
+production Mac worker's PostgreSQL connection, symlink/cwd/egress isolation,
+or authenticated screen QA.
+
+## 2026-08-03 Browser Use lifecycle blocker-preservation checkpoint
+
+The canonical helper's execute-failure cleanup now handles a single-use
+profile that was never created without replacing the original validation
+blocker with `browser_use_lifecycle_invalid`. A malformed public post-command
+probe now reports `browser_use_post_command_invalid` with cleanup status
+`cleaned`; no profile, port, or room remains.
+
+The corrected fresh public read-only run
+`automation-os-public-current-readback-r3-20260803` completed against
+`https://automation-os.zeabur.app/` with post-command state/title/URL
+readback, `external_effects=none`, finalized receipt, profile/download/lock
+cleanup, and active Browser Use rooms `0`. Its receipt is
+`/Users/nichikatanaka/.browser-use-cli/receipts/automation-os-public-current-readback-r3-20260803/automation-os-public-cur-8ed61cfa37-303880b159144fdd8fe512d5488ec6e5.json`.
+This remains public operator-gate evidence only; authenticated screen QA is
+still unverified.
+
+## 2026-08-03 local screen-recording gate checkpoint
+
+An isolated SQLite/demo fixture was created only to test whether the
+canonical authorized recorder could exercise the local UI without using
+production credentials. The recorder reached `recording_status=active` in
+the same run/session, but the local origin was rejected by the canonical URL
+preflight as `browser_use_url_preflight_rejected` because private/loopback
+origins are not an allowed Browser Use surface. The resulting artifact is
+explicitly `status=blocked` and must not be treated as screen QA:
+`outputs/recordings/qa-local-20260803/browser-use-recording-manifest.json`.
+
+The recording/profile/download/lock cleanup completed, the owned Browser Use
+PID and local fixture server were stopped, and the temporary SQLite fixture
+was removed. Production authorized screen recordings therefore still require
+a fresh production authority and remain unverified.
+
+## 2026-08-03 chat snapshot and project analytics grouping checkpoint
+
+Codex App Server chat context is now serialized through a bounded JSON
+serializer instead of cutting a JSON string at 64,000 characters. The
+serializer preserves the complete project-scoped snapshot when it fits, then
+uses explicit compact/reduced/minimal tiers with `freshness.snapshotTruncated`,
+`freshness.snapshotTier`, and included counts. It never sends an invalid
+partial JSON document to the Mac worker planner. Focused chat snapshot tests
+cover large-history bounding, valid JSON, project boundaries, and the
+secret-free boundary.
+
+The module-owned Codex App Server client is explicitly closed by
+`worker:once` and after bounded `worker:loop` shutdown; injected test clients
+remain caller-owned. Server build and the chat/App Server focused tests pass.
+
+Company analytics now returns a truthful `by_stage` status aggregation, and the
+Web performance view uses the project presentation profile's
+`preferredGrouping`: day, ISO week, workflow, or status/stage. The existing
+widget allowlist still controls visibility, so the UI does not claim metrics
+whose source is unavailable. Server analytics tests, Web typecheck, and Web
+build pass; the latest full suite is 891 tests with 886 passed, 5 skipped, and
+0 failed, and the static all-page control preflight is passed (21 screen cases,
+181 manifest entries, 230 rendered patterns, no issues). Runtime browser
+verification of the changed performance view is still unverified pending a
+fresh Browser Use authority; no production deploy was used as a substitute.
+Planner failure readback now preserves only a safe `codex_app_server_*` or
+`codex_planner_*` blocker prefix and never returns the thrown message or secret
+suffix. The focused chat/App Server suite passes 8/8.
+
+## 2026-08-03 semantic/video surface binding r14 completion checkpoint
+
+The canonical Browser Use helper now captures a fixed URL/readyState probe in
+the same `record-stop` target/session immediately before the recorder flushes
+the final frame. The existing `final_visual_readback.state_sha256` remains the
+raw DOM-state hash for compatibility; the new
+`final_semantic_state_sha256` is the normalized semantic-state hash. Finalize
+also compares that hash, target ID, URL hash, and title hash with the durable
+semantic bundle and fails closed with
+`browser_use_recording_semantic_surface_mismatch` on disagreement.
+
+Fresh public read-only run `automation-os-public-surface-proof-r14-20260803`
+completed through the canonical helper. Requested session was
+`automation-os-public-surface-proof-r14-20260803`, effective session was
+`automation-os-public-sur-a843413ff7`, and both final visual and semantic
+readback use target `A6B32B132B19BDE570668BB47C5BE411`. The manifest is
+`work/recordings/automation-os-public-surface-proof-r14-20260803/browser-use-recording-manifest.json`;
+the receipt is
+`/Users/nichikatanaka/.browser-use-cli/receipts/automation-os-public-surface-proof-r14-20260803/automation-os-public-sur-a843413ff7-c89ee243278641c2a41a60ea1537fb6f.json`.
+`completion_blocker=null`, `external_effects=none`, and
+`semantic_readback_surface_match=true`; the final semantic hash and bundle
+state hash are both
+`619d792abc7f7b510fc3bf365710c507ce60128bbdbfa5e05c2328541d827cbe`.
+
+The MP4 is H.264 2400x1332 at 12 fps, 6 frames, 0.5 seconds, video SHA-256
+`3a9c2f2dd487736aee7820c4a9d7fbbdfdd982b63e2a7e8f9d1ad5e20df1c4df`, and the
+decoded final frame at 0.375 seconds has SHA-256
+`8da7ab43d438904ce5fd5d996e52c8eb0d18b2ca4b70a1d29e42c869213d3c61`.
+The adaptive video-frame manifest is under the same run directory and has 1
+base keyframe plus 6 timestamped detail frames. Visual inspection shows the
+public operator-token gate; no authentication, token entry, or external
+effect was performed. Receipt cleanup reports the profile and download
+directory removed, no locks retained, and the post-run room readback has no
+active room.
+
+The r12 failed-startup path was reconciled separately after exact PID/profile/
+port/run-lock verification; canonical startup reconciliation reported
+`process_absent=true`, `listener_absent=true`, and both owned locks removed.
+The residual registry entry was then released with the same r12 owner-bound
+run ID; a fresh room readback reports `active_count=0`, the r12 room as
+`released`, no listener on port 19986, and no residual profile/port locks.
+Authenticated screen-by-screen QA, token rotation, stored PostgreSQL worker
+execution, production schedule mutation/readback, deployment, and independent
+Graph verification remain unverified.
+
+## 2026-08-03 continuation: screen-case plan and stored-worker proof readback
+
+The tracked UI preflight now emits 21 route/page screen cases from the current
+`renderPage` source. Each case carries its manifest control IDs, route-marker
+validation, required recording lifecycle, same-session readback requirement,
+and the explicit runtime blocker
+`fresh_browser_use_authority_required_for_runtime_screen_qa`. This remains a
+static execution plan; no authenticated screen click or recording completion is
+claimed.
+
+Fresh `npm run worker:production-proof:stored` readback completed in proof mode
+after a server build. It stopped before spawning the worker or connecting to a
+database with `status=blocked`, `blocker=stored_postgres_secret_invalid_url`.
+The non-secret diagnostic says the stored template reference cannot resolve
+`POSTGRES_USERNAME`, `POSTGRES_PASSWORD`, `POSTGRES_HOST`, `POSTGRES_PORT`, and
+`POSTGRES_DATABASE`. No secret value was printed or changed. The next action is
+an owner-authorized save of a valid PostgreSQL connection through the existing
+secret-store flow, followed by a fresh proof and only then a worker loop.
+
+## 2026-08-03 tracked UI control QA preflight checkpoint
+
+The broken `scripts/all_page_button_qa.mjs` shim that imported an untracked
+Playwright/headless implementation from `work/automation-os-new-deploy-repo`
+has been replaced with a tracked source-level preflight. It loads the current
+`apps/web/src/controlManifest.ts`, parses rendered `data-control-id` and
+`controlId` patterns from `apps/web/src/App.tsx`, validates disposition/evidence
+fields, checks duplicate/unclassified/orphan controls, and extracts the route
+markers and rendered page components from `renderPage`. It does not launch a
+browser, store page bodies, or claim runtime clicks.
+
+Preflight artifact:
+`work/qa/all-page-button-static-preflight.json`.
+Current result: `passed`, 181 manifest entries, 230 rendered patterns, 0
+unclassified controls, 0 orphan entries, 103 `real_read`, 55 `real_action`,
+and 23 `justified_human_gate` entries. The canonical runtime surface remains
+`browser_use_cli`; runtime screen QA is explicitly `unverified` with exact
+blocker `fresh_browser_use_authority_required_for_runtime_screen_qa` and still
+requires fresh screen-by-screen recordings. The report now contains 21
+screen cases covering the exact and dynamic route families, including the
+conditional production-status and unavailable-project surfaces. Each case
+binds its route markers, rendered page component(s), manifest control IDs, and
+the required `record-start` → per-control readback → `record-finalize`
+lifecycle without claiming that runtime controls were clicked.
+
+The six redundant exact ProjectTabs entries were consolidated under the
+existing `projects.sections.*` pattern, and the dynamic profile summary is now
+represented by `truthful.*.profile-summary.panel`; no rendered UI behavior was
+changed. Focused static QA tests pass 2/2, the existing control-manifest and UI
+truthfulness tests pass 5/5, the full suite passes 888 total / 883 passed /
+5 skipped / 0 failed, server and web builds/typecheck pass, and `git diff --check`
+passes. The old Playwright implementation remains only as an untrusted
+historical work artifact and is no longer an executable package entrypoint.
+
+## 2026-08-03 semantic/video surface binding r10 checkpoint
+
+The previous r9 recording intentionally used `--capture-readback`, which is a
+transient snapshot path and therefore did not populate the helper's durable
+semantic bundle. It was not accepted as current proof. Fresh public
+unauthenticated read-only recording
+`automation-os-public-video-surface-fix-r10-20260803` was rerun through the
+canonical Browser Use helper without that flag for the allowlisted semantic
+commands (`state`, `get title`, `get url`). The semantic bundle and decoded
+video final-frame readback now bind to the same working target
+`4096D93D88DADE013441B508E946442D` and the same session
+`automation-os-public-vid-r10-20260803`.
+
+Manifest:
+`work/recordings/automation-os-public-video-surface-fix-r10-20260803/browser-use-recording-manifest.json`.
+Receipt:
+`/Users/nichikatanaka/.browser-use-cli/receipts/automation-os-public-video-surface-fix-r10-20260803/automation-os-public-vid-r10-20260803-a8979e7993cc48b484e887306827efd9.json`.
+The manifest is `completed` with `external_effects=none`; semantic state hash
+is `619d792abc7f7b510fc3bf365710c507ce60128bbdbfa5e05c2328541d827cbe`, the
+video is H.264 2400x1332 at 12 fps with 6 frames and 0.5 seconds, video SHA-256
+is `3a9c2f2dd487736aee7820c4a9d7fbbdfdd982b63e2a7e8f9d1ad5e20df1c4df`, and
+the decoded final frame at 0.375 seconds has SHA-256
+`8da7ab43d438904ce5fd5d996e52c8eb0d18b2ca4b70a1d29e42c869213d3c61`.
+Receipt exit code is 0, `finalized=true`, cleanup status is `cleaned`, no locks
+are retained, the descriptor is finalized with no live process, and the room
+readback has no non-released rooms. The frame-reader adaptive manifest and
+visual inspection show the same public operator-token gate as the semantic
+readback; no authentication, token entry, or external effect was performed.
+
+Focused evidence: Browser Use helper validation passed; recording manifest
+tests `4/4`, recording-session tests `6/6`, capture-context tests `9/9`, the
+recording-start handshake passed `2/2`, and an independent r10 semantic/video/
+receipt/cleanup binding assertion passed. Authenticated screen-by-screen QA,
+token rotation, stored PostgreSQL worker execution, production schedule
+mutation/readback, deployment, and independent Graph verification remain
+unverified.
+
+## 2026-08-03 chat progress payload hardening checkpoint
+
+Chat planner progress no longer persists or returns the raw Codex
+`streamText` or App Server event `delta` bodies. The worker stores only a
+bounded `streamTextLength` and event identity/status fields, the API projection
+returns only that numeric length and event metadata (including safe projections
+for legacy rows), and the Web panel renders the count without exposing
+internal JSON. Existing message/draft redaction remains unchanged.
+
+Focused `chatApi.test.ts` passes 3/3, including API and persisted-metadata
+assertions that raw stream text, event delta text, and secret-like input are
+absent. Server build, Web build/typecheck, `git diff --check`, and the full
+server suite pass: 888 tests, 883 passed, 5 skipped, 0 failed. This is a local
+code/test checkpoint only;
+stored PostgreSQL worker recovery, authenticated screen QA, independent Graph
+verification, production schedule mutation/readback, token rotation, and
+deployment remain unverified.
+
+## 2026-08-03 semantic/video surface binding r8 checkpoint
+
+Fresh public unauthenticated read-only recording `automation-os-public-video-surface-fix-r8-20260803`
+was completed with the canonical Browser Use helper. The durable semantic bundle
+contains state/title/url readback for `https://automation-os.zeabur.app/` and is
+bound to the same working target `FD285FE80F7CA86D4335CAEB165F1353` as the final
+visual readback. The decoded MP4 final frame is also bound to that readback:
+frame SHA-256 `8da7ab43d438904ce5fd5d996e52c8eb0d18b2ca4b70a1d29e42c869213d3c61`,
+video SHA-256 `3a9c2f2dd487736aee7820c4a9d7fbbdfdd982b63e2a7e8f9d1ad5e20df1c4df`,
+and final-frame time `0.375` seconds. The semantic state hash is
+`619d792abc7f7b510fc3bf365710c507ce60128bbdbfa5e05c2328541d827cbe` and the
+visual state hash is `eda200f9b74a28ec55fba57adcfbba5259dbd0ac06ea8c19c2dc3e0fb19a1f45`.
+
+Manifest:
+`work/recordings/automation-os-public-video-surface-fix-r8-20260803/browser-use-recording-manifest.json`.
+Receipt:
+`/Users/nichikatanaka/.browser-use-cli/receipts/automation-os-public-video-surface-fix-r8-20260803/automation-os-public-vid-r8-20260803-c505f16e040e496aa985ffe0a1b8d4df.json`.
+The receipt is finalized with `external_effects=none`; the temporary profile,
+download directory, and both profile/port locks were removed, and the final
+recording-status readback reports no live process. No authentication, token
+entry, or external effect was performed.
+
+Focused verification for App Server environment/permission compatibility,
+Browser Use readback masking, cleanup receipts, video QA validation, and token
+comparison passes 18/18. This checkpoint does not attest authenticated
+screen-by-screen QA, token rotation, stored PostgreSQL worker recovery,
+production schedule mutation/readback, deployment, or independent Graph
+verification.
+
+## 2026-08-03 chat worker-admission readback checkpoint
+
+The Codex App Server chat queue now includes a safe, bounded Mac worker
+readback on both chat enqueue and job polling. When the stored worker is
+blocked, the Web Chat progress panel stops waiting for the 90-second planner
+timeout and shows the public blocker plus the redacted next action. The API
+does not expose `reason`, secret values, or the API-key flag. Queueing remains
+asynchronous and external actions remain false; worker restart, PostgreSQL
+secret changes, and deployment were not performed.
+
+The newly rendered execution-contract indicators are also covered by the
+control manifest. Durable queue tests use an isolated missing worker-state
+path so host-owned local state cannot change tenant-queue expectations.
+
+The focused `chatApi.test.ts` covers the blocked readback and asserts that the
+stored reason and secret-like message text do not appear. Server build,
+Web typecheck/build, `npm test`, and `git diff --check` passed. The current
+local stored worker state remains blocked at
+`stored_postgres_secret_invalid_url`; the restart point is still to save a
+complete valid PostgreSQL connection through the existing secret-store UI and
+then rerun the stored worker proof.
+
+## 2026-08-03 semantic/video surface binding fresh checkpoint
+
+Fresh public read-only recording `automation-os-public-semantic-video-check-r4-20260803`
+was completed through the canonical Browser Use helper. The same effective
+session `automation-os-public-sem-378f7a4e9f` is recorded in the manifest and
+receipt, and the semantic bundle, tab inventory, and final visual readback all
+bind to working target `F1F1510E00AB44E4B9FC1EDF17871345`. The semantic bundle
+contains state/title/url readback for the public origin
+`https://automation-os.zeabur.app`; the final visual readback is bound to the
+decoded MP4 frame at 0.375 seconds. The frame SHA-256 is
+`8da7ab43d438904ce5fd5d996e52c8eb0d18b2ca4b70a1d29e42c869213d3c61` and the
+video SHA-256 is
+`3a9c2f2dd487736aee7820c4a9d7fbbdfdd982b63e2a7e8f9d1ad5e20df1c4df`.
+
+Manifest:
+`work/recordings/automation-os-public-semantic-video-check-r4-20260803/browser-use-recording-manifest.json`.
+Receipt:
+`/Users/nichikatanaka/.browser-use-cli/receipts/automation-os-public-semantic-video-check-r4-20260803/automation-os-public-sem-378f7a4e9f-d5fec20023e54fc6b02f51bf103a28fe.json`.
+The receipt is finalized with `external_effects=none`, exit code 0, removed
+profile/download directory, no retained locks, and the post-finalize room
+readback reports no active rooms; no Browser Use or worker process remains.
+
+The r3 run is diagnostic only: it used transient `--capture-readback`, so its
+durable semantic bundle was null even though its final visual binding was
+valid. It is not current proof. Focused recorder tests pass: recording session
+finalizer 6/6, manifest finalizer 4/4, recording-start handshake 2/2, helper
+validation, and an independent target/session/frame/video/cleanup assertion.
+This checkpoint is public unauthenticated read-only only; authenticated
+screen-by-screen QA, token rotation, deployment, production schedule
+mutation/readback, stored PostgreSQL worker execution, and independent Graph
+verification remain unverified.
+
+## 2026-08-03 durable Mac worker readback checkpoint
+
+`/api/mvp/state` now merges the safe stored worker state with the company
+durable queue readback. A current stored `blocked`/`running` state can no
+longer be hidden as `idle`; only a bounded blocker code, redacted next action,
+timestamp, processed count, and boolean API-key flag are exposed. The stored
+reason text and secret value are never returned. The dashboard path also
+surfaces the same safe blocker and keeps the system-check heartbeat rules.
+
+Focused API first-stage coverage passes 79/79, the guard/sanitizer/token
+coverage passes 72/72, server build passes, Web typecheck/build passes, and
+`git diff --check` passes. The fresh local state remains blocked at
+`stored_postgres_secret_invalid_url`; the restart point is saving a complete
+valid PostgreSQL connection through the existing secret-store UI and rerunning
+the stored worker proof. No secret was read or entered, and no worker restart
+or external effect was performed.
+
+## 2026-08-03 authentication failure uniformity checkpoint
+
+Production API and write guards now return the same generic `401` contract
+`production_token_required` for both missing and invalid operator tokens. This
+removes the previous external distinction between `423` token-unconfigured
+and `401` token-invalid while preserving successful write/read authentication,
+constant-time comparison, and all company-scope checks. The browser gate now
+gives generic operator-token guidance and does not infer or disclose server
+token configuration.
+
+Focused guard, sanitizer, and token-comparison coverage passes 72/72; server
+build, Web typecheck/build, and `git diff --check` pass. This is local-only and
+does not attest token rotation or authenticated screen QA.
+
+## 2026-08-03 truthful scheduled execution contract checkpoint
+
+The automation API and both legacy dashboard projections now expose the same
+execution contract derived from `worker_command_kind`. The default
+`safe_local_demo` path is explicitly labeled as control-plane dry-run only,
+with `scheduler_effect=queues_scheduled_dry_run` and
+`external_action_allowed=false`; unknown paths are labeled as unverified and
+are not presented as executed workflows. The project automation table and
+Builder schedule screen show this contract next to the schedule, including
+that a scheduled occurrence creates `scheduled_dry_run` control-plane proof
+without starting external site actions, sends, or posts.
+
+No scheduler or worker behavior was changed in this checkpoint. Focused API
+coverage passes 8/8, Codex App Server compatibility/probe coverage passes
+18/18, server build and Web typecheck/build pass, and `git diff --check`
+passes. This remains a local, undeployed change. Authenticated full-screen QA,
+stored PostgreSQL worker configuration, production schedule readback, and the
+independent Graph Verifier remain unverified; the exact Graph blocker remains
+`opencode_go_auth_or_transport_blocked`.
+
+Fresh local worker-state readback remains blocked at
+`stored_postgres_secret_invalid_url`; the safe reason is
+`template_reference_missing:POSTGRES_USERNAME,POSTGRES_PASSWORD,POSTGRES_HOST,POSTGRES_PORT,POSTGRES_DATABASE`.
+The stored secret value was not read into the report. The restart point is to
+save a complete valid PostgreSQL connection through the existing secret-store
+UI, then rerun the stored worker proof and confirm the same-run production DB
+pickup readback. No worker restart was attempted.
+
+## 2026-08-03 Browser Use route-label consistency checkpoint
+
+The canonical Browser Use CLI adapter remains gated by its existing run/stage/
+attempt/session/authority contract and no-fallback proof. A focused audit found
+only a misleading route evidence label: the Browser Use adapter was recorded as
+`adapter_policy=in_app_browser_only` even though the worker policy and runtime
+snapshot identify Browser Use CLI as the canonical surface. The label now reads
+`adapter_policy=browser_use_cli_no_fallback`; legacy Playwright/IAB-compatible
+adapters retain their existing fail-closed label and gate. No surface switch,
+worker admission, or external action behavior changed.
+
+Focused execution-routing and runtime-snapshot tests pass 9/9; the worker-engine
+focused suite passes 72/72; server build passes. The Mac worker runtime is still
+not live-read back in this turn, and authenticated Browser Use QA/recording,
+stored PostgreSQL configuration, production schedule readback, deployment, and
+Graph verification remain unverified.
+
+## 2026-08-03 Codex App Server permission-profile compatibility checkpoint
+
+The live Mac-worker App Server probe exposed the current Codex CLI 0.145.0
+protocol change: `sandboxPolicy.access` is rejected with
+`readOnly.access is no longer supported; use permissionProfile for restricted
+reads`. The minimal client fix removes that legacy nested access object and
+sends the built-in `permissionProfile: ":read-only"` on `turn/start`, while
+retaining `thread/start` `sandbox: "read-only"`, `approvalPolicy: "never"`,
+the allowlisted child environment, and the worker's no-approval handler.
+
+Focused App Server client/probe tests pass `17/17`; server build and
+`git diff --check` pass. A fresh live read-only smoke turn using the actual
+`/Users/nichikatanaka/.local/bin/codex` 0.145.0 completed with a same-run
+thread/turn, status `completed`, 18 protocol events, and no exact blocker.
+The client closed the child; a post-run process readback found no live
+`codex app-server`, Browser Use, worker, or Automation OS process. Browser Use
+room readback found 46 historical rooms, all `released`, with active count 0.
+
+This proves the local App Server transport compatibility and cleanup only. It
+does not prove authenticated screen-by-screen QA, stored PostgreSQL worker
+configuration, production schedule mutation/readback, deployment, or the
+independent Graph Verifier, which remains blocked at
+`opencode_go_auth_or_transport_blocked`.
+
+## 2026-08-03 Chat project-scope readback checkpoint
+
+The Web Chat planner readback now uses the explicit `options.projectId` sent
+to `/api/create/chat` for `PlannerReadback.project_id`, with the previous
+session-storage value retained only as a legacy fallback. This prevents the
+visible plan card from showing a stale company after a project switch. The
+change is local-only in `apps/web/src/App.tsx`; it has not been deployed.
+
+Focused evidence after the change: Web typecheck, Web build, server build,
+Chat API/Codex App Server tests (20/20), Browser Use redaction and token
+comparison tests (3/3), semantic readback tests (4/4), and `git diff --check`
+all passed. The existing public semantic/video checkpoint was re-read: run
+`automation-os-public-semantic-video-check-r2-20260803`, effective session
+`automation-os-public-sem-1444015d1e`, semantic and visual target
+`DB5BCEA882F9BDD1987373B0DF988ED6`, manifest under
+`work/recordings/automation-os-public-semantic-video-check-r2-20260803/`, and
+the matching receipt under the Browser Use receipts directory. Receipt
+finalization is true, external effects are none, exit code is 0, locks/profile
+are removed, and room summary reports zero active/current rooms.
+
+The independent Graph remains blocked at `verify` by the exact configured
+DeepSeek V4 Flash Verifier transport blocker
+`opencode_go_auth_or_transport_blocked`; no fallback or release claim was
+made. Authenticated screen-by-screen QA/token rotation, live Mac-worker
+PostgreSQL/App Server isolation, production schedule mutation/readback, and
+deployment of this local Chat scope fix remain unverified.
+
+## 2026-08-03 semantic/video binding verification checkpoint
+
+Fresh public read-only recording `automation-os-public-semantic-video-check-r2-20260803`
+completed through the canonical Browser Use helper. The same run/session
+(`automation-os-public-sem-1444015d1e`), public origin, and working target
+`DB5BCEA882F9BDD1987373B0DF988ED6` are present in the semantic bundle, tab
+inventory, and final visual readback. The durable semantic bundle contains
+state/title/url; the final visual readback is bound to the MP4-decoded frame at
+0.458333 seconds with frame SHA-256
+`c1d384ffbb1f07eb573162d98db109bac9dd59bf27189fffaf945632c24f8e31` and
+video SHA-256
+`e7097a2786fc73e6f80de015eb2595a3b68d4ef094550b6c31e3233aca65aceb`.
+
+The manifest is
+`work/recordings/automation-os-public-semantic-video-check-r2-20260803/browser-use-recording-manifest.json`
+and the receipt is the matching run-owned Browser Use receipt under
+`/Users/nichikatanaka/.browser-use-cli/receipts/automation-os-public-semantic-video-check-r2-20260803/`.
+The video is H.264, 2400x1332, 12fps, 7 frames, 0.583333 seconds; independent
+ffmpeg extraction with the helper's exact seek/quality parameters reproduced
+the final-frame SHA byte-for-byte. The receipt reports external effects none,
+exit 0, cleaned locks, removed profile/download directory, and the post-finalize
+status reports `process_live_count=0`; the room is released with no auxiliary
+tabs. Focused semantic-readback tests passed 4/4, video-QA/redaction tests 9/9,
+server build and `git diff --check` passed.
+
+The preceding r1 recording is diagnostic only because it intentionally omitted
+the required durable URL semantic part; it was finalized and cleaned and is
+not used as proof. This checkpoint remains public unauthenticated read-only
+only. Authenticated screen QA, token rotation, live Mac-worker/App Server
+isolation, production schedule mutation/readback, and independent DeepSeek
+Graph verification remain unverified. The exact Graph restart point remains
+restoring the configured DeepSeek V4 Flash Verifier transport and resuming
+`run_d9f984898358444e` at `verify`; no model substitution or release claim was
+made.
+
+## 2026-08-03 local remediation and verifier checkpoint
+
+After a verified Opus 5 Security Review (`REVISE`) and verified Kimi K3
+design, the root applied a bounded local remediation. The new helper
+`apps/server/src/security/tokenComparison.ts` compares fixed-size SHA-256
+digests with `timingSafeEqual`; both production API token guards in
+`apps/server/src/index.ts` use it. The existing 401/423 distinction remains
+intentionally unchanged as a residual UI/security tradeoff and is not claimed
+as fully resolved.
+
+The canonical Browser Use readback regression
+`apps/server/src/tests/browserUseReadbackSecurity.test.ts` confirms the helper
+masks INPUT/TEXTAREA/SELECT controls and contains no `element.value` read. The
+exact metadata-only r4 inventory is
+`work/security/r4-artifact-inventory-20260803.md`; its two enumerated
+recording/receipt files were purged without opening their contents, and a
+post-purge path check returned no entries. Token rotation was not performed or
+attested. Provenance scope is recorded in
+`work/security/provenance-boundary-20260803.md` and remains limited to the
+unauthenticated r5 operator-token gate.
+
+Current deterministic checks: server build passed; `npm test` passed
+`888 total / 883 passed / 5 skipped / 0 failed`; focused token/API/App Server
+and Browser Use redaction tests passed; Web typecheck/build passed; and
+`git diff --check` passed.
+
+The next-turn fresh retry of the exact configured DeepSeek V4 Flash Verifier
+also returned `opencode_go_auth_or_transport_blocked` with
+`verified=false`; no fallback route was used. This is the same provider
+transport blocker as the prior verification attempt. The custom Graph remains
+at `verify`; no final review or release claim was made.
+
+Custom Graph `run_d9f984898358444e` reached Verifier after implementation.
+The exact configured DeepSeek V4 Flash Verifier route returned
+`opencode_go_auth_or_transport_blocked`, so the independent Graph verifier is
+not proven and no model fallback was used. The local evidence remains green,
+but the Graph is blocked at verification.
+
+Exact restart point: restore the configured DeepSeek Verifier transport and
+resume the same Graph at verification. Keep token rotation, any unlisted r4
+artifacts, live Mac-worker/App Server traversal/symlink/cwd/egress proof,
+production auth matrix, production schedule mutation/readback, authenticated
+screen recording, and fresh r5 MP4 re-decode explicitly UNVERIFIED.
+
+## 2026-08-03 production-readiness Graph checkpoint
+
+Fresh authority/state/process readback was completed before continuing Graph
+`run_e6c47cf235ff429b`. The root intake requirements were submitted with the
+current public r5 semantic/video evidence and explicit exclusions for token
+input, deploy, production schedule mutation, and external effects.
+
+The required exact Security Reviewer route
+`mcp__opencode_opus5_reviewer__opencode_opus5_reviewer` reached
+`opencode/claude-opus-5` through provider `opencode`, but returned HTTP 400
+`invalid_request_error`: the model does not support assistant-message
+prefill. The route result was read-only, `verified=false`, and no fallback
+model was used. Graph status is `blocked` before design/implementation;
+this is a review-bridge transport blocker, not product implementation proof.
+
+Exact restart point: repair/reconfigure the same Opus bridge so the request
+ends with a user message, then resume the waiting Graph security-review stage
+with a fresh invocation. Do not substitute another model or reuse the old
+review result. Authenticated screen-by-screen QA, stored Mac-worker
+PostgreSQL runtime, live Codex App Server turn/filesystem boundary, and
+production schedule mutation/readback remain unverified.
+
+## 2026-08-03 r5 semantic/video surface binding completion checkpoint
+
+The fresh public single-use run `automation-os-public-video-surface-fix-r5-20260803`
+completed through the canonical helper. The semantic readback bundle, final
+visual readback, and tab inventory share working target
+`EF636254008518255E08DFB7194B2FC2`; auxiliary tabs are empty. The final visual
+readback is bound to the decoded MP4 frame at 0.375s with matching frame/video
+SHA-256 values. Independent ffmpeg decode comparison returned mean RGB error
+`0.0003300674` and zero pixels above the 0.08 threshold.
+
+The manifest and receipt are complete, the video is H.264 2400x1332 at 12fps
+with 6 frames and 0.5s duration, and `video-frame-reader.manifest.v2` contains
+one base keyframe plus six PTS-aligned detail frames. The source helper and
+run-captured helper are byte-identical (SHA-256
+`6ad5b5a68e39ec16a8e9a222032e025bde796d4c0726ae709e54e9bd114ff28b`). Receipt
+cleanup is `cleaned`, no locks are retained, recording status is finalized,
+the room is released, and no live process remains.
+
+Focused recorder tests pass: handshake `2/2`, recording-session finalizer
+`6/6`, manifest finalizer `4/4`, AST parse, and helper `validate`. This
+checkpoint is public unauthenticated read-only only; authenticated screen QA,
+token input, and external effects remain outside its proof.
+
+The r4 fresh run is retained as diagnostic evidence only: it used transient
+`--capture-readback`, so its durable semantic bundle was null even though its
+MP4 binding finalized correctly. The r5 run uses the normal semantic command
+path and is the current checkpoint.
+
+## 2026-08-03 r5 goal audit checkpoint
+
+The active r5 Graph was started from fresh current-state evidence. Intake and
+plan approval completed with the boundary that secret input/rotation,
+production schedule mutation, deployment, and external effects require a
+fresh authority. The required exact Security Reviewer route
+`mcp__opencode_opus5_reviewer__opencode_opus5_reviewer` reached provider
+`opencode/claude-opus-5` but returned HTTP 400 because assistant-message
+prefill is unsupported. The Graph is therefore blocked before implementation;
+no model fallback was used.
+
+Read-only audit artifact: `work/automation-os-r5-readonly-audit-20260803.md`.
+Current deterministic checks pass: `npm test` 880 passed / 5 skipped / 0
+failed, web typecheck/build, server build, and `git diff --check`. Public
+readback returns `/api/health` `ok=true`, serves the same local build asset
+names `assets/index-bl8LLXvh.js` and `assets/index-Cf33YyzV.css`, and rejects
+protected `/api/mvp/state` without a token with
+`production_api_token_required`.
+
+Fresh public read-only r5 recording `automation-os-r5-public-surface-20260803`
+also completed. It used the canonical helper with one working target
+`85E8485C0B6798F29E74CF284BB72823`, no auxiliary tabs, semantic readback, and
+MP4-decoded final-frame binding. The manifest/video are under
+`work/recordings/automation-os-r5-public-surface-20260803`; the receipt is
+cleaned with no retained locks, and Browser Use reports `active_room_count=0`.
+The visible result is only the unauthenticated operator-token gate.
+
+Remaining proof gaps are the stored PostgreSQL worker configuration, a live
+Mac-worker Codex App Server isolation turn, fresh authorized authenticated
+screen-by-screen recordings, and production schedule mutation/readback. No
+secret value was displayed or changed.
+
+## 2026-08-03 Semantic readback / video surface binding checkpoint
+
+The canonical Browser Use helper now binds final visual readback to a frame
+decoded from the finalized MP4. The final frame seek is kept before the last
+decodable PTS, and only numbered recorder JPGs are used as render inputs so
+derived frames cannot be fed back into a retry. Focused semantic recording
+tests pass `2/2`; Python syntax and diff checks pass; source and installed
+helpers are byte-identical and the helper doctor reports `completed`.
+
+Fresh public read-only run `automation-os-public-video-surface-fix-r3-20260803`
+completed with a semantic bundle, final visual readback, and tab inventory
+bound to the same working target with no auxiliary tabs. The manifest's final
+frame path/SHA and video SHA are cross-bound to the decoded video frame. The
+video-frame-reader evidence is under
+`work/recordings/automation-os-public-video-surface-fix-r3-20260803`.
+The Browser Use receipt reports finalized/cleaned, no retained locks, and no
+active room remains. This checkpoint contains no authentication or external
+effect.
+
+The earlier r2 run is not a completion proof because its `--capture-readback`
+commands intentionally produced raw readback without a persisted semantic
+bundle. It is retained as diagnostic history only.
+
+## 2026-08-03 Final public release and recording checkpoint
+
+The reviewed product changes are released at commits `e882aef` and `1f62aa9`
+on `origin/main`. Local Web typecheck/build, server build, full tests
+(`885 total / 880 passed / 5 skipped / 0 failed`), and `git diff --check` pass.
+The public origin now serves `assets/index-bl8LLXvh.js` and
+`assets/index-Cf33YyzV.css`; `/api/health` returns HTTP 200.
+
+The operator-token label/help layout was corrected and the old unauthenticated
+feedback warning no longer appears in the final visual readback. Final public
+recording run `automation-os-public-final-ui-20260803` completed with the same
+semantic/final target `BDAF7FEC9EED322063E000AE18906BFA`, H.264 video proof,
+manifest/receipt, and cleaned Browser Use room. The final artifact directory is
+`work/recordings/automation-os-public-final-ui-20260803`.
+
+Authenticated all-screen QA remains unverified because it needs a fresh
+authorized session after token rotation. Stored Mac-worker PostgreSQL and a
+live Codex App Server turn remain blocked/unverified; no secret value was
+displayed or changed.
+
+## 2026-08-03 Browser Use readback security containment
+
+During the temporary authorized recording run `automation-os-open-20260803-r4`,
+a post-login DOM readback exposed a password-input value. The value is not
+stored or reproduced here. Authenticated QA stopped immediately; this run is
+not valid for further screen proof and must not be reused. If the entered
+operator token was real, revoke/rotate it before any new login.
+
+The canonical Browser Use source and installed helper now mask all form
+controls/contenteditable fields with `[入力値は非表示]` and no longer read
+`element.value` during target matching. Browser Use CLI regression passed
+`13/13`, the dedicated redaction test passed, and both helpers passed Python
+syntax checks. The live r4 descriptor is intentionally bound to the prior
+helper generation and reports `browser_use_recording_helper_hash_mismatch`.
+
+Exact restart point: after token rotation, create a fresh authorized temporary
+recording session, enter the new token only there, and perform same-session
+readback before the screen-by-screen sweep. Separate unresolved blocker:
+`stored_postgres_secret_invalid_url` on the Mac worker; no secret value was
+recorded.
+
+Continuation readback: the old r4 room remains process-live and invalid for
+authenticated proof. One explicit read-only helper refresh adopted the masked
+helper generation; terminal and working-tab close were rejected by the
+temporary lifecycle contract, so no further page readback or login was done.
+The stored worker loop still fails closed with
+`stored_postgres_secret_invalid_url`. Current full regression is
+`878 total / 873 passed / 5 skipped / 0 failed`; public `/api/health` is HTTP
+200 and serves `assets/index-EhWFzrUG.js` with the Chat secret boundary,
+Codex App Server, and Browser Use markers. Patched canonical helper
+`validate`, Web typecheck, and `git diff --check` also passed.
+
+Commit `09f9c3e` was pushed to `origin/main` and Zeabur deployment
+`5716374918` completed. Public asset `assets/index-C0bYpjDl.js` and health
+HTTP 200 were read back. PostgreSQL template references are now retained
+encrypted but marked `template_reference_pending` / unavailable to the runner;
+Chat shows only a redacted pending count. Focused secret/API tests passed
+`40/40`; Web typecheck/build and diff checks passed. Authenticated screen
+recording remains pending while old r4 is still live and invalid for proof.
+
+The fresh global automation audit returned `8 checked / 8 compliant / 0 gaps`
+with `external_action_executed=false`. This confirms local registry/manifest
+parity only and does not replace authenticated screen recordings or the Mac
+worker PostgreSQL repair.
+
+## 2026-08-03 Automation health false-blocker fix and deployment
+
+The automation health parser no longer treats the contract phrase
+`same-run source-of-truth readback` as an executable `same-run` path. The
+regression test and the full project suite pass: `880 total / 875 passed / 5
+skipped / 0 failed`. The fresh project health report is
+`artifacts/automation-health/2026-08-02T182606660Z.json` with
+`8 active / blockers 0 / missing_entrypoints 0 / video_qa_issues 0` and 22
+non-blocking authority-file warnings. The global audit remains `8 checked / 8
+compliant / 0 gaps`.
+
+Commit `0b9a228` was pushed to `origin/main`; the Zeabur check completed with
+`success`, and public `/api/health` remains HTTP 200. This closes the false
+`automation-3` health blocker only. The valid authenticated recording and
+Mac-worker PostgreSQL runtime remain unresolved at their existing exact
+restart points.
+
+## 2026-08-03 Operator login diagnosis and deployment
+
+The public readback is healthy: `/api/health` returns HTTP 200 and the
+protected `/api/mvp/state` returns HTTP 401, which proves the production API
+token guard is configured rather than locked. Commit `d0f1040` trims the
+configured `AUTOMATION_OS_WRITE_TOKEN` before comparison and the UI now
+distinguishes 401 (token mismatch) from 423 (token not configured). Zeabur
+reported `success`; public HTML serves `assets/index-BGpHUnGZ.js` containing
+the new 401/423 guidance. The token value is not stored or reproduced here.
+
+Restart point: in Zeabur Variables, use the current value of the row named
+`AUTOMATION_OS_WRITE_TOKEN` only. Do not use `AUTOMATION_OS_REGISTER_TOKEN` or
+`AUTOMATION_OS_REQUIRE_*`, and do not send the value in chat. Authenticated
+recording remains paused until the old r4 session is closed and the token is
+rotated after the earlier input-value exposure.
+
+The post-auth-fix focused suite passed `70/70`; Web typecheck/build and server
+build passed. Fresh automation health is recorded at
+`artifacts/automation-health/2026-08-02T184131355Z.json` with zero blockers;
+the global audit remains `8/8 compliant / gaps 0`. The remaining 22 health
+items are non-blocking authority-file warnings and were not converted into
+placeholder files.
+
+## 2026-08-02 Current continuation checkpoint
+
+The current local worktree is on `ui-restore-clean` at `a76b7ef` with the
+company-scoped secret boundary, durable Chat planner leases, local Codex App
+Server queue proof, truthful Browser Use/sync projections, Security/Recovery
+UI, template draft boundary, and builder accessibility corrections present as
+uncommitted working-tree changes. Local verification is green: `npm test`
+completed with `877 total / 872 passed / 5 skipped / 0 failed`, and the Web
+typecheck, Web build, Server build, and `git diff --check` passed.
+
+The public Zeabur origin still serves the older bundle and has not been
+promoted from this worktree. No deployment or push has been performed because
+promotion is a separate explicitly authorized stage.
+
+The current canonical Browser Use CLI recording run is
+`automation-os-release-qa-20260802`, temporary and authorized, with the same
+retained handoff session and recording descriptor. Fresh same-session
+readback still shows the public origin's operator-token form; the Owner shell
+is absent. Only the authentication screen has been recorded (four frames), so
+the requested authenticated screen-by-screen QA has not started. The exact
+restart point is: enter `AUTOMATION_OS_WRITE_TOKEN` in the already-open
+temporary tab, press `開く`, send the one-time human confirmation, then obtain
+fresh same-session readback before any route interaction. Do not treat the
+human signal itself as application authentication proof.
+
+## 2026-07-28 Resumed blocked-audit attempt 1/3
+
+The user resumed the previously blocked Goal, so a fresh blocked audit began.
+Fresh Graph run `run_2582201c91ee4a42` verified the unchanged v5 Browser Use
+CLI evidence and then called only the exact read-only Opus 5 route. It again
+failed before review output with
+`opencode_opus5_reviewer_upstream_http_400`.
+
+This is resumed audit attempt `1/3`; the Goal remains `blocked` but is not
+re-blocked for a new threshold yet. No fallback reviewer, IAB, Chrome,
+Playwright, CDP, helper, browser, network, auth, process, profile, port,
+lease, or external action was used.
+
+Exactly one next action: restore the exact Opus 5 provider transport in a fresh
+task/runtime and rerun only the resumed P6 read-only review.
+
+## 2026-07-28 Goal blocked: exact Opus 5 provider HTTP 400 repeated 3/3
+
+The active G0→P9 Goal is now correctly marked `blocked` after the same exact
+condition repeated across three consecutive Goal continuations:
+`opencode_opus5_reviewer_upstream_http_400`. Fresh Graph runs were
+`run_69e616f74fb54db8`, `run_30ef3d0046f2408b`, and
+`run_06e80e7804ef4f42`; each preserved the unchanged v5 Browser Use CLI
+evidence and stopped before runtime or external action.
+
+The P6 local contract evidence is retained: adapter/test/readback hashes are
+unchanged, readback is mode `0600`, focused tests remain `25/25`, and
+`certification=false`. No reviewer fallback, IAB, Chrome, Playwright, CDP,
+helper, browser, network, auth, process, profile, port, lease, or external
+action was used. This is a blocked state, not completion.
+
+Safe restart point: restore the exact Opus 5 provider transport in a fresh task
+or runtime, then rerun only the read-only P6 review with the explicit artifact
+allowlist. Once that review returns valid output, continue P6 authorized
+runtime verification and then the original P7→G1-activation→P8→P9 sequence.
+
+Do not substitute another reviewer or web surface, and do not claim P6/P7–P9
+completion until the required review and downstream proofs exist.
+
+## 2026-07-28 Browser Use CLI P6 fresh review recovery after HTTP 400 (run_30ef3d0046f2408b)
+
+Fresh preflight passed with unchanged v5 packet/readback/hashes and no
+side-effects. The exact read-only `opencode/claude-opus-5` review was called
+with the explicit absolute artifact allowlist, but again failed before output
+with `opencode_opus5_reviewer_upstream_http_400`. No fallback reviewer, IAB,
+Chrome, Playwright, CDP, helper, browser, network, auth, process, or external
+action was used.
+
+This is the second consecutive goal continuation with the same provider HTTP
+400 blocker. The Goal remains `active`; the strict three-turn blocked audit is
+not yet satisfied. Current v5 local evidence remains unchanged and valid, but
+P6 authorized runtime and P7–P9 cannot start without a valid exact review.
+
+Exactly one next action: restore the exact Opus 5 provider transport in a fresh
+task/runtime and rerun only the read-only review stage. Do not substitute a
+reviewer or surface.
+
+## 2026-07-28 Opus 5 route diagnostic after attempt 3
+
+The exact reviewer route is registered and enabled in `codex mcp list` as
+`opencode_opus5_reviewer`, but the artifact-explicit and short-context retries
+both fail before a review with provider HTTP 400:
+`opencode_opus5_reviewer_upstream_http_400`. The route has not been replaced,
+and its configured Auth status is only a readback; no auth or credential state
+was changed.
+
+The first call in this attempt did return a non-empty Opus review and exposed a
+separate input-quality blocker (the reviewer needed actual artifact paths and
+contents). That input was corrected in the two retries; those retries then hit
+the upstream HTTP 400. The current v5 hashes/readback and local 25/25 evidence
+remain unchanged. Goal status stays `active`; do not mark completion or use a
+reviewer fallback.
+
+Exactly one next action: restore the exact Opus 5 provider transport in a fresh
+task/runtime, then rerun only the read-only review with the explicit artifact
+allowlist. Stop before P6 authorized runtime or P7–P9.
+
+## 2026-07-28 Browser Use CLI P6 exact Opus 5 recovery attempt 3/3: provider HTTP 400
+
+The third fresh preflight confirmed the v5 packet, readback, hashes, and
+no-side-effect boundary are unchanged. Graph run `run_69e616f74fb54db8` then
+called only the exact read-only `opencode/claude-opus-5` reviewer. One bounded
+response was non-empty but correctly BLOCKED because the first request did not
+include inspectable artifact content. Two follow-up calls with an explicit
+absolute-path allowlist and a shorter context both failed upstream with HTTP
+400: `opencode_opus5_reviewer_upstream_http_400`.
+
+No fallback reviewer, IAB, Chrome, Playwright, CDP, helper, browser, network,
+auth, process, profile, port, lease, or external action was used. The v5
+local evidence remains valid (`25/25`, current hashes unchanged,
+`certification=false`). The Goal remains `active`; this is not a completion or
+the strict three-turn same-blocker threshold because the earlier empty-review
+blocker differs from the current provider HTTP 400 blocker.
+
+Completed: third fresh preflight and exact-route attempts with honest
+metadata. Unfinished: a valid exact Opus 5 review, then P6 authorized runtime
+verification and P7–P9. Exactly one next action: restore the exact Opus 5
+provider transport in a fresh task/runtime, then rerun only the review stage
+with the explicit artifact allowlist.
+
+Stop condition: do not substitute another reviewer, use IAB or fallback
+surfaces, invoke Browser Use runtime/helper, perform provider/auth or external
+actions, or claim P6/P7–P9 completion while the exact reviewer transport is
+unavailable.
+
+## 2026-07-28 Browser Use CLI P6 exact Opus 5 recovery attempt 2/3
+
+The active goal `893e5f6b-e218-45cc-b438-1880f2ae1bd5` remains `active` and
+incomplete. The fresh preflight for Graph run `run_2221bb115811460e` passed:
+the v5 packet/readback and all current adapter/test hashes are unchanged,
+readback mode is `0600`, and the focused suite remains `25/25`. No file edit,
+helper/browser/network/auth/process/profile/port/lease lifecycle, IAB, or
+external action occurred.
+
+The exact read-only reviewer route again resolved to provider `opencode` and
+model `opencode/claude-opus-5`, but returned the same exact blocker:
+`reviewer_output_invalid: Opus 5 returned an empty final review.` The fresh
+Graph run is blocked at `exact_opus_review`; no fallback reviewer was used and
+the four v5 findings are not reassessed. This is the second consecutive fresh
+goal continuation with the same reviewer-output blocker; the strict blocked
+threshold has not yet been reached.
+
+Completed: fresh evidence preflight and current v5 local evidence remain
+valid. Unfinished: a valid exact Opus 5 final review, then P6 authorized
+runtime verification and the remaining P7–P9 plan. Exactly one next action:
+restore the exact Opus 5 reviewer transport/output in a fresh task or runtime
+and rerun only the exact review stage.
+
+Stop condition: do not substitute another reviewer, invoke Browser Use CLI
+runtime/helper, use IAB or fallback surfaces, perform provider/auth or
+external actions, or claim P6/P7–P9 completion while the exact review has no
+valid output.
+
+## 2026-07-27 Browser Use CLI P6 adapter contract v5: local evidence complete, Opus final review blocked
+
+The active goal `893e5f6b-e218-45cc-b438-1880f2ae1bd5` remains `active` and
+incomplete. Browser Use CLI is the only permitted Automation OS web/UI surface
+for this migration; IAB, Chrome/Profile 2, Playwright, direct CDP, raw-helper
+fallback, and stale receipts/handles remain forbidden.
+
+Fresh v5 packet `work/p6-authorized-adapter-contract/v5-correction.md` was
+approved after a root preflight and fresh Security Reviewer approval. The
+bounded changes are limited to the adapter and its two focused tests. The
+current hashes are adapter
+`2513666a960942b11e60b7513ea989b50aa3746abb544bf8143b1abec8857fed`, contract
+test `6a8cfe6277e75da568afb21229980d1911527fd7e7ba9a3e2fbfe011a984372d`,
+static test
+`1947f0dbfde18f7a30d0fa4112fa24e79c2143752638adfc6c91a4288467c712`, and
+packet `20d02e249195142f35667e428864c2360215376d507235398c98ed98cb69738c`.
+
+The v5 local evidence readback is
+`work/p6-authorized-adapter-contract/v5-readback.json` (mode `0600`, SHA-256
+`c20b954c28aca1d99d31d8d95ccabbecb696275a89dc36ba73a129a349197e43`).
+`node --check`, the focused contract/static suite (`25/25`), two stable hash
+snapshots, import-only no-side-effect checks, exact start/command authority
+digest mismatch with zero seam calls, gated recording-root checks, and
+behavioral `test_seam`/`helper` transport markers all passed. No helper,
+browser, network, auth, process, profile, port, lease, or external action was
+performed; `certification=false` and
+`p6_authorized_browser_use_cli_adapter_contract_unverified` remain true.
+
+The required read-only route
+`mcp__opencode_opus5_reviewer__opencode_opus5_reviewer` resolved to provider
+`opencode`, model `opencode/claude-opus-5`, but returned no final review:
+`reviewer_output_invalid: Opus 5 returned an empty final review.` Graph run
+`run_91ad3ac700d94c75` is blocked at `final_review`; no reviewer fallback was
+used and prior Opus findings are not treated as reassessed.
+
+Completed: v5 packet, fresh security approval, bounded implementation,
+deterministic local verification, and evidence-only readback. Unfinished:
+valid exact Opus 5 final review, then any later authorized runtime/P7-P9 work.
+Exactly one next action: restore the exact Opus 5 reviewer transport/output in
+a fresh task or runtime and rerun only `final_review`.
+Stop condition: do not substitute another reviewer, invoke the helper/browser,
+use IAB or fallback surfaces, perform provider/auth or external actions, or
+claim certification/P6 authorized execution/P7-P9 completion while that review
+is unavailable.
+
+Evidence: `work/p6-authorized-adapter-contract/v5-correction.md`,
+`work/p6-authorized-adapter-contract/v5-readback.json`, Graph run
+`run_91ad3ac700d94c75`, and the exact Opus route result above.
+
+## 2026-07-27 Latest Browser Use CLI P6 adapter audit finalized
+
+The active goal `893e5f6b-e218-45cc-b438-1880f2ae1bd5` remains `active` and
+incomplete. Browser Use CLI is the only permitted Automation OS web/UI
+surface for this migration; IAB, Chrome/Profile 2, Playwright, direct CDP, raw
+helper fallback, and stale receipts/handles remain forbidden.
+
+The current shared adapter was freshly pinned at SHA-256
+`8e240ffa30667e3288a39feac76f1a08e86409e5200f6d90419b97c9f7561a0e`.
+Evidence-only Packet A was pinned at SHA-256
+`398b82a98c1dfc9e694d497f15837e5787d87a2c9aa2d527f752ff70825edcdf`.
+Graph run `run_ecf3e37973414ce6` completed the root preflight, fresh
+Security Reviewer admission, read-only audit, independent verification, and
+root evidence finalization. The corrected audit readback is
+`work/goal-orchestration/browser-use-migration-p6-adapter-contract-audit-readback-20260727.v1.json`
+with SHA-256
+`acb6e278125bdd3b50be5257edac8f870e025dbba4c39259affd35109266ab20`.
+
+Import-only smoke passed with zero active-handle/request delta and no helper,
+browser, network, process-lifecycle, or external action. Static audit found
+that `startBrowserUseCliFlow` can pass the first command to `record-start`
+before descriptor validation; `open` is not confined to one verified command
+boundary; and generic descriptor/lease data lacks current-run authority,
+step/attempt, expiry, generation, adapter/origin/runtime provenance. No fake
+helper test was run because the module exposes no non-mutating injection seam.
+These are evidence findings, not runtime certification.
+
+Completed: P6 guard/test slice and deterministic verification; current-adapter
+evidence-only contract audit and verification. Unfinished: a separately
+approved contract-complete adapter change/test packet, then authorized worker
+integration, P7 recording/readback, P8 regression, and P9 canary/release gates.
+Exactly one next action: obtain a fresh approval bound to adapter SHA-256
+`8e240ffa30667e3288a39feac76f1a08e86409e5200f6d90419b97c9f7561a0e` for a
+contract-complete adapter change/test packet before any adapter invocation.
+Stop condition: do not invoke the adapter/helper, launch a browser, use IAB or
+fallback surfaces, change auth/provider/activation state, perform external
+actions, or claim P6 authorized execution/P7-P9 completion.
+
+Evidence: `work/goal-orchestration/browser-use-migration-p6-adapter-contract-packet-20260727.v1.json`,
+`work/goal-orchestration/browser-use-migration-p6-adapter-contract-audit-readback-20260727.v1.json`,
+Graph run `run_ecf3e37973414ce6`, the P6 guard readback, and the prior Opus
+route readback. `certification=false`, `worker_integration=false`,
+`external_action_executed=false`.
+
+## 2026-07-27 Browser Use CLI P6 guard/test slice verified; final review blocked
+
+The active goal `893e5f6b-e218-45cc-b438-1880f2ae1bd5` remains `active` and
+incomplete. The narrow P6 guard/test slice is now implemented and independently
+verified in Graph run `run_7b61e7618a094115`. It adds the pure contract schema
+`browser_use_authorized_adapter_contract.v1` and keeps the worker
+`browser_use_cli` branch stop-only. Missing, mismatched, legacy, or even
+valid-looking contract metadata always stops with
+`p6_authorized_browser_use_cli_adapter_contract_unverified` before any adapter,
+helper, process, browser, or network action.
+
+Fresh evidence: runtimeBinding, workerEngine, and their focused tests match the
+current hashes recorded in
+`work/goal-orchestration/browser-use-migration-p6-authorized-executor-contract-readback-20260727.v1.json`;
+build, TypeScript no-emit, diff check, and 77 focused tests passed. The guard
+tests prove zero adapter/helper/process calls, including wrong run/stage/attempt/
+session/origin/digest and valid-looking contract fixtures. No shared adapter,
+IAB, Chrome/Profile 2, Playwright, CDP, provider/auth, activation, deployment,
+or external action was performed.
+
+The shared adapter changed outside this guard work while the packet was being
+verified: current SHA-256 is
+`6eafb95d046ee1e172dcfe39221fbc5778f464df82f500e845cd3fac8ac686db`, while the
+earlier packet recorded `0ddd8b13aa38b3269db7b85231d67d2e5d811a73c5bf2dc6e5682957dc720995`.
+This drift is recorded separately and is not treated as execution approval.
+
+The required high-impact final-review route `opencode/claude-opus-5` was
+attempted again for the guard slice and failed with provider HTTP 400:
+`opencode_opus5_reviewer_upstream_http_400`. Graph run
+`run_7b61e7618a094115` is blocked at final review; no reviewer fallback was
+used.
+
+Completed: P6 guard/test implementation and deterministic verification.
+Unfinished: restore the exact Opus 5 reviewer route, complete final review,
+then separately review the current adapter contract before any authorized
+execution. Exactly one next action: restore the exact
+`opencode/claude-opus-5` reviewer transport in a fresh task/runtime and rerun
+only final review. Stop condition: do not substitute another reviewer, invoke
+the shared adapter/helper, launch a browser, use provider/auth, activate,
+deploy, or claim authorized execution/P7–P9 completion.
+
+Evidence: `work/goal-orchestration/browser-use-migration-p6-authorized-executor-contract-packet-20260727.v1.json`,
+`work/goal-orchestration/browser-use-migration-p6-authorized-executor-contract-readback-20260727.v1.json`,
+`work/goal-orchestration/opencode-opus5-reviewer-route-readback-20260727.v1.json`,
+Graph run `run_7b61e7618a094115`, and the current worker/runtimeBinding hashes.
+`external_action_executed=false`.
+
+## 2026-07-27 Browser Use CLI migration: P6 admission verified; final review route blocked
+
+The active goal `893e5f6b-e218-45cc-b438-1880f2ae1bd5` remains `active` and
+incomplete. Browser Use CLI remains the only allowed Automation OS web/UI
+surface for this migration; IAB, Chrome/Profile 2, Playwright, direct CDP, raw
+helper fallback, and stale browser handles/receipts are not used.
+
+Current state: the P6 data-only authorized-admission packet was independently
+verified in Graph run `run_1c548080d4ac466b` and passed. Packet SHA-256 is
+`ae44c4fd7f02e52a6f87cf2a7c0443b438099e79cbf5841f9ed6bf988b515fb3`;
+`browserUseAuthorizedAdmission.ts` is
+`7ee24c2df7d58e718cebdb53c660a9365ec7c48aca2185c79b089bbdd547d446`; its
+test is `04a2192a7de33268f34cbf2275fd26e6e94be55d3291f1a274f0d1bb544275c5`.
+Build, TypeScript no-emit, focused 12-test suite, and `git diff --check` passed;
+the canonical helper validator returned `launch=false, finalized=true,
+status=completed`. No Browser Use session, network, provider/auth operation,
+external action, activation, deployment, or production proof occurred.
+
+The required high-impact final-review route
+`opencode/claude-opus-5` was called read-only and failed before producing a
+review with provider HTTP 400 (`opencode_opus5_reviewer_upstream_http_400`).
+Graph run `run_1c548080d4ac466b` is therefore `blocked`; no reviewer fallback
+was used. The P6 admission implementation is approved only as data-only
+admission. Worker/adapter execution remains unimplemented and unapproved;
+the downstream blocker is `browser_use_cli_authorized_executor_not_implemented`
+(worker literal: `browser_use_cli_stage_execution_requires_registered_binding`).
+
+Completed: P6 data-only admission implementation, security review, and
+independent verification. Unfinished: restore the exact Opus 5 reviewer route,
+complete final review, then separately approve and implement the root-owned
+authorized executor before P7–P9. Exactly one next action: restore the exact
+`opencode/claude-opus-5` reviewer transport in a fresh task/runtime and rerun
+only the blocked final-review stage. Stop condition: do not substitute another
+reviewer, wire worker/helper execution, launch a browser, perform external or
+provider/auth actions, activate, deploy, or claim P6–P9 completion while this
+route is unavailable.
+
+Evidence: `work/goal-orchestration/browser-use-migration-p6-admission-implementation-packet-20260727.v1.json`,
+`work/goal-orchestration/PLAN_BROWSER_USE_MIGRATION-20260727.v1.md`, and the
+Graph run `run_1c548080d4ac466b` readback. `external_action_executed=false`.
+
+## 2026-07-27 Browser Use CLI migration: P5 public canary completed
+
+The active goal `893e5f6b-e218-45cc-b438-1880f2ae1bd5` remains `active` and
+incomplete. Browser Use CLI is now the canonical Automation OS web surface for
+this migration; IAB, Chrome/Profile 2, Playwright, direct CDP, raw helper
+fallback, and stale browser handles/receipts are not used.
+
+Completed: G0, P1, P2, P3, P4, and P5. The fresh r18 public canary used only
+`https://example.com` on fixed port `19980`, with `start -> open -> readback ->
+finalize`; semantic URL/title/readyState/DNS/redirect checks, exact-one final
+receipt, recording proof, and full cleanup all passed. `status=completed`,
+`cleanup_verified=true`, `external_action_executed=false`; no provider/auth,
+activation, deployment, or production proof was performed. Runtime evidence:
+`work/goal-orchestration/browser-use-migration-p5-runtime-readback-20260727.r18.json`
+(SHA-256 `dd859e43fe9610cf4697fd9f8e339a499da315669fc40c7d18e88aaa35b788a2`).
+
+Fresh r18 packet SHA-256 is
+`dfe83fb41834721667a0270016c9499a2dcda283a18b7ed594253c0e13e9667f`; r18
+anchor/claim/summary/observation/receipt/recording are bound to the same run.
+Prior r15 receipt aggregation and r16/r17 pre-helper packet mismatches are
+retained as stale, never reused. Full local suite after validator changes is
+`849 passed, 0 failed, 5 skipped`; focused receipt validator is `7 passed, 0
+failed`; helper validate is `launch=false, finalized=true, status=completed`.
+
+Unfinished: P6 authorized-lane contract/readiness audit, P7 recording/readback
+across required workflows, P8 regression matrix, and P9 separately approved
+production canary. Exactly one next action: begin P6 static authorized-lane
+contract/readiness audit; do not perform external action or provider/auth
+operation without a separate fresh approval. Stop condition: missing authority,
+expiry/scope/account/origin/action mismatch, secret persistence risk, ambiguous
+external outcome, cleanup debt, or missing runtime approval. `goal_status=active`,
+`goal_complete=false`, `external_action_executed=false`.
+
+## 2026-07-27 Browser Use CLI migration: P6 authorized static audit blocked
+
+P6 static audit is recorded in
+`work/goal-orchestration/browser-use-migration-p6-authorized-static-audit-20260727.v1.json`.
+The manifest contract was tightened so authorized mode requires a future
+`authority_expiry`, while public mode rejects authority fields. TypeScript,
+`npm test` (`849 passed, 0 failed, 5 skipped`) and `git diff --check` pass.
+
+The live authorized lane remains blocked at the worker admission boundary:
+`browserUseAuthority.ts` and the Browser Use runtime binding are test-covered
+but not wired into a production caller; `workerEngine.ts` still stops the
+Browser Use adapter before launch. Existing Daily AI/job writers also emit a
+legacy authority shape that is not accepted by the strict parser. Exact blocker:
+`browser_use_cli_authorized_executor_not_implemented`. No helper launch,
+provider/auth operation, external action, activation, deployment, or production
+proof occurred. P7-P9 remain unstarted.
+
+Exactly one next action: wire one root-owned authorized Browser Use admission
+path that atomically creates/loads the strict authority and envelope, validates
+the same-run runtime binding, and passes the same digest/path to the helper;
+keep external actions disabled until a fresh authorized no-side-effect readback
+is approved. Stop before authorized launch or production claim while this path
+or current-turn approval/readback is absent.
+
+## 2026-07-27 Browser Use CLI migration continuation
+
+The active goal `893e5f6b-e218-45cc-b438-1880f2ae1bd5` is continuing the bounded G0→P9 migration plan in `work/goal-orchestration/PLAN_BROWSER_USE_MIGRATION-20260727.v1.md`. Browser Use CLI is the canonical Automation OS web surface for this plan; IAB, Chrome/Profile 2, Playwright, direct CDP, raw helper fallback, and stale browser receipts/handles remain forbidden. Connector/API-only lanes are out of scope.
+
+G0, P1, P2, P3, and P4 are complete locally. P5 lifecycle, semantic readback, and approval-anchor claim code are implemented only within their reviewed exact paths. The full local suite is `849 passed, 0 failed, 5 skipped`; the focused semantic suite is `4 passed, 0 failed`; helper validate is `status=completed`, `launch=false`, `finalized=true`. No browser, network canary, external action, activation, provider/auth operation, or production proof was performed.
+
+The v9/v10/v11/v12/v13 static reviews are approved. r5 stopped on runtime-config hash drift; r6 stopped before helper start on the claim-error output bug; r7 stopped before helper start because its pinned packet was not mode 0600; r8 reached the helper but stopped at `browser_use_cli_recording_start_failed` because the helper parser lacked the adapter's fixed `--port` option. r6/r7/r8 anchors and attempts are retained as stale and never deleted, chmodded, or reused. The helper now includes the approved exact-19980 P5 port gate, and the canary points to r9. Current static packet SHA-256 is `102e140b792ec2eb95db8ea7aca06f73e62b2684476a7ae5b6710cdc782de476`; v13 evidence SHA-256 is `25fc664c5dd7e13bd0de69aea86c1181fec27b0536164128a223d86db551a644`. Fresh r9 packet is mode 0600 with SHA-256 `33eb7978a5bbbd160ed88243a9d4cb085db6ba63dfd9a88025843bb95641a003` and is pending runtime approval.
+
+Unfinished: r9 runtime approval, atomically created r9 anchor, one no-side-effect P5 canary, then P6–P9 gates and any production/activation proof. Exactly one next action: obtain the current Security Reviewer runtime decision for r9. Stop condition: do not create r9 anchor, launch Browser Use, run the canary, perform external actions, mutate activation/provider/auth state, or claim P5/P6–P9 completion before r9 approval and fresh preflight. `goal_status=active`, `goal_complete=false`, `external_action_executed=false`.
+
+## 2026-07-26 ordinary-chat manual execute lane
+
+- Explicit user turns may invoke a registered automation from any session cwd with clear live action intent such as execute/run/start/resume. The shared hook resolves the exact ID or one unambiguous target name from the global registry and issues one fresh target-bound `thread_source=user` receipt; missing metadata or root-owned IAB capability still fails closed.
+
+## 2026-07-26 explicit ACTIVE release readback
+
+- The user explicitly released all six Codex App registrations; official App API readback, TOML/SQLite parity, and global audit are `6/6 compliant` with `gaps=0`.
+- Older `PAUSED` statements below are historical migration/release records and must not override the current ACTIVE registration state.
+- Automation OS IAB compile, dry-run, and preflight pass with `external_action_executed=false`; live execute remains restricted to a fresh first-class scheduled root with host-issued metadata and root-owned IAB capability.
+- Common Kernel profile split is installed: internal idempotent stages compile as `light`, external non-idempotent stages as `full`, and an external stage cannot be downgraded. The IAB canary is Light but still requires fresh first-class-root metadata and root-owned IAB capability at execute.
+
+## 2026-07-26 Continuation: Opus final-review blocker reached 3/3
+
+The exact read-only `opencode/claude-opus-5` final-review route failed identically in three consecutive fresh Goal continuations: `exit 1: no diagnostic output`, with no verifiable request/usage/preflight metadata. Candidate identity and all prior local gates remain unchanged; no fallback reviewer or production action was used. Evidence: `work/goal-orchestration/final-review-route-blocker-20260726.r3.json`.
+
+The strict fresh blocked-audit threshold is now 3/3, so Goal is blocked (not complete). Safe restart point: restore the exact Opus 5 Reviewer runtime/transport in a fresh task or full runtime restart, then rerun only `final_review`. Do not substitute another model/role or claim G0→P9 completion.
+
+## 2026-07-26 Continuation: Opus final-review blocker repeated 2/3
+
+After the Goal resumed, the exact read-only Opus 5 Reviewer route was retried in a second fresh audit. It again failed with `exit 1: no diagnostic output`; provider/model/request/usage/preflight metadata remained unverified. The candidate, Designer checkpoint, no-op Executor, Verifier pass, and Security applicability approval are unchanged. Evidence: `work/goal-orchestration/final-review-route-blocker-20260726.r2.json`.
+
+This is fresh blocked-audit attempt 2/3, so Goal remains `active`. Exactly one next action: restore the exact `opencode/claude-opus-5` Reviewer route in a fresh task/runtime and rerun only `final_review`. No substitute reviewer or completion claim is allowed.
+
+## 2026-07-26 Continuation: final Opus review route blocked
+
+Kimi K3 Designer recovered and passed live metadata verification; the fresh Graph `run_9dd96cfe35c54074` then recorded a no-UI checkpoint, Executor no-op, Verifier pass (build passed; 5 focused tests passed, 5 real PostgreSQL tests skipped), and Security applicability approval for unchanged candidate `c59e9378489dcacf9253910eb6409d572f7176aa` / tree `aaa4100c02e778f9c409a739950be212a1a5ca41`.
+
+The required read-only integrated final review route `mcp__opencode_opus5_reviewer__opencode_opus5_reviewer` with exact model `opencode/claude-opus-5` failed with `exit 1: no diagnostic output`; verified provider/model/request/usage/preflight metadata was not obtained. Final review is blocked, no fallback was used, and Goal remains active on fresh blocked audit attempt 1/3. Evidence: `work/goal-orchestration/final-review-route-blocker-20260726.r1.json`. Exactly one next action: restore and live-preflight the exact Opus 5 Reviewer route in a fresh task/runtime, then rerun only final_review. Stop condition: do not substitute another model/role or claim G0→P9 completion.
+
+## 2026-07-26 Continuation: Designer route blocker reached 3/3
+
+The required Kimi K3 Designer route was retried once in each of three consecutive active-Goal continuations. Each invocation resolved the tool but failed before handoff with the identical exact blocker `Transport closed`; no provider/model/request/usage or supported-bridge metadata was returned. Live registry still reports the route as enabled with Auth Unsupported. Evidence: `work/goal-orchestration/designer-route-recovery-20260726.r4.json`.
+
+The candidate remains clean and Security Reviewer-approved for test containment only at commit `c59e9378489dcacf9253910eb6409d572f7176aa`, tree `aaa4100c02e778f9c409a739950be212a1a5ca41`. No credential, external effect, production proof, release, deploy, or activation occurred. The strict same-blocker threshold is now 3/3; the safe restart point is a fresh task or full runtime restart that restores Kimi K3 Designer transport, followed by a fresh Graph run at Designer. Do not substitute another model or bypass the stage.
+
+## 2026-07-26 Continuation: Kimi Designer recovery retry still transport-closed
+
+On a fresh active-Goal continuation, the required Kimi K3 Designer route was live-resolved and called once more. The tool again failed with exact blocker `Transport closed` before returning provider/model/request/usage or supported-bridge metadata. `codex mcp list` shows `opencode_go_kimi3_designer` registered as enabled with `Auth Unsupported`; this is recorded as readback only, and no credential or auth state was changed. Evidence: `work/goal-orchestration/designer-route-recovery-20260725.r3.json`.
+
+The candidate and approved containment remain unchanged at commit `c59e9378489dcacf9253910eb6409d572f7176aa`, tree `aaa4100c02e778f9c409a739950be212a1a5ca41`. Exactly one next action: restore the configured Kimi K3 Designer runtime/auth transport in a fresh task or full runtime restart, then create/fork a fresh Graph run at the pending Designer stage. Stop condition: do not substitute another model, guess credentials, bypass Designer, or advance release/deploy/activation gates.
+
+## 2026-07-25 Continuation: containment approved; Kimi Designer transport blocked
+
+The resumed Graph `run_d7eaa762a9b44d00` advanced through fresh Researcher, native Planner, root plan approval, candidate-only Executor containment, fresh bounded P1 checks, and a content-bearing native Security Reviewer. Candidate `/tmp/automation-os-candidate-recovered-20260725-r2` is clean at commit `c59e9378489dcacf9253910eb6409d572f7176aa`, tree `aaa4100c02e778f9c409a739950be212a1a5ca41`; the only changed file is `apps/server/src/tests/durableQueuePostgres.test.ts`, hash `cb3978d7073e417e73587e82cab267612d09a1c30bf2574cbadbfd4dc8383397`. Server build passed, focused tests passed 5 with 5 PostgreSQL integration tests safely skipped because no disposable marker/validated target was present, and no PostgreSQL connection was attempted. Evidence: `work/goal-orchestration/p1-containment-readback-20260725.r2.json` (SHA-256 `1d42ee2d44c3a1776282177d9e29abdcbfb32876860132057f61fd2f4a8a5e60`).
+
+Native Security Reviewer approved the test-only containment packet and kept release/deploy/activation false. Evidence: `work/goal-orchestration/security-review-packet-20260725.r2.v2.json` (SHA-256 `b4183bc260b1b470e3e8a2fd45dc8a7f4301cb7417d9d66d272c28066a00455c`), with decision `approved`, residual risk that real PostgreSQL and all production proof remain absent.
+
+The pending Designer stage then called the required OpenCode Go Kimi K3 route `mcp__opencode_go_kimi3_designer__opencode_go_kimi3_designer`, but the transport closed before any bounded handoff or verifiable provider/model/request/usage metadata returned. The Graph is now `blocked` at Designer with exact blocker `blocked_designer_route_transport_closed`; no Luna/root/other OpenCode fallback was used. Exactly one next action: restore the configured Kimi K3 Designer route in a fresh task or full runtime restart and rerun only the pending Designer stage. Stop condition: do not proceed to implementation/release/deploy/activation or claim production proof while this route is unavailable.
+
+## 2026-07-25 Continuation: candidate worktree reconstructed after disappearance
+
+Fresh readback found that the previously recorded candidate path `/tmp/automation-os-candidate-recovered-20260725` no longer exists. The preserved commit/tree objects were still present, so a new isolated worktree was reconstructed at `/tmp/automation-os-candidate-recovered-20260725-r2` from commit `7c66e5ed225c99337cc09fb75bc519e2f7c51c64`; HEAD/tree match, status is clean, and `git diff --check` passed. Evidence: `work/goal-orchestration/candidate-worktree-recovery-readback-20260725.v2.json`.
+
+This is local candidate accessibility only and does not restore independent security approval, signing, production runtime, IAB/provider proof, or release readiness. The blocked Goal was resumed and is currently `active` for a fresh audit; no old receipt or browser handle was reused. Exactly one next action: dispatch the current Researcher stage once against this reconstructed candidate and fresh project state. Stop condition: do not promote, sign, deploy, activate, or bypass Researcher/Security Reviewer gates.
+
+## 2026-07-25 Continuation: strict blocked threshold reached for Researcher route
+
+The third resumed Goal audit dispatched native Researcher invocation `019f97ac-5da9-7cd0-84b3-da2b185e8c3e`; it returned no bounded output after 180 seconds. The same exact blocker `researcher_route_timeout_after_180000ms` therefore repeated for `3/3` consecutive resumed Goal turns. Goal was updated to `blocked` (not complete). Evidence: `work/goal-orchestration/resumed-recovery-readback-20260725.v6.json`.
+
+The fresh Graph remains blocked at `research`; Planner, Security Reviewer, implementation, verification, deploy, activation, P7, P8, and P9 are not complete. The candidate remains clean at `/tmp/automation-os-candidate-recovered-20260725`, commit `7c66e5ed225c99337cc09fb75bc519e2f7c51c64`, tree `22e50a54b449b2dfaddc3b4746dde79fae7200ac`; `git diff --check` passed. No candidate change, external effect, browser/provider/auth operation, signing, deployment, activation, or protected global change occurred. Exactly one next action: after the Researcher native runtime is repaired or a fresh task provides a verified route, fresh-read current state and rerun Researcher only. Stop condition: remain stopped until that external route state changes; do not bypass Researcher, promote/sign/deploy/activate, claim P7/P8/P9, or treat local evidence as production proof.
+
+## 2026-07-25 Continuation: Researcher timeout repeated on fresh Goal continuation
+
+The next Goal continuation performed a fresh read and dispatched a new native Researcher invocation `019f97a6-487a-7430-880b-af9d1e5163d7`. It again returned no bounded output after 180 seconds. This is resumed blocked-audit attempt `2/3`; Goal remains `active`, incomplete, and the existing Graph `run_7317472d16df4692` remains blocked at `research`. Evidence: `work/goal-orchestration/resumed-recovery-readback-20260725.v5.json`.
+
+As a non-advancing sidecar, the recovered candidate was tested without installing or copying dependencies. `npm test` stopped before compilation with `tsc: command not found`; using the main worktree's existing node_modules stopped with `TS2688: Cannot find type definition file for 'node'`. The candidate remains clean at `/tmp/automation-os-candidate-recovered-20260725`, commit `7c66e5ed225c99337cc09fb75bc519e2f7c51c64`, tree `22e50a54b449b2dfaddc3b4746dde79fae7200ac`, and `git diff --check` passed. No candidate change, external effect, browser/provider/auth operation, signing, deployment, activation, or protected global change occurred. Exactly one next action: in the next fresh task/runtime, run the current Researcher stage once with a verified native route. Stop condition: do not bypass Researcher, promote/sign/deploy/activate, claim P7/P8/P9, or treat local evidence as production proof.
+
+## 2026-07-25 Continuation: fresh Graph recovery stopped at Researcher route
+
+The user reported that the route should now be usable. A fresh adaptive Graph run `run_7317472d16df4692` was created without reusing old receipts or browser handles. The root intake completed, but the required Researcher route timed out twice after bounded 180-second waits, including one focused retry limited to current STATE/PLAN/latest v27 readbacks and the recovered candidate. The Graph is blocked at `research`; Goal remains `active`, incomplete, and this resumed audit is attempt `1/3`. Evidence: `work/goal-orchestration/resumed-recovery-readback-20260725.v4.json`.
+
+Current candidate remains clean at `/tmp/automation-os-candidate-recovered-20260725`, commit `7c66e5ed225c99337cc09fb75bc519e2f7c51c64`, tree `22e50a54b449b2dfaddc3b4746dde79fae7200ac`. No candidate change, browser/provider/auth operation, external effect, signing, deployment, activation, or protected global change occurred. Historical local tests remain historical and were not rerun after recovery. Exactly one next action: rerun the current Researcher stage in a fresh task/runtime with a verified Researcher route. Stop condition: do not bypass Researcher, promote/sign/deploy/activate, claim P7/P8/P9, or treat local evidence as production proof.
+
+## 2026-07-25 Continuation: resumed blocked threshold reached again
+
+The third resumed recovery attempt again produced no independent Security Reviewer output after a 180-second bounded wait (`security_reviewer_route_timeout`). Researcher found no gate-advancing evidence; Verifier and Reviewer timed out; Executor confirmed the candidate is not release-ready. The native Designer handoff was rejected for metadata mismatch, while direct Kimi metadata was verified only as noncritical advisory output. The resumed blocked threshold is now `3/3`; Goal is `blocked`, not complete. Evidence: `work/goal-orchestration/resumed-blocked-audit-20260725.v3.json`, `work/goal-orchestration/security-review-route-recovery-20260725.v11.json`, and `work/goal-orchestration/required-role-route-readback-20260725.v11.json`.
+
+The candidate worktree remains available and clean at `/tmp/automation-os-candidate-recovered-20260725`, commit `7c66e5ed225c99337cc09fb75bc519e2f7c51c64`, tree `22e50a54b449b2dfaddc3b4746dde79fae7200ac`. Historical local P5/full evidence remains 41/41 and 841/841, but fresh tests after worktree recovery were not rerun. No independent approval, signing, production proof, external effect, or protected global change exists; canonical automations remain `PAUSED`.
+
+Latest reconciliation and audit are `work/goal-orchestration/g1-p6-release-gap-reconciliation-20260725.v27.json` and `work/goal-orchestration/full-plan-completion-audit-20260725.v27.json`. Safe restart point: start a fresh task/runtime context with a verified Security Reviewer route, then fresh-read STATE.md, PLAN_DRAFT, the recovered candidate, and the current amendment. Exactly one next action: restore that route and review the unchanged candidate-only amendment. Stop condition: do not promote, sign, deploy, activate, claim P7, or treat local evidence as production proof.
+
+## 2026-07-25 Continuation: candidate worktree reconstructed from preserved commit
+
+The historical candidate path was missing, but the candidate commit object remained present in the local repository. A new isolated worktree was reconstructed at `/tmp/automation-os-candidate-recovered-20260725` from commit `7c66e5ed225c99337cc09fb75bc519e2f7c51c64`; live readback confirms clean status, tree `22e50a54b449b2dfaddc3b4746dde79fae7200ac`, source-to-candidate diff check passed across 160 paths, and no external effect. Evidence: `work/goal-orchestration/candidate-worktree-recovery-readback-20260725.v1.json`.
+
+This restores local candidate accessibility only. It does not create independent security approval, signing, production runtime, IAB, provider, deploy, activation, or fresh post-recovery test proof. The current resumed audit remains attempt `2/3`, Goal `active/incomplete`, with latest reconciliation/audit at `work/goal-orchestration/g1-p6-release-gap-reconciliation-20260725.v26.json` and `work/goal-orchestration/full-plan-completion-audit-20260725.v26.json`. Exactly one next action: restore a verified independent Security Reviewer runtime route, then review the unchanged candidate-only amendment. Canonical automations remain `PAUSED`.
+
+## 2026-07-25 Continuation: resumed blocked audit attempt 2, route spawn recovered but review still times out
+
+The native agent thread-limit condition was cleared by closing orphaned agents. New Security Reviewer spawns were then accepted, including both `message` and structured `items` prompt delivery, but each bounded 180-second review still timed out. Researcher, Verifier, and Reviewer also timed out in the same resumed attempt. No independent approval or approved hunk hash was obtained. Evidence: `work/goal-orchestration/security-review-route-recovery-20260725.v10.json` and `work/goal-orchestration/required-role-route-readback-20260725.v10.json`.
+
+This is resumed blocked-audit attempt `2/3`, so Goal remains `active`, incomplete. The candidate is unchanged and clean at `7c66e5ed225c99337cc09fb75bc519e2f7c51c64`; local P5 remains `41/41` and full suite `841/841` under temporary loopback PostgreSQL. No external effect, signing, deployment, activation, browser/provider operation, or protected global change occurred; canonical automations remain `PAUSED`.
+
+Latest reconciliation and completion audit are `work/goal-orchestration/g1-p6-release-gap-reconciliation-20260725.v25.json` and `work/goal-orchestration/full-plan-completion-audit-20260725.v25.json`. Exactly one next action: restore a verified independent Security Reviewer runtime route, then review the unchanged candidate-only amendment. Stop condition: do not promote, sign, deploy, activate, claim P7, or treat local evidence as production proof.
+
+## 2026-07-25 Continuation: resumed blocked Goal, first runtime recovery attempt failed
+
+The user resumed the previously blocked Goal, so the blocked audit restarted from zero and Goal status returned to `active`. A fresh native Security Reviewer route was given a 180-second bounded wait, but still returned no output: exact blocker `security_reviewer_route_timeout`. Researcher returned only read-only consistency findings; Verifier and Reviewer also timed out. No security approval or approved hunk hash was obtained. Evidence: `work/goal-orchestration/resumed-blocked-audit-20260725.v1.json`, `work/goal-orchestration/security-review-route-recovery-20260725.v9.json`, and `work/goal-orchestration/required-role-route-readback-20260725.v9.json`.
+
+The candidate remains unchanged and clean at `7c66e5ed225c99337cc09fb75bc519e2f7c51c64`, with local P5 `41/41` and full `841/841` under temporary loopback PostgreSQL. No external effect, signing, deploy, activation, browser/provider operation, or protected global change occurred; canonical automations remain `PAUSED`.
+
+Latest reconciliation and completion audit are `work/goal-orchestration/g1-p6-release-gap-reconciliation-20260725.v24.json` and `work/goal-orchestration/full-plan-completion-audit-20260725.v24.json`. The resumed blocked threshold is currently `1/3`, so Goal remains active rather than being marked blocked again. Exactly one next action: restore a verified independent Security Reviewer runtime route, then review the unchanged candidate-only amendment. Stop condition: do not promote, sign, deploy, activate, claim P7, or treat local evidence as production proof.
+
+## 2026-07-25 Continuation: strict blocked audit reached for independent Security Reviewer
+
+The same exact blocker `security_reviewer_route_timeout` repeated across the consecutive v20, v21, v22, and current fresh route attempts. The current native Researcher, Security Reviewer, Verifier, Reviewer, Executor, and Designer routes also returned no bounded output within 60 seconds. The strict blocked threshold is met: local candidate verification is complete, but progress beyond P0/G1 requires a functioning independent Security Reviewer runtime; substituting root or another role would violate the plan. The blocked audit is `work/goal-orchestration/full-plan-blocked-audit-20260725.v1.json`.
+
+Goal status is now `blocked`, not complete. The candidate remains unchanged and clean at `7c66e5ed225c99337cc09fb75bc519e2f7c51c64`, with local P5 `41/41` and full `841/841` under temporary loopback PostgreSQL. No external effect, secret emission, signing, deployment, activation, browser/provider operation, or protected global change occurred; canonical automations remain `PAUSED`.
+
+Latest reconciliation and completion audit are `work/goal-orchestration/g1-p6-release-gap-reconciliation-20260725.v23.json` and `work/goal-orchestration/full-plan-completion-audit-20260725.v23.json`. Safe restart point: restore a verified native Security Reviewer runtime or start a fresh task with that runtime available, then fresh-read STATE.md, PLAN_DRAFT, and the unchanged candidate. Exactly one next action: restore that route and review the unchanged candidate-only amendment. Stop condition: do not promote, sign, deploy, activate, claim P7, or treat local evidence as production proof.
+
+## 2026-07-25 Continuation: Designer metadata verified; native execution roles timed out
+
+The route classifier selected the feature preset and required a Designer. The direct read-only OpenCode Go Kimi K3 route passed live preflight with provider/model metadata, bridge `0.3.0`, request id, and usage; it returned a bounded handoff saying no critical design dependency exists before G1/P6/P7. Its response text nevertheless labeled the model “Claude,” conflicting with the verified tool metadata, so the handoff is recorded only as non-critical advisory evidence and is not accepted as release/security proof. Evidence: `work/goal-orchestration/designer-route-readback-20260725.v1.json` (SHA-256 `69b4bd37f8a26a8ee5aa9ef90898099414a4d7a6db7b4ae17810515d4e4fe0bd`).
+
+Fresh native Researcher, Security Reviewer, Verifier, Reviewer, and Executor routes all returned no bounded output within 60 seconds and were closed. Exact blockers are `researcher_route_timeout`, `security_reviewer_route_timeout`, `verifier_route_timeout`, `reviewer_route_timeout`, and `executor_route_timeout`. No independent security approval or approved hunk hash exists. Readback: `work/goal-orchestration/required-role-route-readback-20260725.v7.json` (SHA-256 `91af26f83ee903cba87b5d81360e7d1d98b840fe98aa148d91000b07f54a53cf`) and `work/goal-orchestration/security-review-route-recovery-20260725.v7.json` (SHA-256 `bf6946b99c5c20f95f9f12b8b54be2c91c0fb6d86c34b1e6011c0847242af0a0`).
+
+The candidate remains unchanged and clean at commit `7c66e5ed225c99337cc09fb75bc519e2f7c51c64`, with local P5 `41/41` and full `841/841` under temporary loopback PostgreSQL. Latest reconciliation and completion audit are `work/goal-orchestration/g1-p6-release-gap-reconciliation-20260725.v22.json` (SHA-256 `cb87f0acffd9aa1c28f296a8972255bebbc8dfaccce2c3c18b16c67d85ae8a29`) and `work/goal-orchestration/full-plan-completion-audit-20260725.v22.json` (SHA-256 `d1db901c3973452784d69ee4c7bb715b07303ccf8ae7157cb671838516145ffe`). Goal remains `active`, incomplete; G1-deploy is rejected, P6 local-only, P7 blocked before claim, activation/P8/P9 not started, and canonical automations remain `PAUSED`.
+
+Exactly one next action: recover a verified independent Security Reviewer route and obtain an explicit decision on the current candidate-only amendment. Stop condition: do not promote, sign, deploy, activate, claim P7, or treat local evidence as production proof.
+
+## 2026-07-25 Continuation: current-turn required roles all timed out
+
+The fresh current-turn required-role dispatch was completed for Researcher, Security Reviewer, Verifier, and Reviewer. All four returned no bounded output within 60 seconds and were closed with exact blockers `researcher_route_timeout`, `security_reviewer_route_timeout`, `verifier_route_timeout`, and `reviewer_route_timeout`. No independent approval, reviewer result, approved hunk hash, external operation, or production proof was fabricated. Evidence: `work/goal-orchestration/required-role-route-readback-20260725.v6.json` (SHA-256 `85349422c02f9d11493bdb8e4d6fcba7c670f730d27a7ae0b5a79b0a032a308f`) and `work/goal-orchestration/security-review-route-recovery-20260725.v6.json` (SHA-256 `ebb87254aced6aa976b2aa0765b9d79fbedd12caf9e5836d5627202121122198`).
+
+The candidate remains clean at commit `7c66e5ed225c99337cc09fb75bc519e2f7c51c64`, tree `22e50a54b449b2dfaddc3b4746dde79fae7200ac`; local evidence remains P5 `41/41` and full `841/841`, zero failures and zero skips, under temporary loopback PostgreSQL 16.14. The corrected current final readback is `work/goal-orchestration/candidate-final-verification-readback-20260725.v6.json` (SHA-256 `b4fd89b9897dfdc89026b57b9274cfa70e64133687ecafaa21ba0c269f11d54d`). This remains local evidence, not production proof.
+
+Latest reconciliation and completion audit are `work/goal-orchestration/g1-p6-release-gap-reconciliation-20260725.v21.json` (SHA-256 `171f0023583e6683a8fa9b11e3df839cd1af7d8dbaa3eed428ab9318e87c0094`) and `work/goal-orchestration/full-plan-completion-audit-20260725.v21.json` (SHA-256 `098cb3fe92451db71bb5728dfe533d5f4d07c44bf710f3299a29d3e62d41aa1c`). Goal remains `active`, incomplete; G1-deploy remains rejected, P6 is local-only, P7 is blocked before claim, activation/P8/P9 are not started, and canonical automations remain `PAUSED`.
+
+Exactly one next action: recover a verified independent Security Reviewer route and obtain an explicit decision on the current candidate-only amendment. Stop condition: do not promote, sign, deploy, activate, claim P7, or treat local evidence as production proof.
+
+## 2026-07-25 Continuation: independent Security Reviewer recovery also timed out
+
+A fresh independent native Security Reviewer attempt was issued for the current candidate-only PostgreSQL connection-drop rollback amendment and waited 60 seconds. It returned no bounded output and was closed with exact blocker `security_reviewer_route_timeout`; invocation `019f95e4-75b8-7430-a8bd-7b40d9d3c11d`. No approval, approved hunk hash, signature, external operation, or substitute reviewer result was recorded. Latest route evidence is `work/goal-orchestration/security-review-route-recovery-20260725.v5.json` and `work/goal-orchestration/required-role-route-readback-20260725.v5.json`.
+
+The candidate itself remains clean at commit `7c66e5ed225c99337cc09fb75bc519e2f7c51c64`, tree `22e50a54b449b2dfaddc3b4746dde79fae7200ac`, with source-delta hash `c7c2e6c3013cabcef1558eebdae323c11388fc24bceb26be504424f97993b6dd` and content archive hash `51964a9edfe963c2af735578f0a17c0eb5fb0451af38c04a5d0f0c189d3aefc3`. The latest local evidence remains P5 `41/41` and full `841/841`, zero failures and zero skips, under temporary loopback PostgreSQL 16.14; it is not production proof.
+
+Latest reconciliation and completion audit are `work/goal-orchestration/g1-p6-release-gap-reconciliation-20260725.v20.json` (SHA-256 `45655bea27cff717f5fd166b2db5f9145eca7bd656a1c5a54c79017fc47b81ce`) and `work/goal-orchestration/full-plan-completion-audit-20260725.v20.json` (SHA-256 `d116dd69fea097ad164d6a9e66e134f2a6443e6c24ff5110c29251cbbfba1dcb`). Goal remains `active`, `goal_complete=false`; G1-deploy is rejected, P6 is local-only, P7 is blocked before claim, activation/P8/P9 are not started, and canonical automations remain `PAUSED`.
+
+Exactly one next action: recover a verified independent Security Reviewer route and obtain an explicit decision on the current candidate-only amendment. Stop condition: do not promote, sign, deploy, activate, claim P7, or treat local evidence as production proof.
+
+## 2026-07-25 Continuation: connection-drop rollback coverage and latest release reconciliation
+
+The isolated candidate now includes the narrowly scoped PostgreSQL connection-drop rollback regression in `apps/server/src/tests/durableQueuePostgres.test.ts`: commit `7c66e5ed225c99337cc09fb75bc519e2f7c51c64`, tree `22e50a54b449b2dfaddc3b4746dde79fae7200ac`, clean status, source-delta hash `c7c2e6c3013cabcef1558eebdae323c11388fc24bceb26be504424f97993b6dd`, and content archive hash `51964a9edfe963c2af735578f0a17c0eb5fb0451af38c04a5d0f0c189d3aefc3`. Candidate-to-source `git diff --check` remains passed.
+
+Fresh temporary loopback PostgreSQL 16.14 evidence is now `P5 41/41 passed, 0 failed, 0 skipped`, including the connection-drop rollback case, and full candidate `npm test` is `841/841 passed, 0 failed, 0 skipped`. The official tenancy audit remains `ok=true` with all counts zero and `issues=[]`; the global automation audit remains `6 checked / 6 compliant / 0 gaps`, with `external_action_executed=false`. This is local verification only and does not provide production PostgreSQL HA/PITR/failover, signing, IAB, provider/auth, deploy, activation, or recovery proof.
+
+Latest machine-readable reconciliation and audit are `work/goal-orchestration/g1-p6-release-gap-reconciliation-20260725.v19.json` (SHA-256 `2f5a9160cb141b6a2afb17612fdb8e9f45ea7004875c7c9692be1ce05bab1d17`) and `work/goal-orchestration/full-plan-completion-audit-20260725.v19.json` (SHA-256 `b739281d86659ad3dff1e9550b32de281e65daabcb8a0eff2f6ace1150f04828`). Fresh Researcher, Security Reviewer, Verifier, Executor, and Reviewer routes all timed out; no independent security decision or approved hunk hash exists. Goal remains `active`, incomplete; G1-deploy remains rejected, downstream stages remain blocked/not started, and canonical automations remain `PAUSED`.
+
+Exactly one next action: recover a verified independent Security Reviewer route and obtain its explicit decision on the current candidate-only amendment. Stop condition: do not promote, sign, deploy, activate, claim P7, or treat local evidence as production proof. Latest route, hunk, amendment, P5, and candidate evidence are referenced by v19 in the same directory.
+
+## 2026-07-25 Continuation: current tenancy and automation audits reconfirmed
+
+Fresh read-only checks remain green: `npm run db:audit-tenancy` returned `ok=true` with every count zero and `issues=[]`; `/Users/nichikatanaka/.local/bin/audit-codex-automations` returned `6 checked / 6 compliant / 0 gaps`, `external_action_executed=false`. Candidate and source diff checks remain clean. This only refreshes local parity evidence and does not satisfy production signing, IAB, provider, deploy, activation, or recovery gates. Evidence: `work/goal-orchestration/p5-official-audit-tenancy-readback-20260725.v2.json`.
+
+Latest reconciliation/audit are now `work/goal-orchestration/g1-p6-release-gap-reconciliation-20260725.v18.json` and `work/goal-orchestration/full-plan-completion-audit-20260725.v18.json`. Exactly one next action and stop condition are unchanged: recover a verified independent Security Reviewer decision; do not promote, sign, deploy, activate, claim P7, or treat local proof as production proof. Goal remains active/incomplete and canonical automations remain `PAUSED`.
+
+## 2026-07-25 Continuation: required role routes re-dispatched and timed out
+
+The current Goal remains `active` and `goal_complete=false`. Fresh current-turn dispatch of Researcher, Security Reviewer, Verifier, Executor, and Reviewer all returned no bounded output within 60 seconds and were closed with exact blockers `researcher_route_timeout`, `security_reviewer_route_timeout`, `verifier_route_timeout`, `executor_route_timeout`, and `reviewer_route_timeout`. No role result, independent security approval, approved hunk hash, signing, deploy, activation, browser/provider/auth operation, or external effect was fabricated or performed. Readback: `work/goal-orchestration/required-role-route-readback-20260725.v3.json` and `work/goal-orchestration/security-review-route-recovery-20260725.v3.json`.
+
+The candidate remains unchanged and clean at commit `9c0195cfcbc755f97c1746180f8c18210bf5cf68`, tree `65156d95e13e4abf2ca197a2706744f4326aab96`; the temporary PostgreSQL-backed local evidence remains `P5 40/40` and full suite `840/840`, with zero failures and zero skips. Latest G1/P6 reconciliation and full completion audit are `work/goal-orchestration/g1-p6-release-gap-reconciliation-20260725.v17.json` and `work/goal-orchestration/full-plan-completion-audit-20260725.v17.json`. Exactly one next action: recover a verified independent Security Reviewer route and obtain an explicit decision on the candidate-only amendment. Stop condition: do not promote, sign, deploy, activate, claim P7, or treat local evidence as production proof. Canonical automations remain `PAUSED`.
+
+## 2026-07-25 Continuation: temporary PostgreSQL candidate verification completed; release gates remain closed
+
+Current state: the isolated candidate is now `9c0195cfcbc755f97c1746180f8c18210bf5cf68`, tree `65156d95e13e4abf2ca197a2706744f4326aab96`, clean, with source-to-candidate `git diff --check` passed across 160 paths. Candidate hashes are source delta `be4806d5dbb63384b2253a72ee41a548d9298cf578394dd9147f66d78bfd067a` and content archive `af607fc318dc1cd7cee9d8af95646282629329b7bf822846ee7e1a1bfbc6462c`. A temporary local Homebrew PostgreSQL `16.14` runtime was installed for verification only; no external database, provider, browser, secret, or production action was used.
+
+Completed evidence: the fresh candidate-bound P5 focused suite is `40/40 passed, 0 failed, 0 skipped`, including all four real PostgreSQL cases; the full candidate `npm test` is `840/840 passed, 0 failed, 0 skipped` with the temporary PostgreSQL runtime. The PostgreSQL test correction is limited to `apps/server/src/tests/durableQueuePostgres.test.ts` and dynamically binds the bootstrap version after the database URL. Evidence: `work/goal-orchestration/p5-no-effect-load-verification-20260725.v2.json`, `work/goal-orchestration/candidate-final-verification-readback-20260725.v3.json`, and `work/goal-orchestration/unsigned-candidate-manifest-20260725.v6.json`.
+
+The current P0 amendment is `work/goal-orchestration/p0-scope-amendment-candidate-allowlist-20260725.v4.json`; approval remains `pending_independent_security_review`, approved hunk hash is null, and the current Security Reviewer/Verifier/Reviewer/Researcher routes remain timed out. Latest route evidence is `work/goal-orchestration/security-review-route-recovery-20260725.v2.json` and `work/goal-orchestration/required-role-route-readback-20260725.v2.json`. G1-deploy remains `rejected_not_approved`; P6 is local-only, P7 is blocked before claim by `in_app_browser_runtime_unavailable`, and activation/P8/P9 are not started. Latest reconciliation and audit are `work/goal-orchestration/g1-p6-release-gap-reconciliation-20260725.v16.json` and `work/goal-orchestration/full-plan-completion-audit-20260725.v16.json`.
+
+Unfinished: independent security-owner approval, trusted signing and signature verification, production backup/restore/rollback and incident evidence, production PostgreSQL HA/PITR/failover evidence, Browser Plugin IAB runtime, provider/authenticated readback, and activation proof. Exactly one next action: recover a verified independent Security Reviewer route and obtain an explicit decision on the candidate-only amendment. Stop condition: do not promote, sign, deploy, activate, claim P7, or call local PostgreSQL evidence production proof while those gates remain absent. `goal_status=active`, `goal_complete=false`, `external_action_executed=false`, and canonical automations remain `PAUSED`.
+
+## 2026-07-25 Continuation: candidate allowlist provenance review in progress
+
+Fresh candidate rerun remains deterministic after a candidate-only EOF correction: commit `b749b4ac98e1b1254a085e99b538a95fe3a0ce4b`, tree `3b7a04d3c0805680d9b419e964517bcac87a7a05`, clean status, working-tree and source-to-candidate `git diff --check` pass, `npm test` `840 total / 836 passed / 0 failed / 4 skipped`, web typecheck/build pass, and tenancy audit `ok=true` with zero counts/issues. The corrected candidate diff is `66023648b3ec62e5462e85b24107b05df2b890b7653315933c73bf89ffe2e708` across 160 paths, archive hash `ba5a6054c35346d902c1c45be8209a8a982f750a51823b089cd36a675bff21c5`. Fresh matching against the original G0 candidate dependency allowlist still finds 26 paths outside that enumeration. The current candidate-only amendment is `work/goal-orchestration/p0-scope-amendment-candidate-allowlist-20260725.v3.json`; its approved hunk hash remains null because the independent security reviewer route timed out (`security_reviewer_route_timeout`). G1-deploy is not advanced. Detailed readback: `work/goal-orchestration/candidate-final-verification-readback-20260725.v2.json` and `work/goal-orchestration/unsigned-candidate-manifest-20260725.v5.json`.
+
+Fresh candidate-bound P5 no-effect/load verification is `work/goal-orchestration/p5-no-effect-load-verification-20260725.v1.json`: the focused suite passed `40 total / 36 passed / 0 failed / 4 skipped`; the two-scheduler/three-worker/killed-worker canary, 100-concurrent claim, heartbeat/fence/recovery, external reconciliation, and local load-readiness/redaction guards passed. The four real-PostgreSQL tests remain skipped because the runtime is absent and no waiver exists, so this is local evidence only and does not advance G1/P6/P7.
+
+The potential secret-bearing image `work/production-deploy-ada1880-20260715/production-security-token-entry.png` was not opened, copied, moved, or included in release evidence. Metadata-only boundary evidence is `work/goal-orchestration/sensitive-artifact-boundary-probe-20260725.v1.json`; exact blocker is `potential_secret_bearing_artifact_not_redaction_verified`.
+
+## 2026-07-25 Continuation: signing identity probe remains release-blocked
+
+The fresh read-only signing probe is `work/goal-orchestration/signing-identity-probe-20260725.v1.json`. The local keychain reports one valid codesigning identity, classified as `Apple Development`; no `Developer ID Application` or Apple Distribution release candidate was present. `gpg` is unavailable. No private material, certificate subject, key export, signature, deployment, or external effect was exposed or performed. This does not satisfy trusted candidate signing or independent verification, so the exact blocker remains `trusted_candidate_signing_evidence_missing`; the candidate remains unsigned and G1-deploy remains rejected.
+
+## 2026-07-25 Continuation: G1 local release-gap reconciliation
+
+Fresh root P5 verification is recorded in `work/goal-orchestration/p5-root-deterministic-verification-20260725.v1.json`: `npm test` is `840 tests / 836 passed / 0 failed / 4 skipped`, web typecheck/build pass, tenant audit has zero issues, global automation audit is `6 checked / 6 compliant / 0 gaps`, and `git diff --check` passes. This is local verification only; `external_action_executed=false` and canonical automations remain `PAUSED`.
+
+The separate G1-deploy decision is now explicitly recorded as `rejected_not_approved` by `current_codex_task_root` in `work/goal-orchestration/g1-p6-release-gap-reconciliation-20260725.v1.json`. That artifact closes only locally resolvable evidence gaps: the named G1 decision, hunk-allowlist owner readback, explicit release-blocking PostgreSQL skip disposition, and an unsigned local candidate hash bundle. It does not provide a trusted signature, independent verification, production recovery evidence, trusted current-turn IAB/provider runtime, or authenticated provider readback.
+
+Remaining release blockers are trusted candidate signing, independent signature verification, candidate-bound migration evidence, production backup/restore/rollback, isolated recovery and incident drills, PostgreSQL HA/PITR/failover/multi-node recovery, rollback anchor, trusted registered current-turn IAB runtime, and provider/authenticated readback. A fresh read-only probe confirms the only local codesigning identity is Apple Development, not trusted release-signing evidence; see `work/goal-orchestration/signing-identity-probe-20260725.v1.json`. P6/P7/G1-activation/P8/P9 remain blocked or not started; no external action, activation, deployment, or protected global surface change occurred. Safe resume is to obtain those trusted proofs, then re-enter the separate G1-deploy decision with automations paused.
+
+The latest authoritative reconciliation is now `work/goal-orchestration/g1-p6-release-gap-reconciliation-20260725.v15.json`, and the latest full audit is `work/goal-orchestration/full-plan-completion-audit-20260725.v15.json`. Both retain `goal_status=active`, `goal_complete=false`, and the exact release blockers without promoting local observations to production proof. PLAN DoD #5 names the root hunk owner, but the separately recorded 26-path amendment is held behind the security owner review; the current Security Reviewer, Verifier, Reviewer, and Researcher routes all timed out, so no role approval or approved hunk hash was recorded. Route evidence: `work/goal-orchestration/required-role-route-readback-20260725.v2.json`.
+
+## 2026-07-25 Continuation: candidate-bound migration parity and release reconciliation
+
+The clean candidate was repaired only within a recorded local scope amendment: `work/goal-orchestration/p0-scope-amendment-postgres-migration-20260725.v1.json`. Candidate commit `339a994174a79b12a6c2d22634c1efb5b8cb19ec` now contains the migration implementation that is byte-identical to the verified main-worktree `scripts/migrateSqliteToPostgres.mjs`; the candidate is clean and `git diff --check` passes.
+
+Candidate-bound checks now pass for server/web build, web typecheck, PostgreSQL migration tests `7/7`, and Automation Kernel runner tests `9/9`. The full candidate server suite is not release-green: `839 total / 810 passed / 25 failed / 4 skipped`. Those failures are candidate snapshot parity gaps outside the current G0 candidate dependency allowlist (Obsidian exporter/ingest and Second Brain, reconciliation CLIs, production readback CLI, and related test expectations). The candidate tenancy audit CLI is also not present because it is outside that allowlist. The detailed unsigned readback is `work/goal-orchestration/unsigned-candidate-manifest-20260725.v1.json`; it is not production proof.
+
+This resolves only `candidate_bound_migration_evidence_missing`. The current G1/P6 reconciliation is `work/goal-orchestration/g1-p6-release-gap-reconciliation-20260725.v2.json`: G1 remains `rejected_not_approved`, P6/P7/G1-activation/P8/P9 remain blocked or not started, canonical automations remain `PAUSED`, and no external action or protected global surface change occurred. Remaining blockers include candidate full-suite parity, trusted signing and independent verification, production recovery/incident/HA/PITR/failover evidence, rollback anchor, trusted current-turn IAB/provider readback, and real PostgreSQL runtime with no waiver.
+
+## 2026-07-25 Continuation: candidate parity completed; trusted release gates remain closed
+
+The candidate-only parity amendment is now complete and committed in the isolated worktree: commit `6bd43b0ed6c05cb5789ba437c5c9bc0f91e15ce0`, tree `63fba9a37beb1d6707695532fb70b500f9e00f08`, clean status, and `git diff --check` pass. Fresh candidate evidence is `work/goal-orchestration/unsigned-candidate-manifest-20260725.v2.json`: server build, web build, web typecheck, PostgreSQL migration tests `7/7`, and Automation Kernel contract tests `16/16` pass; the full server suite is `840 total / 836 passed / 0 failed / 4 skipped`.
+
+The four skipped tests are real PostgreSQL tests without `AUTOMATION_OS_TEST_POSTGRES_URL` and without a waiver, so they remain release-blocking rather than being counted as a clean production gate. The candidate tenancy audit CLI is outside the candidate snapshot allowlist; the main worktree audit separately passed with zero issues. The candidate remains unsigned, has no candidate digest/signature/independent verification, and has no production backup/restore/rollback, incident, HA/PITR/failover, trusted current-turn IAB/provider, or authenticated provider readback proof.
+
+The authoritative reconciliation is `work/goal-orchestration/g1-p6-release-gap-reconciliation-20260725.v3.json` and the full audit is `work/goal-orchestration/full-plan-completion-audit-20260725.v3.json`. G1-deploy remains `rejected_not_approved`; P6 is locally green but not release-ready; P7/G1-activation/P8/P9 remain blocked or not started. No external action, deployment, activation, provider call, credential use, or protected global surface change occurred; canonical automations remain `PAUSED`. Safe restart point: obtain the missing trusted release/recovery/runtime/provider/PostgreSQL evidence, then re-enter G1-deploy with automations paused.
+
+The remaining candidate-only tenancy evidence gap is closed by `work/goal-orchestration/p0-scope-amendment-candidate-tenancy-audit-20260725.v1.json`: the read-only `npm run db:audit-tenancy` candidate readback is `ok=true`, every reported count is zero, and `issues=[]`. Candidate commit `5cabf8986d50222a0166f68dc1a26fd7efa38c94` / tree `8eaa755ab0931ac5c739f63c9064c7ff72ccc904` is clean. The final local readback is `work/goal-orchestration/unsigned-candidate-manifest-20260725.v3.json`, with final reconciliation and audit at `work/goal-orchestration/g1-p6-release-gap-reconciliation-20260725.v4.json` and `work/goal-orchestration/full-plan-completion-audit-20260725.v4.json`.
+
+This does not advance G1-deploy or P6 release promotion: four real PostgreSQL tests remain skipped without runtime or waiver, and trusted signing, independent verification, production recovery/rollback/incident/HA-PITR, current-turn IAB/provider, and authenticated provider evidence remain absent. No external action, deployment, activation, provider call, credential use, or protected global surface change occurred; canonical automations remain `PAUSED`.
+
+The final same-commit verification rerun is recorded in `work/goal-orchestration/candidate-final-verification-readback-20260725.v1.json`: `npm test` exited `0` with `840 total / 836 passed / 0 failed / 4 skipped`; tenancy audit is `ok=true` with zero counts and no issues; web typecheck/build, migration `7/7`, and Automation Kernel contract `16/16` remain passed. The candidate stayed clean at the same commit/tree.
+
+## 2026-07-25 Continuation: P7 IAB canary stopped before claim
+
+The safe P7 preparation was executed for the canonical `automation-os-iab` registration. Global audit returned `6 checked / 6 compliant / 0 gaps`; Kernel compile/status passed for fresh run `automation-os-iab-p7-readonly-20260725-01`; registered dry-run and preflight both passed with `external_action_executed=false` and `command_ready=true`. Evidence: `work/goal-orchestration/p7-automation-os-iab-readonly-canary-20260725.v1.json`.
+
+The live stage was not claimed because the Codex in-app Browser Browser Plugin exposed no IAB runtime (`Browser is not available: iab`, normalized blocker `in_app_browser_runtime_unavailable`). No capability, current-turn receipt, browser handle, business stage, external intent, or external action was created. The official automation view capability also returned `No handler registered for tool: codex_app.automation_update`; no automation state was mutated. Do not fallback to Chrome, Playwright, CDP, Browser Use, old receipt, or old handle. P7 and all downstream activation stages remain blocked; canonical automations remain `PAUSED`.
+
+A read-only PostgreSQL availability probe is recorded in `work/goal-orchestration/p5-postgresql-runtime-probe-20260725.v1.json`: `AUTOMATION_OS_TEST_POSTGRES_URL`, `pg_isready`, and `psql` are all absent. No secret was emitted and no database was mutated. The four real PostgreSQL test skips therefore remain an unresolved release blocker with no waiver.
+
+The current reconciled gate state is `work/goal-orchestration/g1-p6-release-gap-reconciliation-20260725.v6.json` and the latest full audit is `work/goal-orchestration/full-plan-completion-audit-20260725.v6.json`. Goal remains `active`; G1-deploy is rejected, P6 is local-only, P7 is blocked before claim, and G1-activation/P8/P9 are not started.
+
+The 21-item plan DoD has been audited requirement-by-requirement in `work/goal-orchestration/dod-requirements-audit-20260725.v1.json`: `8` completed locally, `9` partial local, `3` missing, and `1` not started. The release goal is not complete; local proof is explicitly separated from trusted production proof.
+
+The clean candidate's deterministic content archive hash is `bfb6c87015afb5f0a3995adcb7f13ca2f09d62f692a9567965a99d6e6e5f5e52`; the source delta hash is `bfb964cc143072741c4293a5ad638a8efcdf6f3dc8ed60abfc20002cefba5a1d` across 160 paths. These are local observations only: the commit signature status is `N`, the approved hunk hash remains null, and no independent verification or release approval exists. Latest evidence is `work/goal-orchestration/unsigned-candidate-manifest-20260725.v4.json`, `work/goal-orchestration/g1-p6-release-gap-reconciliation-20260725.v7.json`, and `work/goal-orchestration/full-plan-completion-audit-20260725.v7.json`.
+
+## 2026-07-24 Continuation: current G1/P6 audit and release safe-stop
+
+Final local blocker-index reconciliation is complete and security-approved: v2 `work/goal-orchestration/g1-p6-blocker-index-20260724.v2.json` has SHA-256 `ed1dc362c1650a5ff470ea6cbeeab57ed09126f978015bd441366904bd254b62`; its final verifier receipt is `work/goal-orchestration/g1-p6-blocker-index-final-verifier-receipt-20260724.v3.json`. Fresh readback is `57` tracked-diff files, `703` untracked files, `139` short-status entries, `760` file-level entries, and `git diff --check` passes. The verified stage order is `G1-deploy → P6 → P7 → G1-activation → P8 → P9`; G1-deploy remains `blocked_not_approved`, all five canonical automations remain `PAUSED`, and no downstream external gate advanced.
+
+The exact remaining G1-deploy blockers are: `g1_deploy_named_decision_missing`, `g1_hunk_allowlist_owner_readback_missing`, `trusted_candidate_signing_evidence_missing`, `independent_signature_verification_missing`, `candidate_manifest_and_hash_bundle_missing`, `candidate_bound_migration_evidence_missing`, `production_backup_restore_rollback_owner_evidence_missing`, `isolated_restore_snapshot_integrity_and_retention_evidence_missing`, `incident_drill_evidence_missing`, `production_postgresql_ha_pitr_failover_multi_node_recovery_evidence_missing`, `zero_unexplained_skip_disposition_missing`, `deploy_rollback_anchor_missing`, and `trusted_current_turn_iab_runtime_not_bound_to_registered_runner`.
+
+An unsigned local candidate observation manifest was added and independently reviewed without advancing any gate: `work/goal-orchestration/unsigned-candidate-manifest-20260724.v1.json`, SHA-256 `e014eb531d887ea45b878cfeb963dbe86c364c69077225376714c6bd83c7b3ef`. It records candidate commit/tree and observed package/source hashes, but explicitly has no signature, candidate SHA-256, approved hunk hash, production readiness, or G1 approval. The latest worktree count is now `57 tracked / 704 untracked / 139 short-status / 761 file-level`; the one-entry increase is this manifest. The 13 G1 blockers remain open.
+
+The file-level count is `756` (`57` tracked-diff files + `699` untracked files); the compact `git status --short` view has `139` entries. The canonical non-promotional evidence index is `work/goal-orchestration/g1-p6-canonical-evidence-pack-20260724.v1.json`.
+
+After adding that canonical evidence index, the latest file-level count is `757` (`57` tracked-diff files + `700` untracked files); the compact `git status --short` view remains `139` entries.
+
+The independent security review classifies the v1 pack as a blocker index only, not G1-deploy/P6 release evidence. It requires explicit separation of G1-deploy, P6, P7, and per-automation activation gates; named G1-deploy decision and hunk-allowlist owner; candidate manifest/SBOM/test/hunk hashes, independent verification, migration and rollback-anchor evidence; backup/restore/rollback owner and isolated recovery evidence; zero-unexplained-skip disposition; and the plan-preserved IAB/provider/workflow-specific blockers (`trusted_manifest_hash_source_unverified`, `iab_external_atomic_gate_production_transaction_not_wired`, `per_workflow_account_target_payload_receipt_contract_missing`, LinkedIn/Gmail/Printify/Canva blockers). The exact emitted P7 blockers remain `automation_same_first_class_root_repair_required` and `automation_same_root_repair_current_automation_metadata_invalid`; no repair is attempted from this `thread_source=user` task.
+
+Fresh current-tree and role readback confirmed that the separate clean candidate remains isolated and valid for local verification: commit `493da6399a315e453f113475c8ecd7eeead37a8a`, tree `2273267d3d3870de52d3ea230dbfac1e43d48d55`, clean status, and the recorded compile/web/focused/runner/SBOM results. The current main worktree is not clean: `57` tracked-diff files, `699` untracked files, and `756` status entries; `git diff --check` passes. This current count supersedes the older `693` untracked-file count in the v1 G1/P6 readback. Fresh `npm run build:server`, `npm run typecheck:web`, and `npm test` also pass; the full test readback is `840 tests / 836 passed / 0 failed / 4 skipped`.
+
+The fresh official audit remains `6 checked / 6 compliant / 0 gaps` with `external_action_executed=false`, and canonical external automations remain paused. A macOS Apple Development identity is present, but it is not evidence of the trusted candidate signing key required by the release plan; no candidate signature was created. The existing v1 G1/P6 JSON also contains duplicate keys under `p7.kernel_execute`, so it is not canonical signing input. The current audit is `work/goal-orchestration/g1-p6-current-audit-20260724.v1.json`.
+
+G1-deploy is not approved. Exact blockers remain trusted candidate signing and independent verification, production backup/restore/rollback, incident drill, PostgreSQL HA/PITR/failover/multi-node recovery evidence, trusted current-turn IAB runtime/provider binding, and authenticated provider readback. P7 remains blocked before the business stage by `automation_same_first_class_root_repair_required`; repair preparation requires `thread_source=automation` while this user task is `thread_source=user`. No browser, provider, deploy, activation, credential, or external effect was executed. Safe resume is to obtain those trusted external proofs, regenerate canonical release evidence, then re-enter the separate G1-deploy approval with automations paused.
+
+## 2026-07-24 Continuation: P6 readback corrected
+
+The clean candidate remains verified in the separate worktree (`493da6399a315e453f113475c8ecd7eeead37a8a`, tree `2273267d3d3870de52d3ea230dbfac1e43d48d55`, clean status, compile/web build/focused 35/35/runner 9/9/SBOM hash passed). The G1/P6 readback was refreshed to remove stale P7 run references and now records the current exact execute blocker: `automation_same_first_class_root_repair_required`, with repair preparation blocked by `automation_same_root_repair_current_automation_metadata_invalid` because the current task metadata is `thread_source=user` and the registered repair requires `thread_source=automation`. The official Codex App API was used to reconcile `daily-ai-research-publish-run`, `nisenprints-daily-product-canva-printify-etsy-pinterest`, and `automation-3`; a fresh local readback now shows all five canonical external automations `PAUSED`. No external intent or action occurred. P6 remains blocked by unavailable trusted signing key, missing production backup/restore/rollback and incident evidence, missing trusted registered runtime/provider binding, and missing authenticated provider readback.
+
+## 2026-07-24 Continuation: Goal re-confirmed and reconciliation/production readback refreshed
+
+The active Goal was re-confirmed with the full owner-operated SaaS objective unchanged: complete G0→P0→P1→P2→P3→P4→P5→G1-deploy→P6→P7→G1-activation→P8→P9, without fabricating provider/auth/runtime/signature/production evidence and without changing protected global policy/hooks/model-routing. The Goal remains `active`, not complete and not yet blocked.
+
+P3 reconciliation coverage is now stronger: the synthetic worker seam verifies confirmed terminalization, `not_found` failed terminalization without retry, and `ambiguous` reconciliation stop; the added tests are `2/2`, and the full server suite is `840 tests / 836 passed / 0 failed / 4 skipped`. Evidence: `work/goal-orchestration/registered-root-runtime-attempt-20260724.v1.json`, `work/goal-orchestration/g1-p6-release-gate-readback-20260724.v1.json`, and `work/goal-orchestration/p5-security-local-verification-20260724.v2.json`.
+
+The current turn exposed host-issued metadata and locally repaired the registered runner import boundary (`globalThis.process` plus an argv-safe shim). Node check, current-turn root dry-run, current-turn root preflight, shell dry-run, and official audit all pass; the runner's current SHA-256 is recorded in `work/goal-orchestration/registered-root-runtime-attempt-20260724.v1.json`. The read-only execute attempt still stopped before the business stage because the existing repair baton requires `thread_source=automation`, while this user task is `thread_source=user`; no shell/environment/file metadata fallback was used, external intent/action remained `0/0`, canonical automations remain `PAUSED`, and no provider connector was called. Read-only operations monitoring also remains fail-closed: the local endpoint is not the production monitoring contract, while production operator readbacks return `401` without the read-only credential. G1/P6/P7, activation, P8, and P9 remain blocked by clean signed candidate, production backup/restore/rollback/incident evidence, trusted registered runtime/provider binding, and authenticated provider readbacks.
+
+The common prevention is now applied to all five project-owned registered-root entrypoints: `automation-os-iab.mjs`, `automation-2-turn.mjs`, `automation.mjs`, `obsidian.mjs`, and `supervisor-artifact-ingest.mjs` no longer statically import `node:process`; they use the host-supplied `globalThis.process` and an empty-safe argv shim. All five pass Node syntax checks and Codex root import verification, and the official shell dry-run remains green. The current-turn evidence is `work/goal-orchestration/registered-root-common-compatibility-20260724.v1.json`; the current G0/P0 authority is `work/goal-orchestration/g0-decision-pack-20260724.v2.json` and `work/goal-orchestration/p0-dirty-baseline-hunk-freeze-20260724.v2.json`.
+
+The runner-specific regression is `9/9` passed, and the existing registered-runner/server focused regression is `35/35` passed after the common repair. The full server suite had a prior verified readback of `840 tests / 836 passed / 0 failed / 4 skipped`; a fresh duplicate rerun was stopped after an unrelated serial test process remained idle beyond the expected window, so that rerun is not counted as new proof.
+
+A separate clean candidate was assembled from the approved dependency set without cleaning the current worktree: candidate commit `493da6399a315e453f113475c8ecd7eeead37a8a`, tree `2273267d3d3870de52d3ea230dbfac1e43d48d55`, clean status, server compile, web build, server focused `35/35`, runner `9/9`, and CycloneDX SBOM hash readback all pass. It is not signed because no trusted signing key is available; production backup/restore/rollback and incident-drill evidence also remain absent. Evidence: `work/goal-orchestration/clean-candidate-readback-20260724.v1.json`.
+
+## 2026-07-24 Continuation: local release verification refreshed
+
+The current active Goal remains `active`; G1-deploy/P6/P7 live execution, activation, P8, and P9 are not falsely promoted. Fresh local verification passed: `npm run build` (server and web), `npm run typecheck:web`, and read-only load against `http://127.0.0.1:8787/api/health` (`677/677` requests succeeded, `0` failed; p50 `7ms`, p95 `53ms`, p99 `174ms`). Evidence: `work/qa/load-readiness-2026-07-24T12-12-24.560Z.json` and the updated `work/goal-orchestration/g1-p6-release-gate-readback-20260724.v1.json`.
+
+The Codex in-app Browser also read back the local UI at `http://127.0.0.1:5173/`: API readback completed and the empty initial state is rendered without treating missing companies as success. This is local UI proof only; it is not a registered scheduler receipt, provider receipt, authenticated connector readback, or current-turn external runtime binding. No external action was executed. Canonical automations remain `PAUSED`; the exact G1 blockers remain clean signed candidate, production backup/restore/rollback and incident evidence, trusted current-turn IAB runtime/provider binding, and authenticated provider readbacks.
+
+## 2026-07-24 Continuation: P1-P5 local implementation and final verification
+
+The reset active Goal is continuing from the user-approved G0/P0 decision. Local P1-P5 work is implemented within the recorded allowlist: tenant-scoped effect identity and ledger lineage, durable reservation/capability/approval binding, signed capability with manifest hash and issuer checks, read-only root rejection of external non-idempotent effects, private root-owned external transition handling, fresh current-turn IAB issuer/coordinator seams, an external durable queue with one-shot provider boundary and forced reconciliation/no-auto-retry, a root-coordinator worker bridge local seam that records the reservation immediately before the provider boundary and terminalizes success/reconciliation, a durable external worker callsite that claims only with injected root coordinator/binding dependencies, Daily AI/Job Manager/NisenPrints external-intent preparation adapters, no-effect scheduler/worker failure-load coverage, and legacy effect-ledger migration repair. Protected global policy/hooks/model-routing and unrelated dirty paths were not changed.
+
+Final evidence: focused P1-P5 regression is `80/80` passed after the migration repair and root-coordinator worker bridge seam; the latest full server regression is `838 tests / 834 passed / 0 failed / 4 skipped`. The no-effect P5 load/failure subset `19/19` passed, including two schedulers/one occurrence, three workers/one winner, 100 concurrent claimants/one winner, heartbeat/stale fence, and worker-exit lease recovery. The tenant audit passes with all blank-company, foreign-key, orphan, and lineage-mismatch counts at zero. The existing SQLite effect-ledger migration now adds `capability_id` before creating its capability index, and the regression test covers that order. Machine-readable evidence is `work/goal-orchestration/p5-security-local-verification-20260724.v2.json`; G1/P6 readback is `work/goal-orchestration/g1-p6-release-gate-readback-20260724.v1.json`. A database connection-drop injection is not verified because the current test adapter has no injectable connection-failure seam. The latest independent re-review request timed out without a readback and is not treated as proof of completion.
+
+The production plan is not complete: the production trusted manifest/current-turn IAB runtime binding, provider connector and authenticated readback, clean signed candidate, backup/restore/HA/PITR/rollback drill, deploy/activation, and monitoring-window proof are absent. The production worker now has a project-owned callsite, but its default CLI path remains fail-closed with `trusted_current_turn_iab_runtime_not_bound_to_registered_runner` and does not claim queued external work; only a first-class root may inject the coordinator and binding builder. Canonical external automations remain `PAUSED`; no provider-authenticated or external business action was executed. A direct current-turn Codex in-app Browser read-only canary did succeed (`about:blank`, DOM/screenshot/console readback, `external_intent=0`, `external_action=0`, `finalize(keep=[])`), but it is not a registered scheduler receipt or provider readback. An earlier canonical runner `execute` stopped at `automation_kernel_in_app_browser_stage_metadata_required`; after the common import repair, the current-root execute attempt now stops earlier at `automation_same_first_class_root_repair_required` because the user task does not carry the registered `thread_source=automation` metadata. All attempts produced zero external intent/action. A project-owned `runRegisteredAutomationFromCurrentRoot({globals,codexTurnMetadata})` entrypoint was added under the P0 scope amendment; it accepts only an explicit host-issued metadata object and keeps shell execute fail-closed. Manifest validation, global automation audit `6/6`, dry-run, preflight, and metadata-absence guards pass. The PAUSED automation prompts were synchronized through the official Codex App API for automation-3, automation-os-iab, daily-ai-research-publish-run, nisenprints-daily-product-canva-printify-etsy-pinterest, and obsidian; all five read back with `CURRENT_ROOT_LIVE_EXECUTION_V1`, and activation was not attempted. G1-deploy/P6, registered P7 execution, G1-activation, P8, and P9 remain pending and must not be inferred from local tests or this canary.
+
+The worker callsite and reconciliation repair are recorded in `work/goal-orchestration/p0-scope-amendment-durable-worker-callsite-20260724.v1.json`: focused verification is `46/46` passed for the worker/queue/dashboard subset, missing-runtime mode preserved the queued job with zero attempts and zero external effect, an injected synthetic coordinator delegated exactly once, and an injected provider readback terminalized reconciliation without retry. The latest full server regression is `838 tests / 834 passed / 0 failed / 4 skipped`. This is local seam evidence only; provider/authenticated IAB runtime remains unavailable.
+
+## 2026-07-24 Continuation: user G0 approval and P0 hunk freeze
+
+The user explicitly instructed: decide all owner/approval fields and execute the full plan, with all approvals granted. The G0 decision pack is now `approved_for_local_implementation`; responsibility is assigned to the current root task, with security review delegated to the security reviewer role and provider/runtime evidence remaining fail-closed when unavailable.
+
+P0 dirty baseline/hunk freeze is recorded in `work/goal-orchestration/p0-dirty-baseline-hunk-freeze-20260724.v1.json`. The baseline contains 57 modified paths and 674 untracked paths (135 porcelain status entries). All pre-existing paths are frozen. The approved implementation scope is limited to the listed service-readiness/IAB/durable-queue/schema files and their focused tests, plus administrative artifacts. Protected global policy/hooks/model-routing and unrelated dirty changes remain excluded.
+
+## 2026-07-24 Continuation: full-plan G0 blocked audit reached threshold
+
+Fresh source-of-truth and Graph readback found the same `g0_owner_decision_packet_missing` blocker for the third consecutive Goal turn. The first occurrence was the Graph submission at `2026-07-24T08:12:36Z`; the second completed all safe P5 local verification; the third re-read the current G0 draft and confirmed no owner decision inputs had arrived. The blocked audit is `work/goal-orchestration/full-plan-blocked-audit-20260724.v1.json`.
+
+The Goal is now marked `blocked` under the strict three-turn rule. This is not a completion claim: P0 through P9 remain unexecuted because implementation authorization, file/hunk allowlist, provider/IAB authority, deploy/activation approval, and required owners are absent. Current truth remains no implementation/browser/provider/deploy/activation/external effect, canonical automations `PAUSED`, and protected global surfaces unchanged. Resume requires a fresh owner G0 decision packet, then P0 dirty baseline/hunk freeze.
+
+## 2026-07-24 Continuation: P5 local verification refreshed before G0
+
+While the full-plan Graph remains stopped at `g0_plan_approval`, the safe local verification lane was refreshed. `npm run build:server`, `npm test` (`817 tests / 813 passed / 0 failed / 4 skipped`), the focused security/IAB/tenant/queue/workflow suite (`83 / 79 / 0 / 4`), `npm run typecheck:web`, `npm run build:web`, and `git diff --check` all passed. The official automation audit also passed `6/6 compliant, gaps=0`, with `external_action_executed=false`.
+
+This evidence does not promote the project to production readiness: G0 approval, allowlist/hunk freeze, trusted root-owned IAB issuer/executor, provider/auth receipts, production HA/PITR/restore/rollback, deploy, activation, and monitoring-window proof remain missing. No implementation, browser/provider operation, deploy/activation, or external effect was performed in this checkpoint. The machine-readable artifact is `work/goal-orchestration/p5-local-verification-readback-20260724.v1.json`.
+
+## 2026-07-24 Continuation: full plan Goal reset and G0 safe-stop
+
+The user explicitly requested that all unfinished work be resumed and that the Goal be set again. A new active Goal was created for the full owner-operated SaaS plan, and a new durable Graph run `run_2581c9fed77440ea` was started with the ordered G0/P0/P1-P4/security/P5/G1-deploy/P6/P7/G1-activation/P8/P9 stages. The native Planner route was freshly dispatched with the parent-side routing guard; agent `019f932d-1313-7241-9d51-147f3ac5b3b4` returned bounded five-heading planning text with zero tool calls.
+
+The Graph stopped at the real `g0_plan_approval` gate. The current G0 draft remains `proposed_not_approved`: no named G0 approver or implementation/security/provider/backup/restore/rollback/incident/hunk-allowlist owners, approved file/hunk allowlist, dirty-worktree exclusions, scope/non-goal decision, or implementation-start approval were supplied. Read-only preparation is complete; no implementation, browser/provider operation, deploy/activation, or external effect occurred. Canonical automations remain `PAUSED`, protected global execution-policy/hooks/model-routing surfaces remain unchanged, and no old receipt/request/browser handle was reused.
+
+The machine-readable readback is `work/goal-orchestration/full-plan-continuation-readback-20260724.v1.json`. The exact restart point is fresh owner G0 decision packet -> P0 dirty baseline/hunk freeze -> approved security remediation -> focused/full verification. Until G0 is supplied, only read-only preparation is authorized by the plan.
+
+## 2026-07-24 Continuation: native Planner route recovered with recursion guard
+
+The active Goal `019f911d-93f7-7e00-8bd0-07876fb0f24a` remains `active`. The native Planner route `multi_agent_v1__spawn_agent(agent_type=planner)` was freshly verified with provider `openai`, model `gpt-5.6-sol`, and `high` reasoning. Invocation `019f9165-a169-72e0-9987-79c5f413594b` returned the required bounded five-heading output with `tool_call_count=0`; the session readback is `/Users/nichikatanaka/.codex/sessions/2026/07/24/rollout-2026-07-24T07-53-04-019f9165-a169-72e0-9987-79c5f413594b.jsonl`.
+
+The observed local failure mode was Planner-side recursive orchestration: a prior bounded Planner session called `route_task` before returning its result. A narrow common prevention was added only to `/Users/nichikatanaka/.codex/agents/planner.toml`: the parent performs route/preflight and the Planner must return bounded text without tools, route_task, workflow tools, shell, browser, skills, or descendants. No shared `~/.codex/config.toml`, execution policy, global hook, or model-routing surface was changed. The provider-boundary root cause remains unproven and is not overstated.
+
+Durable Graph run `run_f9fd5fad6df9494e` completed intake and Planner stages and is waiting at the real `plan_approval` gate. The recovery readback is `work/goal-orchestration/planner-recovery-readback-20260724.v1.json` (SHA-256 `2f1eef18cc66555f99ea72286345bbdd784fa09bc26d8e0f15aac1f1a8160896`). Restart requires owner-approved G0/plan approval; after approval, dispatch Security Reviewer before any implementation. No browser, provider/connector auth, deployment, activation, or external effect occurred.
+
+## 2026-07-23 Continuation: protected planner/runtime blocker closed
+
+After three consecutive identical planner-runtime failures, the active Goal is being closed as `blocked` under the strict blocked audit. The exact blocker is `cursor_fable5_planner_timeout`; supporting evidence is `codex_mcp_config_parse_failed_at_features.multi_agent_v2`. The immutable readback is `work/goal-orchestration/planner-runtime-protected-blocker-20260723.v3.json` (SHA-256 `aa02f98949d044c78643dc04a6fcee75262c125ef2b6a2d9ba48ebc07da83302`).
+
+No shared `~/.codex/config.toml`, global hook, shared execution policy, or model-routing surface was edited because those are protected runtime boundaries requiring explicit owner review or a fresh Codex task/full restart. The target repository remains unactivated: canonical external automations are `PAUSED`, `external_action_executed=false`, and no browser/provider/auth/deploy/external effect occurred. Resume requires owner-reviewed runtime/config repair or a fresh fully restarted task, then a complete Fable 5 `PLAN_DRAFT` before any production seam implementation.
+
+## 2026-07-23 Continuation: Fable planner fork retry and deterministic readback
+
+`bridge_readback: accepted`. The blocked planner run was forked from the completed risk checkpoint without mutating its parent: parent `run_6e956e9a5eb54b9c`, fork `run_40dd8e2a6333460f`, source checkpoint `1f185f92-74ae-6f7c-8005-0d902b58d97c`. The fresh Fable 5 read-only plan call again timed out after 180 seconds with no `PLAN_DRAFT`; the exact blocker is `cursor_fable5_planner_timeout`.
+
+The immutable readback is `work/goal-orchestration/planner-fork-retry-readback-20260723.v2.json` (SHA-256 `bb3a55c5389f60a320cfc4e3d0449865ccd2fad8700900fae032fcea0a74b42d`). Runtime diagnostics show the current source adapter is version `0.1.5` with a 600-second timeout, while the exposed route behaves as a 180-second generation; `codex mcp` also fails to parse `features.multi_agent_v2`. This is recorded as a runtime-generation/config mismatch, not a reason to substitute the native planner or kill/restart Codex from this task.
+
+Deterministic local checks still pass: official automation audit `6/6 compliant, gaps=0`; server build passed; focused IAB/kernel/queue/service-readiness contract suite `76 passed / 0 failed / 0 skipped`; `git diff --check` passed. No browser/provider/connector/auth/deploy/activation/external effect occurred and canonical external automations remain `PAUSED`. Safe restart is a fresh Codex task or fully refreshed planner MCP/config, followed by plan-only resumption from the risk checkpoint; implementation still requires a complete plan and the graph `plan_approval` gate.
+
+## 2026-07-23 Crash continuation: planner route safe-stop
+
+`bridge_readback: accepted`. Source cwd: `/Users/nichikatanaka/Documents/New project`; target repo: `/Users/nichikatanaka/Documents/Codex/automation-os`. Inventory and read-only risk analysis resumed after the PC crash. Inventory artifact `work/goal-orchestration/inventory-20260723.v1.json` has SHA-256 `121828e65c25685bcbaaf715fe3d3287c4ddcdd92ec97b1df167f37b1ca0640a`; risk register `work/goal-orchestration/risk-register-20260723.v1.json` has SHA-256 `bc9eadc40b039adf22c32f1dcd26f4bf74aa99362e3a99e110185735601f972f` and records 12 risks (5 critical, 7 high).
+
+The durable Adaptive Orchestration run is `run_6e956e9a5eb54b9c`. Its mandatory Fable 5 read-only planner route was attempted twice: attempt 1 stopped at `cursor_fable5_planner_timeout` after 180 seconds; attempt 2 returned expected provider/model/read-only metadata but no required `PLAN_DRAFT`, so the graph stopped fail-closed at the plan stage with `cursor_fable5_planner_output_incomplete`. Immutable readback: `work/goal-orchestration/planner-stage-blocked-20260723.v1.json` (SHA-256 `8c035d856f46b8212de45b0f9b4d404d5fd50b075bb02aaf2b071c99214a9641`).
+
+No implementation, browser tab claim, provider/connector/auth call, activation, deploy, or external effect occurred in this continuation. Canonical external automations remain `PAUSED`, and `goal_complete=false`, `goal_blocked=false`, `external_action_executed=false` remain current truth. Safe restart is a fresh Codex task or refreshed planner route, rerunning only the plan stage from the risk checkpoint; do not substitute a native planner or implement/activate the production seam until a complete plan and explicit owner approval exist.
+
+## 2026-07-23 Crash continuation: atomic IAB gate local verification
+
+`bridge_readback: accepted`. Source cwd: `/Users/nichikatanaka/Documents/New project`; target repo: `/Users/nichikatanaka/Documents/Codex/automation-os`. After the PC crash, the current gate, project authority, and latest service-readiness artifacts were fresh-read. The existing root-owned IAB executor contract was hardened locally and a SQL-backed production-shaped atomic gate now revalidates capability/approval/request bindings, live attempt/lease/fence/account state, and derived reservation identity before one approval-consume plus effect-ledger transaction. The gate is still not wired into a production executor call site.
+
+Focused atomic-gate regression passed `7/7`; IAB/effect-related regression passed `47/47`; the full server suite passed `817 tests / 813 passed / 0 failed / 4 skipped`; server build, web typecheck/build, and `git diff --check` all passed. The immutable local readback is `work/service-readiness/iab-external-atomic-gate-readback-20260723.v1.json` (SHA-256 `7a3a71ccd977703999a9b028b47260df3fa7eccb0a11c492af54668f78b01c1c`).
+
+The corresponding Goal status supersession is `work/service-readiness/goal-status-20260723.v4.json` (SHA-256 `38218c85933d621c2a30bdefe9457f489038cc2c32cc43dd33cf80a8e8de045a`); it remains `incomplete_with_exact_blockers`.
+
+This stage used synthetic temporary databases only: no Codex in-app Browser tab was claimed or created, no provider or connector was called, no receipt/request/browser handle was reused, and `external_action_executed=false`. The root runtime/capability issuer, trusted manifest source, provider adapters, production call site, and workflow activation remain absent. Canonical `automation-3`, Daily AI, and NisenPrints automations remain `PAUSED`; `goal_complete=false`, `goal_blocked=false`, and `activation_authorized=false` remain current truth.
+
+Exact blockers are preserved: `iab_external_effect_capability_not_implemented`, `in_app_browser_runtime_unavailable`, `iab_external_atomic_gate_production_transaction_not_wired`, `trusted_manifest_hash_source_unverified`, Daily AI LinkedIn no-post/IAB/media proof, Job Manager Gmail response capture/IAB submission proof, NisenPrints Printify/Canva auth and IAB publish proof, Company SaaS G0/G1 and production HA/PITR/restore/rollback/incident evidence, and per-workflow provider receipt contracts. Safe resume is the separate CRITICAL stage for trusted root-owned IAB runtime issuance and provider-specific same-run receipt/readback/cleanup/release; do not replay or activate any old effect.
+
+## 2026-07-23 Crash continuation: root-owned IAB executor contract hardening
+
+`bridge_readback: accepted`. Source cwd: `/Users/nichikatanaka/Documents/New project`; target repo: `/Users/nichikatanaka/Documents/Codex/automation-os`. After the PC crash, local authority files and the current target state were fresh-read. No old receipt, request, browser handle, task tab, listing, post,応募, send, or provider effect was reused; no tab was claimed or created and no external action was executed.
+
+The new sibling contract `apps/server/src/serviceReadiness/iabExternalExecutor.ts` is now fail-closed and review-approved. It remains a contract seam, not a production executor: the runtime and real atomic approval+effect transaction are not injected. Provider receipts now carry and validate every current root/company/job/workflow/run/stage/attempt/fence/capability/turn/session/nonce/approval/payload binding field; foreign-run receipts cannot terminalize the current effect. Capability TTL is revalidated after current approval readback, after runtime identity readback, and immediately before the provider call. A provider/outcome external-effect flag mismatch becomes `reconciliation_required`. Cleanup is ordered as release-free draft -> capability release fresh readback -> final immutable cleanup receipt, and missing release readback blocks terminalization.
+
+Immutable readback: `work/service-readiness/iab-external-executor-contract-readback-20260723.v2.json` (SHA-256 `1af741de0415a66fb2f65ce43a1efb3b82476abe0795456e640ca92897684982`). Verification: full server suite `810 tests / 806 passed / 0 failed / 4 skipped`; executor focused `16/16`; reviewer executor+adapter `18/18`, service-readiness `54/54`, verdict `APPROVE`; `npm run build:server`, `npm run typecheck:web`, `npm run build:web`, and `git diff --check` all exit `0`.
+
+Current truth remains `goal_complete=false`, `goal_blocked=false`, `external_action_executed=false`, and canonical automations remain `PAUSED`. The exact blockers are intentionally preserved: `iab_external_effect_capability_not_implemented`, `in_app_browser_runtime_unavailable`, production atomic approval/ledger transaction not wired, Daily AI LinkedIn no-post/IAB proof, Job Gmail response capture/IAB submission proof, NisenPrints Printify/Canva auth and IAB publish proof, Company SaaS G0/G1 and production HA/PITR/restore/rollback/incident evidence, and per-workflow provider receipt contracts. Safe resume is to wire the trusted root-owned IAB runtime and real atomic gate, then obtain fresh same-run capability/provider/cleanup/release evidence; no activation or external replay is authorized.
+
+## 2026-07-23 Crash continuation: fresh IAB availability and registry fail-closed readback
+
+`bridge_readback: accepted`. Source cwd: `/Users/nichikatanaka/Documents/New project`; target repo: `/Users/nichikatanaka/Documents/Codex/automation-os`. After the PC crash, the Codex in-app Browser backend was freshly initialized and read back successfully; it currently has zero open/user tabs and zero controlled tabs. No tab was claimed or created, and no old receipt, request, browser handle, listing, post,応募, or send effect was reused. This backend availability does not provide the Automation OS root-owned external executor.
+
+`apps/server/src/serviceReadiness/contractRegistry.ts` now keeps every generic or `{approved:true, capability_id}` capability description at `no_effect` until a trusted root-owned IAB executor is actually injected. The new fail-closed regression is included in the fresh full server suite: `794 tests / 790 passed / 0 failed / 4 skipped`; targeted post-change tests were `32/32`. Build and server no-emit typecheck passed. Evidence: `work/service-readiness/release-evidence-contract-readback-20260723.v2.json` (SHA-256 `8d9fb383496b282ff650f70a9970dba5a4f3656d4cf1069dfb82a3a7bf8876ab`).
+
+The current Goal readback is `work/service-readiness/goal-status-20260723.v3.json` (SHA-256 `ec56238a797f17093ee0a403d0269b541c98609baf384b2f9bd9e53f67cd6748`): `goal_complete=false`, `goal_blocked=false`, `external_action_executed=false`. Canonical automations remain `PAUSED` (stale Job alias `DISABLED`). The exact blockers are unchanged: no trusted root-owned IAB external executor/current-turn capability, Daily AI LinkedIn no-post/IAB capability, Job Gmail response capture, NisenPrints Printify/Canva auth, six Company G0/G1 evidence fields, and production HA/PITR/failover/restore/rollback/incident proof. The next safe step is a reviewed executor contract with atomic approval+effect reservation and same-run provider/cleanup readback; no activation or external action is authorized.
+
+## 2026-07-22 Crash continuation: strict release-evidence envelope
+
+The local Company SaaS release boundary now has a separate `company_release_evidence.v1` contract at `apps/server/src/serviceReadiness/releaseEvidence.ts`. It validates owner-approved G0 decisions, mixed-file hunk allowlist ownership, clean candidate/SBOM/signed-manifest provenance, backup/restore/rollback execution readback, all three workflow account/target/payload/provider/idempotency/cleanup/rollback contracts, and incident recovery evidence. Every verified field must carry a readback URI, SHA-256, verifier, and timestamp; dirty candidates, failed restore drills, incomplete workflow coverage, stale/unknown fields, and `external_action_executed=true` are rejected. The builder deliberately emits a blocked packet and never invents evidence.
+
+Owner Admin `/api/v1/admin/diagnostics` now exposes the blocked `company_release_evidence` projection, and the sidebar renders it as a read-only evidence-gates panel. Fresh local proof is `work/service-readiness/release-evidence-contract-readback-20260722.v1.json` (SHA-256 `4f47f09a4d76f79e4aab16eeff8fa1f218dde26c6fb12d5d752b6ef02568b7b1`): server/web typechecks, server emit, web production build, release-evidence `8/8`, Company release readiness `6/6`, Admin API `5/5`, contract registry `8/8`, control manifest `2/2`, selected IAB/root/cleanup/kernel/queue regression `53/53`, and approval/tenancy regression `15/15` all passed with zero external action; the full server suite was `789/793` passed, `0` failed, `4` skipped. The evidence contract now requires a trusted verifier, fresh URI/hash readback, canonical value-hash binding, mandatory candidate/source binding for ready status, rollback-anchor binding, workflow/provider receipt-contract binding, and signature-algorithm prefix binding. This strengthens validation and visibility only; it does not create approvers, signatures, candidate SHAs, backup proofs, provider receipts, IAB capabilities, or activation authority.
+
+The requirement-by-requirement continuation audit is `work/service-readiness/goal-status-20260722.v2.json` (SHA-256 `e234306c73c90889aeafe374f7333dc8a586a60c6fe6f2a8bffa5e703b40340d`). It keeps the full goal `incomplete_with_exact_blockers`: local control-plane, tenancy, durable queue, proof/cleanup, and UI/readback requirements are partially or fully verified; IAB external execution, real workflow/provider evidence, Company G0/G1 release values, production HA/PITR/restore/rollback, and incident-drill proof remain missing. `goal_complete=false` and `goal_blocked=false` are intentional; local progress remains possible without user-supplied evidence or an external runtime.
+
+Fresh official App view/readback after this continuation confirms `automation-os-iab`, `automation-3`, `daily-ai-research-publish-run`, and `nisenprints-daily-product-canva-printify-etsy-pinterest` are `PAUSED`; stale `job-application-manager` remains `DISABLED`. `/Users/nichikatanaka/.local/bin/audit-codex-automations` returned `6/6 compliant`, `gaps=0`, database checked, and `external_action_executed=false`. No status mutation was made in this readback.
+Machine-readable copy: `work/service-readiness/official-automation-audit-20260722.v2.json` (SHA-256 `3ea4d4fee6e73a7028a9fbaefbd70db945b6db134e5d0912caa724c21a171206`).
+
+## 2026-07-22 Crash continuation: official pause parity and root-bound IAB canary
+
+`bridge_readback: accepted`. Source cwd: `/Users/nichikatanaka/Documents/New project`; target repo: `/Users/nichikatanaka/Documents/Codex/automation-os`. After the PC restart, the official `codex_app__automation_update` capability was freshly resolved. The canonical registered IDs `automation-3` (Job Application Manager), `daily-ai-research-publish-run`, and `nisenprints-daily-product-canva-printify-etsy-pinterest` were reconciled to `PAUSED` through the official App API; their TOML/SQLite status parity is now confirmed. The stale `job-application-manager` alias remains `DISABLED` and was not changed. Global audit is `6/6 compliant`, `gaps=0`, database checked, and `external_action_executed=false`.
+
+Fresh local IAB-only canary proof is `work/service-readiness/reference-workflow-canary-20260722.v2.json` (SHA-256 `238da03a5ebd2d5332b917c970677358dd359a43c5ee3f546d7e8f7b79556e17`): Daily AI, Job, and NisenPrints are all `proof_backed_safe_stop_verified` with `runtime_binding_verified=true`, `safety_proof_verified=true`, `idempotent_recheck=true`, exact blocker `in_app_browser_required`, and `external_action_executed=false`. The readback packet is `work/service-readiness/automation-paused-iab-canary-readback-20260722.v2.json`.
+
+The current server build passed and the focused service-readiness/kernel/queue contract regression passed `115/115` with `0` failures. No browser, provider, connector, post, application, listing, pin, activation, deploy, push, or external effect occurred. Release remains `blocked_pending_required_fields`; the remaining independent blockers and five Company SaaS G0/G1 fields are preserved exactly in the readback packet.
+
+Cleanup-binding addendum: `apps/server/src/serviceReadiness/cleanupReceipt.ts` now defines `service_readiness_cleanup_receipt.v1`; the canary binds one immutable no-residual/no-external-action receipt per run. Latest canary `work/service-readiness/reference-workflow-canary-20260722.v3.json` (SHA-256 `cebfb3482099a239df2d4e4aef7c2b5ade14fb78a4a9f0ddf1b2395dbdf8334f`) is `3/3` safe-stop verified with cleanup hashes, and cleanup receipt tests `2/2` plus canary tests `6/6` pass. This remains a local proof contract, not an IAB executor or activation authorization.
+
+Owner Admin now includes a pure `company_release_readiness` projection and the sidebar displays all five required G0/G1 fields as blocked until real owner-approved evidence is supplied. This is a read-only visibility improvement; it does not create approvers, signatures, candidate SHAs, backup proofs, provider receipts, or activation authority.
+
+Admin/build readback: `work/service-readiness/company-admin-readback-20260722.v1.json` (SHA-256 `736285acab408c6928e4ccfb4f653bacf6b3cc319be3465080c9b2dfd3c8c1a9`) records server/web typecheck, web production build, and the combined Admin/cleanup/canary focused suite `15/15` with zero external action.
+
+## 2026-07-22 Crash continuation: durable migration and full regression readback
+
+`bridge_readback: accepted`. Source cwd: `/Users/nichikatanaka/Documents/New project`; target repo: `/Users/nichikatanaka/Documents/Codex/automation-os`. A fresh local readback after the PC crash completed without browser/provider execution. The full compiled server suite now passes `767 tests / 763 pass / 0 fail / 4 skipped` with exit code `0`; the previous three execution-routing failures were stale expectations for `chrome_extension_required` and now correctly assert the current IAB blocker `in_app_browser_required`.
+
+The durable service-readiness migration is recorded in `work/iab-readonly-bridge-v1-20260721/phase-15-service-readiness-durable-migration.v1.json` (SHA-256 `01e8fe2705209b06f42da424cd663e34db71b69d6dcbf56d6a4f50edadfebfa1`). SQLite/Postgres migration and indexes for `service_readiness_effect_ledger`, root-bound IAB identity, and the pure `service_readiness_iab_external_capability.v1` validator are locally verified. The external capability remains contract-only: it does not issue an IAB handle, call a provider, mark an effect executed, or populate provider receipts. All three reference adapters remain read-only/blocked, and all in-scope official automations remain `PAUSED`.
+
+Fresh foundation and release readbacks are `work/service-readiness/foundation-gap-audit-refresh-20260722.v1.json` (SHA-256 `99e40e08dbc709b17fff60e5c55444440e7c06ed04ad6284e6e5b8a77df09cc8`) and `work/company-saas-release-target-pack-refresh-20260722.json` (SHA-256 `1e233085f0ea99671c35ebd5aae9b96417b4060d0d1b88b88c06433b84542ff7`). The release pack remains `blocked_pending_required_fields`: named G0 decisions, mixed-file hunk owner, clean candidate/signed manifest, backup/restore/rollback owner, per-workflow account/target/payload/provider receipt values, and a reviewed root-owned IAB external executor.
+
+Post-regression official scheduler audit was rerun read-only: `6/6 compliant`, `gaps=0`, database checked, and `external_action_executed=false`. Proof: `work/iab-readonly-bridge-v1-20260721/phase-16-post-regression-official-audit.v1.json` (SHA-256 `0034a3a9fcf0dc4eb026e2a3052a7803083c8d29055e8bb916fec4e31f224739`).
+
+The pure root-stage admission contract is also verified at `5/5`: it binds fresh IAB identity, root/run/stage/attempt/fencing, workflow account/target/payload/provider fields, and the canonical effect key while remaining read-only. It is not a provider executor and does not issue a capability or claim an external action. Proof: `work/iab-readonly-bridge-v1-20260721/phase-17-root-stage-admission-contract.v1.json` (SHA-256 `8e8a583abdfa60ef34d480d48e0dccb116d635d950b383fe2ac24b398aea747b`).
+
+After the root-stage addition, a fresh server build and focused service-readiness regression passed `19/19` across root-stage admission, IAB external capability, root binding, effect ledger, and workflow adapters. Proof: `work/iab-readonly-bridge-v1-20260721/phase-18-post-root-stage-focused-regression.v1.json` (SHA-256 `da2ac391fbdc79540e3f6254b06dfbc542356cd79837fbbad43c41333b08fb85`).
+
+Independent review fixes are now read back in `work/iab-readonly-bridge-v1-20260721/phase-19-review-fix-regression.v1.json` (SHA-256 `5a5d693efa9d138d1c37384f92c15a9877c8b1182f1f598ac1f0a9b7f3f87967`). The Job Manager identity is canonicalized to `job-application-manager` and rejects the legacy `job-manager` alias; stale null blocker fallbacks no longer emit `chrome_extension_required`; the full-test log is task-owned and checksummed. Post-fix focused tests passed `95/95`; no external action occurred.
+
+The final current-tree full regression is `776 tests / 772 pass / 0 fail / 4 skipped`, exit `0`, including the reference/root-stage admission tests and all review fixes. Checksummed log: `work/iab-readonly-bridge-v1-20260721/full-server-test-20260722-post-review.log` (SHA-256 `856abb7ff41659de395ccb197109577fb4dddd66994e9e608301ccef80e73cc8`). Final proof: `work/iab-readonly-bridge-v1-20260721/phase-20-full-regression-post-review.v1.json` (SHA-256 `da49a153ad74e57e7704b7a25b954b21c9584657ada5c9fab5908d1615c6abcb`).
+
+Final current-tree readback is consolidated at `work/iab-readonly-bridge-v1-20260721/phase-21-final-current-tree-readback.v1.json` (SHA-256 `176ed8052c3216a3665e2b2a8f063832449b3be31c2281a19f43884253723bca`). It records current build/test/web/diff proof, the fresh official audit (`6/6`, gaps `0`), canonical Job identity, IAB-only fallback, release fields, and the exact external blockers. It does not authorize activation or execution.
+
+Independent blockers are unchanged: Daily AI LinkedIn no-post/IAB capability, Job `gmail_connector_response_capture_unavailable`, Nisen `printify_auth_required` plus `canva_connector_reauthentication_required`, and Company release fields. No old receipt/request/browser handle, external action, activation, push, deploy, or App/Chrome restart was used. Resume at non-live root/queue/kernel/proof adapter wiring and release-field readback; do not activate or execute reference workflows until the blockers are independently proven resolved.
+
+## 2026-07-22 Crash continuation: durable effect and IAB root binding
+
+`bridge_readback: accepted`. Source cwd: `/Users/nichikatanaka/Documents/New project`; target repo: `/Users/nichikatanaka/Documents/Codex/automation-os`. Fresh IAB owner-admin readback and official Codex App prompt migration remain current: `automation-os-iab`, Daily AI, `automation-3`, and NisenPrints are all `PAUSED`; global audit is `6/6 compliant`, `gaps=0`, `external_action_executed=false`. No old receipt/request/browser handle or external effect was reused.
+
+The local service foundation now has a durable `service_readiness_effect_ledger` with canonical provider/account/target/payload/effect-class keys, replay/cross-binding rejection, terminal receipt persistence, and ambiguous-to-reconciliation normalization. A new `service_readiness_iab_root_binding.v1` contract binds fresh IAB session/turn/nonce/stage/attempt identity to root/workflow/run/stage/attempt/fencing fields and rejects legacy surfaces, prior receipt reuse, and external mode until a separate IAB external executor exists. `npm run build:server` and the focused service-readiness suite passed `56/56`; no browser or provider execution occurred. Proof: `work/iab-readonly-bridge-v1-20260721/phase-11-durable-effect-and-root-binding.v1.json` (SHA-256 `ef45d6ed5b8f89a79235de7a5f1825a41c206b90ccf7b394d897bdc8cf41bb8c`).
+
+The Owner Admin diagnostics now projects the three reference workflow adapter boundaries (`daily-ai`, `job-manager`, `nisenprints`) as IAB-only, legacy-primary-forbidden, read-only, and blocked at `iab_external_effect_capability_not_implemented`; their contract schemas are visible but account/target/payload/provider receipt values remain unpopulated. Server build, web typecheck/build, and adapter tests passed. Proof: `work/iab-readonly-bridge-v1-20260721/phase-12-admin-workflow-adapter-projection.v1.json` (SHA-256 `1c9734ceb9375bb7b946120ec77dbbb917fda44ba97dac7922df763b58bd8592`).
+
+Post-crash official readback confirms the Codex App registry is still `6/6 compliant`, `gaps=0`, database checked, and `external_action_executed=false`; the four in-scope automations remain `PAUSED`. Proof: `work/iab-readonly-bridge-v1-20260721/phase-13-post-crash-official-audit.v1.json` (SHA-256 `2d02e9c5f0fbf46c783084b6bf61117afa367114509b7261314e4c57783caf53`).
+
+The official scheduler registry retirement path removed one stale registry-only `automation` entry that pointed to a missing `automation.toml` and had no official App DB row. Current registered automation IDs were not changed; deterministic kernel manifest compilation is now `16/16`, registered Codex runner tests `13/13`, and the post-retirement global audit remains `6/6 compliant`, `gaps=0`, `external_action_executed=false`. Proof: `work/iab-readonly-bridge-v1-20260721/phase-14-stale-registry-retirement.v1.json` (SHA-256 `636ca37a362dd19e3d51ee1739426e55ecf96a346e6d75fb95508496329edfb4`).
+
+Exact blockers remain independent: `iab_external_effect_capability_not_implemented`, Daily AI LinkedIn no-post/IAB capability, Job `gmail_connector_response_capture_unavailable`, Nisen `printify_auth_required` plus `canva_connector_reauthentication_required`, and Company SaaS's five G0/G1 release fields. Resume at non-live workflow adapter wiring and provider contract population; keep registered automation `ACTIVE`/execute blocked until fresh capability, account/target/payload/provider receipt, cleanup, backup/rollback, and approval evidence are read back.
+
+# 2026-07-17 Fresh release-pack synchronization after Codex App retries
+
+The release target pack was synchronized to the newest current evidence without changing its authorization boundary. Pack: `work/company-saas-release-target-pack-refresh-20260716.json` (SHA-256 `e9bf5e3ddcbe6e0a11295112dd8e6eddcd1cbd7191a87bc1fa350ef7039d8d6e`), refreshed at `2026-07-17T14:31:17+09:00`, status `blocked_pending_required_fields`.
+
+- Daily AI latest registered run `2026-07-17T05-04-37-000Z` is blocked at no-post QA by `chrome_extension_task_tab_selector_transport_timeout:240000`. The selector did not complete; post-timeout browser readback, claim, close, finalize, retry, and publish were not attempted. Cleanup proof is `cleanup_verified=false`, owned runner processes `0`, target tab presence unverified. Evidence: `artifacts/chrome-plugin-runs/2026-07-17T05-04-37-000Z/registered-browser-summary.json`, `automation-kernel-result.v2.json`, `cleanup-proof.json`.
+- Job Application Manager received one fresh registered-thread execute retry after the root tool registry exposed Gmail names, but the registered thread's callable surface still lacked `mcp__codex_apps__gmail_search_emails` and `mcp__codex_apps__gmail_batch_read_email`. Exact blocker remains `gmail_connector_context_isolation_unavailable`; no controller, Gmail search, browser,応募, send, or external write ran in that retry.
+- NisenPrints Canva was checked read-only through the current Codex App connector and returned `UNAUTHORIZED / oauth_token_invalid_grant / TRIGGER_REAUTHENTICATION`. Exact blocker remains `canva_connector_reauthentication_required`; no Canva, Printify, Etsy, or Pinterest write ran.
+- Required release fields remain: named G0 approvers/decisions, mixed-file hunk allowlist owner, clean candidate SHA plus signed manifest, backup/restore/rollback owner, and per-workflow account/target/payload/provider receipt contracts. No push, deploy, production mutation, or external publish is authorized by this pack.
+
+# 2026-07-17 Fresh Company SaaS UI readback; canonical empty state and cleanup
+
+bridge_readback: accepted. Source cwd: `/Users/nichikatanaka/Documents/New project`. Target repo: `/Users/nichikatanaka/Documents/Codex/automation-os`. A fresh Chrome Extension/Profile 2 receipt was issued for this turn; the current receipt and final cleanup receipt are recorded in `work/company-saas-wave6-ui-readback-20260717/evidence-manifest.json`.
+
+An isolated server was run on `http://127.0.0.1:8788/` with task-owned SQLite `/tmp/automation-os-company-saas-fresh-QhGgfE`. The local UI flow created the synthetic canonical company `Wave 6 UI Canary` once. The company automation list DOM confirms the normal empty copy `このプロジェクトの自動化はまだありません`, zero automations from the local API, `runs=0`, `proofs=0`, `worker=idle`, and no `未接続`/API-disconnected copy. The run-history DOM and screenshot make the zero counts visible on screen (`実行件数 0`, `処理候補 0`, `承認待ち 0`, `待機Job 0`, `実行中Job 0`). `html[lang]=ja` is confirmed.
+
+Fresh evidence:
+
+- manifest: `work/company-saas-wave6-ui-readback-20260717/evidence-manifest.json` (SHA-256 `98a528bbb8d56ab53a99ba00392877789e3389910076b84182fa8548bd76cce5`)
+- automation DOM: `work/company-saas-wave6-ui-readback-20260717/chrome-dom-readback.json`
+- automation screenshot: `work/company-saas-wave6-ui-readback-20260717/chrome-company-automations.png` (SHA-256 `63a38fa78b523b9f54181c6afc823c0013ec26757abf31c19253dafa0ab69f9f`)
+- visible zero-count DOM: `work/company-saas-wave6-ui-readback-20260717/chrome-runs-dom-readback.json`
+- visible zero-count screenshot: `work/company-saas-wave6-ui-readback-20260717/chrome-runs-zero.png` (SHA-256 `5454e053f1a688a8cc80544d50c092b763de0211a3f7c1a63c9f1600abdfa4e9`)
+
+The release target pack was refreshed to remove the now-satisfied fresh Chrome receipt requirement while retaining the remaining G0/G1, backup/rollback, and per-workflow contract gates. The pack hash at this UI readback was `21dfd0e574898517441ae5bc9f4b02a49a5a6e030f737a62afdfc943055a5569`; the later synchronized pack is `e9bf5e3ddcbe6e0a11295112dd8e6eddcd1cbd7191a87bc1fa350ef7039d8d6e`, with status still `blocked_pending_required_fields`.
+
+Cleanup is complete: task tab `1980894428` in `🧵 Company SaaS UI確認` was finalized with `keep:[]`; Heavy Chain, X, and the existing about:blank tab were not touched. Server session `20035` stopped, port `8788` has no listener, and the temporary SQLite directory was removed. No deploy, push, production mutation, external post, application, send, payment, checkout, App/Chrome restart, or alternate browser was used. This fresh readback supersedes the historical foreign-session misclassification; it is UI proof only and does not satisfy the remaining release-authorization fields.
+
+## 2026-07-17 Codex App fresh workflow audit addendum
+
+The same current App-only audit also recorded the latest registered workflow outcomes without external writes. Daily AI run `2026-07-17T03-53-47-3NZ` reached fresh Profile 2 preflight and stopped in no-post QA at `chrome_extension_task_tab_selector_transport_timeout:240000`; publish, engagement, and Sheets writes were not attempted and its cleanup proof remains `cleanup_verified=false` because post-timeout tab readback is forbidden. Job Application Manager stopped before controller/Gmail execution at `gmail_connector_context_isolation_unavailable`; no Gmail body read, application, send, or external write occurred. NisenPrints stopped at `canva_transaction` with `canva_connector_reauthentication_required` (`oauth_token_invalid_grant` / `TRIGGER_REAUTHENTICATION`); no Canva retry, hosting, Printify, Etsy, or Pinterest write occurred. These are current exact blockers, not release authorization.
+
+# 2026-07-17 Fresh registered App run 006; edit-collision safe-stop after selector hardening
+
+Daily AIのselector hardening後にCodex App登録workflowを1回再検証しました。run `2026-07-17T03-25-22-608Z` は現turn preflightの再成立前に `codex_edit_collision_write_set_unresolved` で停止し、Chrome openTabs/selector、登録runner、QA、publish、engagement、Sheets writeは未実行です。旧receipt/backend/tabは再利用せず、owned processは0、tab `1980894382` は未確認、`cleanup_verified=false`。再開点は `pre_browser_readiness` です。
+
+証跡は `artifacts/chrome-plugin-runs/2026-07-17T03-25-22-608Z/pre-execution-blocker.json`（SHA-256 `75aeb6375bc475eac8270352e945d7bdf59579c5242e2e4c889c717e6f9ade08`）、`stage-observations/pre_browser_readiness/attempt-1/summary.json`（SHA-256 `56711fe4cb2e33e80bd0b0150b5b95482126f8f1122e825093bfe29762f74274`）、`browser_video_qa_no_post_preflight/manifest.json`（SHA-256 `e077690419644a9ab15fb5556ef4db9056c103b338fa0853a733aed0cea67548`）、`cleanup-proof.json`（SHA-256 `37f74481ba38e9b5089b725129fae579cf25c8613ba571c63551a81a18fd79d1`）です。selector hardeningのローカル証跡は `artifacts/chrome-plugin-runs/daily-ai-selector-hardening-20260717.json` に記録しました。
+
+このrunのexact blockerは編集衝突ガードであり、live selectorの成功証明ではありません。外部provider実行、応募、送信、投稿、push、deployは未完了です。
+最新release pack `work/company-saas-release-target-pack-refresh-20260716.json` は SHA-256 `2592e05adcfd64d9bc5d831203b16c276b58c644e0a69d7f6fd277baba83ce9c`、status `blocked_pending_required_fields` のままです。
+
+# 2026-07-17 Fresh registered App run 005; read-only task selector transport safe-stop
+
+Codex App内のDaily AI登録workflowで新run `2026-07-17T03-01-28-053Z`（thread `019f6be4-69da-7953-8664-f1e81a5e6aae`、turn `019f6dfa-bc40-78d1-9a90-86bf2ed5fb29`）を開始しました。manifest validationは成功し、fresh Chrome Extension/Profile 2 preflightも3/3 samplesで成立しましたが、read-only `openTabs` / 共通task selectorが180秒で `js execution timed out; kernel reset, rerun your request` となりました。登録runnerのstage claim、QA、publish、engagement、Sheets write、claim/close/finalize、Runway再生成は未実行です。
+
+Run 005の証跡は `artifacts/chrome-plugin-runs/2026-07-17T03-01-28-053Z/pre-execution-blocker.json`（SHA-256 `cd1f280b4316f79393e8cea5f7b9e0c8d8511131f990bd98e42341043ba5532e`）、`stage-observations/pre_browser_readiness/attempt-1/summary.json`（SHA-256 `01a57768edd092cc2a1861add4bdd7093f1e66bd050caff098fc3b432f20dc19`）、`browser_video_qa_no_post_preflight/manifest.json`（SHA-256 `ee787db1b3e47ed50d00b8091390230fa1d76bbb97d53f9236d0b949d8390d21`）、`cleanup-proof.json`（SHA-256 `5c88379594d6c7ec2b4da81eaf00cd98d19a6e97dd2aa39e1047b19c4df8263a`）です。fresh receiptは `/Users/nichikatanaka/.codex/state/chrome-extension-health/sessions/019f6be4-69da-7953-8664-f1e81a5e6aae/turns/019f6dfa-bc40-78d1-9a90-86bf2ed5fb29/de571dc72b2a988ba015c525b5609fc533a3257d90e58fe6/95c0b1060ee88cfd3736ba4de84d9c28f5ca37b28dc67ff63f188a4f389548e2.json`（SHA-256 `95c0b1060ee88cfd3736ba4de84d9c28f5ca37b28dc67ff63f188a4f389548e2`）です。cleanupは `cleanup_verified=false`、owned process 0、tab `1980894382` の状態は未確認です。再開点は `pre_browser_readiness` で、timeout後のbackend/receipt/tab objectは再利用しません。
+
+このrunのexact blockerは `chrome_extension_task_tab_selector_transport_timeout:180000`（NodeREPL表記 `js execution timed out; kernel reset, rerun your request`）です。Goalは未完了・未blockedのままです。
+
+# 2026-07-17 Fresh registered App run 004; selector repair regression readback
+
+Codex App内のDaily AI登録workflowの最新runは `2026-07-17T02-02-03-000Z`（thread `019f6be4-69da-7953-8664-f1e81a5e6aae`）です。`research_queue_refresh`、`pre_entry_readiness`、`pre_browser_readiness` は成功し、Runway `gpt-image-2` handoffを3件検証してship-now/usable bufferを `3/3` にしました。selector repair後のno-post QAは、最初のbrowser callが240秒transport timeoutでkernel resetし、その後のfresh cleanup preflightが `chrome_signed_runtime_generation_repair_lease_inode_changed` で停止しました。QAは `safe=false / recommendation_status=fail / anomaly_detected=true`、publish、engagement、Sheets writeは未実行、`external_action_executed=false` です。
+
+Run 004の証跡は `artifacts/chrome-plugin-runs/2026-07-17T02-02-03-000Z/automation-kernel-result.v2.json`（SHA-256 `308cec730cb5b85402b61c31e4e6843004cfe652c09b6109b81704fd039d6b81`）、`browser_video_qa_no_post_preflight/manifest.json`（SHA-256 `26a88fbf56911773519f6fab422cc7be18e143585bd74087e1ea264c2489d953`）、`cleanup-proof.json`（SHA-256 `9989bec2a21c2ef348478babf696c2e6fa5db8420558c165076d1380c9229a37`）、`registered-browser-summary.json`（SHA-256 `8263fcfcd3edcde2427b10b6466dadf0bf8082ef2dd609ae547f9d1edcae21c9`）です。cleanupは `cleanup_verified=false`、owned process 0、browser tab countは未確認です。再開点は `browser_video_qa_no_post_preflight` で、古いreceiptやtimeout後のtab objectを再利用しません。
+
+selector修正後の局所検証は tab lease `12 passed`、Daily route `16 passed`、New project全体pytestは `1542 passed / 0 failed / 54 skipped` です。Job Managerの最新Gmail blockerは `gmail_connector_response_capture_unavailable`、NisenPrints/Canvaは `canva_connector_reauthentication_required` のままです。release packは `blocked_pending_required_fields` のままで、今回更新後のSHA-256は `ad02470df8f25035d9ff591afe54a053f868d6a5e86e38804783737528364b6b` です。外部provider実行、応募、送信、投稿、push、deployは未完了です。
+
+# 2026-07-17 Fresh registered App run 003 and durable evidence refresh
+
+Codex App内のDaily AI登録workflowの最新runは `2026-07-17T01-13-40-000Z`（thread `019f6be4-69da-7953-8664-f1e81a5e6aae`）。`research_queue_refresh`、`pre_entry_readiness`、`pre_browser_readiness`、cleanupは成功し、ship-now/usable bufferは `3/3`。投稿前のno-post QAは `safe=false / recommendation_status=fail / anomaly_detected=true`、exact blocker `chrome_extension_tab_operation_timeout:claim_tab` で外部操作前に停止した。publish、engagement、Sheets writeは未実行。
+
+最新証跡は `artifacts/chrome-plugin-runs/2026-07-17T01-13-40-000Z/automation-kernel-result.v2.json`（SHA-256 `f8c4f44cdb873549300a3077d6345bb72732e94b2afb433e2d78e481ec493f35`）、QA summary（SHA-256 `b60e89c2ea8531d9a9e27b90df8d19991efde8ab5efc34af7864d43089772b0b`）、cleanup proof（SHA-256 `954f8a5b5c50a0d3cb27231b1d5135bbd782d94a16636d7f11b1a24988279e67`）。cleanupは `cleanup_verified=true`、owned process 0、browser target 0、run-owned tab 0。fresh signed Chrome receiptは `/Users/nichikatanaka/.codex/state/chrome-extension-health/sessions/019f6be4-69da-7953-8664-f1e81a5e6aae/turns/019f6da0-a095-7a62-8f04-a45a6f5f5867/126c3b3375c9c62db08e483b0d2225cd8ff45990f2cce113/a0ac019699e57b8793781f263278fe66db4cd78d615b158f1c05f2927b8a1988.json`（SHA-256 `a0ac019699e57b8793781f263278fe66db4cd78d615b158f1c05f2927b8a1988`）。
+
+Dailyの局所hardening focused verificationは tab lease `9 passed`、Daily route `15 passed`。New project全体pytestは `1541 passed / 0 failed / 54 skipped`、登録automation監査は `6/6 compliant / gaps 0`。Job Managerの最新blockerは `gmail_connector_response_capture_unavailable`、NisenPrints/Canvaは `canva_connector_reauthentication_required` のまま。release pack `work/company-saas-release-target-pack-refresh-20260716.json` は SHA-256 `2d7a31552fa7536d3b022a07de1a11c768db34b87374f5c6cb9bd7c09f501b3d`、status `blocked_pending_required_fields`。Goalは未完了・未blockedで、Dailyの再開点は `browser_video_qa_no_post_preflight`。
+
+# 2026-07-17 Fresh registered App run 002 after local hardening
+
+Daily AIの最新fresh registered App turn `019f6d6e-4642-7573-b1d9-cd0de373c7c9` は、run `2026-07-17T00-38-02-000Z`、fresh Runway `gpt-image-2` handoff、fresh Profile 2/Kernelsを使い、`research_queue_refresh`、`pre_entry_readiness`、`pre_browser_readiness`を成功させた。候補はship-now/usable publish buffer `3/3`まで補充されたが、投稿前のno-post QAで `safe=false / recommendation_status=fail / anomaly_detected=true`、exact blocker `chrome_extension_tab_operation_timeout:claim_tab` により外部操作前に停止した。`direct_publish`、engagement、Sheets writeは未実行。cleanupは`cleanup_verified=true`、owned processes 0、browser targets 0、run-owned tabs 0。証跡は `artifacts/chrome-plugin-runs/2026-07-17T00-38-02-000Z/automation-kernel-result.v2.json`、`stage-observations/browser_video_qa_no_post_preflight/attempt-1/summary.json`、`cleanup-proof.json`。
+
+Dailyの局所hardeningは `scripts/browser_use/chrome_extension_tab_lease.mjs`、`scripts/run_daily_ai_chrome_plugin.mjs`、関連testsへ反映した。claim/close/finalizeはbounded no-retry、ID-only claimはcurrent-session live handleへ解決、Dailyの直接tab closeはhelper経由。focused verificationはtab lease Node tests `7 passed`、Daily route `15 passed`。証跡は `artifacts/chrome-plugin-runs/daily-ai-tab-lease-hardening-followup-20260717.json`。次回はbufferを3/3へ補充して`pre_entry_readiness`から再開する。
+
+Job Managerのfresh registered App turn `019f6d45-70cd-7d43-af8a-6da969608b79` はChrome preflight/controller後、Gmail summary searchを1回実行したが、100件のidentity/classificationをcaptureできず `gmail_connector_response_capture_unavailable`。Chrome終端の補助blockerは `chrome_extension_turn_health_receipt_unpromoted`。body read、browser chunk、応募、送信、外部writeは未実行。canonical manifest/terminal/cleanup proofは `artifacts/run-summaries/codex-app-automation-3-20260716-233336-228558-96ed460c/follow-up/` に保存し、owned process cleanupは完了。
+
+Canva connectorはlive read-only `canva_search_designs` でも `This app connection requires reauthentication before other actions on this app can succeed.` を返した。NisenPrintsは `canva_transaction` 待ちで、証跡は `/Users/nichikatanaka/Documents/Etsy/artifacts/runway_mcp/canva-connector-auth-readback-20260717-followup.json`。
+
+# 2026-07-17 Codex App registered workflows final audit
+
+Codex App経由のDaily AI、Job Application Manager、NisenPrintsをfresh readbackした。外部providerへのpublish/apply/send/submit/post、production mutation、push、deploy、payment、identity/permission変更は全件 `external_action_executed:false`。Daily AIの最新registered runは候補3/3まで進んだが、no-post QAの `chrome_extension_tab_operation_timeout:claim_tab` で外部操作前に停止し、`cleanup_verified=true`、owned process 0、browser target 0。直前の2/3 runは履歴として保持するが、最新状態の判定には使わない。Job ManagerはGmail response capture unavailableで停止し、その後のowner-started controller runも公式cleanupで終了、`owned_processes_remaining=[]` と terminal/cleanup/state pointer を同期した。NisenPrintsはCanva `oauth_token_invalid_grant / TRIGGER_REAUTHENTICATION` で `canva_transaction` 待ち。Fresh first-use Company SaaS UIはDOM/API/screenshot、canonical company、正常0件表示、task-tab/port/temp DB cleanupまで確認済み。
+
+最新release packは `work/company-saas-release-target-pack-refresh-20260716.json`（SHA-256 `7d104efc176b6e07e0035a47f4592879b9ef2aadf0ee1c081d86ad0e30148803`）で、statusは `blocked_pending_required_fields`。未充足は named G0 approvers/decisions、mixed-hunk allowlist owner、clean candidate SHA + signed manifest、backup/restore/rollback owner、workflowごとの account/target/payload/provider receipt contract、fresh Chrome Profile 2 preflight receipt。対象repoは `ui-restore-clean`、HEAD=`ada18801f12000183eed4462e402bc0b91a9490a`、`origin/main`と一致、dirtyは tracked 55 / untracked 54。New projectの全Python suiteは `1541 passed / 0 failed / 54 skipped` へ更新済み。Goalは未完了・未blockedのまま、Dailyの再開点は `browser_video_qa_no_post_preflight`、その他は各外部依存のfresh proof取得後に一件ずつ再開すること。
+
+## 2026-07-17 Chrome/Profile 2 selector correction; fresh UI readback complete
+
+`bridge_readback: accepted`. Source cwd is `/Users/nichikatanaka/Documents/New project`; target repo is `/Users/nichikatanaka/Documents/Codex/automation-os`. A fresh trusted Chrome Extension/Profile 2 receipt was issued with three health samples (`65dede8127b7d5d5e6d1e7e0d3b5c8ba8437833f108961045ea6779d7c56ee1b`, backend `-9786-4096-9f73-818d715db7dd`). The selector correctly excluded ungrouped `about:blank` anchor `1980894160` and returned `action=create`; `tabs.new()` ran exactly once and created task tab `1980894373` in `🧵 Company SaaS`. Heavy Chain tab `1980894372` and the anchor were not claimed, navigated, closed, or finalized.
+
+Fresh DOM and screenshot evidence is in `work/company-saas-first-use-ui-qa-20260717-selector-corrected/` (artifact SHA-256 `ff2a2686a8612fddb0636c6a6bb7d8950bcac0aa48a90813a5b2edc117cc130b`). The canonical company `初見Chrome確認用会社` was created in the isolated local UI; Chat auto-selected it, and Home showed the normal `自動化はまだ登録されていません` state. API readback is HTTP 200 with one owner company, zero automations, idle worker, and `external_action_executed:false`; console warning/error count is `0`.
+
+Cleanup is complete: the Company SaaS task tab was finalized with `keep:[]`, task server session `96772` stopped, port `8788` is clear, and `/private/tmp/company-saas-ui-qa-20260717.4QL9vo` was removed. The prior `chrome_extension_foreign_session_tab_lease_active` rows in continuation-3, the Goal audit, unblock pack, and release target pack were a historical misclassification of an unrelated Heavy Chain tab plus an anchor; they are superseded by this current readback and no longer represent the current Chrome blocker. The immutable-history correction is `work/company-saas-first-use-ui-readback-blocked-20260717-continuation-3-correction.json`.
+
+The overall Goal remains incomplete because the independent gates are still exact: `g0_named_decisions_owners_and_signed_evidence_store_readback_missing`, `g1_mixed_hunk_allowlist_signed_manifest_clean_release_sha_missing`, `per_workflow_account_target_payload_provider_receipt_missing`, and `g0_g1_release_authorization_and_clean_sha_missing`. No push, deploy, production mutation, external send/post/submit/application, payment, identity/permission change, or App/Chrome restart was performed. Machine artifact: `work/company-saas-first-use-ui-qa-20260717-selector-corrected/attempt.json`. Current pack readbacks: Goal audit SHA `30a19d5d90af41752263c3fe077b2d3303b8dd958bccfd8572c03a43a564ed63`, unblock SHA `1981a8e44cdda78a96518ea7caf0f1e2732a786bd4a6af8c85ebc3e9ba289e96`, release target SHA `48bb550029e04d763c66eea3360403ba3fe779b69c12859f8c15cc1dfdaeea84`.
+
+## 2026-07-17 Synthetic sandbox rehearsal; local-only proof complete
+
+仮データでG0/G1入力形、3 workflow契約、Kernel compile/status、登録automation dry-run/preflight、Daily AI demo seed、provider receipt→internal readback照合まで一周させた。証跡は `work/company-saas-synthetic-sandbox-20260717/` に保存している。3 workflow safe-stop canaryは全件 `proof_backed_safe_stop_verified`、synthetic full-flowは3/3 `simulated_reconciled`、focused regressionは9/9、すべて `external_action_executed:false`。仮provider receipt、仮署名、仮candidate SHAは本番権限ではなく、実値へ差し替えるための練習用である。
+
+このsandboxは「次回は `synthetic-inputs.json` の値だけを承認済み実値へ差し替える」再現点を提供する。実provider receipt、G0/G1署名、clean release SHA、production/external completion proofは未取得であり、Goalのexact blockersは変わらない。temp DB/artifactはrun後に削除し、sandboxの永続物は入力・readback・READMEだけを残した。
+
+## Historical (superseded) 2026-07-17 Chrome/Profile 2 fresh receipt; foreign anchor lease safe-stop
+
+The trusted Chrome Extension/Profile 2 preflight was refreshed through the hook-provided bootstrap and issued receipt `a79bca35b9304799752d6bd7046ac7a1eeba09938c40d20b187df82d139e4f3f` for session `019f6643-dafc-7dc3-849b-4836afc0b7f9`, turn `2e280ca7-fbe1-4556-b55a-28d5ca1751cc`, with three health samples. Re-enumeration found `Heavy Chain` as an unrelated tab and one ungrouped `about:blank` connection anchor; current-session `tabs.list()` was empty. The anchor was not claimed or navigated, no replacement tab was created, and `tabs.finalize({keep:[]})` completed.
+
+Exact blocker: `chrome_extension_foreign_session_tab_lease_active`, now observed for three consecutive goal turns. Immutable readback: `work/company-saas-first-use-ui-readback-blocked-20260717-continuation-3.json` (mode `0600`, SHA-256 `0b3ed43bbeba67b510a44b4e87892ab49f229282f8707479e97378a7e5b77aae`). The current worktree is 55 tracked modifications, 519 non-ignored untracked files, and 109 porcelain lines. No local server, DOM/screenshot proof, external action, production mutation, push, or deploy occurred. Goal state is now `goal_complete=false`, `goal_blocked=true`; resume requires the foreign session to release the anchor or an unowned non-anchor task tab to appear.
+
+Current packs: Goal audit `work/company-saas-goal-completion-audit-20260716.json` (SHA-256 `35cb6c540dcc272ee16af3e0049aa9b3d1fb05c5d7ee92accbc4698b82cc664a`), unblock `work/company-saas-unblock-pack-20260716.json` (SHA-256 `3db68ba566780cda90eba56ce96bdfa8d46dd7f410a5b0cbb80566434f999fc7`), release target refresh `work/company-saas-release-target-pack-refresh-20260716.json` (SHA-256 `5c5785d6e42fb7a6270eaba61a68be828dbf9524aa5fd47a04d262ded1fbd227`).
+
+## 2026-07-17 Chrome preflight attestation safe-stop; no receipt or browser action
+
+`bridge_readback: accepted`. Source cwd is `/Users/nichikatanaka/Documents/New project`; target repo is `/Users/nichikatanaka/Documents/Codex/automation-os`. The fresh Chrome Extension/Profile 2 preflight attempt was stopped by the PreToolUse hook before browser-client setup, Profile 2 enumeration, or receipt issuance. Exact blocker: `chrome_extension_preflight_helper_attestation_failed`. Read-only attestation found the helper SHA and hook-pinned helper SHA agree (`0f2360b83591162ea1a0af6403132c6f44c459c690a919c00ab0ec2dbde6c1d7`), while `verify_policy.py` is false for `runtime_receipt_captured_after_health_sampling`; no workaround or hash edit was made.
+
+Immutable readback: `work/company-saas-first-use-ui-readback-preflight-blocked-20260717-continuation-2.json` (mode `0600`, SHA-256 `3f07c4810943987bbd8d0673c50cc9ee09b0ec1ce6af2763b3576f5ba207f611`). This turn produced no receipt, browser backend/tab enumeration, task-tab claim, DOM/screenshot, local server, external action, production mutation, push, or deploy. The earlier foreign-session lease was observed for two goal turns but was not reverified in this turn.
+
+Current packs: Goal audit `work/company-saas-goal-completion-audit-20260716.json` (SHA-256 `b2a99223306df2807dd44b9fdceceb2a75c45e22dafb80b9c554f29f2b736ad4`), unblock `work/company-saas-unblock-pack-20260716.json` (SHA-256 `4e9b098972d14349508b103d21dd1513adea595202d9713e4871ea981f848ce1`), release target refresh `work/company-saas-release-target-pack-refresh-20260716.json` (SHA-256 `a399efb6717a08bbf2ca7cc92504b663b5988defb23ca182b975c43fe0a81fcf`). Goal remains `goal_complete=false`, `goal_blocked=false`; next restart is a supported hook/runtime attestation repair or refresh, followed by a new current-turn receipt before any Profile 2 tab work.
+
+## 2026-07-16 Unblock pack; exact re-entry fields fixed without external action
+
+`bridge_readback: accepted`. Source cwd is `/Users/nichikatanaka/Documents/New project`; target repo is `/Users/nichikatanaka/Documents/Codex/automation-os`. A machine-readable unblock pack is now recorded at `work/company-saas-unblock-pack-20260716.json` (SHA-256 `5ac832f316395522522868250b72ee7bb7a9a30f830c02ff3de1d394e0419ee2`, mode `0600`) with its human readback at `work/company-saas-unblock-pack-20260716.md` (mode `0600`). It contains eight requirement rows covering G0, G1, Job Manager canonical registration, current-turn Chrome/Profile 2 receipt, three external workflow contracts, and push/deploy boundary; each row records current evidence, missing inputs, verification, unlock condition, and prohibited assumptions.
+
+Local verification remains green (`npm test` 687 total / 683 pass / 0 fail / 4 conditional skips; build, web typecheck, and `git diff --check` pass). The current worktree is 55 tracked modifications, 517 non-ignored untracked files, and 109 porcelain lines after adding the latest evidence. No push, deploy, production mutation, customer invite, payment, identity/permission change, send, post, submit, apply, or external workflow action was executed. Goal state remains `goal_complete=false`, `goal_blocked=false`; the next restart point is the G0 signed decision/evidence-store readback, followed by the G1 approved clean candidate.
+
+## 2026-07-16 Job Manager canonical registration fresh readback
+
+Fresh source-of-truth readback resolved the earlier registration ambiguity. `/Users/nichikatanaka/.local/bin/audit-codex-automations --json` returned `ok=true`, `checked=5`, `compliant=5`, `gaps=0`; the active scheduler ID is `automation`, while legacy `job-application-manager` is `DISABLED` in both TOML and SQLite. Canonical and legacy dry-runs both remained `external_action_executed=false`. Evidence: `work/company-saas-job-manager-canonicalization-readback-20260716.json` (mode `0600`, SHA-256 `bc76a8cd84f917ba0e4aaea24a0123f681d4c05d00bc8bc84e429d97cf81c565`). The prior duplicate-registration blocker is resolved; execute still requires a fresh trusted Chrome receipt and same-run provider proof.
+
+The unblock pack is refreshed at `work/company-saas-unblock-pack-20260716.json` (SHA-256 `5ac832f316395522522868250b72ee7bb7a9a30f830c02ff3de1d394e0419ee2`); its current registration row is `verified_single_active_scheduler_entry`, while the UI row is blocked by the same foreign tab lease for two consecutive goal turns. The Goal audit is refreshed at `work/company-saas-goal-completion-audit-20260716.json` (SHA-256 `798dc47937a7bcbe3884bd30198b0e8577e5ae74e639197008744b271147fed2`) with the current ACTIVE registration, validator-hardening, UI safe-stop/continuation, and full-suite readbacks added; overall status remains `incomplete_with_exact_blockers`.
+
+## 2026-07-17 100-user local 60-minute soak completed
+
+An isolated task-owned SQLite/server/Vite run completed exactly `3,600,000ms` at concurrency `100` against Web `/`, `/api/health`, and `/api/mvp/state` with a read-only token. All `6,901,804/6,901,804` requests succeeded; aggregate p95 was `120ms`, p99 `199ms`, and failures were `0`. Evidence: `work/qa/load-readiness-100-concurrent-60m-task-owned-authenticated-20260716.json` (SHA-256 `f64bceaf93d50287ad4483b3af25eb3554156848c78e30d4b89ca752a2365612`). Cleanup readback is `work/company-saas-60m-soak-cleanup-readback-20260717.json` (SHA-256 `da5b5f7564f3cc08c2b7eb30b91f9441205b2fdffc1f0159d6290a980b4219d2`, mode `0600`): task-owned PIDs `74306`, `74307`, `74327` were stopped, temporary soak state was removed, ports `8788` and `5174` are clear, and pre-existing `8787` was untouched.
+
+The local-quality row is now `verified_for_reconstructed_snapshot_and_100_concurrent_60m_local_readiness_soak`; this still does not prove production-like writes, HA/PITR, cross-browser coverage, or deployed runtime. Refreshed pack hashes: unblock `5ac832f316395522522868250b72ee7bb7a9a30f830c02ff3de1d394e0419ee2`, Goal audit `798dc47937a7bcbe3884bd30198b0e8577e5ae74e639197008744b271147fed2`, release target JSON `39195d53328e4c18d560c4070405e22b62b743df61bbd4dcfa24ba55fb6083ac`.
+
+## 2026-07-17 Job Manager historical run pointer reconciliation readback
+
+The historical Job Application Manager run `20260715-223455-714559-e5c83dd2` is not live despite its stale `run-state.v1.json` pointer reporting `status=running` with `updated_at=2026-07-15T22:35:02+00:00`. Later terminal truth is authoritative for observation: `terminal-state.json`, `terminal-blocker.json`, and `job-manager-cleanup.json` all report `status=blocked`, exact blocker `gmail_outer_stage_terminal_missing_before_registered_child`, `workflow_child_started=false`, and `owned_processes_remaining=[]`, finished at `2026-07-16T00:35:11Z`. No replay, run-state edit, receipt reuse, external action, production mutation, push, or deploy was performed. The cleanup proof is intact.
+
+The readback is recorded at `work/company-saas-job-manager-stale-run-pointer-readback-20260717.json` (mode `0600`, SHA-256 `af1392ebe35b626d167de5fef0a5800a6d5ba559f5a18e22fc243949d0f33277`). It records `state_pointer_inconsistent=true`, the supported completion-validator failure, and the missing child/capability terminal artifacts. The next repair must use the supported scheduler/terminal reconciliation path; `run-state.v1.json` must not be hand-edited or replayed. This historical safe-stop does not satisfy the separate account/target/payload/provider receipt contract, current-turn Chrome receipt, or G0/G1 release gates.
+
+## 2026-07-17 Job Manager completion validator hardening
+
+The source-side `validate_job_manager_completion_audit.py` now performs a strict `terminal_state_matches_run_state` check. When `terminal-state.json` exists, its schema, run ID, status, and exact blocker must match `run-state.v1.json`; a terminal run without the terminal artifact is also rejected, while an ordinary non-terminal run remains valid. This prevents a stale `running` pointer from being treated as live or completion-capable.
+
+Verification: the focused normal-path/stale-pointer regression passed `2/2`; the related Job Manager completion, run-contract, and CLI suites passed `60/60`; Python compilation passed. Evidence: `work/company-saas-job-manager-validator-hardening-20260717.json` (mode `0600`, SHA-256 `dca207bd1921560e7026825931d432dd76708c289aa5fbdf96baaaf404fa3028`). The historical run still fails honestly on the exact Gmail terminal blocker plus the new pointer-consistency check; no replay or state edit was performed.
+
+## 2026-07-17 Job Manager registered-automation readback
+
+Fresh source-of-truth readback found the canonical `/Users/nichikatanaka/.codex/automations/automation/automation.toml` and its SQLite row at `status=ACTIVE`, `model=gpt-5.6-luna`, `reasoning_effort=high`; the legacy `job-application-manager` TOML/SQLite entry remains `DISABLED`. The supported global audit reports `5/5 compliant`, `0 gaps`, and `external_action_executed=false`; the extension-first preflight independently passes `53/53`.
+
+The current official extension-first artifact is `/private/tmp/company-saas-extension-first-preflight-20260717-0124.json` (SHA-256 `d332082aab6a54c5ec9879b998626e88011e834c3f6b988ff39c6f970e76d414`, `ok=true`, `53/53`). The durable current readback is `work/company-saas-job-manager-registration-current-readback-20260717.json` (mode `0600`, SHA-256 `db2e53d59e05e5890a16a63df19cdf0c3cae63da837c160fdf577b1978c733f3`). The earlier `PAUSED` observation is preserved as superseded history in `work/company-saas-job-manager-registration-drift-readback-20260717.json`; the transition actor was not determined from local readback.
+
+No direct TOML/SQLite edit, Chrome restart, external action, push, deploy, or production mutation was performed in this continuation. ACTIVE registration is not proof of a same-run business result; the next gate is a fresh trusted Chrome/Profile 2 receipt plus action-specific workflow contract and provider reconciliation.
+
+## 2026-07-17 Local UI fresh receipt safe-stop
+
+The trusted Chrome Extension/Profile 2 preflight succeeded with receipt `8b5c4acf3e41f4ab675373be767489b6d709fa330b4ec0659a6109de138664fd`, backend `-ef48-45b4-9c1c-a160c5357ee6`, and three stable `openTabs()` samples. The only reusable tab was the existing `about:blank` anchor `1980894160`; claiming it returned exact blocker `chrome_extension_foreign_session_tab_lease_active` because it belonged to browser session `019f66d4-a736-7842-ac65-f6a12ba1701f`. The current session had no claimable tabs, so no replacement tab was created and no DOM/screenshot was claimed.
+
+The isolated local server was started on `127.0.0.1:8788` with a task-owned SQLite directory, then stopped after the tab-lease stop. Port `8788` is clear and the temporary database directory was removed. Chrome session finalization completed with `keep:[]`. Readback: `work/company-saas-first-use-ui-readback-blocked-20260717.json` (mode `0600`, SHA-256 `008c828a6f4aef5c924a3afd658fcf07177999b2eeae7a7ee17f6e57d35dc88d`). Prior canonical-company/empty-state evidence remains historical and was not reused as current-turn proof.
+
+## 2026-07-17 Local UI continuation recheck
+
+A second fresh Chrome Extension/Profile 2 receipt succeeded (`099d9ad14d261e1e34f4f1d83377a841590939cc27c44a72e50ca800ee28075a`, backend `-7e1f-41da-a5f4-bac037ede239`, three samples `2/2/2`). The same blank anchor `1980894160` remained owned by foreign session `019f66d4-a736-7842-ac65-f6a12ba1701f`; Heavy Chain tab `1980894339` was unrelated and untouched. The exact blocker repeated: `chrome_extension_foreign_session_tab_lease_active`. No replacement tab, DOM, or screenshot was created. The task-owned server/DB cleanup and Chrome `keep:[]` finalization both passed. Readback: `work/company-saas-first-use-ui-readback-blocked-20260717-continuation.json` (mode `0600`, SHA-256 `af21e2cd6909eca3cf0b61c03820f3a48ed7d517fa74403355e105297d67d2ab`).
+
+## 2026-07-17 Broad recurring-workflow suite readback
+
+The focused Job Manager completion/run-contract/CLI suites remain `60/60` and the extension-first preflight remains `53/53`. A broader cross-workflow command (`tests/test_job_manager_workflow_runner.py`, `tests/test_job_manager_readiness_audit.py`, `tests/test_automation_prompts.py`) finished `82 passed / 1 failed` with exit `1`. The sole failure is `test_shared_video_qa_visual_audit_contract_is_referenced_by_recurring_workflows`: the NisenPrints registered prompt `/Users/nichikatanaka/.codex/automations/nisenprints-daily-product-canva-printify-etsy-pinterest/automation.toml` lacks the literal `Video QA visual audits follow the shared schema`.
+
+This is an unrelated cross-workflow prompt gap, not a Company SaaS validator regression. It is recorded at `work/company-saas-broad-workflow-suite-20260717.json` (mode `0600`, SHA-256 `0ab3a586630e1c63f97d7671cb1fa5f644f6cad462b6e4fad15036ef502c0dea`). The NisenPrints TOML was not edited from this task; its repair must use that workflow's supported Codex App automation API or an owner-approved documentation change.
+
+## 2026-07-17 NisenPrints registered prompt API repair and broad suite green
+
+The NisenPrints registered prompt was repaired through the supported `codex_app__automation_update` API (`mode=update`) for automation `nisenprints-daily-product-canva-printify-etsy-pinterest`. The source-of-truth TOML now contains the literal `Video QA visual audits follow the shared schema.`, with TOML SHA-256 `b9582d3993f0b63a9faec09ca47ac2ff1407723381b34028e2bacbd54d617e20`; SQLite readback is `PAUSED|gpt-5.4-mini|high|1784219742097`. The automation remains `PAUSED`; no activation or external action was performed.
+
+The broad recurring-workflow suite was rerun after the API update and passed `83/83`: `uv run pytest -q tests/test_job_manager_workflow_runner.py tests/test_job_manager_readiness_audit.py tests/test_automation_prompts.py`. Immutable evidence: `work/company-saas-broad-workflow-suite-20260717-after-nisenprints-api.json` (mode `0600`, SHA-256 `2a59a78774a4678328a88c83e782e027fe8cdb5e0b3b3551da4bdd342ac3d014`). The global automation audit remains `5/5 compliant`, `0 gaps`, `external_action_executed=false`.
+
+This closes the unrelated registered-prompt contract gap only. G0/G1, the fresh Chrome task-tab lease, and the account/target/payload/provider-receipt contracts remain separate blockers; `goal_complete=false` and `goal_blocked=false` remain unchanged.
+
+## 2026-07-17 Full local suite recheck after current-manifest test alignment
+
+The first full-suite rerun exposed one stale test prerequisite (`682 pass / 1 fail / 4 skips`): the Chrome admission test tried to claim `pre_entry_readiness` before the current Daily AI manifest's required `research_queue_refresh` stage. The test was corrected locally to consume that prerequisite; no production behavior code was changed. The targeted automationKernel suite then passed `16/16`.
+
+The final full suite passed `687 total / 683 pass / 0 fail / 4 conditional skips` with `npm test`; `npm run build`, `npm run typecheck:web`, and `git diff --check` also pass. Immutable evidence: `work/company-saas-full-suite-after-kernel-test-fix-20260717.json` (mode `0600`, SHA-256 `5391f72988ee3ce0deef4b0c6040d9ff5cb2c4a2f181bebbf89033b0442c8753`). The current snapshot is 55 tracked modifications, 517 non-ignored untracked files, and 109 porcelain lines. This closes the local test inconsistency, not the G0/G1, Chrome foreign lease, or provider-receipt gates.
+
+## 2026-07-16 Continuation recheck; full local suite green, release gates still blocked
+
+`bridge_readback: accepted`. Source cwd is `/Users/nichikatanaka/Documents/New project`; target repo is `/Users/nichikatanaka/Documents/Codex/automation-os`. After the earlier Chrome receipt stop, the task-owned ports `8788`, `8797`, `8798`, and `5174` were rechecked clear; no new server, tab, or temporary database was started.
+
+The missing registered entrypoint behind the full-suite failure was repaired without activation: `/Users/nichikatanaka/.codex/automations/automation-2/automation.toml`, `STATE.md`, and `queue.json` were restored as an explicitly `INACTIVE` supervisor entry. `automation-2` dry-run and preflight both returned `ok=true` with readable state/queue and `external_action_executed=false`; `audit-codex-automations` returned `5/5 compliant`, `0 gaps` for the current ACTIVE/PAUSED set. No heartbeat, Codex App registration, external action, push, deploy, or production mutation was started.
+
+Fresh compiled server verification now passes `687 total / 683 pass / 0 fail / 4 conditional PostgreSQL skips` with `npm test` exit `0`; the earlier manifest compile failure for the absent `automation-2/automation.toml` is gone. Evidence: `work/company-saas-continuation-recheck-20260716.md`.
+
+The current-turn Chrome Extension/Profile 2 preflight was attempted through the trusted helper but stopped before receipt with exact blocker `chrome_extension_turn_health_identity_missing` because no hook-issued preflight nonce was present in this turn. No nonce was generated, bundle substituted, browser fallback, Chrome/App restart, or external action was used. The previously successful first-use DOM/screenshot proof remains valid for the completed prior turn, but a new current-turn receipt was not established.
+
+The overall goal therefore remains incomplete: local quality advanced, while G0/G1 approval, clean signed candidate, action-specific external target/receipt contracts, current Chrome receipt, and production/external completion proof remain unresolved. The current snapshot is 55 tracked modifications, 501 untracked files, and 109 porcelain lines because this continuation added one evidence artifact.
+
+## 2026-07-16 Next-step readback; local verification passed, release gates remain blocked
+
+`bridge_readback: accepted`. Source cwd is `/Users/nichikatanaka/Documents/New project`; target repo is `/Users/nichikatanaka/Documents/Codex/automation-os`. A Chrome Extension/Profile 2 preflight returned `ok=true` with `profileName=Nicky`, `profileOrdering=2`, and three stable health samples; its readback found only an existing managed blank tab and two unrelated Heavy Chain tabs. Heavy Chain was left untouched, no new tab or external action was made, and the browser session was finalized. After the user steering update, the newly bound preflight (`nonce=24f784...`) timed out with `js execution timed out; kernel reset` before issuing a receipt, so no further Chrome action was attempted.
+
+Current continuation Chrome bootstrap (`nonce=913672...`) failed before receipt with `ENOENT` for the pinned `26.707.72221/scripts/browser-client.mjs`. Only `26.707.91948` exists and its SHA differs from the expected helper; no bundle substitution or browser fallback was used. This is the current exact blocker for Chrome-dependent stages.
+
+Current local verification passed: `npm run build`, `npm run typecheck:web`, and `git diff --check`. The full compiled server suite was `687` tests / `683` pass / `0` fail / `4` conditional PostgreSQL skips; the focused Company slice was `98` / `94` / `0` / `4`. `npm audit --omit=dev --audit-level=high` reported no high-severity finding and one low indirect `esbuild` development-server advisory; no dependency change was applied. Credential-pattern matches were limited to intentional test/sanitizer fixtures.
+
+Task-owned load-readiness evidence is now stronger: with an isolated SQLite database, local Vite on `127.0.0.1:5174`, server on `127.0.0.1:8788`, and a read-only token, the three read surfaces (Web `/`, `/api/health`, `/api/mvp/state`) returned `2,904/2,904` successful HEAD responses at concurrency 8 (p95 `68ms`, p99 `137ms`). A separate 100-concurrent, 5-second probe returned `1,651/1,651` successes (p95 `419ms`, p99 `516ms`). Evidence is `work/qa/load-readiness-task-owned-authenticated-20260716.json` and `work/qa/load-readiness-100-concurrent-task-owned-authenticated-20260716.json`. This is local single-process/readback evidence only; it does not prove production-like writes, HA, cross-browser behavior, PITR/restore, or deployed-runtime SLOs.
+
+The first-use write race was also exercised locally: 100 concurrent `POST /api/companies` calls using the same company name and idempotency key all returned HTTP `201`, produced one unique company ID, and the final owner-scoped readback contained exactly one company. Evidence is `work/qa/company-create-100-concurrency-task-owned-20260716.json` (mode `0600`). This proves the local idempotency/transaction race contract only; it does not prove multi-node production writes or provider-side behavior.
+
+The planned 20-company/5-role authorization matrix was executed against a fresh isolated SQLite database: 20 companies, 100 human users, 20 users per role (`owner`, `admin`, `operator`, `approver`, `viewer`), and 600 checks all passed. Reads were allowed to the owning company, mutation gates matched their role sets, and every adjacent-company direct-ID read was denied. Evidence is `work/qa/company-saas-20-company-5-role-matrix-20260716.json` (mode `0600`, SHA-256 `be95d1bfef8fce80e067651a9c95d958c8374b41d1865391f7f2046867a8e81d`). The temporary database was removed; a default-DB synthetic-ID readback returned zero rows.
+
+The bounded soak was extended to 60 seconds at concurrency `100`: Web, health, and MVP state returned `46,946/46,946` successful readback responses with aggregate p95 `310ms` and p99 `439ms`; each target had zero failures. Evidence is `work/qa/load-readiness-100-concurrent-60s-task-owned-authenticated-20260716.json` (SHA-256 `5a29ce655210940d268f64f2d52d4bbdc9ad272b7e2c9488777bd5d691550599`). This remains a single-process/readback diagnostic and is not a 60-minute production/HA acceptance run.
+
+Fresh focused regression verification after the new probes passed `26/26`: `automationApi` 5/5, `companyScope` 5/5, `durableQueueApi` 3/3, `loadReadiness` 7/7, and `tenancyAudit` 6/6; server build passed before the suite. No source code was changed by the probes.
+
+A detached candidate probe from `HEAD` was created and removed without touching the dirty source worktree. It copied only the audited Company-pure/untracked Company sources plus required Automation Kernel support, deliberately excluding the 10 mixed files. Fresh `npm run build` then failed exactly at the missing `runSqlTransaction`/`SqlTransactionStep` exports from `apps/server/src/db/client.ts` and changed planner/proof signatures from `apps/server/src/index.ts`. This proves the mixed hunk allowlist is required for a compilable candidate; no candidate commit, push or deploy was created.
+
+The release boundary is unchanged. `HEAD` and `origin/main` are both `ada18801f12000183eed4462e402bc0b91a9490a`; the current snapshot is 55 tracked modifications, 501 untracked files, and 109 porcelain lines (434 untracked files are accumulated `work/` evidence). G1 still needs an approved mixed-hunk allowlist, hermetic QA shims, a clean candidate SHA, SBOM and signed manifest. G0 still lacks named IdP/RBAC/MFA, legal/privacy/data-region, topology/SLO/restore, support/incident, provider-canary and evidence-store decisions. Daily AI, Job Application Manager and NisenPrints also lack action-specific account/target/payload/provider-receipt values. No push, deploy, production mutation or external send is claimable.
+
+The current release/target readback is refreshed at `work/company-saas-release-target-pack-refresh-20260716.json` and `.md`. It records the current 55/506/109 worktree counts, G1 hunk inventory, 20x5 role matrix, 60-minute soak, historical Job Manager stale-pointer readback, and all unresolved target/receipt fields without authorizing execution.
+
+Latest registered-automation readback: global audit is `6/6 compliant` with `0` gaps. Daily AI and Job Manager dry-runs produced launch packets but no external action; Daily AI non-submit preflight stopped at `trusted_pre_request_recovery_gateway_required`, and Job Manager still requires a fresh signed Chrome/Profile 2 receipt. NisenPrints dry-run/preflight compiled with `command_ready=true` and `external_action_executed=false`, but its registered automation is `PAUSED` and its non-idempotent workflow effect remains pending. No historical provider receipt or target was reused.
+
+Job Manager registration ambiguity: the global registry canonical entry `job-application-manager` aliases active `automation`, but direct `run-codex-automation --automation-id job-application-manager --stage dry-run` resolves the separate `job-application-manager/automation.toml` with `status=DISABLED`; SQLite contains both records. Global audit follows the alias and reports compliant, but the dispatcher has two possible entries. No status/registry mutation was made; a single-entry owner decision is required before scheduled execution is claimed.
+
+Machine-readable registration evidence is fixed at `work/company-saas-job-manager-registration-ambiguity-20260716.json` (mode `0600`, SHA-256 `f65fe8e39f13a75df441dac675cee3fd637867065466f3f6eca39af044eb4965`). It records the registry entry, both TOML hashes/statuses, and both SQLite rows; `mutation_performed=false` and `external_action_executed=false` remain explicit.
+
+Fresh alias readback: global audit returned `checked=6`, `compliant=6`, `gaps=0`; `--automation-id automation --stage dry-run` resolved `/Users/nichikatanaka/.codex/automations/automation/automation.toml` and generated launch-message SHA `2c5f2dd8b82e2bab2e4d05925e35fc9e4f4305ed949ffc7522ac25b2eef9e3f0`. In the same readback, `--automation-id job-application-manager --stage dry-run` resolved `/Users/nichikatanaka/.codex/automations/job-application-manager/automation.toml` and generated launch-message SHA `9818f05781ca15f43e62304ffec85ee880dc2e77295281b065c975cb0d8240fd`; the direct canonical ID remains a separate DISABLED entry, so a single-entry owner decision is still required.
+
+Cleanup readback: only the target repository remains in `git worktree list`; the detached candidate path is absent; task-owned ports `8788`, `8797`, and `8798` are clear. Port `8787` is a pre-existing `node apps/server/dist/index.js` process from 2026-07-15 and was not touched by this run.
+
+G1 hunk inventory refresh: the ten mixed/required-shared files contain `504` diff hunks (`+4,746/-1,672`). `index.ts` contributes 188 hunks, `App.tsx` 233, and `db/client.ts` 22; the clean candidate depends on selected transaction and planner/proof contracts from those files. Machine-readable hunk boundaries are in `work/company-saas-g1-mixed-hunk-inventory-20260716.json` (mode `0600`, SHA-256 `6cbb88341bdc5f0f7125b6852a2ab216a031e79516bd3ffa42c1ed2507271ae9`). The two tracked QA shims still import untracked 613-line and 194-line implementations under `work/automation-os-new-deploy-repo`. No whole-file promotion or dirty-worktree edit was made; an owner-approved hunk allowlist remains required.
+
+Detached hermetic QA probe: a temporary `HEAD` candidate copied those two implementations into the tracked script paths; both `node --check` and the `work/**` import scan passed, then the candidate was removed. This proves a hermetic implementation boundary is possible, not that those files are approved for release.
+
+Clean-checkout reproducibility probe: a detached `HEAD=ada18801f12000183eed4462e402bc0b91a9490a` candidate reconstructed the current code snapshot (tracked diff excluding evidence-only `STATE.md`, all non-`work/**` untracked implementation files, and hermetic QA scripts). Fresh build, web typecheck, QA syntax/import checks, and `npm test` passed with `687` tests / `683` pass / `0` fail / `4` conditional skips; duration was `972137.576ms`. Candidate, patch and temporary log were removed. This is reproducibility evidence only; the candidate was not an allowlisted release line and has no signed manifest/SBOM/release approval.
+
+Provisional SBOM: generated `work/company-saas-sbom-provisional-20260716.json` via npm CycloneDX 1.5 and validated 284 components. SBOM SHA-256 is `72e5e3c13e9c16cbc658ac81c5b99423e5fac64d5ec42136ba949ef6e509d9e9`; package.json and package-lock.json hashes are `6b1f59910214d34ae65dfc51fcdf935938957a063a4f92122aae667df0272775` and `8030481c3a49b05bc37a0355caf079210c6e4fa1101b198ec10df78f722e02f1`. This remains provisional until the allowlisted candidate and signed evidence manifest exist.
+
+Provisional snapshot manifest: `work/company-saas-snapshot-manifest-provisional-20260716.json` is mode `0600`, SHA-256 `e223c0d46dc5834212474ca0d512bd3a94abf4c5e28079420ae1276f8919372e`, and records 54 tracked changed files (excluding evidence-only `STATE.md`), 67 non-`work/**` untracked implementation files, and 419 scratch files excluded. It explicitly records `signed=false`, `clean_release_sha=null`, and `release_approval=missing`.
+
+Goal completion audit: `work/company-saas-goal-completion-audit-20260716.json` (mode `0600`, SHA-256 `b754b6bc97fdf8feb734537f2b3a97d2d7bd7b717d3f9bb7193518f477986a03`) records seven requirement rows and `overall_status=incomplete_with_exact_blockers`. Its local-quality row now explicitly says `verified_for_reconstructed_snapshot_and_100_concurrent_local_readiness_soak`, covering the successful bounded 60-second/100-concurrent readback, first-use idempotency, 20-company/5-role matrix, fresh first-use DOM/API/screenshot readback, fresh 26/26 focused regression probes, and the fresh full-suite `687/683/0/4` recheck. Registered automation evidence includes the restored INACTIVE automation-2 dry-run/preflight; release-boundary and external-workflow rows reference the refreshed target pack and the new unblock pack; release/automation/production readiness remains partial, external workflow and Chrome receipt blockers remain, and `goal_complete=false`, `goal_blocked=false`.
+
+Continuation recheck: current `npm run build` and `npm run typecheck:web` passed, and the compiled Company/automation/queue/load/tenancy focused suite passed `26/26` with zero failures. A fresh global automation audit returned `checked=6`, `compliant=6`, `gaps=0`; alias dry-run launch-message SHA is `2c5f2dd8b82e2bab2e4d05925e35fc9e4f4305ed949ffc7522ac25b2eef9e3f0`, while direct `job-application-manager` dry-run launch-message SHA is `9818f05781ca15f43e62304ffec85ee880dc2e77295281b065c975cb0d8240fd` and resolves the separate DISABLED entry. No execute stage or external action ran.
+
+Evidence: `work/company-saas-next-step-readback-20260716.md`.
+
+## 2026-07-16 Global recurring-automation onboarding and activation gate complete
+
+All current ACTIVE/PAUSED primary Codex automations now resolve through `/Users/nichikatanaka/.codex/automations/_shared/automation-kernel-registry.v1.json`; global audit reports `checked=6`, `compliant=6`, `gaps=0` with TOML/SQLite prompt, cwd, rrule, model, reasoning, target, and status parity plus manifest/executable/runner/config validation. The project-independent creation path is `/Users/nichikatanaka/.local/bin/create-codex-automation`: Codex App creates PAUSED first, the CLI adopts only an exactly-PAUSED App ID whose name/kind/RRULE/execution environment/target/cwds match, records that material snapshot, generates Skill/STATE/manifest/Kernel-wired runner/config/artifacts, and requires global audit before activation. Registry commits use an exclusive re-read/atomic-commit/fsync transaction; stale locks are retained as blockers and post-rename failures preserve both committed entries and generated files. A global PreToolUse guard blocks ID-less ACTIVE creation, all material ACTIVE drift, and ACTIVE updates missing App registration, parity, registry, manifest, command config, or prompt Kernel markers. Generated runners start through a trusted self-stopping launcher and a native macOS process-tree watcher that records process unique ID and immutable parent unique ID before business execution resumes. This covers arbitrary-language relays, clean environments, and new process groups; timeout, watcher failure, or owned-background-process cleanup is never reported as success.
+
+Verification: onboarding/guard tests `23 passed`, including missing DB, concurrent scaffold, stale-lock fail-closed, post-rename preservation, PAUSED material mismatch, runner/config material tamper, timeout, direct detach, sync Node-to-Python clean-env detach, and Node-to-Ruby arbitrary-relay detach; Automation Kernel tests `16 passed`; global audit is `6/6`. Existing Job Manager and Daily AI dry-runs, migrated backup/Obsidian/NisenPrints dry-run+preflight, and automation-2 same-run Kernel canary remain prechecks only. Future scheduled business success still requires each workflow's next registered run and source-of-truth readback; dry-run/preflight are not that proof.
+
+## 2026-07-16 Full execution attempt; Chrome receipt timeout preserved
+
+The user requested execution of all remaining gates. Fresh authority readback was completed and the known production target remains `nick353/automation-os` -> `https://automation-os.zeabur.app`, with deployed SHA `ada18801f12000183eed4462e402bc0b91a9490a`. The current worktree and release/target pack are unchanged.
+
+The required current-turn Chrome Extension/Profile 2 bootstrap was attempted once with the trusted canonical input. It timed out before returning a receipt; raw tool result: `js execution timed out; kernel reset`. Normalized blocker: `chrome_extension_preflight_timeout_before_receipt`. No backend was accepted and no Chrome, account, authenticated production, send, apply, post, application, push or deploy action was attempted after the timeout.
+
+Evidence: `work/company-saas-full-execution-attempt-20260716.md`. The remaining executable path is a fresh Chrome preflight turn plus a completed G0/G1 target pack; the dirty source worktree remains preserved.
+
+## 2026-07-16 Release/target pack assembled; execution fields remain unresolved
+
+The known target was fixed from current authority: repository `nick353/automation-os`, branch `ui-restore-clean`/`origin/main`, production service `automation-os.zeabur.app`, and current deployed SHA `ada18801f12000183eed4462e402bc0b91a9490a`. A release/target pack was created at `work/company-saas-release-target-pack-20260716.md` and its structured form at `work/company-saas-release-target-pack-20260716.json`.
+
+The pack deliberately separates known target values from unresolved execution fields. The current worktree still has 55 tracked and 345 untracked changes; 10 tracked files need hunk-level boundary approval, and no clean candidate SHA or signed manifest exists. Daily AI, Job Application Manager and NisenPrints are known workflow families, but no account, target/recipient, payload/content or provider receipt contract is supplied. The pack therefore remains `blocked_pending_required_fields`; no commit, push, deploy or external action was performed.
+
+## 2026-07-16 Blanket execution approval readback; promotion and external lanes stopped
+
+`bridge_readback: accepted`. The user approved all remaining work, including push/deploy/production/external actions. Fresh authority readback confirmed that `HEAD=ada18801f12000183eed4462e402bc0b91a9490a` already equals `origin/main` and the read-only production health endpoint reports the same SHA, PostgreSQL, and token guards. Re-deploying the already deployed SHA would not publish the current dirty changes.
+
+The current checkout still contains the preserved mixed worktree (`55` tracked changes and `345` untracked files). The G1 allowlist audit requires hunk-level boundary approval, hermetic QA shims, a fresh clean checkout, and a signed manifest before any new SHA can be pushed or deployed. G0 still lacks named IdP/RBAC, legal/privacy, topology/SLO, support, provider-canary and evidence-store decisions. External workflows also lack a concrete account, recipient/target, payload/content and provider-specific receipt contract; blanket approval does not identify those values.
+
+Local revalidation passed: `npm run build`, `npm run typecheck:web`, and `git diff --check`. The current-turn Chrome Extension/Profile 2 canonical preflight did not issue a receipt: observed raw result was `js execution timed out; kernel reset`, recorded as `chrome_extension_preflight_timeout_before_receipt`. No browser action, push, deploy, production mutation, migration/backfill, invite, permission/IdP change, payment, external send/post/apply/application, or App/Chrome restart/kill was performed in this turn.
+
+Evidence: `work/company-saas-execution-approval-readback-20260716.md`. Restart requires a fresh Chrome preflight turn plus an action-specific release/target pack; then only an allowlisted clean SHA and one-at-a-time provider-reconciled external action may proceed.
+
+## 2026-07-16 First-use Chrome/Profile 2 visual readback completed
+
+`bridge_readback: accepted`. Source cwd is `/Users/nichikatanaka/Documents/New project`; target repo is `/Users/nichikatanaka/Documents/Codex/automation-os`. The remaining first-use UI gate is complete in the authorized Chrome Extension/Profile 2 surface. Fresh signed preflight succeeded for Profile 2 (`Nicky`); the isolated server ran only on `http://127.0.0.1:8798` with a temporary SQLite database. The task-owned tab created for this turn was `1980894144` and was closed before `tabs.finalize({keep:[]})`; the unrelated Heavy Chain tab was left untouched.
+
+DOM and screenshot readback confirmed the zero-company entry state (`最初の設定`, `会社がまだ登録されていません`), UI creation of `初見Chrome確認用会社`, automatic Chat selection of the single canonical company (`company_70a9b2bf4337502ea83ff0f6`), and Templates automatic selection of the same company. Home then showed the normal one-company/zero-automation state with `自動化はまだ登録されていません`; the API readback contained one owner company and `automations: []`. The browser console returned no warning or error entries. Evidence is in `work/company-saas-first-use-ui-qa-20260716/` (DOM, screenshot, API state, console and attempt metadata).
+
+Cleanup proof: task tab closed, final open-tabs readback contained only the unrelated Heavy Chain tab, `tabs.finalize({keep:[]})` completed, port `8798` is clear, and `/private/tmp/automation-os-first-use-20260716` was removed. No deploy, push, production mutation, external send/application/post, payment, identity or permission action was performed.
+
+## 2026-07-16 First-use company setup and navigation hardening complete; Chrome visual readback blocked
+
+The local Company SaaS UI now has a real first-use path instead of a zero-company dead end. A successful empty company readback shows an inline company-name form backed by `POST /api/companies`; creation is accepted only after a fresh `/api/mvp/state` readback contains the created owner-scoped company, then the company is remembered and Chat opens. Home now shows one restrained next step for zero companies, one-company/zero-automation, and multi-company/zero-automation states. Chat and Templates auto-select exactly one canonical company, require an explicit selection when several exist, and fail closed while MVP state is not ready. The global create action routes zero-company users to setup. Search now has a stable label and separate status readback; collapsed navigation retains visible labels and accessible names; the operator-token gate is an Enter-submittable, focused, described form.
+
+Company creation is retry-safe. The UI retains a stable idempotency key for the same company name. The server derives an actor-and-key-scoped deterministic company id, atomically stores company, owner membership, audit event and completed idempotency receipt, replays the same response after a lost response or transaction race, and rejects changed payloads with `idempotency_key_payload_conflict`. The focused regression uses a Japanese company name and proves same-id replay, exactly one company/idempotency row, payload-drift rejection, and blank-name rejection.
+
+Verification: web typecheck/build and server build pass; final `npm test` is **671 total / 667 pass / 0 fail / 4 conditional real-PostgreSQL skips**; focused company-scope, control-manifest and frontend source-contract suites pass; `git diff --check` passes; independent final review is `APPROVE` with no P0-P2 findings. An isolated port `8798` run proved canonical zero-company state, Japanese company creation, same-key replay to `company_1011f61c05aa12cc1f2a368e`, changed-payload HTTP `409`, and final state of one owner company with zero automations. The isolated server, SQLite/WAL/SHM directory and port `8798` were cleaned up.
+
+Chrome Extension/Profile 2 post-fix DOM, screenshot and console verification remains unclaimed. The trusted same-turn canonical preflight stopped with exact blocker `chrome_signed_runtime_live_app_server_path_mismatch`; no Playwright, direct CDP, temporary profile, in-app browser or other surface fallback was used. Because official Chrome control was unavailable, task tab `1980894140` could not be finalized and its current existence is unverified. No App/Chrome restart or kill, deploy, push, production mutation, external send/application/post, payment, identity or permission change was performed.
+
+## 2026-07-16 External execution Goal: blocked before irreversible mutation
+
+Goal `019f6643-dafc-7dc3-849b-4836afc0b7f9` requested deploy, push, production changes and external send/apply/post/application execution. Fresh authority readback found no action-specific target pack: commit scope, remote/branch, deploy provider/project/environment, production change and rollback owner, or workflow account/recipient/content were not supplied. The worktree remains dirty (`55` tracked diff files, `345` untracked files), and G1 explicitly requires named mixed-hunk allowlist approval before a clean release candidate. No irreversible action or Chrome account/tab action was performed. Restart point: approved target pack -> detached allowlist candidate -> clean-SHA verification -> staging -> controlled production canary -> one-at-a-time provider-receipt-backed external action.
+
+Fresh local revalidation under this Goal: `npm test` **670 total / 666 pass / 0 fail / 4 skip**, web typecheck/build pass, `git diff --check` pass, and isolated reference-workflow canary **3/3 safe-stop** with `chrome_extension_required` and `external_action_executed=false`. Temporary canary DB/artifacts were removed and port `8797` is clear.
+
+## 2026-07-16 Company SaaS full-completion Goal execution: local slices advanced; G0/G1/G2/G6 external gates remain blocked
+
+The active Goal is executing the approved full-completion order without guessing named approvals or performing external/production actions. G0 decision-pack preparation was refreshed; G1 inventory/allowlist audit was recorded; safe local G3/G5/G7/G9 slices were executed.
+
+Fresh local readback:
+
+- isolated local load on port `8797`: `24,985/24,985` HEAD requests, `0` failures, concurrency `100`, p95 `52ms`, p99 `117ms`;
+- isolated tenancy audit: `ok=true`, all blank-company, missing-FK, orphan, mismatch, lineage and version counters `0`;
+- G3 focused suite: `21 pass / 0 fail / 4 skip` (conditional real-PostgreSQL tests only);
+- G5 automation/API/control/reference workflow/worker suite: `93/93 pass`;
+- G9 compiled durable queue suite: `17/17 pass`;
+- server/web TypeScript no-emit checks: pass;
+- G6 safe-stop canary: Daily AI, Job Manager, NisenPrints `3/3 proof_backed_safe_stop_verified`, exact blocker `chrome_extension_required`, `external_action_executed=false`.
+- dependency audit: `npm audit --offline --audit-level=high --omit=dev` found `0` vulnerabilities; credential scan had fixture-only matches and no live credential material.
+
+Evidence: `work/company-saas-goal-execution-readback-20260716.md` and `work/company-saas-g1-allowlist-audit-20260716.md`. The local server, temporary database/artifacts and port `8797` were cleaned up. This does not establish 100-user production readiness.
+
+Current hard stops: G0 named approvers/IdP/legal/topology/provider/support/evidence-store decisions; G1 mixed-file hunk extraction, QA shim hermeticity, clean SHA and signed manifest; G2 legal/privacy; real IdP/RBAC/MFA; production-like PostgreSQL/PITR/HA; provider credentials/receipts; cross-browser/manual usability; G10-G12 production authorization. No deploy, push, production mutation, external action, payment, identity/permission change, CAPTCHA/OTP, or App/Chrome restart/kill was performed.
+
+## 2026-07-16 Company SaaS 100-person readiness run: local hardening and evidence; promotion still blocked
+
+The safe local-hardening Goal for the approved Company SaaS 100-person production-readiness plan is complete. This turn finished the work that can be done without named G0 approvers, a clean release SHA, production authorization, external credentials, or identity/payment gates. Final independent review: `APPROVE_WITH_BLOCKERS`; this is not production approval.
+
+Implemented local slices:
+
+- Web accessibility/readability: Japanese document language, accessible table captions and column scopes, narrow-width table reflow, focus-visible styling, and feedback dialog semantics (`role=dialog`, modal labelling, initial textarea focus, Escape close, focus restoration).
+- Readback truthfulness: production QA scripts use only explicit read-only tokens for protected reads while `/api/health` stays public; missing PostgreSQL worker secret now exits non-zero instead of reporting a successful blocked run. Browser screenshots fail closed without a read token, scope that token to same-origin `/api/*` requests, redact HAR credentials, and fail on protected API auth errors.
+- Bounded load readiness: a read-only `qa:load` CLI uses HEAD requests, manual redirects, loopback-only defaults, explicit production-host opt-in, bounded concurrency up to 256, optional read-only token headers from environment, latency percentiles, and exact-token-redacted evidence. Non-2xx responses, including redirects, are failures.
+- UI safety hardening: chat, Builder, template, and durable-job retry writes use stable fingerprinted idempotency keys with in-flight disable; company Run details bind both the Run and its proofs to the company route.
+
+Verification:
+
+- server/web build and web typecheck pass; `qa:load -- --help` pass;
+- final full `npm test`: `670` tests, `666` pass, `0` fail, `4` skip (conditional real-PostgreSQL environment tests); the final focused post-review suite is `78/78` pass;
+- Chrome Extension/Profile 2 local UI evidence at `work/company-saas-ui-qa-20260716.md`: `html[lang]=ja`, canonical `Wave 6 UI Canary`, `1社`, `自動化 0件`, normal empty copy `自動化はまだ登録されていません`, `0件`, no disconnected copy, table captions, and feedback dialog focus/Escape readback; screenshot and machine-readable DOM evidence are in the same work directory;
+- task-owned Chrome tab `1980894034`, local server port `8788`, and temporary SQLite/WAL/SHM files were cleaned up. No production write, deploy, push, external action, invite, payment, identity change, or permission change was performed.
+
+Open release blockers (intentional):
+
+- G0 has no named approvers or decisions for IdP/OIDC/SAML, role matrix, data region/retention/legal, HA/topology/SLO, support/incident, or workflow sandbox ownership; `work/company-saas-g0-decision-pack-draft-20260716.md` is draft only.
+- G1 clean-lineage/reproducibility is not complete: the worktree remains intentionally dirty and tracked `scripts/all_page_button_qa.mjs` plus `scripts/production_operations_monitor.mjs` still import untracked `work/automation-os-new-deploy-repo` implementations.
+- Legacy production records without explicit company attribution remain fail-closed; no speculative backfill was made.
+- No 100-person identity/RBAC exercise, 20-company/5-role load run, HA/failover/restore/PITR proof, production-like Postgres run, or deployed reference workflow can be claimed. Wave 6 rehearsal remains a `chrome_extension_required` safety stop, not business completion.
+- The production QA/readback and local load tools were reviewed after the first rejection; token scoping, HAR redaction, exact-token evidence redaction, in-flight Chat controls, replay stage truthfulness, and company/run proof grouping were hardened and rechecked locally. No production QA run was executed because no read token, external authorization, or production mutation was supplied. Independent review findings and the final verdict are recorded in the dated review artifact; neither overrides G0/G1.
+
+Evidence and planning artifacts: `work/company-saas-100-person-production-plan-20260716.md`, `work/company-saas-full-completion-plan-20260716.md`, `work/company-saas-g1-lineage-20260716.md`, `work/company-saas-g0-decision-pack-draft-20260716.md`, and `work/company-saas-ui-qa-20260716.md`. Do not treat this entry as a promotion or production-readiness approval.
+
+Updated: 2026-07-16
+
+## 2026-07-15 Obsidian x Codex maximum-autonomy audit complete
+
+Obsidian is now the automatic, locator-only knowledge layer for Codex App across existing and future durable projects. Routine operation needs no manual note copying: Automation OS exports every 5 minutes, bounded maintenance runs at most every 30 minutes, private Vault Git backup runs at most every 6 hours, the pull LaunchAgent checks every 15 minutes, and Codex automation `obsidian` performs a read-only audit every Monday at 09:30 JST. Obsidian CLI `1.12.7` is enabled for official readback through the read-only wrapper; raw CLI writes are not part of Codex operation.
+
+This completion added shared Vault writer locking with dead-PID recovery, safe stale-empty-Base archival, semantic Second Brain distillation, review-only Skill candidate detection, a privacy-minimal knowledge-use ledger, valid Docs links, future-project resolver scoring, transcript-derived research notes with an unverified-source boundary, and a legacy SQLite migration repair. The source transcript is preserved in `09_Inbox/AI-YouTube.md`; reusable findings are curated in `06_Research/AIカンパニー運用知見 - Obsidian・Codex・Skill改善.md`. Skill candidates are never installed automatically.
+
+Final verified readback before the closing export/backup:
+
+- complete isolated server suite: `625/625` pass, `0` fail, `0` skipped
+- focused Obsidian suite: `58/58` pass; hook suite: `16/16` pass; DB migration regression: `5/5` pass
+- live export: healthy, generated files `57/57`, missing `0`, non-generated overwrite `0`, Second Brain support files `4`
+- official CLI graph: unresolved links `0`, orphan notes `0`, active Bases exactly `5`
+- latest maintenance: scanned `42`, eligible `17`, unchanged `17`, blocked `0`
+- project audit: `9 ok`, `1 attention`, `0 blocked`; attention is project-owned freshness, not an Obsidian runtime failure
+- private backup checkpoint: secret finding files `0`, local/remote divergence `0`, pushed private head `d5ff36c9e5afe52fd8407fc7a03fde5f703ce4a4`
+- test isolation readback: live idempotency rows `0`; the original blocked NisenPrints run remains the only live run
+
+Obsidian pages, generated Context Packs, handoffs, and memory remain locators rather than execution authority. External posting, applications, purchasing, billing, CAPTCHA/OTP, identity, permission changes, release, and deployment still require their own explicit approval/proof gates by design. MyPro still owns human gates `H001` and `H004`; Heavy Chain still owns the `local_preview_connection_refused` UI-verification gate. These project-specific gates are now surfaced automatically and are not Obsidian integration failures.
+
+## 2026-07-15 Company SaaS Waves 1-6 local implementation complete; promotion gates remain
+
+Company SaaS Wave 1は、company / user・service identity / membership / RBAC、server-enforced company scope、run・step・event・approval・proof・feedback・skill・research plan・registered workflow lineageまで実装し、独立再々reviewで `APPROVED` になった。`registered_workflow_start.workflowId`を含むworkflow alias conflictはmutation前に拒否する。research-plan startはunlinkedなprepared Runをworker全entrypointからclaim不能にし、approvalはlineage activationと同じtransactionで初めて作成する。commit failure時はplan更新とprepared Run配下を原子的にrollback/cleanupする。
+
+現時点のfocused verificationはcontrol manifest `1/1`、research planner `33/33`、source binding `6/6`、tenancy audit `3/3`、worker engine `82/82`、server/web typecheck・build、`git diff --check` pass。独立reviewでもP0/P1/P2なしを確認した。local isolated PostgreSQL transactionのcommit/rollbackは `work/company-saas-wave1-verification-20260715.md` に記録済み。
+
+legacy live auditは、会社帰属を安全に断定できない既存recordが残るため意図的にfail-closedである。これはWave 1 code blockerではなくmigration data gateであり、推測backfillはしない。tenant read pathではunassigned recordを隠し、明示owner/company attributionと再auditが完了するまで本番promotionを禁止する。
+
+Wave 0の静的Lane・復旧・成果物・Plugin・historical production rollup、receipt-only bulk approval・mock test・重複FABは削除し、company-scoped persisted readbackまたは明示empty/unavailable表示へ置換した。
+
+Wave 2はautomation version、revisioned schedule、typed memory/account refs、optimistic concurrency、company-scoped idempotency、resource・audit・receiptのatomic mutationを完成し、独立reviewで `APPROVED`。Wave 3はdurable job・attempt・lease・fencing token・heartbeat・company concurrency slot、timezone/DST対応scheduler occurrence、cancel/retry/recovery/reconciliation、live attemptへexact-boundなapproval consume、checksum/MIME付きartifact/proofを実装した。legacy workerはdurable-owned runを実行せず、production workerはservice identityが未設定・無効・operator scope不足・一部companyのみの場合にexact blockerとblocked heartbeatを残して非zero終了する。開始時だけでなく各cycleでもrequired company scopeを再検証する。
+
+Wave 3最終検証はserver/web build pass、focused service-identity suite `52/52` pass、durable queue・API・scheduler・approval・company scope・migration回帰群 `124` pass / `0` fail / `1` skip、独立review `APPROVED`。skipは `AUTOMATION_OS_TEST_POSTGRES_URL` がないための実PostgreSQL multi-connection claim testだけで、SQLiteの並行process testと条件付きPostgreSQL test自体は実装済み。
+
+Wave 4はcompany-scoped Integrations inventory、OAuth/verification/expiry/reconnect/revoke lifecycle、Owner-only Admin分離、normal stateからのdiagnostics除去、feedback screenshotのtenant-scoped integrity artifact保存を完成した。承認作成・消費は接続参照のverified/OAuth/revocation/expiry状態を検証し、消費時はlive attempt/fenceと同じCAS内で再検証する。generic PUTはrevoked参照を再有効化できず、UIも期限切れ・OAuth異常をverified表示しない。public healthは最小情報だけを返す。最終full suiteは `635` pass / `0` fail / `1` skip、focused修正検証 `57/57`、server/web build pass、独立再review `APPROVED`。
+
+Wave 5はdurable jobs・approvalsをtyped outcome/duration/approval-latency/failure-category eventへ安全に投影し、会社・Automation・最大366日の期間で集計する専用APIを実装した。cost/time-saved/SLAはsource/target未設定のため0を捏造せず`unavailable`、legacy runはdurable lineageなしとして除外件数をprovenanceに出す。UIは専用APIだけを使い、loading/error/empty/partial、日別・Automation別、last-updated/source row countを表示する。会社・filter切替はAbortControllerとrequest generationで旧応答を破棄し、unexpected server errorは固定コードへ丸める。build・web typecheck、focused `112/112`、独立再review `APPROVED`。
+
+Wave 6はDaily AI、Job Application Manager、NisenPrintsの実registered workflowを隔離SQLiteでrehearsalし、3/3がrunner起動前に`chrome_extension_required`で安全停止、distinct run ID、idempotent recheck、billing-only no-start-approval boundary、`external_action_executed=false`を確認した。これはproof-backed safetyでありbusiness completionではない。API rehearsalはfresh receiptとcurrent definition/schedule lineageを必須にし、authorized global evidenceを会社runとは別に認可して他actorのrun/proofを除外する。PostgreSQLはversion一元化、stable advisory lock、新しいDB versionのfail-closed、legacy no-UNIQUE backfill、task-owned search-path isolationを実接続`4/4`で確認した。server/web build、web typecheck、focused API `79/79`、UI truth `37/37`、final compiled suiteはreal PostgreSQL有効でexit `0`・fail `0`・skip `0`、独立review `APPROVE`・P0/P1/P2なし。Chrome Extension/Profile 2はfresh receiptでpost-fix DOM/screenshotとtask-tab cleanupまで完了し、canonical会社名`Wave 6 UI Canary`、正常0件表示`自動化はまだ登録されていません`、`未接続`/API-disconnected copyなしを確認した。port `8788`と一時SQLite directoryもcleanup済み。historical synthetic snapshot `2831e540c00d6e58d23834a8e2fb4d5bfa3fd2e2`をcurrent clean SHAとは扱わない。deploy、push、production mutation、external actionは未実施で、明示承認までpromotionしない。証跡は`work/company-saas-wave6-verification-20260715.md`と`work/company-saas-wave6-postfix-ui-readback-20260715.md`。
+
+## 2026-07-15 Obsidian session and project-proof indexing hardened
+
+The Obsidian x Codex runtime now indexes only user-owned conversation sessions for Active Sessions: `thread_source=user` and metadata-free legacy sessions are allowlisted; subagent, automation, and unknown thread sources plus injected plugin/instruction/environment/AGENTS envelopes and stop-hook prompts are excluded; duplicate session ids collapse to the newest file; malformed records are ignored; and large JSONL files use bounded head/tail reads. `Resume Current Work` keeps the current-project session as a locator/hint while project DB/state remains authoritative, and shows the latest global user-owned session as a locator only, so another project's recent or blocked work cannot change the current project's Next Codex Move.
+
+Project artifact discovery now selects real files rather than directory mtimes, rejects symlinks, escaped artifact roots/files, and read errors, and excludes Automation OS generated status JSON/Markdown and generated Markdown before newest-file selection. Old `STATE.md` files warn only when newer real project-owned activity exists. Project artifact locators are rendered separately from DB completion proofs and never satisfy a proof gate.
+
+Final verification: focused compiled tests 25/25 pass; project freshness tests 4/4 pass including the generated-status-newer-than-real-artifact order; server build, web typecheck/build, and `git diff --check` pass; independent review `APPROVE`; live LaunchAgent server healthy; live export healthy with generated files 55/55, missing 0, non-generated overwrite 0; Active Sessions forbidden-pattern readback 0; project audit 8 ok, 2 attention, 0 blocked; project artifact locators 24 and DB completion proofs 0. The two attention projects are `apparel-ai-workspace` and `muscle-ai`, where real artifacts are newer than project-owned `STATE.md`; this is an honest source-of-truth freshness signal, not an Obsidian automation failure, and the exporter does not auto-edit those project-owned facts. Full-suite readback was 545/561; the 16 failures belong to concurrent company-scope/SaaS API and reconciliation changes outside this Obsidian slice. Evidence: `work/obsidian-session-proof-index-hardening-20260715.md`.
+
+No deploy, push, external post, application, purchase, payment, identity action, or production mutation was performed.
+
+## 2026-07-15 Company SaaS Wave 1 owner-shell foundation (superseded by the complete Wave 1 section above)
+
+Company SaaS Wave 1の最小foundationとして、`users / companies / company_memberships / company_audit_events`、role policy、canonical `mvp_automations.company_id`、membership-derived `/api/companies`、company-scoped automation/approval mutation、bounded tenant `/api/mvp/state`を実装した。frontend company switcherはcanonical company listだけを正本にし、automation/run rowから会社候補を合成しない。
+
+Verificationは`npm test` 553/553 pass、web typecheck/build、server build、`git diff --check` pass、独立review `APPROVE`（最小owner-shell foundation限定）。A actorからB automation/approval既知IDのmutationを拒否しDB不変、approvalとrunのcompany不一致をcreate/decision両方で404拒否、mutation responseでactorの他companyを保持、B/unassigned run/proofはA tenant stateに不出現、viewer write拒否、unscoped write fail-closedを確認した。詳細証跡は`work/company-saas-wave1-foundation-20260715.md`。
+
+これはWave 1全体完了ではない。exact remaining blockersは`full_wave1_company_scope_not_complete`、`company_scoped_worker_not_implemented`、`identity_provider_and_service_account_binding_deferred`、`postgres_migration_not_executed`、`tenant_direct_resource_endpoints_pending`。legacy run/approval/proofは安全な帰属情報がないため自動backfillせず、tenant stateからfail-closedで隠している。次はrun/proof/approvalの全作成経路とdirect ID endpointを`id + company_id`へ移し、legacy orphan count validationと2社negative testを通す。deploy、push、production mutation、browser/external actionは未実施。
+
+## 2026-07-15 Obsidian x Codex App cross-project autonomy complete
+
+Obsidian is now connected to Codex App as a locator-only project memory layer across Automation OS, Muscle AI/MyPro, Heavy Chain, Daily AI/Jobs, Etsy, existing registered projects, and future durable projects. Normal operation requires no manual note copying or weekly return to this task: the local Automation OS LaunchAgent exports every 5 minutes, detached exports invoke bounded maintenance at most every 30 minutes, the private Vault Git backup runs at most every 6 hours, and Codex App automation `obsidian` runs a read-only weekly audit every Monday at 09:30 JST.
+
+The maintenance loop now discovers durable roots as locator-only candidates, refreshes registry-backed Context Packs, runs the explicitly opted-in Second Brain processor through a dry-run plus a maximum-five-note canary, and audits project-owned truth. All Vault writers share an atomic lock. Second Brain apply also verifies the source preimage before replacement. Markdown, generated handoffs, and memory snapshots cannot authorize commands, approvals, external writes, or project promotion; `STATE.md`, `AGENTS.md`, `GOAL.md`, current artifacts, and live readback remain authoritative.
+
+Current production readback:
+
+- two consecutive periodic exports succeeded at `2026-07-14T17:30:47.348Z` and `2026-07-14T17:35:48.426Z`
+- generated file check: `55/55`, missing `0`, non-generated overwrite `0`
+- forced maintenance: `ok=true`, projects `10`, Context Pack files `25`, stale generated packs removed, handwritten notes preserved
+- Second Brain latest canary: eligible `16`, updated `0`, blocked `0`; the initial live canary safely updated the two opted-in transcript notes with backups
+- project audit: `4 ok`, `6 attention`, `0 blocked`; attention means stale or missing project-owned proof, not an automation failure
+- private Vault backup: secret findings `0`, divergence `0`, pushed head `dae53d76edc67acc20244ded4a6aa1f850d41d8a`, local/remote head matched
+- weekly Git dry-run preserves `lastExecutedAt`; the following normal execute correctly remained rate-limited, so audits cannot reset or bypass the six-hour backup clock
+- Hermes/VPS credentials: shared macOS Keychain source, shell and Python launch-context readback succeeded, same-secret plaintext files `0`, literal `sshpass -p` sites `0`; 28 related Python files compile
+
+Verification completed:
+
+- complete isolated server test sweep: `544/544` pass, `0` fail, `0` skipped
+- final Obsidian-focused rerun: `28/28` pass
+- `npm run build:server`: pass
+- `npm run typecheck:web`: pass
+- `npm run build:web`: pass
+- `git diff --check`: pass
+- live Automation OS health: `ok=true`; access guard intentionally off for localhost-only LaunchAgent operation
+
+No external posting, application, purchase, billing, payment, CAPTCHA/OTP, identity, permission change, or deployment was performed. Private backup push was the only intended external write. Future projects are auto-discovered only when durable markers exist; discovery never grants execution authority. The six attention projects should be improved by their own workflows as fresh proof appears, while this Obsidian/Codex foundation continues automatically.
 
 ## 2026-07-15 SaaS release candidate verification
 

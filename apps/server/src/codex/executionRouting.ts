@@ -334,7 +334,11 @@ function buildEvidence(input: {
   exactBlocker: ExecutionRoutingExactBlocker;
   selectedAdapter: string | null;
 }): string[] {
-  const adapterPolicy = input.selectedAdapter === "playwright_cli" || input.selectedAdapter === "browser_use_cli" ? "in_app_browser_only" : "default";
+  const adapterPolicy = input.selectedAdapter === "browser_use_cli"
+    ? "browser_use_cli_no_fallback"
+    : input.selectedAdapter === "playwright_cli"
+      ? "in_app_browser_only"
+      : "default";
   return [
     "schema=route_decision",
     `controller=${input.controller.name}`,

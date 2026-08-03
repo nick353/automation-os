@@ -198,6 +198,9 @@ type AutomationRow = {
   next_run_at: string;
   lane: string;
   last: string;
+  execution_mode: "control_plane_dry_run" | "registered_workflow_readback" | "unverified";
+  execution_label: string;
+  scheduler_effect: string;
   status: Status;
 };
 type ScheduleKind = "manual" | "daily" | "weekly" | "cron";
@@ -486,7 +489,7 @@ type PlannerReadback = {
   chat_thread_id?: string | null;
   chat_turn_id?: string | null;
   chat_status?: string;
-  chat_stream_text?: string;
+  chat_stream_text_length?: number;
   chat_events?: PlannerEvent[];
   proposed_changes?: PlannerChange[];
   requires_confirmation?: string[];
@@ -514,8 +517,19 @@ type PlannerProgress = {
   status: string;
   threadId?: string;
   turnId?: string;
-  streamText: string;
+  streamTextLength: number;
   events: PlannerEvent[];
+  workerStatus?: string;
+  workerBlocker?: string;
+  workerNextAction?: string;
+};
+
+type WorkerReadback = {
+  status?: string;
+  exactBlocker?: string | null;
+  nextAction?: string | null;
+  updatedAt?: string | null;
+  processed?: number;
 };
 
 type ServerPlannerResult = {
@@ -876,6 +890,7 @@ async function requestChatPlan(
     error?: unknown;
     exactBlocker?: unknown;
     job?: PlannerJobReadback;
+    worker_readback?: WorkerReadback | null;
   } | null;
   if (!response.ok || body?.ok !== true || !body.job?.id) {
     const exact = typeof body?.exactBlocker === "string"
@@ -886,14 +901,22 @@ async function requestChatPlan(
     throw new Error(redactSensitiveText(exact).slice(0, 180) || "planner_readback_unavailable");
   }
   let job = body.job;
-  options.onProgress?.(plannerProgressFromJob(body.job.id!, job));
+  let workerReadback = body.worker_readback ?? null;
+  options.onProgress?.(plannerProgressFromJob(body.job.id!, job, workerReadback));
+  if (workerReadback?.status === "blocked" && workerReadback.exactBlocker) {
+    throw new Error(workerReadback.exactBlocker);
+  }
   for (let attempt = 0; attempt < 90 && job.status !== "completed" && job.status !== "blocked"; attempt += 1) {
     await new Promise((resolve) => window.setTimeout(resolve, 1_000));
     const poll = await mvpFetch(`/api/create/plan/jobs/${encodeURIComponent(body.job.id)}`, { cache: "no-store" });
-    const pollBody = await poll.json().catch(() => null) as { ok?: boolean; job?: PlannerJobReadback } | null;
+    const pollBody = await poll.json().catch(() => null) as { ok?: boolean; job?: PlannerJobReadback; worker_readback?: WorkerReadback | null } | null;
     if (!poll.ok || pollBody?.ok !== true || !pollBody.job) throw new Error("planner_job_readback_unavailable");
     job = pollBody.job;
-    options.onProgress?.(plannerProgressFromJob(body.job.id!, job));
+    workerReadback = pollBody.worker_readback ?? null;
+    options.onProgress?.(plannerProgressFromJob(body.job.id!, job, workerReadback));
+    if (workerReadback?.status === "blocked" && workerReadback.exactBlocker) {
+      throw new Error(workerReadback.exactBlocker);
+    }
   }
   if (job.status !== "completed" || !job.result || typeof job.result.title !== "string") {
     throw new Error(job.exactBlocker || "codex_app_server_unavailable");
@@ -920,7 +943,10 @@ async function requestChatPlan(
     planner_model_ref: serverPlan.model ?? null,
     planner_schema_version: "create-plan-v1",
     planner_operation: serverPlan.operation ?? "answer_question",
-    project_id: projectSlugFromPrompt(prompt),
+    // Keep the planner readback bound to the same project that was sent to the
+    // server. Falling back to session storage is only for legacy callers that
+    // do not provide an explicit project scope.
+    project_id: options.projectId?.trim() || projectSlugFromPrompt(prompt),
     automation_type: explicitAutomationType ?? "answer-only",
     plan: {
       ...productDefaults,
@@ -946,7 +972,7 @@ async function requestChatPlan(
     chat_thread_id: typeof job.metadata?.codexThreadId === "string" ? job.metadata.codexThreadId : null,
     chat_turn_id: typeof job.metadata?.codexTurnId === "string" ? job.metadata.codexTurnId : null,
     chat_status: job.status,
-    chat_stream_text: typeof job.metadata?.streamText === "string" ? job.metadata.streamText : "",
+    chat_stream_text_length: typeof job.metadata?.streamTextLength === "number" ? job.metadata.streamTextLength : 0,
     chat_events: plannerProgressFromJob(body.job.id!, job).events,
     proposed_changes: Array.isArray(serverPlan.proposedChanges) ? serverPlan.proposedChanges : [],
     requires_confirmation: Array.isArray(serverPlan.requiresConfirmation) ? serverPlan.requiresConfirmation : []
@@ -1002,7 +1028,7 @@ type PlannerJobReadback = {
   metadata?: Record<string, unknown>;
 };
 
-function plannerProgressFromJob(jobId: string, job: PlannerJobReadback): PlannerProgress {
+function plannerProgressFromJob(jobId: string, job: PlannerJobReadback, workerReadback?: WorkerReadback | null): PlannerProgress {
   const events = Array.isArray(job.metadata?.events)
     ? job.metadata.events
       .filter((event): event is Record<string, unknown> => Boolean(event) && typeof event === "object")
@@ -1022,8 +1048,11 @@ function plannerProgressFromJob(jobId: string, job: PlannerJobReadback): Planner
     status: typeof job.status === "string" ? job.status : "unknown",
     threadId: typeof job.metadata?.codexThreadId === "string" ? job.metadata.codexThreadId : undefined,
     turnId: typeof job.metadata?.codexTurnId === "string" ? job.metadata.codexTurnId : undefined,
-    streamText: typeof job.metadata?.streamText === "string" ? job.metadata.streamText : "",
-    events
+    streamTextLength: typeof job.metadata?.streamTextLength === "number" ? job.metadata.streamTextLength : 0,
+    events,
+    workerStatus: typeof workerReadback?.status === "string" ? workerReadback.status : undefined,
+    workerBlocker: typeof workerReadback?.exactBlocker === "string" ? workerReadback.exactBlocker : undefined,
+    workerNextAction: typeof workerReadback?.nextAction === "string" ? workerReadback.nextAction : undefined
   };
 }
 
@@ -1058,7 +1087,8 @@ function ChatProgressPanel({ progress, planning }: { progress: PlannerProgress |
           {progress.events.slice(-5).map((event, index) => <span key={`${event.method}-${event.capturedAt ?? index}`}>{plannerEventLabel(event.method)}</span>)}
         </div>
       ) : <p className="muted">workerから進捗を待っています。</p>}
-      {progress?.streamText && <details><summary>受信進捗（内部JSONは表示しません）</summary><p className="muted">Codexから {progress.streamText.length.toLocaleString("ja-JP")} 文字を受信しました。</p></details>}
+      {progress?.streamTextLength ? <details><summary>受信進捗（内部JSONは表示しません）</summary><p className="muted">Codexから {progress.streamTextLength.toLocaleString("ja-JP")} 文字を受信しました。</p></details> : null}
+      {progress?.workerBlocker && <p className="muted">Mac worker: {publicBlockerSummary(progress.workerBlocker)}{progress.workerNextAction ? ` / 次: ${progress.workerNextAction}` : ""}</p>}
       {!planning && status === "completed" && <p className="muted">外部操作は実行していません。内容確認後に保存へ進みます。</p>}
     </div>
   );
@@ -1077,6 +1107,9 @@ function toAutomationRows(items: any[]): AutomationRow[] {
     next_run_at: String(item.next_run_at ?? "未計算"),
     lane: String(item.lane ?? "Lane 1"),
     last: String(item.last_run_at ?? item.last ?? "未実行"),
+    execution_mode: (item.execution_mode === "control_plane_dry_run" || item.execution_mode === "registered_workflow_readback" ? item.execution_mode : "unverified") as AutomationRow["execution_mode"],
+    execution_label: String(item.execution_label ?? "実行契約未確認（保存のみ）"),
+    scheduler_effect: String(item.scheduler_effect ?? "not_configured"),
     status: (["running", "waiting", "approved", "blocked", "enabled", "disabled", "draft"].includes(item.status) ? item.status : "draft") as Status
   }));
 }
@@ -1451,10 +1484,8 @@ function App() {
     } catch (error) {
       clearWriteToken();
       const message = error instanceof Error ? error.message : "";
-      if (message === "mvp_state_http_401") {
-        setReceipt("認証に失敗しました（401）。Zeabur Variablesの現在のAUTOMATION_OS_WRITE_TOKENを確認してください。値はこの画面へ入力するだけで、チャットには送らないでください。");
-      } else if (message === "mvp_state_http_423") {
-        setReceipt("本番の認証トークンが未設定です（423）。Zeabur VariablesにAUTOMATION_OS_WRITE_TOKENを設定して再デプロイしてください。");
+      if (message === "mvp_state_http_401" || message === "mvp_state_http_423") {
+        setReceipt("operator tokenを確認できませんでした。設定済みの値をこの画面へ入力してください。値はチャットには送られません。");
       } else {
         setReceipt("operator token を確認できませんでした。値と公開先を確認してください。");
       }
@@ -2120,6 +2151,80 @@ function MiniBarChart({ rows }: { rows: Array<{ label: string; value: number }> 
   return <div className="mini-bar-chart" aria-label="プロジェクト別実績グラフ">{rows.slice(-14).map((row) => <div className="mini-bar-row" key={row.label}><span>{row.label}</span><div className="mini-bar-track"><div className="mini-bar-fill" style={{ width: `${Math.max(2, Math.round((row.value / max) * 100))}%` }} /></div><strong>{row.value}</strong></div>)}</div>;
 }
 
+type PerformanceSeries = {
+  title: string;
+  emptyLabel: string;
+  headers: string[];
+  chartRows: Array<{ label: string; value: number }>;
+  rows: React.ReactNode[][];
+};
+
+function performanceSeriesForGrouping(analytics: any, grouping: string): PerformanceSeries {
+  if (grouping === "workflow") {
+    const rows = Array.isArray(analytics?.by_automation) ? analytics.by_automation : [];
+    return {
+      title: "Workflow別実績",
+      emptyLabel: "表示できるWorkflow別bucketはありません。",
+      headers: ["Workflow", "Job", "完了", "完了率", "更新"],
+      chartRows: rows.map((row: any) => ({ label: String(row.automation_name ?? row.automation_id ?? "未確認"), value: Number(row.total_jobs ?? 0) })),
+      rows: rows.map((row: any) => [row.automation_name ?? row.automation_id ?? "未確認", row.total_jobs, row.completed_jobs, formatRatio(row.completion_rate), row.last_updated_at ?? "-"])
+    };
+  }
+  if (grouping === "stage") {
+    const rows = Array.isArray(analytics?.by_stage) ? analytics.by_stage : [];
+    return {
+      title: "状態・段階別実績",
+      emptyLabel: "表示できる状態・段階別bucketはありません。",
+      headers: ["状態", "Job", "完了", "未完了", "完了率"],
+      chartRows: rows.map((row: any) => ({ label: stageLabel(row.stage), value: Number(row.total_jobs ?? 0) })),
+      rows: rows.map((row: any) => [stageLabel(row.stage), row.total_jobs, row.completed_jobs, row.failed_jobs, formatRatio(row.completion_rate)])
+    };
+  }
+  const dateRows = Array.isArray(analytics?.by_date) ? analytics.by_date : [];
+  if (grouping === "week") {
+    const buckets = new Map<string, { total: number; completed: number; failed: number }>();
+    for (const row of dateRows) {
+      const key = isoWeekLabel(String(row.date ?? ""));
+      const bucket = buckets.get(key) ?? { total: 0, completed: 0, failed: 0 };
+      bucket.total += Number(row.total_jobs ?? 0);
+      bucket.completed += Number(row.completed_jobs ?? 0);
+      bucket.failed += Number(row.failed_jobs ?? 0);
+      buckets.set(key, bucket);
+    }
+    const rows = [...buckets.entries()].map(([label, bucket]) => [label, bucket.total, bucket.completed, bucket.failed]);
+    return {
+      title: "週別実績",
+      emptyLabel: "表示できる週別bucketはありません。",
+      headers: ["週 (UTC)", "Job", "完了", "未完了"],
+      chartRows: rows.map((row) => ({ label: String(row[0]), value: Number(row[1]) })),
+      rows
+    };
+  }
+  return {
+    title: "日別実績",
+    emptyLabel: "表示できる日別bucketはありません。",
+    headers: ["日付 (UTC)", "Job", "完了", "未完了"],
+    chartRows: dateRows.map((row: any) => ({ label: String(row.date ?? "未確認"), value: Number(row.total_jobs ?? 0) })),
+    rows: dateRows.map((row: any) => [row.date, row.total_jobs, row.completed_jobs, row.failed_jobs])
+  };
+}
+
+function isoWeekLabel(value: string): string {
+  const date = new Date(`${value}T00:00:00.000Z`);
+  if (!Number.isFinite(date.getTime())) return "未確認";
+  const day = date.getUTCDay() || 7;
+  date.setUTCDate(date.getUTCDate() + 4 - day);
+  const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
+  const week = Math.ceil((((date.getTime() - yearStart.getTime()) / 86_400_000) + 1) / 7);
+  return `${date.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
+}
+
+function stageLabel(value: unknown): string {
+  const labels: Record<string, string> = { queued: "待機", leased: "実行中", completed: "完了", failed: "失敗", cancelled: "キャンセル", timed_out: "タイムアウト", reconciliation_required: "照合待ち" };
+  const raw = String(value ?? "");
+  return labels[raw] ?? (raw || "未確認");
+}
+
 function TruthfulPerformancePage({ model }: { model: AppModel }) {
   const route = useRoute();
   const companyId = projectSlugFromRoute(route);
@@ -2167,6 +2272,8 @@ function TruthfulPerformancePage({ model }: { model: AppModel }) {
   const failures = analytics?.metrics?.failure_categories;
   const profile = model.mvpState.presentation_profiles?.find((item) => item.id === companyId);
   const widgets = new Set(profile?.widgets ?? ["kpi", "timeline", "failure_table", "evidence_timeline"]);
+  const grouping = profile?.preferredGrouping ?? "day";
+  const performanceSeries = performanceSeriesForGrouping(analytics, grouping);
   return (
     <section>
       <ProjectTabs mvpState={model.mvpState} />
@@ -2188,10 +2295,10 @@ function TruthfulPerformancePage({ model }: { model: AppModel }) {
           <MetricCard controlId="truthful.performance.metric.duration" title="平均所要時間" value={formatDuration(duration?.average)} sub={`sample ${duration?.sample_size ?? 0}`} status={duration?.availability === "available" ? "enabled" : "waiting"} />
           <MetricCard controlId="truthful.performance.metric.approval" title="承認平均時間" value={formatDuration(approvalLatency?.average)} sub={`sample ${approvalLatency?.sample_size ?? 0}`} status={approvalLatency?.availability === "available" ? "enabled" : "waiting"} />
         </div>
-        {widgets.has("timeline") && <Panel title="日別実績" controlId="truthful.performance.series.panel">
-          {(analytics.by_date ?? []).length ? <><MiniBarChart rows={analytics.by_date.map((row: any) => ({ label: row.date, value: Number(row.total_jobs ?? 0) }))} /><DataTable controlId="truthful.performance.series.table" headers={["日付 (UTC)", "Job", "完了", "未完了"]} rows={analytics.by_date.map((row: any) => [row.date, row.total_jobs, row.completed_jobs, row.failed_jobs])} /></> : <p className="muted">表示できる日別bucketはありません。</p>}
+        {widgets.has("timeline") && <Panel title={performanceSeries.title} controlId="truthful.performance.series.panel">
+          {performanceSeries.rows.length ? <><MiniBarChart rows={performanceSeries.chartRows} /><DataTable controlId="truthful.performance.series.table" headers={performanceSeries.headers} rows={performanceSeries.rows} /></> : <p className="muted">{performanceSeries.emptyLabel}</p>}
         </Panel>}
-        {widgets.has("kpi") && <Panel title="Automation別実績" controlId="truthful.performance.automation.panel">
+        {widgets.has("kpi") && grouping !== "workflow" && <Panel title="Automation別実績" controlId="truthful.performance.automation.panel">
           {(analytics.by_automation ?? []).length ? <DataTable controlId="truthful.performance.automation.table" headers={["Automation", "Job", "完了", "完了率", "更新"]} rows={analytics.by_automation.map((row: any) => [row.automation_name, row.total_jobs, row.completed_jobs, formatRatio(row.completion_rate), row.last_updated_at ?? "-"])} /> : <p className="muted">表示できるAutomation別集計はありません。</p>}
         </Panel>}
         {widgets.has("failure_table") && <Panel title="失敗カテゴリ" controlId="truthful.performance.failures.panel">
@@ -3746,7 +3853,7 @@ function AutomationsPage({ model }: { model: AppModel }) {
         </Panel>
       )}
       <Panel title="自動化一覧" controlId="projects.automation.panel">
-        <DataTable controlId="projects.automation.table" headers={["タスク名", "説明", "スケジュール", "Lane", "最終実行", "ステータス", "操作"]} rows={visibleAutomationRows.length ? visibleAutomationRows.map((a) => [a.name, a.desc, <div data-control-id={`projects.automation.schedule.${a.id}`}><strong>{a.schedule}</strong><small>next {a.next_run_at} / version {a.schedule_version}</small></div>, a.lane, a.last, <StatusBadge status={a.status} />, <div className="row-actions"><IconButton controlId={`projects.automation.edit.${a.id}`} label={`${a.name}を編集`} onClick={() => { setPageNote(`${a.name}: 編集画面へ移動します / ${actionStamp()}`); go(`#/projects/${activeProject}/automations/${a.id}/edit`); }}><Edit3 size={14} /></IconButton><IconButton controlId={`projects.automation.archive.${a.id}`} label={`${a.name}をアーカイブ`} disabled={Boolean(archivingId)} onClick={() => archiveAutomation(a)}>{archivingId === a.id ? <Clock size={14} /> : <Archive size={14} />}</IconButton></div>]) : [["このプロジェクトの自動化はまだありません", "チャットから追加できます", "-", "-", "-", <StatusBadge status="draft" />, <Button controlId="projects.automation.create" onClick={() => { setPageNote(`作成する: チャットへ移動します / ${actionStamp()}`); go(chatHref({ companyId: activeProject, context: "project-automations" })); }}>作成する</Button>]]} />
+        <DataTable controlId="projects.automation.table" headers={["タスク名", "説明", "スケジュール", "実行契約", "Lane", "最終実行", "ステータス", "操作"]} rows={visibleAutomationRows.length ? visibleAutomationRows.map((a) => [a.name, a.desc, <div data-control-id={`projects.automation.schedule.${a.id}`}><strong>{a.schedule}</strong><small>next {a.next_run_at} / version {a.schedule_version}</small></div>, <div data-control-id={`projects.automation.execution.${a.id}`}><strong>{a.execution_label}</strong><small>{a.scheduler_effect}</small></div>, a.lane, a.last, <StatusBadge status={a.status} />, <div className="row-actions"><IconButton controlId={`projects.automation.edit.${a.id}`} label={`${a.name}を編集`} onClick={() => { setPageNote(`${a.name}: 編集画面へ移動します / ${actionStamp()}`); go(`#/projects/${activeProject}/automations/${a.id}/edit`); }}><Edit3 size={14} /></IconButton><IconButton controlId={`projects.automation.archive.${a.id}`} label={`${a.name}をアーカイブ`} disabled={Boolean(archivingId)} onClick={() => archiveAutomation(a)}>{archivingId === a.id ? <Clock size={14} /> : <Archive size={14} />}</IconButton></div>]) : [["このプロジェクトの自動化はまだありません", "チャットから追加できます", "-", "実行契約未確認", "-", "-", <StatusBadge status="draft" />, <Button controlId="projects.automation.create" onClick={() => { setPageNote(`作成する: チャットへ移動します / ${actionStamp()}`); go(chatHref({ companyId: activeProject, context: "project-automations" })); }}>作成する</Button>]]} />
       </Panel>
       {activeProject && (
         <Panel title="Codex App登録済み自動化" controlId="projects.registered.panel">
@@ -3809,6 +3916,9 @@ function BuilderPage({ model }: { model: AppModel }) {
   const builderKind = builderConfig.kindLabel;
   const builderTitle = `${builderKind} 自動化仕様`;
   const automationName = persistedAutomation?.name ?? builderConfig.automationName;
+  const executionMode = String(persistedAutomation?.execution_mode ?? "unverified");
+  const executionLabel = String(persistedAutomation?.execution_label ?? "実行契約未確認（保存のみ）");
+  const schedulerEffect = String(persistedAutomation?.scheduler_effect ?? "not_configured");
   const persistedStepRecords: Array<{ title: string; enabled: boolean }> = Array.isArray(persistedSpec?.spec?.steps)
     ? persistedSpec.spec.steps
       .map((step: any) => ({ title: typeof step === "string" ? step : step?.title, enabled: typeof step === "string" ? true : step?.enabled !== false }))
@@ -4047,6 +4157,12 @@ function BuilderPage({ model }: { model: AppModel }) {
               <Button controlId="builder.schedule.save" variant="primary" onClick={saveSchedule} disabled={scheduleSaving || !persistedAutomation}>{scheduleSaving ? "定期実行を保存中" : "定期実行を保存"}</Button>
             </div>
             <div className="action-note" role="status">{persistedAutomation ? `revision=${persistedSchedule?.revision ?? "新規(1)"} / status=${persistedSchedule?.status ?? "未保存"} / next=${persistedSchedule?.next_run_at ?? "未計算"}` : "自動化本体を保存すると、実設定を編集できます。"}</div>
+          </Panel>
+          <Panel title="実行契約" controlId="builder.execution-contract.panel">
+            <p><strong>{executionLabel}</strong></p>
+            <div className="action-note" role="status">mode={executionMode} / scheduler={schedulerEffect} / external_action_allowed=false</div>
+            {executionMode === "control_plane_dry_run" && <p className="muted">定期実行は scheduled_dry_run を作成し、予約・制御面のproofまでです。外部サイトの操作、送信、投稿は起動しません。</p>}
+            {executionMode === "unverified" && <p className="muted">実行経路はまだ確認できていません。保存済み仕様を実行済みとは扱いません。</p>}
           </Panel>
         </div>
         <aside className="side-panel">

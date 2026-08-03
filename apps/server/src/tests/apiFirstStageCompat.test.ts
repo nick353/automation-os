@@ -3620,6 +3620,10 @@ test("GET /api/dashboard scopes local heartbeat staleness while MVP state uses t
   db.initDb();
   db.resetDemoData();
   db.execSql("DELETE FROM runs; DELETE FROM approvals; DELETE FROM system_checks; DELETE FROM bridge_executions; DELETE FROM bridge_actions; DELETE FROM knowledge_notes;");
+  const previousWorkerStatePath = process.env.AUTOMATION_OS_WORKER_STATE_PATH;
+  const workerStatePath = join(tempRoot, "stored-worker-blocked.json");
+  process.env.AUTOMATION_OS_WORKER_STATE_PATH = join(tempRoot, "stored-worker-state-missing.json");
+  try {
   db.insert("system_checks", {
     id: "local_codex_worker_heartbeat",
     kind: "local_codex_worker",
@@ -3709,6 +3713,28 @@ test("GET /api/dashboard scopes local heartbeat staleness while MVP state uses t
   assert.equal(futureBody.worker.heartbeat_age_seconds, undefined);
   assert.equal(futureBody.worker.readback_status, "stored");
   assert.equal(futureBody.worker.exact_blocker, null);
+
+  process.env.AUTOMATION_OS_WORKER_STATE_PATH = workerStatePath;
+  writeFileSync(workerStatePath, JSON.stringify({
+    status: "blocked",
+    blocker: "stored_postgres_secret_invalid_url",
+    reason: "template_reference_missing:POSTGRES_HOST",
+    nextAction: "保存済みPostgreSQL接続を確認してください。",
+    updated_at: "2026-06-06T00:00:04.000Z"
+  }));
+  db.execSql("DELETE FROM system_checks;");
+  const storedStateResponse = await getJson("/api/mvp/state");
+  const storedStateBody = JSON.parse(storedStateResponse.body) as {
+    worker: { status: string; exact_blocker: string | null; next_action: string };
+  };
+  assert.equal(storedStateBody.worker.status, "blocked");
+  assert.equal(storedStateBody.worker.exact_blocker, "stored_postgres_secret_invalid_url");
+  assert.match(storedStateBody.worker.next_action, /PostgreSQL/);
+  assert.doesNotMatch(storedStateResponse.body, /template_reference_missing:POSTGRES_HOST/);
+  } finally {
+    if (previousWorkerStatePath === undefined) delete process.env.AUTOMATION_OS_WORKER_STATE_PATH;
+    else process.env.AUTOMATION_OS_WORKER_STATE_PATH = previousWorkerStatePath;
+  }
 });
 
 test("registered workflow schedule pause survives refresh without exposing internals on dashboard", async () => {

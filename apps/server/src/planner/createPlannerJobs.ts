@@ -58,6 +58,13 @@ export type CreatePlannerJobProcessOptions = {
 let sharedAppServerClient: CodexAppServerClient | null = null;
 const defaultLeaseMs = 10 * 60 * 1000;
 
+function stripPlannerProgressDelta(event: unknown): Record<string, unknown> {
+  if (!event || typeof event !== "object") return {};
+  const safeEvent = { ...(event as Record<string, unknown>) };
+  delete safeEvent.delta;
+  return safeEvent;
+}
+
 export function enqueueCreatePlannerJob(input: {
   messages: CreatePlannerMessage[];
   currentDraft?: string;
@@ -191,21 +198,26 @@ async function processCreatePlannerJob(row: CreatePlannerJobRow, options: Create
   const metadata = parseJson<Record<string, unknown>>(row.metadata_json, {});
   const transport = metadata.transport === "codex_app_server" ? "codex_app_server" : "codex_exec";
   const workerId = normalizeWorkerId(options.workerId);
-  let progressText = typeof metadata.streamText === "string" ? redactSensitiveText(metadata.streamText).slice(-24_000) : "";
+  const legacyStreamText = typeof metadata.streamText === "string" ? metadata.streamText : "";
+  let progressTextLength = typeof metadata.streamTextLength === "number" && Number.isFinite(metadata.streamTextLength)
+    ? Math.max(0, Math.min(24_000, Math.floor(metadata.streamTextLength)))
+    : Math.min(24_000, legacyStreamText.length);
   let progressEvents = Array.isArray(metadata.events) ? metadata.events.filter((event) => event && typeof event === "object").slice(-160) : [];
   let lastProgressWriteAt = 0;
   const persistProgress = (event: { method: string; threadId?: string; turnId?: string; itemId?: string; delta?: string; status?: string; capturedAt: string }) => {
-    if (event.delta) progressText = `${progressText}${redactSensitiveText(event.delta)}`.slice(-24_000);
-    progressEvents = [...progressEvents, event].slice(-160);
+    if (event.delta) progressTextLength = Math.min(24_000, progressTextLength + redactSensitiveText(event.delta).length);
+    progressEvents = [...progressEvents, stripPlannerProgressDelta(event)].slice(-160);
     const now = Date.now();
     if (event.method !== "turn/completed" && now - lastProgressWriteAt < 250) return;
     lastProgressWriteAt = now;
+    const safeMetadata = { ...metadata };
+    delete safeMetadata.streamText;
     const progressMetadata = {
-      ...metadata,
+      ...safeMetadata,
       transport,
       ...(event.threadId ? { codexThreadId: event.threadId } : {}),
       ...(event.turnId ? { codexTurnId: event.turnId } : {}),
-      streamText: progressText,
+      streamTextLength: progressTextLength,
       events: progressEvents
     };
     querySql(
@@ -227,16 +239,18 @@ async function processCreatePlannerJob(row: CreatePlannerJobRow, options: Create
         })
       : null;
     const result = resultWithMetadata?.result ?? await createPlannerResponse({ messages, currentDraft, providerOverride: "codex" });
+    const safeMetadata = { ...metadata };
+    delete safeMetadata.streamText;
     const nextMetadata = resultWithMetadata
       ? {
-          ...metadata,
+          ...safeMetadata,
           transport,
           codexThreadId: resultWithMetadata.threadId,
           codexTurnId: resultWithMetadata.turnId,
-          streamText: resultWithMetadata.streamText.slice(-24_000),
-          events: resultWithMetadata.events.slice(-160)
+          streamTextLength: Math.min(24_000, resultWithMetadata.streamText.length),
+          events: resultWithMetadata.events.slice(-160).map(stripPlannerProgressDelta)
         }
-      : { ...metadata, transport };
+      : { ...safeMetadata, transport };
     const metadataUpdated = querySql(
       `UPDATE create_planner_jobs
        SET metadata_json=${sqlValue(nextMetadata)}, updated_at=${sqlValue(nowIso())}
@@ -262,8 +276,7 @@ async function processCreatePlannerJob(row: CreatePlannerJobRow, options: Create
     if (terminal.length === 0) return getCreatePlannerJob(row.id) as CreatePlannerJob;
   } catch (error) {
     const completedAt = nowIso();
-    void error;
-    const blocker = "codex_planner_failed";
+    const blocker = safePlannerBlocker(error);
     querySql(
       `UPDATE create_planner_jobs
        SET status='blocked',
@@ -280,9 +293,23 @@ async function processCreatePlannerJob(row: CreatePlannerJobRow, options: Create
   return getCreatePlannerJob(row.id) as CreatePlannerJob;
 }
 
+function safePlannerBlocker(error: unknown): string {
+  const message = error instanceof Error ? error.message.trim() : "";
+  const candidate = message.match(/^(codex_app_server_[a-z0-9_]+|codex_planner_[a-z0-9_]+)/u)?.[1];
+  if (candidate) return candidate.slice(0, 160);
+  return "codex_planner_failed";
+}
+
 function getSharedAppServerClient(): CodexAppServerClient {
   if (!sharedAppServerClient) sharedAppServerClient = new CodexAppServerClient();
   return sharedAppServerClient;
+}
+
+/** Close only the module-owned client; injected clients remain caller-owned. */
+export function closeSharedAppServerClient(): void {
+  const client = sharedAppServerClient;
+  sharedAppServerClient = null;
+  client?.close();
 }
 
 function mapCreatePlannerJob(row: CreatePlannerJobRow): CreatePlannerJob {

@@ -7,6 +7,10 @@ import test from "node:test";
 
 const tempRoot = mkdtempSync(join(tmpdir(), "automation-os-durable-queue-api-"));
 process.env.AUTOMATION_OS_DB = join(tempRoot, "automation-os.sqlite");
+// Keep this durable-queue contract test independent from a host-owned local
+// worker state file. The production API may surface that file, but this test
+// asserts the tenant queue projection in isolation.
+process.env.AUTOMATION_OS_WORKER_STATE_PATH = join(tempRoot, "worker-state-does-not-exist.json");
 process.env.NODE_TEST_CONTEXT = "1";
 process.env.AUTOMATION_OS_OWNER_USER_ID = "api_bootstrap_owner";
 

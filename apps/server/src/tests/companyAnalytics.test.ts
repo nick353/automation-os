@@ -56,6 +56,7 @@ test("company analytics derives typed metrics, filters, provenance, and explicit
   assert.equal(result.metrics.sla.availability, "unavailable");
   assert.equal(result.by_date.length, 2);
   assert.equal(result.by_automation.length, 2);
+  assert.deepEqual(result.by_stage.map((row) => row.stage), ["completed", "failed"]);
   assert.equal(result.completeness.excluded_legacy_runs, 1);
   assert.equal(result.provenance.find((item) => item.source === "durable_jobs")?.row_count, 2);
   assert.doesNotMatch(JSON.stringify(result), /authentication_failed/);

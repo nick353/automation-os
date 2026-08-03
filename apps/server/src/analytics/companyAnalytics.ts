@@ -102,6 +102,13 @@ export function buildCompanyAnalytics(input: CompanyAnalyticsQuery) {
     completion_rate: rows.length ? round(rows.filter((job) => job.status === "completed").length / rows.length, 4) : null,
     last_updated_at: latestTimestamp(rows.map((job) => job.updated_at))
   }));
+  const byStage = aggregateJobs(jobs, (job) => job.status).map(([stage, rows]) => ({
+    stage,
+    total_jobs: rows.length,
+    completed_jobs: rows.filter((job) => job.status === "completed").length,
+    failed_jobs: rows.filter((job) => job.status !== "completed" && terminalStatuses.has(job.status)).length,
+    completion_rate: rows.length ? round(rows.filter((job) => job.status === "completed").length / rows.length, 4) : null
+  }));
   const lastUpdatedAt = latestTimestamp([
     ...jobs.map((job) => job.updated_at),
     ...approvals.map((approval) => approval.decided_at ?? approval.created_at)
@@ -142,6 +149,7 @@ export function buildCompanyAnalytics(input: CompanyAnalyticsQuery) {
     },
     by_date: byDate,
     by_automation: byAutomation,
+    by_stage: byStage,
     provenance: [
       { source: "durable_jobs", row_count: jobs.length, last_updated_at: latestTimestamp(jobs.map((job) => job.updated_at)) },
       { source: "approvals", row_count: approvals.length, last_updated_at: latestTimestamp(approvals.map((approval) => approval.decided_at ?? approval.created_at)) },

@@ -156,15 +156,8 @@ test("Codex App Server child is started with an allowlisted environment and read
   assert.equal(threadStart?.params?.approvalPolicy, "never");
   assert.equal(threadStart?.params?.sandbox, "read-only");
   assert.equal(turnStart?.params?.approvalPolicy, "never");
-  assert.deepEqual(turnStart?.params?.sandboxPolicy, {
-    type: "readOnly",
-    access: {
-      type: "restricted",
-      includePlatformDefaults: true,
-      readableRoots: ["/tmp/automation-os-chat-sandbox"]
-    },
-    networkAccess: false
-  });
+  assert.equal(turnStart?.params?.permissionProfile, ":read-only");
+  assert.equal(turnStart?.params?.sandboxPolicy, undefined);
   assert.equal(turnStart?.params?.cwd, "/tmp/automation-os-chat-sandbox");
   client.close();
 });

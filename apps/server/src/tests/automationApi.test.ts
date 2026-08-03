@@ -110,6 +110,28 @@ test("v1 automation reads are company-isolated and viewer/operator/admin permiss
   assert.equal(adminArchive.json.automation.status, "archived");
 });
 
+test("automation readback exposes the truthful scheduled dry-run contract", async () => {
+  seedMembership("api_execution_contract", "api_execution_owner", "owner");
+  setActor("api_execution_owner");
+
+  const created = await createV1("api_execution_contract", "Execution contract", "api-execution-contract");
+  const schedule = await requestJson(
+    "PUT",
+    `/api/v1/companies/api_execution_contract/automations/${created.id}/schedule`,
+    { kind: "daily", expression: "09:00", timezone: "Asia/Tokyo", enabled: true, expected_revision: 1 }
+  );
+  assert.equal(schedule.status, 200, schedule.raw);
+
+  const listed = await requestJson("GET", "/api/v1/companies/api_execution_contract/automations");
+  assert.equal(listed.status, 200, listed.raw);
+  const item = listed.json.automations.find((automation: any) => automation.id === created.id);
+  assert.ok(item, listed.raw);
+  assert.equal(item.execution_mode, "control_plane_dry_run");
+  assert.equal(item.scheduler_effect, "queues_scheduled_dry_run");
+  assert.equal(item.external_action_allowed, false);
+  assert.match(item.execution_label, /dry-run/);
+});
+
 test("presentation profile is company-scoped and revisioned", async () => {
   setActor("api_owner_a");
   const initial = await requestJson("GET", "/api/v1/companies/api_company_a/presentation-profile");

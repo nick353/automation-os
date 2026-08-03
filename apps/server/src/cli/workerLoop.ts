@@ -1,5 +1,5 @@
 import { initDb, nowIso, querySql, sqlValue, upsert } from "../db/client.js";
-import { processQueuedCreatePlannerJobs } from "../planner/createPlannerJobs.js";
+import { closeSharedAppServerClient, processQueuedCreatePlannerJobs } from "../planner/createPlannerJobs.js";
 import { runWorkerOnce } from "../runs/workerEngine.js";
 import { materializeDueAutomationOccurrences } from "../runs/automationScheduler.js";
 import { runDurableDryRunWorkerOnce } from "../runs/durableDryRunWorker.js";
@@ -167,6 +167,7 @@ for (let cycle = 1; !stopping && cycle <= maxCycles; cycle += 1) {
   await sleep(intervalMs);
 }
 
+closeSharedAppServerClient();
 writeWorkerHeartbeat(fatalBlocker ? "blocked" : "idle", fatalBlocker ? "Durable worker identityの検証に失敗して停止しました" : "Mac workerを停止しました", {
   lifecycle: "stopped",
   cycle: null,

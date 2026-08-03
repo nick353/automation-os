@@ -87,7 +87,7 @@ test("execution routing blocks browser_use_cli with the same in-app Browser gate
   assert.equal(routing.phase, "route_decision");
   assert.equal(routing.exactBlocker, "in_app_browser_required");
   assert.match(routing.evidence.join(" "), /adapter=browser_use_cli/);
-  assert.match(routing.evidence.join(" "), /adapter_policy=in_app_browser_only/);
+  assert.match(routing.evidence.join(" "), /adapter_policy=browser_use_cli_no_fallback/);
 });
 
 test("execution routing requires a decision fingerprint before route readback", () => {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
@@ -21,21 +21,43 @@ test("POST /api/create/chat queues a project-scoped Codex App Server turn withou
   db.upsert("companies", { id: "project-a", slug: "project-a", name: "Research Project", status: "active", created_at: now, updated_at: now });
   db.upsert("company_memberships", { id: "membership-chat", company_id: "project-a", user_id: "user_local_owner", role: "owner", status: "active", created_at: now, updated_at: now });
 
-  const response = await requestJson("POST", "/api/create/chat", {
-    project_id: "project-a",
-    currentDraft: "token=secret-planner-input",
-    messages: [{ role: "user", text: "システム全体を確認して token=secret-planner-message" }]
-  });
+  const workerStatePath = join(tempRoot, "worker-state.json");
+  writeFileSync(workerStatePath, JSON.stringify({
+    status: "blocked",
+    blocker: "stored_postgres_secret_invalid_url",
+    reason: "template_reference_missing:POSTGRES_PASSWORD",
+    nextAction: "有効なPostgreSQL接続を保存し直してください。"
+  }));
+  const previousWorkerStatePath = process.env.AUTOMATION_OS_WORKER_STATE_PATH;
+  process.env.AUTOMATION_OS_WORKER_STATE_PATH = workerStatePath;
+  let response: Awaited<ReturnType<typeof requestJson>>;
+  try {
+    response = await requestJson("POST", "/api/create/chat", {
+      project_id: "project-a",
+      currentDraft: "token=secret-planner-input",
+      messages: [{ role: "user", text: "システム全体を確認して token=secret-planner-message" }]
+    });
+  } finally {
+    if (previousWorkerStatePath === undefined) delete process.env.AUTOMATION_OS_WORKER_STATE_PATH;
+    else process.env.AUTOMATION_OS_WORKER_STATE_PATH = previousWorkerStatePath;
+  }
   assert.equal(response.status, 202);
-  const body = JSON.parse(response.body) as { ok: boolean; job: { id: string; status: string; metadata: Record<string, unknown> } };
+  const body = JSON.parse(response.body) as { ok: boolean; job: { id: string; status: string; metadata: Record<string, unknown> }; worker_readback: { status: string; exactBlocker: string | null; nextAction: string | null } | null };
   assert.equal(body.ok, true);
   assert.equal(body.job.status, "queued");
   assert.equal(body.job.metadata.transport, "codex_app_server");
   assert.equal(body.job.metadata.route, "mac_worker_codex_app_server");
+  assert.equal("streamText" in body.job.metadata, false);
+  assert.equal(body.job.metadata.streamTextLength, 0);
+  assert.equal(body.worker_readback?.status, "blocked");
+  assert.equal(body.worker_readback?.exactBlocker, "stored_postgres_secret_invalid_url");
+  assert.match(body.worker_readback?.nextAction ?? "", /PostgreSQL/u);
+  assert.doesNotMatch(JSON.stringify(body), /template_reference_missing|POSTGRES_PASSWORD|secret-planner-message/u);
   const readback = await requestJson("GET", `/api/create/plan/jobs/${encodeURIComponent(body.job.id)}`);
   const readbackBody = JSON.parse(readback.body) as { job: { metadata: Record<string, unknown> } };
   assert.equal(readback.status, 200);
   assert.equal(readbackBody.job.metadata.transport, "codex_app_server");
+  assert.equal("streamText" in readbackBody.job.metadata, false);
   assert.equal(JSON.stringify(readbackBody).includes("DATABASE_URL"), false);
   const stored = db.querySql<{ messages_json: string; current_draft: string }>("SELECT messages_json, current_draft FROM create_planner_jobs WHERE id=" + db.sqlValue(body.job.id))[0];
   assert.ok(stored);
@@ -110,7 +132,7 @@ test("create planner jobs claim atomically and recover an expired Mac worker lea
       status: "completed" as const,
       text: JSON.stringify(result),
       structured: result,
-      events: []
+      events: [{ method: "item/agentMessage/delta", delta: "event-secret-value", capturedAt: "2026-08-03T00:00:00.000Z" }]
     })
   } as unknown as CodexAppServerClient;
 
@@ -134,6 +156,17 @@ test("create planner jobs claim atomically and recover an expired Mac worker lea
   );
   assert.equal(leases.length, 2);
   assert.equal(leases.every((lease) => lease.lease_owner === null && lease.lease_expires_at === null && lease.attempt_count === 1), true);
+  const persistedProgress = db.querySql<{ metadata_json: string }>(
+    `SELECT metadata_json FROM create_planner_jobs WHERE id=${db.sqlValue(first.id)}`
+  )[0];
+  const persistedProgressMetadata = JSON.parse(persistedProgress.metadata_json) as Record<string, unknown>;
+  assert.equal("streamText" in persistedProgressMetadata, false);
+  assert.equal(typeof persistedProgressMetadata.streamTextLength, "number");
+  assert.ok(Number(persistedProgressMetadata.streamTextLength) > 0);
+  assert.equal(JSON.stringify(persistedProgressMetadata).includes("event-secret-value"), false);
+  const processedReadback = await requestJson("GET", `/api/create/plan/jobs/${encodeURIComponent(first.id)}`);
+  assert.equal(processedReadback.status, 200);
+  assert.equal(processedReadback.body.includes("event-secret-value"), false);
 
   const stale = enqueueCreatePlannerJob({
     messages: [{ role: "user", text: "期限切れleaseを回復" }],
@@ -145,6 +178,27 @@ test("create planner jobs claim atomically and recover an expired Mac worker lea
   assert.equal(recovered[0]?.status, "completed");
   const recoveredLease = db.querySql<{ attempt_count: number; lease_owner: string | null }>(`SELECT attempt_count, lease_owner FROM create_planner_jobs WHERE id=${db.sqlValue(stale.id)}`)[0];
   assert.deepEqual(recoveredLease, { attempt_count: 1, lease_owner: null });
+});
+
+test("Mac worker preserves a safe Codex App Server blocker for chat readback", async () => {
+  db.initDb();
+  db.resetDemoData();
+  const { enqueueCreatePlannerJob, processQueuedCreatePlannerJobs } = await import("../planner/createPlannerJobs.js");
+  const job = enqueueCreatePlannerJob({
+    messages: [{ role: "user", text: "App Serverの接続状態を確認" }],
+    metadata: { transport: "codex_app_server", actorUserId: "user_local_owner", companyIds: ["project-a"] }
+  });
+  const failingClient = {
+    startOrResumeThread: async () => {
+      throw new Error("codex_app_server_turn_timeout secret=must-not-escape");
+    }
+  } as unknown as CodexAppServerClient;
+
+  const processed = await processQueuedCreatePlannerJobs(1, { workerId: "worker-blocked", appServerClient: failingClient });
+  assert.equal(processed[0]?.id, job.id);
+  assert.equal(processed[0]?.status, "blocked");
+  assert.equal(processed[0]?.exactBlocker, "codex_app_server_turn_timeout");
+  assert.doesNotMatch(JSON.stringify(processed[0]), /must-not-escape/u);
 });
 
 function requestJson(method: string, path: string, payload: Record<string, unknown> = {}) {

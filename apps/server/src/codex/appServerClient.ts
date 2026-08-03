@@ -164,7 +164,10 @@ export class CodexAppServerClient {
       input: [{ type: "text", text, text_elements: [] }],
       cwd: appServerCwd(this.options.cwd),
       approvalPolicy: "never",
-      sandboxPolicy: restrictedReadOnlySandbox(appServerCwd(this.options.cwd)),
+      // Codex CLI 0.145+ removed the legacy sandboxPolicy.access shape for
+      // restricted reads. Keep the turn on the built-in read-only profile so
+      // the worker remains unable to approve or write external effects.
+      permissionProfile: ":read-only",
       ...(input.outputSchema ? { outputSchema: input.outputSchema } : {})
     });
     let response: Record<string, unknown>;
@@ -457,18 +460,6 @@ function appServerCwd(value: string | undefined): string {
   } catch {
     return candidate;
   }
-}
-
-function restrictedReadOnlySandbox(cwd: string): Record<string, unknown> {
-  return {
-    type: "readOnly",
-    access: {
-      type: "restricted",
-      includePlatformDefaults: true,
-      readableRoots: [cwd]
-    },
-    networkAccess: false
-  };
 }
 
 function turnKey(threadId: string, turnId: string): string {
