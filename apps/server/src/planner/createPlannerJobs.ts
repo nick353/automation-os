@@ -147,7 +147,10 @@ export function listCreateChatThreads(input: {
     const job = mapCreatePlannerJob(row);
     const metadata = job.metadata;
     const owner = typeof metadata.actorUserId === "string" ? metadata.actorUserId : "";
-    if (owner && owner !== input.actorUserId) continue;
+    // Legacy jobs without an actor binding are not safe to expose through a
+    // tenant-scoped history projection. Requiring both bindings keeps a
+    // missing owner from becoming an implicit wildcard after a reload.
+    if (!owner || owner !== input.actorUserId) continue;
     const companyIds = plannerJobCompanyIds(metadata);
     if (companyIds.length === 0 || !companyIds.some((companyId) => allowedCompanies.has(companyId))) continue;
     const threadId = typeof metadata.codexThreadId === "string" ? metadata.codexThreadId.trim() : "";

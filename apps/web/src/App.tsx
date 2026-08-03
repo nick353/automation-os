@@ -2226,8 +2226,22 @@ function ProjectPresentationProfileSummary({ model, companyId, context }: { mode
 }
 
 function MiniBarChart({ rows }: { rows: Array<{ label: string; value: number }> }) {
-  const max = Math.max(1, ...rows.map((row) => row.value));
-  return <div className="mini-bar-chart" aria-label="プロジェクト別実績グラフ">{rows.slice(-14).map((row) => <div className="mini-bar-row" key={row.label}><span>{row.label}</span><div className="mini-bar-track"><div className="mini-bar-fill" style={{ width: `${Math.max(2, Math.round((row.value / max) * 100))}%` }} /></div><strong>{row.value}</strong></div>)}</div>;
+  const chartRows = rows
+    .filter((row) => row.label.trim() && Number.isFinite(row.value) && row.value > 0)
+    .slice(-14);
+  if (!chartRows.length) return null;
+  const max = Math.max(...chartRows.map((row) => row.value));
+  return <div className="mini-bar-chart" aria-label="プロジェクト別実績グラフ">{chartRows.map((row) => <div className="mini-bar-row" key={row.label}><span>{row.label}</span><div className="mini-bar-track"><div className="mini-bar-fill" style={{ width: `${Math.min(100, Math.max(0, Math.round((row.value / max) * 100)))}%` }} /></div><strong>{row.value}</strong></div>)}</div>;
+}
+
+function validAnalyticsCount(value: unknown): number | null {
+  const count = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(count) && count > 0 ? count : null;
+}
+
+function validAnalyticsLabel(value: unknown): string | null {
+  const label = String(value ?? "").trim();
+  return label && label !== "未確認" ? label : null;
 }
 
 type PerformanceSeries = {
@@ -2240,30 +2254,31 @@ type PerformanceSeries = {
 
 function performanceSeriesForGrouping(analytics: any, grouping: string): PerformanceSeries {
   if (grouping === "workflow") {
-    const rows = Array.isArray(analytics?.by_automation) ? analytics.by_automation : [];
+    const rows = (Array.isArray(analytics?.by_automation) ? analytics.by_automation : []).filter((row: any) => validAnalyticsLabel(row.automation_name ?? row.automation_id) && validAnalyticsCount(row.total_jobs) !== null);
     return {
       title: "Workflow別実績",
       emptyLabel: "表示できるWorkflow別bucketはありません。",
       headers: ["Workflow", "Job", "完了", "完了率", "更新"],
-      chartRows: rows.map((row: any) => ({ label: String(row.automation_name ?? row.automation_id ?? "未確認"), value: Number(row.total_jobs ?? 0) })),
+      chartRows: rows.map((row: any) => ({ label: String(row.automation_name ?? row.automation_id), value: validAnalyticsCount(row.total_jobs) as number })),
       rows: rows.map((row: any) => [row.automation_name ?? row.automation_id ?? "未確認", row.total_jobs, row.completed_jobs, formatRatio(row.completion_rate), row.last_updated_at ?? "-"])
     };
   }
   if (grouping === "stage") {
-    const rows = Array.isArray(analytics?.by_stage) ? analytics.by_stage : [];
+    const rows = (Array.isArray(analytics?.by_stage) ? analytics.by_stage : []).filter((row: any) => validAnalyticsLabel(stageLabel(row.stage)) && validAnalyticsCount(row.total_jobs) !== null);
     return {
       title: "状態・段階別実績",
       emptyLabel: "表示できる状態・段階別bucketはありません。",
       headers: ["状態", "Job", "完了", "未完了", "完了率"],
-      chartRows: rows.map((row: any) => ({ label: stageLabel(row.stage), value: Number(row.total_jobs ?? 0) })),
+      chartRows: rows.map((row: any) => ({ label: stageLabel(row.stage), value: validAnalyticsCount(row.total_jobs) as number })),
       rows: rows.map((row: any) => [stageLabel(row.stage), row.total_jobs, row.completed_jobs, row.failed_jobs, formatRatio(row.completion_rate)])
     };
   }
-  const dateRows = Array.isArray(analytics?.by_date) ? analytics.by_date : [];
+  const dateRows = (Array.isArray(analytics?.by_date) ? analytics.by_date : []).filter((row: any) => validAnalyticsLabel(row.date) && validAnalyticsCount(row.total_jobs) !== null);
   if (grouping === "week") {
     const buckets = new Map<string, { total: number; completed: number; failed: number }>();
     for (const row of dateRows) {
       const key = isoWeekLabel(String(row.date ?? ""));
+      if (!key) continue;
       const bucket = buckets.get(key) ?? { total: 0, completed: 0, failed: 0 };
       bucket.total += Number(row.total_jobs ?? 0);
       bucket.completed += Number(row.completed_jobs ?? 0);
@@ -2275,7 +2290,7 @@ function performanceSeriesForGrouping(analytics: any, grouping: string): Perform
       title: "週別実績",
       emptyLabel: "表示できる週別bucketはありません。",
       headers: ["週 (UTC)", "Job", "完了", "未完了"],
-      chartRows: rows.map((row) => ({ label: String(row[0]), value: Number(row[1]) })),
+      chartRows: rows.filter((row) => validAnalyticsCount(row[1]) !== null).map((row) => ({ label: String(row[0]), value: validAnalyticsCount(row[1]) as number })),
       rows
     };
   }
@@ -2283,14 +2298,14 @@ function performanceSeriesForGrouping(analytics: any, grouping: string): Perform
     title: "日別実績",
     emptyLabel: "表示できる日別bucketはありません。",
     headers: ["日付 (UTC)", "Job", "完了", "未完了"],
-    chartRows: dateRows.map((row: any) => ({ label: String(row.date ?? "未確認"), value: Number(row.total_jobs ?? 0) })),
+    chartRows: dateRows.map((row: any) => ({ label: String(row.date), value: validAnalyticsCount(row.total_jobs) as number })),
     rows: dateRows.map((row: any) => [row.date, row.total_jobs, row.completed_jobs, row.failed_jobs])
   };
 }
 
-function isoWeekLabel(value: string): string {
+function isoWeekLabel(value: string): string | null {
   const date = new Date(`${value}T00:00:00.000Z`);
-  if (!Number.isFinite(date.getTime())) return "未確認";
+  if (!Number.isFinite(date.getTime())) return null;
   const day = date.getUTCDay() || 7;
   date.setUTCDate(date.getUTCDate() + 4 - day);
   const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
@@ -2374,7 +2389,7 @@ function TruthfulPerformancePage({ model }: { model: AppModel }) {
           <Button controlId="truthful.performance.refresh.button" onClick={() => setRefreshGeneration((value) => value + 1)}>再読込</Button>
         </div>
       </Panel>
-      {analyticsStatus === "loading" ? <Panel title="集計中" controlId="truthful.performance.loading.panel"><p className="muted">会社別の永続Jobと承認記録を集計しています。</p></Panel> : analyticsStatus === "error" ? <Panel title="集計できませんでした" controlId="truthful.performance.error.panel"><p className="muted">前回値を最新値として残していません。条件を確認して再読込してください。</p></Panel> : analytics?.data_state === "empty" ? <Panel title="計測データなし" controlId="truthful.performance.empty.panel"><p className="muted">この期間に計測可能なdurable Jobはありません。0件を成功率や所要時間として表示しません。</p></Panel> : <>
+      {analyticsStatus === "loading" ? <Panel title="集計中" controlId="truthful.performance.loading.panel"><p className="muted">会社別の永続Jobと承認記録を集計しています。</p></Panel> : analyticsStatus === "error" ? <Panel title="集計できませんでした" controlId="truthful.performance.error.panel"><p className="muted">前回値を最新値として残していません。条件を確認して再読込してください。</p></Panel> : analytics?.data_state === "empty" || analytics?.metrics?.outcome?.availability !== "available" ? <Panel title="計測データなし" controlId="truthful.performance.empty.panel"><p className="muted">この期間に計測可能なdurable Jobがありません。KPIやグラフは表示しません。承認記録など別の証跡だけが存在する場合も、Job実績としては集計しません。</p></Panel> : <>
         <div className="cards four">
           <MetricCard controlId="truthful.performance.metric.jobs" title="Job" value={String(outcome?.denominator ?? 0)} sub="durable_jobsのみ" status="enabled" />
           <MetricCard controlId="truthful.performance.metric.completion" title="完了率" value={formatRatio(outcome?.completion_rate)} sub={`${outcome?.numerator ?? 0}/${outcome?.denominator ?? 0}`} status={(outcome?.statuses?.failed ?? 0) > 0 ? "blocked" : "enabled"} />
@@ -2382,7 +2397,7 @@ function TruthfulPerformancePage({ model }: { model: AppModel }) {
           <MetricCard controlId="truthful.performance.metric.approval" title="承認平均時間" value={formatDuration(approvalLatency?.average)} sub={`sample ${approvalLatency?.sample_size ?? 0}`} status={approvalLatency?.availability === "available" ? "enabled" : "waiting"} />
         </div>
         {widgets.has("timeline") && <Panel title={performanceSeries.title} controlId="truthful.performance.series.panel">
-          {performanceSeries.rows.length ? <><MiniBarChart rows={performanceSeries.chartRows} /><DataTable controlId="truthful.performance.series.table" headers={performanceSeries.headers} rows={performanceSeries.rows} /></> : <p className="muted">{performanceSeries.emptyLabel}</p>}
+          {performanceSeries.rows.length ? <>{performanceSeries.chartRows.length ? <MiniBarChart rows={performanceSeries.chartRows} /> : <p className="muted">グラフに使える有効な数値bucketはありません。</p>}<DataTable controlId="truthful.performance.series.table" headers={performanceSeries.headers} rows={performanceSeries.rows} /></> : <p className="muted">{performanceSeries.emptyLabel}</p>}
         </Panel>}
         {widgets.has("kpi") && grouping !== "workflow" && <Panel title="Automation別実績" controlId="truthful.performance.automation.panel">
           {(analytics.by_automation ?? []).length ? <DataTable controlId="truthful.performance.automation.table" headers={["Automation", "Job", "完了", "完了率", "更新"]} rows={analytics.by_automation.map((row: any) => [row.automation_name, row.total_jobs, row.completed_jobs, formatRatio(row.completion_rate), row.last_updated_at ?? "-"])} /> : <p className="muted">表示できるAutomation別集計はありません。</p>}

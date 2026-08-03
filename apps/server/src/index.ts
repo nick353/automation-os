@@ -1347,17 +1347,14 @@ app.post("/api/portable-workflows/:id/run", async (req, res, next) => {
   try {
     initDb();
     initRegisteredWorkflows();
+    const projectId = requestedCompanyId(req);
+    requireCompanyAccess(projectId, ["owner", "admin", "operator"]);
     const fixedWorkflow = fixedRegisteredWorkflows.find((item) => item.id === req.params.id);
     if (!fixedWorkflow) {
       res.status(404).json({ ok: false, error: "portable_workflow_not_found", exact_blocker: "portable_workflow_not_found", external_action_executed: false });
       return;
     }
-    const companyIds = actorCompanyIds(["owner", "admin", "operator"]);
-    if (companyIds.length === 0) {
-      res.status(403).json({ ok: false, error: "company_scope_forbidden", exact_blocker: "company_scope_forbidden", external_action_executed: false });
-      return;
-    }
-    const workflow = getRegisteredWorkflowForCompanies(req.params.id, companyIds);
+    const workflow = getRegisteredWorkflowForCompanies(req.params.id, [projectId]);
     if (!workflow) {
       res.status(404).json({ ok: false, error: "registered_workflow_not_found", exact_blocker: "registered_workflow_not_found", external_action_executed: false });
       return;
@@ -1377,7 +1374,8 @@ app.post("/api/portable-workflows/:id/run", async (req, res, next) => {
     const started = await startPortableWorkflowRun({
       workflowId: workflow.id as Parameters<typeof startPortableWorkflowRun>[0]["workflowId"],
       sourceTrigger: "codex_app_bridge",
-      idempotencyKey
+      idempotencyKey,
+      companyId: projectId
     });
     const mode = portableWorkerExecutionMode();
     res.status(202).json({

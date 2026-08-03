@@ -17,6 +17,12 @@ export type PortableWorkflowStartInput = {
   workflowId: PortableWorkflowId;
   sourceTrigger: PortableTrigger;
   idempotencyKey: string;
+  /**
+   * Optional viewer/company scope for interactive starts. Global scheduler
+   * starts intentionally omit it; App bridge starts must bind it so the run
+   * is visible in the same company-scoped readback that accepted it.
+   */
+  companyId?: string | null;
 };
 
 export type PortableWorkflowStartResult = {
@@ -104,6 +110,7 @@ export async function startPortableWorkflowRun(input: PortableWorkflowStartInput
   const source = input.sourceTrigger === "automation_os_scheduler" ? "scheduler" as const : "manual" as const;
   const result = await startCommandRun(command, {
     deferWorker: true,
+    ...(input.companyId !== undefined ? { companyId: input.companyId } : {}),
     metadata: {
       registeredWorkflowId: workflow.id,
       registered_workflow_id: workflow.id,

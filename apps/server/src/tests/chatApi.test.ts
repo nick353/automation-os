@@ -94,6 +94,13 @@ test("GET /api/create/chat/threads returns only the actor/company-scoped redacte
       codexThreadId: "thread_project_b_history"
     }
   });
+  enqueueCreatePlannerJob({
+    messages: [{ role: "user", text: "旧形式の会話" }],
+    metadata: {
+      companyIds: ["project-a"],
+      codexThreadId: "thread_legacy_without_actor"
+    }
+  });
 
   const response = await requestJson("GET", "/api/create/chat/threads?project_id=project-a");
   assert.equal(response.status, 200, response.body);
@@ -104,6 +111,7 @@ test("GET /api/create/chat/threads returns only the actor/company-scoped redacte
   assert.equal(JSON.stringify(body).includes("thread-secret-value"), false);
   assert.equal(body.threads[0].messages.some((message) => message.text.includes("[redacted")), true);
   assert.equal(JSON.stringify(body).includes("project_b_history"), false);
+  assert.equal(JSON.stringify(body).includes("thread_legacy_without_actor"), false);
   assert.equal(job.status, "queued");
 });
 

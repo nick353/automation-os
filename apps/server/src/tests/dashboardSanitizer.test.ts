@@ -561,6 +561,9 @@ test("frontend hides static operational charts and decorative panel menus", () =
   assert.match(performanceSource, /analyticsStatus === "loading"/);
   assert.match(performanceSource, /analyticsStatus === "error"/);
   assert.match(performanceSource, /analytics\?\.data_state === "empty"/);
+  assert.match(performanceSource, /analytics\?\.metrics\?\.outcome\?\.availability !== "available"/);
+  assert.match(performanceSource, /performanceSeries\.chartRows\.length/);
+  assert.doesNotMatch(performanceSource, /Math\.max\(2/);
   assert.match(performanceSource, /集計の来歴/);
   assert.match(performanceSource, /未計測指標/);
   assert.doesNotMatch(performanceSource, /const runs = \(model\.mvpState\.runs/);

@@ -27,7 +27,8 @@ test("portable entrypoint is shared by App bridge and other schedulers, with ide
   ];
   for (const [index, item] of cases.entries()) {
     const idempotencyKey = `portable-entrypoint-test-${index + 1}`;
-    const first = await startPortableWorkflowRun({ ...item, idempotencyKey });
+    const companyId = index % 2 === 0 ? "portable_test_company" : undefined;
+    const first = await startPortableWorkflowRun({ ...item, idempotencyKey, ...(companyId ? { companyId } : {}) });
     assert.equal(first.replayed, false);
     assert.equal(first.workflowId, item.workflowId);
     assert.equal(first.sourceTrigger, item.sourceTrigger);
@@ -38,9 +39,10 @@ test("portable entrypoint is shared by App bridge and other schedulers, with ide
 
     const processed = await runWorkerOnce(first.runId);
     assert.equal(processed.length, 1);
-    const run = db.querySql<{ status: string; metadata_json: string }>(
-      `SELECT status, metadata_json FROM runs WHERE id=${db.sqlValue(first.runId)} LIMIT 1`
+    const run = db.querySql<{ status: string; company_id: string | null; metadata_json: string }>(
+      `SELECT status, company_id, metadata_json FROM runs WHERE id=${db.sqlValue(first.runId)} LIMIT 1`
     )[0];
+    assert.equal(run.company_id, companyId ?? null);
     const metadata = JSON.parse(run.metadata_json) as {
       portable_workflow_invocation?: { app_dependency?: boolean; source_trigger?: string };
       exact_blocker?: string;
