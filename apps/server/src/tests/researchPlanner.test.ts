@@ -1047,7 +1047,18 @@ test("portable scheduler canary admits a fixed global workflow without service i
       `SELECT execution_source, metadata_json FROM runs WHERE id=${db.sqlValue(runId)} LIMIT 1`
     )[0];
     assert.equal(before.execution_source, "automation-os");
-    assert.equal((JSON.parse(before.metadata_json) as { portable_worker?: { admission?: string } }).portable_worker?.admission, "no_effect_canary");
+    const beforeMetadata = JSON.parse(before.metadata_json) as {
+      portable_workflow_invocation?: {
+        schema?: string;
+        source_trigger?: string;
+        idempotency_key?: string;
+        external_action_executed?: boolean;
+      };
+    };
+    assert.equal(beforeMetadata.portable_workflow_invocation?.schema, "automation_os_portable_workflow_invocation_v1");
+    assert.equal(beforeMetadata.portable_workflow_invocation?.source_trigger, "automation_os_scheduler");
+    assert.equal(beforeMetadata.portable_workflow_invocation?.idempotency_key, `scheduler:daily-ai-research-publish-run:2026-06-16T09:00`);
+    assert.equal(beforeMetadata.portable_workflow_invocation?.external_action_executed, false);
 
     const processed = await runWorkerOnce(runId);
     assert.equal(processed.length, 1);

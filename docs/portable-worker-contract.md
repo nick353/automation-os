@@ -38,6 +38,20 @@ admission is limited to the no-effect canary and writes a portable admission
 marker to the run. Real execution mode continues to require the existing
 service identity, scope, approval, and provider-readback gates.
 
+The same run contract can be started by an App bridge, launchd, GitHub Actions,
+or another scheduler through the shared entrypoint:
+
+```sh
+npm run portable:worker-start -- \
+  --workflow=daily-ai-research-publish-run \
+  --trigger=codex_app_bridge \
+  --idempotency-key=example-run-2026-08-03
+```
+
+The entrypoint is idempotent for the workflow, trigger, and key tuple and only
+creates an Automation OS run. The worker owns execution and readback; the
+canary worker stops before Browser Use CLI, MCP, or any external action.
+
 ## Verification
 
 ```sh

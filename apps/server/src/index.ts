@@ -171,6 +171,7 @@ import {
   PORTABLE_WORKER_CANARY_MODE,
   portableWorkflowIdForWorkerAdapter
 } from "./runs/portableWorkflowWorker.js";
+import { startPortableWorkflowRun } from "./runs/portableWorkflowEntrypoint.js";
 
 export const app = express();
 app.set("case sensitive routing", true);
@@ -6725,15 +6726,14 @@ export async function runResearchPlanSchedulerOnce(
         const globalServiceUserId = process.env.AUTOMATION_OS_GLOBAL_SYSTEM_SERVICE_USER_ID?.trim() ?? "";
         let globalServiceBlocker = "";
         if (portableCanaryAdmission) {
-          runMetadata = {
-            ...runMetadata,
-            portable_worker: {
-              mode: PORTABLE_WORKER_CANARY_MODE,
-              workflow_id: workflow.id,
-              external_action_executed: false,
-              admission: "no_effect_canary"
-            }
-          };
+          const portableStarted = await startPortableWorkflowRun({
+            workflowId: workflow.id as Parameters<typeof startPortableWorkflowRun>[0]["workflowId"],
+            sourceTrigger: "automation_os_scheduler",
+            idempotencyKey: `scheduler:${workflow.id}:${due.dueKey}`
+          });
+          runIds.push(portableStarted.runId);
+          recordRegisteredWorkflowSchedulerStart(workflow, due.dueKey, portableStarted.runId, now);
+          continue;
         } else if (!isFixedGlobalWorkflow) {
           globalServiceBlocker = "registered_workflow_company_scope_missing";
         } else if (!globalServiceUserId) {

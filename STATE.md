@@ -82,6 +82,12 @@ same-run worker canary stops before Browser Use/MCP with
 not installed or kickstarted because the stored PostgreSQL proof still fails
 before spawn with `stored_postgres_secret_invalid_url`.
 
+The shared `portable:worker-start` entrypoint now accepts the same portable
+workflow contract from `codex_app_bridge`, `launchd`, `github_actions`, or the
+Automation OS scheduler. It binds an idempotency key to an Automation OS run;
+the three-workflow entrypoint test confirms replay stability and same-run
+canary stop/readback for Daily AI, NisenPrints, and Job Application Manager.
+
 Fresh portable canary readback on 2026-08-03 completed for the scheduler and
 all three portable workflows (`checked=3`, `completed=3`) with
 `browser_started=false`, `connector_called=false`, and

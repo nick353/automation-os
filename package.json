@@ -30,6 +30,7 @@
     "reference-workflow:canary": "npm run build:server && node apps/server/dist/cli/referenceWorkflowCanary.js",
     "portable:canary": "npm run build:server && node apps/server/dist/cli/portableWorkerCanary.js",
     "portable:scheduler-canary": "npm run build:server && node apps/server/dist/cli/portableSchedulerCanary.js",
+    "portable:worker-start": "npm run build:server && node apps/server/dist/cli/portableWorkflowStart.js",
     "portable:quarantine": "npm run build:server && node apps/server/dist/cli/quarantinePortableRuns.js",
     "worker:loop:stored": "npm run build:server && node apps/server/dist/cli/workerProductionFromStoredSecret.js --mode=loop",
     "local-history:triage": "npm run build:server && node apps/server/dist/cli/localHistoryTriage.js",
