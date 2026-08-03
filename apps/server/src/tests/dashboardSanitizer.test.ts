@@ -464,6 +464,23 @@ test("frontend template catalog preserves distinct automation types", () => {
   assert.match(source, /kind === "creative-video"[\s\S]*?return "creative-video"/);
 });
 
+test("frontend fails closed instead of rendering unknown automation types as SNS", () => {
+  const source = readAppSource();
+  const slugSource = appSection(source, "function automationSlugForKind", "function explicitAutomationTypeFromPrompt");
+  const builderSource = appSection(source, "function builderConfigForAutomationType", "async function requestChatPlan");
+  const pageSource = appSection(source, "function BuilderPage", "function ApprovalsPage");
+
+  assert.match(slugSource, /if \(kind === "広告投稿"\) return "ads";/);
+  assert.match(slugSource, /return "";/);
+  assert.match(builderSource, /function isSupportedAutomationType\(type: string\)/);
+  assert.match(builderSource, /kindLabel: "未確認"/);
+  assert.match(builderSource, /riskBoundary: "未認識の自動化タイプは保存・承認・定期実行更新を行いません。"/);
+  assert.match(pageSource, /const builderTypeSupported = isSupportedAutomationType\(builderType\)/);
+  assert.match(pageSource, /if \(!builderTypeSupported\)/);
+  assert.match(pageSource, /disabled=\{saving \|\| !builderTypeSupported\}/);
+  assert.match(pageSource, /SNSとして表示・保存せず/);
+});
+
 test("frontend company pages and successful empty states use canonical API truth", () => {
   const source = readAppSource();
   const optionSource = appSection(source, "function projectOptionsFromState", "async function fetchApiJson");

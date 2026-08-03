@@ -1,5 +1,18 @@
 # Automation OS Current State
 
+## 2026-08-03 unknown automation type fail-closed UI checkpoint
+
+Builderが未知の`automation_type`をSNSへ暗黙変換して表示・保存できる経路を
+閉じた。既知型のマッピングは維持し、未知型は`未確認`として表示し、Builderの
+保存・承認・schedule更新とChatからの詳細設定遷移を停止して正本確認を促す。
+
+Fresh verification: server build、web typecheck、web build、dashboard sanitizer
+`42/42`、静的UI preflight `21 screen cases / 184 manifest entries /
+233 rendered patterns / 0 issues`、full suite `916 total / 911 pass / 0 fail /
+5 skip`。5 skipは`AUTOMATION_OS_TEST_POSTGRES_URL`未設定のPostgreSQL fixture。
+Runtimeの認証済み画面QAと画面別録画は、保持中の同一Browser Use sessionが
+operator token gateに留まっているため未確認のままです。
+
 ## 2026-08-03 stored worker production-role binding checkpoint
 
 The stored-secret production worker now explicitly binds

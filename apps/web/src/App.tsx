@@ -745,7 +745,7 @@ function automationSlugForKind(kind: string) {
   if (kind === "dm-reply") return "dm-reply";
   if (kind === "広告投稿") return "ads";
   if (kind === "ads") return "ads";
-  return "sns-post";
+  return "";
 }
 
 function explicitAutomationTypeFromPrompt(prompt: string): string | null {
@@ -885,7 +885,19 @@ const builderConfigs: Record<string, BuilderConfig> = {
 };
 
 function builderConfigForAutomationType(type: string): BuilderConfig {
-  return builderConfigs[type] ?? builderConfigs["sns-post"];
+  return builderConfigs[type] ?? {
+    kindLabel: "未確認",
+    automationName: "未確認の自動化",
+    approvalPolicy: "未確認",
+    steps: ["保存済みautomation_typeを確認してから編集します"],
+    inputSources: "API readback待ち",
+    outputs: "未確認（保存しません）",
+    riskBoundary: "未認識の自動化タイプは保存・承認・定期実行更新を行いません。"
+  };
+}
+
+function isSupportedAutomationType(type: string) {
+  return Object.prototype.hasOwnProperty.call(builderConfigs, type);
 }
 
 async function requestChatPlan(
@@ -3486,10 +3498,16 @@ function ChatPage({ model }: { model: AppModel }) {
       setReceipt(plannerReadback?.creation_blocker ?? "作成可能な自動化プランを確認できませんでした。");
       return;
     }
+    const builderSlug = automationSlugForKind(plan.kind);
+    if (!builderSlug || !isSupportedAutomationType(builderSlug)) {
+      setReceipt(`plannerが返した自動化タイプ（${plan.kind}）をBuilderで確認できません。SNSとして置き換えず、詳細設定は開きません。`);
+      setChatNote(`詳細設定停止: 未認識のautomation_type=${plan.kind} / ${actionStamp()}`);
+      return;
+    }
     setReceipt("詳細設定を開きました。Lane・承認・リトライ条件を確認できます。");
     setChatNote(`詳細設定へ移動: project=${targetProject} / kind=${plan.kind} / ${actionStamp()}`);
     rememberProject(targetProject);
-    go(`#/projects/${targetProject}/automations/${automationSlugForKind(plan.kind)}/edit`);
+    go(`#/projects/${targetProject}/automations/${builderSlug}/edit`);
   };
   const saveAdjustedSchedule = async () => {
     if (!canAdjustSchedule || !selectedAutomation?.id) {
@@ -4067,6 +4085,7 @@ function BuilderPage({ model }: { model: AppModel }) {
   const persistedSpec = mvpState.builder_specs?.find((item) => item.automation_id === automationId);
   const persistedSchedule = mvpState.schedules?.find((item) => String(item.automation_id ?? item.automationId ?? "") === automationId);
   const builderType = persistedAutomation?.automation_type ?? routeAutomationKey;
+  const builderTypeSupported = isSupportedAutomationType(builderType);
   const builderConfig = builderConfigForAutomationType(builderType);
   const builderKind = builderConfig.kindLabel;
   const builderTitle = `${builderKind} 自動化仕様`;
@@ -4123,6 +4142,10 @@ function BuilderPage({ model }: { model: AppModel }) {
     });
   }, [automationId, persistedSchedule?.revision, persistedSchedule?.kind, persistedSchedule?.expression, persistedSchedule?.timezone, persistedSchedule?.enabled, persistedSpec?.updated_at, builderDraft.schedule]);
   const saveBuilder = async () => {
+    if (!builderTypeSupported) {
+      noteBuilder(`未認識のautomation_type=${builderType}です。SNSとして置き換えず、正本の型を確認するまで保存しません。`);
+      return;
+    }
     if (saving) return;
     setSaving(true);
     try {
@@ -4202,6 +4225,10 @@ function BuilderPage({ model }: { model: AppModel }) {
     }
   };
   const saveSchedule = async () => {
+    if (!builderTypeSupported) {
+      noteBuilder(`未認識のautomation_type=${builderType}です。定期実行の更新は未確認のまま保存しません。`);
+      return;
+    }
     if (!persistedAutomation) {
       noteBuilder("先に自動化本体を下書き保存してから、定期実行を保存してください。");
       return;
@@ -4247,10 +4274,11 @@ function BuilderPage({ model }: { model: AppModel }) {
     <section>
       <ProjectTabs mvpState={mvpState} />
       <PageTitle title={builderTitle} desc="チャットやテンプレートから生成された自動化を編集します。">
-        <Button controlId="builder.save" onClick={saveBuilder} disabled={saving}>{saving ? "保存確認中" : "下書きとして保存"}</Button>
+        <Button controlId="builder.save" onClick={saveBuilder} disabled={saving || !builderTypeSupported}>{saving ? "保存確認中" : "下書きとして保存"}</Button>
         <Button
           controlId="builder.sync"
           variant="primary"
+          disabled={!builderTypeSupported || saving}
           onClick={async () => {
             try {
               const approvalTitle = `${builderDraft.name || builderTitle} 公開確認`;
@@ -4283,6 +4311,7 @@ function BuilderPage({ model }: { model: AppModel }) {
         </Button>
       </PageTitle>
       <ProjectScopeNotice projectId={activeProject} mvpState={mvpState} />
+      {!builderTypeSupported && <div className="notice-row" role="alert">この自動化の型（<code>{builderType}</code>）は現在のBuilderで確認できません。SNSとして表示・保存せず、正本のautomation_typeを確認してください。</div>}
       <div className="builder-grid">
         <div>
           <Panel title="基本設定" controlId="builder.basic.panel">
