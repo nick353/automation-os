@@ -2687,6 +2687,8 @@ function renderPage(route: string, model: AppModel) {
   if (currentPath.includes("/recovery")) return <TruthfulRecoveryPage model={model} />;
   if (currentPath.includes("/runs/")) return <TruthfulRunDetailPage model={model} />;
   if (currentPath.includes("/automations")) return <AutomationsPage model={model} />;
+  if (/^#\/projects\/[^/]+$/u.test(currentPath)) return <HomePage model={model} />;
+  if (currentPath.includes("/projects/")) return <ProjectUnavailablePage reason="この会社画面は現在のルート契約では確認できません。会社タブから選び直してください。" />;
   return <HomePage model={model} />;
 }
 
