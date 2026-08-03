@@ -623,7 +623,9 @@ test("frontend fails closed behind an operator-token gate on protected productio
   assert.match(appSource, /const unlockOperatorAccess = async \(\) =>/);
   assert.match(appSource, /persistWriteToken\(writeToken\);[\s\S]*const state = await readMvpState\(\)/);
   assert.match(appSource, /setApiAccessRequired\(false\)/);
-  assert.match(appSource, /title="オペレーター確認"/);
+  assert.match(appSource, /title="管理者アクセス"/);
+  assert.match(appSource, /管理者アクセスキー（Operator token）/);
+  assert.match(appSource, /管理者だけが使う確認キーです/);
   assert.match(appSource, /type="password"/);
 });
 
