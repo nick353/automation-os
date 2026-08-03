@@ -903,13 +903,14 @@ function isSupportedAutomationType(type: string) {
 async function requestChatPlan(
   prompt: string,
   selectedPlatforms: string[],
-  options: { projectId?: string; sessionId?: string; messages?: ChatMessage[]; threadId?: string; onProgress?: (progress: PlannerProgress) => void } = {}
+  options: { projectId?: string; sessionId?: string; messages?: ChatMessage[]; threadId?: string; signal?: AbortSignal; onJobId?: (jobId: string) => void; onProgress?: (progress: PlannerProgress) => void } = {}
 ): Promise<PlannerReadback> {
   const conversation = (options.messages?.length ? options.messages : [{ id: "current", role: "user" as const, text: prompt }])
     .map((message) => ({ role: message.role, text: message.text }));
   const response = await mvpFetch("/api/create/chat", {
     method: "POST",
     headers: { "content-type": "application/json" },
+    signal: options.signal,
     body: JSON.stringify({
       messages: conversation,
       currentDraft: prompt,
@@ -933,6 +934,7 @@ async function requestChatPlan(
         : "planner_readback_unavailable";
     throw new Error(redactSensitiveText(exact).slice(0, 180) || "planner_readback_unavailable");
   }
+  options.onJobId?.(body.job.id);
   let job = body.job;
   let workerReadback = body.worker_readback ?? null;
   options.onProgress?.(plannerProgressFromJob(body.job.id!, job, workerReadback));
@@ -941,7 +943,8 @@ async function requestChatPlan(
   }
   for (let attempt = 0; attempt < 90 && job.status !== "completed" && job.status !== "blocked"; attempt += 1) {
     await new Promise((resolve) => window.setTimeout(resolve, 1_000));
-    const poll = await mvpFetch(`/api/create/plan/jobs/${encodeURIComponent(body.job.id)}`, { cache: "no-store" });
+    if (options.signal?.aborted) throw new Error("chat_request_aborted");
+    const poll = await mvpFetch(`/api/create/plan/jobs/${encodeURIComponent(body.job.id)}`, { cache: "no-store", signal: options.signal });
     const pollBody = await poll.json().catch(() => null) as { ok?: boolean; job?: PlannerJobReadback; worker_readback?: WorkerReadback | null } | null;
     if (!poll.ok || pollBody?.ok !== true || !pollBody.job) throw new Error("planner_job_readback_unavailable");
     job = pollBody.job;
@@ -1081,6 +1084,19 @@ async function activateChatSession(projectId: string, sessionId: string): Promis
   const body = await response.json().catch(() => ({})) as { ok?: boolean; session?: ChatSessionReadback; exactBlocker?: string; error?: string };
   if (!response.ok || body.ok !== true || !body.session) throw new Error(body.exactBlocker || body.error || `chat_session_activate_http_${response.status}`);
   return body.session;
+}
+
+async function cancelChatPlannerJob(jobId: string): Promise<PlannerJobReadback> {
+  const response = await mvpFetch(`/api/create/plan/jobs/${encodeURIComponent(jobId)}/cancel`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{}"
+  });
+  const body = await response.json().catch(() => ({})) as { ok?: boolean; job?: PlannerJobReadback; exactBlocker?: string; error?: string };
+  if (!response.ok || body.ok !== true || !body.job) {
+    throw new Error(body.exactBlocker || body.error || `chat_job_cancel_http_${response.status}`);
+  }
+  return body.job;
 }
 
 type PlannerJobReadback = {
@@ -3152,6 +3168,8 @@ function ChatPage({ model }: { model: AppModel }) {
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const submittedPromptRef = useRef("");
   const plannerRequestGeneration = useRef(0);
+  const plannerAbortRef = useRef<AbortController | null>(null);
+  const activePlannerJobRef = useRef("");
   const createIdempotencyRef = useRef<{ fingerprint: string; key: string } | null>(null);
   const canonicalProjects = projectOptionsFromState(mvpState);
   React.useEffect(() => {
@@ -3192,7 +3210,43 @@ function ChatPage({ model }: { model: AppModel }) {
     && plannerReadback?.planner_mode === "ready_to_schedule"
     && targetProjectIsVerified
     && Boolean(selectedAutomation?.id);
+  const cancelPlanning = async () => {
+    if (!planning) return;
+    plannerRequestGeneration.current += 1;
+    plannerAbortRef.current?.abort();
+    plannerAbortRef.current = null;
+    const jobId = activePlannerJobRef.current;
+    activePlannerJobRef.current = "";
+    setPlanning(false);
+    setPlannerReadback(null);
+    setPlanVisible(false);
+    setCreated(false);
+    setPlannerError(null);
+    if (jobId) {
+      try {
+        const cancelled = await cancelChatPlannerJob(jobId);
+        setPlannerProgress((current) => ({
+          ...(current ?? { jobId, status: "blocked", streamTextLength: 0, events: [] }),
+          status: cancelled.status ?? "blocked"
+        }));
+        setReceipt(`Chatのplanner処理を停止しました。job=${jobId} / external_action=false`);
+        setChatNote(`planner停止済み: job=${jobId} / ${actionStamp()}`);
+      } catch (error) {
+        const exact = error instanceof Error ? error.message : "chat_job_cancel_failed";
+        setPlannerProgress((current) => current ? { ...current, status: "blocked" } : null);
+        setReceipt(`Chatの停止結果を確認できませんでした: ${publicBlockerSummary(exact)}`);
+        setChatNote(`planner停止のreadback未確認: ${publicBlockerSummary(exact)} / ${actionStamp()}`);
+      }
+    } else {
+      setPlannerProgress(null);
+      setReceipt("Chatのplanner処理を停止しました。jobはまだ発行されていません。");
+      setChatNote(`planner停止: job発行前 / ${actionStamp()}`);
+    }
+  };
   const resetChat = () => {
+    plannerAbortRef.current?.abort();
+    plannerAbortRef.current = null;
+    activePlannerJobRef.current = "";
     plannerRequestGeneration.current += 1;
     setPlanning(false);
     setPrompt("");
@@ -3373,6 +3427,9 @@ function ChatPage({ model }: { model: AppModel }) {
     plannerRequestGeneration.current = requestGeneration;
     createIdempotencyRef.current = null;
     setPlanning(true);
+    const plannerController = new AbortController();
+    plannerAbortRef.current = plannerController;
+    activePlannerJobRef.current = "";
     try {
       const secretReadback = await storeChatSecrets(activePrompt, selectedProjectId);
       const safePrompt = secretReadback.sanitizedText.trim();
@@ -3382,6 +3439,8 @@ function ChatPage({ model }: { model: AppModel }) {
         projectId: selectedProjectId,
         sessionId: chatSessionId || undefined,
         threadId: requestThreadId || undefined,
+        signal: plannerController.signal,
+        onJobId: (jobId) => { activePlannerJobRef.current = jobId; },
         messages: [...messages, { id: "current", role: "user", text: safePrompt }],
         onProgress: (progress) => {
           if (plannerRequestGeneration.current === requestGeneration) setPlannerProgress(progress);
@@ -3419,7 +3478,11 @@ function ChatPage({ model }: { model: AppModel }) {
       setReceipt(`プラン作成結果を確認できませんでした（${blocker}）。自動化の作成は確認されていません。`);
       setChatNote(`プラン作成停止: ${blocker} / ${actionStamp()}`);
     } finally {
-      if (plannerRequestGeneration.current === requestGeneration) setPlanning(false);
+      if (plannerRequestGeneration.current === requestGeneration) {
+        setPlanning(false);
+        if (plannerAbortRef.current === plannerController) plannerAbortRef.current = null;
+        activePlannerJobRef.current = "";
+      }
     }
   };
   const sendMessage = async () => {
@@ -3433,6 +3496,9 @@ function ChatPage({ model }: { model: AppModel }) {
     plannerRequestGeneration.current = requestGeneration;
     createIdempotencyRef.current = null;
     setPlanning(true);
+    const plannerController = new AbortController();
+    plannerAbortRef.current = plannerController;
+    activePlannerJobRef.current = "";
     try {
       const secretReadback = await storeChatSecrets(draftPrompt, selectedProjectId);
       const safePrompt = secretReadback.sanitizedText.trim();
@@ -3441,6 +3507,8 @@ function ChatPage({ model }: { model: AppModel }) {
         projectId: selectedProjectId,
         sessionId: chatSessionId || undefined,
         threadId: requestThreadId || undefined,
+        signal: plannerController.signal,
+        onJobId: (jobId) => { activePlannerJobRef.current = jobId; },
         messages: [...messages, { id: "current", role: "user", text: safePrompt }],
         onProgress: (progress) => {
           if (plannerRequestGeneration.current === requestGeneration) setPlannerProgress(progress);
@@ -3481,7 +3549,11 @@ function ChatPage({ model }: { model: AppModel }) {
       setReceipt(`送信結果を確認できませんでした（${blocker}）。自動化の作成は確認されていません。`);
       setChatNote(`送信停止: ${blocker} / ${actionStamp()}`);
     } finally {
-      if (plannerRequestGeneration.current === requestGeneration) setPlanning(false);
+      if (plannerRequestGeneration.current === requestGeneration) {
+        setPlanning(false);
+        if (plannerAbortRef.current === plannerController) plannerAbortRef.current = null;
+        activePlannerJobRef.current = "";
+      }
     }
   };
   const editPlan = () => {
@@ -3832,6 +3904,7 @@ function ChatPage({ model }: { model: AppModel }) {
             />
           </label>
           <div className="button-row">
+            <Button controlId="chat.cancel" onClick={() => { void cancelPlanning(); }} disabled={!planning}>停止</Button>
             <Button controlId="chat.send" variant="primary" icon={<MessageSquare size={14} />} onClick={sendMessage} disabled={!draftPrompt || planning || creating}>{planning ? "確認中" : "送信して考える"}</Button>
             <Button controlId="chat.recreate" onClick={startPlan} disabled={!activePrompt || planning || creating}>プランを再作成</Button>
             <Button controlId="chat.reset-input" onClick={resetChat} disabled={planning || creating}>入力をリセット</Button>

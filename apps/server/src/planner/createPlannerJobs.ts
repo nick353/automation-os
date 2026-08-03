@@ -101,6 +101,31 @@ export function getCreatePlannerJob(id: string): CreatePlannerJob | undefined {
 }
 
 /**
+ * Logically stop a queued or running read-only planner job. The worker may
+ * finish an already-running App Server turn, but its completion update is
+ * fenced by status and lease_owner, so a cancelled job cannot publish a
+ * late plan into the control plane.
+ */
+export function cancelCreatePlannerJob(id: string, reason = "chat_cancelled_by_user"): CreatePlannerJob | undefined {
+  const normalizedId = id.trim();
+  if (!normalizedId) return undefined;
+  const now = nowIso();
+  const rows = querySql<CreatePlannerJobRow>(
+    `UPDATE create_planner_jobs
+     SET status='blocked',
+         exact_blocker=${sqlValue(reason.slice(0, 160))},
+         completed_at=${sqlValue(now)},
+         updated_at=${sqlValue(now)},
+         lease_owner=NULL,
+         lease_expires_at=NULL
+     WHERE id=${sqlValue(normalizedId)} AND status IN ('queued', 'running')
+     RETURNING *`
+  );
+  if (rows[0]) return mapCreatePlannerJob(rows[0]);
+  return getCreatePlannerJob(normalizedId);
+}
+
+/**
  * Return only the actor/company-scoped conversation projection needed to
  * resume the web chat.  The App Server owns the actual thread history; the
  * planner job stores a redacted UI projection so a browser reload can recover

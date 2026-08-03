@@ -55,7 +55,7 @@ import {
 } from "./codex/automationMigrationLedger.js";
 import { refreshKnowledgeNotes } from "./knowledge/refresh.js";
 import { createPlannerResponse, buildLocalPlanner, type CreatePlannerMessage } from "./planner/createPlanner.js";
-import { enqueueCreatePlannerJob, getCreatePlannerJob, listCreateChatThreads, type CreatePlannerJob } from "./planner/createPlannerJobs.js";
+import { cancelCreatePlannerJob, enqueueCreatePlannerJob, getCreatePlannerJob, listCreateChatThreads, type CreatePlannerJob } from "./planner/createPlannerJobs.js";
 import { createSkillDraft } from "./planner/skillFactory.js";
 import {
   createResearchPlan,
@@ -1612,6 +1612,34 @@ app.get("/api/create/plan/jobs/:id", (req, res) => {
     return;
   }
   res.json({ ok: true, job: sanitizeCreatePlannerJobForApi(job), plan: job.result, worker_readback: safeStoredWorkerStateForApi() });
+});
+
+app.post("/api/create/plan/jobs/:id/cancel", (req, res) => {
+  const job = getCreatePlannerJob(req.params.id);
+  if (!job) {
+    res.status(404).json({ ok: false, error: "create_planner_job_not_found", exactBlocker: "create_planner_job_not_found" });
+    return;
+  }
+  try {
+    assertCreatePlannerJobAccess(job);
+  } catch {
+    res.status(404).json({ ok: false, error: "create_planner_job_not_found", exactBlocker: "create_planner_job_not_found" });
+    return;
+  }
+  if (job.status !== "queued" && job.status !== "running") {
+    res.status(409).json({ ok: false, error: "chat_job_not_cancellable", exactBlocker: "chat_job_not_cancellable" });
+    return;
+  }
+  const cancelled = cancelCreatePlannerJob(job.id);
+  if (!cancelled || cancelled.status !== "blocked" || cancelled.exactBlocker !== "chat_cancelled_by_user") {
+    res.status(409).json({ ok: false, error: "chat_job_not_cancellable", exactBlocker: "chat_job_not_cancellable" });
+    return;
+  }
+  res.json({
+    ok: true,
+    job: sanitizeCreatePlannerJobForApi(cancelled),
+    external_action_executed: false
+  });
 });
 
 app.get("/api/create/session", (_req, res) => {

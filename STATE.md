@@ -1,5 +1,21 @@
 # Automation OS Current State
 
+## 2026-08-03 Chat planner stop control checkpoint
+
+ChatのCodex App風planner処理に「停止」導線を追加した。停止は現在のread-only
+planner jobだけをactor/company scope付きで論理キャンセルし、`blocked` と
+`chat_cancelled_by_user` を同一jobへreadbackする。leaseを解放し、遅れて返る
+worker完了結果がplanを公開しないようstatus/lease境界でfenceしている。外部効果は
+発生しない。UI側はAbortControllerでpollingを止め、job発行後はcancel endpointの
+結果をreceiptとprogressへ反映する。
+
+Fresh verification: focused chat API `6/6`、server build、web typecheck/build、
+`git diff --check`、静的UI preflight `21 screen cases / 185 manifest entries /
+234 rendered patterns / 0 issues`、full suite `917 total / 912 pass / 0 fail /
+5 skip`。5 skipは`AUTOMATION_OS_TEST_POSTGRES_URL`未設定のPostgreSQL fixture。
+認証済み21画面QA・画面別録画・Mac worker/App Server production readback・有効な
+PostgreSQL secret・production schedule/project readbackは未確認のままです。
+
 ## 2026-08-03 public deployment parity readback after unknown-type fix
 
 Fresh public read-only readback now matches the current local build at

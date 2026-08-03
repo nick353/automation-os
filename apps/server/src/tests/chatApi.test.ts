@@ -107,6 +107,48 @@ test("GET /api/create/chat/threads returns only the actor/company-scoped redacte
   assert.equal(job.status, "queued");
 });
 
+test("chat planner cancellation fences a queued job and preserves actor scope", async () => {
+  db.initDb();
+  const now = db.nowIso();
+  db.upsert("users", { id: "user_local_owner", auth_provider: "test", auth_subject: "user_local_owner", email: null, display_name: "Chat owner", kind: "human", status: "active", created_at: now, updated_at: now });
+  db.upsert("companies", { id: "project-chat-cancel", slug: "project-chat-cancel", name: "Chat Cancel Project", status: "active", created_at: now, updated_at: now });
+  db.upsert("company_memberships", { id: "membership-chat-cancel", company_id: "project-chat-cancel", user_id: "user_local_owner", role: "owner", status: "active", created_at: now, updated_at: now });
+  const { enqueueCreatePlannerJob, processQueuedCreatePlannerJobs } = await import("../planner/createPlannerJobs.js");
+  const job = enqueueCreatePlannerJob({
+    messages: [{ role: "user", text: "停止可能性を確認" }],
+    metadata: { transport: "codex_app_server", actorUserId: "user_local_owner", companyIds: ["project-chat-cancel"] }
+  });
+
+  const cancelled = await requestJson("POST", `/api/create/plan/jobs/${encodeURIComponent(job.id)}/cancel`);
+  assert.equal(cancelled.status, 200, cancelled.body);
+  const cancelledBody = JSON.parse(cancelled.body) as { ok: boolean; external_action_executed: boolean; job: { status: string; exactBlocker?: string } };
+  assert.equal(cancelledBody.ok, true);
+  assert.equal(cancelledBody.external_action_executed, false);
+  assert.equal(cancelledBody.job.status, "blocked");
+  assert.equal(cancelledBody.job.exactBlocker, "chat_cancelled_by_user");
+
+  const readback = await requestJson("GET", `/api/create/plan/jobs/${encodeURIComponent(job.id)}`);
+  assert.equal(readback.status, 200, readback.body);
+  assert.equal((JSON.parse(readback.body) as { job: { status: string; exactBlocker?: string } }).job.exactBlocker, "chat_cancelled_by_user");
+  db.execSql("UPDATE create_planner_jobs SET status='blocked', exact_blocker='test_fixture_isolation' WHERE status='queued'");
+  assert.deepEqual(await processQueuedCreatePlannerJobs(1, { workerId: "cancel-test" }), []);
+
+  const secondCancel = await requestJson("POST", `/api/create/plan/jobs/${encodeURIComponent(job.id)}/cancel`);
+  assert.equal(secondCancel.status, 409);
+  assert.equal(JSON.parse(secondCancel.body).exactBlocker, "chat_job_not_cancellable");
+
+  const previousActor = process.env.AUTOMATION_OS_OWNER_USER_ID;
+  process.env.AUTOMATION_OS_OWNER_USER_ID = "user_other_actor";
+  try {
+    const foreignCancel = await requestJson("POST", `/api/create/plan/jobs/${encodeURIComponent(job.id)}/cancel`);
+    assert.equal(foreignCancel.status, 404);
+    assert.equal(JSON.parse(foreignCancel.body).exactBlocker, "create_planner_job_not_found");
+  } finally {
+    if (previousActor === undefined) delete process.env.AUTOMATION_OS_OWNER_USER_ID;
+    else process.env.AUTOMATION_OS_OWNER_USER_ID = previousActor;
+  }
+});
+
 test("named chat sessions stay actor/project scoped and preserve the App Server thread binding", async () => {
   db.initDb();
   db.execSql("UPDATE create_planner_jobs SET status='blocked' WHERE status='queued'");
