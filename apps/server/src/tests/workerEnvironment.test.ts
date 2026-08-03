@@ -50,6 +50,20 @@ test("stored database URL is injected only when explicitly bound to the worker",
   assert.equal(env.AUTOMATION_OS_WRITE_TOKEN, undefined);
 });
 
+test("stored production worker can bind the explicit production startup role", () => {
+  const env = safeWorkerEnvironment(
+    { PATH: "/bin", AUTOMATION_OS_ENV_ROLE: "recovery" },
+    {
+      databaseUrl: "postgres://bound:password@example.invalid/db",
+      overrides: { AUTOMATION_OS_ENV_ROLE: "production" }
+    }
+  );
+
+  assert.equal(env.AUTOMATION_OS_ENV_ROLE, "production");
+  assert.equal(env.AUTOMATION_OS_DATABASE_URL, "postgres://bound:password@example.invalid/db");
+  assert.equal(env.DATABASE_URL, "postgres://bound:password@example.invalid/db");
+});
+
 test("worker output redaction removes credential values before persistence", () => {
   const output = redactWorkerOutput(Buffer.from([
     "AUTOMATION_OS_DATABASE_URL=postgres://user:password@example.invalid/db",

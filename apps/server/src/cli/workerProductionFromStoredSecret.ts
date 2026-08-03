@@ -52,6 +52,9 @@ const child = spawn(process.execPath, args, {
   env: safeWorkerEnvironment(process.env, {
     databaseUrl: validatedDatabaseUrl,
     overrides: {
+      // Keep the stored-secret worker on the production startup policy path;
+      // the child must not silently inherit legacy SQLite semantics.
+      AUTOMATION_OS_ENV_ROLE: "production",
       AUTOMATION_OS_ASSUME_EXISTING_POSTGRES_SCHEMA: process.env.AUTOMATION_OS_ASSUME_EXISTING_POSTGRES_SCHEMA ?? "1"
     }
   }),
