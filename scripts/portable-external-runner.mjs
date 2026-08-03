@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 
 const WORKFLOW_SPECS = {
   "job-application-manager": {
@@ -56,95 +57,106 @@ const WORKFLOW_SPECS = {
 };
 
 let tempRoot;
-const input = parseArgs(process.argv.slice(2));
-const spec = WORKFLOW_SPECS[input.workflow_id];
-if (!spec) finish({
-  status: "blocked",
-  exact_blocker: "portable_external_workflow_unknown",
-  external_action_executed: false
-}, 1);
 
-const effects = process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS === "enabled";
-const codexBin = process.env.AUTOMATION_OS_CODEX_BIN?.trim() || "/usr/local/bin/codex";
-if (!statIsFile(codexBin)) finish({
-  status: "blocked",
-  exact_blocker: "portable_external_codex_cli_missing",
-  external_action_executed: false,
-  codex_bin: codexBin
-}, 1);
-
-tempRoot = mkdtempSync(join(tmpdir(), "automation-os-portable-external-"));
-const lastMessagePath = join(tempRoot, `${safe(input.run_id)}.last-message.json`);
-try {
-  const prompt = buildPrompt({ ...input, spec, effects });
-  const result = spawnSync(codexBin, [
-    "exec",
-    "--ephemeral",
-    "--sandbox", "danger-full-access",
-    "--cd", spec.cwd,
-    "--output-last-message", lastMessagePath,
-    prompt
-  ], {
-    cwd: spec.cwd,
-    env: {
-      ...process.env,
-      AUTOMATION_OS_PORTABLE_WORKFLOW_ID: input.workflow_id,
-      AUTOMATION_OS_PORTABLE_RUN_ID: input.run_id,
-      AUTOMATION_OS_PORTABLE_STEP_ID: input.step_id,
-      AUTOMATION_OS_PORTABLE_IDEMPOTENCY_KEY: input.idempotency_key,
-      AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS: effects ? "enabled" : "read_only",
-      AUTOMATION_OS_BROWSER_SURFACE: "browser_use_cli",
-      AUTOMATION_OS_BROWSER_NO_FALLBACK: "1"
-    },
-    encoding: "utf8",
-    maxBuffer: 20 * 1024 * 1024,
-    timeout: Number(process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_CODEX_TIMEOUT_MS ?? 3_600_000)
-  });
-  if (result.error) finish({
-    status: "blocked",
-    exact_blocker: result.error.code === "ETIMEDOUT"
-      ? "portable_external_codex_cli_timeout"
-      : "portable_external_codex_cli_failed",
-    external_action_executed: false,
-    exit_status: result.status,
-    signal: result.signal
-  }, 1);
-  if (result.status !== 0) finish({
-    status: "blocked",
-    exact_blocker: "portable_external_codex_cli_exit_nonzero",
-    external_action_executed: false,
-    exit_status: result.status,
-    signal: result.signal,
-    stdout_tail: tail(result.stdout),
-    stderr_tail: tail(result.stderr)
-  }, 1);
-  const receipt = parseReceipt(readFileSafe(lastMessagePath));
-  if (!receipt) finish({
-    status: "blocked",
-    exact_blocker: "portable_external_worker_receipt_missing",
-    external_action_executed: false,
-    stdout_tail: tail(result.stdout),
-    stderr_tail: tail(result.stderr)
-  }, 1);
-  finish({
-    status: receipt.status,
-    exact_blocker: receipt.exact_blocker ?? null,
-    external_action_executed: effects && receipt.external_action_executed === true,
-    workflow_id: input.workflow_id,
-    run_id: input.run_id,
-    step_id: input.step_id,
-    idempotency_key: input.idempotency_key,
-    source_trigger: input.source_trigger,
-    executor: "codex_cli_portable_worker",
-    browser_surface: "browser_use_cli",
-    connector_gateway: "mcp",
-    effects_mode: effects ? "enabled" : "read_only",
-    artifacts: Array.isArray(receipt.artifacts) ? receipt.artifacts.slice(0, 20) : [],
-    proof_summary: typeof receipt.proof_summary === "string" ? receipt.proof_summary : null
-  }, receipt.status === "blocked" || receipt.exact_blocker ? 1 : 0);
-} finally {
-  rmSync(tempRoot, { recursive: true, force: true });
+export function selectCodexBin(env = process.env) {
+  return env.AUTOMATION_OS_CODEX_BIN?.trim()
+    || env.CODEX_CLI_PATH?.trim()
+    || "/usr/local/bin/codex";
 }
+
+function main() {
+  const input = parseArgs(process.argv.slice(2));
+  const spec = WORKFLOW_SPECS[input.workflow_id];
+  if (!spec) finish({
+    status: "blocked",
+    exact_blocker: "portable_external_workflow_unknown",
+    external_action_executed: false
+  }, 1);
+
+  const effects = process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS === "enabled";
+  const codexBin = selectCodexBin();
+  if (!statIsFile(codexBin)) finish({
+    status: "blocked",
+    exact_blocker: "portable_external_codex_cli_missing",
+    external_action_executed: false,
+    codex_bin: codexBin
+  }, 1);
+
+  tempRoot = mkdtempSync(join(tmpdir(), "automation-os-portable-external-"));
+  const lastMessagePath = join(tempRoot, `${safe(input.run_id)}.last-message.json`);
+  try {
+    const prompt = buildPrompt({ ...input, spec, effects });
+    const result = spawnSync(codexBin, [
+      "exec",
+      "--ephemeral",
+      "--sandbox", "danger-full-access",
+      "--cd", spec.cwd,
+      "--output-last-message", lastMessagePath,
+      prompt
+    ], {
+      cwd: spec.cwd,
+      env: {
+        ...process.env,
+        AUTOMATION_OS_PORTABLE_WORKFLOW_ID: input.workflow_id,
+        AUTOMATION_OS_PORTABLE_RUN_ID: input.run_id,
+        AUTOMATION_OS_PORTABLE_STEP_ID: input.step_id,
+        AUTOMATION_OS_PORTABLE_IDEMPOTENCY_KEY: input.idempotency_key,
+        AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS: effects ? "enabled" : "read_only",
+        AUTOMATION_OS_BROWSER_SURFACE: "browser_use_cli",
+        AUTOMATION_OS_BROWSER_NO_FALLBACK: "1"
+      },
+      encoding: "utf8",
+      maxBuffer: 20 * 1024 * 1024,
+      timeout: Number(process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_CODEX_TIMEOUT_MS ?? 3_600_000)
+    });
+    if (result.error) finish({
+      status: "blocked",
+      exact_blocker: result.error.code === "ETIMEDOUT"
+        ? "portable_external_codex_cli_timeout"
+        : "portable_external_codex_cli_failed",
+      external_action_executed: false,
+      exit_status: result.status,
+      signal: result.signal
+    }, 1);
+    if (result.status !== 0) finish({
+      status: "blocked",
+      exact_blocker: "portable_external_codex_cli_exit_nonzero",
+      external_action_executed: false,
+      exit_status: result.status,
+      signal: result.signal,
+      stdout_tail: tail(result.stdout),
+      stderr_tail: tail(result.stderr)
+    }, 1);
+    const receipt = parseReceipt(readFileSafe(lastMessagePath));
+    if (!receipt) finish({
+      status: "blocked",
+      exact_blocker: "portable_external_worker_receipt_missing",
+      external_action_executed: false,
+      stdout_tail: tail(result.stdout),
+      stderr_tail: tail(result.stderr)
+    }, 1);
+    finish({
+      status: receipt.status,
+      exact_blocker: receipt.exact_blocker ?? null,
+      external_action_executed: effects && receipt.external_action_executed === true,
+      workflow_id: input.workflow_id,
+      run_id: input.run_id,
+      step_id: input.step_id,
+      idempotency_key: input.idempotency_key,
+      source_trigger: input.source_trigger,
+      executor: "codex_cli_portable_worker",
+      browser_surface: "browser_use_cli",
+      connector_gateway: "mcp",
+      effects_mode: effects ? "enabled" : "read_only",
+      artifacts: Array.isArray(receipt.artifacts) ? receipt.artifacts.slice(0, 20) : [],
+      proof_summary: typeof receipt.proof_summary === "string" ? receipt.proof_summary : null
+    }, receipt.status === "blocked" || receipt.exact_blocker ? 1 : 0);
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) main();
 
 function buildPrompt({ workflow_id, run_id, step_id, source_trigger, idempotency_key, spec, effects }) {
   const authorityText = spec.authority.map((path) => `- ${path}`).join("\n");
