@@ -1,0 +1,28 @@
+# Local/runtime material must never enter a hosted image build context.
+.git/
+.codex/
+outputs/
+work/
+data/
+artifacts/
+logs/
+test-results/
+node_modules/
+**/node_modules/
+apps/*/dist/
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.log
+
+# Browser and UI capture material is not application runtime input.
+**/recordings/
+**/*.mp4
+**/*.webm
+**/*.png
+**/*.jpg
+**/*.jpeg

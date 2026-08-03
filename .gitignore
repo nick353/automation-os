@@ -12,6 +12,11 @@ test-results/
 .playwright-mcp/
 .playwright-cli/
 
+# Browser Use authorities are task-local runtime material; keep the evidence
+# directories available without allowing authority JSON into a Git snapshot.
+outputs/recordings/**/authority*.json
+work/recordings/**/authority*.json
+
 # Secrets and local environment
 .env
 .env.*
