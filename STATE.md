@@ -115,6 +115,15 @@ were not changed. Reactivation or real external effects still requires the
 production worker proof and downstream Browser Use/MCP readback described
 above.
 
+During the continuation readback, a receipt-quality defect was found and
+fixed: the canary now derives `source_trigger` and `idempotency_key` from the
+run's authoritative `portable_workflow_invocation`, not a reduced step
+metadata snapshot. Fresh runs `run_msd6cb9n_o89v4v`, `run_msd6cbod_s9qvns`, and
+`run_msd6cc3n_61wx6y` verified parity between run metadata and worker proof
+metadata for all three workflows. The server was restarted afterward;
+`/api/health` returned `ok=true`, and the live server remains in portable
+canary mode.
+
 ## 2026-08-03 portable worker isolation and tenancy audit checkpoint
 
 Commit `fc24d2a` (`Isolate portable worker tenancy tests`) was pushed to

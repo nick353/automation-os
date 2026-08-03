@@ -1958,25 +1958,47 @@ function completePortableWorkerCanaryStep(input: {
   workflowId: PortableWorkflowId;
   now: string;
 }): RegisteredExecutionResult {
-  const registeredStart = input.metadata.registered_workflow_start;
+  // The run metadata is the authoritative source for the trigger and
+  // idempotency binding. Step metadata can be a reduced snapshot and was
+  // previously causing scheduler-launched receipts to fall back to the App
+  // bridge trigger even though the run itself was correctly bound.
+  const runMetadataRow = querySql<{ metadata_json: string }>(
+    `SELECT metadata_json FROM runs WHERE id=${sqlValue(input.step.run_id)} LIMIT 1`
+  )[0];
+  const runMetadata = parseJson<Record<string, unknown>>(runMetadataRow?.metadata_json ?? "{}", {});
+  const portableInvocation = typeof runMetadata.portable_workflow_invocation === "object"
+    && runMetadata.portable_workflow_invocation !== null
+    && !Array.isArray(runMetadata.portable_workflow_invocation)
+    ? runMetadata.portable_workflow_invocation as Record<string, unknown>
+    : {};
+  const registeredStart = runMetadata.registered_workflow_start ?? input.metadata.registered_workflow_start;
   const registeredStartRecord = typeof registeredStart === "object" && registeredStart !== null
     ? registeredStart as Record<string, unknown>
     : {};
-  const sourceTrigger = registeredStartRecord.source === "scheduler"
-    ? "automation_os_scheduler" as const
-    : "codex_app_bridge" as const;
+  const sourceTrigger = portableInvocation.source_trigger === "automation_os_scheduler"
+    || portableInvocation.source_trigger === "codex_app_bridge"
+    || portableInvocation.source_trigger === "launchd"
+    || portableInvocation.source_trigger === "github_actions"
+    ? portableInvocation.source_trigger
+    : registeredStartRecord.source === "scheduler"
+      ? "automation_os_scheduler" as const
+      : "codex_app_bridge" as const;
+  const idempotencyKey = typeof portableInvocation.idempotency_key === "string" && portableInvocation.idempotency_key.trim()
+    ? portableInvocation.idempotency_key
+    : typeof input.metadata.idempotency_key === "string" && input.metadata.idempotency_key.trim()
+      ? input.metadata.idempotency_key
+      : `automation-os:${input.workflowId}:${input.step.run_id}`;
   const portable = runPortableWorkflowNoEffect({
     runId: input.step.run_id,
     workflowId: input.workflowId,
     sourceTrigger,
-    idempotencyKey: typeof input.metadata.idempotency_key === "string" && input.metadata.idempotency_key.trim()
-      ? input.metadata.idempotency_key
-      : `automation-os:${input.workflowId}:${input.step.run_id}`
+    idempotencyKey
   });
   const artifact = writeWorkerArtifact(input.step.run_id, input.step.id, {
     ...portable.receipt,
     workflow_id: input.workflowId,
     source_trigger: sourceTrigger,
+    idempotency_key: idempotencyKey,
     exact_blocker: PORTABLE_EXTERNAL_EFFECTS_DISABLED_BLOCKER,
     external_action_executed: false,
     created_at: input.now
@@ -2001,6 +2023,7 @@ function completePortableWorkerCanaryStep(input: {
       execution_mode: "portable_canary",
       portable_workflow_id: input.workflowId,
       source_trigger: sourceTrigger,
+      idempotency_key: idempotencyKey,
       external_action_executed: false
     }
   });
@@ -2011,6 +2034,8 @@ function completePortableWorkerCanaryStep(input: {
       execution_mode: "portable_canary",
       worker_mode: portableWorkerModeForAdapter(input.selectedAdapter),
       portable_workflow_id: input.workflowId,
+      source_trigger: sourceTrigger,
+      idempotency_key: idempotencyKey,
       portable_canary_receipt: portable.receipt,
       portable_canary_artifact: artifact.uri,
       proof_gate: proofGate,

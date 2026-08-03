@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dbBackend, initDb, querySql, sqlValue } from "../db/client.js";
+import { redactWorkerOutput, safeWorkerEnvironment } from "../security/processEnvironment.js";
 import { startCommandRun } from "../runs/workerEngine.js";
 
 const moduleDir = dirname(fileURLToPath(import.meta.url));
@@ -43,9 +44,15 @@ const created = await startCommandRun(command, {
 });
 
 const workerLoopPath = join(moduleDir, "workerLoop.js");
+const childDatabaseUrl = process.env.AUTOMATION_OS_DATABASE_URL ?? process.env.DATABASE_URL;
 const worker = spawnSync(process.execPath, [workerLoopPath, `--run-id=${created.runId}`, "--max-cycles=1", "--interval-ms=1000"], {
   cwd: process.cwd(),
-  env: process.env,
+  env: safeWorkerEnvironment(process.env, {
+    databaseUrl: childDatabaseUrl,
+    overrides: {
+      AUTOMATION_OS_ENV_ROLE: "production"
+    }
+  }),
   encoding: "utf8",
   maxBuffer: 1024 * 1024
 });
@@ -68,13 +75,13 @@ finish({
   ok,
   blocker: ok ? null : "production_worker_pickup_not_confirmed",
   createdRunId: created.runId,
-  command,
+  command: redactWorkerOutput(command, 1_000),
   database: { backend: dbBackend, configured: true },
   worker: {
     status: worker.status,
     signal: worker.signal,
-    stdoutTail: tail(worker.stdout),
-    stderrTail: tail(worker.stderr)
+    stdoutTail: redactWorkerOutput(tail(worker.stdout)),
+    stderrTail: redactWorkerOutput(tail(worker.stderr))
   },
   heartbeat: heartbeat
     ? {

@@ -43,9 +43,15 @@ test("portable entrypoint is shared by App bridge and other schedulers, with ide
       exact_blocker?: string;
       external_action_executed?: boolean;
     };
+    const proof = db.querySql<{ metadata_json: string }>(
+      `SELECT metadata_json FROM proofs WHERE run_id=${db.sqlValue(first.runId)} AND proof_type='worker_receipt' ORDER BY created_at DESC LIMIT 1`
+    )[0];
+    const proofMetadata = JSON.parse(proof.metadata_json) as { source_trigger?: string; idempotency_key?: string };
     assert.equal(run.status, "blocked");
     assert.equal(metadata.portable_workflow_invocation?.app_dependency, false);
     assert.equal(metadata.portable_workflow_invocation?.source_trigger, item.sourceTrigger);
+    assert.equal(proofMetadata.source_trigger, item.sourceTrigger);
+    assert.equal(proofMetadata.idempotency_key, idempotencyKey);
     assert.equal(metadata.exact_blocker, "portable_external_effects_disabled");
     assert.equal(metadata.external_action_executed, false);
   }
