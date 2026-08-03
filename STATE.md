@@ -48,6 +48,17 @@ The unresolved-template fail-closed path is also regression-tested: the
 focused worker-production/environment/App Server suite passed `15/15`, with
 no PostgreSQL URL or credential-like value in the blocked wrapper readback.
 
+## 2026-08-03 release 4d8be89 worker-boundary hardening
+
+The verified source/test/STATE change set was committed as `4d8be89` and
+pushed to `origin/main`; `git ls-remote` read back the same commit. The public
+Zeabur URL returned HTTP 200 for both `/api/health` and `/`. The public health
+payload was the safe projection `{ok:true, service:"automation-os"}` and did
+not expose credentials. Zeabur does not expose the running commit hash in the
+available response, so exact container-to-commit identity remains
+`UNVERIFIED_DEPLOYMENT_READBACK`; the health response is not treated as a
+release proof by itself.
+
 ## 2026-08-03 fresh r15 semantic/video readback checkpoint
 
 Fresh public read-only recording
