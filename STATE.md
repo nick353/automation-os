@@ -1,5 +1,32 @@
 # Automation OS Current State
 
+## 2026-08-03 residual-gate audit r4 checkpoint
+
+Fresh static UI preflight passed with `21 screen cases / 184 manifest entries /
+233 rendered patterns / 0 issues`. It explicitly keeps runtime QA as
+`unverified` until a fresh same-session Browser Use authority is authenticated;
+the preflight is source ownership evidence, not proof that controls were
+clicked.
+
+The designated read-only Designer route was attempted once for the r4
+continuation and returned the exact blocker
+`opencode_go_http_error: Go endpoint returned HTTP 500` from
+`opencode-go/kimi-k3`. No alternate model or design route was substituted.
+
+Fresh stored-worker proof remains fail-closed with
+`stored_postgres_secret_invalid_url` and only the missing template field names
+`POSTGRES_USERNAME`, `POSTGRES_PASSWORD`, `POSTGRES_HOST`, `POSTGRES_PORT`, and
+`POSTGRES_DATABASE`; no secret value was read back. Local PostgreSQL is not
+responding on `127.0.0.1:5432`.
+
+Fresh same-session Browser Use readback still shows the public operator-token
+gate. The held temporary run/session/target remains
+`automation-os-authenticated-qa-20260803-r2` / `aos-auth-r2` /
+`FB833636CDCCB3348D8CFA23291555CC`, recorder active, external effects none.
+Authenticated 21-screen QA, per-screen recordings, production Mac worker/App
+Server turn, valid PostgreSQL fixture tests, production schedule/project
+readback, and Zeabur container parity remain unverified.
+
 ## 2026-08-03 direct production database guard checkpoint
 
 The backend database module now evaluates the canonical server startup policy
