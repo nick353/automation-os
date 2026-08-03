@@ -13,6 +13,15 @@ Fresh verification: server build、web typecheck、web build、dashboard sanitiz
 Runtimeの認証済み画面QAと画面別録画は、保持中の同一Browser Use sessionが
 operator token gateに留まっているため未確認のままです。
 
+## 2026-08-03 unknown automation type release readback
+
+修正commit `7d1e50c` は`origin/main`へpush済み。push直後の公開readbackは
+root `200`、`/api/health` `200`、protected `/api/browser/health` `401
+production_token_required`だったが、served JSはなお
+`assets/index-lQVyT8bE.js`で、今回のlocal build
+`assets/index-BqP6oceC.js`とは不一致だった。現在のexact blockerは
+`zeabur_public_asset_stale_after_origin_push`であり、公開反映済みとは断定しない。
+
 ## 2026-08-03 stored worker production-role binding checkpoint
 
 The stored-secret production worker now explicitly binds
