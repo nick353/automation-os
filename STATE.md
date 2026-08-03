@@ -1,5 +1,25 @@
 # Automation OS Current State
 
+## 2026-08-03 fresh authorized recording r2 checkpoint
+
+The current temporary authorized recording is still held for the same run and
+session: run `automation-os-authenticated-qa-20260803-r2`, session
+`aos-auth-r2`, descriptor
+`/Users/nichikatanaka/.browser-use-cli/recordings/automation-os-authenticated-qa-20260803-r2/aos-auth-r2-6f1cb725ca8e943b9b9822a17f31c8b6b3772d46b1d995f0ae8d10dbc78325ef.json`.
+The canonical readback confirms room `room-6ae2d36174e063beab48acf7f56f6a4c`,
+port `20086`, Chrome PID `70948`, one working target
+`FB833636CDCCB3348D8CFA23291555CC`, active recorder, and no auxiliary tabs.
+The authority digest is
+`9c2ca5a353f20ab3d52f268a570e53f15b61aa073dd8e8d9d3848b4b231156ce`.
+
+Same-session semantic readback remains the public administrator operator-token
+gate (`operator token が必要です。`). `record-auth-wait` reported that the
+recording was not in an auth-wait state, so authentication is not promoted;
+the token was not read or persisted. The exact next action is to enter the
+token in this same visible room and then re-read the same target/session before
+authenticated QA. Until then the room must remain held and must not be
+finalized or replaced. No external effect occurred.
+
 ## 2026-08-03 authenticated handoff gate and terminal cleanup checkpoint
 
 Fresh same-run readback on the preserved temporary room
@@ -51,12 +71,15 @@ Owner-bound post-cleanup recheck on 2026-08-03 confirmed the same target room
 PID `42789`, watchdog PID `42951`, the exact temporary profile, and session
 locks are absent. The canonical cleanup receipt and cleanup marker remain the
 only run-owned handoff records, with `external_effects=none`. The requested
-`scripts/sync-live.sh` and `scripts/doctor.sh` are not present in this current
-checkout, so they were not fabricated or inferred from historical artifacts;
-current canonical `validate` passed and the repository Browser Use focused
-suite passed `16/16` as the available substitute. An unrelated host
-`browser_harness.daemon` was observed without room/port/session ownership and
-was not stopped.
+`scripts/sync-live.sh` and `scripts/doctor.sh` are not present in this
+Automation OS checkout; their canonical shared-helper source is
+`/Users/nichikatanaka/Documents/New project/browser-use-cli`. After the
+owner-bound room cleanup, that source's `scripts/sync-live.sh` completed with
+source/live parity, `scripts/doctor.sh` passed all checks with zero occupied
+ports, and the shared helper suite passed `19/19`. The Automation OS checkout
+still uses the canonical installed helper path and must not grow a second
+helper implementation. An unrelated host `browser_harness.daemon` was
+observed without room/port/session ownership and was not stopped.
 
 The fresh local Mac-worker stored-secret proof also remains blocked at the
 secret boundary: `stored_postgres_secret_invalid_url` with unresolved template

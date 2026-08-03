@@ -4,7 +4,7 @@ import test from "node:test";
 import pg from "pg";
 
 const postgresUrl = process.env.AUTOMATION_OS_TEST_POSTGRES_URL ?? "";
-const postgresSkipReason = postgresUrl ? undefined : "AUTOMATION_OS_TEST_POSTGRES_URL is not set";
+const postgresSkipReason = postgresUrl ? undefined : "postgres_fixture_unavailable:AUTOMATION_OS_TEST_POSTGRES_URL is not set";
 
 test("real PostgreSQL serializes empty-schema bootstrap and produces exactly one durable claim winner", { skip: postgresSkipReason }, async () => {
   const schema = `automation_os_queue_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
