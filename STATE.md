@@ -12,6 +12,25 @@ port `20086`, Chrome PID `70948`, one working target
 The authority digest is
 `9c2ca5a353f20ab3d52f268a570e53f15b61aa073dd8e8d9d3848b4b231156ce`.
 
+## 2026-08-03 template automation-type alignment checkpoint
+
+The template catalog no longer saves `DM返信` as `gmail-reply`; it now uses
+`dm-reply`. The `Runway広告動画生成` catalog item now uses the distinct
+`creative-video` type and has a matching Builder configuration, so the saved
+draft does not appear as an SNS post. This remains a safe draft/control-plane
+contract; no external provider or publication was run.
+
+Fresh verification passed: web typecheck and build, server build, dashboard
+regression `41/41`, static UI preflight with `21 screen cases / 184 manifest
+entries / 233 rendered patterns / 0 issues`, and the full suite
+`912 total / 907 pass / 0 fail / 5 skip`. The five skips are the explicit
+PostgreSQL fixture-unavailable tests. Commit `e1d5daf` was pushed to
+`origin/main`. Public root and health remain `200`, but three read-only polls
+still served the previous asset `assets/index-ddL98HTV.js` instead of the new
+local build asset `assets/index-lQVyT8bE.js`; exact deployment readback blocker
+is `zeabur_public_asset_stale_after_origin_push`. Protected browser health
+remains `401`.
+
 Same-session semantic readback remains the public administrator operator-token
 gate (`operator token が必要です。`). `record-auth-wait` reported that the
 recording was not in an auth-wait state, so authentication is not promoted;
