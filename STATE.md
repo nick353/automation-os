@@ -1,5 +1,28 @@
 # Automation OS Current State
 
+## 2026-08-03 public deployment parity readback after unknown-type fix
+
+Fresh public read-only readback now matches the current local build at
+`origin/main` / `c446c82`: root served `assets/index-BqP6oceC.js` and
+`assets/index-BA1yLsFP.css`. The JS asset is byte-identical to the local
+build (`391136` bytes, SHA-256
+`e3dc21ce7bc8c198842521bdeb3fba5e62d17d9ccb83b9e480828fedccc4176f`), and
+the CSS remains byte-identical (`20226` bytes, SHA-256
+`c59e1d6c18f1d7cf41ded127e70d9c28d467055b023c41558ffdb111fc5a0a46`). The
+public JS contains the unknown-automation fail-closed markers. `/api/health`
+returned `200`; protected `/api/browser/health` returned the expected `401`
+with `production_token_required`. The earlier
+`zeabur_public_asset_stale_after_origin_push` blocker is resolved.
+
+The previously requested old room `room-6b8171d751ebea1042bc6dc886daa8b4`
+with port `20098` / Chrome PID `42789` is already released according to the
+canonical room ledger and cleanup receipt. The current separate temporary
+continuation run remains intentionally held for human authentication in the
+same session: run `automation-os-authenticated-qa-20260803-r2`, session
+`aos-auth-r2`, room `room-6ae2d36174e063beab48acf7f56f6a4c`, port `20086`,
+Chrome PID `70948`, recorder active. It remains at the operator-token gate;
+no token was read or persisted and no external effect occurred.
+
 ## 2026-08-03 unknown automation type fail-closed UI checkpoint
 
 Builderが未知の`automation_type`をSNSへ暗黙変換して表示・保存できる経路を
