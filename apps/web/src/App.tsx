@@ -1510,7 +1510,7 @@ function App() {
         const message = error instanceof Error ? error.message : "";
         if (/mvp_state_http_(?:401|423)/.test(message)) {
           setApiAccessRequired(true);
-          setReceipt("operator token が必要です。");
+          setReceipt("管理者用の利用キーが必要です。");
           return;
         }
         setReceipt("Local Agent は待機中です。MVP API未接続のためローカル表示です。");
@@ -1547,7 +1547,7 @@ function App() {
 
   const unlockOperatorAccess = async () => {
     if (!writeToken.trim()) {
-      setReceipt("operator token を入力してください。");
+      setReceipt("管理者用の利用キーを入力してください。");
       return;
     }
     setAccessChecking(true);
@@ -1559,14 +1559,14 @@ function App() {
       setAutomationRows(toAutomationRows(state.automations ?? []));
       setFeedbackReadback(state.feedbacks ?? []);
       setApiAccessRequired(false);
-      setReceipt("operator token を確認しました。このタブでAutomation OSを利用できます。");
+      setReceipt("管理者用の利用キーを確認しました。このタブでAutomation OSを利用できます。");
     } catch (error) {
       clearWriteToken();
       const message = error instanceof Error ? error.message : "";
       if (message === "mvp_state_http_401" || message === "mvp_state_http_423") {
-        setReceipt("operator tokenを確認できませんでした。設定済みの値をこの画面へ入力してください。値はチャットには送られません。");
+        setReceipt("管理者用の利用キーを確認できませんでした。ZeaburのVariablesにあるAUTOMATION_OS_WRITE_TOKENを確認してください。入力値は表示・保存しません。");
       } else {
-        setReceipt("operator token を確認できませんでした。値と公開先を確認してください。");
+        setReceipt("管理者用の利用キーを確認できませんでした。値と公開先を確認してください。");
       }
     } finally {
       setAccessChecking(false);
@@ -1602,10 +1602,10 @@ function App() {
           <PageTitle title="Automation OS" desc="この画面は管理者専用です。" />
           <Panel title="管理者アクセス" controlId="shell.operator.panel">
             <form className="access-form" onSubmit={(event) => { event.preventDefault(); void unlockOperatorAccess(); }}>
-              <label className="operator-token-label" htmlFor="shell.operator.token-input">管理者アクセスキー（Operator token）</label>
-              <p id="operator-token-help" className="muted">管理者だけが使う確認キーです。ZeaburのVariablesにある <code>AUTOMATION_OS_WRITE_TOKEN</code> の値を入力してください。値はこのタブのsessionStorageだけに保存し、タブを閉じると破棄します。わからない場合は、管理者にVariablesの値を確認してください。</p>
+              <label className="operator-token-label" htmlFor="shell.operator.token-input">管理者用の利用キー</label>
+              <p id="operator-token-help" className="muted">通常のログインパスワードではありません。ZeaburのAutomation OSサービスにあるVariablesで <code>AUTOMATION_OS_WRITE_TOKEN</code> を表示してコピーし、ここに貼り付けてください。確認時だけAPIの認証ヘッダーとして使い、チャット本文には入りません。このタブのsessionStorageにだけ保存し、タブを閉じると破棄します。Variablesを見られない場合は、管理者に確認してください。</p>
               <input id="shell.operator.token-input" data-control-id="shell.operator.token-input" type="password" value={writeToken} onChange={(event) => setWriteToken(event.target.value)} autoComplete="current-password" autoFocus aria-describedby="operator-token-help operator-token-status" />
-              <div className="button-row"><Button controlId="shell.operator.open" type="submit" variant="primary" disabled={accessChecking}>{accessChecking ? "確認中" : "開く"}</Button></div>
+              <div className="button-row"><Button controlId="shell.operator.open" type="submit" variant="primary" disabled={accessChecking}>{accessChecking ? "確認中" : "確認して開く"}</Button></div>
               <div id="operator-token-status" className="action-note" role="status">{receipt}</div>
             </form>
           </Panel>

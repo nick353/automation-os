@@ -651,8 +651,12 @@ test("frontend fails closed behind an operator-token gate on protected productio
   assert.match(appSource, /persistWriteToken\(writeToken\);[\s\S]*const state = await readMvpState\(\)/);
   assert.match(appSource, /setApiAccessRequired\(false\)/);
   assert.match(appSource, /title="管理者アクセス"/);
-  assert.match(appSource, /管理者アクセスキー（Operator token）/);
-  assert.match(appSource, /管理者だけが使う確認キーです/);
+  assert.match(appSource, /管理者用の利用キー/);
+  assert.match(appSource, /AUTOMATION_OS_WRITE_TOKEN/);
+  assert.match(appSource, /認証ヘッダー/);
+  assert.match(appSource, /通常のログインパスワードではありません/);
+  assert.match(appSource, /確認して開く/);
+  assert.doesNotMatch(appSource, /管理者だけが使う確認キーです/);
   assert.match(appSource, /type="password"/);
 });
 

@@ -141,6 +141,17 @@ const AUTHORITY_MARKERS = [
   "STAGE_OBSERVATION_SCHEMA.md"
 ];
 
+// These files are created inside an immutable run directory.  They are
+// required by a workflow's completion contract, but their absence in the
+// registered cwd is not a broken static authority reference.
+const RUN_OWNED_ARTIFACT_BASENAMES = new Set([
+  "opportunity-status-ledger.jsonl",
+  "target-contract.v1.json",
+  "source-snapshot.v1.json",
+  "source-of-truth-readback.v1.json",
+  "final-user-action-manifest.json"
+]);
+
 function timestampForPath(date: Date): string {
   return date.toISOString().replace(/[:.]/g, "").replace("Z", "Z");
 }
@@ -416,6 +427,23 @@ function uniqueBy<T>(items: T[], keyFn: (item: T) => string): T[] {
 function extractAuthorityFiles(automation: AutomationTomlRecord): AutomationHealthEntry["authority_files"] {
   const prompt = automation.prompt;
   const files: AutomationHealthEntry["authority_files"] = [];
+  // Absolute paths may contain spaces (for example, the registered
+  // ``New project`` cwd).  Parse known cwd prefixes before the generic token
+  // regex, which intentionally stops at whitespace for untrusted prose.
+  for (const cwd of automation.cwds) {
+    const prefix = cwd.endsWith("/") ? cwd : `${cwd}/`;
+    let offset = 0;
+    while (offset < prompt.length) {
+      const start = prompt.indexOf(prefix, offset);
+      if (start < 0) break;
+      const suffix = prompt.slice(start + prefix.length).split(/[\s`"',)]/u, 1)[0].trim();
+      const path = `${prefix}${suffix}`;
+      if (looksLikeAuthority(path)) {
+        files.push({ label: basename(path), path, exists: existsSync(path) });
+      }
+      offset = start + prefix.length;
+    }
+  }
   const absolutePathRegex = /\/Users\/[^\s"'`,)]+/g;
   for (const match of prompt.matchAll(absolutePathRegex)) {
     const path = cleanToken(match[0]);
@@ -434,10 +462,11 @@ function extractAuthorityFiles(automation: AutomationTomlRecord): AutomationHeal
   }
 
   const generalAuthorityRegex =
-    /(?:^|[\s`"'])((?:\.{1,2}\/|[A-Za-z0-9_.-]+\/)?[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*\.(?:md|json|jsonl|tsv|toml|yaml|yml))/g;
+    /(?:^|[\s`"'])((?:\.{1,2}\/|[A-Za-z0-9_.-]+\/)?[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*\.(?:md|jsonl?|tsv|toml|yaml|yml))(?=$|[\s`"',)])/g;
   for (const match of prompt.matchAll(generalAuthorityRegex)) {
     const token = cleanToken(match[1]);
     if (!isAuthorityToken(token)) continue;
+    if (RUN_OWNED_ARTIFACT_BASENAMES.has(basename(token))) continue;
     const bases = automation.cwds.length > 0 ? automation.cwds : [process.cwd()];
     const candidates = token.includes("/")
       ? [

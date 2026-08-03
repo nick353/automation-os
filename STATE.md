@@ -1,5 +1,185 @@
 # Automation OS Current State
 
+## 2026-08-03 public recording r25 and same-session login readback
+
+Fresh public single-use recording `automation-os-public-qa-20260803-r25` was
+started through the canonical Browser Use helper on port `19980` and the same
+working target. The first semantic state was the operator-token gate. After the
+user completed login in the visible target, a same-session `state` readback showed
+the Home dashboard, `operator tokenを確認しました。このタブでAutomation OSを利用できます。`,
+sidebar routes Home/Chat/Company/Run History/Approvals/Templates/Admin, summary
+cards, Live Execution, Approval Queue, Progress Overview, and Feedback.
+The token value was never read or persisted.
+
+Public mode correctly rejected the empty `開く` click with
+`browser_use_public_requires_authorized_mode`; no input or click was replayed.
+The recording was finalized with `external_effects=none`:
+
+- video: `/Users/nichikatanaka/.browser-use-cli/recordings/automation-os-public-qa-20260803-r25/browser-recording.mp4`
+- manifest: `/Users/nichikatanaka/.browser-use-cli/recordings/automation-os-public-qa-20260803-r25/browser-use-recording-manifest.json`
+- receipt: `/Users/nichikatanaka/.browser-use-cli/receipts/automation-os-public-qa-20260803-r25/automation-os-public-qa-20260803-r25-354e358210474fb6a2a1992b2f84a6f9.json`
+- video proof: H.264, `2400x1336`, `12fps`, `8 frames`, `0.666667s`, SHA-256
+  `841af1edc4a7860396a5a6e63d6fa02401107084b0f6026eb1e452aa91b26467`
+
+Fresh cleanup readback confirms PID `5065`, listener `19980`, profile, locks, and
+runtime socket/pid/port are absent. The video-frame-reader bundle is under the
+recording's `video-frame-analysis/` directory. This is public/read-only Home
+evidence only; the other 20 screens, authorized interactions, and mobile QA are
+not proven. The required Designer route also returned
+`opencode_go_http_error: Go endpoint returned HTTP 500` and was not replaced by
+another model.
+
+## 2026-08-03 authorized QA r3 admission blocker and current readback
+
+Fresh authorized authority issuance for
+`automation-os-authenticated-qa-20260803-r3` / `aos-auth-r3` succeeded with
+read-only UI QA scope and expiry `2026-08-03T10:49:05Z`. The subsequent
+canonical `record-start --mode authorized --lifecycle temporary` stopped before
+Chrome launch with the exact blocker
+`browser_use_external_reconciliation_required`. No r3 descriptor, room, Chrome
+PID, listener, profile lock, or port lock was created. The only live Browser
+Use room at this readback is another task's Lightchain room on port `20084` and
+is not owned by this project task.
+
+The cross-run blocker is still the old owner-lane operation
+`d6c374d4bc824b0f9048c9ebf959a316` in run
+`automation-os-qa-20260801-auth3`: descriptor recovery is `cleanup_complete`,
+process/listener/daemon/profile locks are absent, but the cleanup receipt still
+records `external_effects=unknown`, `pending_reconciliation_count=1`, and
+`browser_use_external_effects_unknown`. No click was replayed and no
+`none`/`executed` result was inferred. The safe restart point is an owner-lane
+source-of-truth reconciliation for that exact operation; only after it is
+resolved may a fresh authorized authority and temporary room be admitted.
+
+Fresh local operational readback in this checkpoint also found the stored
+production worker blocked before spawn by
+`stored_postgres_secret_invalid_url` with missing template references
+`POSTGRES_USERNAME`, `POSTGRES_PASSWORD`, `POSTGRES_HOST`, `POSTGRES_PORT`, and
+`POSTGRES_DATABASE`; the secret value was not printed. Automation health
+completed with 8 registrations (7 ACTIVE, 1 PAUSED), 0 blockers, 0 DB drift,
+0 missing entrypoints, and 14 warnings, mainly missing authority files for
+`automation-3`, `daily-ai-research-publish-run`, and `identity`.
+
+Authenticated 21-screen runtime QA, per-screen recordings, live Mac-worker
+App Server proof, valid production PostgreSQL, production schedule/project
+readback, and deployment-container parity remain unverified.
+
+## 2026-08-03 fresh local readiness and current room ownership
+
+The first local load-readiness probe failed only because the expected Vite UI
+target `http://127.0.0.1:5173/` was not running; the API targets
+`http://127.0.0.1:8787/api/health` and `/api/mvp/state` returned 200. A
+task-local Vite server was started for verification, then the same probe
+completed successfully: `1113/1113` requests succeeded, `0` failed,
+`exactBlocker=null`. Evidence:
+`/tmp/automation-os-load-readiness-current-2.json`. The task-local Vite
+process is not a production or Browser Use authority.
+
+Fresh tenancy audit remains `ok=true` with no issues. Project audit remains
+`10` projects total, `ok=6`, `attention=4`, `blocked=0`; the four attention
+rows are stale-STATE warnings for Heavy Chain, Local Codex, Prompt Transfer,
+and Prompt Transfer Ukiyoe, not Automation OS blockers. Evidence:
+`/tmp/automation-os-tenancy-current.json` and
+`data/project-audit-status.json`.
+
+The only live Browser Use room at this checkpoint is owned by another task:
+temporary port `20084`, Chrome PID `82492`, profile under
+`/Users/nichikatanaka/.browser-use-cli/profiles/temporary/`. It is not
+operated, attached, or cleaned up here. Automation OS has no owned live
+Browser Use process/listener. Authenticated QA still cannot be admitted until
+the owner-lane operation
+`d6c374d4bc824b0f9048c9ebf959a316` is source-of-truth reconciled; its receipt
+still has `external_effects=unknown` and one pending reconciliation. The
+login notice in another task's room does not satisfy this run's authority or
+same-session proof.
+
+The owner-thread readback confirms that the live room on port `20084` belongs
+to a separate Heavy Chain / Lightchain run
+`lightchain-feature-exploration-20260803-r3-183356-0B63B9A3`, currently at
+`https://jp.linkaigc.com/login?redirect=/?` with
+`browser_use_authentication_required`. Its login state and recording are not
+Automation OS evidence and must not be attached to this task.
+
+## 2026-08-03 static screen coverage and focused runtime-boundary verification
+
+The current source-owned UI preflight completed with `21` screen cases,
+`185` control-manifest entries, `234` rendered patterns, no duplicate or
+orphan controls, and `issues=[]`. Every case has at least one control and is
+explicitly marked `runtime_qa.status=unverified` with
+`fresh_browser_use_authority_required_for_runtime_screen_qa`; the preflight
+does not claim that a runtime control was clicked. Evidence:
+`work/qa/all-page-button-static-preflight-current.json`.
+
+After a fresh server build, the focused boundary suite passed `48/48`: stored
+PostgreSQL secrets remain redacted and block before worker spawn when unresolved
+templates are missing, Chat/App Server snapshot and cancellation remain
+actor/project scoped, and the App Server client/probe keeps the allowlisted
+environment and cleanup contract. No secret value or external operation was
+used.
+
+Fresh production read-only API readback at `https://automation-os.zeabur.app`
+returned `/api/health=200` with `ok=true` and `service=automation-os`. The
+protected `/api/dashboard`, `/api/registered-workflows`, and `/api/mvp/state`
+endpoints returned `401` without the operator token, which is the expected
+production auth boundary; no token was read or replayed. The local health
+audit also completed with `8` registrations, `7` ACTIVE / `1` PAUSED,
+`warnings=0`, `blockers=0`, `db_drift=0`, `missing_entrypoints=0`, and
+`video_qa_issues=0`. Report:
+`/Users/nichikatanaka/Documents/Codex/automation-os/artifacts/automation-health/2026-08-03T101252681Z.json`.
+
+The first-use operator gate copy was clarified without changing token storage,
+header binding, or access control. It now calls the value `管理者用の利用キー`,
+labels the action `確認して開く`, points to the Zeabur
+`AUTOMATION_OS_WRITE_TOKEN` variable, and truthfully explains that the value is
+used only as an API auth header and kept in tab-scoped sessionStorage. The
+updated UI sanitizer suite passed `42/42`; the static screen preflight remains
+`21` cases with `issues=[]`. The change is local and has not been deployed.
+
+## 2026-08-03 automation health authority-parser correction
+
+The automation health audit had two false-positive paths: `.jsonl` ledger names
+could be truncated into `.json`, and absolute authority paths containing the
+registered cwd's space (`New project`) were split at whitespace. It also treated
+run-owned completion artifacts (`target-contract.v1.json`,
+`source-snapshot.v1.json`, `source-of-truth-readback.v1.json`,
+`final-user-action-manifest.json`, and `opportunity-status-ledger.jsonl`) as
+static cwd authority files. The parser now preserves known registered-cwd
+prefixes, enforces extension boundaries, and excludes only those run-owned
+artifact basenames from static-authority checks.
+
+Fresh verification: focused `automationHealth` `18/18` pass; server full suite
+`920 total / 915 pass / 0 fail / 5 skip`; web typecheck and production build
+pass. The five skips remain the explicit PostgreSQL fixture-unavailable tests.
+Fresh health readback is 8 registrations, 7 ACTIVE / 1 PAUSED, `warnings=0`,
+`blockers=0`, `db_drift=0`, `missing_entrypoints=0`, and
+`video_qa_issues=0`. Report:
+`/tmp/automation-os-health-after-space-fix/2026-08-03T095713869Z.json`.
+No automation registration or prompt was changed by this correction.
+
+## 2026-08-03 owner-lane cleanup and regression checkpoint
+
+Owner-laneの正規 `record-finalize --cleanup-only` 再試行は、現行helper SHA
+`7e9b93455381a0fa1c7a8f969b16f93255945ab40eeb8ddcbfebb915fdd35191` で1回だけ
+実行し、`status=cleanup_completed` となった。対象は
+`automation-os-qa-20260801-auth3` / session同名 / task
+`automation-os-qa-20260801-auth3-task`、descriptor
+`automation-os-qa-20260801-auth3-c41b2b705835446284c19a89be798132.json`、room
+`room-23b1ff387395e34c2553240f05c342f8` / port `20095` / 元PID `93249`。
+fresh readbackではdescriptor `status=stale` / `recovery_state=cleanup_complete`、
+recording-status `process_live=null` / `recorder_active=false` / `cleanup_pending_count=0`、
+room `released`、PID・listener・daemon runtime・lock候補は不在。cleanup receiptは
+`/Users/nichikatanaka/.browser-use-cli/receipts/automation-os-qa-20260801-auth3/automation-os-qa-20260801-auth3-c41b2b705835446284c19a89be798132-cleanup.json`。
+Ledger operation `d6c374d4bc824b0f9048c9ebf959a316` は引き続き
+`external_effects=unknown` / `pending_reconciliation_count=1` であり、クリック再送や
+`none` / `executed` の推定はしていない。
+
+同時点の検証は focused 50/50 pass、server全体 917 tests中 912 pass / 0 fail /
+5 skip、web typecheck pass。PostgreSQL fixtureを別途起動した5件は5/5 passし、
+fixture process・port・temporary directoryは後処理後に不在。tenancy auditは
+`ok=true`、project auditは10件中 `ok=6 / attention=4 / blocked=0`（Automation OSは
+`ok`）。認証済み21画面QA・画面別録画、実Mac worker/App Server、本番schedule/project
+readback、保存済みproduction PostgreSQL secret、deployment container parityは未確認。
+
 ## 2026-08-03 authenticated QA temporary room released
 
 ユーザーの明示依頼により、認証済みQAを継続せず、同一run/sessionの一時roomを

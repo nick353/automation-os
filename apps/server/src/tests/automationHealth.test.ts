@@ -339,6 +339,56 @@ test("capitalized prose with hyphen is not treated as an entrypoint", () => {
   assert.equal(report.summary.missing_entrypoints, 0);
 });
 
+test("run-owned completion artifacts are not treated as static authority files", () => {
+  const fixture = tempFixture();
+  const id = "demo-run-owned-artifacts";
+  const prompt = [
+    "Read the current run artifacts before finalization:",
+    "opportunity-status-ledger.jsonl, target-contract.v1.json, source-snapshot.v1.json,",
+    "source-of-truth-readback.v1.json, and final-user-action-manifest.json."
+  ].join("\n");
+  const body = toml({ id, cwd: fixture.cwd, prompt });
+  writeAutomation(fixture.automationRoot, id, body);
+  createDb(fixture.dbPath, [{ id, prompt, status: "ACTIVE", rrule: "FREQ=DAILY;BYHOUR=9;BYMINUTE=0;BYSECOND=0", cwds: [fixture.cwd] }]);
+
+  const report = runAutomationHealth({ automationRoot: fixture.automationRoot, dbPath: fixture.dbPath, outputRoot: fixture.outputRoot, psText: "" });
+
+  assert.equal(report.automations[0]?.issues.some((issue) => issue.code === "authority_file_missing"), false);
+});
+
+test("jsonl references are not truncated into false json authority paths", () => {
+  const fixture = tempFixture();
+  const id = "demo-jsonl-boundary";
+  const prompt = "Use artifacts/shared/opportunity-status-ledger.jsonl as the run-owned ledger.";
+  const body = toml({ id, cwd: fixture.cwd, prompt });
+  writeAutomation(fixture.automationRoot, id, body);
+  createDb(fixture.dbPath, [{ id, prompt, status: "ACTIVE", rrule: "FREQ=DAILY;BYHOUR=9;BYMINUTE=0;BYSECOND=0", cwds: [fixture.cwd] }]);
+
+  const report = runAutomationHealth({ automationRoot: fixture.automationRoot, dbPath: fixture.dbPath, outputRoot: fixture.outputRoot, psText: "" });
+  const authorityPaths = report.automations[0]?.authority_files.map((authority) => authority.path) ?? [];
+
+  assert.equal(authorityPaths.some((path) => path.endsWith("opportunity-status-ledger.json")), false);
+});
+
+test("absolute authority paths with spaces resolve from the registered cwd", () => {
+  const fixture = tempFixture();
+  const spacedCwd = join(fixture.root, "project with space");
+  mkdirSync(join(spacedCwd, "references"), { recursive: true });
+  const authorityPath = join(spacedCwd, "references", "current-run-contract.md");
+  writeFileSync(authorityPath, "# Contract\n");
+  const id = "demo-spaced-absolute-authority";
+  const prompt = `Read ${authorityPath} before acting.`;
+  const body = toml({ id, cwd: spacedCwd, prompt });
+  writeAutomation(fixture.automationRoot, id, body);
+  createDb(fixture.dbPath, [{ id, prompt, status: "ACTIVE", rrule: "FREQ=DAILY;BYHOUR=9;BYMINUTE=0;BYSECOND=0", cwds: [spacedCwd] }]);
+
+  const report = runAutomationHealth({ automationRoot: fixture.automationRoot, dbPath: fixture.dbPath, outputRoot: fixture.outputRoot, psText: "" });
+  const entry = report.automations[0];
+
+  assert.equal(entry?.authority_files.some((authority) => authority.path === authorityPath && authority.exists), true);
+  assert.equal(entry?.issues.some((issue) => issue.code === "authority_file_missing"), false);
+});
+
 test("skill reference files resolve relative to matching skill directory", () => {
   const fixture = tempFixture();
   const id = "demo-skill-reference";
