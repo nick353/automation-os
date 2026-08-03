@@ -88,6 +88,14 @@ Automation OS scheduler. It binds an idempotency key to an Automation OS run;
 the three-workflow entrypoint test confirms replay stability and same-run
 canary stop/readback for Daily AI, NisenPrints, and Job Application Manager.
 
+Fresh live local-SQLite readback also created and processed one canary run for
+each portable workflow (`run_msd60gug_mlefnv`, `run_msd60gws_mx52mj`, and
+`run_msd60gyq_zkcqb3`). All three are `execution_source=automation-os`,
+`execution_mode=portable_canary`, `status=blocked`, and carry
+`exact_blocker=portable_external_effects_disabled` with
+`external_action_executed=false`. This proves the running Automation OS
+server-to-worker path without claiming production PostgreSQL readiness.
+
 Fresh portable canary readback on 2026-08-03 completed for the scheduler and
 all three portable workflows (`checked=3`, `completed=3`) with
 `browser_started=false`, `connector_called=false`, and
@@ -96,6 +104,16 @@ stops before spawn with `stored_postgres_secret_invalid_url` because the
 required `POSTGRES_USERNAME`, `POSTGRES_PASSWORD`, `POSTGRES_HOST`,
 `POSTGRES_PORT`, and `POSTGRES_DATABASE` template references are missing.
 No secret value was printed.
+
+The three matching Codex App schedules were then paused through the official
+automation update route, without deletion, only after the same-run canary
+readback: `automation-3` (Job Application Manager),
+`daily-ai-research-publish-run` (Daily AI), and
+`nisenprints-daily-product-canva-printify-etsy-pinterest` (NisenPrints) all
+read back as `PAUSED`. The unrelated email, backup, and Obsidian schedules
+were not changed. Reactivation or real external effects still requires the
+production worker proof and downstream Browser Use/MCP readback described
+above.
 
 ## 2026-08-03 portable worker isolation and tenancy audit checkpoint
 
