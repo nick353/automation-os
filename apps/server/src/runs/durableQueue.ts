@@ -15,6 +15,7 @@ import type {
   IabExternalExecutorResultV1,
   IabExternalReservationV1
 } from "../serviceReadiness/iabExternalExecutor.js";
+import { PORTABLE_EXECUTION_SOURCE } from "./portableWorkerIsolation.js";
 
 export class DurableQueueError extends Error {
   constructor(public readonly code: string) {
@@ -280,8 +281,8 @@ export function materializeDurableScheduleOccurrence(input: {
         expectChanges: 1
       },
       {
-        sql: `INSERT INTO runs (id, company_id, automation_id, automation_version_id, name, status, objective, created_at, updated_at, metadata_json)
-              VALUES (${sqlValue(runId)}, ${sqlValue(companyId)}, ${sqlValue(schedule.automation_id)}, ${sqlValue(schedule.automation_version_id)}, ${sqlValue(`Scheduled dry run: ${schedule.automation_name}`)}, 'queued', ${sqlValue(schedule.automation_goal || schedule.automation_description || schedule.automation_name)}, ${sqlValue(timestamp)}, ${sqlValue(timestamp)}, ${sqlValue({ durable_job_id: jobId, schedule_occurrence_id: occurrenceId, external_action_allowed: false, ...serviceReadinessRunMetadata(runId, payload) })})`,
+        sql: `INSERT INTO runs (id, company_id, automation_id, automation_version_id, name, status, objective, created_at, updated_at, metadata_json, execution_source, quarantined)
+              VALUES (${sqlValue(runId)}, ${sqlValue(companyId)}, ${sqlValue(schedule.automation_id)}, ${sqlValue(schedule.automation_version_id)}, ${sqlValue(`Scheduled dry run: ${schedule.automation_name}`)}, 'queued', ${sqlValue(schedule.automation_goal || schedule.automation_description || schedule.automation_name)}, ${sqlValue(timestamp)}, ${sqlValue(timestamp)}, ${sqlValue({ durable_job_id: jobId, schedule_occurrence_id: occurrenceId, external_action_allowed: false, ...serviceReadinessRunMetadata(runId, payload) })}, ${sqlValue(PORTABLE_EXECUTION_SOURCE)}, 0)`,
         expectChanges: 1
       },
       {
@@ -364,8 +365,8 @@ export function enqueueAutomationDryRun(input: {
   }
   const steps: SqlTransactionStep[] = [
     {
-      sql: `INSERT INTO runs (id, company_id, automation_id, automation_version_id, name, status, objective, created_at, updated_at, metadata_json)
-            VALUES (${sqlValue(runId)}, ${sqlValue(companyId)}, ${sqlValue(automation.id)}, ${sqlValue(automation.currentVersionId)}, ${sqlValue(`Dry run: ${automation.name}`)}, 'queued', ${sqlValue(automation.goal || automation.description || automation.name)}, ${sqlValue(timestamp)}, ${sqlValue(timestamp)}, ${sqlValue({ durable_job_id: jobId, job_kind: "dry_run", external_action_allowed: false, ...serviceReadinessRunMetadata(runId, payload) })})`,
+      sql: `INSERT INTO runs (id, company_id, automation_id, automation_version_id, name, status, objective, created_at, updated_at, metadata_json, execution_source, quarantined)
+            VALUES (${sqlValue(runId)}, ${sqlValue(companyId)}, ${sqlValue(automation.id)}, ${sqlValue(automation.currentVersionId)}, ${sqlValue(`Dry run: ${automation.name}`)}, 'queued', ${sqlValue(automation.goal || automation.description || automation.name)}, ${sqlValue(timestamp)}, ${sqlValue(timestamp)}, ${sqlValue({ durable_job_id: jobId, job_kind: "dry_run", external_action_allowed: false, ...serviceReadinessRunMetadata(runId, payload) })}, ${sqlValue(PORTABLE_EXECUTION_SOURCE)}, 0)`,
       expectChanges: 1
     },
     {
@@ -501,8 +502,8 @@ export function enqueueAutomationExternalEffect(input: {
     request,
     resourceSteps: [
       {
-        sql: `INSERT INTO runs (id, company_id, automation_id, automation_version_id, name, status, objective, created_at, updated_at, metadata_json)
-              VALUES (${sqlValue(runId)}, ${sqlValue(companyId)}, ${sqlValue(automation.id)}, ${sqlValue(automation.currentVersionId)}, ${sqlValue(`External IAB intent: ${automation.name}`)}, 'queued', ${sqlValue(automation.goal || automation.description || automation.name)}, ${sqlValue(timestamp)}, ${sqlValue(timestamp)}, ${sqlValue({ durable_job_id: jobId, job_kind: "external_iab", execution_mode: "external", external_action_allowed: true, external_intent: externalIntent })})`,
+        sql: `INSERT INTO runs (id, company_id, automation_id, automation_version_id, name, status, objective, created_at, updated_at, metadata_json, execution_source, quarantined)
+              VALUES (${sqlValue(runId)}, ${sqlValue(companyId)}, ${sqlValue(automation.id)}, ${sqlValue(automation.currentVersionId)}, ${sqlValue(`External IAB intent: ${automation.name}`)}, 'queued', ${sqlValue(automation.goal || automation.description || automation.name)}, ${sqlValue(timestamp)}, ${sqlValue(timestamp)}, ${sqlValue({ durable_job_id: jobId, job_kind: "external_iab", execution_mode: "external", external_action_allowed: true, external_intent: externalIntent })}, ${sqlValue(PORTABLE_EXECUTION_SOURCE)}, 0)`,
         expectChanges: 1
       },
       {
@@ -547,11 +548,13 @@ export function claimNextDurableJob(input: {
   const now = normalizedTime(input.now ?? nowIso(), "durable_job_claim_time_invalid");
   const leaseMs = boundedInteger(input.leaseMs ?? 60_000, 5_000, 15 * 60_000, "durable_job_lease_ms_invalid");
   const kindPredicate = input.kinds?.length
-    ? ` AND kind IN (${input.kinds.map((kind) => sqlValue(required(kind, "durable_job_kind_invalid"))).join(", ")})`
+    ? ` AND durable_jobs.kind IN (${input.kinds.map((kind) => sqlValue(required(kind, "durable_job_kind_invalid"))).join(", ")})`
     : "";
   const candidates = querySql<DurableJobRow>(`
-    SELECT * FROM durable_jobs
-    WHERE company_id=${sqlValue(companyId)} AND status='queued' AND available_at<=${sqlValue(now)}${kindPredicate}
+    SELECT durable_jobs.* FROM durable_jobs
+    JOIN runs ON runs.id=durable_jobs.run_id AND (runs.company_id=durable_jobs.company_id OR runs.company_id IS NULL)
+    WHERE durable_jobs.company_id=${sqlValue(companyId)} AND durable_jobs.status='queued' AND durable_jobs.available_at<=${sqlValue(now)}
+      AND runs.execution_source=${sqlValue(PORTABLE_EXECUTION_SOURCE)} AND runs.quarantined=0${kindPredicate}
     ORDER BY priority DESC, available_at ASC, created_at ASC, id ASC
     LIMIT 100
   `);

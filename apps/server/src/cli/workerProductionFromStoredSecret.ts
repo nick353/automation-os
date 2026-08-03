@@ -43,6 +43,18 @@ if (!databaseUrlValidation.ok) {
 }
 const validatedDatabaseUrl = databaseUrlValidation.value;
 
+if (mode === "loop") {
+  const globalServiceUserId = process.env.AUTOMATION_OS_GLOBAL_SYSTEM_SERVICE_USER_ID?.trim() ?? "";
+  const durableServiceUserId = process.env.AUTOMATION_OS_DURABLE_SERVICE_USER_ID?.trim() ?? "";
+  if (!globalServiceUserId && !durableServiceUserId) {
+    finishBlocked({
+      blocker: "worker_service_identity_missing",
+      nextAction: "Automation OSのactiveなservice identityをAUTOMATION_OS_GLOBAL_SYSTEM_SERVICE_USER_IDまたはAUTOMATION_OS_DURABLE_SERVICE_USER_IDに設定してからworkerを再起動してください。identity値はログへ出しません。",
+      serviceIdentity: { configured: false }
+    });
+  }
+}
+
 const args = mode === "loop"
   ? ["apps/server/dist/cli/workerLoop.js", ...forwardedArgs()]
   : ["apps/server/dist/cli/workerProductionPickupProof.js", ...forwardedArgs()];

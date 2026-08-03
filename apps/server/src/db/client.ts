@@ -18,7 +18,7 @@ const postgresUrl = process.env.AUTOMATION_OS_DATABASE_URL ?? process.env.DATABA
 const postgresWorkerTimeoutMs = Number(process.env.AUTOMATION_OS_POSTGRES_WORKER_TIMEOUT_MS ?? 12000);
 // Bump when an idempotent migration adds a durable schema object that must be
 // applied to already-bootstrapped PostgreSQL databases.
-export const postgresSchemaBootstrapVersion = 3;
+export const postgresSchemaBootstrapVersion = 4;
 
 export const dbPath = process.env.AUTOMATION_OS_DB ?? defaultDbPath;
 export const dbBackend = postgresUrl ? "postgres" : "sqlite";
@@ -260,6 +260,9 @@ function runIdempotentMigrations(): void {
   ensureColumn("users", "auth_provider", "TEXT NOT NULL DEFAULT 'legacy_operator_token'");
   ensureColumn("users", "auth_subject", "TEXT NOT NULL DEFAULT ''");
   ensureColumn("runs", "company_id", "TEXT");
+  ensureColumn("runs", "execution_source", "TEXT NOT NULL DEFAULT 'legacy'");
+  ensureColumn("runs", "quarantined", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("runs", "readback_proof_id", "TEXT");
   ensureColumn("run_steps", "company_id", "TEXT");
   ensureColumn("approvals", "company_id", "TEXT");
   ensureColumn("approvals", "job_id", "TEXT");
@@ -298,6 +301,7 @@ function runIdempotentMigrations(): void {
   ensureColumn("research_plans", "run_id", "TEXT");
   execSql(`
     CREATE INDEX IF NOT EXISTS idx_runs_company ON runs(company_id);
+    CREATE INDEX IF NOT EXISTS idx_runs_worker_claim ON runs(execution_source, quarantined, status, created_at);
     CREATE INDEX IF NOT EXISTS idx_approvals_company_status ON approvals(company_id, status);
     CREATE INDEX IF NOT EXISTS idx_approvals_bound_action ON approvals(company_id, job_id, status, expires_at);
     CREATE INDEX IF NOT EXISTS idx_proofs_company_run ON proofs(company_id, run_id);
@@ -793,6 +797,7 @@ function quotePostgresIdentifier(value: string): string {
 
 function schemaSqlForCurrentDatabase(schemaSql: string): string {
   const legacyTenantTables = ["runs", "approvals", "proofs", "registered_workflows", "research_plans", "skills", "mvp_feedback"];
+  const existingRunColumns = listTableColumns("runs");
   const needsLegacyCompat = legacyTenantTables.some((table) => {
     const columns = listTableColumns(table);
     return columns.size > 0 && !columns.has("company_id");
@@ -801,6 +806,7 @@ function schemaSqlForCurrentDatabase(schemaSql: string): string {
   if (needsLegacyCompat) {
     compatible = compatible
       .replace(/^CREATE INDEX IF NOT EXISTS idx_runs_company ON runs\(company_id\);\s*$/gim, "")
+      .replace(/^CREATE INDEX IF NOT EXISTS idx_runs_worker_claim ON runs\(execution_source, quarantined, status, created_at\);\s*$/gim, "")
       .replace(/^CREATE INDEX IF NOT EXISTS idx_approvals_company_status ON approvals\(company_id, status\);\s*$/gim, "")
       .replace(/^CREATE INDEX IF NOT EXISTS idx_proofs_company_run ON proofs\(company_id, run_id\);\s*$/gim, "")
       .replace(/^CREATE INDEX IF NOT EXISTS idx_registered_workflows_company ON registered_workflows\(company_id\);\s*$/gim, "")
@@ -808,6 +814,12 @@ function schemaSqlForCurrentDatabase(schemaSql: string): string {
       .replace(/^CREATE INDEX IF NOT EXISTS idx_skills_company ON skills\(company_id\);\s*$/gim, "")
       .replace(/^CREATE INDEX IF NOT EXISTS mvp_automations_company_idx ON mvp_automations\(company_id\);\s*$/gim, "")
       .replace(/^CREATE INDEX IF NOT EXISTS mvp_feedback_company_idx ON mvp_feedback\(company_id, created_at DESC\);\s*$/gim, "");
+  }
+  if (existingRunColumns.size > 0 && !existingRunColumns.has("execution_source")) {
+    compatible = compatible.replace(
+      /^CREATE INDEX IF NOT EXISTS idx_runs_worker_claim ON runs\(execution_source, quarantined, status, created_at\);\s*$/gim,
+      ""
+    );
   }
   const runColumns = listTableColumns("runs");
   if (runColumns.size > 0 && (!runColumns.has("automation_id") || !runColumns.has("automation_version_id"))) {
@@ -849,14 +861,20 @@ function getDb(): Database.Database {
 }
 
 export function insert(table: string, row: Record<string, SqlValue>): void {
-  const columns = Object.keys(row);
-  const values = columns.map((column) => sqlValue(row[column]));
+  const normalizedRow = table === "runs" && row.execution_source === undefined
+    ? { ...row, execution_source: "automation-os", quarantined: row.quarantined ?? 0 }
+    : row;
+  const columns = Object.keys(normalizedRow);
+  const values = columns.map((column) => sqlValue(normalizedRow[column]));
   execSql(`INSERT INTO ${table} (${columns.join(", ")}) VALUES (${values.join(", ")});`);
 }
 
 export function upsert(table: string, row: Record<string, SqlValue>, conflictColumn = "id"): void {
-  const columns = Object.keys(row);
-  const values = columns.map((column) => sqlValue(row[column]));
+  const normalizedRow = table === "runs" && row.execution_source === undefined
+    ? { ...row, execution_source: "automation-os", quarantined: row.quarantined ?? 0 }
+    : row;
+  const columns = Object.keys(normalizedRow);
+  const values = columns.map((column) => sqlValue(normalizedRow[column]));
   const updates = columns
     .filter((column) => column !== conflictColumn)
     .map((column) => `${column}=excluded.${column}`)

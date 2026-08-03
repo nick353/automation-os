@@ -51,18 +51,19 @@ type RegisteredWorkflowConfig = {
 };
 
 function workflowConfigFor(workflowId: string, automationRoot = defaultAutomationRoot): RegisteredWorkflowConfig | undefined {
+  const automationId = automationRoot === defaultAutomationRoot ? "automation-3" : "job-application-manager";
   switch (workflowId) {
     case "job_submit_registered":
       return {
         cwd: "/Users/nichikatanaka/Documents/New project",
-        automationToml: join(automationRoot, "job-application-manager", "automation.toml"),
+        automationToml: join(automationRoot, automationId, "automation.toml"),
         proofType: "job_submit_registered_codex_execution",
         label: "Job submit registered Codex execution"
       };
     case "job_followup_registered":
       return {
         cwd: "/Users/nichikatanaka/Documents/New project",
-        automationToml: join(automationRoot, "job-application-manager", "automation.toml"),
+        automationToml: join(automationRoot, automationId, "automation.toml"),
         proofType: "job_followup_registered_codex_execution",
         label: "Job follow-up registered Codex execution"
       };

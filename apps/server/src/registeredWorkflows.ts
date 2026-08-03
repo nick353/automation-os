@@ -152,10 +152,11 @@ function fixedWorkflow(input: {
   startCommand: string;
   rrule: string;
   startCommandSource?: RegisteredWorkflowDefinition["startCommand"]["source"];
+  automationTomlId?: string;
   sourceRefs?: RegisteredWorkflowDefinition["sourceRefs"];
   provenance?: Partial<RegisteredWorkflowDefinition["provenance"]>;
 }): RegisteredWorkflowDefinition {
-  const path = automationTomlPath(input.id);
+  const path = automationTomlPath(input.automationTomlId ?? input.id);
   const sourceRefs = input.sourceRefs ?? [{ type: "automation_toml" as const, path, legacyAutomationId: input.id }];
   return {
     id: input.id,
@@ -230,10 +231,11 @@ export const fixedRegisteredWorkflows: RegisteredWorkflowDefinition[] = [
     projectRoot: newProjectRoot,
     startCommand: "Job Application Manager registered workflow billing-only inbox readback and submit",
     rrule: "RRULE:FREQ=WEEKLY;BYHOUR=7;BYMINUTE=30;BYDAY=SU,MO,TU,WE,TH,FR,SA",
-    sourceRefs: [{ type: "automation_toml", path: automationTomlPath("job-application-manager"), legacyAutomationId: "job-application-manager" }],
+    automationTomlId: "automation-3",
+    sourceRefs: [{ type: "automation_toml", path: automationTomlPath("automation-3"), legacyAutomationId: "automation-3" }],
     provenance: {
       legacyAutomationId: "job-application-manager",
-      automationTomlPath: automationTomlPath("job-application-manager"),
+      automationTomlPath: automationTomlPath("automation-3"),
       approvalBoundary: "billing_purchase_payment_checkout_hard_stop",
       completionBoundary: "approved_submit_requires_readback"
     }

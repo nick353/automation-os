@@ -61,12 +61,16 @@ CREATE TABLE IF NOT EXISTS runs (
   objective TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  metadata_json TEXT NOT NULL DEFAULT '{}'
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  execution_source TEXT NOT NULL DEFAULT 'legacy',
+  quarantined INTEGER NOT NULL DEFAULT 0,
+  readback_proof_id TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_runs_company ON runs(company_id);
 CREATE INDEX IF NOT EXISTS idx_runs_automation ON runs(automation_id);
 CREATE INDEX IF NOT EXISTS idx_runs_automation_version ON runs(automation_version_id);
+CREATE INDEX IF NOT EXISTS idx_runs_worker_claim ON runs(execution_source, quarantined, status, created_at);
 
 CREATE TABLE IF NOT EXISTS run_steps (
   id TEXT PRIMARY KEY,

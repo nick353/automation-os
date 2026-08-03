@@ -35,6 +35,7 @@ import {
 } from "../serviceReadiness/runtimeBinding.js";
 import { BROWSER_USE_HELPER_PATH, BROWSER_USE_RUNTIME_CONFIG_PATH } from "../serviceReadiness/browserUseCanonical.js";
 import { redactWorkerOutput, resolveWorkerWorkspacePath, safeWorkerEnvironment } from "../security/processEnvironment.js";
+import { PORTABLE_EXECUTION_SOURCE } from "./portableWorkerIsolation.js";
 
 export type WorkerAdapter =
   | "child_codex"
@@ -946,10 +947,10 @@ export async function resumeRunAfterApproval(runId: string) {
 
 export async function runWorkerOnce(runId?: string) {
   const runIds = runId
-    ? querySql<{ id: string }>(`SELECT id FROM runs WHERE id=${sqlValue(runId)} AND NOT EXISTS (SELECT 1 FROM durable_jobs WHERE durable_jobs.run_id=runs.id)`).map((row) => row.id)
-    : querySql<{ id: string }>("SELECT id FROM runs WHERE status IN ('queued', 'running', 'waiting_approval') AND NOT EXISTS (SELECT 1 FROM durable_jobs WHERE durable_jobs.run_id=runs.id) ORDER BY created_at ASC").map(
-        (row) => row.id
-      );
+    ? querySql<{ id: string }>(`SELECT id FROM runs WHERE id=${sqlValue(runId)} AND execution_source=${sqlValue(PORTABLE_EXECUTION_SOURCE)} AND quarantined=0 AND NOT EXISTS (SELECT 1 FROM durable_jobs WHERE durable_jobs.run_id=runs.id)`).map((row) => row.id)
+    : querySql<{ id: string }>(`SELECT id FROM runs WHERE status IN ('queued', 'running', 'waiting_approval') AND execution_source=${sqlValue(PORTABLE_EXECUTION_SOURCE)} AND quarantined=0 AND NOT EXISTS (SELECT 1 FROM durable_jobs WHERE durable_jobs.run_id=runs.id) ORDER BY created_at ASC`).map(
+      (row) => row.id
+    );
   const summaries = [];
   for (const id of runIds) {
     summaries.push(await runWorkerCycle(id));

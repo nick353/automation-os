@@ -7727,8 +7727,8 @@ async function startRegisteredPostgresRunFast(input: {
   try {
     await client.query("BEGIN");
     await client.query(
-      `INSERT INTO runs (id, company_id, name, status, objective, created_at, updated_at, metadata_json)
-       VALUES ($1, NULL, $2, 'queued', $3, $4, $4, $5)`,
+      `INSERT INTO runs (id, company_id, name, status, objective, created_at, updated_at, metadata_json, execution_source, quarantined)
+       VALUES ($1, NULL, $2, 'queued', $3, $4, $4, $5, 'automation-os', 0)`,
       [runId, input.command.slice(0, 72) || "Daily AI registered workflow run", input.command, now, JSON.stringify(metadata)]
     );
     await client.query(

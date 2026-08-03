@@ -37,6 +37,11 @@ test("fixed registered workflows define native, skill, and lane workflow entries
   assert.equal(dailyAi.provenance.safetyContract.publicKind, "billing_only_hard_stop");
   assert.equal(dailyAi.provenance.codexAppContinuousSync, false);
 
+  const job = registeredWorkflows.fixedRegisteredWorkflows.find((workflow) => workflow.id === "job-application-manager");
+  assert.ok(job);
+  assert.equal(job.sourceRefs[0]?.path, "/Users/nichikatanaka/.codex/automations/automation-3/automation.toml");
+  assert.equal(job.sourceRefs[0]?.legacyAutomationId, "automation-3");
+
   const connected = registeredWorkflows.fixedRegisteredWorkflows.filter((workflow) =>
     ["nisenprints-daily-product-canva-printify-etsy-pinterest", "job-application-manager", "prompt-transfer-ukiyoe"].includes(workflow.id)
   );
