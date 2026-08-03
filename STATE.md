@@ -1,5 +1,25 @@
 # Automation OS Current State
 
+## 2026-08-03 portable worker isolation and tenancy audit checkpoint
+
+Commit `fc24d2a` (`Isolate portable worker tenancy tests`) was pushed to
+`origin/main`. The portable worker isolation tests now use a task-local
+temporary SQLite database instead of the project database. After removing
+only the four fixture rows created by the prior unisolated test run, fresh
+`portableWorkerIsolation` plus portable contract tests passed `6/6`, and
+`auditTenancy --json` returned `ok=true` with blank-company, missing-FK,
+orphan, and lineage mismatch counts all at zero. No user run rows were
+removed.
+
+The fresh stored-secret production worker proof remains safely blocked before
+spawn with `stored_postgres_secret_invalid_url`; the missing template names
+are `POSTGRES_USERNAME`, `POSTGRES_PASSWORD`, `POSTGRES_HOST`,
+`POSTGRES_PORT`, and `POSTGRES_DATABASE`, and no secret value was emitted.
+`automationHealth --json` reports `6` active registrations, zero blockers,
+zero DB drift, zero missing entrypoints, and zero video-QA issues. This is
+local/startup-boundary proof, not valid production PostgreSQL or live
+Mac-worker execution proof.
+
 ## 2026-08-03 accessibility regression fix and full-suite checkpoint
 
 Commit `ce01e6d` (`Restore stable schedule checkbox accessibility label`) was
