@@ -1,8 +1,8 @@
 export type PostgresUrlValidation = { ok: true; value: string } | { ok: false; reason: string };
 
-export function validatePostgresUrl(value: string): PostgresUrlValidation {
+export function validatePostgresUrl(value: string, env: NodeJS.ProcessEnv = process.env): PostgresUrlValidation {
   const trimmed = value.trim();
-  const resolved = resolvePostgresTemplate(trimmed);
+  const resolved = resolvePostgresTemplate(trimmed, env);
   if (!resolved.ok) {
     return { ok: false, reason: resolved.reason };
   }
@@ -20,11 +20,11 @@ export function validatePostgresUrl(value: string): PostgresUrlValidation {
   }
 }
 
-function resolvePostgresTemplate(input: string): { ok: true; value: string } | { ok: false; reason: string } {
+function resolvePostgresTemplate(input: string, env: NodeJS.ProcessEnv): { ok: true; value: string } | { ok: false; reason: string } {
   const variablePattern = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/gu;
   const missingVariables: string[] = [];
   const resolved = input.replace(variablePattern, (_match, variableName: string) => {
-    const envValue = process.env[variableName]?.trim();
+    const envValue = env[variableName]?.trim();
     if (!envValue) {
       if (!missingVariables.includes(variableName)) missingVariables.push(variableName);
       return _match;

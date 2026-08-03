@@ -261,6 +261,7 @@ export function saveAutomationSchedule(input: {
   actorUserId: string;
   automationId: string;
   schedule: AutomationScheduleInput;
+  nextRunAt?: string | null;
 }): AutomationScheduleRecord {
   requireCompanyAccess(required(input.companyId, "company_id_required"), ["owner", "admin", "operator"], required(input.actorUserId, "actor_user_id_required"));
   const automation = requiredAutomation(input.companyId, input.automationId, false);
@@ -279,7 +280,7 @@ export function saveAutomationSchedule(input: {
     enabled: input.schedule.enabled,
     status: input.schedule.enabled ? "active" : "paused",
     revision: existing ? existing.revision + 1 : 1,
-    nextRunAt: null,
+    nextRunAt: input.nextRunAt ?? null,
     lastRunAt: existing?.lastRunAt ?? null,
     pausedAt: input.schedule.enabled ? null : timestamp,
     createdAt: existing?.createdAt ?? timestamp,

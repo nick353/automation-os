@@ -707,6 +707,38 @@ tr:hover td {
   color: #111;
 }
 
+.chat-input input,
+.chat-input select {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid #dedede;
+  border-radius: 7px;
+  padding: 8px 10px;
+  color: #111;
+  background: #fff;
+}
+
+.chat-session-controls {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+  margin: 0 0 4px;
+}
+
+.chat-session-controls .chat-input {
+  margin-bottom: 0;
+}
+
+.chat-session-controls .btn {
+  min-height: 38px;
+  margin-bottom: 0;
+}
+
+.chat-session-note {
+  margin: 0 0 14px;
+}
+
 .chat-context {
   display: flex;
   align-items: center;
@@ -1512,6 +1544,10 @@ label textarea {
   .confirm-panel {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .chat-session-controls {
+    grid-template-columns: 1fr;
   }
 
   .feedback-launcher {

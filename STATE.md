@@ -1,5 +1,364 @@
 # Automation OS Current State
 
+## 2026-08-03 authenticated handoff gate and terminal cleanup checkpoint
+
+Fresh same-run readback on the preserved temporary room
+`automation-os-authenticated-qa-20260803-r1` / session
+`automation-os-authenticated-qa-20260803` / target
+`371CBBAA1A3F67F18A5D6E1D15FEC379` still showed the public operator-token
+gate (`operator token が必要です。`); no authenticated screen was reached and
+no token was captured or persisted. The follow-up recording was finalized with
+`external_effects=none`:
+
+- manifest:
+  `work/recordings/automation-os-authenticated-qa-after-login-20260803/browser-use-recording-manifest.json`;
+- receipt:
+  `/Users/nichikatanaka/.browser-use-cli/receipts/automation-os-authenticated-qa-20260803-r1/automation-os-authenticated-qa-20260803-7603ab35fed64258811d22d9ffc3193f.json`;
+- gate blocker:
+  `work/qa/automation-os-authenticated-qa-20260803-gate-blocker.json`.
+
+The owner-bound canonical terminal cleanup then removed the exact temporary
+profile, port `20098` listener, Chrome PID `42789`, room, locks, and session;
+the cleanup receipt reads `cleaned=true`, `finalized=true`, and
+`external_effects=none`. A helper hardening fixed the orphaned handoff
+watchdog path: terminal cleanup now stops only a same-user process whose
+canonical helper arguments exactly match the run/session/descriptor. The
+previous watchdog PID `42951` was reconciled through the canonical helper;
+unknown processes were not touched. Current helper SHA-256 is
+`a439a538d301e46091c31d3b19419855f269e93953b59365acac72a21deeae49`.
+
+Fresh verification: canonical helper `py_compile` and `validate` passed;
+the focused watchdog cleanup test passed `2/2`; the full server suite passed
+`911 total / 906 pass / 0 fail / 5 skip`. The five skips are explicit missing
+`AUTOMATION_OS_TEST_POSTGRES_URL` fixtures. Authenticated 21-screen QA,
+per-screen recordings, Mac-worker live App Server proof, production schedule
+readback, and Zeabur deployment parity remain unverified because the operator
+token was not accepted on the visible gate.
+
+Owner-bound post-cleanup recheck on 2026-08-03 confirmed the same target room
+`room-6b8171d751ebea1042bc6dc886daa8b4` is `released`; port `20098`, Chrome
+PID `42789`, watchdog PID `42951`, the exact temporary profile, and session
+locks are absent. The canonical cleanup receipt and cleanup marker remain the
+only run-owned handoff records, with `external_effects=none`. The requested
+`scripts/sync-live.sh` and `scripts/doctor.sh` are not present in this current
+checkout, so they were not fabricated or inferred from historical artifacts;
+current canonical `validate` passed and the repository Browser Use focused
+suite passed `16/16` as the available substitute. An unrelated host
+`browser_harness.daemon` was observed without room/port/session ownership and
+was not stopped.
+
+The fresh local Mac-worker stored-secret proof also remains blocked at the
+secret boundary: `stored_postgres_secret_invalid_url` with unresolved template
+references `POSTGRES_USERNAME`, `POSTGRES_PASSWORD`, `POSTGRES_HOST`,
+`POSTGRES_PORT`, and `POSTGRES_DATABASE`. The proof wrote only the safe
+readback to `data/state/automation-os-worker.json`; no secret value was read
+back or displayed.
+
+The local LaunchAgent readback confirms the same boundary: it is running with
+`AUTOMATION_OS_ENV_ROLE=recovery` and `AUTOMATION_OS_ALLOW_SQLITE_FALLBACK=1`
+on `127.0.0.1:8787`; the stderr log records that the stored Postgres
+connection is unavailable and that SQLite fallback was selected. This is a
+healthy local recovery service, not production Mac-worker/Postgres proof.
+
+## 2026-08-03 fresh public recording semantic/frame checkpoint r23
+
+The repaired canonical Browser Use recorder was reverified in a fresh public,
+single-use, read-only run `automation-os-public-surface-fix-r23-20260803`.
+One working target `01613B1E4CCEDB00C9A5C99D6A844781` and one session
+`automation-os-public-sur-r23-20260803` were preserved across `open`, `state`,
+`get title`, `get url`, and `record-finalize`. The final stop probe and decoded
+MP4 frame are bound to the same working target; the manifest reports no
+completion blocker and `external_effects=none`.
+
+Fresh evidence:
+
+- manifest: `work/recordings/automation-os-public-surface-fix-r23-20260803/browser-use-recording-manifest.json`;
+- receipt:
+  `/Users/nichikatanaka/.browser-use-cli/receipts/automation-os-public-surface-fix-r23-20260803/automation-os-public-sur-r23-20260803-9a121d89627744cb9d17cedcca2765a7.json`;
+- semantic state hash:
+  `619d792abc7f7b510fc3bf365710c507ce60128bbdbfa5e05c2328541d827cbe`;
+- decoded final-frame and bound visual-frame SHA-256:
+  `7de1b0ff4b431b77cd5fcbae941d824f4cc74c41e58ad046b7301e9a0e09f0ed`;
+- video SHA-256:
+  `c7e9e83347a346de21c30403f73065a4ae9cabcf11cbc8277169d0880b6763a2`;
+- H.264, 1200x924, 12 fps, 6 frames, 0.5 seconds; adaptive frame-reader
+  manifest contains one base keyframe and six timestamped detail frames;
+- `semantic_readback_surface_match=true`, with the final semantic state source
+  `record-stop-final-probe`;
+- focused helper test `browserUseCliSemanticReadback`: `4/4 pass`, direct
+  final-probe binding/mismatch checks passed, and canonical `validate` plus
+  `py_compile` passed. The helper SHA-256 at this r23 checkpoint was
+  `22bfc43897cace7117687b5fcc4577562417fcbd65a2a1cf582d2c6b032dd792`.
+
+The final visual readback is the public unauthenticated administrator access-key
+gate. No token was entered and no authenticated screen or external effect was
+performed. Receipt cleanup is `cleaned`: profile/download removal, no retained
+locks, no live process/listener, and the r23 room is released. The earlier r22
+run was taken before the comparison logic was restored and is not promoted.
+Authenticated 21-screen QA, deployment parity, and production runtime gates
+remain unverified.
+
+## 2026-08-03 chat-session race error checkpoint
+
+Named Chat session create/rename now normalizes a concurrent database unique
+constraint race to `409 chat_session_name_conflict` without returning raw
+SQLite/PostgreSQL constraint text. The preflight duplicate checks and all
+actor/project scoping contracts remain unchanged.
+
+Fresh verification: `npm run build:server`, compiled `chatApi` `5/5`, and
+`git diff --check` passed. Browser authentication and runtime screen QA were
+not performed; the owned temporary handoff remains human-completion gated.
+
+## 2026-08-03 chat-session uniqueness hardening checkpoint
+
+Named Chat session create/rename now converts a concurrent database unique
+constraint race into the safe `409 chat_session_name_conflict` contract. The
+existing preflight duplicate check remains, while raw SQLite/PostgreSQL
+constraint text is not returned to the UI. Cross-project and cross-actor
+scope behavior is unchanged.
+
+Fresh verification: `npm run build:server` passed; `chatApi` passed `5/5`;
+`git diff --check` passed. The authenticated Browser Use handoff remains
+active and human-completion gated; no browser operation was performed in this
+checkpoint.
+
+## 2026-08-03 atomic schedule next-run checkpoint
+
+The company-scoped schedule PUT now passes its computed `nextRunAt` into the
+same revisioned schedule transaction instead of saving the schedule first and
+performing a second best-effort UPDATE. This keeps a successful schedule
+receipt and the persisted `next_run_at` readback aligned under concurrent
+updates, while preserving the existing optimistic revision, RBAC, idempotency,
+and manual/daily/weekly/cron contracts.
+
+Fresh focused verification: `npm run build:server` passed;
+`automationApi`, `automationRepository`, and `automationScheduler` passed
+`22/22`; `git diff --check` passed. Authenticated 21-screen Browser Use QA,
+Mac worker live App Server turn, Zeabur deployment/readback, and production
+schedule readback remain unverified. The current authorized handoff is still
+owned by `automation-os-authenticated-qa-20260803-task` on port `20098`; do
+not operate it until the human completion signal is received.
+
+## 2026-08-03 project-scoped named Chat session checkpoint
+
+The local implementation slice for the Chat control room is complete. Chat
+now supports actor/project-scoped named sessions without replacing the legacy
+`create_sessions` row or `/api/create/session` route. Added session list,
+create, rename, and activate endpoints; `POST /api/create/chat` accepts a
+`session_id`; a completed Codex App Server thread is written back only when
+the session, actor, and company match. The web ChatPage now loads sessions on
+project change, creates and activates a named session, switches sessions, and
+sends the selected session id. New controls are registered in the UI
+manifest and styled responsively.
+
+Security and compatibility evidence:
+
+- cross-project and cross-actor session reads return `404 chat_session_not_found`;
+- names are sanitized/redacted and capped at 120 characters;
+- planner metadata removes raw stream text and binds the returned thread with
+  actor/company predicates;
+- named session mutations require the production write-token guard;
+- the legacy default create session remains unchanged;
+- no browser authentication, deployment, schedule mutation, or external
+  effect was performed.
+
+Fresh local verification:
+
+- `npm run typecheck:web`: pass;
+- `npm run build:web`: pass;
+- `npm run build:server`: pass;
+- focused `chatApi`: `5/5 pass`;
+- `npm test`: `911 total / 906 pass / 0 fail / 5 skip`;
+- `git diff --check`: pass;
+- static UI preflight: `21 screen cases / 184 manifest entries / 233 rendered
+  patterns / 0 issues`;
+- temporary localhost Browser QA: Automation OS rendered nonblank with no
+  console warning/error; a temporary project was created, two named sessions
+  were created, switched, and read back as active.
+
+Release gates still unverified: production migration and token/actor
+readback, Zeabur deployment, live Mac-worker App Server turn, authenticated
+21-screen runtime QA with per-screen recordings, and schedule/external-effect
+readback. Restart from fresh current-run authority for those gates; do not
+promote this local checkpoint to production readiness.
+
+## 2026-08-03 local boundary evidence and full-suite checkpoint
+
+The revised local-only slice is now independently verified and security
+reviewed. The slice changed only test coverage: five PostgreSQL integration
+tests now expose one stable skip reason when the explicit test fixture URL is
+absent; child Codex coverage adds a symlink-escape rejection; and Codex App
+Server coverage adds invalid-root and missing-cwd rejection with spawn count
+zero. Existing dirty worktree entries were preserved and no production source
+was changed by this slice.
+
+The bounded review packet is
+`work/reviews/automation-os-local-boundary-security-review-20260803.md`.
+Its evidence covers the shared `realpath` workspace resolver, path-component
+boundary check, environment allowlist, explicit database injection boundary,
+worker-output redaction, App Server stderr non-persistence, and pre-spawn
+validation. The supplied-evidence security review returned `APPROVED` with
+the explicit limitation that it applies only to this local slice.
+
+Fresh direct verification from the repository root:
+
+- `npm run build:server`: pass.
+- Focused compiled set: `99 total / 94 pass / 0 fail / 5 skip`.
+- `npm test`: `910 total / 905 pass / 0 fail / 5 skip`.
+- `git diff --check`: pass.
+
+All five skipped tests are the five PostgreSQL integration tests and all use
+the same reason `AUTOMATION_OS_TEST_POSTGRES_URL is not set`; this is an
+explicit fixture-unavailable classification, not an unexpected skip. No
+production/authenticated gate is promoted by this checkpoint. The public r21
+recording remains a separate public read-only proof. The custom Adaptive
+Graph `run_fe0238f4e8f9484a` stopped at its first security-review attempt
+because the role received only a path and not supplied evidence; the later
+direct supplied-evidence security review passed, but it is not a substitute
+for production or authenticated proof.
+
+Still unverified: real PostgreSQL connection and stored-secret template,
+Zeabur role/deployment container-to-commit readback, live Mac-worker
+PostgreSQL/workspace/egress/runtime identity, Codex App Server live turn,
+fresh authorized Browser Use authority/token rotation, authenticated
+21-screen QA and per-screen recordings, production schedule mutation and
+readback, cross-project analytics/read/write proof, and the configured
+external verifier/reviewer provider routes. No secret mutation, browser
+authentication, deployment, schedule mutation, or external effect occurred.
+
+Final read-only Browser Use room/process observation at 2026-08-03T05:39Z
+found two active temporary rooms owned by other task identities: the existing
+login handoff on port 20095 and a separate feature-exploration handoff on
+port 20081. Both have matching Chrome/listener/process observations. They are
+not owned by this current run, so no attach, operation, or cleanup was
+performed. The r21 room remains released; global cleanup is not claimed.
+
+## 2026-08-03 canonical recording semantic/video binding r21 checkpoint
+
+The canonical Browser Use helper was repaired at the two missing binding
+points: `record-stop` now captures the same-target final URL/ready-state
+probe immediately before the video flush, and `record-finalize` compares the
+final semantic hash, target ID, URL hash, and title hash with the durable
+same-session semantic bundle. A disagreement now fails closed as
+`browser_use_recording_semantic_surface_mismatch`. The helper passed
+`python3 -m py_compile`, canonical `validate`, and its current SHA-256 is
+`22bfc43897cace7117687b5fcc4577562417fcbd65a2a1cf582d2c6b032dd792`.
+
+Fresh public read-only run `automation-os-public-surface-proof-r21-20260803`
+completed through the canonical helper. Requested/effective session was
+`automation-os-public-surface-proof-r21-20260803` /
+`automation-os-public-sur-bb458ab615`; semantic bundle, final visual
+readback, and tab inventory all use target
+`D2FECDFC157A958D26370CE140B9FC2B`. Manifest:
+`work/recordings/automation-os-public-surface-proof-r21-20260803/browser-use-recording-manifest.json`.
+Receipt:
+`/Users/nichikatanaka/.browser-use-cli/receipts/automation-os-public-surface-proof-r21-20260803/automation-os-public-sur-bb458ab615-8dbfc631f989486b9369f13b47b67266.json`.
+
+The manifest reports `completion_blocker=null`, `external_effects=none`, and
+`semantic_readback_surface_match=true`; the `record-stop-final-probe` hash
+and durable semantic state hash are both
+`619d792abc7f7b510fc3bf365710c507ce60128bbdbfa5e05c2328541d827cbe`.
+The decoded MP4 final-frame SHA-256 and bound visual-frame SHA-256 are both
+`de30d32f050b12acf7e7a947f2d525384266e4e348a825f45ac7226a50e857ac`, and
+the video SHA-256 is
+`a6e6ec3c7a40cb3fe6c3731ed8d53649816253f4a7637eb2a7c0473f1880cd94`.
+The receipt reports `cleanup.status=cleaned`, profile/download removal,
+no retained locks, and the final room readback is released with
+`active_count=0`. A separate host-level `browser_harness.daemon` PID 42200
+is parented by launchd/init, has no listening socket, and is not bound to the
+r21 room/port/session. Its owner is not established in this run, so it was
+not stopped; the r21 receipt's owned-resource cleanup remains clean, while
+global process cleanup is not claimed.
+
+Focused evidence after the repair: `node --test
+scripts/tests/browserUseCliSemanticReadback.test.mjs` passed `4/4`, and
+the local server/chat/project contract set passed `40/40`. The r19/r20
+attempts are retained as non-promoted diagnostic artifacts: r19 lacked a
+semantic bundle because its first command ran before URL navigation, and r20
+had the helper regression that omitted the final semantic probe. Neither is
+used as completion proof. This checkpoint remains public gate evidence only;
+authenticated 21-screen QA, fresh authorized authority/token rotation,
+production deployment/readback, Mac-worker execution, and schedule mutation
+remain unverified.
+
+## 2026-08-03 recording semantic/video binding checkpoint
+
+The current canonical Browser Use helper was reverified with a fresh public,
+single-use, read-only recording at
+`work/recordings/automation-os-public-video-surface-fix-r12-20260803`.
+The recording used one working target and one session. `state`, `get title`,
+and `get url` followed the durable semantic-readback path, so the manifest
+contains all three `browser_use_semantic_readback.v1` parts. The finalized
+`browser-use-final-visual-readback.v1` points to the decoded MP4 final frame,
+not a pre-encode screenshot. Target IDs, tab inventory, semantic bundle, and
+final visual readback match; the final-frame SHA-256 and video SHA-256 bindings
+were independently recomputed from disk.
+
+Fresh evidence: H.264, 2400x1332, 12 fps, 6 frames, 0.5 seconds;
+`completion_blocker=null`, `external_effects=none`, and the adaptive
+video-frame-reader manifest contains one base keyframe plus six timestamped
+detail frames. The receipt is
+`/Users/nichikatanaka/.browser-use-cli/receipts/automation-os-public-video-surface-fix-r12-20260803/automation-os-public-vid-r12-20260803-22219532a2fd4d7caaf28aa8a61c709c.json`;
+cleanup reports profile/download removal and no retained locks. The public
+readback reached only the unauthenticated admin-access-key gate; no token was
+entered and no authenticated screen was exercised.
+
+The earlier r8/r9 artifacts remain historical and are not promoted: their
+semantic bundle or same-time final visual binding was incomplete. r11 proved
+final visual binding but intentionally used transient `--capture-readback`,
+so r12 is the current semantic proof. Authenticated 21-screen QA, fresh
+authorized authority/token rotation, production deployment/readback, Mac
+worker/App Server execution, and schedule mutation remain unverified.
+
+## 2026-08-03 production/recovery database-authority boundary checkpoint
+
+The server startup boundary now has an explicit, opt-in production role. The
+new `AUTOMATION_OS_ENV_ROLE=production` policy requires a syntactically valid
+`AUTOMATION_OS_DATABASE_URL` (preferred) or `DATABASE_URL` before the package
+`start:server` command runs process hygiene or binds the server. Missing or
+invalid PostgreSQL configuration returns a classification-only blocker and
+cannot select or create the SQLite backend. Unknown non-empty role values also
+fail closed. The role-unset legacy behavior remains unchanged, and
+`AUTOMATION_OS_ENV_ROLE=recovery` preserves the Mac LaunchAgent's explicit
+SQLite fallback. The LaunchAgent now declares the recovery role; the hosted
+Zeabur deployment still needs the production role to be set and read back.
+
+The guard and pure policy are in
+`apps/server/src/cli/serverStartupGuard.ts` and
+`apps/server/src/cli/serverStartupPolicy.ts`; the package guard runs before
+`processHygiene` and server bind. PostgreSQL template validation now accepts an
+explicit environment object, keeping tests deterministic. No URL, password,
+secret-store output, or token is included in guard diagnostics.
+
+Fresh local evidence: startup-policy and PostgreSQL validation tests passed;
+the focused cross-component regression passed `127/127`; server build,
+Web typecheck/build, shell syntax, `git diff --check`, and static all-page
+preflight passed (`181` manifest entries, `230` rendered patterns, `0`
+issues). A direct production start probe exited `2` with
+`production_postgres_configuration_missing` before SQLite file creation or
+server bind; recovery exited `0`; an unknown role exited `2` with
+`automation_os_env_role_invalid`. The initially suspected `maintenanceCli`
+hang was not reproduced: its full 21-test file later passed in about 73
+seconds. The complete `npm test` suite was later launched accidentally
+through a shell-quoting expansion; its process completed, but its stdout and
+exit code were consumed by that command and are not available as evidence.
+It is therefore not claimed as full-suite proof; the focused tests remain the
+current deterministic proof.
+
+This is a local code/config contract checkpoint, not production completion.
+Zeabur role injection/deployment readback, the real stored PostgreSQL secret,
+Mac-worker PostgreSQL/App Server execution, authenticated 21-screen runtime
+QA and per-screen recordings, production schedule mutation/readback, and final
+independent Graph review remain unverified. No secret mutation, browser auth,
+deploy, or external effect occurred.
+
+Independent route readback for this checkpoint: the configured MiniMax executor
+review returned PASS with the bounded limitations above; the configured DeepSeek
+reviewer returned PASS after its documented model fallback; the exact DeepSeek
+verifier route was blocked by `opencode_go_auth_or_transport_blocked`; and the
+exact Opus 5 reviewer was blocked by the provider's assistant-prefill HTTP 400.
+Neither blocked route was replaced or described as completed.
+
 ## 2026-08-03 public asset parity recovery checkpoint
 
 Fresh public readback at `2026-08-03T04:03Z` now serves the current local

@@ -29,6 +29,8 @@
     <string>1</string>
     <key>AUTOMATION_OS_ALLOW_SQLITE_FALLBACK</key>
     <string>1</string>
+    <key>AUTOMATION_OS_ENV_ROLE</key>
+    <string>recovery</string>
     <key>AUTOMATION_OS_OBSIDIAN_PERIODIC_EXPORT_MS</key>
     <string>300000</string>
     <key>AUTOMATION_OS_PORT</key>

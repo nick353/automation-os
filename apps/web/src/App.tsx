@@ -565,6 +565,16 @@ type ChatThreadReadback = {
   resultTitle?: string;
 };
 
+type ChatSessionReadback = {
+  id: string;
+  project_id: string;
+  name: string;
+  codex_thread_id: string | null;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
 function nextChatId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -871,7 +881,7 @@ function builderConfigForAutomationType(type: string): BuilderConfig {
 async function requestChatPlan(
   prompt: string,
   selectedPlatforms: string[],
-  options: { projectId?: string; messages?: ChatMessage[]; threadId?: string; onProgress?: (progress: PlannerProgress) => void } = {}
+  options: { projectId?: string; sessionId?: string; messages?: ChatMessage[]; threadId?: string; onProgress?: (progress: PlannerProgress) => void } = {}
 ): Promise<PlannerReadback> {
   const conversation = (options.messages?.length ? options.messages : [{ id: "current", role: "user" as const, text: prompt }])
     .map((message) => ({ role: message.role, text: message.text }));
@@ -882,6 +892,7 @@ async function requestChatPlan(
       messages: conversation,
       currentDraft: prompt,
       project_id: options.projectId,
+      session_id: options.sessionId,
       codex_thread_id: options.threadId
     })
   });
@@ -1018,6 +1029,36 @@ async function requestChatThreads(projectId: string): Promise<ChatThreadReadback
   const body = await response.json().catch(() => ({})) as { ok?: boolean; threads?: ChatThreadReadback[]; exactBlocker?: string };
   if (!response.ok || body.ok !== true) throw new Error(body.exactBlocker || `chat_threads_http_${response.status}`);
   return Array.isArray(body.threads) ? body.threads : [];
+}
+
+async function requestChatSessions(projectId: string): Promise<ChatSessionReadback[]> {
+  if (!projectId) return [];
+  const response = await mvpFetch(`/api/create/chat/sessions?project_id=${encodeURIComponent(projectId)}`, { cache: "no-store" });
+  const body = await response.json().catch(() => ({})) as { ok?: boolean; sessions?: ChatSessionReadback[]; exactBlocker?: string; error?: string };
+  if (!response.ok || body.ok !== true) throw new Error(body.exactBlocker || body.error || `chat_sessions_http_${response.status}`);
+  return Array.isArray(body.sessions) ? body.sessions : [];
+}
+
+async function createChatSession(projectId: string, name: string): Promise<ChatSessionReadback> {
+  const response = await mvpFetch("/api/create/chat/sessions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ project_id: projectId, name })
+  });
+  const body = await response.json().catch(() => ({})) as { ok?: boolean; session?: ChatSessionReadback; exactBlocker?: string; error?: string };
+  if (!response.ok || body.ok !== true || !body.session) throw new Error(body.exactBlocker || body.error || `chat_session_create_http_${response.status}`);
+  return body.session;
+}
+
+async function activateChatSession(projectId: string, sessionId: string): Promise<ChatSessionReadback> {
+  const response = await mvpFetch(`/api/create/chat/sessions/${encodeURIComponent(sessionId)}/activate`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ project_id: projectId })
+  });
+  const body = await response.json().catch(() => ({})) as { ok?: boolean; session?: ChatSessionReadback; exactBlocker?: string; error?: string };
+  if (!response.ok || body.ok !== true || !body.session) throw new Error(body.exactBlocker || body.error || `chat_session_activate_http_${response.status}`);
+  return body.session;
 }
 
 type PlannerJobReadback = {
@@ -3074,6 +3115,10 @@ function ChatPage({ model }: { model: AppModel }) {
   const [selectedProjectId, setSelectedProjectId] = useState(requestedProjectId || rememberedProject());
   const [selectedAutomationId, setSelectedAutomationId] = useState("");
   const [chatThreadId, setChatThreadId] = useState(() => rememberedChatThread(requestedProjectId || rememberedProject()));
+  const [chatSessionId, setChatSessionId] = useState("");
+  const [chatSessions, setChatSessions] = useState<ChatSessionReadback[]>([]);
+  const [chatSessionsLoading, setChatSessionsLoading] = useState(false);
+  const [newChatSessionName, setNewChatSessionName] = useState("");
   const [chatThreads, setChatThreads] = useState<ChatThreadReadback[]>([]);
   const [chatHistoryLoading, setChatHistoryLoading] = useState(false);
   const [planning, setPlanning] = useState(false);
@@ -3107,6 +3152,8 @@ function ChatPage({ model }: { model: AppModel }) {
   const fallbackPlan = buildAutomationPlan(redactedActivePrompt, selectedPlatforms);
   const plan = plannerReadback?.plan ?? fallbackPlan;
   const targetProject = selectedProjectId;
+  const selectedChatSession = chatSessions.find((session) => session.id === chatSessionId);
+  const requestThreadId = selectedChatSession ? (selectedChatSession.codex_thread_id ?? "") : chatThreadId;
   const presentationProfile = mvpState.presentation_profiles?.find((profile) => profile.id === targetProject);
   const targetAutomations = (mvpState.automations ?? []).filter((automation) => String(automation.project_id ?? automation.company_id ?? "") === targetProject);
   const selectedAutomation = targetAutomations.find((automation) => automation.id === selectedAutomationId) ?? targetAutomations[0];
@@ -3136,8 +3183,8 @@ function ChatPage({ model }: { model: AppModel }) {
     setPlannerError(null);
     setCreated(false);
     createIdempotencyRef.current = null;
-    setChatThreadId("");
-    clearChatThread(selectedProjectId);
+    setChatThreadId(requestThreadId);
+    if (!chatSessionId) clearChatThread(selectedProjectId);
     setMessages([{ id: "welcome", role: "assistant", text: "リセットしました。前の計画や選択は引き継がず、新しい自動化として考えます。" }]);
     setReceipt("チャットをリセットしました。新しい自動化リクエストを入力できます。");
     setChatNote(`リセット完了: platform=0 / plan=false / ${actionStamp()}`);
@@ -3145,13 +3192,36 @@ function ChatPage({ model }: { model: AppModel }) {
   };
   React.useEffect(() => {
     setChatThreadId(rememberedChatThread(selectedProjectId));
+    setChatSessionId("");
     setSelectedAutomationId("");
     let stale = false;
     if (!selectedProjectId || model.mvpLoadStatus !== "ready") {
+      setChatSessions([]);
+      setChatSessionsLoading(false);
       setChatThreads([]);
       setChatHistoryLoading(false);
       return () => { stale = true; };
     }
+    setChatSessionsLoading(true);
+    requestChatSessions(selectedProjectId)
+      .then((sessions) => {
+        if (stale) return;
+        setChatSessions(sessions);
+        const active = sessions.find((session) => session.active) ?? sessions[0];
+        if (active) {
+          setChatSessionId(active.id);
+          setChatThreadId(active.codex_thread_id ?? "");
+        }
+      })
+      .catch((error) => {
+        if (!stale) {
+          setChatSessions([]);
+          setChatNote(`名前付きチャットを確認できませんでした: ${publicBlockerSummary(error instanceof Error ? error.message : "chat_sessions_unavailable")} / ${actionStamp()}`);
+        }
+      })
+      .finally(() => {
+        if (!stale) setChatSessionsLoading(false);
+      });
     setChatHistoryLoading(true);
     requestChatThreads(selectedProjectId)
       .then((threads) => {
@@ -3174,6 +3244,58 @@ function ChatPage({ model }: { model: AppModel }) {
       setSelectedAutomationId(targetAutomations[0]?.id ?? "");
     }
   }, [selectedAutomationId, targetAutomations.map((automation) => automation.id).join("|")]);
+  const clearVisibleConversation = (session?: ChatSessionReadback) => {
+    setPrompt("");
+    setRequestText("");
+    submittedPromptRef.current = "";
+    setPlanVisible(false);
+    setPlannerReadback(null);
+    setPlannerProgress(null);
+    setPlannerError(null);
+    setCreated(false);
+    createIdempotencyRef.current = null;
+    setChatThreadId(session?.codex_thread_id ?? "");
+    setMessages([{ id: "welcome", role: "assistant", text: session ? `${session.name}を開きました。目的や調整内容を入力してください。` : "新しい会話を開始できます。" }]);
+  };
+  const switchChatSession = async (sessionId: string) => {
+    if (!selectedProjectId || planning || creating || !sessionId || sessionId === chatSessionId) return;
+    const target = chatSessions.find((session) => session.id === sessionId);
+    if (!target) return;
+    try {
+      const activated = await activateChatSession(selectedProjectId, sessionId);
+      setChatSessionId(activated.id);
+      setChatSessions((items) => items.map((session) => ({ ...session, active: session.id === activated.id, ...(session.id === activated.id ? activated : {}) })));
+      setChatThreadId(activated.codex_thread_id ?? "");
+      const thread = activated.codex_thread_id ? chatThreads.find((item) => item.threadId === activated.codex_thread_id) : undefined;
+      if (thread) resumeChat(thread);
+      else clearVisibleConversation(activated);
+      setChatNote(`チャットセッションを切り替えました: ${activated.name} / ${actionStamp()}`);
+      setReceipt(`プロジェクト別チャットを切り替えました。session=${activated.name} / external_action=false`);
+    } catch (error) {
+      const exact = error instanceof Error ? error.message : "chat_session_activate_failed";
+      setChatNote(`チャットセッションの切替を確認できませんでした: ${publicBlockerSummary(exact)} / ${actionStamp()}`);
+    }
+  };
+  const createNamedChatSession = async () => {
+    const name = newChatSessionName.trim();
+    if (!selectedProjectId || !name || planning || creating) {
+      setChatNote("新しいチャット名と保存先の会社を指定してください。");
+      return;
+    }
+    try {
+      const createdSession = await createChatSession(selectedProjectId, name);
+      const activated = await activateChatSession(selectedProjectId, createdSession.id);
+      setChatSessions((items) => [...items.map((session) => ({ ...session, active: false })), { ...activated, active: true }]);
+      setChatSessionId(activated.id);
+      setNewChatSessionName("");
+      clearVisibleConversation(activated);
+      setChatNote(`新しいチャットセッションを作成しました: ${activated.name} / ${actionStamp()}`);
+      setReceipt(`プロジェクト別チャットを作成しました。session=${activated.name} / external_action=false`);
+    } catch (error) {
+      const exact = error instanceof Error ? error.message : "chat_session_create_failed";
+      setChatNote(`チャットセッションの作成を確認できませんでした: ${publicBlockerSummary(exact)} / ${actionStamp()}`);
+    }
+  };
   const togglePlatform = (platform: string) => {
     setSelectedPlatforms((items) => {
       const next = items.includes(platform) ? items.filter((item) => item !== platform) : [...items, platform];
@@ -3236,7 +3358,8 @@ function ChatPage({ model }: { model: AppModel }) {
       setPrompt(safePrompt);
       const readback = await requestChatPlan(safePrompt, selectedPlatforms, {
         projectId: selectedProjectId,
-        threadId: plannerReadback?.chat_thread_id ?? chatThreadId ?? undefined,
+        sessionId: chatSessionId || undefined,
+        threadId: requestThreadId || undefined,
         messages: [...messages, { id: "current", role: "user", text: safePrompt }],
         onProgress: (progress) => {
           if (plannerRequestGeneration.current === requestGeneration) setPlannerProgress(progress);
@@ -3247,6 +3370,9 @@ function ChatPage({ model }: { model: AppModel }) {
       if (readback.chat_thread_id) {
         setChatThreadId(readback.chat_thread_id);
         rememberChatThread(selectedProjectId, readback.chat_thread_id);
+        if (chatSessionId) {
+          requestChatSessions(selectedProjectId).then(setChatSessions).catch(() => undefined);
+        }
       }
       setPlannerError(null);
       setRequestText(safePrompt);
@@ -3291,7 +3417,8 @@ function ChatPage({ model }: { model: AppModel }) {
       if (!safePrompt) throw new Error("chat_prompt_empty_after_secret_redaction");
       const readback = await requestChatPlan(safePrompt, selectedPlatforms, {
         projectId: selectedProjectId,
-        threadId: plannerReadback?.chat_thread_id ?? chatThreadId ?? undefined,
+        sessionId: chatSessionId || undefined,
+        threadId: requestThreadId || undefined,
         messages: [...messages, { id: "current", role: "user", text: safePrompt }],
         onProgress: (progress) => {
           if (plannerRequestGeneration.current === requestGeneration) setPlannerProgress(progress);
@@ -3303,6 +3430,9 @@ function ChatPage({ model }: { model: AppModel }) {
       if (readback.chat_thread_id) {
         setChatThreadId(readback.chat_thread_id);
         rememberChatThread(selectedProjectId, readback.chat_thread_id);
+        if (chatSessionId) {
+          requestChatSessions(selectedProjectId).then(setChatSessions).catch(() => undefined);
+        }
       }
       setPlannerError(null);
       setRequestText(safePrompt);
@@ -3566,6 +3696,21 @@ function ChatPage({ model }: { model: AppModel }) {
           {canonicalProjects.map((project) => <option key={project.id} value={project.id}>{project.label}</option>)}
         </select>
       </label>
+      <div className="chat-session-controls" role="group" aria-label="プロジェクト別チャットセッション">
+        <label className="chat-input">
+          会話セッション
+          <select data-control-id="chat.session-select" aria-label="会話セッション" value={chatSessionId} disabled={planning || creating || chatSessionsLoading || !chatSessions.length} onChange={(event) => { void switchChatSession(event.target.value); }}>
+            {!chatSessions.length && <option value="">{chatSessionsLoading ? "確認中" : "名前付き会話は未作成"}</option>}
+            {chatSessions.map((session) => <option key={session.id} value={session.id}>{session.name}{session.active ? "（使用中）" : ""}</option>)}
+          </select>
+        </label>
+        <label className="chat-input chat-session-new-name">
+          新しい会話名
+          <input data-control-id="chat.session-name" aria-label="新しい会話名" value={newChatSessionName} disabled={planning || creating || !targetProjectIsVerified} onChange={(event) => setNewChatSessionName(event.target.value.slice(0, 120))} placeholder="例: 週次レポート改善" />
+        </label>
+        <Button controlId="chat.session-create" icon={<Plus size={14} />} onClick={() => { void createNamedChatSession(); }} disabled={!newChatSessionName.trim() || planning || creating || !targetProjectIsVerified}>新しい会話を作成</Button>
+      </div>
+      {chatSessionId && <p className="muted chat-session-note">この会社の会話をセッション単位で分離しています。Codex App Server threadは選択中のセッションへ紐づきます。</p>}
       {isManageWorkflowPlan && (
         <label className="chat-input">
           調整対象の自動化

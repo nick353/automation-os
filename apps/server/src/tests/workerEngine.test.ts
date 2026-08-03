@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -1023,6 +1023,28 @@ test("child Codex command rejects a cwd outside the worker workspace before exec
     process.env.AUTOMATION_OS_CHILD_CODEX_CWD = join(workspaceRoot, "..");
     assert.throws(
       () => buildWorkerCommand({ adapter: "child_codex", taskName: "outside check" }),
+      /worker_cwd_outside_workspace/u
+    );
+  } finally {
+    if (previousRoot === undefined) delete process.env.AUTOMATION_OS_WORKER_WORKSPACE_ROOT;
+    else process.env.AUTOMATION_OS_WORKER_WORKSPACE_ROOT = previousRoot;
+    if (previousCwd === undefined) delete process.env.AUTOMATION_OS_CHILD_CODEX_CWD;
+    else process.env.AUTOMATION_OS_CHILD_CODEX_CWD = previousCwd;
+  }
+});
+
+test("child Codex command rejects a symlinked cwd that escapes the worker workspace before execution", () => {
+  const previousRoot = process.env.AUTOMATION_OS_WORKER_WORKSPACE_ROOT;
+  const previousCwd = process.env.AUTOMATION_OS_CHILD_CODEX_CWD;
+  const workspaceRoot = mkdtempSync(join(tmpdir(), "automation-os-child-symlink-root-"));
+  const outside = mkdtempSync(join(tmpdir(), "automation-os-child-symlink-outside-"));
+  const escapeLink = join(workspaceRoot, "escape");
+  symlinkSync(outside, escapeLink, "dir");
+  try {
+    process.env.AUTOMATION_OS_WORKER_WORKSPACE_ROOT = workspaceRoot;
+    process.env.AUTOMATION_OS_CHILD_CODEX_CWD = escapeLink;
+    assert.throws(
+      () => buildWorkerCommand({ adapter: "child_codex", taskName: "symlink escape check" }),
       /worker_cwd_outside_workspace/u
     );
   } finally {

@@ -14,6 +14,14 @@ export AUTOMATION_OS_OBSIDIAN_PERIODIC_EXPORT_MS="${AUTOMATION_OS_OBSIDIAN_PERIO
 export AUTOMATION_OS_ALLOW_SQLITE_FALLBACK="${AUTOMATION_OS_ALLOW_SQLITE_FALLBACK:-1}"
 export AUTOMATION_OS_DAILY_AI_VISIBLE_BROWSER="${AUTOMATION_OS_DAILY_AI_VISIBLE_BROWSER:-1}"
 
+case "${AUTOMATION_OS_ENV_ROLE:-}" in
+  ""|production|recovery) ;;
+  *)
+    printf 'automation_os_startup_blocked:automation_os_env_role_invalid\n' >&2
+    exit 2
+    ;;
+esac
+
 cd "$REPO_ROOT"
 mkdir -p "$REPO_ROOT/data/logs"
 
@@ -51,7 +59,12 @@ if stored_database_url="$(node apps/server/dist/cli/readStoredPostgresSecret.js 
     export AUTOMATION_OS_ASSUME_EXISTING_POSTGRES_SCHEMA="${AUTOMATION_OS_ASSUME_EXISTING_POSTGRES_SCHEMA:-1}"
   fi
 elif [[ "$has_postgres_secret" == "1" ]]; then
-  if [[ "$AUTOMATION_OS_ALLOW_SQLITE_FALLBACK" == "1" ]]; then
+  if [[ -n "${AUTOMATION_OS_DATABASE_URL:-}" || -n "${DATABASE_URL:-}" ]]; then
+    printf 'stored Postgres connection unavailable; preserving direct database configuration.\n' >&2
+  elif [[ "${AUTOMATION_OS_ENV_ROLE:-}" == "production" ]]; then
+    printf 'automation_os_startup_blocked:production_postgres_configuration_unavailable\n' >&2
+    exit 2
+  elif [[ "$AUTOMATION_OS_ALLOW_SQLITE_FALLBACK" == "1" ]]; then
     printf 'stored Postgres connection unavailable; falling back to local sqlite because AUTOMATION_OS_ALLOW_SQLITE_FALLBACK=1.\n' >&2
   else
     printf 'stored Postgres connection unavailable; refusing to start Automation OS UI/API to avoid DB split.\n' >&2

@@ -386,14 +386,9 @@ app.put("/api/v1/companies/:companyId/automations/:automationId/schedule", (req,
       companyId,
       actorUserId: currentActorUserId(),
       automationId: String(req.params.automationId ?? "").trim(),
-      schedule: parsedSchedule
+      schedule: parsedSchedule,
+      nextRunAt
     });
-    if (savedSchedule.nextRunAt !== nextRunAt) {
-      execSql(`UPDATE mvp_automation_schedules
-        SET next_run_at=${sqlValue(nextRunAt)}, updated_at=${sqlValue(nowIso())}
-        WHERE id=${sqlValue(savedSchedule.id)} AND company_id=${sqlValue(companyId)}
-          AND automation_id=${sqlValue(savedSchedule.automationId)} AND revision=${savedSchedule.revision}`);
-    }
     const schedule = listAutomationSchedules(companyId, savedSchedule.automationId).find((item) => item.id === savedSchedule.id) ?? savedSchedule;
     res.json({ ok: true, schedule, receipt: { action: "automation.schedule_saved", company_id: companyId, automation_id: schedule.automationId, schedule_id: schedule.id, pinned_version_id: schedule.automationVersionId, revision: schedule.revision } });
   } catch (error) {
@@ -1430,7 +1425,22 @@ app.post("/api/create/chat", (req, res, next) => {
     }
     const requested = requestedCompanyId(req, false);
     const companyIds = requested ? [requireCompanyAccess(requested).id] : actorCompanyIds();
-    const requestedThreadId = typeof req.body?.codex_thread_id === "string" ? req.body.codex_thread_id.trim() : "";
+    const requestedSessionId = typeof req.body?.session_id === "string"
+      ? req.body.session_id.trim()
+      : typeof req.body?.chat_session_id === "string" ? req.body.chat_session_id.trim() : "";
+    const session = requestedSessionId
+      ? readScopedChatSession(requestedSessionId, companyIds[0] ?? "", currentActorUserId())
+      : undefined;
+    if (requestedSessionId && !session) {
+      res.status(404).json({ ok: false, error: "chat_session_not_found", exactBlocker: "chat_session_not_found" });
+      return;
+    }
+    const bodyThreadId = typeof req.body?.codex_thread_id === "string" ? req.body.codex_thread_id.trim() : "";
+    if (session?.codex_thread_id && bodyThreadId && session.codex_thread_id !== bodyThreadId) {
+      res.status(409).json({ ok: false, error: "chat_session_thread_mismatch", exactBlocker: "chat_session_thread_mismatch" });
+      return;
+    }
+    const requestedThreadId = session?.codex_thread_id ?? bodyThreadId;
     if (requestedThreadId) assertCreatePlannerThreadAccess(requestedThreadId, companyIds, currentActorUserId());
     const contextSnapshot = buildAutomationOsChatSnapshot(companyIds);
     const job = enqueueCreatePlannerJob({
@@ -1441,6 +1451,7 @@ app.post("/api/create/chat", (req, res, next) => {
         transport: "codex_app_server",
         actorUserId: currentActorUserId(),
         companyIds,
+        ...(session ? { chatSessionId: session.id } : {}),
         codexThreadId: requestedThreadId || undefined,
         contextCapturedAt: new Date().toISOString(),
         contextSnapshotHash: createHash("sha256").update(contextSnapshot).digest("hex"),
@@ -1460,6 +1471,115 @@ app.post("/api/create/chat", (req, res, next) => {
       return;
     }
     next(error);
+  }
+});
+
+app.get("/api/create/chat/sessions", (req, res, next) => {
+  try {
+    initDb();
+    const projectId = requestedCompanyId(req, true);
+    const company = requireCompanyAccess(projectId);
+    const sessions = listScopedChatSessions(company.id, currentActorUserId());
+    res.json({ ok: true, project_id: company.id, sessions });
+  } catch (error) {
+    sendTenantResourceError(res, error, "chat_session_not_found", "chat_sessions_list_failed");
+  }
+});
+
+app.post("/api/create/chat/sessions", (req, res, next) => {
+  try {
+    initDb();
+    const projectId = requestedCompanyId(req, true);
+    const company = requireCompanyAccess(projectId);
+    const name = sanitizeShortText(
+      typeof req.body?.name === "string" ? req.body.name : typeof req.body?.title === "string" ? req.body.title : "",
+      120
+    );
+    if (!name) {
+      res.status(400).json({ ok: false, error: "chat_session_name_required", exactBlocker: "chat_session_name_required" });
+      return;
+    }
+    const actorUserId = currentActorUserId();
+    if (querySql("SELECT id FROM chat_sessions WHERE company_id=" + sqlValue(company.id) + " AND actor_user_id=" + sqlValue(actorUserId) + " AND name=" + sqlValue(name) + " LIMIT 1")[0]) {
+      res.status(409).json({ ok: false, error: "chat_session_name_conflict", exactBlocker: "chat_session_name_conflict" });
+      return;
+    }
+    const suppliedThreadId = typeof req.body?.codex_thread_id === "string" ? req.body.codex_thread_id.trim() : "";
+    if (suppliedThreadId) assertCreatePlannerThreadAccess(suppliedThreadId, [company.id], actorUserId);
+    const existing = querySql<{ id: string }>("SELECT id FROM chat_sessions WHERE company_id=" + sqlValue(company.id) + " AND actor_user_id=" + sqlValue(actorUserId) + " LIMIT 1");
+    const timestamp = nowIso();
+    const session = {
+      id: makeId("chat_session"),
+      company_id: company.id,
+      actor_user_id: actorUserId,
+      name,
+      codex_thread_id: suppliedThreadId || null,
+      is_active: existing.length === 0 ? 1 : 0,
+      created_at: timestamp,
+      updated_at: timestamp
+    };
+    insert("chat_sessions", session);
+    res.status(201).json({ ok: true, session: sanitizeChatSessionForApi(session) });
+  } catch (error) {
+    sendChatSessionError(res, error, "chat_session_create_failed");
+  }
+});
+
+app.patch("/api/create/chat/sessions/:id", (req, res, next) => {
+  try {
+    initDb();
+    const projectId = requestedCompanyId(req, true);
+    const company = requireCompanyAccess(projectId);
+    const actorUserId = currentActorUserId();
+    const current = readScopedChatSession(req.params.id, company.id, actorUserId);
+    if (!current) {
+      res.status(404).json({ ok: false, error: "chat_session_not_found", exactBlocker: "chat_session_not_found" });
+      return;
+    }
+    const name = sanitizeShortText(
+      typeof req.body?.name === "string" ? req.body.name : typeof req.body?.title === "string" ? req.body.title : "",
+      120
+    );
+    if (!name) {
+      res.status(400).json({ ok: false, error: "chat_session_name_required", exactBlocker: "chat_session_name_required" });
+      return;
+    }
+    const duplicate = querySql("SELECT id FROM chat_sessions WHERE company_id=" + sqlValue(company.id) + " AND actor_user_id=" + sqlValue(actorUserId) + " AND name=" + sqlValue(name) + " AND id!=" + sqlValue(current.id) + " LIMIT 1")[0];
+    if (duplicate) {
+      res.status(409).json({ ok: false, error: "chat_session_name_conflict", exactBlocker: "chat_session_name_conflict" });
+      return;
+    }
+    const updated = querySql<ChatSessionRow>(
+      `UPDATE chat_sessions
+       SET name=${sqlValue(name)}, updated_at=${sqlValue(nowIso())}
+       WHERE id=${sqlValue(current.id)} AND company_id=${sqlValue(company.id)} AND actor_user_id=${sqlValue(actorUserId)}
+       RETURNING *`
+    )[0];
+    res.json({ ok: true, session: sanitizeChatSessionForApi(updated ?? { ...current, name }) });
+  } catch (error) {
+    sendChatSessionError(res, error, "chat_session_rename_failed");
+  }
+});
+
+app.post("/api/create/chat/sessions/:id/activate", (req, res, next) => {
+  try {
+    initDb();
+    const projectId = requestedCompanyId(req, true);
+    const company = requireCompanyAccess(projectId);
+    const actorUserId = currentActorUserId();
+    const current = readScopedChatSession(req.params.id, company.id, actorUserId);
+    if (!current) {
+      res.status(404).json({ ok: false, error: "chat_session_not_found", exactBlocker: "chat_session_not_found" });
+      return;
+    }
+    runSqlTransaction([
+      { sql: `UPDATE chat_sessions SET is_active=0, updated_at=${sqlValue(nowIso())} WHERE company_id=${sqlValue(company.id)} AND actor_user_id=${sqlValue(actorUserId)}` },
+      { sql: `UPDATE chat_sessions SET is_active=1, updated_at=${sqlValue(nowIso())} WHERE id=${sqlValue(current.id)} AND company_id=${sqlValue(company.id)} AND actor_user_id=${sqlValue(actorUserId)}`, expectChanges: 1 }
+    ]);
+    const activated = readScopedChatSession(current.id, company.id, actorUserId) ?? current;
+    res.json({ ok: true, session: sanitizeChatSessionForApi(activated) });
+  } catch (error) {
+    sendTenantResourceError(res, error, "chat_session_not_found", "chat_session_activate_failed");
   }
 });
 
@@ -3350,6 +3470,19 @@ function sendTenantResourceError(
     return;
   }
   sendCompanyScopeError(res, error, fallback);
+}
+
+function sendChatSessionError(
+  res: Parameters<RequestHandler>[1],
+  error: unknown,
+  fallback: string
+): void {
+  const message = error instanceof Error ? error.message : "";
+  if (/chat_sessions/i.test(message) && /(unique|duplicate|constraint)/i.test(message)) {
+    res.status(409).json({ ok: false, error: "chat_session_name_conflict", exactBlocker: "chat_session_name_conflict" });
+    return;
+  }
+  sendTenantResourceError(res, error, "chat_session_not_found", fallback);
 }
 
 function sendResearchPlanScopeError(res: Parameters<RequestHandler>[1], error: unknown): boolean {
@@ -6187,6 +6320,47 @@ function displayTaskName(name: string): string {
     .replace(/\s*正本同期/g, "")
     .replace(/\s*最後まで/g, "")
     .trim() || "実行";
+}
+
+type ChatSessionRow = {
+  id: string;
+  company_id: string;
+  actor_user_id: string;
+  name: string;
+  codex_thread_id: string | null;
+  is_active: number;
+  created_at: string;
+  updated_at: string;
+};
+
+function sanitizeChatSessionForApi(session: ChatSessionRow | Record<string, unknown>) {
+  const raw = session as Record<string, unknown>;
+  return {
+    id: String(raw.id ?? ""),
+    project_id: String(raw.company_id ?? raw.project_id ?? ""),
+    name: redactSensitiveText(String(raw.name ?? "")).slice(0, 120),
+    codex_thread_id: typeof raw.codex_thread_id === "string" ? raw.codex_thread_id : null,
+    active: Number(raw.is_active ?? 0) === 1,
+    created_at: String(raw.created_at ?? ""),
+    updated_at: String(raw.updated_at ?? "")
+  };
+}
+
+function readScopedChatSession(id: string, companyId: string, actorUserId: string): ChatSessionRow | undefined {
+  if (!id.trim() || !companyId.trim() || !actorUserId.trim()) return undefined;
+  return querySql<ChatSessionRow>(
+    `SELECT * FROM chat_sessions
+     WHERE id=${sqlValue(id)} AND company_id=${sqlValue(companyId)} AND actor_user_id=${sqlValue(actorUserId)}
+     LIMIT 1`
+  )[0];
+}
+
+function listScopedChatSessions(companyId: string, actorUserId: string) {
+  return querySql<ChatSessionRow>(
+    `SELECT * FROM chat_sessions
+     WHERE company_id=${sqlValue(companyId)} AND actor_user_id=${sqlValue(actorUserId)}
+     ORDER BY is_active DESC, updated_at DESC, created_at DESC`
+  ).map(sanitizeChatSessionForApi);
 }
 
 function parseResearchSourceSelection(value: unknown): Partial<Record<ResearchSourceKey, boolean>> | undefined {

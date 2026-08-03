@@ -4,8 +4,9 @@ import test from "node:test";
 import pg from "pg";
 
 const postgresUrl = process.env.AUTOMATION_OS_TEST_POSTGRES_URL ?? "";
+const postgresSkipReason = postgresUrl ? undefined : "AUTOMATION_OS_TEST_POSTGRES_URL is not set";
 
-test("real PostgreSQL serializes empty-schema bootstrap and produces exactly one durable claim winner", { skip: !postgresUrl }, async () => {
+test("real PostgreSQL serializes empty-schema bootstrap and produces exactly one durable claim winner", { skip: postgresSkipReason }, async () => {
   const schema = `automation_os_queue_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const admin = new pg.Client({ connectionString: postgresUrl });
   await admin.connect();
@@ -59,7 +60,7 @@ test("real PostgreSQL serializes empty-schema bootstrap and produces exactly one
   }
 });
 
-test("real PostgreSQL initializes a legacy mvp_automation_versions table without UNIQUE(automation_id, revision) after schema marker removal", { skip: !postgresUrl }, async () => {
+test("real PostgreSQL initializes a legacy mvp_automation_versions table without UNIQUE(automation_id, revision) after schema marker removal", { skip: postgresSkipReason }, async () => {
   const schema = makePostgresSchemaName("automation_os_pg_legacy_versions");
   const admin = new pg.Client({ connectionString: postgresUrl });
   await admin.connect();
@@ -159,7 +160,7 @@ test("real PostgreSQL initializes a legacy mvp_automation_versions table without
   }
 });
 
-test("real PostgreSQL initialization only alters the first search_path schema and leaves a task-owned fallback users table untouched", { skip: !postgresUrl }, async () => {
+test("real PostgreSQL initialization only alters the first search_path schema and leaves a task-owned fallback users table untouched", { skip: postgresSkipReason }, async () => {
   const tenantSchema = makePostgresSchemaName("automation_os_pg_tenant_users");
   const fallbackSchema = makePostgresSchemaName("automation_os_pg_fallback_users");
   const admin = new pg.Client({ connectionString: postgresUrl });
@@ -240,7 +241,7 @@ test("real PostgreSQL initialization only alters the first search_path schema an
   }
 });
 
-test("real PostgreSQL initialization fails closed when the schema marker version is newer than the binary", { skip: !postgresUrl }, async () => {
+test("real PostgreSQL initialization fails closed when the schema marker version is newer than the binary", { skip: postgresSkipReason }, async () => {
   const schema = makePostgresSchemaName("automation_os_pg_newer_marker");
   const admin = new pg.Client({ connectionString: postgresUrl });
   await admin.connect();
@@ -281,7 +282,7 @@ test("real PostgreSQL initialization fails closed when the schema marker version
   }
 });
 
-test("real PostgreSQL rolls back a transaction when the server drops its connection", { skip: !postgresUrl }, async () => {
+test("real PostgreSQL rolls back a transaction when the server drops its connection", { skip: postgresSkipReason }, async () => {
   const schema = makePostgresSchemaName("automation_os_pg_connection_drop");
   const admin = new pg.Client({ connectionString: postgresUrl });
   await admin.connect();

@@ -107,6 +107,94 @@ test("GET /api/create/chat/threads returns only the actor/company-scoped redacte
   assert.equal(job.status, "queued");
 });
 
+test("named chat sessions stay actor/project scoped and preserve the App Server thread binding", async () => {
+  db.initDb();
+  db.execSql("UPDATE create_planner_jobs SET status='blocked' WHERE status='queued'");
+  const now = db.nowIso();
+  db.upsert("companies", { id: "project-named-a", slug: "project-named-a", name: "Named Project", status: "active", created_at: now, updated_at: now });
+  db.upsert("company_memberships", { id: "membership-named-a", company_id: "project-named-a", user_id: "user_local_owner", role: "owner", status: "active", created_at: now, updated_at: now });
+
+  const created = await requestJson("POST", "/api/create/chat/sessions", {
+    project_id: "project-named-a",
+    name: "顧客対応 token=session-name-secret"
+  });
+  assert.equal(created.status, 201, created.body);
+  const createdBody = JSON.parse(created.body) as { session: { id: string; name: string; active: boolean; project_id: string } };
+  assert.equal(createdBody.session.project_id, "project-named-a");
+  assert.equal(createdBody.session.active, true);
+  assert.doesNotMatch(createdBody.session.name, /session-name-secret/u);
+
+  const second = await requestJson("POST", "/api/create/chat/sessions", { project_id: "project-named-a", name: "別の相談" });
+  assert.equal(second.status, 201, second.body);
+  const secondId = (JSON.parse(second.body) as { session: { id: string } }).session.id;
+  const activated = await requestJson("POST", `/api/create/chat/sessions/${encodeURIComponent(secondId)}/activate`, { project_id: "project-named-a" });
+  assert.equal(activated.status, 200, activated.body);
+  assert.equal((JSON.parse(activated.body) as { session: { active: boolean } }).session.active, true);
+
+  const renamed = await requestJson("PATCH", `/api/create/chat/sessions/${encodeURIComponent(createdBody.session.id)}`, {
+    project_id: "project-named-a",
+    name: "顧客対応 renamed"
+  });
+  assert.equal(renamed.status, 200, renamed.body);
+  assert.equal((JSON.parse(renamed.body) as { session: { name: string } }).session.name, "顧客対応 renamed");
+
+  const crossProject = await requestJson("GET", "/api/create/chat/sessions?project_id=project-not-owned");
+  assert.equal(crossProject.status, 404);
+  assert.equal(JSON.parse(crossProject.body).exactBlocker, "chat_session_not_found");
+
+  const previousActor = process.env.AUTOMATION_OS_OWNER_USER_ID;
+  process.env.AUTOMATION_OS_OWNER_USER_ID = "user_other_actor";
+  try {
+    const crossActor = await requestJson("GET", "/api/create/chat/sessions?project_id=project-named-a");
+    assert.equal(crossActor.status, 404);
+    assert.equal(JSON.parse(crossActor.body).exactBlocker, "chat_session_not_found");
+  } finally {
+    if (previousActor === undefined) delete process.env.AUTOMATION_OS_OWNER_USER_ID;
+    else process.env.AUTOMATION_OS_OWNER_USER_ID = previousActor;
+  }
+
+  const previousRequireWrite = process.env.AUTOMATION_OS_REQUIRE_WRITE_TOKEN;
+  const previousWriteToken = process.env.AUTOMATION_OS_WRITE_TOKEN;
+  process.env.AUTOMATION_OS_REQUIRE_WRITE_TOKEN = "1";
+  process.env.AUTOMATION_OS_WRITE_TOKEN = "named-session-write-token";
+  try {
+    const guardedMutation = await requestJson("POST", "/api/create/chat/sessions", { project_id: "project-named-a", name: "guarded session" });
+    assert.equal(guardedMutation.status, 401);
+    assert.equal(JSON.parse(guardedMutation.body).exactBlocker, "production_token_required");
+  } finally {
+    if (previousRequireWrite === undefined) delete process.env.AUTOMATION_OS_REQUIRE_WRITE_TOKEN;
+    else process.env.AUTOMATION_OS_REQUIRE_WRITE_TOKEN = previousRequireWrite;
+    if (previousWriteToken === undefined) delete process.env.AUTOMATION_OS_WRITE_TOKEN;
+    else process.env.AUTOMATION_OS_WRITE_TOKEN = previousWriteToken;
+  }
+
+  const queued = await requestJson("POST", "/api/create/chat", {
+    project_id: "project-named-a",
+    session_id: createdBody.session.id,
+    messages: [{ role: "user", text: "同じ相談を続ける" }]
+  });
+  assert.equal(queued.status, 202, queued.body);
+  const queuedBody = JSON.parse(queued.body) as { job: { id: string } };
+  const queuedMetadata = db.querySql<{ metadata_json: string }>(`SELECT metadata_json FROM create_planner_jobs WHERE id=${db.sqlValue(queuedBody.job.id)}`)[0];
+  assert.equal(JSON.parse(queuedMetadata.metadata_json).chatSessionId, createdBody.session.id);
+
+  const { processQueuedCreatePlannerJobs } = await import("../planner/createPlannerJobs.js");
+  const fakeClient = {
+    startOrResumeThread: async () => "thread_named_session",
+    startTurn: async ({ threadId }: { threadId: string }) => ({
+      threadId,
+      turnId: "turn_named_session",
+      status: "completed" as const,
+      text: JSON.stringify({ intent: "answer_question", title: "named", reply: "続き", command: "", visibleSteps: [], backendChecks: [], answered: [], openQuestions: [], nextAction: "", executionDecision: "read_only", confidence: "high" }),
+      structured: { intent: "answer_question", title: "named", reply: "続き", command: "", visibleSteps: [], backendChecks: [], answered: [], openQuestions: [], nextAction: "", executionDecision: "read_only", confidence: "high" },
+      events: []
+    })
+  } as unknown as CodexAppServerClient;
+  await processQueuedCreatePlannerJobs(1, { workerId: "named-session-test", appServerClient: fakeClient });
+  const linked = db.querySql<{ codex_thread_id: string | null }>(`SELECT codex_thread_id FROM chat_sessions WHERE id=${db.sqlValue(createdBody.session.id)}`)[0];
+  assert.equal(linked.codex_thread_id, "thread_named_session");
+});
+
 test("create planner jobs claim atomically and recover an expired Mac worker lease", async () => {
   db.initDb();
   db.resetDemoData();

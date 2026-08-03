@@ -202,6 +202,42 @@ test("Codex App Server rejects a symlinked cwd that escapes the workspace root",
   });
 });
 
+test("Codex App Server rejects an invalid workspace root before spawn", async () => {
+  let spawnCount = 0;
+  const client = new CodexAppServerClient({
+    workspaceRoot: join(tmpdir(), "automation-os-app-server-missing-root"),
+    processFactory: () => {
+      spawnCount += 1;
+      return new FakeAppServerChild();
+    }
+  });
+
+  await assert.rejects(() => client.start(), (error: unknown) => {
+    assert.equal((error as Error).message, "codex_app_server_workspace_root_invalid");
+    return true;
+  });
+  assert.equal(spawnCount, 0);
+});
+
+test("Codex App Server rejects a missing cwd before spawn", async () => {
+  const root = mkdtempSync(join(tmpdir(), "automation-os-app-server-cwd-root-"));
+  let spawnCount = 0;
+  const client = new CodexAppServerClient({
+    cwd: join(root, "missing-cwd"),
+    workspaceRoot: root,
+    processFactory: () => {
+      spawnCount += 1;
+      return new FakeAppServerChild();
+    }
+  });
+
+  await assert.rejects(() => client.start(), (error: unknown) => {
+    assert.equal((error as Error).message, "codex_app_server_cwd_invalid");
+    return true;
+  });
+  assert.equal(spawnCount, 0);
+});
+
 test("Codex App Server spawn failures use a stable blocker and never expose the thrown message", async () => {
   const client = new CodexAppServerClient({
     processFactory: () => {

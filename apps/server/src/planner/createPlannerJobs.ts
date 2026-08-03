@@ -241,7 +241,7 @@ async function processCreatePlannerJob(row: CreatePlannerJobRow, options: Create
     const result = resultWithMetadata?.result ?? await createPlannerResponse({ messages, currentDraft, providerOverride: "codex" });
     const safeMetadata = { ...metadata };
     delete safeMetadata.streamText;
-    const nextMetadata = resultWithMetadata
+    const nextMetadata: Record<string, unknown> = resultWithMetadata
       ? {
           ...safeMetadata,
           transport,
@@ -251,6 +251,21 @@ async function processCreatePlannerJob(row: CreatePlannerJobRow, options: Create
           events: resultWithMetadata.events.slice(-160).map(stripPlannerProgressDelta)
         }
       : { ...safeMetadata, transport };
+    const sessionId = typeof nextMetadata.chatSessionId === "string" ? nextMetadata.chatSessionId.trim() : "";
+    const sessionActorId = typeof nextMetadata.actorUserId === "string" ? nextMetadata.actorUserId.trim() : "";
+    const sessionCompanyIds = Array.isArray(nextMetadata.companyIds)
+      ? nextMetadata.companyIds.filter((value): value is string => typeof value === "string" && Boolean(value.trim()))
+      : [];
+    if (sessionId && resultWithMetadata?.threadId) {
+      querySql(
+        `UPDATE chat_sessions
+         SET codex_thread_id=${sqlValue(resultWithMetadata.threadId)}, updated_at=${sqlValue(nowIso())}
+         WHERE id=${sqlValue(sessionId)}
+           AND actor_user_id=${sqlValue(sessionActorId)}
+           AND company_id IN (${sessionCompanyIds.map(sqlValue).join(", ") || "''"})
+         RETURNING id`
+      );
+    }
     const metadataUpdated = querySql(
       `UPDATE create_planner_jobs
        SET metadata_json=${sqlValue(nextMetadata)}, updated_at=${sqlValue(nowIso())}

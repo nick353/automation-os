@@ -320,6 +320,23 @@ function runIdempotentMigrations(): void {
   ensureColumn("create_sessions", "command", "TEXT NOT NULL DEFAULT ''");
   ensureColumn("create_sessions", "created_at", "TEXT NOT NULL DEFAULT ''");
   ensureColumn("create_sessions", "updated_at", "TEXT NOT NULL DEFAULT ''");
+  execSql(`
+    CREATE TABLE IF NOT EXISTS chat_sessions (
+      id TEXT PRIMARY KEY,
+      company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+      actor_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      codex_thread_id TEXT,
+      is_active INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(company_id, actor_user_id, name)
+    );
+    CREATE INDEX IF NOT EXISTS chat_sessions_scope_idx
+      ON chat_sessions(company_id, actor_user_id, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS chat_sessions_thread_idx
+      ON chat_sessions(codex_thread_id);
+  `);
   ensureColumn("create_planner_jobs", "status", "TEXT NOT NULL DEFAULT 'queued'");
   ensureColumn("create_planner_jobs", "messages_json", "TEXT NOT NULL DEFAULT '[]'");
   ensureColumn("create_planner_jobs", "current_draft", "TEXT NOT NULL DEFAULT ''");
