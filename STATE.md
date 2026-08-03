@@ -133,7 +133,16 @@ labels the action `確認して開く`, points to the Zeabur
 `AUTOMATION_OS_WRITE_TOKEN` variable, and truthfully explains that the value is
 used only as an API auth header and kept in tab-scoped sessionStorage. The
 updated UI sanitizer suite passed `42/42`; the static screen preflight remains
-`21` cases with `issues=[]`. The change is local and has not been deployed.
+`21` cases with `issues=[]` at the pre-deploy checkpoint.
+
+The operator-copy change was then committed as `d0af8ee` and pushed to
+`origin/main`. Fresh public readback now serves
+`assets/index-DiFvVcjf.js` (SHA-256
+`35fe6083500d28e84c0d53b8f9c51004eb0856e584ca57b992215a7676a01c4b`); the
+asset contains `管理者用の利用キー` and `確認して開く`, and no longer
+contains the old `管理者アクセスキー（Operator token）` label. Production
+`/api/health` returned 200 with `ok=true`. This proves deployment of the copy
+change, not authenticated screen QA.
 
 ## 2026-08-03 automation health authority-parser correction
 
