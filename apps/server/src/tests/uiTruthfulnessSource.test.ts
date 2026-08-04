@@ -13,6 +13,16 @@ test("dashboard does not turn an unverified capability into a no-blocker claim",
   assert.doesNotMatch(source, /exactBlocker \?\? "no blocker reported"/);
 });
 
+test("worker readback separates persisted state age from Mac heartbeat freshness", () => {
+  const source = readFileSync(resolve(process.cwd(), "apps/web/src/App.tsx"), "utf8");
+
+  assert.match(source, /function relativeAgeLabel\(value: unknown\)/);
+  assert.match(source, /状態記録: \$\{age\} \/ Mac heartbeat未確認/);
+  assert.match(source, /heartbeat: \$\{age\} \/ stale/);
+  assert.match(source, /heartbeat: \$\{age\} \/ fresh/);
+  assert.match(source, /freshness: "未確認"/);
+});
+
 test("builder controls expose stable accessible names for browser QA and keyboard users", () => {
   const source = readFileSync(resolve(process.cwd(), "apps/web/src/App.tsx"), "utf8");
 
