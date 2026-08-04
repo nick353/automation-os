@@ -458,6 +458,7 @@ function workerStatusSummary(worker: MvpState["worker"]) {
       label: "unknown",
       blocker: "mac_worker_state_missing",
       nextAction: "MVP stateを再読込してworker状態を確認してください。",
+      freshness: "未確認",
       display: "worker=unknown / blocker=mac_worker_state_missing"
     };
   }
