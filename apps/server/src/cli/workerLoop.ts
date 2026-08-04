@@ -4,6 +4,7 @@ import { runWorkerOnce } from "../runs/workerEngine.js";
 import { materializeDueAutomationOccurrences } from "../runs/automationScheduler.js";
 import { runDurableDryRunWorkerOnce } from "../runs/durableDryRunWorker.js";
 import { runDurableExternalWorkerOnce } from "../runs/durableExternalWorker.js";
+import { resolveCodexBin } from "../codex/codexBin.js";
 import { hostname } from "node:os";
 
 const intervalMs = boundedNumber(readArgValue("--interval-ms") ?? process.env.AUTOMATION_OS_WORKER_LOOP_INTERVAL_MS, 30_000, {
@@ -59,7 +60,7 @@ console.log(JSON.stringify({
   intervalMs,
   runId: runId ?? null,
   maxCycles: Number.isFinite(maxCycles) ? maxCycles : null,
-  codexBin: process.env.AUTOMATION_OS_CHILD_CODEX_BIN ?? process.env.AUTOMATION_OS_CODEX_BIN ?? "codex",
+  codexBin: resolveCodexBin(["AUTOMATION_OS_CHILD_CODEX_BIN"]),
   plannerProvider: process.env.AUTOMATION_OS_CREATE_PLANNER_PROVIDER ?? "auto",
   usesApiKey: Boolean(process.env.OPENAI_API_KEY || process.env.CODEX_API_KEY),
   durableServiceUserConfigured: Boolean(durableServiceUserId)
@@ -237,7 +238,7 @@ function writeWorkerHeartbeat(status: "running" | "ok" | "blocked" | "idle", sum
       runId: runId ?? null,
       maxCycles: Number.isFinite(maxCycles) ? maxCycles : null,
       host: hostname(),
-      codexBin: process.env.AUTOMATION_OS_CHILD_CODEX_BIN ?? process.env.AUTOMATION_OS_CODEX_BIN ?? "codex",
+      codexBin: resolveCodexBin(["AUTOMATION_OS_CHILD_CODEX_BIN"]),
       plannerProvider: process.env.AUTOMATION_OS_CREATE_PLANNER_PROVIDER ?? "auto",
       usesApiKey: Boolean(process.env.OPENAI_API_KEY || process.env.CODEX_API_KEY),
       pid: process.pid,

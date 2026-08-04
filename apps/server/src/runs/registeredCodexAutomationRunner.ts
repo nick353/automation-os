@@ -6,6 +6,7 @@ import { evaluateGeminiVideoQaAudit } from "./geminiVideoQa.js";
 import { issueLedgerMetadata } from "./issueLedger.js";
 import { Proof } from "./proofGate.js";
 import { BROWSER_USE_HELPER_PATH, BROWSER_USE_RUNTIME_CONFIG_PATH } from "../serviceReadiness/browserUseCanonical.js";
+import { resolveCodexBin } from "../codex/codexBin.js";
 
 export type RegisteredCodexAutomationStatus = "complete" | "blocked";
 
@@ -111,11 +112,12 @@ export function runRegisteredCodexAutomation(input: { runId: string; workflowId:
     "- Do not bypass CAPTCHA, OTP/security-code, identity verification, assessments/tests, or missing completion proof; capture exact evidence and continue with the next safe candidate/stage when possible.",
     "- If strict completion proof is unavailable and no safe next candidate/stage exists, finish as blocked with exact blocker and artifact paths instead of turning non-billing work into an approval stop."
   ].join("\n");
+  const codexBin = resolveCodexBin();
   const command = {
-    bin: process.env.AUTOMATION_OS_CODEX_BIN || "codex",
+    bin: codexBin,
     args: ["exec", "--sandbox", "danger-full-access", "--cd", workflow.cwd, executablePrompt],
     cwd: workflow.cwd,
-    display: `codex exec --sandbox danger-full-access --cd ${JSON.stringify(workflow.cwd)} ${JSON.stringify("<registered automation prompt>")}`,
+    display: `${codexBin} exec --sandbox danger-full-access --cd ${JSON.stringify(workflow.cwd)} ${JSON.stringify("<registered automation prompt>")}`,
     env: {
       AUTOMATION_OS_REGISTERED_WORKFLOW_ID: input.workflowId,
       AUTOMATION_OS_RUN_ID: input.runId,
@@ -263,11 +265,12 @@ function stringValue(value: unknown): string {
 function blockedResult(input: { runId: string; workflowId: string }, reason: string, metadata: Record<string, unknown>): RegisteredCodexAutomationRunResult {
   const artifactPath = artifactPathFor(input.runId, input.workflowId);
   mkdirSync(dirname(artifactPath), { recursive: true });
+  const codexBin = resolveCodexBin();
   const command = {
-    bin: process.env.AUTOMATION_OS_CODEX_BIN || "codex",
+    bin: codexBin,
     args: [],
     cwd: process.cwd(),
-    display: "registered automation runner unavailable",
+    display: `${codexBin} registered automation runner unavailable`,
     env: {
       AUTOMATION_OS_REGISTERED_WORKFLOW_ID: input.workflowId,
       AUTOMATION_OS_RUN_ID: input.runId,

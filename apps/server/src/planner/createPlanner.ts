@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { redactSensitiveText } from "../obsidian/redaction.js";
 import { CodexAppServerClient, type CodexAppServerEvent } from "../codex/appServerClient.js";
+import { resolveCodexBin } from "../codex/codexBin.js";
 
 export type CreatePlannerMessage = {
   role: "assistant" | "user";
@@ -658,7 +659,7 @@ async function callOpenAiPlanner(apiKey: string, messages: CreatePlannerMessage[
 }
 
 async function callCodexPlanner(messages: CreatePlannerMessage[], currentDraft?: string): Promise<CreatePlannerResult> {
-  const bin = process.env.AUTOMATION_OS_CODEX_PLANNER_BIN ?? process.env.AUTOMATION_OS_CODEX_BIN ?? "codex";
+  const bin = resolveCodexBin(["AUTOMATION_OS_CODEX_PLANNER_BIN"]);
   const timeoutMs = boundedTimeout(process.env.AUTOMATION_OS_CODEX_PLANNER_TIMEOUT_MS, 25_000);
   const prompt = [
     plannerSystemPrompt(),

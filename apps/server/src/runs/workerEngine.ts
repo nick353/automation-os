@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "no
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { getCodexCapabilities, type CodexCapabilitiesSummary } from "../codex/capabilities.js";
+import { resolveCodexBin } from "../codex/codexBin.js";
 import {
   buildCanonicalExecutionRoutingMetadata,
   buildExecutionRoutingSnapshot,
@@ -339,19 +340,21 @@ export function buildWorkerCommand(input: {
       process.env.AUTOMATION_OS_CHILD_CODEX_CWD,
       process.env.AUTOMATION_OS_WORKER_WORKSPACE_ROOT
     );
+    const bin = resolveCodexBin(["AUTOMATION_OS_CHILD_CODEX_BIN"]);
     return {
-      bin: process.env.AUTOMATION_OS_CHILD_CODEX_BIN || process.env.AUTOMATION_OS_CODEX_BIN || "codex",
+      bin,
       args: ["exec", "--sandbox", "read-only", "--cd", childCwd, input.taskName],
-      display: `codex exec --sandbox read-only --cd ${JSON.stringify(childCwd)} ${JSON.stringify(
+      display: `${bin} exec --sandbox read-only --cd ${JSON.stringify(childCwd)} ${JSON.stringify(
         input.taskName
       )}`
     };
   }
   if (input.adapter === "codex_cli") {
+    const bin = resolveCodexBin();
     return {
-      bin: process.env.AUTOMATION_OS_CODEX_BIN || "codex",
+      bin,
       args: ["exec", "--sandbox", "read-only", input.taskName],
-      display: `codex exec --sandbox read-only ${JSON.stringify(input.taskName)}`
+      display: `${bin} exec --sandbox read-only ${JSON.stringify(input.taskName)}`
     };
   }
   if (input.adapter === "browser_use_cli") {
@@ -491,15 +494,16 @@ export function buildWorkerCommand(input: {
   }
   if (input.adapter === "job_submit_registered" || input.adapter === "job_followup_registered") {
     const workflowId = "job-application-manager";
+    const bin = resolveCodexBin();
     return {
-      bin: process.env.AUTOMATION_OS_CODEX_BIN || "codex",
+      bin,
       args: ["exec", "--sandbox", "workspace-write", "--cd", "/Users/nichikatanaka/Documents/New project", "<registered automation prompt>"],
       env: {
         AUTOMATION_OS_REGISTERED_WORKFLOW_ID: workflowId,
         AUTOMATION_OS_RUN_ID: "<AUTOMATION_OS_RUN_ID>",
         AUTOMATION_OS_REGISTERED_SUMMARY_PATH: "<AUTOMATION_OS_REGISTERED_SUMMARY_PATH>"
       },
-      display: `AUTOMATION_OS_RUN_ID="<AUTOMATION_OS_RUN_ID>" AUTOMATION_OS_REGISTERED_SUMMARY_PATH="<AUTOMATION_OS_REGISTERED_SUMMARY_PATH>" codex exec --sandbox workspace-write --cd "/Users/nichikatanaka/Documents/New project" "<${workflowId} automation.toml prompt>"`
+      display: `AUTOMATION_OS_RUN_ID="<AUTOMATION_OS_RUN_ID>" AUTOMATION_OS_REGISTERED_SUMMARY_PATH="<AUTOMATION_OS_REGISTERED_SUMMARY_PATH>" ${bin} exec --sandbox workspace-write --cd "/Users/nichikatanaka/Documents/New project" "<${workflowId} automation.toml prompt>"`
     };
   }
   if (isHumanInputRequiredWithEvidenceAdapter(input.adapter)) {

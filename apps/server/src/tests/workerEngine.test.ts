@@ -873,7 +873,10 @@ test("plans command run with subscription-backed worker lanes", () => {
 
 test("builds worker commands without OpenAI API keys", () => {
   const previousOpenAiEnv = Object.entries(process.env).filter(([key]) => key.startsWith("OPENAI_"));
+  const codexEnvironmentNames = ["AUTOMATION_OS_CHILD_CODEX_BIN", "AUTOMATION_OS_CODEX_BIN", "CODEX_CLI_PATH"] as const;
+  const previousCodexEnv = Object.fromEntries(codexEnvironmentNames.map((key) => [key, process.env[key]]));
   for (const [key] of previousOpenAiEnv) delete process.env[key];
+  for (const key of codexEnvironmentNames) delete process.env[key];
   try {
     assert.equal(chooseWorkerAdapter({ name: "Daily AI publish full flow", resources: ["social_publish"] }), "daily_ai_registered");
     assert.equal(chooseWorkerAdapter({ name: "Browser Useで画面確認", resources: ["local_worker"] }), "browser_use_cli");
@@ -1004,6 +1007,11 @@ test("builds worker commands without OpenAI API keys", () => {
     assert.equal(resolveWorkerAdapterPolicy("local_worker").classification, "non_browser");
   } finally {
     for (const [key, value] of previousOpenAiEnv) process.env[key] = value;
+    for (const key of codexEnvironmentNames) {
+      const value = previousCodexEnv[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   }
 });
 
