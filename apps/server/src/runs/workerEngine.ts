@@ -2136,6 +2136,7 @@ function completePortableWorkerCanaryStep(input: {
     ? registeredStart as Record<string, unknown>
     : {};
   const sourceTrigger = portableInvocation.source_trigger === "automation_os_scheduler"
+    || portableInvocation.source_trigger === "automation_os_ui"
     || portableInvocation.source_trigger === "codex_app_bridge"
     || portableInvocation.source_trigger === "launchd"
     || portableInvocation.source_trigger === "github_actions"

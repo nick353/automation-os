@@ -14,7 +14,7 @@ if (!workflowId || !sourceTrigger || !idempotencyKey || !isPortableWorkflowTrigg
   console.error(JSON.stringify({
     ok: false,
     exact_blocker: "portable_workflow_start_arguments_invalid",
-    usage: "--workflow=<portable-workflow-id> --trigger=<automation_os_scheduler|codex_app_bridge|launchd|github_actions> --idempotency-key=<key>",
+    usage: "--workflow=<portable-workflow-id> --trigger=<automation_os_scheduler|automation_os_ui|codex_app_bridge|launchd|github_actions> --idempotency-key=<key>",
     external_action_executed: false
   }));
   process.exit(2);

@@ -14,11 +14,11 @@ const { initRegisteredWorkflows } = await import("../registeredWorkflows.js");
 const { startPortableWorkflowRun } = await import("../runs/portableWorkflowEntrypoint.js");
 const { runWorkerOnce } = await import("../runs/workerEngine.js");
 
-test("portable entrypoint is shared by App bridge and other schedulers, with idempotent run binding", async () => {
+test("portable entrypoint is shared by AOS UI, App bridge, and other schedulers, with idempotent run binding", async () => {
   db.initDb();
   initRegisteredWorkflows();
   const cases = [
-    { workflowId: "daily-ai-research-publish-run" as const, sourceTrigger: "codex_app_bridge" as const },
+    { workflowId: "daily-ai-research-publish-run" as const, sourceTrigger: "automation_os_ui" as const },
     { workflowId: "nisenprints-daily-product-canva-printify-etsy-pinterest" as const, sourceTrigger: "launchd" as const },
     { workflowId: "job-application-manager" as const, sourceTrigger: "github_actions" as const },
     { workflowId: "prompt-transfer-ukiyoe" as const, sourceTrigger: "automation_os_scheduler" as const },

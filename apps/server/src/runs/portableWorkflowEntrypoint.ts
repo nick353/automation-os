@@ -34,7 +34,7 @@ export type PortableWorkflowStartResult = {
   status?: string;
 };
 
-const portableTriggers = new Set<PortableTrigger>(["automation_os_scheduler", "codex_app_bridge", "launchd", "github_actions"]);
+const portableTriggers = new Set<PortableTrigger>(["automation_os_scheduler", "automation_os_ui", "codex_app_bridge", "launchd", "github_actions"]);
 
 export function isPortableWorkflowTrigger(value: string): value is PortableTrigger {
   return portableTriggers.has(value as PortableTrigger);

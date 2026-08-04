@@ -9,7 +9,7 @@ export type PortableWorkflowId =
   | "sns-multi-poster-ukiyoe"
   | "x-authenticated-browser-lane";
 
-export type PortableTrigger = "automation_os_scheduler" | "codex_app_bridge" | "launchd" | "github_actions";
+export type PortableTrigger = "automation_os_scheduler" | "automation_os_ui" | "codex_app_bridge" | "launchd" | "github_actions";
 export type PortableExternalEffectPolicy = "disabled" | "approval_required";
 
 export type PortableWorkflowManifestV1 = {
@@ -116,7 +116,7 @@ export function validatePortableRunManifestV1(value: PortableRunManifestV1): Por
   if (value.schema !== PORTABLE_RUN_MANIFEST_SCHEMA_V1) fail("run_schema_invalid");
   identifier(value.run_id, "run_id");
   identifier(value.workflow_id, "workflow_id");
-  if (!["automation_os_scheduler", "codex_app_bridge", "launchd", "github_actions"].includes(value.source_trigger)) {
+  if (!["automation_os_scheduler", "automation_os_ui", "codex_app_bridge", "launchd", "github_actions"].includes(value.source_trigger)) {
     fail("source_trigger_invalid");
   }
   if (value.execution_backend !== "automation_os_worker") fail("run_backend_invalid");

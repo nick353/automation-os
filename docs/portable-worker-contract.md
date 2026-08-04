@@ -77,13 +77,13 @@ canonical Browser Use CLI and the Codex Server/MCP plugin gateway; Codex App is
 not part of this process. If the runner is absent, the run stops with the exact
 blocker `portable_external_adapter_not_configured`.
 
-The same run contract can be started by an App bridge, launchd, GitHub Actions,
-or another scheduler through the shared entrypoint:
+The same run contract can be started by the Automation OS UI, its scheduler,
+launchd, GitHub Actions, or the legacy App bridge through the shared entrypoint:
 
 ```sh
 npm run portable:worker-start -- \
   --workflow=daily-ai-research-publish-run \
-  --trigger=codex_app_bridge \
+  --trigger=automation_os_scheduler \
   --idempotency-key=example-run-2026-08-03
 ```
 
@@ -94,7 +94,8 @@ canary worker stops before Browser Use CLI, MCP, or any external action.
 The AOS UI exposes the same contract for every fixed registered workflow:
 
 - `POST /api/portable-workflows/:id/run` queues a manual run from the UI with
-  `source_trigger: codex_app_bridge` and an idempotency key.
+  `source_trigger: automation_os_ui` and an idempotency key. This endpoint is
+  served by Automation OS and does not require a Codex App controller identity.
 - `POST /api/registered-workflows/:id/pause` and `/resume` control the AOS
   schedule from the UI.
 - The run response reports `runId`, `workerProtocol`, execution mode, and
@@ -113,7 +114,7 @@ cleanup contracts.
 
 ## Migration order
 
-1. Keep the current App schedules until the corresponding OS worker has a
+1. Keep the current App schedules paused until the corresponding OS worker has a
    same-run canary and readback.
 2. Register one OS schedule and run it in no-effect mode.
 3. Quarantine legacy queued rows and let the worker claim only

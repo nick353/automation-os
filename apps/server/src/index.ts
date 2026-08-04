@@ -1373,7 +1373,7 @@ app.post("/api/portable-workflows/:id/run", async (req, res, next) => {
     }
     const started = await startPortableWorkflowRun({
       workflowId: workflow.id as Parameters<typeof startPortableWorkflowRun>[0]["workflowId"],
-      sourceTrigger: "codex_app_bridge",
+      sourceTrigger: "automation_os_ui",
       idempotencyKey,
       companyId: projectId
     });
@@ -1387,6 +1387,7 @@ app.post("/api/portable-workflows/:id/run", async (req, res, next) => {
       workflow: publicRegisteredWorkflowById(workflow.id),
       portable: {
         workflow_id: workflow.id,
+        source_trigger: "automation_os_ui",
         execution_mode: mode,
         app_dependency: false,
         browser_surface: "browser_use_cli",

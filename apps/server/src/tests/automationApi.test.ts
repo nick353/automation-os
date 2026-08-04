@@ -206,6 +206,7 @@ test("registered automation readback is company-scoped and HTTP execution remain
   assert.equal(portable.status, 202, portable.raw);
   assert.equal(portable.json.ok, true);
   assert.equal(portable.json.portable.app_dependency, false);
+  assert.equal(portable.json.portable.source_trigger, "automation_os_ui");
   assert.equal(portable.json.portable.external_action_executed, false);
   assert.equal(portable.json.workerProtocol, "mac_worker_polling_required");
 
