@@ -153,6 +153,27 @@ function publicBlockerSummary(value: unknown) {
   return "詳細確認が必要です";
 }
 
+function relativeAgeLabel(value: unknown) {
+  const timestamp = Date.parse(String(value ?? ""));
+  if (!Number.isFinite(timestamp)) return "未確認";
+  const ageSeconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+  if (ageSeconds < 60) return `${ageSeconds}秒前`;
+  const ageMinutes = Math.floor(ageSeconds / 60);
+  if (ageMinutes < 60) return `${ageMinutes}分前`;
+  const ageHours = Math.floor(ageMinutes / 60);
+  if (ageHours < 24) return `${ageHours}時間前`;
+  return `${Math.floor(ageHours / 24)}日前`;
+}
+
+function workerFreshnessLabel(worker: Partial<NonNullable<MvpState["worker"]>> & { updatedAt?: string | null }) {
+  const timestamp = worker.heartbeat_at ?? worker.updatedAt ?? null;
+  const age = relativeAgeLabel(timestamp);
+  if (worker.readback_status === "stored") return `状態記録: ${age} / Mac heartbeat未確認`;
+  if (worker.heartbeat_fresh === false) return `heartbeat: ${age} / stale`;
+  if (worker.heartbeat_fresh === true) return `heartbeat: ${age} / fresh`;
+  return `状態記録: ${age} / heartbeat鮮度未確認`;
+}
+
 function publicBrowserUseRuntimeStatus(runtime: MvpState["browser_use_runtime"]) {
   if (!runtime) return "未確認";
   if (runtime.status === "verified") return "確認済み";
@@ -455,6 +476,7 @@ function workerStatusSummary(worker: MvpState["worker"]) {
     label: storedReadback ? "API保存済み（heartbeat未確認）" : worker.readback_status ?? "unknown",
     blocker,
     nextAction,
+    freshness: workerFreshnessLabel(worker),
     display: blocker ? `blocker=${blocker} / 次: ${nextAction}` : storedReadback ? `readback=stored / 次: ${nextAction}` : `heartbeat=${worker.readback_status ?? "unknown"} / 次: ${nextAction}`
   };
 }
@@ -2606,6 +2628,7 @@ function TruthfulPluginsPage({ model }: { model: AppModel }) {
 function TruthfulProductionStatusPage({ model }: { model: AppModel }) {
   const readiness = model.mvpState.production_readiness_readback;
   const browser = model.mvpState.browserHealth;
+  const workerSummary = workerStatusSummary(model.mvpState.worker);
   const readinessRows = readiness && typeof readiness === "object"
     ? Object.entries(readiness).filter(([key]) => ["status", "production_ready", "goal_complete", "blocker", "next_action", "checked_at", "source"].includes(key)).map(([key, value]) => [key, typeof value === "object" ? JSON.stringify(value) : String(value ?? "-")])
     : [];
@@ -2614,7 +2637,7 @@ function TruthfulProductionStatusPage({ model }: { model: AppModel }) {
       <PageTitle title="本番状態" desc="現在のAPI readback。deployや外部検証は実行しません。" />
       <div className="cards four">
         <MetricCard controlId="truthful.production.metric.persistence" title="Persistence" value={String(model.mvpState.persistence?.adapter ?? "未確認")} sub="現在のAPI readback" status={model.mvpState.persistence?.adapter ? "enabled" : "waiting"} />
-        <MetricCard controlId="truthful.production.metric.worker" title="Worker" value={model.mvpState.worker?.status ?? "未確認"} sub={workerStatusSummary(model.mvpState.worker).label} status={model.mvpState.worker?.heartbeat_fresh ? "enabled" : model.mvpState.worker?.readback_status === "stored" ? "draft" : "blocked"} />
+        <MetricCard controlId="truthful.production.metric.worker" title="Worker" value={model.mvpState.worker?.status ?? "未確認"} sub={`${workerSummary.label} / ${workerSummary.freshness}`} status={model.mvpState.worker?.heartbeat_fresh ? "enabled" : model.mvpState.worker?.readback_status === "stored" ? "draft" : "blocked"} />
         <MetricCard controlId="truthful.production.metric.chrome" title="Chrome lane" value={publicCapabilityStatus(browser?.chromeExtension)} sub={publicCapabilityBlocker(browser?.chromeExtension)} status={browser?.chromeExtension?.status === "ready" ? "enabled" : "blocked"} />
         <MetricCard controlId="truthful.production.metric.goal" title="Goal Complete" value={readiness?.goal_complete === true ? "true" : "false"} sub="readbackがtrueになるまで未完了" status={readiness?.goal_complete === true ? "approved" : "blocked"} />
       </div>
@@ -2656,7 +2679,10 @@ function OwnerAdminPage({ model }: { model: AppModel }) {
       </PageTitle>
       {status === "error" && <Panel title="Admin readback" controlId="admin.error.panel"><p className="muted">Owner専用API readbackを取得できませんでした。通常の会社ページへ内部診断値はfallback表示しません。</p></Panel>}
       {status === "ready" && diagnostics && <>
-        <Panel title="PC / Worker" controlId="admin.pc.panel"><pre>{diagnosticText(diagnostics.pc)}</pre></Panel>
+        <Panel title="PC / Worker" controlId="admin.pc.panel">
+          <p className="muted">鮮度: {workerFreshnessLabel({ updatedAt: diagnostics.pc?.local_worker?.updatedAt, readback_status: "diagnostic" })}</p>
+          <pre>{diagnosticText(diagnostics.pc)}</pre>
+        </Panel>
         <Panel title="Browser / Codex" controlId="admin.browser-codex.panel"><pre>{diagnosticText({ browser: diagnostics.browser, codex: diagnostics.codex })}</pre></Panel>
         <Panel title="IAB / Root capability" controlId="admin.iab.panel"><pre>{diagnosticText(diagnostics.iab)}</pre></Panel>
         <Panel title="Browser Use / workflow adapters" controlId="admin.workflow-adapters.panel">
@@ -4947,12 +4973,12 @@ function PcStatusPage({ model }: { model: AppModel }) {
       </PageTitle>
       <div className="action-note" role="status">{pcNote}</div>
       <div className="cards four">
-        <MetricCard controlId="pc.metric.local-agent" title="Local Agent" value={workerSummary.fresh ? "heartbeat確認済み" : workerSummary.stored ? "API readback" : "要確認"} sub={workerSummary.blocker ? workerSummary.nextAction : workerSummary.nextAction} status={workerSummary.fresh ? "enabled" : workerSummary.stored ? "draft" : "blocked"} />
-        <MetricCard controlId="pc.metric.heartbeat" title="Heartbeat" value={workerSummary.fresh ? "fresh" : workerSummary.stored ? "未取得" : "stale"} sub={worker?.heartbeat_at ?? "未確認"} status={workerSummary.fresh ? "enabled" : workerSummary.stored ? "draft" : "blocked"} />
+        <MetricCard controlId="pc.metric.local-agent" title="Local Agent" value={workerSummary.fresh ? "heartbeat確認済み" : workerSummary.stored ? "API readback" : "要確認"} sub={`${workerSummary.nextAction} / ${workerSummary.freshness}`} status={workerSummary.fresh ? "enabled" : workerSummary.stored ? "draft" : "blocked"} />
+        <MetricCard controlId="pc.metric.heartbeat" title="Heartbeat" value={workerSummary.fresh ? "fresh" : workerSummary.stored ? "未取得" : "stale"} sub={workerSummary.freshness} status={workerSummary.fresh ? "enabled" : workerSummary.stored ? "draft" : "blocked"} />
         <MetricCard controlId="pc.metric.queue" title="Queue" value={String(worker?.queue_depth ?? 0)} sub="待機中の実行候補" status={(worker?.queue_depth ?? 0) > 0 ? "running" : "enabled"} />
         <MetricCard controlId="pc.metric.last-run" title="Last Run" value={worker?.last_run_id ? "あり" : "なし"} sub={worker?.last_run_id ?? "未実行"} status={worker?.last_run_id ? "enabled" : "waiting"} />
       </div>
-      <Panel title="Local Agent readback" controlId="pc.readback.panel"><DataTable controlId="pc.readback.table" headers={["項目", "状態", "次に見ること"]} rows={[["接続状態", workerSummary.fresh ? "接続確認済み" : workerSummary.stored ? "API保存済み / heartbeat未確認" : "要確認", workerSummary.nextAction], ["Worker", worker?.status ?? "unknown", worker?.id ?? "unknown"], ["Heartbeat", worker?.heartbeat_at ?? "none", workerSummary.blocker ?? (workerSummary.stored ? "Mac heartbeat未取得" : "問題なし")], ["Queue", String(worker?.queue_depth ?? 0), "外部操作は各workflowの承認境界で停止"]]} /></Panel>
+      <Panel title="Local Agent readback" controlId="pc.readback.panel"><DataTable controlId="pc.readback.table" headers={["項目", "状態", "次に見ること"]} rows={[["接続状態", workerSummary.fresh ? "接続確認済み" : workerSummary.stored ? "API保存済み / heartbeat未確認" : "要確認", workerSummary.nextAction], ["Worker", worker?.status ?? "unknown", worker?.id ?? "unknown"], ["Heartbeat", workerSummary.freshness, workerSummary.blocker ?? (workerSummary.stored ? "Mac heartbeat未取得" : "問題なし")], ["Queue", String(worker?.queue_depth ?? 0), "外部操作は各workflowの承認境界で停止"]]} /></Panel>
       <Panel title="実行中ローカルタスク" controlId="pc.running.panel"><DataTable controlId="pc.running.table" headers={["Run", "Automation", "開始時刻", "ステータス", "Blocker"]} rows={(mvpState.runs ?? []).filter((run) => ["queued", "running", "blocked"].includes(run.status)).slice(0, 8).map((run) => [run.id, run.automation_name ?? run.automation_id, run.started_at ?? run.queued_at ?? "-", <StatusBadge status={run.status === "blocked" ? "blocked" : run.status === "running" ? "running" : "waiting"} label={run.status} />, run.exact_blocker ?? "-"])} /></Panel>
     </section>
   );
