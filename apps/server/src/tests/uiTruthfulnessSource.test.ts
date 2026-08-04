@@ -23,6 +23,16 @@ test("worker readback separates persisted state age from Mac heartbeat freshness
   assert.match(source, /freshness: "未確認"/);
 });
 
+test("runs history shows stored completed runs in its initial view", () => {
+  const source = readFileSync(resolve(process.cwd(), "apps/web/src/App.tsx"), "utf8");
+  const runsSource = source.slice(source.indexOf("function RunsPage"), source.indexOf("function PcStatusPage"));
+
+  assert.match(runsSource, /const \[statusFilter, setStatusFilter\] = useState\("all"\)/);
+  assert.match(runsSource, /const filteredRuns = runs\.filter\(\(run\) => statusMatches\(run\)/);
+  assert.match(runsSource, /\["complete", "completed"\]\.includes\(run\.status\)/);
+  assert.match(runsSource, /controlId="runs\.history\.table"/);
+});
+
 test("builder controls expose stable accessible names for browser QA and keyboard users", () => {
   const source = readFileSync(resolve(process.cwd(), "apps/web/src/App.tsx"), "utf8");
 

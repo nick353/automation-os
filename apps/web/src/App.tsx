@@ -4734,7 +4734,7 @@ function RunsPage({ model }: { model: AppModel }) {
   const runs = mvpState.runs ?? [];
   const jobs = mvpState.jobs ?? [];
   const proofs = mvpState.proofs ?? [];
-  const [statusFilter, setStatusFilter] = useState("active");
+  const [statusFilter, setStatusFilter] = useState("all");
   const [projectFilter, setProjectFilter] = useState("all");
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [selectedRunDetail, setSelectedRunDetail] = useState<RunDetail | null>(null);
