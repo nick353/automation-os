@@ -5,6 +5,7 @@ import { readStoredSecretByKind } from "../secrets/secretStore.js";
 import { safeWorkerEnvironment } from "../security/processEnvironment.js";
 import { validatePostgresUrl } from "./postgresUrlValidation.js";
 import { workerChildSpawnFailureSummary } from "./workerProductionErrors.js";
+import { signalWorkerProcessGroup } from "./workerProcessGroup.js";
 
 const mode = readArgValue("--mode") ?? "proof";
 const statePath = process.env.AUTOMATION_OS_WORKER_STATE_PATH
@@ -68,6 +69,7 @@ const proofTimeoutMs = mode === "proof"
 
 const child = spawn(process.execPath, args, {
   cwd: process.cwd(),
+  detached: true,
   env: safeWorkerEnvironment(process.env, {
     databaseUrl: validatedDatabaseUrl,
     overrides: {
@@ -85,9 +87,9 @@ let childTimedOut = false;
 if (proofTimeoutMs !== null) {
   childTimer = setTimeout(() => {
     childTimedOut = true;
-    if (childIsAlive()) child.kill("SIGTERM");
+    signalChild("SIGTERM");
     const killTimer = setTimeout(() => {
-      if (childIsAlive()) child.kill("SIGKILL");
+      signalChild("SIGKILL");
     }, 2_000);
     killTimer.unref();
   }, proofTimeoutMs + 30_000);
@@ -138,6 +140,17 @@ function readArgValue(name: string) {
 
 function childIsAlive() {
   return child.exitCode === null && child.signalCode === null;
+}
+
+function signalChild(signal: NodeJS.Signals) {
+  if (!childIsAlive()) return;
+  if (!signalWorkerProcessGroup(child.pid, signal)) {
+    try {
+      child.kill(signal);
+    } catch {
+      // The child may have exited between the liveness check and the signal.
+    }
+  }
 }
 
 function finishBlocked(summary: Record<string, unknown>): never {

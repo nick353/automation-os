@@ -1,6 +1,4 @@
-import { createRequire } from "node:module";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { buildReadbackHeaders, readProductionReadToken } from "./productionReadbackAuth.mjs";
 
@@ -23,6 +21,10 @@ const result = {
   screenshots: [],
   failures: []
 };
+
+// installScopedReadbackRoute is deliberately not implemented here: UI
+// navigation and screenshots belong exclusively to the canonical Browser Use
+// CLI session, never to a Playwright or direct browser fallback.
 
 await checkApi("/api/health", { required: true, routeType: "health", includeReadToken: false });
 
@@ -297,127 +299,26 @@ function sanitizeDeploymentReadback(deployment) {
 async function captureScreenshot(label, viewport) {
   const path = join(outDir, `${label}.png`);
   const harPath = join(outDir, `${label}.har`);
+  const redactedHar = redactHarFile(harPath);
   if (!readToken) {
-    result.screenshots.push({ label, viewport, path, harPath, status: null, exactBlocker: "production_read_token_missing" });
+    result.screenshots.push({ label, viewport, path: null, ...redactedHar, status: null, exactBlocker: "production_read_token_missing" });
     result.failures.push(`screenshot_${label}: production_read_token_missing`);
     return;
   }
-  const [width, height] = viewport.split(",").map((value) => Number(value));
-  const playwright = loadPlaywright();
-  const browser = await playwright.chromium.launch({ headless: true });
-  const context = await browser.newContext({
-    viewport: { width, height },
-    recordHar: { path: harPath, content: "embed" }
+  result.screenshots.push({
+    label,
+    viewport,
+    path: null,
+    ...redactedHar,
+    status: null,
+    exactBlocker: "browser_use_cli_runtime_required",
+    detail: "Production UI screenshots require a fresh same-run Browser Use CLI authority/profile/port and recording proof."
   });
-  const page = await context.newPage();
-  await installScopedReadbackRoute(page, baseUrl, readToken);
-  const consoleErrors = [];
-  const protectedApiFailures = [];
-  page.on("console", (message) => {
-    if (message.type() === "error") consoleErrors.push(message.text().slice(0, 500));
-  });
-  page.on("response", (response) => {
-    try {
-      const pathname = new URL(response.url()).pathname;
-      if (pathname.startsWith("/api/") && [401, 403, 423].includes(response.status())) {
-        protectedApiFailures.push(`${response.status()}:${pathname}`);
-      }
-    } catch {
-      // Ignore non-URL response observations; navigation status remains authoritative.
-    }
-  });
-  let status = 0;
-  let error = "";
-  try {
-    const response = await page.goto(baseUrl, { waitUntil: "networkidle" });
-    status = response?.status() ?? 0;
-    await page.screenshot({ path, fullPage: true });
-    if (status < 200 || status >= 400) error = `http_${status}`;
-    if (protectedApiFailures.length) error = error || "protected_api_auth_failed";
-    if (consoleErrors.length) error = error || "console_errors";
-  } catch (caught) {
-    error = caught instanceof Error ? caught.message : String(caught);
-  } finally {
-    await context.close();
-    await browser.close();
-    redactHarFile(harPath, readToken);
-  }
-  result.screenshots.push({ label, viewport, path, harPath, status, consoleErrors, protectedApiFailures, error });
-  if (error) {
-    result.failures.push(`screenshot_${label}: ${error}`);
-  }
+  result.failures.push(`screenshot_${label}: browser_use_cli_runtime_required`);
 }
 
-async function installScopedReadbackRoute(page, targetUrl, readToken) {
-  const targetOrigin = new URL(targetUrl).origin;
-  const readbackHeaders = buildReadbackHeaders(readToken);
-  await page.route("**/*", async (route) => {
-    const requestUrl = new URL(route.request().url());
-    if (requestUrl.origin !== targetOrigin || !requestUrl.pathname.startsWith("/api/") || !Object.keys(readbackHeaders).length) {
-      await route.continue();
-      return;
-    }
-    await route.continue({ headers: { ...route.request().headers(), ...readbackHeaders } });
-  });
-}
-
-function redactHarFile(path, readToken) {
-  if (!readToken || !existsSync(path)) return;
-  try {
-    const parsed = JSON.parse(readFileSync(path, "utf8"));
-    redactHarNode(parsed, readToken);
-    writeFileSync(path, `${JSON.stringify(parsed, null, 2)}\n`);
-  } catch {
-    // A missing/non-JSON HAR remains an artifact failure for the caller to inspect.
-  }
-}
-
-function redactHarNode(value, readToken, key = "") {
-  if (Array.isArray(value)) {
-    if (key.toLowerCase().includes("header")) {
-      for (const item of value) {
-        if (!item || typeof item !== "object" || Array.isArray(item)) {
-          redactHarNode(item, readToken, key);
-          continue;
-        }
-        const headerName = String(item.name ?? "").toLowerCase();
-        const headerValue = typeof item.value === "string" ? item.value : "";
-        if (headerName.includes("authorization") || headerName.includes("token") || headerValue.includes(readToken)) {
-          if (typeof item.value === "string") item.value = "[redacted]";
-        } else {
-          redactHarNode(item, readToken, key);
-        }
-      }
-      return;
-    }
-    for (const item of value) redactHarNode(item, readToken, key);
-    return;
-  }
-  if (!value || typeof value !== "object") return;
-  for (const [childKey, childValue] of Object.entries(value)) {
-    const normalizedKey = childKey.toLowerCase();
-    if (normalizedKey.includes("authorization") || normalizedKey.includes("token")) {
-      if (typeof childValue === "string") value[childKey] = "[redacted]";
-      else redactHarNode(childValue, readToken, childKey);
-      continue;
-    }
-    if (typeof childValue === "string") {
-      value[childKey] = childValue.split(readToken).join("[redacted]");
-    } else {
-      redactHarNode(childValue, readToken, childKey);
-    }
-  }
-}
-
-function loadPlaywright() {
-  const localRequire = createRequire(import.meta.url);
-  try {
-    return localRequire("playwright");
-  } catch (localError) {
-    const bundledModuleRoot = process.env.AUTOMATION_OS_PLAYWRIGHT_NODE_MODULES
-      || join(homedir(), ".cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules");
-    const bundledPackage = join(bundledModuleRoot, "playwright", "package.json");
-    if (existsSync(bundledPackage)) return createRequire(bundledPackage)("playwright");
-    throw localError;
-  }
+function redactHarFile(_harPath) {
+  // HAR capture remains disabled here. Browser Use CLI owns authenticated UI
+  // recording and any resulting artifact redaction in its same-run receipt.
+  return { harPath: null, harStatus: "browser_use_cli_runtime_required" };
 }

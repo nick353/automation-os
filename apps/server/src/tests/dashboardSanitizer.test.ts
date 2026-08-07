@@ -172,9 +172,9 @@ test("sanitizes direct dashboard row internals while keeping public flags", () =
   const serialized = JSON.stringify(row);
 
   assert.equal(row.connection_configured, true);
-  assert.equal(row.playwright_configured, true);
-  assert.equal(row.browser_driver, "playwright_cli");
-  assert.equal(row.browser_use_configured, false);
+  assert.equal(row.playwright_configured, undefined);
+  assert.equal(row.browser_driver, "browser_use_cli");
+  assert.equal(row.browser_use_configured, true);
   assert.equal(row.uri, undefined);
   assert.equal(row.path, undefined);
   assert.equal(row.target_url, undefined);
@@ -272,7 +272,7 @@ test("sanitizes proof rows to viewer links without raw file fields", () => {
   assert.doesNotMatch(serialized, /data\/artifacts|\/Users|screenshotPath|summary/);
 });
 
-test("sanitizes Daily AI Playwright CLI lane as Playwright configured without Browser Use fallback", () => {
+test("sanitizes legacy browser lane metadata as Browser Use CLI configuration", () => {
   const rows = sanitizeDashboardRows([
     {
       id: "daily-ai-playwright",
@@ -283,7 +283,7 @@ test("sanitizes Daily AI Playwright CLI lane as Playwright configured without Br
       browser_use_session: "stale-browser-use-session",
       metadata_json: JSON.stringify({
         metadata: {
-          driver: "playwright_cli",
+          driver: "browser_use_cli",
           screenshotPath: "artifacts/stage-observations/daily-ai.png",
           domPath: "artifacts/stage-observations/daily-ai-dom.json",
           cleanupStatus: "completed"
@@ -295,12 +295,12 @@ test("sanitizes Daily AI Playwright CLI lane as Playwright configured without Br
   const metadata = JSON.parse(String(row.metadata_json));
   const serialized = JSON.stringify(row);
 
-  assert.equal(row.playwright_configured, true);
-  assert.equal(row.browser_driver, "playwright_cli");
-  assert.equal(row.browser_use_configured, false);
-  assert.deepEqual(metadata.playwright_result, {
-    driver: "playwright_cli",
-    evidenceCount: 2,
+  assert.equal(row.playwright_configured, undefined);
+  assert.equal(row.browser_driver, "browser_use_cli");
+  assert.equal(row.browser_use_configured, true);
+  assert.deepEqual(metadata.browser_use_result, {
+    driver: "browser_use_cli",
+    evidenceCount: 1,
     cleanupStatus: "completed"
   });
   assert.equal(row.cdp_port, undefined);

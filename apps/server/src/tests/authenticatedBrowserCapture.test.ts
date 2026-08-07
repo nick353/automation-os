@@ -22,21 +22,19 @@ test.after(() => {
   else process.env.AUTOMATION_OS_ALLOW_CUSTOM_OBSIDIAN_EXPORT = previousAllowCustomVault;
 });
 
-test("X learning lane command is fixed to port 9336 and the dedicated profile without fallback ports", () => {
+test("X learning lane command delegates to Browser Use CLI with no Chrome fallback", () => {
   const command = buildOpenXLearningChromeCommand("/Applications/Test Chrome.app/Contents/MacOS/Google Chrome");
   const serialized = [command.bin, ...command.args].join(" ");
 
-  assert.equal(command.laneName, "x_learning_authenticated_cdp");
+  assert.equal(command.laneName, "x_learning_authenticated_browser_use_cli");
   assert.equal(command.port, 9336);
-  assert.equal(command.profileDir, "/Users/nichikatanaka/.x-learning-playwright-chrome");
-  assert.ok(command.args.includes("--remote-debugging-port=9336"));
-  assert.ok(command.args.includes("--user-data-dir=/Users/nichikatanaka/.x-learning-playwright-chrome"));
-  assert.ok(command.args.includes("--profile-directory=Default"));
-  assert.ok(command.args.includes("https://x.com/home"));
-  assert.doesNotMatch(serialized, /9333|9334|9335|9222/u);
+  assert.equal(command.profileDir, xLearningLane.profileDir);
+  assert.match(serialized, /codex-browser-use/iu);
+  assert.deepEqual(command.args.slice(-2), ["open", "https://x.com/home"]);
+  assert.doesNotMatch(serialized, /remote-debugging-port|user-data-dir|playwright|9222/iu);
 });
 
-test("X learning health checks only the fixed 9336 json/version endpoint", async () => {
+test("X learning health reports Browser Use CLI admission instead of probing Chrome CDP", async () => {
   const seen: string[] = [];
   const result = await getXLearningChromeHealth(async (url) => {
     seen.push(String(url));
@@ -46,10 +44,29 @@ test("X learning health checks only the fixed 9336 json/version endpoint", async
     });
   });
 
-  assert.equal(result.ok, true);
+  assert.equal(result.ok, false);
   assert.equal(result.port, 9336);
   assert.equal(result.profileDir, xLearningLane.profileDir);
-  assert.deepEqual(seen, ["http://127.0.0.1:9336/json/version"]);
+  assert.equal(result.exactBlocker, "browser_use_authority_required");
+  assert.deepEqual(seen, []);
+});
+
+test("authenticated browser capture blocks the default direct CDP seam", async () => {
+  const result = await runAuthenticatedBrowserCapture({
+    url: "https://x.com/example/status/123",
+    vaultPath: createVault("browser-use-admission"),
+    artifactRoot: join(tempRoot, "browser-use-admission-artifacts")
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, "blocked");
+  assert.equal(result.exactBlocker, "browser_use_authority_required");
+  if (!result.ok) {
+    const combined = readFileSync(result.files?.stageOpen ?? "", "utf8");
+    assert.match(combined, /browser_use_cli/iu);
+    assert.match(combined, /direct_chrome_cdp_retired/iu);
+    assert.match(combined, /externalActionExecuted.*false/iu);
+  }
 });
 
 test("authenticated browser capture allows only X/Twitter read URLs and rejects posting or account surfaces", () => {

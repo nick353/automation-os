@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { runPortableWorkerCanary } from "../runs/portableWorkerCanary.js";
 import {
@@ -62,6 +64,25 @@ test("portable canary validates binding and proves no browser, connector, or ext
   assert.equal(receipt.connector_called, false);
   assert.equal(receipt.external_action_executed, false);
   assert.equal(receipt.exact_blocker, null);
+});
+
+test("portable canary CLI accepts the Automation OS UI trigger", () => {
+  const cliPath = fileURLToPath(new URL("../cli/portableWorkerCanary.js", import.meta.url));
+  const result = spawnSync(process.execPath, [
+    cliPath,
+    "--workflow=job-application-manager",
+    "--trigger=automation_os_ui"
+  ], { encoding: "utf8" });
+
+  assert.equal(result.status, 0, result.stderr);
+  const receipt = JSON.parse(result.stdout.trim()) as {
+    ok?: boolean;
+    workflow_id?: string;
+    external_action_executed?: boolean;
+  };
+  assert.equal(receipt.ok, true);
+  assert.equal(receipt.workflow_id, "job-application-manager");
+  assert.equal(receipt.external_action_executed, false);
 });
 
 test("portable worker adapter mapping stays canary-only and effect-free", () => {

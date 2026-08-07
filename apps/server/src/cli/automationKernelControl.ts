@@ -45,6 +45,7 @@ type Options = {
 };
 
 const CHROME_STAGE_CAPABILITY = "/Users/nichikatanaka/.codex/scripts/chrome-stage-capability.mjs";
+export const AUTOMATION_KERNEL_BROWSER_USE_CLI_REQUIRED = "automation_kernel_browser_use_cli_required";
 
 export function runAutomationKernelControl(options: Options): Record<string, unknown> {
   const manifest = parseAutomationKernelManifestFileV1(options.manifest);
@@ -71,6 +72,9 @@ export function runAutomationKernelControl(options: Options): Record<string, unk
     const selectedEffectId = options.effectId ?? beforeClaim.next_effect_id;
     const selectedEffect = definition.effects.find((candidate) => candidate.effect_id === selectedEffectId);
     if (!selectedEffect) throw new Error("automation_kernel_effect_missing");
+    if (selectedEffect.payload.browser_surface === "in_app_browser" || selectedEffect.payload.needs_chrome === true) {
+      throw new Error(`${AUTOMATION_KERNEL_BROWSER_USE_CLI_REQUIRED}:${selectedEffect.effect_id}`);
+    }
     const approval = selectedEffect.payload.approval_required === true
       ? validateAutomationKernelApprovalFile(options.approvalFile, {
           workflowId: compiled.workflow_id,
@@ -114,19 +118,18 @@ export function runAutomationKernelControl(options: Options): Record<string, unk
       ? parseJsonObject(readFileSync(resolve(options.evidenceFile), "utf8"), "automation_kernel_evidence_invalid")
       : {};
     const inAppBrowserStage = effect.payload.browser_surface === "in_app_browser";
+    const legacyBrowserStage = inAppBrowserStage || effect.payload.needs_chrome === true;
+    if (legacyBrowserStage && !options.admissionFailed) {
+      throw new Error(`${AUTOMATION_KERNEL_BROWSER_USE_CLI_REQUIRED}:${effect.effect_id}`);
+    }
     if (options.admissionFailed) {
-      if ((!inAppBrowserStage && effect.payload.needs_chrome !== true)
+      if ((!legacyBrowserStage)
         || options.outcome !== "failed"
         || options.externalActionExecuted === true) {
         throw new Error("automation_kernel_browser_admission_failure_invalid");
       }
-      const blockerPattern = inAppBrowserStage
-        ? /^(?:in_app_browser_|automation_kernel_in_app_browser_)/u
-        : /^(?:chrome_|automation_kernel_chrome_)/u;
-      if (!options.exactBlocker || !blockerPattern.test(options.exactBlocker)) {
-        throw new Error(inAppBrowserStage
-          ? "automation_kernel_in_app_browser_admission_exact_blocker_invalid"
-          : "automation_kernel_chrome_admission_exact_blocker_invalid");
+      if (options.exactBlocker !== `${AUTOMATION_KERNEL_BROWSER_USE_CLI_REQUIRED}:${effect.effect_id}`) {
+        throw new Error("automation_kernel_browser_use_cli_admission_exact_blocker_invalid");
       }
     }
     const chromeCapability = effect.payload.needs_chrome === true && !options.admissionFailed

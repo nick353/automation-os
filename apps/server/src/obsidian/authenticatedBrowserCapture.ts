@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { makeId } from "../db/client.js";
-import { xLearningLane } from "../browser/xLearningLane.js";
+import { openXLearningChrome, xLearningLane } from "../browser/xLearningLane.js";
 import { runObsidianIngest, type ObsidianIngestResult } from "./ingest.js";
 import { redactSensitiveText } from "./redaction.js";
 import { guardObsidianVaultPath } from "./vaultGuard.js";
@@ -153,7 +153,32 @@ export async function runAuthenticatedBrowserCapture(input: AuthenticatedBrowser
     files
   };
 
-  const cdpClient = input.cdpClient ?? createCdpClient();
+  if (!input.cdpClient) {
+    const admission = openXLearningChrome();
+    const exactBlocker = admission.exactBlocker ?? "browser_use_authority_required";
+    const summary = admission.summary;
+    writeJson(files.stageOpen, {
+      status: "blocked",
+      browserSurface: "browser_use_cli",
+      legacySurface: "direct_chrome_cdp_retired",
+      requestedUrl,
+      laneName: xLearningLane.name,
+      exactBlocker,
+      summary: redactSensitiveText(summary),
+      externalActionExecuted: false
+    });
+    writeJson(files.manifest, {
+      ...manifestBase,
+      status: "blocked",
+      browserSurface: "browser_use_cli",
+      legacySurface: "direct_chrome_cdp_retired",
+      exactBlocker,
+      externalActionExecuted: false
+    });
+    return { ok: false, status: "blocked", captureId, artifactDir, requestedUrl, exactBlocker, summary: redactSensitiveText(summary), files };
+  }
+
+  const cdpClient = input.cdpClient;
   let opened: Awaited<ReturnType<AuthenticatedBrowserCdpClient["openUrl"]>>;
   try {
     opened = await cdpClient.openUrl(parsed.url.toString());
@@ -355,92 +380,6 @@ export function validateCaptureUrl(value: unknown):
   return { ok: true, url };
 }
 
-function createCdpClient(): AuthenticatedBrowserCdpClient {
-  return new ChromeCdpClient();
-}
-
-class ChromeCdpClient implements AuthenticatedBrowserCdpClient {
-  private transport?: CdpWebSocketTransport;
-
-  async openUrl(url: string): Promise<{ targetId?: string; webSocketDebuggerUrl?: string }> {
-    const target = await openCdpTarget(url);
-    const wsUrl = typeof target.webSocketDebuggerUrl === "string" ? target.webSocketDebuggerUrl : undefined;
-    if (!wsUrl) throw new Error("x_auth_capture_cdp_target_missing_websocket");
-    this.transport = await CdpWebSocketTransport.connect(wsUrl);
-    await this.transport.send("Runtime.enable");
-    return {
-      targetId: typeof target.id === "string" ? target.id : undefined,
-      webSocketDebuggerUrl: wsUrl
-    };
-  }
-
-  async evaluate(expression: string): Promise<unknown> {
-    if (!this.transport) throw new Error("x_auth_capture_cdp_not_connected");
-    await delay(1200);
-    const envelope = await this.transport.send("Runtime.evaluate", {
-      expression,
-      returnByValue: true,
-      awaitPromise: true
-    });
-    return parseRuntimeEvaluateByValue(envelope);
-  }
-
-  async close(): Promise<void> {
-    await this.transport?.close();
-  }
-}
-
-class CdpWebSocketTransport {
-  private id = 0;
-  private pending = new Map<number, { resolve(value: unknown): void; reject(error: Error): void }>();
-
-  private constructor(private readonly socket: WebSocketLike) {}
-
-  static connect(url: string): Promise<CdpWebSocketTransport> {
-    const WebSocketCtor = globalThis.WebSocket as WebSocketConstructor | undefined;
-    if (!WebSocketCtor) return Promise.reject(new Error("x_auth_capture_websocket_unavailable"));
-    return new Promise((resolveConnect, rejectConnect) => {
-      const socket = new WebSocketCtor(url) as WebSocketLike;
-      const transport = new CdpWebSocketTransport(socket);
-      socket.addEventListener("open", () => resolveConnect(transport), { once: true });
-      socket.addEventListener("error", () => rejectConnect(new Error("x_auth_capture_websocket_connect_failed")), { once: true });
-      socket.addEventListener("message", (event) => transport.onMessage(event));
-      socket.addEventListener("close", () => transport.rejectAll(new Error("x_auth_capture_websocket_closed")));
-    });
-  }
-
-  send(method: string, params?: Record<string, unknown>): Promise<unknown> {
-    const id = ++this.id;
-    const message = JSON.stringify({ id, method, params });
-    return new Promise((resolveSend, rejectSend) => {
-      this.pending.set(id, { resolve: resolveSend, reject: rejectSend });
-      this.socket.send(message);
-    });
-  }
-
-  async close(): Promise<void> {
-    this.rejectAll(new Error("x_auth_capture_websocket_closed"));
-    this.socket.close();
-  }
-
-  private onMessage(event: { data: unknown }): void {
-    const text = typeof event.data === "string" ? event.data : Buffer.isBuffer(event.data) ? event.data.toString("utf8") : "";
-    if (!text) return;
-    const message = JSON.parse(text) as { id?: number; result?: unknown; error?: { message?: string } };
-    if (typeof message.id !== "number") return;
-    const pending = this.pending.get(message.id);
-    if (!pending) return;
-    this.pending.delete(message.id);
-    if (message.error) pending.reject(new Error(message.error.message ?? "cdp_error"));
-    else pending.resolve({ result: message.result });
-  }
-
-  private rejectAll(error: Error): void {
-    for (const pending of this.pending.values()) pending.reject(error);
-    this.pending.clear();
-  }
-}
-
 export function parseRuntimeEvaluateByValue(envelope: unknown): unknown {
   if (!isRecord(envelope) || !hasOwn(envelope, "result")) {
     throw new Error("x_auth_capture_runtime_evaluate_missing_result");
@@ -465,23 +404,6 @@ export function parseRuntimeEvaluateByValue(envelope: unknown): unknown {
     throw new Error("x_auth_capture_runtime_evaluate_object_id_only");
   }
   return undefined;
-}
-
-type WebSocketConstructor = new (url: string) => WebSocketLike;
-type WebSocketLike = {
-  send(data: string): void;
-  close(): void;
-  addEventListener(type: "open" | "error" | "close", listener: () => void, options?: { once?: boolean }): void;
-  addEventListener(type: "message", listener: (event: { data: unknown }) => void): void;
-};
-
-async function openCdpTarget(url: string): Promise<Record<string, unknown>> {
-  const encoded = encodeURIComponent(url);
-  const endpoint = `http://127.0.0.1:${xLearningLane.port}/json/new?${encoded}`;
-  let response = await fetch(endpoint, { method: "PUT" });
-  if (response.status === 405 || response.status === 404) response = await fetch(endpoint);
-  if (!response.ok) throw new Error(`x_auth_capture_cdp_new_target_http_${response.status}`);
-  return await response.json() as Record<string, unknown>;
 }
 
 function normalizeExtractedPage(value: unknown): ExtractedPage {
@@ -673,8 +595,4 @@ function rejected(captureId: string, exactBlocker: string, summary: string, requ
     requestedUrl,
     vaultPath
   } as Extract<AuthenticatedBrowserCaptureResult, { status: "rejected" }> & { vaultPath?: string };
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
 }

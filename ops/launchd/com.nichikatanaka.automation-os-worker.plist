@@ -30,7 +30,17 @@
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>AUTOMATION_OS_PORTABLE_WORKER_MODE</key>
-    <string>canary</string>
+    <string>external</string>
+    <key>AUTOMATION_OS_DURABLE_SERVICE_USER_ID</key>
+    <string>service_automation_os_worker</string>
+    <key>AUTOMATION_OS_PORTABLE_EXTERNAL_RUNNER</key>
+    <string>/Users/nichikatanaka/Documents/Codex/automation-os/scripts/portable-external-runner.mjs</string>
+    <key>AUTOMATION_OS_PORTABLE_EXTERNAL_WORKDIR</key>
+    <string>/Users/nichikatanaka/Documents/Codex/automation-os</string>
+    <key>AUTOMATION_OS_PORTABLE_EXTERNAL_TIMEOUT_MS</key>
+    <string>3600000</string>
+    <key>AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS</key>
+    <string>enabled</string>
   </dict>
 </dict>
 </plist>

@@ -1,6 +1,7 @@
-import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, copyFileSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { getCodexCapabilities } from "../codex/capabilities.js";
 import { buildCodexAppParityLedgerItems, type CodexAppParityLedgerItem } from "../codex/parityLedger.js";
 import { querySql } from "../db/client.js";
@@ -8,6 +9,7 @@ import { buildResumeContract, renderResumeContractMarkdown, resolveResumeContrac
 import { selectActionQueueRuns, selectAttentionRuns, selectResumeCandidateRun } from "../runs/selectors.js";
 import { auditProjects, writeProjectAuditStatus, type ProjectAuditItem, type ProjectAuditResult } from "../projects/projectAuditor.js";
 import { defaultObsidianVaultPath, resolveConfiguredObsidianVaultPath } from "./vaultGuard.js";
+import { buildAndWriteRedactedSessionIndex, readRedactedSessionIndex } from "./sessionIndex.js";
 import { withVaultWriteLockSync } from "./vaultWriteLock.js";
 
 const defaultOutputSubdir = join("02_Systems", "automation-os");
@@ -31,8 +33,54 @@ const secondBrainWeeklyDigestFilename = "Second Brain Weekly Digest.md";
 const secondBrainReviewBaseFilename = "Second Brain Review.base";
 const defaultGeneratedBackupRetentionCount = 10;
 const protectedBackupDirectoryNames = new Set(["manual-cleanup", "second-brain-processor"]);
+const decisionDashboardBaseFilename = "Decision Dashboard.base";
+const legacyDecisionDashboardTemplateId = "decision-dashboard-legacy-v1";
+const legacyDecisionDashboardBase = [
+  "filters:",
+  "  and:",
+  "    - file.ext == \"md\"",
+  "    - file.inFolder(\"07_Decisions\")",
+  "properties:",
+  "  file.name:",
+  "    displayName: Note",
+  "  status:",
+  "    displayName: Status",
+  "  priority:",
+  "    displayName: Priority",
+  "  owner:",
+  "    displayName: Owner",
+  "  source_of_truth:",
+  "    displayName: Source of truth",
+  "  required_proof:",
+  "    displayName: Required proof",
+  "  next_action:",
+  "    displayName: Next action",
+  "  blocker:",
+  "    displayName: Blocker",
+  "  file.mtime:",
+  "    displayName: Modified",
+  "views:",
+  "  - type: table",
+  "    name: Decision Dashboard",
+  "    order:",
+  "      - file.name",
+  "      - status",
+  "      - priority",
+  "      - owner",
+  "      - source_of_truth",
+  "      - required_proof",
+  "      - next_action",
+  "      - blocker",
+  "      - file.mtime",
+  "    limit: 100"
+].join("\n");
+let skipNonGeneratedFiles = false;
+let skippedNonGeneratedFiles: string[] = [];
+let legacyAdoptionMetadata: ObsidianLegacyAdoptionMetadata | null = null;
+let activeExportRunId = "";
 const activeSessionsFilename = "Active Sessions.md";
 const conversationMemoryCardsFilename = "Conversation Memory Cards.md";
+const sessionKnowledgeDigestFilename = "Session Knowledge Digest.md";
 const userSignalsFilename = "User Signals.md";
 const skillRegistryFilename = "Skill Registry.md";
 const skillCandidatesFilename = "Skill Candidates.md";
@@ -67,6 +115,8 @@ const orientationIndexes = [
   { subdir: "09_Inbox", filename: "Inbox Index.md", title: "Inbox Index", description: "Temporary capture area for unsorted notes before Codex classifies them." }
 ];
 const secondBrainDestinationAllowlist = new Set(["05_Projects", "06_Research", "07_Decisions", "08_Runbooks", "09_Inbox", "unknown"]);
+const secondBrainPromotionTargetFolders = ["05_Projects", "06_Research", "07_Decisions", "08_Runbooks", "09_Inbox"];
+const secondBrainPromotionDestinationAllowlist = new Set(["05_Projects", "06_Research", "07_Decisions", "08_Runbooks"]);
 const orientationTemplates = [
   {
     filename: "project-note.md",
@@ -387,6 +437,29 @@ type SecondBrainClassificationCandidate = {
   approvalRequired: boolean;
   reason: string;
   excerpt: string;
+  progressiveSummary: string;
+  distillation: string;
+  nextUse: string;
+  unresolvedQuestion: string;
+  reviewCycle: string;
+  distillationQuality: string;
+  knowledgeReuseStatus: string;
+  processedAt: string;
+  sourceKey: string;
+  duplicateSourceCount: number;
+  duplicateSourceFiles: string[];
+};
+
+type AutoPromotedSecondBrainKnowledge = {
+  file: string;
+  title: string;
+  destination: string;
+  progressiveSummary: string;
+  distillation: string;
+  nextUse: string;
+  sourceUrl: string;
+  sourceOfTruth: string;
+  contentSha256: string;
 };
 
 type SecondBrainDigestNote = {
@@ -431,6 +504,15 @@ type CodexSessionSummary = {
   parentThreadId: string | null;
 };
 
+type SessionIndexInventory = {
+  path: string;
+  available: boolean;
+  indexedEntries: number;
+  pendingHumanReview: number;
+  promotionAllowed: number;
+  latestMtime: string | null;
+};
+
 type ProjectProofPointer = {
   id: string;
   projectId: string;
@@ -464,10 +546,38 @@ export type ObsidianExportOptions = {
   dashboardSubdir?: string;
   docsDir?: string;
   codexSessionsDir?: string;
+  codexSessionIndexFile?: string;
+  refreshCodexSessionIndex?: boolean;
   codexMemoryFile?: string;
   knowledgeUseLedgerFile?: string;
   resumeContractPath?: string;
+  skipNonGenerated?: boolean;
 };
+
+export type ObsidianLegacyAdoptionMetadata = {
+  status: "adopted" | "blocked" | "post_write_failed";
+  export_run_id: string;
+  target_path: string;
+  template_id: string;
+  pre_sha256: string;
+  post_sha256: string | null;
+  backup_path: string | null;
+  backup_sha256: string | null;
+  readback: {
+    attempted: boolean;
+    ok: boolean;
+    sha256: string | null;
+    error: string | null;
+  };
+  reason?: string;
+};
+
+class ObsidianLegacyAdoptionError extends Error {
+  constructor(public readonly metadata: ObsidianLegacyAdoptionMetadata) {
+    super(`legacy_adoption_${metadata.status}:${metadata.reason ?? "unknown"}`);
+    this.name = "ObsidianLegacyAdoptionError";
+  }
+}
 
 export type ObsidianExportResult = {
   vaultPath: string;
@@ -487,6 +597,10 @@ export type ObsidianExportResult = {
   templateFiles: string[];
   projectGovernanceFiles?: string[];
   projectAuditStatusFile?: string;
+  parityManifestFile?: string;
+  legacyAdoption?: ObsidianLegacyAdoptionMetadata | null;
+  skippedNonGeneratedFiles?: string[];
+  exportRunId?: string;
   backupRetention?: ObsidianBackupRetentionSummary;
 };
 
@@ -495,6 +609,10 @@ export type ObsidianBackupRetentionSummary = {
   prunedDirs: string[];
   skippedDirs: string[];
 };
+
+export function matchesLegacyDecisionDashboardBase(body: string): boolean {
+  return body === legacyDecisionDashboardBase || body === `${legacyDecisionDashboardBase}\n`;
+}
 
 export function resolveObsidianVaultPath(input?: string): string {
   return resolveConfiguredObsidianVaultPath(input);
@@ -506,6 +624,9 @@ export function exportObsidianVault(options: ObsidianExportOptions = {}): Obsidi
 }
 
 function exportObsidianVaultUnlocked(options: ObsidianExportOptions, vaultPath: string): ObsidianExportResult {
+  skipNonGeneratedFiles = options.skipNonGenerated === true || process.env.AUTOMATION_OS_OBSIDIAN_SKIP_NON_GENERATED === "1";
+  skippedNonGeneratedFiles = [];
+  legacyAdoptionMetadata = null;
   const startHereSubdir = options.startHereSubdir ?? defaultStartHereSubdir;
   const outputDir = join(vaultPath, options.outputSubdir ?? defaultOutputSubdir);
   const startHereDir = join(vaultPath, startHereSubdir);
@@ -523,6 +644,8 @@ function exportObsidianVaultUnlocked(options: ObsidianExportOptions, vaultPath: 
   }
   const templateDir = join(vaultPath, "90_Templates");
   mkdirSync(templateDir, { recursive: true });
+  const exportRunId = process.env.AUTOMATION_OS_OBSIDIAN_EXPORT_RUN_ID || randomUUID();
+  activeExportRunId = exportRunId;
 
   const runs = querySql<RunRow>("SELECT * FROM runs ORDER BY created_at DESC LIMIT 200");
   const proofs = querySql<ProofRow>("SELECT * FROM proofs ORDER BY created_at DESC LIMIT 500");
@@ -533,7 +656,13 @@ function exportObsidianVaultUnlocked(options: ObsidianExportOptions, vaultPath: 
   const researchPlans = querySql<ResearchPlanRow>("SELECT * FROM research_plans ORDER BY updated_at DESC LIMIT 20");
   const docs = readDocs(docsDir);
   const capabilities = getCodexCapabilities();
-  const codexSessions = readCodexSessions(options.codexSessionsDir);
+  const codexSessions = readCodexSessions(
+    options.codexSessionsDir,
+    options.codexSessionIndexFile,
+    options.refreshCodexSessionIndex !== true
+  );
+  refreshCodexSessionIndexIfNeeded(options);
+  const sessionIndexInventory = readSessionIndexInventory(options.codexSessionIndexFile);
   const memoryHints = readMemoryProjectHints(options.codexMemoryFile);
   const exportTimestamp = new Date().toISOString();
   const resumeContractJsonPath = resolveExportResumeContractPath(vaultPath, startHereSubdir, options.resumeContractPath);
@@ -567,6 +696,7 @@ function exportObsidianVaultUnlocked(options: ObsidianExportOptions, vaultPath: 
     projectActionQueueFilename,
     approvalLedgerFilename,
     conversationMemoryCardsFilename,
+    sessionKnowledgeDigestFilename,
     userSignalsFilename,
     secondBrainIntakeFilename,
     secondBrainAutoProcessorFilename,
@@ -587,6 +717,7 @@ function exportObsidianVaultUnlocked(options: ObsidianExportOptions, vaultPath: 
   const commandQueue = readCommandQueue(vaultPath);
   const secondBrainCandidates = readSecondBrainClassificationCandidates(vaultPath);
   const secondBrainDigestNotes = readSecondBrainDigestNotes(vaultPath);
+  const autoPromotedKnowledge = readAutoPromotedSecondBrainKnowledge(vaultPath);
   const skillCandidates = readSkillCandidateNotes(vaultPath);
   const knowledgeUseReceipts = readKnowledgeUseReceipts(options.knowledgeUseLedgerFile);
   const resumeContractJsonFile = writeResumeContract(resumeContract, resumeContractJsonPath);
@@ -600,7 +731,7 @@ function exportObsidianVaultUnlocked(options: ObsidianExportOptions, vaultPath: 
     ),
     writeMarkdown(outputDir, "Runs.md", renderRuns(runs, proofs), exportTimestamp),
     writeMarkdown(outputDir, "Proofs.md", renderProofs(proofs, runs), exportTimestamp),
-    writeMarkdown(outputDir, "Knowledge.md", renderKnowledge({ bridgeActions, bridgeExecutions, knowledgeNotes, checks }), exportTimestamp),
+    writeMarkdown(outputDir, "Knowledge.md", renderKnowledge({ bridgeActions, bridgeExecutions, knowledgeNotes, checks, autoPromotedKnowledge }), exportTimestamp),
     writeMarkdown(outputDir, "Docs.md", renderDocs(docs), exportTimestamp),
     writeMarkdown(outputDir, runLedgerFilename, renderRunLedger({ runs, proofs, bridgeExecutions, generatedAt: exportTimestamp }), exportTimestamp)
   ];
@@ -719,6 +850,12 @@ function exportObsidianVaultUnlocked(options: ObsidianExportOptions, vaultPath: 
     ),
     writeMarkdown(
       controlPanelDir,
+      sessionKnowledgeDigestFilename,
+      renderSessionKnowledgeDigest({ codexSessions, sessionIndexInventory, generatedAt: exportTimestamp }),
+      exportTimestamp
+    ),
+    writeMarkdown(
+      controlPanelDir,
       userSignalsFilename,
       renderUserSignals({ codexSessions, memoryHints, knowledgeNotes, generatedAt: exportTimestamp }),
       exportTimestamp
@@ -816,7 +953,7 @@ function exportObsidianVaultUnlocked(options: ObsidianExportOptions, vaultPath: 
     writeMarkdown(
       controlPanelDir,
       secondBrainAutoProcessorFilename,
-      renderSecondBrainAutoProcessor({ candidates: secondBrainCandidates, generatedAt: exportTimestamp }),
+      renderSecondBrainAutoProcessor({ candidates: secondBrainCandidates, autoPromotedCount: autoPromotedKnowledge.length, generatedAt: exportTimestamp }),
       exportTimestamp
     ),
     writeMarkdown(
@@ -838,7 +975,13 @@ function exportObsidianVaultUnlocked(options: ObsidianExportOptions, vaultPath: 
   ];
   const dashboardFiles = [
     ...dashboardBases.map((base) =>
-      writeMarkdown(dashboardDir, base.filename, renderDashboardBase({ ...base, generatedAt: exportTimestamp }), exportTimestamp)
+      writeMarkdown(
+        dashboardDir,
+        base.filename,
+        renderDashboardBase({ ...base, generatedAt: exportTimestamp }),
+        exportTimestamp,
+        base.filename === decisionDashboardBaseFilename
+      )
     ),
     writeMarkdown(dashboardDir, blockerRadarFilename, renderBlockerRadar({ runs, bridgeExecutions, projectAudit, generatedAt: exportTimestamp }), exportTimestamp),
     writeMarkdown(dashboardDir, successPathsFilename, renderSuccessPaths({ runs, proofs, knowledgeNotes, generatedAt: exportTimestamp }), exportTimestamp)
@@ -874,6 +1017,25 @@ function exportObsidianVaultUnlocked(options: ObsidianExportOptions, vaultPath: 
     ...orientationFiles,
     ...templateFiles
   ]);
+  const parityManifestFile = writeParityManifest(
+    join(outputDir, "obsidian-export-manifest.json"),
+    exportRunId,
+    exportTimestamp,
+    legacyAdoptionMetadata,
+    [
+      ...files,
+      controlPanelFile,
+      proofInboxFile,
+      join(startHereDir, resumeContractFilename),
+      resumeContractJsonFile,
+      ...missionFiles,
+      ...secondBrainFiles,
+      ...dashboardFiles,
+      ...projectGovernanceFiles,
+      ...orientationFiles,
+      ...templateFiles
+    ]
+  );
 
   return {
     vaultPath,
@@ -891,10 +1053,107 @@ function exportObsidianVaultUnlocked(options: ObsidianExportOptions, vaultPath: 
     dashboardFiles,
     projectGovernanceFiles: [...projectGovernanceFiles, projectAuditStatusFile],
     projectAuditStatusFile,
+    parityManifestFile,
+    legacyAdoption: legacyAdoptionMetadata,
+    skippedNonGeneratedFiles: [...new Set(skippedNonGeneratedFiles)],
+    exportRunId,
     orientationFiles,
     templateFiles,
     backupRetention
   };
+}
+
+type ObsidianParityManifest = {
+  generated_by: "automation-os";
+  schema_version: 1;
+  export_run_id: string;
+  generated_at: string;
+  coverage_epoch: string;
+  source_revision: string | null;
+  generator_version: string;
+  files: Array<{ path: string; sha256: string; size_bytes: number; mtime: string }>;
+  skipped_non_generated_files: string[];
+  legacy_adoption: ObsidianLegacyAdoptionMetadata | null;
+};
+
+function writeParityManifest(
+  path: string,
+  exportRunId: string,
+  generatedAt: string,
+  legacyAdoption: ObsidianLegacyAdoptionMetadata | null,
+  targets: string[]
+): string {
+  if (existsSync(path)) {
+    try {
+      const existing = JSON.parse(readFileSync(path, "utf8")) as Partial<ObsidianParityManifest>;
+      if (existing.generated_by !== "automation-os") {
+        throw new Error(`Refusing to overwrite non-generated Obsidian file: ${path}`);
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith("Refusing to overwrite")) throw error;
+      throw new Error(`Refusing to overwrite invalid generated Obsidian manifest: ${path}`);
+    }
+  }
+  const files = [...new Set(targets)]
+    .filter((target): target is string => typeof target === "string" && existsSync(target) && statSync(target).isFile())
+    .map((target) => {
+      const stat = statSync(target);
+      return {
+        path: target,
+        sha256: createHash("sha256").update(readFileSync(target)).digest("hex"),
+        size_bytes: stat.size,
+        mtime: stat.mtime.toISOString()
+    };
+  });
+  validateLegacyAdoptionAudit(legacyAdoption, exportRunId, files);
+  const manifest: ObsidianParityManifest = {
+    generated_by: "automation-os",
+    schema_version: 1,
+    export_run_id: exportRunId,
+    generated_at: generatedAt,
+    coverage_epoch: generatedAt,
+    source_revision: process.env.GIT_COMMIT || process.env.SOURCE_REVISION || null,
+    generator_version: "automation-os:obsidian-export:v1",
+    files,
+    legacy_adoption: legacyAdoption,
+    skipped_non_generated_files: [...new Set(skippedNonGeneratedFiles)]
+  };
+  mkdirSync(dirname(path), { recursive: true });
+  const tmpPath = `${path}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(tmpPath, `${JSON.stringify(manifest, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  const manifestFd = openSync(tmpPath, "r");
+  try {
+    fsyncSync(manifestFd);
+  } finally {
+    closeSync(manifestFd);
+  }
+  renameSync(tmpPath, path);
+  fsyncDirectory(dirname(path));
+  return path;
+}
+
+function validateLegacyAdoptionAudit(
+  adoption: ObsidianLegacyAdoptionMetadata | null,
+  exportRunId: string,
+  files: Array<{ path: string; sha256: string; size_bytes: number; mtime: string }>
+): void {
+  if (!adoption) return;
+  if (adoption.export_run_id !== exportRunId) throw new Error("legacy_adoption_run_id_mismatch");
+  if (adoption.template_id !== legacyDecisionDashboardTemplateId) throw new Error("legacy_adoption_template_id_mismatch");
+  if (resolve(adoption.target_path) !== adoption.target_path) throw new Error("legacy_adoption_target_not_canonical");
+  if (adoption.status !== "adopted") return;
+  const targetStat = lstatSync(adoption.target_path);
+  if (targetStat.isSymbolicLink() || !targetStat.isFile() || targetStat.nlink > 1) throw new Error("legacy_adoption_target_readback_not_regular");
+  const targetBytes = readFileSync(adoption.target_path);
+  const targetSha256 = createHash("sha256").update(targetBytes).digest("hex");
+  if (!adoption.post_sha256 || targetSha256 !== adoption.post_sha256) throw new Error("legacy_adoption_target_hash_mismatch");
+  if (!adoption.readback.attempted || !adoption.readback.ok || adoption.readback.sha256 !== targetSha256) throw new Error("legacy_adoption_readback_proof_mismatch");
+  if (!adoption.backup_path || !adoption.backup_sha256 || resolve(adoption.backup_path) !== adoption.backup_path) throw new Error("legacy_adoption_backup_proof_missing");
+  const backupStat = lstatSync(adoption.backup_path);
+  if (backupStat.isSymbolicLink() || !backupStat.isFile() || backupStat.nlink > 1) throw new Error("legacy_adoption_backup_not_regular");
+  const backupSha256 = createHash("sha256").update(readFileSync(adoption.backup_path)).digest("hex");
+  if (backupSha256 !== adoption.backup_sha256 || backupSha256 !== adoption.pre_sha256) throw new Error("legacy_adoption_backup_proof_mismatch");
+  if (!files.some((file) => resolve(file.path) === adoption.target_path && file.sha256 === targetSha256)) throw new Error("legacy_adoption_manifest_target_missing");
 }
 
 function resolveExportResumeContractPath(vaultPath: string, startHereSubdir: string, resumeContractPath?: string): string {
@@ -913,14 +1172,30 @@ function assertGeneratedTargets(outputDir: string, filenames: string[]): void {
     if (!existsSync(path)) continue;
     const existing = readFileSync(path, "utf8");
     if (!hasGeneratedMarkerForFilename(filename, existing)) {
+      if (filename === decisionDashboardBaseFilename && matchesLegacyDecisionDashboardBase(existing)) continue;
+      if (skipNonGeneratedFiles) {
+        skippedNonGeneratedFiles.push(path);
+        continue;
+      }
       throw new Error(`Refusing to overwrite non-generated Obsidian file: ${path}`);
     }
   }
 }
 
-function writeMarkdown(outputDir: string, filename: string, body: string, exportTimestamp: string): string {
+function writeMarkdown(outputDir: string, filename: string, body: string, exportTimestamp: string, allowLegacyAdoption = false): string {
   const path = join(outputDir, filename);
   if (existsSync(path)) {
+    const existing = readFileSync(path, "utf8");
+    if (!hasGeneratedMarkerForFilename(filename, existing)) {
+      if (allowLegacyAdoption && matchesLegacyDecisionDashboardBase(existing)) {
+        return adoptLegacyDecisionDashboard(path, body, exportTimestamp);
+      }
+      if (skipNonGeneratedFiles) {
+        skippedNonGeneratedFiles.push(path);
+        return path;
+      }
+      throw new Error(`Refusing to overwrite non-generated Obsidian file: ${path}`);
+    }
     const backupDir = join(outputDir, ".backups", safeTimestamp(exportTimestamp));
     mkdirSync(backupDir, { recursive: true });
     copyFileSync(path, join(backupDir, filename));
@@ -929,6 +1204,97 @@ function writeMarkdown(outputDir: string, filename: string, body: string, export
   writeFileSync(tmpPath, body.endsWith("\n") ? body : `${body}\n`);
   renameSync(tmpPath, path);
   return path;
+}
+
+function adoptLegacyDecisionDashboard(path: string, renderedBody: string, exportTimestamp: string): string {
+  const metadataBase: ObsidianLegacyAdoptionMetadata = {
+    status: "blocked",
+    export_run_id: activeExportRunId,
+    target_path: resolve(path),
+    template_id: legacyDecisionDashboardTemplateId,
+    pre_sha256: "",
+    post_sha256: null,
+    backup_path: null,
+    backup_sha256: null,
+    readback: { attempted: false, ok: false, sha256: null, error: null }
+  };
+  try {
+    const canonicalPath = resolve(path);
+    const fileStat = lstatSync(canonicalPath);
+    if (fileStat.isSymbolicLink() || fileStat.nlink > 1) {
+      throw new Error("legacy_adoption_path_not_regular");
+    }
+    const original = readFileSync(canonicalPath);
+    const preSha256 = createHash("sha256").update(original).digest("hex");
+    const backupPath = `${canonicalPath}.bak-${safeTimestamp(exportTimestamp)}-${randomUUID().slice(0, 8)}`;
+    const backupFd = openSync(backupPath, "wx", 0o600);
+    try {
+      writeSync(backupFd, original);
+      fsyncSync(backupFd);
+    } finally {
+      closeSync(backupFd);
+    }
+    const backupSha256 = createHash("sha256").update(readFileSync(backupPath)).digest("hex");
+    if (backupSha256 !== preSha256) throw new Error("legacy_adoption_backup_hash_mismatch");
+    fsyncDirectory(dirname(canonicalPath));
+
+    const beforeRenameStat = lstatSync(canonicalPath);
+    const beforeRenameBytes = readFileSync(canonicalPath);
+    const beforeRenameSha256 = createHash("sha256").update(beforeRenameBytes).digest("hex");
+    if (
+      beforeRenameStat.isSymbolicLink() ||
+      beforeRenameStat.nlink !== fileStat.nlink ||
+      beforeRenameStat.dev !== fileStat.dev ||
+      beforeRenameStat.ino !== fileStat.ino ||
+      beforeRenameSha256 !== preSha256
+    ) {
+      throw new Error("legacy_adoption_target_changed_before_rename");
+    }
+
+    const tempPath = `${canonicalPath}.${process.pid}.${Date.now()}.tmp`;
+    const rendered = renderedBody.endsWith("\n") ? renderedBody : `${renderedBody}\n`;
+    const renderedBytes = Buffer.from(rendered, "utf8");
+    const tempFd = openSync(tempPath, "wx", 0o600);
+    try {
+      writeSync(tempFd, renderedBytes);
+      fsyncSync(tempFd);
+    } finally {
+      closeSync(tempFd);
+    }
+    renameSync(tempPath, canonicalPath);
+    fsyncDirectory(dirname(canonicalPath));
+    const postSha256 = createHash("sha256").update(readFileSync(canonicalPath)).digest("hex");
+    const expectedPostSha256 = createHash("sha256").update(renderedBytes).digest("hex");
+    const readbackOk = postSha256 === expectedPostSha256 && hasBaseGeneratedMarker(readFileSync(canonicalPath, "utf8"));
+    const metadata: ObsidianLegacyAdoptionMetadata = {
+      status: readbackOk ? "adopted" : "post_write_failed",
+      export_run_id: activeExportRunId,
+      target_path: canonicalPath,
+      template_id: legacyDecisionDashboardTemplateId,
+      pre_sha256: preSha256,
+      post_sha256: postSha256,
+      backup_path: backupPath,
+      backup_sha256: backupSha256,
+      readback: { attempted: true, ok: readbackOk, sha256: postSha256, error: readbackOk ? null : "legacy_adoption_post_write_readback_mismatch" },
+      reason: readbackOk ? undefined : "legacy_adoption_post_write_readback_mismatch"
+    };
+    legacyAdoptionMetadata = metadata;
+    if (!readbackOk) throw new ObsidianLegacyAdoptionError(metadata);
+    return path;
+  } catch (error) {
+    const metadata = error instanceof ObsidianLegacyAdoptionError ? error.metadata : { ...metadataBase, reason: error instanceof Error ? error.message : "legacy_adoption_failed" };
+    legacyAdoptionMetadata = metadata;
+    throw new ObsidianLegacyAdoptionError(metadata);
+  }
+}
+
+function fsyncDirectory(path: string): void {
+  const fd = openSync(path, "r");
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
 }
 
 function pruneGeneratedBackupRetention(paths: string[]): ObsidianBackupRetentionSummary {
@@ -1149,12 +1515,15 @@ function renderKnowledge(input: {
   bridgeExecutions: BridgeExecutionRow[];
   knowledgeNotes: KnowledgeNoteRow[];
   checks: SystemCheckRow[];
+  autoPromotedKnowledge: AutoPromotedSecondBrainKnowledge[];
 }): string {
   return [
     "---",
     "system: automation-os",
     "generated_by: automation-os",
     "kind: knowledge-index",
+    `auto_promoted_internal_knowledge_count: ${input.autoPromotedKnowledge.length}`,
+    "auto_promoted_internal_knowledge_read_only: true",
     "---",
     "",
     "# Knowledge",
@@ -1175,6 +1544,15 @@ function renderKnowledge(input: {
       ""
     ]),
     input.knowledgeNotes.length === 0 ? "No knowledge notes indexed yet." : "",
+    "",
+    "## Auto-promoted internal knowledge",
+    "",
+    "Only handwritten, review-ready Second Brain notes that pass every fail-closed eligibility check are shown here.",
+    "This is internal/read-only knowledge and is never authorization for external action.",
+    "",
+    input.autoPromotedKnowledge.length
+      ? input.autoPromotedKnowledge.map((knowledge) => renderAutoPromotedSecondBrainKnowledge(knowledge)).join("\n")
+      : "No reviewed Second Brain notes met the fail-closed promotion predicate.",
     "",
     "## Trusted Bridge Actions",
     "",
@@ -1218,6 +1596,25 @@ function renderKnowledge(input: {
     "## UI Verification",
     "",
     ...renderSystemChecks(input.checks.slice(0, 8))
+  ].join("\n");
+}
+
+function renderAutoPromotedSecondBrainKnowledge(knowledge: AutoPromotedSecondBrainKnowledge): string {
+  return [
+    `### [[${knowledge.file.replace(/\.md$/, "")}|${shortSnippet(knowledge.title, 160)}]]`,
+    "",
+    "- promotion_status: auto_promoted",
+    "- eligibility: eligible",
+    `- destination: ${knowledge.destination}`,
+    `- progressive_summary: ${shortSnippet(knowledge.progressiveSummary, 420)}`,
+    `- distillation: ${shortSnippet(knowledge.distillation, 420)}`,
+    `- next_use: ${shortSnippet(knowledge.nextUse, 420)}`,
+    `- source_url: ${redactSecondBrainPointer(knowledge.sourceUrl)}`,
+    `- source_of_truth: ${redactSecondBrainPointer(knowledge.sourceOfTruth)}`,
+    `- content_sha256: ${knowledge.contentSha256}`,
+    "- external_action_authorized: false",
+    "- rule: internal/read-only knowledge only; not external-action authorization.",
+    ""
   ].join("\n");
 }
 
@@ -2473,7 +2870,7 @@ function renderSecondBrainCandidate(candidate: SecondBrainClassificationCandidat
   ].join("\n");
 }
 
-function renderSecondBrainAutoProcessor(input: { candidates: SecondBrainClassificationCandidate[]; generatedAt: string }): string {
+function renderSecondBrainAutoProcessor(input: { candidates: SecondBrainClassificationCandidate[]; autoPromotedCount: number; generatedAt: string }): string {
   return [
     "---",
     "system: automation-os",
@@ -2519,6 +2916,8 @@ function renderSecondBrainAutoProcessor(input: { candidates: SecondBrainClassifi
     "",
     `- Source redaction: ${input.candidates.length ? "enabled for source_url and source_of_truth" : "no candidates"}`,
     "- Destination allowlist: 05_Projects, 06_Research, 07_Decisions, 08_Runbooks, 09_Inbox, unknown",
+    `- Auto-promoted internal knowledge eligible count: ${input.autoPromotedCount}`,
+    "- Auto-promotion rule: review_ready + processor proof + substantive reuse fields only; internal/read-only and never external-action authorization.",
     "",
     input.candidates.length
       ? input.candidates.map((candidate) => renderSecondBrainAutoProcessorQueueItem(candidate)).join("\n")
@@ -2537,23 +2936,37 @@ function renderSecondBrainAutoProcessorQueueItem(candidate: SecondBrainClassific
   const unknownDestination = suggestedDestination === "unknown";
   const externalActionRequired = unknownDestination || candidate.externalActionRequired ? "true" : "false";
   const approvalRequired = unknownDestination || candidate.approvalRequired ? "true" : "false";
+  const duplicateFiles = candidate.duplicateSourceFiles.length
+    ? candidate.duplicateSourceFiles.map((file) => `[[${file.replace(/\.md$/, "")}|${file}]]`).join(", ")
+    : "none";
   return [
     `### [[${candidate.file.replace(/\.md$/, "")}|${candidate.title}]]`,
     "",
     `- auto_process: obsidian_internal_only`,
     `- processing_status: ${candidate.processingStatus}`,
     `- suggested_destination: ${suggestedDestination}`,
-    `- progressive_summary: ${candidate.excerpt}`,
+    `- progressive_summary: ${safeSecondBrainValue(candidate.progressiveSummary, 360)}`,
     `- source_url: ${sourceUrl}`,
     `- source_of_truth: ${sourceOfTruth}`,
-    `- distillation: ${candidate.reason}`,
-    `- next_use: draft Obsidian-only note or link after review of the redacted source pointer`,
-    `- unresolved_question: confirm whether the suggested destination is enough for durable reuse`,
-    `- review_cycle: weekly`,
+    `- source_key: ${candidate.sourceKey}`,
+    `- duplicate_source_group: ${candidate.duplicateSourceCount}`,
+    `- duplicate_source_files: ${duplicateFiles}`,
+    `- distillation: ${safeSecondBrainValue(candidate.distillation, 360)}`,
+    `- next_use: ${safeSecondBrainValue(candidate.nextUse, 360)}`,
+    `- unresolved_question: ${safeSecondBrainValue(candidate.unresolvedQuestion, 360)}`,
+    `- review_cycle: ${safeSecondBrainValue(candidate.reviewCycle, 120)}`,
+    `- distillation_quality: ${safeSecondBrainValue(candidate.distillationQuality, 120)}`,
+    `- knowledge_reuse_status: ${safeSecondBrainValue(candidate.knowledgeReuseStatus, 120)}`,
+    `- processed_at: ${safeSecondBrainValue(candidate.processedAt, 120)}`,
+    `- excerpt_for_locator_only: ${safeSecondBrainValue(candidate.excerpt, 220)}`,
     `- external_action_required: ${externalActionRequired}`,
     `- approval_required: ${approvalRequired}`,
     ""
   ].join("\n");
+}
+
+function safeSecondBrainValue(value: string, maxLength: number): string {
+  return shortSnippet(redactSensitive(value), maxLength) || "not_present";
 }
 
 function renderSecondBrainWeeklyDigest(input: {
@@ -2813,6 +3226,85 @@ function renderConversationMemoryCards(input: {
     "",
     "Do not answer from this page alone. Use it to choose what to read first, what to verify, and which concern to handle without asking the user to repeat it."
   ].join("\n");
+}
+
+function renderSessionKnowledgeDigest(input: {
+  codexSessions: CodexSessionSummary[];
+  sessionIndexInventory: SessionIndexInventory;
+  generatedAt: string;
+}): string {
+  const projects = groupSessionsByCwd(input.codexSessions);
+  return [
+    "---",
+    "system: automation-os",
+    "generated_by: automation-os",
+    "kind: codex-session-knowledge-digest",
+    "status: active",
+    "priority: high",
+    "coverage: all_redacted_session_index_inventory_plus_latest_50_user_owned_head_tail_detail",
+    "raw_transcript_stored: false",
+    "review_status: pending_human_review",
+    "knowledge_reuse_status: locator_only",
+    "promotion_allowed: false",
+    "source_of_truth: ~/.codex/sessions bounded session metadata; project-owned STATE/AGENTS/artifacts remain authoritative",
+    `generated_at: ${input.generatedAt}`,
+    "---",
+    "",
+    "# Session Knowledge Digest",
+    "",
+    "セッションを跨いで再開候補・繰り返しの詰まり・次に読む場所を見つけるためのcompact digestです。全文ログやraw transcriptを知識として自動昇格させません。",
+    "",
+    "## Coverage and Boundary",
+    "",
+    `- All-session redacted index entries: ${input.sessionIndexInventory.available ? input.sessionIndexInventory.indexedEntries : "unavailable"}`,
+    `- Session index readback: ${input.sessionIndexInventory.available ? input.sessionIndexInventory.path : "unavailable"}`,
+    `- Session index mtime: ${input.sessionIndexInventory.latestMtime ?? "unknown"}`,
+    `- Index review status: pending_human_review=${input.sessionIndexInventory.pendingHumanReview}; promotion_allowed=${input.sessionIndexInventory.promotionAllowed}`,
+    `- Session summaries indexed: ${input.codexSessions.length}`,
+    "- Detail coverage: up to 50 user-owned sessions selected after scanning a bounded recent file window; subagent sessions are excluded.",
+    "- All-session inventory is count/status metadata from the redacted session index; it is not a transcript export.",
+    "- Read mode: bounded head/tail metadata and short redacted hints only.",
+    "- Promotion: disabled until a human explicitly reviews the original session and project-owned source of truth.",
+    "- Obsidian role: locator and review surface, not completion proof or execution authorization.",
+    "",
+    "## Project Mix",
+    projects.length
+      ? projects.map((project) => `- ${project.cwd}: ${project.count} session(s); latest=${project.latest.sessionId} (${project.latest.mtime})`).join("\n")
+      : "- No user-owned sessions indexed.",
+    "",
+    "## Session Entries",
+    input.codexSessions.length
+      ? input.codexSessions.map((session) => renderSessionKnowledgeDigestItem(session)).join("\n")
+      : "No user-owned sessions indexed.",
+    "",
+    "## Resume Rule",
+    "",
+    "Use an entry to choose the next source read. Before claiming reuse or completion, open the original session plus the current project STATE/AGENTS, latest artifact, and readback.",
+    ""
+  ].join("\n");
+}
+
+function renderSessionKnowledgeDigestItem(session: CodexSessionSummary): string {
+  const blockerClass = classifyBlockerText(`${session.lastUser} ${session.lastAssistant}`);
+  return [
+    `### ${session.sessionId}`,
+    "",
+    `- modified: ${session.mtime}`,
+    `- file: \`${session.file}\``,
+    `- cwd: ${session.cwd}`,
+    `- thread_source: ${session.threadSource}`,
+    `- blocker_class_hint: ${blockerClass}`,
+    `- last_user_hint: ${safeSessionHint(session.lastUser)}`,
+    `- last_assistant_hint: ${safeSessionHint(session.lastAssistant)}`,
+    "- review_status: pending_human_review",
+    "- knowledge_reuse_status: locator_only",
+    "- promotion_allowed: false",
+    ""
+  ].join("\n");
+}
+
+function safeSessionHint(value: string): string {
+  return shortSnippet(redactSensitive(value), 180) || "none";
 }
 
 function renderUserSignals(input: {
@@ -3469,6 +3961,18 @@ function renderSecondBrainReviewBase(input: { title: string; folder: string; gen
     "    displayName: Suggested destination",
     "  progressive_summary:",
     "    displayName: Progressive summary",
+    "  distillation:",
+    "    displayName: Distillation",
+    "  next_use:",
+    "    displayName: Next use",
+    "  unresolved_question:",
+    "    displayName: Unresolved question",
+    "  review_cycle:",
+    "    displayName: Review cycle",
+    "  distillation_quality:",
+    "    displayName: Distillation quality",
+    "  knowledge_reuse_status:",
+    "    displayName: Knowledge reuse status",
     "  source_of_truth:",
     "    displayName: Source of truth",
     "  external_action_required:",
@@ -3487,6 +3991,12 @@ function renderSecondBrainReviewBase(input: { title: string; folder: string; gen
     "      - processing_status",
     "      - suggested_destination",
     "      - progressive_summary",
+    "      - distillation",
+    "      - next_use",
+    "      - unresolved_question",
+    "      - review_cycle",
+    "      - distillation_quality",
+    "      - knowledge_reuse_status",
     "      - source_of_truth",
     "      - external_action_required",
     "      - approval_required",
@@ -3645,10 +4155,133 @@ function readCommandQueueFromFile(vaultPath: string, path: string): CommandQueue
 function readSecondBrainClassificationCandidates(vaultPath: string): SecondBrainClassificationCandidate[] {
   const inboxDir = join(vaultPath, "09_Inbox");
   if (!existsSync(inboxDir)) return [];
-  return readMarkdownFiles(inboxDir)
+  const candidates = readMarkdownFiles(inboxDir)
     .map((path) => readSecondBrainCandidateFromFile(vaultPath, path))
-    .filter((candidate): candidate is SecondBrainClassificationCandidate => Boolean(candidate))
+    .filter((candidate): candidate is SecondBrainClassificationCandidate => Boolean(candidate));
+  const groups = groupBy(candidates, (candidate) => candidate.sourceKey);
+  return candidates
+    .map((candidate) => {
+      const group = groups.get(candidate.sourceKey) ?? [candidate];
+      return {
+        ...candidate,
+        duplicateSourceCount: group.length,
+        duplicateSourceFiles: group.map((item) => item.file).filter((file) => file !== candidate.file)
+      };
+    })
     .slice(0, 80);
+}
+
+function readAutoPromotedSecondBrainKnowledge(vaultPath: string): AutoPromotedSecondBrainKnowledge[] {
+  const vaultRoot = resolve(vaultPath);
+  let vaultRealPath: string;
+  try {
+    vaultRealPath = realpathSync(vaultRoot);
+  } catch {
+    return [];
+  }
+  return secondBrainPromotionTargetFolders
+    .flatMap((folder) => {
+      const root = join(vaultRoot, folder);
+      try {
+        if (!existsSync(root)) return [];
+        const rootStat = lstatSync(root);
+        if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) return [];
+        return readSafeSecondBrainMarkdownFiles(root, vaultRoot, vaultRealPath);
+      } catch {
+        return [];
+      }
+    })
+    .map((path) => readAutoPromotedSecondBrainKnowledgeFromFile(vaultRoot, path))
+    .filter((knowledge): knowledge is AutoPromotedSecondBrainKnowledge => Boolean(knowledge))
+    .sort((left, right) => left.file.localeCompare(right.file));
+}
+
+function readSafeSecondBrainMarkdownFiles(dir: string, vaultRoot: string, vaultRealPath: string): string[] {
+  try {
+    return readdirSync(dir)
+      .flatMap((entry) => {
+        if (entry === ".backups" || entry === ".obsidian" || entry.toLowerCase() === "templates" || entry.toLowerCase() === "_templates" || entry.toLowerCase().includes("generated")) {
+          return [];
+        }
+        const path = join(dir, entry);
+        let pathStat;
+        try {
+          pathStat = lstatSync(path);
+        } catch {
+          return [];
+        }
+        if (pathStat.isSymbolicLink()) return [];
+        if (pathStat.isDirectory()) return readSafeSecondBrainMarkdownFiles(path, vaultRoot, vaultRealPath);
+        if (!pathStat.isFile() || !entry.endsWith(".md")) return [];
+        let realPath: string;
+        try {
+          realPath = realpathSync(path);
+        } catch {
+          return [];
+        }
+        const relativeRealPath = relative(vaultRealPath, realPath);
+        if (relativeRealPath === ".." || relativeRealPath.startsWith(`..${sep}`) || isAbsolute(relativeRealPath)) return [];
+        const relativeVaultPath = relative(vaultRoot, path);
+        if (!secondBrainPromotionTargetFolders.some((folder) => relativeVaultPath === folder || relativeVaultPath.startsWith(`${folder}${sep}`))) {
+          return [];
+        }
+        return [path];
+      })
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
+function readAutoPromotedSecondBrainKnowledgeFromFile(vaultRoot: string, path: string): AutoPromotedSecondBrainKnowledge | undefined {
+  try {
+    const markdown = readFileSync(path, "utf8");
+    const frontmatter = parseFrontmatter(markdown);
+    if (Object.hasOwn(frontmatter, "generated_by") || frontmatterFlagIsAffirmative(frontmatter.skill_candidate)) return undefined;
+    if (frontmatter.auto_process !== "obsidian_internal_only") return undefined;
+    if (frontmatter.processing_status !== "review_ready") return undefined;
+    if (frontmatter.processed_by !== "automation-os-second-brain-processor") return undefined;
+    if (!secondBrainDestinationAllowlist.has(frontmatter.suggested_destination) || !secondBrainPromotionDestinationAllowlist.has(frontmatter.suggested_destination)) {
+      return undefined;
+    }
+    if (frontmatter.knowledge_reuse_status !== "ready" || frontmatter.distillation_quality !== "substantive") return undefined;
+    if (!frontmatterFlagIsExplicitFalse(frontmatter.external_action_required) || !frontmatterFlagIsExplicitFalse(frontmatter.approval_required)) {
+      return undefined;
+    }
+
+    const progressiveSummary = firstPresentString(frontmatter.progressive_summary);
+    const distillation = firstPresentString(frontmatter.distillation);
+    const nextUse = firstPresentString(frontmatter.next_use);
+    const sourceOfTruth = firstPresentString(frontmatter.source_of_truth);
+    if (!isSubstantiveSecondBrainValue(progressiveSummary) || !isSubstantiveSecondBrainValue(distillation) || !isSubstantiveSecondBrainValue(nextUse) || !isSubstantiveSecondBrainValue(sourceOfTruth)) {
+      return undefined;
+    }
+    const sourceUrl = firstPresentString(frontmatter.source_url) ?? "unknown";
+    if ((sourceUrl !== "unknown" && redactSecondBrainPointer(sourceUrl) !== sourceUrl) || redactSecondBrainPointer(sourceOfTruth) !== sourceOfTruth) {
+      return undefined;
+    }
+
+    return {
+      file: relative(vaultRoot, path),
+      title: firstPresentString(frontmatter.title) ?? basename(path, ".md"),
+      destination: frontmatter.suggested_destination,
+      progressiveSummary,
+      distillation,
+      nextUse,
+      sourceUrl,
+      sourceOfTruth,
+      contentSha256: createHash("sha256").update(markdown, "utf8").digest("hex")
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function isSubstantiveSecondBrainValue(value: string | undefined): value is string {
+  if (!value) return false;
+  const normalized = value.replace(/\s+/g, " ").trim().toLowerCase();
+  if (normalized.length < 24) return false;
+  return !new Set(["unknown", "none", "n/a", "na", "null", "todo", "tbd", "draft", "review_needed", "review needed", "review and classify.", "source_url", "source_of_truth", "handwritten note", "note"]).has(normalized);
 }
 
 function readSecondBrainCandidateFromFile(vaultPath: string, path: string): SecondBrainClassificationCandidate | undefined {
@@ -3672,6 +4305,14 @@ function readSecondBrainCandidateFromFile(vaultPath: string, path: string): Seco
   const processingStatus = firstPresentString(frontmatter.processing_status, frontmatter.processingStatus) ?? "queued";
   const suggested = firstPresentString(frontmatter.suggested_destination, frontmatter.suggestedDestination);
   const inferred = suggested ? normalizeSecondBrainSuggestedDestination(suggested) : inferSecondBrainDestination({ title, body, captureType });
+  const progressiveSummary = firstPresentString(frontmatter.progressive_summary, frontmatter.progressiveSummary) ?? "not_present";
+  const distillation = firstPresentString(frontmatter.distillation) ?? "not_present";
+  const nextUse = firstPresentString(frontmatter.next_use, frontmatter.nextUse) ?? "not_present";
+  const unresolvedQuestion = firstPresentString(frontmatter.unresolved_question, frontmatter.unresolvedQuestion) ?? "not_present";
+  const reviewCycle = firstPresentString(frontmatter.review_cycle, frontmatter.reviewCycle) ?? "not_set";
+  const distillationQuality = firstPresentString(frontmatter.distillation_quality, frontmatter.distillationQuality) ?? "not_set";
+  const knowledgeReuseStatus = firstPresentString(frontmatter.knowledge_reuse_status, frontmatter.knowledgeReuseStatus) ?? "not_set";
+  const processedAt = firstPresentString(frontmatter.processed_at, frontmatter.processedAt) ?? "not_set";
   return {
     file: rel,
     title,
@@ -3685,7 +4326,18 @@ function readSecondBrainCandidateFromFile(vaultPath: string, path: string): Seco
     externalActionRequired: frontmatterFlagIsTrue(frontmatter.external_action_required, frontmatter.externalActionRequired),
     approvalRequired: frontmatterFlagIsTrue(frontmatter.approval_required, frontmatter.approvalRequired),
     reason: inferred.reason,
-    excerpt: shortSnippet(stripFrontmatter(body), 220)
+    excerpt: shortSnippet(stripFrontmatter(body), 220),
+    progressiveSummary,
+    distillation,
+    nextUse,
+    unresolvedQuestion,
+    reviewCycle,
+    distillationQuality,
+    knowledgeReuseStatus,
+    processedAt,
+    sourceKey: canonicalSecondBrainSourceKey(sourceUrl !== "unknown" ? sourceUrl : sourceOfTruth, rel),
+    duplicateSourceCount: 1,
+    duplicateSourceFiles: []
   };
 }
 
@@ -3802,6 +4454,26 @@ function redactSecondBrainPointer(value: unknown): string {
   return text || "unknown";
 }
 
+function canonicalSecondBrainSourceKey(value: string, fallbackFile: string): string {
+  const redacted = redactSecondBrainPointer(value);
+  if (redacted === "unknown" || redacted.includes("[REDACTED]")) {
+    return `file:${createHash("sha256").update(fallbackFile, "utf8").digest("hex").slice(0, 16)}`;
+  }
+  try {
+    const url = new URL(redacted);
+    if (!/^https?:$/.test(url.protocol)) throw new Error("unsupported_source_protocol");
+    url.hostname = url.hostname.toLowerCase();
+    url.pathname = url.pathname.replace(/\/+$/, "") || "/";
+    for (const key of [...url.searchParams.keys()]) {
+      if (/^(?:utm_[^=]+|fbclid|gclid|s|sub_rt)$/i.test(key)) url.searchParams.delete(key);
+    }
+    const canonical = url.toString().replace(/\/$/, "");
+    return `url:${createHash("sha256").update(canonical, "utf8").digest("hex").slice(0, 16)}`;
+  } catch {
+    return `pointer:${createHash("sha256").update(redacted, "utf8").digest("hex").slice(0, 16)}`;
+  }
+}
+
 function inferCaptureType(input: { sourceUrl: string; body: string }): string {
   if (input.sourceUrl !== "unknown") return "url";
   if (/\barticle\b|記事|論文|paper/i.test(input.body)) return "article";
@@ -3825,9 +4497,28 @@ function inferSecondBrainDestination(input: { title: string; body: string; captu
   return { destination: "09_Inbox", reason: "insufficient signal; keep in inbox for safe review" };
 }
 
-function readCodexSessions(inputDir?: string): CodexSessionSummary[] {
-  const sessionsDir = resolve(inputDir ?? process.env.AUTOMATION_OS_CODEX_SESSIONS_DIR ?? join(homedir(), ".codex", "sessions"));
+function readCodexSessions(inputDir?: string, inputIndexFile?: string, preferRedactedIndex = false): CodexSessionSummary[] {
+  const configuredSessionsDir = inputDir ?? process.env.AUTOMATION_OS_CODEX_SESSIONS_DIR;
+  const sessionsDir = resolve(configuredSessionsDir ?? join(homedir(), ".codex", "sessions"));
   if (!existsSync(sessionsDir)) return [];
+  const explicitIndex = inputIndexFile !== undefined || Boolean(process.env.AUTOMATION_OS_CODEX_SESSION_INDEX);
+  const explicitSessionsDir = configuredSessionsDir !== undefined;
+  if (preferRedactedIndex && (explicitIndex || !explicitSessionsDir)) {
+    const indexedSessions = readRedactedSessionIndex(inputIndexFile)
+      .filter((entry) => entry.parentThreadId === null)
+      .slice(0, 50)
+      .map((entry): CodexSessionSummary => ({
+        file: entry.file,
+        sessionId: entry.sessionId,
+        mtime: entry.mtime,
+        cwd: entry.cwd,
+        lastUser: entry.lastUser,
+        lastAssistant: entry.lastAssistant,
+        threadSource: entry.threadSource,
+        parentThreadId: entry.parentThreadId
+      }));
+    if (indexedSessions.length > 0) return indexedSessions;
+  }
   try {
     const candidates = listJsonlFiles(sessionsDir)
       .flatMap((path) => {
@@ -3853,6 +4544,56 @@ function readCodexSessions(inputDir?: string): CodexSessionSummary[] {
     return sessions;
   } catch {
     return [];
+  }
+}
+
+function readSessionIndexInventory(inputFile?: string): SessionIndexInventory {
+  const path = resolve(inputFile ?? process.env.AUTOMATION_OS_CODEX_SESSION_INDEX ?? join(homedir(), ".codex", "session-index.jsonl"));
+  const unavailable: SessionIndexInventory = {
+    path,
+    available: false,
+    indexedEntries: 0,
+    pendingHumanReview: 0,
+    promotionAllowed: 0,
+    latestMtime: null
+  };
+  if (!existsSync(path)) return unavailable;
+  try {
+    const stat = statSync(path);
+    if (!stat.isFile()) return unavailable;
+    let indexedEntries = 0;
+    let pendingHumanReview = 0;
+    let promotionAllowed = 0;
+    for (const line of safeReadText(path).split("\n")) {
+      const entry = parseJson<Record<string, unknown>>(line, {});
+      if (!firstPresentString(entry.sessionId, entry.session_id, entry.file)) continue;
+      indexedEntries += 1;
+      if (String(entry.reviewStatus ?? "") === "pending_human_review") pendingHumanReview += 1;
+      if (entry.promotionAllowed === true) promotionAllowed += 1;
+    }
+    return {
+      path,
+      available: true,
+      indexedEntries,
+      pendingHumanReview,
+      promotionAllowed,
+      latestMtime: stat.mtime.toISOString()
+    };
+  } catch {
+    return unavailable;
+  }
+}
+
+function refreshCodexSessionIndexIfNeeded(options: ObsidianExportOptions): void {
+  const shouldRefresh = options.refreshCodexSessionIndex === true;
+  if (!shouldRefresh) return;
+  try {
+    buildAndWriteRedactedSessionIndex({
+      sessionsDir: options.codexSessionsDir,
+      outputPath: options.codexSessionIndexFile
+    });
+  } catch {
+    // A stale redacted index remains a locator-only fallback; export must not fail open on session indexing.
   }
 }
 
@@ -4234,6 +4975,14 @@ function firstPresentString(...values: unknown[]): string | undefined {
 
 function frontmatterFlagIsTrue(...values: unknown[]): boolean {
   return values.some((value) => String(value ?? "").trim().toLowerCase() === "true");
+}
+
+function frontmatterFlagIsAffirmative(...values: unknown[]): boolean {
+  return values.some((value) => ["true", "yes", "1"].includes(String(value ?? "").trim().toLowerCase()));
+}
+
+function frontmatterFlagIsExplicitFalse(value: unknown): boolean {
+  return String(value ?? "").trim().toLowerCase() === "false";
 }
 
 function extractFirstUrl(markdown: string): string | undefined {

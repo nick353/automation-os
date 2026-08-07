@@ -1,5 +1,43 @@
 # Automation OS Current State
 
+## 2026-08-07 Browser Use CLI unification checkpoint
+
+The current local source routes every browser-backed execution surface through
+the canonical Browser Use CLI helper and shared stage adapter. Browser lanes
+now stop with `browser_use_cli_required` instead of the retired
+`in_app_browser_required`; legacy Playwright/IAB metadata is compatibility-only
+and is classified fail-closed. Dashboard sanitization reports
+`browser_driver=browser_use_cli` and no longer exposes a current
+`playwright_configured` lane.
+
+The isolated reference canary now uses an explicit Browser Use CLI safe-stop
+boundary and never invokes a registered workflow runner. Focused evidence on
+this checkpoint: worker plus registered runner `128/128`, portable external
+runner `6/6`, Browser Use route/UI/portable subset `63/63`, server build, web
+typecheck, and `git diff --check` passed. The portable external prompt approval
+bug and NisenPrints default Browser Use runner path were also fixed with
+regression coverage.
+
+The source tree remains mixed and uncommitted; unrelated dirty files, runtime
+artifacts, worker processes, LaunchAgents, production DB, and Browser Use
+rooms were not changed by this checkpoint. Zeabur was not redeployed. A fresh
+read-only production QA against `https://automation-os.zeabur.app` returned
+public assets `200`, but all protected routes returned `401
+production_token_required`; UI screenshots stopped at
+`production_read_token_missing` because no QA read token was injected.
+
+Remaining release blockers are not hidden by the route change: Zeabur's
+protected readback still lacks an injected QA token, and authenticated
+production UI/worker/PostgreSQL proof has not been completed. Fixed workflows
+now enter the portable external worker even when the server process did not
+inherit an explicit mode; they never fall back to a legacy per-workflow
+browser runner. A missing or non-canonical workflow adapter remains an exact
+fail-closed blocker. NisenPrints, Daily AI, SNS, and Prompt Transfer still
+require fresh same-run authority/readback and workflow-specific completion
+proof. The next release step is to inject a read-only QA token into Zeabur,
+deploy only an approved source revision, then perform fresh same-run Browser
+Use CLI readback. No token value belongs in chat, source, or artifacts.
+
 ## 2026-08-03 current productionization checkpoint
 
 Commit `f43503a` (`Harden worker environment and portable provenance`) was

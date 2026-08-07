@@ -27,7 +27,6 @@ import {
   type BrowserUseLocalCheckOptions,
   type BrowserUseLocalCheckResult
 } from "./browser/browserUseLocalCheck.js";
-import { runLocalBrowserBridgeCheckAsync, type BrowserBridgeCheckResult } from "./browser/localCheck.js";
 import {
   createBridgeReceipt,
   createProtectedBridgeApproval,
@@ -37,7 +36,7 @@ import {
 } from "./bridge/trustedBridge.js";
 import { getCodexCapabilities } from "./codex/capabilities.js";
 import { buildCanonicalExecutionRoutingMetadata, buildExecutionRoutingSnapshot } from "./codex/executionRouting.js";
-import { getLatestCapabilityProbeSnapshot, probeCodexMcpSurface } from "./codex/capabilityProbe.js";
+import { getLatestCapabilityProbeSnapshot, probeCodexMcpSurface, probeCodexMcpSurfaceAsync } from "./codex/capabilityProbe.js";
 import { getLatestAppServerProbeSnapshot, probeCodexAppServerSurface } from "./codex/appServerProbe.js";
 import { buildCapabilityRouterSnapshot } from "./codex/capabilityRouter.js";
 import { serializeAutomationOsChatSnapshot } from "./codex/chatSnapshot.js";
@@ -170,11 +169,13 @@ import { computeNextAutomationOccurrence } from "./runs/automationScheduler.js";
 import {
   PORTABLE_WORKER_CANARY_MODE,
   PORTABLE_WORKER_EXTERNAL_MODE,
-  portableWorkflowIdForWorkerAdapter,
-  portableWorkerExecutionMode
+  portableWorkflowIdForWorkerAdapter
 } from "./runs/portableWorkflowWorker.js";
 import { startPortableWorkflowRun } from "./runs/portableWorkflowEntrypoint.js";
 import { portableWorkflowManifests } from "./runs/portableWorkflowContract.js";
+import { runMvpStateInChild } from "./runs/mvpStateProcess.js";
+import { runResearchPlanSchedulerInChild } from "./runs/researchPlanSchedulerProcess.js";
+import { readPostgresMvpState, warmPostgresMvpStatePool } from "./runs/postgresMvpState.js";
 
 export const app = express();
 app.set("case sensitive routing", true);
@@ -900,11 +901,24 @@ app.get("/api/mvp/feedback", (req, res) => {
   }
 });
 
-app.get("/api/mvp/state", (req, res) => {
-  initDb();
+app.get("/api/mvp/state", async (req, res) => {
   try {
-    const scope = resolveCompanyScope(req, false);
-    res.json(getMvpStateReadback(scope.companyIds));
+    const companyId = requestedCompanyId(req, false);
+    if (dbBackend === "postgres") {
+      const state = await readPostgresMvpState({ companyId: companyId || undefined });
+      res.json(state);
+      return;
+    }
+    const result = await runMvpStateInChild({ companyId: companyId || undefined });
+    if (result.status === "blocked") {
+      if (result.exactBlocker === "company_scope_forbidden") {
+        sendCompanyScopeError(res, new Error(result.exactBlocker), "company_state_read_failed");
+      } else {
+        res.status(503).json({ ok: false, status: "blocked", error: result.exactBlocker, exactBlocker: result.exactBlocker });
+      }
+      return;
+    }
+    res.json(result.state);
   } catch (error) {
     sendCompanyScopeError(res, error, "company_state_read_failed");
   }
@@ -1073,6 +1087,7 @@ app.put("/api/mvp/automations/:automationId/builder-spec", (req, res) => {
 });
 
 let researchPlanSchedulerTimer: ReturnType<typeof setInterval> | undefined;
+let researchPlanSchedulerInFlight = false;
 const researchPlanSchedulerInFlightDueKeys = new Set<string>();
 
 app.post("/api/mvp/feedback", (req, res) => {
@@ -1377,7 +1392,9 @@ app.post("/api/portable-workflows/:id/run", async (req, res, next) => {
       idempotencyKey,
       companyId: projectId
     });
-    const mode = portableWorkerExecutionMode();
+    if (!started.replayed) recordRunAwaitingWorkerLoop(started.runId, "portable_workflow_manual_start");
+    const mode = started.executionMode;
+    const workerProtocol = dbBackend === "postgres" ? "mac_worker_polling_required" : "local_worker_loop_required";
     res.status(202).json({
       ok: true,
       accepted: true,
@@ -1395,10 +1412,12 @@ app.post("/api/portable-workflows/:id/run", async (req, res, next) => {
         external_runner_configured: Boolean(process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_RUNNER?.trim()),
         external_action_executed: false
       },
-      workerProtocol: "mac_worker_polling_required",
+      workerProtocol,
       nextAction: mode === PORTABLE_WORKER_EXTERNAL_MODE
-        ? "Mac worker loopが本番DBから拾い、portable external adapterのreceiptを保存します。"
-        : "canaryとしてrun binding/readbackを確認します。外部操作を開始するにはMac側portable external adapterの設定が必要です。"
+        ? (dbBackend === "postgres"
+          ? "Mac worker loopが本番DBから拾い、portable external adapterのreceiptを保存します。"
+          : "local worker loopがrunを拾い、portable external adapterのreceiptを保存します。")
+        : "canaryとしてrun binding/readbackを確認します。外部操作を開始するにはportable external adapterの設定が必要です。"
     });
   } catch (error) {
     next(error);
@@ -1414,9 +1433,13 @@ app.get("/api/codex/capabilities", (_req, res) => {
   res.json(getCodexCapabilitiesReadback());
 });
 
-app.post("/api/codex/capabilities/probe", (_req, res) => {
-  const probe = probeCodexMcpSurface();
-  res.json(getCodexCapabilitiesReadback({ mcpProbe: probe, forceRefresh: true }));
+app.post("/api/codex/capabilities/probe", async (_req, res, next) => {
+  try {
+    const probe = await probeCodexMcpSurfaceAsync();
+    res.json(getCodexCapabilitiesReadback({ mcpProbe: probe, forceRefresh: true }));
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.post("/api/codex/app-server/probe", async (_req, res, next) => {
@@ -1760,14 +1783,17 @@ app.post("/api/registered-workflows/refresh", (_req, res) => {
 
 app.post("/api/registered-workflows/scheduler/run-once", async (_req, res, next) => {
   try {
-    initDb();
-    const companyIds = actorCompanyIds(["owner", "admin"]);
-    if (companyIds.length === 0) {
-      res.status(403).json({ error: "company_scope_forbidden" });
+    const result = await runResearchPlanSchedulerInChild({ scopeRoles: ["owner", "admin"] });
+    if (result.status === "blocked") {
+      res.status(result.exactBlocker === "company_scope_forbidden" ? 403 : 503).json({
+        ok: false,
+        status: "blocked",
+        error: result.exactBlocker,
+        exactBlocker: result.exactBlocker
+      });
       return;
     }
-    const result = await runResearchPlanSchedulerOnce(new Date(), companyIds);
-    res.json(result);
+    res.json(result.result);
   } catch (error) {
     next(error);
   }
@@ -1858,9 +1884,57 @@ app.post("/api/registered-workflows/:id/start", async (req, res, next) => {
       ...registeredWorkflowStartMetadata(workflow, { source: "manual", command }),
       ...(fixedWorkflow ? { system_scope: "global", system_admin_actor_user_id: currentActorUserId() } : {})
     };
+    if (fixedWorkflow && isPortableSchedulerAdmission(workflow)) {
+      const requestedKey = typeof req.body?.idempotency_key === "string"
+        ? req.body.idempotency_key.trim()
+        : typeof req.get("idempotency-key") === "string" ? req.get("idempotency-key")!.trim() : "";
+      const idempotencyKey = requestedKey || `ui:${workflow.id}:${currentActorUserId()}:${Date.now()}`;
+      if (idempotencyKey.length > 240 || !/^[A-Za-z0-9._:-]+$/.test(idempotencyKey)) {
+        res.status(400).json({ error: "portable_idempotency_key_invalid", exactBlocker: "portable_idempotency_key_invalid" });
+        return;
+      }
+      const portableStarted = await startPortableWorkflowRun({
+        workflowId: workflow.id as Parameters<typeof startPortableWorkflowRun>[0]["workflowId"],
+        sourceTrigger: "automation_os_ui",
+        idempotencyKey
+      });
+      if (!portableStarted.replayed) recordRunAwaitingWorkerLoop(portableStarted.runId, "portable_workflow_manual_start");
+      recordRegisteredWorkflowManualStart(workflow, portableStarted.runId);
+      const mode = portableStarted.executionMode;
+      const workerProtocol = dbBackend === "postgres" ? "mac_worker_polling_required" : "local_worker_loop_required";
+      res.status(202).json({
+        ok: true,
+        accepted: true,
+        replayed: portableStarted.replayed,
+        runId: portableStarted.runId,
+        status: portableStarted.status ?? "queued",
+        run: {
+          runId: portableStarted.runId,
+          status: portableStarted.status ?? "queued"
+        },
+        workflow: publicRegisteredWorkflowById(workflow.id),
+        portable: {
+          workflow_id: workflow.id,
+          source_trigger: "automation_os_ui",
+          execution_mode: mode,
+          app_dependency: false,
+          browser_surface: "browser_use_cli",
+          connector_gateway: "mcp",
+          external_runner_configured: Boolean(process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_RUNNER?.trim()),
+          external_action_executed: false
+        },
+        workerProtocol,
+        nextAction: mode === PORTABLE_WORKER_EXTERNAL_MODE
+          ? (dbBackend === "postgres"
+            ? "Mac worker loopが本番DBから拾い、portable external adapterのreceiptを保存します。"
+            : "local worker loopがrunを拾い、portable external adapterのreceiptを保存します。")
+          : "canaryとしてrun binding/readbackを確認します。外部操作を開始するにはportable external adapterの設定が必要です。"
+      });
+      return;
+    }
     if (dbBackend === "postgres" && workflow.id === "daily-ai-research-publish-run") {
       const fastStarted = await startRegisteredPostgresRunFast({ workflow, command, metadata: runMetadata });
-      clearRegisteredWorkflowSchedulerBlock(workflow);
+      recordRegisteredWorkflowManualStart(workflow, fastStarted.runId);
       res.status(202).json({
         accepted: true,
         runId: fastStarted.runId,
@@ -1992,7 +2066,7 @@ app.post("/api/bridge/browser-check", async (req, res, next) => {
   try {
     initDb();
     const targetUrl = typeof req.body?.targetUrl === "string" ? req.body.targetUrl : undefined;
-    const result = await runLocalBrowserBridgeCheckAsync({ targetUrl });
+    const result = await runBrowserUseLocalCheckAsync({ targetUrl });
     storeSystemCheck(result);
     const action = findTrustedBridgeAction("local_browser_check");
     if (action) {
@@ -2105,7 +2179,7 @@ const handleBridgeActionRun: RequestHandler = async (req, res, next) => {
     }
     if (action.id === "local_browser_check") {
       const targetUrl = typeof req.body?.targetUrl === "string" ? req.body.targetUrl : undefined;
-      const result = await runLocalBrowserBridgeCheckAsync({ targetUrl });
+      const result = await runBrowserUseLocalCheckAsync({ targetUrl });
       storeSystemCheck(result);
       const receipt = storeBridgeReceipt(
         createBridgeReceipt({
@@ -3673,6 +3747,11 @@ app.use(apiErrorHandler);
 
 export function startServer() {
   const server = app.listen(port, host, () => {
+    if (dbBackend === "postgres") {
+      void warmPostgresMvpStatePool().catch(() => {
+        // The first authenticated read will return the exact database blocker.
+      });
+    }
     const backgroundStartupDisabled =
       process.env.AUTOMATION_OS_RESEARCH_PLAN_SCHEDULER_MS === "0" &&
       process.env.AUTOMATION_OS_OBSIDIAN_PERIODIC_EXPORT_MS === "0";
@@ -4170,7 +4249,7 @@ function buildPersistedProjectPresentationProfile(
   }
 }
 
-function getMvpStateReadback(companyIds: string[]) {
+export function getMvpStateReadback(companyIds: string[]) {
   const allowed = listActorCompanies().filter((company) => companyIds.includes(company.id));
   const scopedIds = allowed.map((company) => company.id);
   const capturedAt = nowIso();
@@ -5203,7 +5282,10 @@ function buildSafeReferenceWorkflowPaths(
     const stages = {
       definition_registered: Boolean(workflow && workflow.status === "active"),
       schedule_registered: schedule.kind === "cron" && typeof schedule.rrule === "string" && schedule.rrule.trim() !== "",
-      route_guarded: workflow?.runner_kind === reference.adapter && policy.exactBlocker === "in_app_browser_required",
+      route_guarded: workflow?.runner_kind === reference.adapter &&
+        policy.classification === "browser_use_cli" &&
+        policy.evidence.includes("surface:browser_use_cli") &&
+        policy.evidence.includes("no_fallback:true"),
       approval_boundary: safety.externalActionBoundary === "billing_purchase_payment_checkout_hard_stop"
         && Array.isArray(safety.humanInputRequiredWithEvidence)
         && ["captcha", "otp", "security_code", "identity_verification"].every((item) => safety.humanInputRequiredWithEvidence.includes(item)),
@@ -5282,7 +5364,7 @@ function readFreshReferenceWorkflowCanary(): Map<string, { definitionFingerprint
         !runId ||
         runIds.has(runId) ||
         path.status !== "proof_backed_safe_stop_verified" ||
-        path.exact_blocker !== "in_app_browser_required" ||
+        path.exact_blocker !== "browser_use_cli_required" ||
         path.run_blocked !== true ||
         path.step_blocked !== true ||
         path.proof_gate_ok !== false ||
@@ -5487,14 +5569,14 @@ function buildCompanyRegisteredAutomationReadback(projectId: string) {
           ? {
               supported: true,
               workflow_id: portableId,
-              execution_mode: portableWorkerExecutionMode(),
+              execution_mode: portableAdmissionExecutionMode(),
               external_runner_configured: Boolean(process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_RUNNER?.trim()),
               app_dependency: false,
               browser_surface: manifest.execution.browser_surface,
               connector_gateway: manifest.execution.connector_gateway,
               external_effect_policy: manifest.external_effect_policy,
               manual_endpoint: `/api/portable-workflows/${portableId}/run`,
-              schedule_admission: portableWorkerExecutionMode() === PORTABLE_WORKER_CANARY_MODE || portableWorkerExecutionMode() === PORTABLE_WORKER_EXTERNAL_MODE
+              schedule_admission: isPortableSchedulerAdmission(workflow)
             }
           : { supported: false, exact_blocker: "portable_workflow_manifest_missing" };
       })()
@@ -6639,7 +6721,7 @@ type TimeoutBlocker = {
 
 type BoundedResult<T> = { ok: true; value: T } | ({ ok: false } & TimeoutBlocker);
 
-type ResearchPlanSchedulerOnceResult = {
+export type ResearchPlanSchedulerOnceResult = {
   checked: number;
   started: number;
   skipped: number;
@@ -6812,8 +6894,10 @@ export async function runResearchPlanSchedulerOnce(
           const portableStarted = await startPortableWorkflowRun({
             workflowId: workflow.id as Parameters<typeof startPortableWorkflowRun>[0]["workflowId"],
             sourceTrigger: "automation_os_scheduler",
-            idempotencyKey: `scheduler:${workflow.id}:${due.dueKey}`
+            idempotencyKey: `scheduler:${workflow.id}:${due.dueKey}`,
+            dueKey: due.dueKey
           });
+          if (!portableStarted.replayed) recordRunAwaitingWorkerLoop(portableStarted.runId, "portable_workflow_scheduler_start");
           runIds.push(portableStarted.runId);
           recordRegisteredWorkflowSchedulerStart(workflow, due.dueKey, portableStarted.runId, now);
           continue;
@@ -6934,10 +7018,14 @@ export async function runResearchPlanSchedulerOnce(
 }
 
 function isPortableSchedulerAdmission(workflow: Pick<RegisteredWorkflowRow, "id" | "runner_kind" | "company_id">): boolean {
-  const mode = process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE?.trim();
-  if (mode !== PORTABLE_WORKER_CANARY_MODE && mode !== PORTABLE_WORKER_EXTERNAL_MODE) return false;
   if (workflow.company_id) return false;
   return portableWorkflowIdForWorkerAdapter(workflow.runner_kind) === workflow.id;
+}
+
+function portableAdmissionExecutionMode(): typeof PORTABLE_WORKER_CANARY_MODE | typeof PORTABLE_WORKER_EXTERNAL_MODE {
+  return process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE?.trim() === PORTABLE_WORKER_CANARY_MODE
+    ? PORTABLE_WORKER_CANARY_MODE
+    : PORTABLE_WORKER_EXTERNAL_MODE;
 }
 
 function reserveResearchPlanSchedulerDueKey(workflowId: string, dueKey: string): boolean {
@@ -6955,9 +7043,20 @@ function startResearchPlanScheduler() {
   const intervalMs = researchPlanSchedulerIntervalMs();
   if (intervalMs <= 0 || researchPlanSchedulerTimer) return;
   researchPlanSchedulerTimer = setInterval(() => {
-    void runResearchPlanSchedulerOnce().catch((error) => {
-      console.error("Research Plan scheduler failed", error);
-    });
+    if (researchPlanSchedulerInFlight) return;
+    researchPlanSchedulerInFlight = true;
+    void runResearchPlanSchedulerInChild()
+      .then((result) => {
+        if (result.status === "blocked") {
+          console.error(`Research Plan scheduler blocked: ${result.exactBlocker}`);
+        }
+      })
+      .catch(() => {
+        console.error("Research Plan scheduler child invocation failed");
+      })
+      .finally(() => {
+        researchPlanSchedulerInFlight = false;
+      });
   }, intervalMs);
   researchPlanSchedulerTimer.unref?.();
 }
@@ -7612,15 +7711,18 @@ function isLiveLocalCdpUrl(cdpUrl: string): boolean {
 function recordBrowserUseLaneObservation(lane: BrowserUseLaneRow | undefined, result: BrowserUseLocalCheckResult) {
   if (!lane) return;
   const connection = result.metadata.connectionStrategy;
+  const admissionBlocked = result.summary === "canonical Browser Use CLI helper以外のブラウザ実行経路は使用しません"
+    || result.metadata.cleanup.reason === "browser_use_cli_canonical_helper_required"
+    || result.metadata.recordingSidecar.reason === "browser_use_cli_canonical_helper_required";
   const profileStrategy = connection.mode;
   const laneVisibility = nonEmptyString(lane.lane_visibility) ?? (connection.mode === "cdp_profile_lane" ? "visible" : "hidden");
   const health = result.status === "ok" ? "good" : "blocked";
   execSql(
     `UPDATE lanes
      SET browser_use_session=${sqlValue(result.metadata.session)},
-         browser_use_cdp_url=${sqlValue(connection.cdpUrl)},
-         browser_use_profile=${sqlValue(connection.profile)},
-         profile_strategy=${sqlValue(profileStrategy)},
+         browser_use_cdp_url=${sqlValue(admissionBlocked ? lane.browser_use_cdp_url : connection.cdpUrl)},
+         browser_use_profile=${sqlValue(admissionBlocked ? lane.browser_use_profile : connection.profile)},
+         profile_strategy=${sqlValue(admissionBlocked ? lane.profile_strategy : profileStrategy)},
          lane_visibility=${sqlValue(laneVisibility)},
          health=${sqlValue(health)},
          updated_at=${sqlValue(result.createdAt)}
@@ -7661,7 +7763,7 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-function storeSystemCheck(result: BrowserUseLocalCheckResult | BrowserBridgeCheckResult) {
+function storeSystemCheck(result: BrowserUseLocalCheckResult) {
   insert("system_checks", {
     id: result.id,
     kind: result.kind,
@@ -7800,7 +7902,7 @@ async function startRegisteredPostgresRunFast(input: {
     command: input.command,
     source: "manual"
   });
-  const laneId = `${runId}_${lane?.id ?? "daily-ai-playwright-cli"}`;
+  const laneId = `${runId}_${lane?.id ?? "daily-ai-browser-use-cli"}`;
   const metadata = {
     command: input.command,
     registered_workflow_start: {
@@ -7810,7 +7912,7 @@ async function startRegisteredPostgresRunFast(input: {
     },
     ...input.metadata,
     ...buildCanonicalExecutionRoutingMetadata(routeDecision),
-    ai_adapters: ["playwright_cli"],
+    ai_adapters: ["browser_use_cli"],
     openai_api: "not_required",
     worker_protocol: "mac_worker_polling_required",
     worker_mode: "queued_for_mac_worker",

@@ -56,12 +56,93 @@ const WORKFLOW_SPECS = {
   }
 };
 
+const CANONICAL_BROWSER_USE_HELPER = "/Users/nichikatanaka/.local/bin/codex-browser-use";
+const CANONICAL_BROWSER_USE_STAGE_ADAPTER = "/Users/nichikatanaka/.codex/skills/automation-kernel-run/scripts/browser-use-cli-stage-adapter.mjs";
+const CANONICAL_BROWSER_USE_RUNTIME_CONFIG = "/Users/nichikatanaka/.browser-use-cli/browser-use-runtime.toml";
+
 let tempRoot;
 
 export function selectCodexBin(env = process.env) {
   return env.AUTOMATION_OS_CODEX_BIN?.trim()
     || env.CODEX_CLI_PATH?.trim()
     || "/usr/local/bin/codex";
+}
+
+export function buildCodexExecArgs({ cwd, lastMessagePath, prompt }) {
+  return [
+    "exec",
+    "--ephemeral",
+    "--sandbox", "danger-full-access",
+    "--skip-git-repo-check",
+    "--cd", cwd,
+    "--output-last-message", lastMessagePath,
+    prompt
+  ];
+}
+
+export function inspectCanonicalBrowserUseCli({
+  helperPath = CANONICAL_BROWSER_USE_HELPER,
+  stageAdapterPath = CANONICAL_BROWSER_USE_STAGE_ADAPTER,
+  runtimeConfigPath = CANONICAL_BROWSER_USE_RUNTIME_CONFIG,
+  runner = spawnSync
+} = {}) {
+  for (const [label, path] of [
+    ["helper", helperPath],
+    ["stage_adapter", stageAdapterPath],
+    ["runtime_config", runtimeConfigPath]
+  ]) {
+    if (!statIsFile(path)) {
+      return {
+        ok: false,
+        exact_blocker: `portable_external_browser_use_cli_${label}_missing`,
+        helper_path: helperPath,
+        stage_adapter_path: stageAdapterPath,
+        runtime_config_path: runtimeConfigPath
+      };
+    }
+  }
+
+  const result = runner(helperPath, ["runtime-readback"], {
+    encoding: "utf8",
+    maxBuffer: 1_000_000,
+    timeout: 15_000
+  });
+  if (result.error || result.status !== 0) {
+    return {
+      ok: false,
+      exact_blocker: "portable_external_browser_use_cli_runtime_unavailable",
+      helper_path: helperPath,
+      stage_adapter_path: stageAdapterPath,
+      runtime_config_path: runtimeConfigPath
+    };
+  }
+  const readback = parseJsonObject(result.stdout ?? "");
+  if (!readback || readback.exact_blocker) {
+    return {
+      ok: false,
+      exact_blocker: "portable_external_browser_use_cli_runtime_unavailable",
+      helper_path: helperPath,
+      stage_adapter_path: stageAdapterPath,
+      runtime_config_path: runtimeConfigPath
+    };
+  }
+  if (readback.runtime_drift === true || readback.launch === true) {
+    return {
+      ok: false,
+      exact_blocker: "portable_external_browser_use_cli_runtime_drift",
+      helper_path: helperPath,
+      stage_adapter_path: stageAdapterPath,
+      runtime_config_path: runtimeConfigPath
+    };
+  }
+  return {
+    ok: true,
+    exact_blocker: null,
+    helper_path: helperPath,
+    stage_adapter_path: stageAdapterPath,
+    runtime_config_path: runtimeConfigPath,
+    readback
+  };
 }
 
 function main() {
@@ -74,6 +155,20 @@ function main() {
   }, 1);
 
   const effects = process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS === "enabled";
+  const approvalGranted = process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_APPROVAL === "approved";
+  if (effects && !approvalGranted) finish({
+    status: "blocked",
+    exact_blocker: "portable_external_approval_required",
+    external_action_executed: false
+  }, 1);
+  const browserUseCli = inspectCanonicalBrowserUseCli();
+  if (!browserUseCli.ok) finish({
+    status: "blocked",
+    exact_blocker: browserUseCli.exact_blocker,
+    external_action_executed: false,
+    browser_surface: "browser_use_cli",
+    browser_use_cli: browserUseCli
+  }, 1);
   const codexBin = selectCodexBin();
   if (!statIsFile(codexBin)) finish({
     status: "blocked",
@@ -85,15 +180,12 @@ function main() {
   tempRoot = mkdtempSync(join(tmpdir(), "automation-os-portable-external-"));
   const lastMessagePath = join(tempRoot, `${safe(input.run_id)}.last-message.json`);
   try {
-    const prompt = buildPrompt({ ...input, spec, effects });
-    const result = spawnSync(codexBin, [
-      "exec",
-      "--ephemeral",
-      "--sandbox", "danger-full-access",
-      "--cd", spec.cwd,
-      "--output-last-message", lastMessagePath,
+    const prompt = buildPrompt({ ...input, spec, effects, approvalGranted });
+    const result = spawnSync(codexBin, buildCodexExecArgs({
+      cwd: spec.cwd,
+      lastMessagePath,
       prompt
-    ], {
+    }), {
       cwd: spec.cwd,
       env: {
         ...process.env,
@@ -103,6 +195,9 @@ function main() {
         AUTOMATION_OS_PORTABLE_IDEMPOTENCY_KEY: input.idempotency_key,
         AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS: effects ? "enabled" : "read_only",
         AUTOMATION_OS_BROWSER_SURFACE: "browser_use_cli",
+        AUTOMATION_OS_BROWSER_USE_CLI_HELPER: CANONICAL_BROWSER_USE_HELPER,
+        AUTOMATION_OS_BROWSER_USE_CLI_STAGE_ADAPTER: CANONICAL_BROWSER_USE_STAGE_ADAPTER,
+        AUTOMATION_OS_BROWSER_USE_CLI_RUNTIME_CONFIG: CANONICAL_BROWSER_USE_RUNTIME_CONFIG,
         AUTOMATION_OS_BROWSER_NO_FALLBACK: "1"
       },
       encoding: "utf8",
@@ -146,6 +241,7 @@ function main() {
       source_trigger: input.source_trigger,
       executor: "codex_cli_portable_worker",
       browser_surface: "browser_use_cli",
+      browser_use_cli: browserUseCli,
       connector_gateway: "mcp",
       effects_mode: effects ? "enabled" : "read_only",
       artifacts: Array.isArray(receipt.artifacts) ? receipt.artifacts.slice(0, 20) : [],
@@ -158,7 +254,7 @@ function main() {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) main();
 
-function buildPrompt({ workflow_id, run_id, step_id, source_trigger, idempotency_key, spec, effects }) {
+export function buildPrompt({ workflow_id, run_id, step_id, source_trigger, idempotency_key, spec, effects, approvalGranted = false }) {
   const authorityText = spec.authority.map((path) => `- ${path}`).join("\n");
   return [
     "You are the portable Automation OS worker. This is not a Codex App thread and it has no controller identity or first-class-root dependency.",
@@ -171,13 +267,14 @@ function buildPrompt({ workflow_id, run_id, step_id, source_trigger, idempotency
     `source_trigger=${source_trigger}`,
     `idempotency_key=${idempotency_key}`,
     `external_effects=${effects ? "enabled" : "read_only"}`,
+    `external_approval=${approvalGranted ? "approved" : "not_granted"}`,
     "",
     "Authority files:",
     authorityText,
     "",
     `Objective: ${spec.objective}`,
     "",
-    "Browser contract: use only /Users/nichikatanaka/.local/bin/codex-browser-use through the current-run Browser Use CLI stage adapter. Do not use Codex in-app browser, Chrome/Profile 2, Playwright, direct CDP, raw browser binaries, or an implicit fallback. Use a fresh run-bound profile/port/authority and same-session state/title/url/readback plus cleanup proof.",
+    `Browser contract: use only ${CANONICAL_BROWSER_USE_HELPER} through ${CANONICAL_BROWSER_USE_STAGE_ADAPTER} with runtime ${CANONICAL_BROWSER_USE_RUNTIME_CONFIG}. Do not use Codex in-app browser, Chrome/Profile 2, Playwright, direct CDP, raw browser binaries, or an implicit fallback. Use a fresh run-bound profile/port/authority and same-session state/title/url/readback plus cleanup proof.`,
     "Connector contract: use the configured Codex Server/MCP gateway for Gmail, Google Sheets, Calendar, or other connectors when the workflow requires it. Never persist credentials, cookies, tokens, storage state, or authority contents.",
     effects
       ? "External effects are enabled for this explicitly configured worker. Perform only the workflow's non-billing, in-scope action and require visible provider completion/readback. Stop on approval, authentication, CAPTCHA, OTP, identity, security, assessment, payment, or ambiguous-effect blockers."
@@ -202,13 +299,19 @@ function parseArgs(args) {
 }
 
 function parseReceipt(text) {
+  const value = parseJsonObject(text);
+  if (!value) return null;
+  if (!["complete", "partial", "blocked"].includes(value.status)) return null;
+  if (typeof value.external_action_executed !== "boolean") return null;
+  return value;
+}
+
+function parseJsonObject(text) {
   const candidates = text.match(/\{[\s\S]*\}/g) ?? [];
   for (let index = candidates.length - 1; index >= 0; index -= 1) {
     try {
       const value = JSON.parse(candidates[index]);
       if (!value || typeof value !== "object" || Array.isArray(value)) continue;
-      if (!["complete", "partial", "blocked"].includes(value.status)) continue;
-      if (typeof value.external_action_executed !== "boolean") continue;
       return value;
     } catch {
       // Continue searching for the final JSON object.

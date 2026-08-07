@@ -1,19 +1,15 @@
-import { spawn } from "node:child_process";
-import { mkdirSync } from "node:fs";
 import { registeredBrowserLaneForWorkflow } from "../runs/laneManager.js";
+import { getBrowserHealth } from "./health.js";
 
 const registeredLane = registeredBrowserLaneForWorkflow("x-authenticated-browser-lane");
 
 export const xLearningLane = {
-  name: "x_learning_authenticated_cdp",
+  name: "x_learning_authenticated_browser_use_cli",
   port: registeredLane?.cdpPort ?? 9336,
-  profileDir: registeredLane?.profileDir ?? "/Users/nichikatanaka/.x-learning-playwright-chrome",
-  profileDirectory: "Default",
+  profileDir: registeredLane?.profileDir ?? "[fresh-browser-use-profile-required]",
   homeUrl: "https://x.com/home",
-  versionUrl: `http://127.0.0.1:${registeredLane?.cdpPort ?? 9336}/json/version`
+  versionUrl: "browser-use-cli://x-learning/authenticated-session"
 } as const;
-
-const defaultChromePath = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 
 export type XLearningChromeCommand = {
   bin: string;
@@ -27,16 +23,18 @@ export type XLearningChromeOpenResult = XLearningChromeCommand & {
   ok: boolean;
   pid?: number;
   url: string;
+  exactBlocker?: string;
   summary: string;
 };
 
-export function buildOpenXLearningChromeCommand(chromePath = process.env.AUTOMATION_OS_X_LEARNING_CHROME_BIN || defaultChromePath): XLearningChromeCommand {
+export function buildOpenXLearningChromeCommand(_ignoredLegacyChromePath?: string): XLearningChromeCommand {
+  const command = getBrowserHealth().browserUseCli.command || "/Users/nichikatanaka/.local/bin/codex-browser-use";
   return {
-    bin: chromePath,
+    bin: command,
     args: [
-      `--remote-debugging-port=${xLearningLane.port}`,
-      `--user-data-dir=${xLearningLane.profileDir}`,
-      `--profile-directory=${xLearningLane.profileDirectory}`,
+      "--session",
+      "aos-x-learning-authenticated",
+      "open",
       xLearningLane.homeUrl
     ],
     laneName: xLearningLane.name,
@@ -46,18 +44,12 @@ export function buildOpenXLearningChromeCommand(chromePath = process.env.AUTOMAT
 }
 
 export function openXLearningChrome(): XLearningChromeOpenResult {
-  mkdirSync(xLearningLane.profileDir, { recursive: true });
   const command = buildOpenXLearningChromeCommand();
-  const child = spawn(command.bin, command.args, {
-    detached: true,
-    stdio: "ignore"
-  });
-  child.unref();
   return {
-    ok: true,
+    ok: false,
     ...command,
-    pid: child.pid,
     url: xLearningLane.homeUrl,
-    summary: "Opened the fixed X learning authenticated CDP lane without fallback."
+    exactBlocker: getBrowserHealth().browserUseCli.available ? "browser_use_authority_required" : "browser_use_cli_missing",
+    summary: "X learningはcanonical Browser Use CLIのfresh authority/sessionからのみ実行します。Chrome/CDPの直接起動はしません。"
   };
 }

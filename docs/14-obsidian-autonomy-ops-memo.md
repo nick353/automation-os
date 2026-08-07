@@ -4,13 +4,13 @@ This memo is the short restart point for the current Obsidian x Codex automation
 
 ## What is now automatic
 
-- `scripts/start-automation-os-server.sh` boots the Automation OS server with Obsidian auto export enabled, a 5 minute periodic export timer, and sqlite fallback when stored Postgres cannot be restored cleanly.
+- `scripts/start-automation-os-server.sh` boots the Automation OS server with Obsidian auto export enabled, a 30 minute periodic export timer, and sqlite fallback when stored Postgres cannot be restored cleanly.
 - `package.json` `start:server` uses the same defaults, so CLI start and login recovery behave the same way.
 - `ops/launchd/com.nichikatanaka.automation-os.plist` restores the same startup path at login.
 - The server now also does an immediate startup export, schedules automatic retry after export failure, and keeps a weekly diagnosis loop alive while the process stays up.
 - `apps/server/src/obsidian/exporter.ts` generates `Obsidian x Codex Self Diagnosis.md` and `Obsidian x Codex Weekly Check.md` automatically on export.
 - `00_Start Here/Resume Current Work.md`, `Weekly Review.md`, and `Today.md` now point at those pages so the weekly loop is visible immediately.
-- Every production detached export invokes `obsidian:maintain`; the maintenance body runs at most once per 30 minutes and refreshes project discovery, registry-backed Context Packs, Second Brain canary processing, and project audit readback.
+- Non-periodic production detached exports invoke `obsidian:maintain`; periodic exports reuse the redacted Codex session index and skip maintenance. When invoked, the maintenance body runs at most once per 30 minutes and refreshes project discovery, registry-backed Context Packs, Second Brain canary processing, and project audit readback.
 - New durable project roots are discovered automatically but remain locator-only until their registry entry is intentionally promoted. The canonical Muscle AI and Heavy Chain roots are already registered.
 - Export, handoff collection, Second Brain apply, and vault Git backup use one shared atomic lock. Second Brain also checks a preimage hash immediately before replacing a note.
 - The global `obsidian-project-memory` Skill resolves cross-project requests and forces a fresh-read of project-owned truth before action.

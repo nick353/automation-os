@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Proof } from "./proofGate.js";
+import { inspectBrowserUseCliRunner } from "./browserUseCliRunnerGuard.js";
 
 export type SnsMultiPosterRegisteredStatus = "complete" | "partial" | "blocked";
 
@@ -28,7 +29,7 @@ export type SnsMultiPosterRegisteredRunResult = {
 
 const serverSrcDir = fileURLToPath(new URL("..", import.meta.url));
 const projectRoot = resolve(serverSrcDir, "../../..");
-export const defaultSnsMultiPosterUkiyoeRunner = join(projectRoot, "scripts", "run_sns_multi_poster_ukiyoe_playwright_cli.mjs");
+export const defaultSnsMultiPosterUkiyoeRunner = join(projectRoot, "scripts", "run_sns_multi_poster_ukiyoe_browser_use_cli.mjs");
 const defaultTimeoutMs = 5 * 60 * 1000;
 const stagePlanProofType = "sns_multi_poster_stage_plan";
 const summaryProofType = "sns_multi_poster_summary";
@@ -71,6 +72,7 @@ export function runSnsMultiPosterRegisteredRunner(input: { runId: string; defaul
   const imagePath = resolvedInput.imagePath;
   const caption = resolvedInput.caption;
   const command = baseCommand(runId, outputRoot, imagePath, caption, input.defaultRunnerPath, resolvedInput);
+  const runnerInspection = command.resolvedRunner.runner ? inspectBrowserUseCliRunner(command.resolvedRunner.runner) : null;
 
   if (!imagePath || !caption) {
     return blockedResult({
@@ -96,6 +98,19 @@ export function runSnsMultiPosterRegisteredRunner(input: { runId: string; defaul
         external_action_executed: false,
         runner_source: "missing",
         default_runner_path: command.resolvedRunner.defaultRunnerPath
+      }
+    });
+  }
+  if (!runnerInspection?.ok) {
+    return blockedResult({
+      reason: runnerInspection?.exactBlocker ?? "browser_use_cli_workflow_adapter_missing",
+      summaryPath: undefined,
+      command,
+      metadata: {
+        external_action_executed: false,
+        runner_source: command.resolvedRunner.source ?? "blocked",
+        default_runner_path: command.resolvedRunner.defaultRunnerPath,
+        runner_inspection: runnerInspection
       }
     });
   }
@@ -276,7 +291,9 @@ function baseCommand(
       AUTOMATION_OS_RUN_ID: runId,
       SNS_MULTI_POSTER_APPROVED_EXTERNAL_ACTIONS: "post,publish",
       SNS_MULTI_POSTER_HARD_STOPS: "billing,purchase,payment,checkout",
-      SNS_MULTI_POSTER_RESOLVED_INPUT_SOURCE: resolvedInput?.source ?? "missing"
+      SNS_MULTI_POSTER_RESOLVED_INPUT_SOURCE: resolvedInput?.source ?? "missing",
+      AUTOMATION_OS_BROWSER_SURFACE: "browser_use_cli",
+      AUTOMATION_OS_BROWSER_NO_FALLBACK: "1"
     },
     resolvedRunner
   };

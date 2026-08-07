@@ -89,7 +89,7 @@ function writeValidReferenceCanaryReceipt(path: string, overrides: Record<string
       adapter,
       run_id: `canary_${id}`,
       status: "proof_backed_safe_stop_verified",
-      exact_blocker: "in_app_browser_required",
+      exact_blocker: "browser_use_cli_required",
       run_blocked: true,
       step_blocked: true,
       proof_gate_ok: false,
@@ -1230,6 +1230,7 @@ test("registered workflow rehearsal rejects a safety receipt that claims referen
 test("registered workflow rehearsal invalidates a canary whose schedule fingerprint no longer matches", async () => {
   db.initDb();
   db.resetDemoData();
+  seedOwnerCompany();
   await postJson("/api/registered-workflows/refresh", {});
   const receiptPath = join(tempRoot, "stale-definition-reference-canary.json");
   writeValidReferenceCanaryReceipt(receiptPath);
@@ -1711,7 +1712,7 @@ test("registered workflow start API creates Automation OS runs from fixed entryp
   assert.equal(dailyMetadata.workflowId, "daily-ai-research-publish-run");
   assert.equal(dailyMetadata.workflow_id, "daily-ai-research-publish-run");
   assert.equal(dailyBody.workerProtocol, "local_worker_loop_required");
-  assert.match(String(dailyBody.nextAction), /npm run worker:loop/);
+  assert.match(String(dailyBody.nextAction), /worker loop/);
   assert.equal(dailyMetadata.registered_workflow_start.source, "manual");
   assert.equal(dailyMetadata.registered_workflow_start.runnerKind, "daily_ai_registered");
   assert.equal(dailyMetadata.registered_workflow_start.workflow_id, "daily-ai-research-publish-run");
@@ -1761,7 +1762,7 @@ test("registered workflow start API creates Automation OS runs from fixed entryp
   assert.equal(nisenMetadata.plan.approvalRequired, false);
   assert.equal(nisenMetadata.run_contract.mode, "nisenprints_full_publish_run");
   assert.equal(nisenBody.workerProtocol, "local_worker_loop_required");
-  assert.match(String(nisenBody.nextAction), /npm run worker:loop/);
+  assert.match(String(nisenBody.nextAction), /worker loop/);
   assert.equal(nisenMetadata.worker_protocol, "local_worker_loop_required");
   assert.equal(nisenMetadata.worker_mode, "queued_for_local_worker_loop");
   assert.equal(nisenMetadata.worker_loop.requiredCommand, "npm run worker:loop");
@@ -1863,7 +1864,7 @@ test("registered workflow scheduler starts due fixed registered workflows with p
   assert.equal(ledgerItem.remainingBlocker, null);
 });
 
-test("fixed global scheduler requires an active service identity before starting", async () => {
+test("fixed portable scheduler does not require a controller service identity before queuing", async () => {
   db.initDb();
   db.resetDemoData();
   seedOwnerCompany();
@@ -1879,36 +1880,21 @@ test("fixed global scheduler requires an active service identity before starting
   try {
     delete process.env.AUTOMATION_OS_GLOBAL_SYSTEM_SERVICE_USER_ID;
     const missing = await runResearchPlanSchedulerOnce(new Date("2026-06-18T11:00:00"));
-    assert.equal(missing.started, 0);
-    assert.deepEqual(missing.blockers, [{
-      workflowId: "daily-ai-research-publish-run",
-      dueKey: "2026-06-18T09:00",
-      exactBlocker: "registered_workflow_global_service_identity_missing"
-    }]);
-
-    process.env.AUTOMATION_OS_GLOBAL_SYSTEM_SERVICE_USER_ID = "user_test_global_human";
-    seedGlobalSystemService("user_test_global_human", "human");
-    const human = await runResearchPlanSchedulerOnce(new Date("2026-06-19T11:00:00"));
-    assert.equal(human.started, 0);
-    assert.deepEqual(human.blockers, [{
-      workflowId: "daily-ai-research-publish-run",
-      dueKey: "2026-06-19T09:00",
-      exactBlocker: "registered_workflow_global_service_identity_invalid"
-    }]);
-
-    seedGlobalSystemService("user_test_global_human", "service");
-    const service = await runResearchPlanSchedulerOnce(new Date("2026-06-20T11:00:00"));
-    assert.equal(service.started, 1);
-    assert.equal(service.blocked, 0);
+    assert.equal(missing.started, 1);
+    assert.equal(missing.blocked, 0);
+    assert.deepEqual(missing.blockers, []);
     const metadata = JSON.parse(db.querySql<{ metadata_json: string }>(
-      `SELECT metadata_json FROM runs WHERE id=${db.sqlValue(service.runIds[0])}`
-    )[0].metadata_json) as { system_scope?: string; scheduler_service_identity?: { userId?: string; kind?: string; scope?: string } };
-    assert.equal(metadata.system_scope, "global");
-    assert.deepEqual(metadata.scheduler_service_identity, {
-      userId: "user_test_global_human",
-      kind: "service",
-      scope: "global_system"
-    });
+      `SELECT metadata_json FROM runs WHERE id=${db.sqlValue(missing.runIds[0])}`
+    )[0].metadata_json) as {
+      registered_workflow_start?: { definition_fingerprint?: string; schedule_fingerprint?: string };
+      portable_workflow_invocation?: { source_trigger?: string; external_action_executed?: boolean };
+      portable_worker?: { external_action_executed?: boolean };
+    };
+    assert.match(String(metadata.registered_workflow_start?.definition_fingerprint), /^[a-f0-9]{64}$/);
+    assert.match(String(metadata.registered_workflow_start?.schedule_fingerprint), /^[a-f0-9]{64}$/);
+    assert.equal(metadata.portable_workflow_invocation?.source_trigger, "automation_os_scheduler");
+    assert.equal(metadata.portable_workflow_invocation?.external_action_executed, false);
+    assert.equal(metadata.portable_worker?.external_action_executed, false);
   } finally {
     if (previousIdentity === undefined) delete process.env.AUTOMATION_OS_GLOBAL_SYSTEM_SERVICE_USER_ID;
     else process.env.AUTOMATION_OS_GLOBAL_SYSTEM_SERVICE_USER_ID = previousIdentity;
@@ -2491,11 +2477,12 @@ test("GET /api/browser/health blocks Browser Use recording QA when configured ru
   }
 });
 
-test("POST local browser check leaves dashboard responsive while Playwright CLI is running", async () => {
+test("POST local browser check leaves dashboard responsive while Browser Use CLI is running", async () => {
   db.initDb();
   db.resetDemoData();
+  seedOwnerCompany();
   db.execSql("DELETE FROM system_checks; DELETE FROM bridge_actions;");
-  const restorePlaywrightCli = installSlowPlaywrightFakeCli("node-dashboard-responsive", 200);
+  const restoreBrowserUseCli = installSlowBrowserUseFakeCli("node-dashboard-responsive", 200);
 
   try {
     let checkFinished = false;
@@ -2533,22 +2520,23 @@ test("POST local browser check leaves dashboard responsive while Playwright CLI 
     assert.equal(typeof dashboardBody.executionRouting.controller.name, "string");
     assert.equal(typeof dashboardBody.executionRouting.controller.status, "string");
     assert.equal(checkResponse.status, 200);
-    assert.equal(checkBody.status, "ok");
-    assert.equal(checkBody.systemCheck.driver, "playwright_cli");
-    assert.equal(checkBody.systemCheck.status, "ok");
-    assert.equal(checkBody.systemCheck.metadata.driver, "playwright_cli");
-    assert.deepEqual(checkBody.systemCheck.metadata.missingArtifacts, []);
-    assert.equal(checkBody.systemCheck.metadata.artifactValidationStatus, "ok");
+    assert.equal(checkBody.status, "blocked");
+    assert.equal(checkBody.systemCheck.driver, "browser_use_cli");
+    assert.equal(checkBody.systemCheck.status, "blocked");
+    assert.equal(checkBody.systemCheck.metadata.driver, "browser_use_cli");
+    assert.ok(checkBody.systemCheck.metadata.missingArtifacts.includes("recordingQa"));
+    assert.equal(checkBody.systemCheck.metadata.artifactValidationStatus, "blocked");
   } finally {
-    restorePlaywrightCli();
+    restoreBrowserUseCli();
   }
 });
 
-test("POST browser-check endpoint also leaves dashboard responsive while Playwright CLI is running", async () => {
+test("POST browser-check endpoint also leaves dashboard responsive while Browser Use CLI is running", async () => {
   db.initDb();
   db.resetDemoData();
+  seedOwnerCompany();
   db.execSql("DELETE FROM system_checks; DELETE FROM bridge_actions;");
-  const restorePlaywrightCli = installSlowPlaywrightFakeCli("node-dashboard-responsive-direct", 200);
+  const restoreBrowserUseCli = installSlowBrowserUseFakeCli("node-dashboard-responsive-direct", 200);
 
   try {
     let checkFinished = false;
@@ -2572,19 +2560,20 @@ test("POST browser-check endpoint also leaves dashboard responsive while Playwri
 
     assert.equal(dashboardResponse.status, 200);
     assert.equal(checkResponse.status, 200);
-    assert.equal(checkBody.driver, "playwright_cli");
-    assert.equal(checkBody.status, "ok");
-    assert.equal(checkBody.metadata.driver, "playwright_cli");
-    assert.deepEqual(checkBody.metadata.missingArtifacts, []);
-    assert.equal(checkBody.metadata.artifactValidationStatus, "ok");
+    assert.equal(checkBody.driver, "browser_use_cli");
+    assert.equal(checkBody.status, "blocked");
+    assert.equal(checkBody.metadata.driver, "browser_use_cli");
+    assert.ok(checkBody.metadata.missingArtifacts.includes("recordingQa"));
+    assert.equal(checkBody.metadata.artifactValidationStatus, "blocked");
   } finally {
-    restorePlaywrightCli();
+    restoreBrowserUseCli();
   }
 });
 
 test("POST /api/bridge/node-check blocks lane observations until recording QA is connected", async () => {
   db.initDb();
   db.resetDemoData();
+  seedOwnerCompany();
   db.execSql("DELETE FROM system_checks; DELETE FROM bridge_actions;");
   const previousCli = process.env.AUTOMATION_OS_BROWSER_USE_CLI;
   const previousArtifactDir = process.env.AUTOMATION_OS_BROWSER_USE_ARTIFACT_DIR;
@@ -2647,7 +2636,7 @@ esac
       createdAt: string;
       metadata: {
         session: string;
-        connectionStrategy: { cdpUrl: string; profile: string };
+      connectionStrategy: { cdpUrl: string | null; profile: string | null };
         recordingQa: { reason: string; recorderStatus: string };
       };
     };
@@ -2665,10 +2654,10 @@ esac
     assert.equal(response.status, 200);
     assert.equal(body.status, "blocked");
     assert.equal(body.metadata.session, "node-api-lane");
-    assert.equal(body.metadata.connectionStrategy.cdpUrl, "http://127.0.0.1:9444");
-    assert.equal(body.metadata.connectionStrategy.profile, "/tmp/profile-api");
-    assert.equal(body.metadata.recordingQa.reason, "browser_use_recording_recorder_unavailable");
-    assert.equal(body.metadata.recordingQa.recorderStatus, "planned");
+    assert.equal(body.metadata.connectionStrategy.cdpUrl, null);
+    assert.equal(body.metadata.connectionStrategy.profile, null);
+    assert.equal(body.metadata.recordingQa.reason, "browser_use_recording_requires_cdp_lane");
+    assert.equal(body.metadata.recordingQa.recorderStatus, "unavailable");
     assert.equal(lane.browser_use_session, "node-api-lane");
     assert.equal(lane.browser_use_cdp_url, "http://127.0.0.1:9444");
     assert.equal(lane.browser_use_profile, "/tmp/profile-api");
@@ -2794,7 +2783,7 @@ test("POST /api/bridge/node-check does not update a lane when laneId conflicts w
       status: string;
       metadata: {
         session: string;
-        connectionStrategy: { profile: string };
+        connectionStrategy: { profile: string | null };
         recordingQa: { reason: string; recorderStatus: string };
       };
     };
@@ -2803,7 +2792,7 @@ test("POST /api/bridge/node-check does not update a lane when laneId conflicts w
     assert.equal(response.status, 200);
     assert.equal(body.status, "blocked");
     assert.notEqual(body.metadata.session, "node-laneid-conflict-a");
-    assert.equal(body.metadata.connectionStrategy.profile, "/tmp/profile-laneid-conflict-b");
+    assert.equal(body.metadata.connectionStrategy.profile, null);
     assert.equal(body.metadata.recordingQa.reason, "browser_use_recording_requires_cdp_lane");
     assert.equal(body.metadata.recordingQa.recorderStatus, "unavailable");
     assert.deepEqual(lanes, [
@@ -2856,7 +2845,7 @@ test("POST /api/bridge/node-check does not update a lane when cdpUrl and profile
       status: string;
       metadata: {
         session: string;
-        connectionStrategy: { cdpUrl: string; profile: string };
+        connectionStrategy: { cdpUrl: string | null; profile: string | null };
         recordingQa: { reason: string; recorderStatus: string };
       };
     };
@@ -2866,10 +2855,10 @@ test("POST /api/bridge/node-check does not update a lane when cdpUrl and profile
     assert.equal(body.status, "blocked");
     assert.notEqual(body.metadata.session, "node-identifier-conflict-a");
     assert.notEqual(body.metadata.session, "node-identifier-conflict-b");
-    assert.equal(body.metadata.connectionStrategy.cdpUrl, "http://127.0.0.1:9460");
-    assert.equal(body.metadata.connectionStrategy.profile, "/tmp/profile-identifier-conflict-b");
-    assert.equal(body.metadata.recordingQa.reason, "browser_use_recording_recorder_unavailable");
-    assert.equal(body.metadata.recordingQa.recorderStatus, "planned");
+    assert.equal(body.metadata.connectionStrategy.cdpUrl, null);
+    assert.equal(body.metadata.connectionStrategy.profile, null);
+    assert.equal(body.metadata.recordingQa.reason, "browser_use_recording_requires_cdp_lane");
+    assert.equal(body.metadata.recordingQa.recorderStatus, "unavailable");
     assert.deepEqual(lanes, [
       { id: "lane_api_identifier_conflict_a", health: "unknown", updated_at: "2026-06-11T00:30:00.000Z" },
       { id: "lane_api_identifier_conflict_b", health: "unknown", updated_at: "2026-06-11T00:31:00.000Z" }
@@ -2913,7 +2902,7 @@ test("POST /api/bridge/node-check resolves matching cdpUrl and profile to the sa
       createdAt: string;
       metadata: {
         session: string;
-        connectionStrategy: { cdpUrl: string; profile: string };
+        connectionStrategy: { cdpUrl: string | null; profile: string | null };
         recordingQa: { reason: string; recorderStatus: string };
       };
     };
@@ -2924,10 +2913,10 @@ test("POST /api/bridge/node-check resolves matching cdpUrl and profile to the sa
     assert.equal(response.status, 200);
     assert.equal(body.status, "blocked");
     assert.equal(body.metadata.session, "node-cdp-profile-positive");
-    assert.equal(body.metadata.connectionStrategy.cdpUrl, "http://127.0.0.1:9470");
-    assert.equal(body.metadata.connectionStrategy.profile, "/tmp/profile-cdp-profile-positive");
-    assert.equal(body.metadata.recordingQa.reason, "browser_use_recording_recorder_unavailable");
-    assert.equal(body.metadata.recordingQa.recorderStatus, "planned");
+    assert.equal(body.metadata.connectionStrategy.cdpUrl, null);
+    assert.equal(body.metadata.connectionStrategy.profile, null);
+    assert.equal(body.metadata.recordingQa.reason, "browser_use_recording_requires_cdp_lane");
+    assert.equal(body.metadata.recordingQa.recorderStatus, "unavailable");
     assert.equal(lane.health, "blocked");
     assert.equal(lane.updated_at, body.createdAt);
     assert.equal(lane.browser_use_session, "node-cdp-profile-positive");
@@ -2938,9 +2927,10 @@ test("POST /api/bridge/node-check resolves matching cdpUrl and profile to the sa
   }
 });
 
-test("POST /api/bridge/node-check marks a lane good when recording and Gemini QA sidecar are present", async () => {
+test("POST /api/bridge/node-check rejects a noncanonical Browser Use sidecar lane", async () => {
   db.initDb();
   db.resetDemoData();
+  seedOwnerCompany();
   db.execSql("DELETE FROM system_checks; DELETE FROM bridge_actions;");
   const restoreBrowserUseCli = installBrowserUseSidecarFakeCli("node-cdp-profile-sidecar-ok");
   const now = "2026-06-12T00:45:00.000Z";
@@ -2971,8 +2961,8 @@ test("POST /api/bridge/node-check marks a lane good when recording and Gemini QA
     const body = JSON.parse(response.body) as {
       status: string;
       createdAt: string;
-      recordingPath: string;
-      geminiQaPath: string;
+      recordingPath: string | null;
+      geminiQaPath: string | null;
       metadata: {
         session: string;
         recordingQa: { status: string; reason: string | null; recorderStatus: string };
@@ -2992,29 +2982,29 @@ test("POST /api/bridge/node-check marks a lane good when recording and Gemini QA
     const persistedGeminiVideoQa = systemCheckMetadata.metadata?.geminiVideoQa ?? systemCheckMetadata.geminiVideoQa;
 
     assert.equal(response.status, 200);
-    assert.equal(body.status, "ok");
+    assert.equal(body.status, "blocked", JSON.stringify(body));
     assert.equal(body.metadata.session, "node-cdp-profile-sidecar-ok");
-    assert.equal(body.recordingPath.endsWith("/recording.mp4"), true);
-    assert.equal(body.geminiQaPath.endsWith("/gemini-video-qa.json"), true);
-    assert.equal(body.metadata.recordingQa.status, "present");
-    assert.equal(body.metadata.recordingQa.reason, null);
-    assert.equal(body.metadata.recordingQa.recorderStatus, "captured");
-    assert.equal(body.metadata.geminiVideoQa.status, "present");
-    assert.equal(body.metadata.geminiVideoQa.exactBlocker, null);
-    assert.equal(lane.health, "good");
+    assert.equal(body.recordingPath, null);
+    assert.equal(body.geminiQaPath, null);
+    assert.equal(body.metadata.recordingQa.status, "blocked");
+    assert.equal(body.metadata.recordingQa.reason, "browser_use_recording_requires_cdp_lane");
+    assert.equal(body.metadata.recordingQa.recorderStatus, "unavailable");
+    assert.equal(body.metadata.geminiVideoQa.status, "blocked");
+    assert.equal(body.metadata.geminiVideoQa.exactBlocker, "browser_use_recording_requires_cdp_lane");
+    assert.equal(lane.health, "blocked");
     assert.equal(lane.updated_at, body.createdAt);
     assert.equal(lane.browser_use_session, "node-cdp-profile-sidecar-ok");
     assert.equal(lane.browser_use_cdp_url, "http://127.0.0.1:9471");
     assert.equal(lane.browser_use_profile, "/tmp/profile-cdp-profile-sidecar-ok");
-    assert.equal(systemCheck.status, "ok");
-    assert.equal(persistedRecordingQa?.status, "present");
-    assert.equal(persistedGeminiVideoQa?.status, "present");
+    assert.equal(systemCheck.status, "blocked");
+    assert.equal(persistedRecordingQa?.status, "blocked");
+    assert.equal(persistedGeminiVideoQa?.status, "blocked");
   } finally {
     restoreBrowserUseCli();
   }
 });
 
-test("POST /api/bridge/node-check uses the latest safe Browser Use CDP fallback when lane details are omitted", async () => {
+test("POST /api/bridge/node-check does not use a historical CDP fallback with a noncanonical helper", async () => {
   db.initDb();
   db.resetDemoData();
   db.execSql("DELETE FROM system_checks; DELETE FROM bridge_actions;");
@@ -3033,24 +3023,25 @@ test("POST /api/bridge/node-check uses the latest safe Browser Use CDP fallback 
     });
     const body = JSON.parse(response.body) as {
       status: string;
-      metadata: { connectionStrategy: { cdpUrl: string; profile: string | null }; recordingQa: { status: string }; geminiVideoQa: { status: string; exactBlocker: string | null } };
+      metadata: { connectionStrategy: { cdpUrl: string | null; profile: string | null }; recordingQa: { status: string; reason: string }; geminiVideoQa: { status: string; exactBlocker: string | null } };
     };
     const lanes = db.querySql<{ id: string }>("SELECT id FROM lanes WHERE browser_use_cdp_url='http://127.0.0.1:9480' OR browser_use_profile='/tmp/profile-safe-fallback-direct'");
 
     assert.equal(response.status, 200);
-    assert.equal(body.status, "ok");
-    assert.equal(body.metadata.connectionStrategy.cdpUrl, "http://127.0.0.1:9480");
+    assert.equal(body.status, "blocked");
+    assert.equal(body.metadata.connectionStrategy.cdpUrl, null);
     assert.equal(body.metadata.connectionStrategy.profile, null);
-    assert.equal(body.metadata.recordingQa.status, "present");
-    assert.equal(body.metadata.geminiVideoQa.status, "present");
-    assert.equal(body.metadata.geminiVideoQa.exactBlocker, null);
+    assert.equal(body.metadata.recordingQa.status, "blocked");
+    assert.equal(body.metadata.recordingQa.reason, "browser_use_recording_requires_cdp_lane");
+    assert.equal(body.metadata.geminiVideoQa.status, "blocked");
+    assert.equal(body.metadata.geminiVideoQa.exactBlocker, "browser_use_recording_requires_cdp_lane");
     assert.deepEqual(lanes, []);
   } finally {
     restoreBrowserUseCli();
   }
 });
 
-test("POST /api/bridge/actions/browser_use_local_check/run uses the latest safe Browser Use CDP fallback when lane details are omitted", async () => {
+test("POST /api/bridge/actions/browser_use_local_check/run does not use a historical CDP fallback with a noncanonical helper", async () => {
   db.initDb();
   db.resetDemoData();
   db.execSql("DELETE FROM system_checks; DELETE FROM bridge_actions;");
@@ -3069,24 +3060,24 @@ test("POST /api/bridge/actions/browser_use_local_check/run uses the latest safe 
     });
     const body = JSON.parse(response.body) as {
       status: string;
-      systemCheck: { status: string; metadata: { connectionStrategy: { cdpUrl: string; profile: string } } };
-      metadata: { connectionStrategy: { cdpUrl: string; profile: string }; laneId?: string };
+      systemCheck: { status: string; metadata: { connectionStrategy: { cdpUrl: string | null; profile: string | null } } };
+      metadata: { connectionStrategy: { cdpUrl: string | null; profile: string | null }; laneId?: string };
     };
 
     assert.equal(response.status, 200);
-    assert.equal(body.status, "ok");
-    assert.equal(body.systemCheck.status, "ok");
-    assert.equal(body.systemCheck.metadata.connectionStrategy.cdpUrl, "http://127.0.0.1:9481");
-    assert.equal(body.systemCheck.metadata.connectionStrategy.profile, "/tmp/profile-safe-fallback-action");
-    assert.equal(body.metadata.connectionStrategy.cdpUrl, "http://127.0.0.1:9481");
-    assert.equal(body.metadata.connectionStrategy.profile, "/tmp/profile-safe-fallback-action");
+    assert.equal(body.status, "blocked");
+    assert.equal(body.systemCheck.status, "blocked");
+    assert.equal(body.systemCheck.metadata.connectionStrategy.cdpUrl, null);
+    assert.equal(body.systemCheck.metadata.connectionStrategy.profile, null);
+    assert.equal(body.metadata.connectionStrategy.cdpUrl, null);
+    assert.equal(body.metadata.connectionStrategy.profile, null);
     assert.equal(body.metadata.laneId, undefined);
   } finally {
     restoreBrowserUseCli();
   }
 });
 
-test("POST /api/bridge/node-check keeps explicit CDP details strict instead of using the safe fallback", async () => {
+test("POST /api/bridge/node-check ignores explicit CDP details when the helper is noncanonical", async () => {
   db.initDb();
   db.resetDemoData();
   db.execSql("DELETE FROM system_checks; DELETE FROM bridge_actions;");
@@ -3105,12 +3096,12 @@ test("POST /api/bridge/node-check keeps explicit CDP details strict instead of u
       profile: "/tmp/profile-explicit-no-fallback",
       targetUrl: "http://127.0.0.1:5173/#lanes"
     });
-    const body = JSON.parse(response.body) as { status: string; metadata: { connectionStrategy: { cdpUrl: string; profile: string } } };
+    const body = JSON.parse(response.body) as { status: string; metadata: { connectionStrategy: { cdpUrl: string | null; profile: string | null } } };
 
     assert.equal(response.status, 200);
-    assert.equal(body.status, "ok");
-    assert.equal(body.metadata.connectionStrategy.cdpUrl, "http://127.0.0.1:9483");
-    assert.equal(body.metadata.connectionStrategy.profile, "/tmp/profile-explicit-no-fallback");
+    assert.equal(body.status, "blocked");
+    assert.equal(body.metadata.connectionStrategy.cdpUrl, null);
+    assert.equal(body.metadata.connectionStrategy.profile, null);
   } finally {
     restoreBrowserUseCli();
   }
@@ -5298,7 +5289,7 @@ function installSlowBrowserUseFakeCli(name: string, delayMs: number): () => void
   const previousCli = process.env.AUTOMATION_OS_BROWSER_USE_CLI;
   const previousArtifactDir = process.env.AUTOMATION_OS_BROWSER_USE_ARTIFACT_DIR;
   const screenshot = join(tempRoot, `${name}-screen.png`);
-  const browserUseCli = join(tempRoot, `${name}.sh`);
+  const browserUseCli = join(tempRoot, "codex-browser-use");
   writeFileSync(
     browserUseCli,
     `#!/bin/sh

@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { YouTubeTranscriptCdpClient } from "../obsidian/youtubeTranscriptCapture.js";
+import type { YouTubeTranscriptBrowserUseCliReadback } from "../obsidian/youtubeTranscriptCapture.js";
 
 const tempRoot = mkdtempSync(join(tmpdir(), "automation-os-youtube-transcript-"));
 process.env.AUTOMATION_OS_OBSIDIAN_AUTO_EXPORT = "0";
@@ -18,9 +18,7 @@ test.after(() => {
 
 const {
   runYouTubeTranscriptCapture,
-  validateYouTubeTranscriptUrl,
-  transcriptRevealExpression,
-  transcriptExtractionExpression
+  validateYouTubeTranscriptUrl
 } = await import("../obsidian/youtubeTranscriptCapture.js");
 const {
   ensureYouTubeTranscriptChromeReady,
@@ -28,31 +26,40 @@ const {
   youtubeTranscriptLane
 } = await import("../browser/youtubeTranscriptLane.js");
 
-test("YouTube transcript capture extracts fake visible segments and writes redacted artifacts", async () => {
+test("YouTube transcript capture uses Browser Use CLI readback and writes redacted caption artifacts", async () => {
   const vaultPath = createVault("success");
   const artifactRoot = join(tempRoot, "artifacts-success");
-  const cdpClient = new FakeCdpClient({
-    title: "Video sample_value_1234567890ABCDEF",
-    currentUrl: "https://www.youtube.com/watch?v=dQw4w9WgXcQ&token=sample-token",
-    officialPanelVisible: true,
-    panelHeadings: ["Transcript"],
-    segments: [
-      { selector: "ytd-transcript-segment-renderer", timestamp: "0:01", text: "Hello test@example.com" },
-      { selector: "ytd-transcript-segment-renderer", timestamp: "0:03", text: "Bearer sample_value_1234567890ABCDEF" }
-    ]
-  });
+  const browserUseCliReadback = new FakeBrowserUseCliReadback();
+  const playerResponse = {
+    videoDetails: { title: "Video sample_value_1234567890ABCDEF" },
+    captions: { playerCaptionsTracklistRenderer: { captionTracks: [{
+      baseUrl: "https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=en",
+      name: { simpleText: "English" },
+      languageCode: "en",
+      vssId: ".en"
+    }] } }
+  };
 
   const result = await runYouTubeTranscriptCapture({
     url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ&token=sample-token",
     vaultPath,
     artifactRoot,
     capturedAt: "2026-06-16T13:00:00.000Z",
-    cdpClient
+    browserUseCliReadback,
+    async publicCaptionFetch(url) {
+      if (String(url).includes("/watch?")) {
+        return new Response(`<script>var ytInitialPlayerResponse = ${JSON.stringify(playerResponse)};</script>`, { status: 200 });
+      }
+      return new Response(JSON.stringify({ events: [
+        { tStartMs: 1000, segs: [{ utf8: "Hello test@example.com" }] },
+        { tStartMs: 3000, segs: [{ utf8: "Bearer sample_value_1234567890ABCDEF" }] }
+      ] }), { status: 200 });
+    }
   });
 
   assert.equal(result.ok, true);
-  assert.equal(cdpClient.openedUrl, "https://www.youtube.com/watch?v=dQw4w9WgXcQ&token=sample-token");
-  assert.equal(cdpClient.closed, true);
+  assert.equal(browserUseCliReadback.inputs.length, 1);
+  assert.equal(browserUseCliReadback.inputs[0]?.url, "https://www.youtube.com/watch?v=dQw4w9WgXcQ&token=sample-token");
   if (!result.ok) throw new Error("expected capture success");
   assert.equal(result.segmentCount, 2);
   assert.equal(existsSync(result.files.manifest), true);
@@ -77,6 +84,7 @@ test("YouTube transcript capture extracts fake visible segments and writes redac
   assert.match(combined, /\[redacted-token\]/);
   assert.doesNotMatch(combined, /secret-token|sample_value_1234567890ABCDEF|test@example\.com/);
   assert.doesNotMatch(combined, /<html|<body|localStorage|cookie/iu);
+  assert.match(readFileSync(result.files.stageOpen, "utf8"), /browser_use_cli/);
 });
 
 test("YouTube transcript URL validation accepts only watch or youtu.be video URLs", () => {
@@ -95,64 +103,6 @@ test("YouTube transcript URL validation accepts only watch or youtu.be video URL
   for (const url of rejected) {
     assert.equal(validateYouTubeTranscriptUrl(url).ok, false, url);
   }
-});
-
-test("YouTube transcript expressions avoid prohibited full-page and write/action APIs", async () => {
-  const expression = `${transcriptRevealExpression}\n${transcriptExtractionExpression}`;
-  assert.match(transcriptRevealExpression, /\.click\(\)/u);
-  assert.doesNotMatch(expression, /document\.body\.innerText|document\.documentElement\.innerText|localStorage|cookie/iu);
-  assert.doesNotMatch(expression, /dispatchEvent|submit|input|download|share|like|subscribe|comment|save/iu);
-  assert.doesNotMatch(transcriptExtractionExpression, /\[class\*='segment'\]|\[aria-label\*='Transcript'\]/u);
-  assert.doesNotMatch(transcriptExtractionExpression, /target-id\*='transcript'|document\.querySelector\("ytd-transcript-renderer"\)/u);
-  assert.doesNotMatch(transcriptExtractionExpression, /\|\| document/u);
-  assert.match(transcriptExtractionExpression, /target-id='engagement-panel-searchable-transcript'/u);
-  assert.doesNotMatch(expression, /querySelectorAll\(["']body["']\)/iu);
-
-  const cdpClient = new CaptureExpressionCdpClient();
-  const result = await runYouTubeTranscriptCapture({
-    url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-    vaultPath: createVault("expression"),
-    artifactRoot: join(tempRoot, "artifacts-expression"),
-    capturedAt: "2026-06-16T13:01:00.000Z",
-    cdpClient
-  });
-  assert.equal(result.ok, false);
-  assert.equal(cdpClient.closed, true);
-  assert.match(cdpClient.expressions.join("\n"), /visible_transcript_control_click/);
-  assert.match(cdpClient.expressions.join("\n"), /ytd-transcript-segment-renderer/);
-  if (result.ok) throw new Error("expected capture to block without the official transcript panel");
-  assert.equal(result.exactBlocker, "youtube_transcript_official_panel_not_visible");
-});
-
-test("YouTube transcript capture blocks fake segments when the official panel is not visible", async () => {
-  const result = await runYouTubeTranscriptCapture({
-    url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-    vaultPath: createVault("fake-segments"),
-    artifactRoot: join(tempRoot, "artifacts-fake-segments"),
-    capturedAt: "2026-06-16T13:02:00.000Z",
-    cdpClient: new FakeCdpClient({
-      title: "Fake segments outside panel",
-      currentUrl: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-      officialPanelVisible: false,
-      panelHeadings: [],
-      visibleTextSamples: [{ selector: "visible_transcript_controls", text: "Show transcript test@example.com" }],
-      segments: [
-        { selector: "ytd-transcript-segment-renderer", timestamp: "0:01", text: "This must not become proof" }
-      ]
-    })
-  });
-
-  assert.equal(result.ok, false);
-  if (result.ok) throw new Error("expected fake segments without official panel to block");
-  assert.equal(result.exactBlocker, "youtube_transcript_official_panel_not_visible");
-  assert.equal(existsSync(result.files?.stageTranscript ?? ""), true);
-  assert.equal(existsSync(result.files?.pageRedacted ?? ""), true);
-  assert.equal(existsSync(result.files?.transcriptRedacted ?? ""), true);
-  assert.equal(existsSync(result.files?.ingest ?? ""), true);
-  const pageRedacted = readFileSync(result.files?.pageRedacted ?? "", "utf8");
-  assert.match(pageRedacted, /youtube_transcript_official_panel_not_visible/);
-  assert.match(pageRedacted, /Show transcript \[redacted-email\]/);
-  assert.doesNotMatch(pageRedacted, /This must not become proof/);
 });
 
 test("YouTube transcript capture falls back to public timedtext captions when the official panel is not visible", async () => {
@@ -178,14 +128,7 @@ test("YouTube transcript capture falls back to public timedtext captions when th
     vaultPath: createVault("public-timedtext"),
     artifactRoot: join(tempRoot, "artifacts-public-timedtext"),
     capturedAt: "2026-06-16T13:02:30.000Z",
-    cdpClient: new FakeCdpClient({
-      title: "No official panel",
-      currentUrl: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-      officialPanelVisible: false,
-      panelHeadings: [],
-      visibleTextSamples: [{ selector: "visible_transcript_controls", text: "Show transcript" }],
-      segments: []
-    }),
+    publicCaptionOnly: true,
     async publicCaptionFetch(url) {
       fetchedUrls.push(String(url));
       if (String(url).includes("/watch?")) {
@@ -277,18 +220,23 @@ test("YouTube transcript capture records transcript endpoint diagnostic when pub
   assert.doesNotMatch(stage, /transcript-params/);
 });
 
-test("YouTube transcript capture writes manifest-listed artifacts on CDP failure", async () => {
+test("YouTube transcript capture preserves the CLI blocker and writes manifest-listed artifacts", async () => {
   const result = await runYouTubeTranscriptCapture({
     url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-    vaultPath: createVault("cdp-failure"),
-    artifactRoot: join(tempRoot, "artifacts-cdp-failure"),
+    vaultPath: createVault("browser-use-cli-failure"),
+    artifactRoot: join(tempRoot, "artifacts-browser-use-cli-failure"),
     capturedAt: "2026-06-16T13:03:00.000Z",
-    cdpClient: new FailingOpenCdpClient()
+    browserUseCliReadback: {
+      async openAndRead() {
+        return { ok: false as const, exactBlocker: "browser_use_cli_authority_required", summary: "fresh CLI proof required" };
+      }
+    },
+    publicCaptionFetch: async () => new Response("not a YouTube player response", { status: 200 })
   });
 
   assert.equal(result.ok, false);
-  if (result.ok) throw new Error("expected CDP failure to block");
-  assert.equal(result.exactBlocker, "youtube_transcript_cdp_failed");
+  if (result.ok) throw new Error("expected Browser Use CLI failure to block");
+  assert.equal(result.exactBlocker, "browser_use_cli_authority_required");
   for (const artifactPath of Object.values(result.files ?? {})) {
     assert.equal(existsSync(artifactPath), true, artifactPath);
   }
@@ -296,7 +244,7 @@ test("YouTube transcript capture writes manifest-listed artifacts on CDP failure
   assert.match(ingest, /blocked_capture_not_ingested/);
 });
 
-test("YouTube transcript lane ensure opens the fixed CDP lane when health is unavailable", async () => {
+test("YouTube transcript lane requires fresh Browser Use authority before opening", async () => {
   const seen: string[] = [];
   let openCalled = 0;
   const result = await ensureYouTubeTranscriptChromeReady({
@@ -304,54 +252,47 @@ test("YouTube transcript lane ensure opens the fixed CDP lane when health is una
     delayMs: 0,
     async fetchImpl(url) {
       seen.push(String(url));
-      if (seen.length === 1) throw new Error("connect ECONNREFUSED 127.0.0.1:9337");
-      return new Response(JSON.stringify({ Browser: "Chrome/Test", webSocketDebuggerUrl: "ws://127.0.0.1:9337/devtools/browser/test" }), {
-        status: 200,
-        headers: { "content-type": "application/json" }
-      });
+      return new Response("unexpected legacy CDP probe", { status: 500 });
     },
     openImpl() {
       openCalled += 1;
       return {
         ok: true,
-        bin: "/Applications/Test Chrome.app/Contents/MacOS/Google Chrome",
-        args: ["--remote-debugging-port=9337"],
+        bin: "/Users/nichikatanaka/.local/bin/codex-browser-use",
+        args: ["--session", "test", "open", youtubeTranscriptLane.homeUrl],
         laneName: youtubeTranscriptLane.name,
         port: youtubeTranscriptLane.port,
         profileDir: youtubeTranscriptLane.profileDir,
-        pid: 12345,
         url: youtubeTranscriptLane.homeUrl,
         summary: "opened for test"
       };
     }
   });
 
-  assert.equal(result.ok, true);
+  assert.equal(result.ok, false);
   assert.equal(openCalled, 1);
-  assert.deepEqual(seen, [youtubeTranscriptLane.versionUrl, youtubeTranscriptLane.versionUrl]);
-  if (!result.ok) throw new Error("expected lane ensure to succeed");
-  assert.equal(result.opened?.pid, 12345);
-  assert.equal(result.health.webSocketDebuggerUrl, "ws://127.0.0.1:9337/devtools/browser/test");
+  assert.deepEqual(seen, []);
+  if (result.ok) throw new Error("expected fresh Browser Use authority to be required");
+  assert.equal(result.exactBlocker, "browser_use_authority_required");
 });
 
-test("YouTube transcript lane ensure returns a clear CDP blocker when Chrome never becomes ready", async () => {
+test("YouTube transcript lane does not treat a legacy open result as Browser Use readiness", async () => {
   let openCalled = 0;
   const result = await ensureYouTubeTranscriptChromeReady({
     attempts: 2,
     delayMs: 0,
     async fetchImpl() {
-      throw new Error("connect ECONNREFUSED 127.0.0.1:9337");
+      throw new Error("legacy CDP probe must not be used");
     },
     openImpl() {
       openCalled += 1;
       return {
         ok: true,
-        bin: "/Applications/Test Chrome.app/Contents/MacOS/Google Chrome",
-        args: ["--remote-debugging-port=9337"],
+        bin: "/Users/nichikatanaka/.local/bin/codex-browser-use",
+        args: ["--session", "test", "open", youtubeTranscriptLane.homeUrl],
         laneName: youtubeTranscriptLane.name,
         port: youtubeTranscriptLane.port,
         profileDir: youtubeTranscriptLane.profileDir,
-        pid: 12345,
         url: youtubeTranscriptLane.homeUrl,
         summary: "opened for test"
       };
@@ -361,9 +302,9 @@ test("YouTube transcript lane ensure returns a clear CDP blocker when Chrome nev
   assert.equal(result.ok, false);
   assert.equal(openCalled, 1);
   if (result.ok) throw new Error("expected lane ensure to block");
-  assert.equal(result.exactBlocker, "youtube_transcript_cdp_unavailable");
+  assert.equal(result.exactBlocker, "browser_use_authority_required");
   assert.match(result.summary, /did not become ready/);
-  assert.equal(result.opened?.pid, 12345);
+  assert.equal(result.opened?.ok, true);
 });
 
 test("YouTube transcript lane ensure converts Chrome open failure into a CDP blocker", async () => {
@@ -378,8 +319,8 @@ test("YouTube transcript lane ensure converts Chrome open failure into a CDP blo
       openCalled += 1;
       return {
         ok: false,
-        bin: "/Applications/Missing Chrome.app/Contents/MacOS/Google Chrome",
-        args: ["--remote-debugging-port=9337"],
+        bin: "/Users/nichikatanaka/.local/bin/codex-browser-use",
+        args: ["--session", "test", "open", youtubeTranscriptLane.homeUrl],
         laneName: youtubeTranscriptLane.name,
         port: youtubeTranscriptLane.port,
         profileDir: youtubeTranscriptLane.profileDir,
@@ -397,13 +338,13 @@ test("YouTube transcript lane ensure converts Chrome open failure into a CDP blo
   assert.match(result.summary, /spawn ENOENT/);
 });
 
-test("YouTube transcript health check is bounded when CDP never responds", async () => {
+test("YouTube transcript health check is bounded without probing legacy CDP", async () => {
   const startedAt = Date.now();
-  const result = await getYouTubeTranscriptChromeHealth(async () => new Promise<Response>(() => undefined));
+  const result = await getYouTubeTranscriptChromeHealth(async () => new Response("unexpected legacy CDP probe", { status: 500 }));
 
   assert.equal(result.ok, false);
-  assert.equal(result.exactBlocker, "youtube_transcript_cdp_unavailable");
-  assert.match(result.summary, /youtube_transcript_cdp_health_timeout/);
+  assert.equal(result.exactBlocker, "browser_use_authority_required");
+  assert.match(result.summary, /fresh authority/);
   assert.ok(Date.now() - startedAt < 3000);
 });
 
@@ -413,66 +354,17 @@ function createVault(name: string): string {
   return vault;
 }
 
-class FakeCdpClient implements YouTubeTranscriptCdpClient {
-  openedUrl = "";
-  closed = false;
-  evaluateCalls = 0;
+class FakeBrowserUseCliReadback implements YouTubeTranscriptBrowserUseCliReadback {
+  inputs: Array<{ url: string; runId: string; session: string; automationId: string; artifactDir: string }> = [];
 
-  constructor(private readonly page: Record<string, unknown>) {}
-
-  async openUrl(url: string): Promise<{ targetId: string; webSocketDebuggerUrl: string }> {
-    this.openedUrl = url;
-    return { targetId: "target-fake", webSocketDebuggerUrl: "ws://127.0.0.1:9337/devtools/page/fake" };
-  }
-
-  async evaluate(expression: string): Promise<unknown> {
-    this.evaluateCalls += 1;
-    assert.doesNotMatch(expression, /document\.body\.innerText|document\.documentElement\.innerText|localStorage|cookie/iu);
-    assert.doesNotMatch(expression, /dispatchEvent|submit|input|download|share|like|subscribe|comment|save/iu);
-    if (/visible_transcript_control_click/.test(expression)) {
-      return { title: this.page.title, currentUrl: this.page.currentUrl, revealAttempted: true, revealMethod: "visible_transcript_control_click" };
-    }
-    return this.page;
-  }
-
-  async close(): Promise<void> {
-    this.closed = true;
-  }
-}
-
-class CaptureExpressionCdpClient implements YouTubeTranscriptCdpClient {
-  expressions: string[] = [];
-  closed = false;
-
-  async openUrl(): Promise<{ targetId: string; webSocketDebuggerUrl: string }> {
-    return { targetId: "target-fake", webSocketDebuggerUrl: "ws://127.0.0.1:9337/devtools/page/fake" };
-  }
-
-  async evaluate(expression: string): Promise<unknown> {
-    this.expressions.push(expression);
-    if (/visible_transcript_control_click/.test(expression)) {
-      return { currentUrl: "https://www.youtube.com/watch?v=dQw4w9WgXcQ", revealAttempted: false, revealMethod: null };
-    }
-    return { title: "No transcript", currentUrl: "https://www.youtube.com/watch?v=dQw4w9WgXcQ", panelHeadings: [], segments: [] };
-  }
-
-  async close(): Promise<void> {
-    this.closed = true;
-  }
-}
-
-class FailingOpenCdpClient implements YouTubeTranscriptCdpClient {
-  closed = false;
-
-  async openUrl(): Promise<{ targetId: string; webSocketDebuggerUrl: string }> {
-    throw new Error("youtube_transcript_cdp_target_missing_websocket");
-  }
-
-  async evaluate(): Promise<unknown> {
-    throw new Error("should_not_evaluate_after_open_failure");
-  }
-
-  async close(): Promise<void> {
-    this.closed = true;
+  async openAndRead(input: { url: string; runId: string; session: string; automationId: string; artifactDir: string }) {
+    this.inputs.push(input);
+    return {
+      ok: true as const,
+      currentUrl: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+      title: "Video sample_value_1234567890ABCDEF",
+      readback: { state: { url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ", title: "Video sample_value_1234567890ABCDEF" } },
+      receipt: join(input.artifactDir, "receipt.json")
+    };
   }
 }

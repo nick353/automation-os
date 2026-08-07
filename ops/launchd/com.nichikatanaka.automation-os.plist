@@ -28,13 +28,21 @@
     <key>AUTOMATION_OS_OBSIDIAN_AUTO_EXPORT</key>
     <string>1</string>
     <key>AUTOMATION_OS_ALLOW_SQLITE_FALLBACK</key>
-    <string>1</string>
+    <string>0</string>
     <key>AUTOMATION_OS_ENV_ROLE</key>
     <string>recovery</string>
     <key>AUTOMATION_OS_OBSIDIAN_PERIODIC_EXPORT_MS</key>
-    <string>300000</string>
+    <string>1800000</string>
     <key>AUTOMATION_OS_PORT</key>
     <string>8787</string>
+    <key>AUTOMATION_OS_CODEX_APP_SERVER_PROBE_ENABLED</key>
+    <string>1</string>
+    <key>AUTOMATION_OS_CODEX_APP_SERVER_PROBE_TIMEOUT_MS</key>
+    <string>5000</string>
+    <key>AUTOMATION_OS_CODEX_APP_SERVER_PROBE_COMMAND</key>
+    <string>/Users/nichikatanaka/.local/bin/codex</string>
+    <key>CODEX_CLI_PATH</key>
+    <string>/Users/nichikatanaka/.local/bin/codex</string>
     <key>AUTOMATION_OS_REQUIRE_API_TOKEN</key>
     <string>0</string>
     <key>AUTOMATION_OS_REPO_ROOT</key>

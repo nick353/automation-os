@@ -16,6 +16,15 @@ test("PostgreSQL schema introspection follows the active search_path schema", ()
   assert.doesNotMatch(source, /ON CONFLICT\(automation_id, revision\) DO NOTHING/u);
 });
 
+test("PostgreSQL worker emits one response and preserves success across cleanup errors", () => {
+  const workerSource = readFileSync(resolve(process.cwd(), "apps", "server", "src", "db", "postgresWorker.ts"), "utf8");
+  assert.match(workerSource, /let responseWritten = false;/u);
+  assert.match(workerSource, /if \(responseWritten\) return;/u);
+  assert.match(workerSource, /if \(!responseWritten\) \{/u);
+  assert.match(workerSource, /cleanup after response failed/u);
+  assert.doesNotMatch(workerSource, /cleanup after response failed[^\n]*error\.message/u);
+});
+
 test("PostgreSQL SQL translation strips SQLite pragmas from schema batches", () => {
   const translated = translateSqlForPostgres(`
     PRAGMA journal_mode = WAL;

@@ -6,6 +6,7 @@ import { Proof } from "./proofGate.js";
 import { registeredBrowserLaneForWorkflow, visibleBrowserLaneForRecordReplay } from "./laneManager.js";
 import { evaluateGeminiVideoQaAudit } from "./geminiVideoQa.js";
 import { issueLedgerMetadata } from "./issueLedger.js";
+import { inspectBrowserUseCliRunner } from "./browserUseCliRunnerGuard.js";
 
 export type DailyAiRegisteredStatus = "complete" | "partial" | "blocked";
 
@@ -56,14 +57,26 @@ export type DailyAiRegisteredRunResult = DailyAiRegisteredEvaluation & {
   stderrTail: string;
 };
 
+// Keep the established receipt filename for storage compatibility. The
+// receipt payload and command surface are Browser Use CLI-only; the filename
+// is not a transport selector.
 const summaryFileName = "registered-playwright-cli-summary.json";
 const projectRoot = "/Users/nichikatanaka/Documents/New project";
 const fixedOutputRoot = join(projectRoot, "artifacts", "automation-os-daily-ai-runs");
-const defaultPlaywrightRunner = join(projectRoot, "scripts", "run_daily_ai_playwright_cli.mjs");
+const defaultBrowserUseRunner = join(projectRoot, "scripts", "run_daily_ai_browser_use_cli_registered.mjs");
 const defaultRunnerTimeoutMs = 90 * 60 * 1000;
 const defaultCliStepTimeoutMs = 45 * 60 * 1000;
-const playwrightRunnerMissing = "playwright_cli_callable_surface_missing";
+const browserUseRunnerMissing = "browser_use_cli_registered_runner_missing";
 const dailyAiRunnerPathPrefix = ["/Users/nichikatanaka/.local/bin", "/opt/homebrew/bin", "/usr/local/bin"];
+
+function externalEffectsEnabled(): boolean {
+  const value = (
+    process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS
+    || process.env.AUTOMATION_OS_EXTERNAL_EFFECTS
+    || ""
+  ).trim();
+  return /^(?:1|true|yes|on|enabled)$/i.test(value);
+}
 
 const proofSpecs = [
   ["daily_ai_publish", "Daily AI publish proof", "direct_publish"],
@@ -95,25 +108,34 @@ export function runDailyAiRegisteredRunner(input: { runId: string; startedAtMs?:
     ? "DAILY_AI_CLI_PROOF_ONLY_NO_POST_PREFLIGHT=true "
     : "";
   mkdirSync(outputDir, { recursive: true });
-  const configuredRunner = (process.env.AUTOMATION_OS_DAILY_AI_PLAYWRIGHT_RUNNER || "").trim();
+  const configuredRunner = (
+    process.env.AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER
+    || ""
+  ).trim();
   const runner = configuredRunner
     ? (existsSync(configuredRunner) ? configuredRunner : "")
-    : (existsSync(defaultPlaywrightRunner) ? defaultPlaywrightRunner : "");
+    : (externalEffectsEnabled() && existsSync(defaultBrowserUseRunner) ? defaultBrowserUseRunner : "");
+  const runnerInspection = runner ? inspectBrowserUseCliRunner(runner) : null;
+  const runnerBlocker = !runner
+    ? browserUseRunnerMissing
+    : runnerInspection?.exactBlocker ?? browserUseRunnerMissing;
 
-  if (!runner) {
+  if (!runner || !runnerInspection?.ok) {
     const command = {
       bin: "node" as const,
-      args: ["<Daily AI Playwright CLI registered runner missing>"],
+      args: ["<Daily AI Browser Use CLI registered runner missing>"],
       cwd: projectRoot,
-      display: "Daily AI Playwright CLI registered runner is not configured",
+      display: runner
+        ? "Daily AI runner is blocked because its source is not a canonical Browser Use CLI adapter"
+        : "Daily AI Browser Use CLI registered runner is not configured",
       env: {
         PATH: runnerPath,
         DAILY_AI_CLI_RUN_ID: cliRunId,
         DAILY_AI_CLI_OUTPUT_DIR: outputDir,
-        DAILY_AI_BROWSER_DRIVER: "playwright_cli",
+        DAILY_AI_BROWSER_DRIVER: "browser_use_cli",
         DAILY_AI_CLI_BROWSER_VIDEO_QA: "no-post-preflight",
-        DAILY_AI_CLI_REQUIRE_BROWSER_USE: "0",
-        DAILY_AI_CLI_RECORDING_REQUIRED: "0",
+        DAILY_AI_CLI_REQUIRE_BROWSER_USE: "1",
+        DAILY_AI_CLI_RECORDING_REQUIRED: "1",
         DAILY_AI_CLI_EXTERNAL_VIDEO_QA_REQUIRED: "0",
         DAILY_AI_CLI_REQUIRE_FEED_STUDY: "false",
         DAILY_AI_CLI_REQUIRE_SHIP_NOW_BUFFER: "false",
@@ -131,10 +153,12 @@ export function runDailyAiRegisteredRunner(input: { runId: string; startedAtMs?:
     if (proofOnlyNoPostPreflightDisplay) {
       command.display += ` ${proofOnlyNoPostPreflightDisplay.trim()}`;
     }
-    const evaluation = blockedEvaluation(playwrightRunnerMissing, undefined, {
-      browser_driver: "playwright_cli",
-      default_runner: defaultPlaywrightRunner,
-      required_env: "AUTOMATION_OS_DAILY_AI_PLAYWRIGHT_RUNNER"
+    const evaluation = blockedEvaluation(runnerBlocker, undefined, {
+      browser_driver: "browser_use_cli",
+      default_runner: defaultBrowserUseRunner,
+      required_env: "AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER or AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS=enabled",
+      external_effects_enabled: externalEffectsEnabled(),
+      runner_inspection: runnerInspection
     });
     return {
       ...evaluation,
@@ -142,7 +166,7 @@ export function runDailyAiRegisteredRunner(input: { runId: string; startedAtMs?:
       exitStatus: null,
       signal: null,
       stdoutTail: "",
-      stderrTail: playwrightRunnerMissing
+      stderrTail: runnerBlocker
     };
   }
 
@@ -152,8 +176,8 @@ export function runDailyAiRegisteredRunner(input: { runId: string; startedAtMs?:
     cwd: projectRoot,
     display:
       `DAILY_AI_CLI_RUN_ID=${JSON.stringify(cliRunId)} DAILY_AI_CLI_OUTPUT_DIR=${JSON.stringify(outputDir)} ` +
-      `DAILY_AI_BROWSER_DRIVER=playwright_cli DAILY_AI_CLI_BROWSER_VIDEO_QA=no-post-preflight ` +
-      `DAILY_AI_CLI_REQUIRE_BROWSER_USE=0 DAILY_AI_CLI_RECORDING_REQUIRED=0 DAILY_AI_CLI_EXTERNAL_VIDEO_QA_REQUIRED=0 ` +
+      `DAILY_AI_BROWSER_DRIVER=browser_use_cli DAILY_AI_CLI_BROWSER_VIDEO_QA=no-post-preflight ` +
+      `DAILY_AI_CLI_REQUIRE_BROWSER_USE=1 DAILY_AI_CLI_RECORDING_REQUIRED=1 DAILY_AI_CLI_EXTERNAL_VIDEO_QA_REQUIRED=0 ` +
       `DAILY_AI_CDP_PORT=${String(dailyAiBrowserLane?.cdpPort ?? 9333)} DAILY_AI_CLI_PROFILE_DIR=${JSON.stringify(
         dailyAiBrowserLane?.profileDir ?? "/Users/nichikatanaka/.daily-ai-playwright-chrome"
       )} DAILY_AI_CLI_HEADLESS=${dailyAiBrowserLane?.laneVisibility === "headless" ? "true" : "false"} DAILY_AI_CLI_SHOW_BROWSER=${
@@ -169,10 +193,10 @@ export function runDailyAiRegisteredRunner(input: { runId: string; startedAtMs?:
       PATH: runnerPath,
       DAILY_AI_CLI_RUN_ID: cliRunId,
       DAILY_AI_CLI_OUTPUT_DIR: outputDir,
-      DAILY_AI_BROWSER_DRIVER: "playwright_cli",
+      DAILY_AI_BROWSER_DRIVER: "browser_use_cli",
       DAILY_AI_CLI_BROWSER_VIDEO_QA: "no-post-preflight",
-      DAILY_AI_CLI_REQUIRE_BROWSER_USE: "0",
-      DAILY_AI_CLI_RECORDING_REQUIRED: "0",
+      DAILY_AI_CLI_REQUIRE_BROWSER_USE: "1",
+      DAILY_AI_CLI_RECORDING_REQUIRED: "1",
       DAILY_AI_CLI_EXTERNAL_VIDEO_QA_REQUIRED: "0",
       DAILY_AI_CLI_REQUIRE_FEED_STUDY: "false",
       DAILY_AI_CLI_REQUIRE_SHIP_NOW_BUFFER: "false",

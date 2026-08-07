@@ -17,6 +17,7 @@ type WorkerInput = {
 const { Client, types } = pg;
 const trace = process.env.AUTOMATION_OS_POSTGRES_WORKER_TRACE === "1";
 const timeoutMs = Number(process.env.AUTOMATION_OS_POSTGRES_WORKER_TIMEOUT_MS ?? 12000);
+let responseWritten = false;
 
 types.setTypeParser(20, (value) => Number(value));
 types.setTypeParser(21, (value) => Number(value));
@@ -37,6 +38,8 @@ function readStdin(): Promise<string> {
 }
 
 function writeResult(result: { ok: true; rows?: Array<Record<string, unknown>>; batches?: Array<Array<Record<string, unknown>>> } | { ok: false; error: string }) {
+  if (responseWritten) return;
+  responseWritten = true;
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }
 
@@ -147,6 +150,10 @@ try {
     clearTimeout(hardTimeout);
   }
 } catch (error) {
-  writeResult({ ok: false, error: error instanceof Error ? error.message : String(error) });
-  process.exitCode = 1;
+  if (!responseWritten) {
+    writeResult({ ok: false, error: error instanceof Error ? error.message : String(error) });
+    process.exitCode = 1;
+  } else if (trace) {
+    console.error("postgresWorker: cleanup after response failed");
+  }
 }

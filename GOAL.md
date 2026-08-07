@@ -6,6 +6,20 @@ Loop ID: automation-os-production-goal-loop-2026-06-26
 Parent thread name: Goal: Automation OS production loop
 Parent thread ID: current Codex thread
 
+## 2026-08-07 continuation checkpoint
+
+Browser-backed execution is now source-routed through the canonical Browser
+Use CLI helper/stage adapter, with the retired in-app browser, Playwright,
+direct Chrome, and direct CDP paths fail-closed. Fixed workflows also enter
+the portable external worker when the server process has no explicit mode,
+so they cannot silently fall back to legacy per-workflow runners. Local
+focused suites and read-only production QA were refreshed, but this goal is
+not complete: Zeabur protected readback lacks an injected QA read token,
+PostgreSQL/live worker proof is not current, and workflow-specific fresh
+authority/readback plus completion proof is still missing for the registered
+flows. These are release blockers, not reasons to claim completion from local
+canaries.
+
 ## Parent Goal
 
 Automation OS を、本番 Zeabur UI と Mac worker の Codex サブスク実行レーンで、Create 相談、登録 workflow、定期実行、失敗修正、Record & Replay 検証まで実用できる状態にする。
@@ -20,7 +34,7 @@ Automation OS を、本番 Zeabur UI と Mac worker の Codex サブスク実行
 
 ## Current Milestone
 
-Phase 4 を継続する。Phase 1-3 の実装、テスト、本番 read-only Replay QA は通過済み。本番 Zeabur の write token と operator browser lane は検証済みで、旧 7 fixed workflow start は `202 accepted` まで到達済み。現在の公開定義は Job 統合後の 6 workflows。次は runner/finalization/progress blocker を直し、登録 workflow の `失敗 -> 修正 -> 最新定義で再実行 -> 成功` を proof つきで示す。
+Phase 4 を継続する。Phase 1-3 の実装とローカルテストは通過済みだが、最新のZeabur read-only QAではprotected APIが `401 production_token_required`、UI replayは `production_read_token_missing` で停止した。本番 write/read tokenとoperator browser laneは現時点で未確認で、現在の公開定義はJob統合後の6 workflows。次はread tokenを正規のsecret managerから注入し、承認済みrevisionをdeployした後、fresh Browser Use CLI same-run readbackとworker/PostgreSQL proofを取得し、登録workflowの `失敗 -> 修正 -> 最新定義で再実行 -> 成功` をproofつきで示す。
 
 ## Root Done Evidence
 

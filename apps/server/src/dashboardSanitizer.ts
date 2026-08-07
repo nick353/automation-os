@@ -30,7 +30,6 @@ export function sanitizeDashboardMetadata(value: unknown): JsonObject {
   const summary = buildRunContractSummary(metadata);
   const sanitized: JsonObject = { ...metadata };
   const publicBrowserUseResult = buildPublicBrowserUseResult(metadata);
-  const publicPlaywrightResult = buildPublicPlaywrightResult(metadata);
 
   if (isObject(sanitized.run_contract)) {
     sanitized.run_contract = publicRunContract(sanitized.run_contract);
@@ -59,10 +58,6 @@ export function sanitizeDashboardMetadata(value: unknown): JsonObject {
   if (publicBrowserUseResult) {
     sanitized.browser_use_result = publicBrowserUseResult;
   }
-  if (publicPlaywrightResult) {
-    sanitized.playwright_result = publicPlaywrightResult;
-  }
-
   return sanitized;
 }
 
@@ -195,26 +190,11 @@ function buildPublicBrowserUseResult(metadata: JsonObject): JsonObject | undefin
     driver: "browser_use_cli",
     evidenceCount,
     connectionMode: typeof connection.mode === "string" ? connection.mode : undefined,
-    cleanupStatus: typeof cleanup.status === "string" ? cleanup.status : undefined
-  };
-}
-
-function buildPublicPlaywrightResult(metadata: JsonObject): JsonObject | undefined {
-  const nested = isObject(metadata.metadata) ? metadata.metadata : {};
-  const driver = typeof nested.driver === "string" ? nested.driver : metadata.driver;
-  if (driver !== "playwright_cli") return undefined;
-  const evidenceCount = [
-    nested.screenshotPath,
-    nested.domPath,
-    nested.consolePath,
-    metadata.screenshotPath,
-    metadata.domPath,
-    metadata.consolePath
-  ].filter((item) => typeof item === "string" && item.length > 0).length;
-  return {
-    driver: "playwright_cli",
-    evidenceCount,
-    cleanupStatus: typeof nested.cleanupStatus === "string" ? nested.cleanupStatus : undefined
+    cleanupStatus: typeof cleanup.status === "string"
+      ? cleanup.status
+      : typeof nested.cleanupStatus === "string"
+        ? nested.cleanupStatus
+        : undefined
   };
 }
 
@@ -222,13 +202,18 @@ function addPublicConnectionFlags(row: JsonObject): void {
   if (row.cdp_port || row.browser_use_cdp_url) {
     row.connection_configured = true;
   }
-  if (row.cdp_port || row.profile_dir || row.profile_strategy === "cdp_profile_lane") {
-    row.playwright_configured = true;
-    row.browser_driver = "playwright_cli";
+  if (
+    row.cdp_port ||
+    row.profile_dir ||
+    row.profile_strategy === "cdp_profile_lane" ||
+    row.browser_use_session ||
+    row.browser_use_cdp_url ||
+    row.browser_use_profile
+  ) {
+    row.browser_use_configured = true;
+    row.browser_driver = "browser_use_cli";
   }
-  if (row.browser_use_session || row.browser_use_cdp_url || row.browser_use_profile) {
-    row.browser_use_configured = row.playwright_configured ? false : true;
-  }
+  delete row.playwright_configured;
 }
 
 function addPublicProofViewerFields(row: JsonObject): void {

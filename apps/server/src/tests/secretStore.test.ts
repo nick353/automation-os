@@ -95,6 +95,19 @@ test("marks PostgreSQL template references as pending for the Mac worker", () =>
   assert.doesNotMatch(JSON.stringify(result), /POSTGRES_USERNAME|POSTGRES_PASSWORD|POSTGRES_HOST|POSTGRES_PORT|POSTGRES_DATABASE/);
 });
 
+test("recomputes stale PostgreSQL template readiness in secret listings without exposing the value", () => {
+  db.initDb();
+  const template = "postgresql://${POSTGRES_USERNAME}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DATABASE}";
+  secrets.saveSecretsFromMessage(`DATABASE_URL=${template}`);
+
+  db.execSql(`UPDATE stored_secrets SET metadata_json='{"state":"stored","availableToRunner":true}' WHERE id='secret_postgres_api_key'`);
+
+  const summary = secrets.listStoredSecrets().find((secret) => secret.kind === "postgres");
+  assert.equal(summary?.state, "template_reference_pending");
+  assert.equal(summary?.availableToRunner, false);
+  assert.doesNotMatch(JSON.stringify(summary), /POSTGRES_USERNAME|POSTGRES_PASSWORD|POSTGRES_HOST|POSTGRES_PORT|POSTGRES_DATABASE/);
+});
+
 test("stores multiline Google service account JSON with routing metadata and redacted chat text", () => {
   db.initDb();
   const serviceAccount = JSON.stringify({

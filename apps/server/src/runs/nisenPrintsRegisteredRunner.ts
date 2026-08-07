@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { evaluateGeminiVideoQaAudit } from "./geminiVideoQa.js";
 import { issueLedgerMetadata } from "./issueLedger.js";
 import { Proof } from "./proofGate.js";
+import { inspectBrowserUseCliRunner } from "./browserUseCliRunnerGuard.js";
 
 export type NisenPrintsRegisteredStatus = "complete" | "partial" | "blocked";
 
@@ -37,6 +38,7 @@ export type NisenPrintsRegisteredRunResult = NisenPrintsRegisteredEvaluation & {
       AUTOMATION_OS_RUN_ID?: string;
       NISENPRINTS_REGISTERED_SUMMARY_PATH?: string;
       NISENPRINTS_OUTPUT_DIR?: string;
+      NISENPRINTS_ARTIFACT_ROOT?: string;
       AUTOMATION_STAGE_TIMEOUT_MS?: string;
     };
   };
@@ -47,10 +49,13 @@ export type NisenPrintsRegisteredRunResult = NisenPrintsRegisteredEvaluation & {
 };
 
 const projectRoot = "/Users/nichikatanaka/Documents/Etsy";
-export const defaultNisenPrintsPlaywrightRunner = "/Users/nichikatanaka/Documents/Etsy/scripts/run_nisenprints_playwright_cli.mjs";
-const summaryFileName = "registered-playlite-cli-summary.json";
+export const defaultNisenPrintsBrowserUseRunner = "/Users/nichikatanaka/Documents/Etsy/.codex/automation-kernel/runners/nisenprints-daily-product-canva-printify-etsy-pinterest.mjs";
+/** Storage/API compatibility name; it is not an execution-surface selector. */
+export const defaultNisenPrintsPlaywrightRunner = defaultNisenPrintsBrowserUseRunner;
+const summaryFileName = "registered-browser-use-cli-summary.json";
 const defaultRunnerTimeoutMs = 60 * 60 * 1000;
-const playwrightRunnerMissing = "nisenprints_playwright_runner_missing";
+const browserUseRunnerMissing = "browser_use_cli_workflow_adapter_missing";
+const defaultNisenPrintsArtifactRoot = "/Users/nichikatanaka/Documents/Etsy/.codex/automation-kernel/artifacts/nisenprints-daily-product-canva-printify-etsy-pinterest";
 
 const completeStatuses = new Set(["pinterest_posted", "playlite_flow_completed", "completed_context_verified"]);
 const proofSpecs = [
@@ -61,13 +66,21 @@ const proofSpecs = [
   ["etsy_visit_site_match_verified", "NisenPrints Pinterest Visit site proof", "visit_site_match"]
 ] as const;
 
-export function resolveNisenPrintsPlaywrightRunner(input: { defaultRunnerPath?: string } = {}): { runner?: string; source?: "env" | "default"; defaultRunnerPath: string } {
-  const configuredRunner = (process.env.AUTOMATION_OS_NISENPRINTS_PLAYWRIGHT_RUNNER || "").trim();
-  if (configuredRunner) return { runner: configuredRunner, source: "env", defaultRunnerPath: input.defaultRunnerPath ?? defaultNisenPrintsPlaywrightRunner };
+export function resolveNisenPrintsBrowserUseRunner(input: { defaultRunnerPath?: string } = {}): { runner?: string; source?: "env" | "default"; defaultRunnerPath: string } {
+  const configuredRunner = (
+    process.env.AUTOMATION_OS_NISENPRINTS_BROWSER_USE_RUNNER
+    || process.env.AUTOMATION_OS_NISENPRINTS_PLAYWRIGHT_RUNNER
+    || ""
+  ).trim();
+  if (configuredRunner) return { runner: configuredRunner, source: "env", defaultRunnerPath: input.defaultRunnerPath ?? defaultNisenPrintsBrowserUseRunner };
 
-  const defaultRunnerPath = input.defaultRunnerPath ?? defaultNisenPrintsPlaywrightRunner;
+  const defaultRunnerPath = input.defaultRunnerPath ?? defaultNisenPrintsBrowserUseRunner;
   if (existsSync(defaultRunnerPath)) return { runner: defaultRunnerPath, source: "default", defaultRunnerPath };
   return { defaultRunnerPath };
+}
+
+export function resolveNisenPrintsPlaywrightRunner(input: { defaultRunnerPath?: string } = {}) {
+  return resolveNisenPrintsBrowserUseRunner(input);
 }
 
 export function runNisenPrintsRegisteredRunner(input: { runId: string; startedAtMs?: number; defaultRunnerPath?: string }): NisenPrintsRegisteredRunResult {
@@ -76,29 +89,36 @@ export function runNisenPrintsRegisteredRunner(input: { runId: string; startedAt
   mkdirSync(outputRoot, { recursive: true });
   const outputDir = join(outputRoot, sanitizeRunId(input.runId));
   mkdirSync(outputDir, { recursive: true });
-  const registeredSummaryPath = join(outputDir, summaryFileName);
-  const resolvedRunner = resolveNisenPrintsPlaywrightRunner({ defaultRunnerPath: input.defaultRunnerPath });
+  mkdirSync(join(outputDir, "business-run"), { recursive: true });
+  const registeredSummaryPath = join(outputDir, "business-run", summaryFileName);
+  const resolvedRunner = resolveNisenPrintsBrowserUseRunner({ defaultRunnerPath: input.defaultRunnerPath });
+  const runnerInspection = resolvedRunner.runner ? inspectBrowserUseCliRunner(resolvedRunner.runner) : null;
+  const runnerBlocker = !resolvedRunner.runner
+    ? browserUseRunnerMissing
+    : runnerInspection?.exactBlocker ?? browserUseRunnerMissing;
 
-  if (!resolvedRunner.runner) {
+  if (!resolvedRunner.runner || !runnerInspection?.ok) {
     const command = {
       bin: "node",
-      args: ["<NisenPrints Playwright CLI runner missing>"],
+      args: ["<NisenPrints Browser Use CLI runner missing>"],
       cwd: projectRoot,
-      display: "NisenPrints Playwright CLI runner is not configured and default runner is missing",
+      display: "NisenPrints Browser Use CLI runner is not configured and default runner is missing",
       env: {
-        NISENPRINTS_BROWSER_DRIVER: "playwright_cli",
-        NISENPRINTS_REQUIRE_BROWSER_USE: "0",
-        NISENPRINTS_RECORDING_REQUIRED: "0",
+        NISENPRINTS_BROWSER_DRIVER: "browser_use_cli",
+        NISENPRINTS_REQUIRE_BROWSER_USE: "1",
+        NISENPRINTS_RECORDING_REQUIRED: "1",
         NISENPRINTS_GEMINI_VIDEO_QA_REQUIRED: "0",
         AUTOMATION_OS_RUN_ID: input.runId,
         NISENPRINTS_REGISTERED_SUMMARY_PATH: registeredSummaryPath,
-        NISENPRINTS_OUTPUT_DIR: outputDir
+        NISENPRINTS_OUTPUT_DIR: outputDir,
+        NISENPRINTS_ARTIFACT_ROOT: outputRoot,
       }
     };
-    const evaluation = blockedEvaluation(playwrightRunnerMissing, undefined, {
-      browser_driver: "playwright_cli",
-      env_runner: "AUTOMATION_OS_NISENPRINTS_PLAYWRIGHT_RUNNER",
-      default_runner_path: resolvedRunner.defaultRunnerPath
+    const evaluation = blockedEvaluation(browserUseRunnerMissing, undefined, {
+      browser_driver: "browser_use_cli",
+      env_runner: "AUTOMATION_OS_NISENPRINTS_BROWSER_USE_RUNNER",
+      default_runner_path: resolvedRunner.defaultRunnerPath,
+      runner_inspection: runnerInspection
     });
     return {
       ...evaluation,
@@ -106,7 +126,7 @@ export function runNisenPrintsRegisteredRunner(input: { runId: string; startedAt
       exitStatus: null,
       signal: null,
       stdoutTail: "",
-      stderrTail: playwrightRunnerMissing
+      stderrTail: runnerBlocker
     };
   }
 
@@ -115,19 +135,20 @@ export function runNisenPrintsRegisteredRunner(input: { runId: string; startedAt
     args: [resolvedRunner.runner],
     cwd: projectRoot,
     display:
-      `cd ${JSON.stringify(projectRoot)} && NISENPRINTS_BROWSER_DRIVER=playwright_cli ` +
-      `NISENPRINTS_REQUIRE_BROWSER_USE=0 NISENPRINTS_RECORDING_REQUIRED=0 NISENPRINTS_GEMINI_VIDEO_QA_REQUIRED=0 ` +
+      `cd ${JSON.stringify(projectRoot)} && NISENPRINTS_BROWSER_DRIVER=browser_use_cli ` +
+      `NISENPRINTS_REQUIRE_BROWSER_USE=1 NISENPRINTS_RECORDING_REQUIRED=1 NISENPRINTS_GEMINI_VIDEO_QA_REQUIRED=0 ` +
       `AUTOMATION_OS_RUN_ID=${JSON.stringify(input.runId)} ` +
       `NISENPRINTS_REGISTERED_SUMMARY_PATH=${JSON.stringify(registeredSummaryPath)} ` +
       `AUTOMATION_STAGE_TIMEOUT_MS=${JSON.stringify(process.env.AUTOMATION_STAGE_TIMEOUT_MS || "900000")} ${JSON.stringify(process.env.AUTOMATION_OS_NODE_BIN || "node")} ${JSON.stringify(resolvedRunner.runner)}`,
     env: {
-      NISENPRINTS_BROWSER_DRIVER: "playwright_cli",
-      NISENPRINTS_REQUIRE_BROWSER_USE: "0",
-      NISENPRINTS_RECORDING_REQUIRED: "0",
+      NISENPRINTS_BROWSER_DRIVER: "browser_use_cli",
+      NISENPRINTS_REQUIRE_BROWSER_USE: "1",
+      NISENPRINTS_RECORDING_REQUIRED: "1",
       NISENPRINTS_GEMINI_VIDEO_QA_REQUIRED: "0",
       AUTOMATION_OS_RUN_ID: input.runId,
       NISENPRINTS_REGISTERED_SUMMARY_PATH: registeredSummaryPath,
       NISENPRINTS_OUTPUT_DIR: outputDir,
+      NISENPRINTS_ARTIFACT_ROOT: outputRoot,
       AUTOMATION_STAGE_TIMEOUT_MS: process.env.AUTOMATION_STAGE_TIMEOUT_MS || "900000"
     }
   };
@@ -165,7 +186,7 @@ export function runNisenPrintsRegisteredRunner(input: { runId: string; startedAt
 
 function resolveNisenPrintsOutputRoot(): string {
   const configured = (process.env.AUTOMATION_OS_NISENPRINTS_PLAYWRIGHT_OUTPUT_ROOT || process.env.AUTOMATION_OS_NISENPRINTS_BROWSER_USE_OUTPUT_ROOT || "").trim();
-  return configured ? resolve(configured) : join(projectRoot, "artifacts", "playlite-runs");
+  return configured ? resolve(configured) : defaultNisenPrintsArtifactRoot;
 }
 
 export function findNisenPrintsRegisteredSummary(input: { startedAtMs?: number } = {}): string | undefined {

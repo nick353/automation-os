@@ -10,22 +10,24 @@ import {
   buildExecutionRoutingSnapshot,
   inferExecutionRoutingSource,
   readCanonicalExecutionRoutingDecision,
+  type ExecutionRoutingExactBlocker,
   type ExecutionRoutingSource,
   type ExecutionRoutingSnapshot
 } from "../codex/executionRouting.js";
-import { countConsoleErrors, runLocalBrowserBridgeCheck } from "../browser/localCheck.js";
+import { countConsoleErrors } from "../browser/localCheck.js";
+import { runBrowserUseLocalCheck } from "../browser/browserUseLocalCheck.js";
 import { sanitizeDashboardRows } from "../dashboardSanitizer.js";
 import { execSql, insert, makeId, nowIso, querySql, sqlValue, type SqlValue } from "../db/client.js";
 import { decomposeGoal, PlannedTask } from "../planner/decompose.js";
 import { createApprovalRequest, requiresApproval } from "./approvalGate.js";
 import { runDailyAiRegisteredRunner } from "./dailyAiRegisteredRunner.js";
-import { allocateParallelLanes, LaneAllocation, registeredBrowserLaneForRunnerKind, visibleBrowserLaneForRecordReplay } from "./laneManager.js";
-import { resolveNisenPrintsPlaywrightRunner, runNisenPrintsRegisteredRunner } from "./nisenPrintsRegisteredRunner.js";
+import { allocateParallelLanes, LaneAllocation } from "./laneManager.js";
+import { runNisenPrintsRegisteredRunner } from "./nisenPrintsRegisteredRunner.js";
 import { evaluateRunContractProofGate, summarizeProofGate, type ProofEvaluation } from "./proofGate.js";
-import { promptTransferArtifactSize, resolvePromptTransferUkiyoeRunner, runPromptTransferRegisteredRunner } from "./promptTransferRegisteredRunner.js";
+import { promptTransferArtifactSize, runPromptTransferRegisteredRunner } from "./promptTransferRegisteredRunner.js";
 import { registeredCodexArtifactSize, runRegisteredCodexAutomation } from "./registeredCodexAutomationRunner.js";
 import { resolveRunContract, RUN_CONTRACT_VERSION, RunContract } from "./runContracts.js";
-import { resolveSnsMultiPosterUkiyoeRunner, runSnsMultiPosterRegisteredRunner, snsMultiPosterArtifactSize } from "./snsMultiPosterRegisteredRunner.js";
+import { runSnsMultiPosterRegisteredRunner, snsMultiPosterArtifactSize } from "./snsMultiPosterRegisteredRunner.js";
 import {
   buildServiceReadinessRuntimeBindingV1,
   deriveServiceReadinessRootId,
@@ -46,7 +48,7 @@ import {
   portableWorkflowIdForWorkerAdapter,
   runPortableWorkflowNoEffect
 } from "./portableWorkflowWorker.js";
-import type { PortableWorkflowId } from "./portableWorkflowContract.js";
+import { portableWorkflowManifests, type PortableWorkflowId } from "./portableWorkflowContract.js";
 
 export type WorkerAdapter =
   | "child_codex"
@@ -89,7 +91,7 @@ export type WorkerAdapterPolicyClassification = "browser_use_cli" | "legacy_brow
 export type WorkerAdapterPolicySnapshot = {
   adapter: WorkerAdapter;
   classification: WorkerAdapterPolicyClassification;
-  exactBlocker: "chrome_extension_required" | "in_app_browser_required" | null;
+  exactBlocker: ExecutionRoutingExactBlocker;
   evidence: string[];
 };
 
@@ -147,6 +149,10 @@ type CodexProofRow = {
 const browserUseAdapterEntryPoint = "/Users/nichikatanaka/.codex/skills/automation-kernel-run/scripts/browser-use-cli-stage-adapter.mjs";
 const browserUseHelper = BROWSER_USE_HELPER_PATH;
 const browserUseRuntimeConfig = BROWSER_USE_RUNTIME_CONFIG_PATH;
+export const BROWSER_USE_CLI_REQUIRED_BLOCKER = "browser_use_cli_required";
+export const BROWSER_USE_CLI_WORKFLOW_ADAPTER_MISSING_BLOCKER = "browser_use_cli_workflow_adapter_missing";
+export const BROWSER_USE_CLI_EXTERNAL_EFFECTS_DISABLED_BLOCKER = "browser_use_cli_external_effects_disabled";
+export const BROWSER_USE_CLI_STALE_RECONCILIATION_REQUIRED_BLOCKER = "browser_use_cli_stale_reconciliation_required";
 
 type ChildRunRow = {
   id: string;
@@ -257,10 +263,13 @@ export function chooseWorkerAdapter(task: Pick<PlannedTask, "name" | "resources"
   if (dailyAiIntent && !codeMaintenanceIntent && dailyAiRunIntent) {
     return "daily_ai_registered";
   }
-  if (nisenPrintsIntent && !codeMaintenanceIntent && /registered workflow|full publish|approval\/proof gate|公開|実行|run/.test(haystack)) {
+  if (nisenPrintsIntent && !codeMaintenanceIntent && /registered workflow|full publish|approval\/proof gate|公開|実行|同期|sync|run/.test(haystack)) {
     return "nisenprints_registered";
   }
-  if ((jobSubmitIntent || jobFollowupIntent) && !codeMaintenanceIntent) {
+  if (jobFollowupIntent && !codeMaintenanceIntent) {
+    return "job_followup_registered";
+  }
+  if (jobSubmitIntent && !codeMaintenanceIntent) {
     return "job_submit_registered";
   }
   if (promptTransferIntent && !codeMaintenanceIntent) {
@@ -279,10 +288,10 @@ export function chooseWorkerAdapter(task: Pick<PlannedTask, "name" | "resources"
     return "child_codex";
   }
   if (/playwright|browser use|browser|chrome|runway|mcp/.test(haystack)) {
-    return "playwright_cli";
+    return "browser_use_cli";
   }
   if (/x\.com|twitter|linkedin|pinterest|投稿|publish/.test(haystack) && !codeMaintenanceIntent) {
-    return "playwright_cli";
+    return "browser_use_cli";
   }
   return "local_worker";
 }
@@ -357,7 +366,7 @@ export function buildWorkerCommand(input: {
       display: `${bin} exec --sandbox read-only ${JSON.stringify(input.taskName)}`
     };
   }
-  if (input.adapter === "browser_use_cli") {
+  const browserUseCliCommand = (workflowId: string, requirement: string): WorkerCommandSpec => {
     const session = `browser-use-${String(input.taskName)
       .replace(/[^0-9A-Za-z_.-]+/g, "-")
       .replace(/^-+|-+$/g, "")
@@ -373,124 +382,33 @@ export function buildWorkerCommand(input: {
         AUTOMATION_OS_BROWSER_HELPER: browserUseHelper,
         AUTOMATION_OS_BROWSER_RUNTIME_CONFIG: browserUseRuntimeConfig,
         AUTOMATION_OS_BROWSER_NO_FALLBACK: "1",
+        AUTOMATION_OS_BROWSER_WORKFLOW_ID: workflowId,
+        AUTOMATION_OS_BROWSER_REQUIRED: "1",
+        AUTOMATION_OS_BROWSER_REQUIREMENT: requirement,
         AUTOMATION_OS_BROWSER_SESSION: session,
-        AUTOMATION_OS_BROWSER_PROFILE: input.lane?.profile_dir ?? "<workflow-owned-profile>",
-        AUTOMATION_OS_BROWSER_PORT: String(input.lane?.cdp_port ?? 0)
+        AUTOMATION_OS_BROWSER_PROFILE: "<fresh-canonical-profile>",
+        AUTOMATION_OS_BROWSER_PORT: "<fresh-canonical-port>"
       },
-      display: `node ${JSON.stringify(browserUseAdapterEntryPoint)} AUTOMATION_OS_BROWSER_SURFACE=browser_use_cli AUTOMATION_OS_BROWSER_SESSION=${JSON.stringify(session)}`
+      display: `node ${JSON.stringify(browserUseAdapterEntryPoint)} AUTOMATION_OS_BROWSER_SURFACE=browser_use_cli AUTOMATION_OS_BROWSER_WORKFLOW_ID=${JSON.stringify(workflowId)} AUTOMATION_OS_BROWSER_REQUIREMENT=${JSON.stringify(requirement)} AUTOMATION_OS_BROWSER_SESSION=${JSON.stringify(session)}`
     };
+  };
+  if (input.adapter === "browser_use_cli") {
+    return browserUseCliCommand("browser-use-cli", "current_run_authority_and_same_session_readback_required");
   }
   if (input.adapter === "playwright_cli") {
-    const port = input.lane?.cdp_port ?? 9333;
-    const profile = input.lane?.profile_dir ?? "/tmp/automation-os/profile";
-    const workdir = input.lane?.workdir ?? "/tmp/automation-os/workdir";
-    const session = `browser-use-${String(input.taskName)
-      .replace(/[^0-9A-Za-z_.-]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .toLowerCase()
-      .slice(0, 48) || "task"}`;
-    return {
-      bin: process.env.AUTOMATION_OS_PLAYWRIGHT_CLI || process.env.PWCLI || "/Users/nichikatanaka/.codex/skills/playwright/scripts/playwright_cli.sh",
-      args: ["open", process.env.AUTOMATION_OS_BROWSER_CHECK_URL || "http://127.0.0.1:5173/#sources"],
-      env: {
-        PLAYWRIGHT_CLI_SESSION: session,
-        PLAYWRIGHT_CLI_PROFILE: profile,
-        PLAYWRIGHT_CLI_WORKDIR: workdir,
-        PLAYWRIGHT_CLI_CDP_URL: `http://127.0.0.1:${port}`
-      },
-      display: `PLAYWRIGHT_CLI_CDP_URL=http://127.0.0.1:${port} PLAYWRIGHT_CLI_PROFILE=${JSON.stringify(profile)} PLAYWRIGHT_CLI_WORKDIR=${JSON.stringify(
-        workdir
-      )} PLAYWRIGHT_CLI_SESSION=${JSON.stringify(session)} playwright-cli open ${JSON.stringify(process.env.AUTOMATION_OS_BROWSER_CHECK_URL || "http://127.0.0.1:5173/#sources")}`
-    };
+    return browserUseCliCommand("browser-check", BROWSER_USE_CLI_REQUIRED_BLOCKER);
   }
   if (input.adapter === "daily_ai_registered") {
-    const runner = process.env.AUTOMATION_OS_DAILY_AI_PLAYWRIGHT_RUNNER || "/Users/nichikatanaka/Documents/New project/scripts/run_daily_ai_playwright_cli.mjs";
-    const registeredLane = visibleBrowserLaneForRecordReplay(registeredBrowserLaneForRunnerKind("daily_ai_registered"));
-    return {
-      bin: process.env.AUTOMATION_OS_NODE_BIN || "node",
-      args: [runner],
-      env: {
-        DAILY_AI_BROWSER_DRIVER: "playwright_cli",
-        DAILY_AI_CLI_REQUIRE_BROWSER_USE: "0",
-        DAILY_AI_CLI_RECORDING_REQUIRED: "0",
-        DAILY_AI_CLI_EXTERNAL_VIDEO_QA_REQUIRED: "0",
-        DAILY_AI_CLI_REQUIRE_FEED_STUDY: "false",
-        DAILY_AI_CLI_REQUIRE_SHIP_NOW_BUFFER: "false",
-        DAILY_AI_CLI_REPLENISH_BUFFER_TIMEOUT_MS: "600000",
-        DAILY_AI_RUNWAY_MCP_TIMEOUT_SECONDS: "300",
-        DAILY_AI_CDP_PORT: String(registeredLane?.cdpPort ?? 9333),
-        DAILY_AI_CLI_PROFILE_DIR: registeredLane?.profileDir ?? "/Users/nichikatanaka/.daily-ai-playwright-chrome",
-        DAILY_AI_CLI_HEADLESS: registeredLane?.laneVisibility === "headless" ? "true" : "false",
-        DAILY_AI_CLI_SHOW_BROWSER: registeredLane?.laneVisibility === "visible" ? "true" : "false"
-      },
-      display:
-        `DAILY_AI_CDP_PORT=${String(registeredLane?.cdpPort ?? 9333)} DAILY_AI_CLI_PROFILE_DIR=${JSON.stringify(
-          registeredLane?.profileDir ?? "/Users/nichikatanaka/.daily-ai-playwright-chrome"
-        )} DAILY_AI_CLI_HEADLESS=${registeredLane?.laneVisibility === "headless" ? "true" : "false"} DAILY_AI_CLI_SHOW_BROWSER=${
-          registeredLane?.laneVisibility === "visible" ? "true" : "false"
-        } DAILY_AI_CLI_EXTERNAL_VIDEO_QA_REQUIRED=0 DAILY_AI_CLI_REPLENISH_BUFFER_TIMEOUT_MS=600000 DAILY_AI_RUNWAY_MCP_TIMEOUT_SECONDS=300 node ${JSON.stringify(runner)}`
-    };
+    return browserUseCliCommand("daily-ai-research-publish-run", BROWSER_USE_CLI_WORKFLOW_ADAPTER_MISSING_BLOCKER);
   }
   if (input.adapter === "nisenprints_registered") {
-    const resolvedRunner = resolveNisenPrintsPlaywrightRunner({ defaultRunnerPath: input.nisenprintsDefaultRunnerPath });
-    const runIdPlaceholder = "<AUTOMATION_OS_RUN_ID>";
-    const outputDirPlaceholder = "<NISENPRINTS_OUTPUT_DIR>";
-    const summaryPathPlaceholder = "<NISENPRINTS_REGISTERED_SUMMARY_PATH>";
-    const nodeBin = process.env.AUTOMATION_OS_NODE_BIN || "node";
-    const stageTimeoutMs = process.env.AUTOMATION_STAGE_TIMEOUT_MS || "900000";
-    return {
-      bin: nodeBin,
-      args: resolvedRunner.runner ? [resolvedRunner.runner] : ["<NisenPrints Playwright CLI runner missing>"],
-      env: {
-        NISENPRINTS_BROWSER_DRIVER: "playwright_cli",
-        NISENPRINTS_REQUIRE_BROWSER_USE: "0",
-        NISENPRINTS_RECORDING_REQUIRED: "0",
-        NISENPRINTS_GEMINI_VIDEO_QA_REQUIRED: "0",
-        AUTOMATION_OS_RUN_ID: runIdPlaceholder,
-        NISENPRINTS_REGISTERED_SUMMARY_PATH: summaryPathPlaceholder,
-        NISENPRINTS_OUTPUT_DIR: outputDirPlaceholder,
-        AUTOMATION_STAGE_TIMEOUT_MS: stageTimeoutMs
-      },
-      display: resolvedRunner.runner
-        ? `NISENPRINTS_BROWSER_DRIVER=playwright_cli NISENPRINTS_REQUIRE_BROWSER_USE=0 NISENPRINTS_RECORDING_REQUIRED=0 NISENPRINTS_GEMINI_VIDEO_QA_REQUIRED=0 AUTOMATION_OS_RUN_ID=${JSON.stringify(
-            runIdPlaceholder
-          )} NISENPRINTS_REGISTERED_SUMMARY_PATH=${JSON.stringify(summaryPathPlaceholder)} NISENPRINTS_OUTPUT_DIR=${JSON.stringify(
-            outputDirPlaceholder
-          )} AUTOMATION_STAGE_TIMEOUT_MS=${JSON.stringify(stageTimeoutMs)} ${nodeBin} ${JSON.stringify(resolvedRunner.runner)}`
-        : "NisenPrints Playwright CLI runner is not configured"
-    };
+    return browserUseCliCommand("nisenprints-registered", BROWSER_USE_CLI_WORKFLOW_ADAPTER_MISSING_BLOCKER);
   }
   if (input.adapter === "prompt_transfer_registered") {
-    const resolvedRunner = resolvePromptTransferUkiyoeRunner();
-    return {
-      bin: resolvedRunner.runner ? process.env.PYTHON || process.env.PYTHON3 || "python3" : "automation-os-fail-closed",
-      args: resolvedRunner.runner ? [resolvedRunner.runner, "--run-id", "<run_id>", "--out-root", "<artifact_root>", "--commit", "--allow-external-commit"] : ["prompt-transfer-ukiyoe"],
-      env: {
-        AUTOMATION_OS_REGISTERED_WORKFLOW_ID: "prompt-transfer-ukiyoe",
-        PROMPT_TRANSFER_EXTERNAL_COMMIT_REQUESTED: "1",
-        PROMPT_TRANSFER_ALLOW_EXTERNAL_COMMIT: "1"
-      },
-      display: resolvedRunner.runner
-        ? `python3 ${JSON.stringify(resolvedRunner.runner)} --run-id "<run_id>" --out-root "<artifact_root>" --commit --allow-external-commit`
-        : "Prompt Transfer Playwright/Sheets runner missing; Browser Use wrapper will not be launched"
-    };
+    return browserUseCliCommand("prompt-transfer-ukiyoe", BROWSER_USE_CLI_WORKFLOW_ADAPTER_MISSING_BLOCKER);
   }
   if (input.adapter === "sns_multi_poster_registered") {
-    const resolvedRunner = resolveSnsMultiPosterUkiyoeRunner();
-    return {
-      bin: resolvedRunner.runner ? process.env.AUTOMATION_OS_NODE_BIN || "node" : "automation-os-fail-closed",
-      args: resolvedRunner.runner
-        ? [resolvedRunner.runner, "--run-id", "<run_id>", "--out-root", "<artifact_root>", "--image-path", "<SNS_MULTI_POSTER_IMAGE_PATH>", "--caption", "<SNS_MULTI_POSTER_CAPTION>"]
-        : ["sns-multi-poster-ukiyoe"],
-      env: {
-        AUTOMATION_OS_REGISTERED_WORKFLOW_ID: "sns-multi-poster-ukiyoe",
-        SNS_MULTI_POSTER_APPROVED_EXTERNAL_ACTIONS: "post,publish",
-        SNS_MULTI_POSTER_HARD_STOPS: "billing,purchase,payment,checkout"
-      },
-      display: resolvedRunner.runner
-        ? `node ${JSON.stringify(resolvedRunner.runner)} --run-id "<run_id>" --out-root "<artifact_root>" --image-path "<SNS_MULTI_POSTER_IMAGE_PATH>" --caption "<SNS_MULTI_POSTER_CAPTION>"`
-        : "SNS Multi Poster Ukiyoe Playwright CLI runner is not connected; capture callable surface/auth human-input evidence"
-    };
+    return browserUseCliCommand("sns-multi-poster-ukiyoe", BROWSER_USE_CLI_WORKFLOW_ADAPTER_MISSING_BLOCKER);
   }
   if (input.adapter === "job_submit_registered" || input.adapter === "job_followup_registered") {
     const workflowId = "job-application-manager";
@@ -501,23 +419,23 @@ export function buildWorkerCommand(input: {
       env: {
         AUTOMATION_OS_REGISTERED_WORKFLOW_ID: workflowId,
         AUTOMATION_OS_RUN_ID: "<AUTOMATION_OS_RUN_ID>",
-        AUTOMATION_OS_REGISTERED_SUMMARY_PATH: "<AUTOMATION_OS_REGISTERED_SUMMARY_PATH>"
+        AUTOMATION_OS_REGISTERED_SUMMARY_PATH: "<AUTOMATION_OS_REGISTERED_SUMMARY_PATH>",
+        AUTOMATION_OS_BROWSER_SURFACE: "browser_use_cli",
+        AUTOMATION_OS_BROWSER_DRIVER: "browser_use_cli",
+        AUTOMATION_OS_BROWSER_ADAPTER: browserUseAdapterEntryPoint,
+        AUTOMATION_OS_BROWSER_HELPER: browserUseHelper,
+        AUTOMATION_OS_BROWSER_RUNTIME_CONFIG: browserUseRuntimeConfig,
+        AUTOMATION_OS_BROWSER_NO_FALLBACK: "1",
+        AUTOMATION_OS_BROWSER_WORKFLOW_ID: workflowId,
+        AUTOMATION_OS_BROWSER_REQUIRED: "1",
+        AUTOMATION_OS_BROWSER_REQUIREMENT: "current_run_authority_and_same_session_readback_required"
       },
-      display: `AUTOMATION_OS_RUN_ID="<AUTOMATION_OS_RUN_ID>" AUTOMATION_OS_REGISTERED_SUMMARY_PATH="<AUTOMATION_OS_REGISTERED_SUMMARY_PATH>" ${bin} exec --sandbox workspace-write --cd "/Users/nichikatanaka/Documents/New project" "<${workflowId} automation.toml prompt>"`
+      display: `AUTOMATION_OS_BROWSER_SURFACE=browser_use_cli AUTOMATION_OS_BROWSER_NO_FALLBACK=1 AUTOMATION_OS_RUN_ID="<AUTOMATION_OS_RUN_ID>" AUTOMATION_OS_REGISTERED_SUMMARY_PATH="<AUTOMATION_OS_REGISTERED_SUMMARY_PATH>" ${bin} exec --sandbox workspace-write --cd "/Users/nichikatanaka/Documents/New project" "<${workflowId} automation.toml prompt>"`
     };
   }
   if (isHumanInputRequiredWithEvidenceAdapter(input.adapter)) {
     const workflowId = humanInputRequiredWithEvidenceWorkflowId(input.adapter);
-    return {
-      bin: "automation-os-human-input-required",
-      args: [workflowId],
-      env: {
-        AUTOMATION_OS_REGISTERED_WORKFLOW_ID: workflowId,
-        AUTOMATION_OS_HARD_STOPS: "billing,purchase,payment,checkout",
-        AUTOMATION_OS_HUMAN_INPUT_REQUIRED_WITH_EVIDENCE: "captcha,otp,security_code,identity_verification,auth_callable_surface"
-      },
-      display: `${workflowId} runner callable surface is not connected; capture URL/screenshot/DOM/exact blocker as human input required`
-    };
+    return browserUseCliCommand(workflowId, "human_input_required_with_evidence");
   }
   return {
     bin: "automation-os-local-worker",
@@ -562,14 +480,15 @@ export function resolveWorkerAdapterPolicy(adapter: WorkerAdapter): WorkerAdapte
     case "playwright_cli":
       return {
         adapter,
-        classification: "legacy_browser_backed",
-        exactBlocker: "in_app_browser_required",
+        classification: "browser_use_cli",
+        exactBlocker: BROWSER_USE_CLI_REQUIRED_BLOCKER,
         evidence: [
-          "bin:playwright_cli",
-          "args:open",
-          "token:PLAYWRIGHT_CLI_CDP_URL",
-          "token:PLAYWRIGHT_CLI_PROFILE",
-          "token:PLAYWRIGHT_CLI_WORKDIR"
+          `entrypoint:${browserUseAdapterEntryPoint}`,
+          `helper:${browserUseHelper}`,
+          `runtime:${browserUseRuntimeConfig}`,
+          "surface:browser_use_cli",
+          "legacy_playwright_route:disabled",
+          "no_fallback:true"
         ]
       };
     case "browser_use_cli":
@@ -589,76 +508,93 @@ export function resolveWorkerAdapterPolicy(adapter: WorkerAdapter): WorkerAdapte
     case "daily_ai_registered":
       return {
         adapter,
-        classification: "legacy_browser_backed",
-        exactBlocker: "in_app_browser_required",
+        classification: "browser_use_cli",
+        exactBlocker: BROWSER_USE_CLI_WORKFLOW_ADAPTER_MISSING_BLOCKER,
         evidence: [
-          "entrypoint:scripts/run_daily_ai_playwright_cli.mjs",
-          "token:DAILY_AI_BROWSER_DRIVER=playwright_cli",
-          "token:DAILY_AI_CDP_PORT",
-          "token:DAILY_AI_CLI_PROFILE_DIR",
-          "token:DAILY_AI_CLI_HEADLESS",
-          "token:DAILY_AI_CLI_SHOW_BROWSER"
+          `entrypoint:${browserUseAdapterEntryPoint}`,
+          `helper:${browserUseHelper}`,
+          `runtime:${browserUseRuntimeConfig}`,
+          "surface:browser_use_cli",
+          "legacy_daily_ai_chrome_plugin_runner:disabled",
+          "required:workflow-owned-browser-use-cli-adapter",
+          "no_fallback:true"
         ]
       };
     case "nisenprints_registered":
       return {
         adapter,
-        classification: "legacy_browser_backed",
-        exactBlocker: "in_app_browser_required",
+        classification: "browser_use_cli",
+        exactBlocker: BROWSER_USE_CLI_WORKFLOW_ADAPTER_MISSING_BLOCKER,
         evidence: [
-          "token:browser_surface=in_app_browser",
-          "token:root-owned-jit-stage-capability",
-          "token:NISENPRINTS_RECORDING_REQUIRED=0",
-          "token:NISENPRINTS_GEMINI_VIDEO_QA_REQUIRED=0",
-          "entrypoint:nisenprints_playwright_cli_runner"
+          `entrypoint:${browserUseAdapterEntryPoint}`,
+          `helper:${browserUseHelper}`,
+          `runtime:${browserUseRuntimeConfig}`,
+          "surface:browser_use_cli",
+          "legacy_nisenprints_runner:disabled",
+          "required:workflow-owned-browser-use-cli-adapter",
+          "no_fallback:true"
         ]
       };
     case "job_submit_registered":
     case "job_followup_registered":
       return {
         adapter,
-        classification: "legacy_browser_backed",
-        exactBlocker: "in_app_browser_required",
+        classification: "browser_use_cli",
+        exactBlocker: null,
         evidence: [
           "entrypoint:codex exec registered automation prompt",
-          "token:Codex In-app Browser",
-          "token:Browser Plugin",
-          "token:root-owned-jit-stage-capability",
-          "token:direct-CDP-and-temporary-Chrome-forbidden"
+          `adapter:${browserUseAdapterEntryPoint}`,
+          `helper:${browserUseHelper}`,
+          `runtime:${browserUseRuntimeConfig}`,
+          "surface:browser_use_cli",
+          "token:direct-CDP-and-temporary-Chrome-forbidden",
+          "no_fallback:true"
         ]
       };
     case "prompt_transfer_registered":
       return {
         adapter,
-        classification: "legacy_browser_backed",
-        exactBlocker: "in_app_browser_required",
+        classification: "browser_use_cli",
+        exactBlocker: BROWSER_USE_CLI_WORKFLOW_ADAPTER_MISSING_BLOCKER,
         evidence: [
-          "entrypoint:run_prompt_transfer_ukiyoe_playwright_sheets.py",
-          "token:--commit",
-          "token:--allow-external-commit",
-          "token:playwright_sheets"
+          `entrypoint:${browserUseAdapterEntryPoint}`,
+          `helper:${browserUseHelper}`,
+          `runtime:${browserUseRuntimeConfig}`,
+          "surface:browser_use_cli",
+          "legacy_prompt_transfer_runner:disabled",
+          "required:workflow-owned-browser-use-cli-adapter",
+          "no_fallback:true"
         ]
       };
     case "sns_multi_poster_registered":
       return {
         adapter,
-        classification: "legacy_browser_backed",
-        exactBlocker: "in_app_browser_required",
+        classification: "browser_use_cli",
+        exactBlocker: BROWSER_USE_CLI_WORKFLOW_ADAPTER_MISSING_BLOCKER,
         evidence: [
-          "entrypoint:run_sns_multi_poster_ukiyoe_playwright_cli.mjs",
-          "token:PLAYWRIGHT_CLI",
-          "token:sns_multi_poster_ukiyoe_playwright_cli"
+          `entrypoint:${browserUseAdapterEntryPoint}`,
+          `helper:${browserUseHelper}`,
+          `runtime:${browserUseRuntimeConfig}`,
+          "surface:browser_use_cli",
+          "legacy_sns_multi_poster_runner:disabled",
+          "required:workflow-owned-browser-use-cli-adapter",
+          "no_fallback:true"
         ]
       };
     case "x_authenticated_browser_lane_registered":
       return {
         adapter,
-        classification: "extension_backed",
+        classification: "browser_use_cli",
         exactBlocker: null,
         evidence: [
           "workflow:x-authenticated-browser-lane",
+          `entrypoint:${browserUseAdapterEntryPoint}`,
+          `helper:${browserUseHelper}`,
+          `runtime:${browserUseRuntimeConfig}`,
+          "surface:browser_use_cli",
           "mode:human_input_required_with_evidence",
-          "surface:Codex In-app Browser"
+          "legacy_extension_surface:disabled",
+          "no_fallback:true"
         ]
       };
     case "child_codex":
@@ -687,6 +623,14 @@ export function classifyWorkerCommandSpec(command: WorkerCommandSpec): {
   ) {
     return { classification: "browser_use_cli", signals: ["browser-use", "shared-adapter"] };
   }
+  if (
+    portableExternalEffectsEnabled() &&
+    command.env?.DAILY_AI_BROWSER_DRIVER === "browser_use_cli" &&
+    command.env?.DAILY_AI_CLI_REQUIRE_BROWSER_USE === "1" &&
+    command.env?.DAILY_AI_CLI_RECORDING_REQUIRED === "1"
+  ) {
+    return { classification: "browser_use_cli", signals: ["browser-use", "daily-ai-registered"] };
+  }
   const haystack = [
     command.bin,
     ...command.args,
@@ -705,7 +649,7 @@ export function classifyWorkerCommandSpec(command: WorkerCommandSpec): {
   const iabRootOwned = command.env?.AUTOMATION_OS_BROWSER_SURFACE === "in_app_browser"
     && command.env?.AUTOMATION_OS_BROWSER_DRIVER === "codex_in_app_browser";
   if (iabRootOwned) {
-    return { classification: "in_app_browser_root_owned", signals };
+    return { classification: "legacy_browser_backed", signals: [...signals, "in-app-browser-disabled"] };
   }
   if (signals.length === 0) {
     return { classification: "non_browser", signals };
@@ -717,6 +661,15 @@ export function classifyWorkerCommandSpec(command: WorkerCommandSpec): {
     return { classification: "legacy_browser_backed", signals };
   }
   return { classification: "non_browser", signals };
+}
+
+function portableExternalEffectsEnabled(): boolean {
+  const value = (
+    process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS
+    || process.env.AUTOMATION_OS_EXTERNAL_EFFECTS
+    || ""
+  ).trim();
+  return /^(?:1|true|yes|on|enabled)$/i.test(value);
 }
 
 function matchCommandSignal(haystack: string, pattern: RegExp, label: string): string[] {
@@ -732,6 +685,8 @@ export type StartCommandRunOptions = {
   deferWorker?: boolean;
   companyId?: string | null;
   prepareOnly?: boolean;
+  /** Internal isolated reference canary marker; never accepted from API metadata. */
+  referenceWorkflowCanary?: boolean;
 };
 
 function resolveAuthorizedCompanyId(options: StartCommandRunOptions): string | null {
@@ -826,6 +781,7 @@ export async function startCommandRun(command: string, options: StartCommandRunO
     phase: "route_decision"
   });
   const metadata = sanitizeRunMetadata(options.metadata);
+  const referenceWorkflowCanary = options.referenceWorkflowCanary === true;
   const companyId = resolveAuthorizedCompanyId(options);
   const runId = makeId("run");
   const serviceReadinessWorkflowId = referenceWorkflowIdFromMetadata(metadata);
@@ -833,6 +789,7 @@ export async function startCommandRun(command: string, options: StartCommandRunO
   const now = nowIso();
   insert("runs", {
     id: runId,
+    ...(referenceWorkflowCanary ? { automation_id: "reference_workflow_canary" } : {}),
     company_id: companyId,
     name: command.slice(0, 72) || "Automation OS command",
     status: options.prepareOnly ? "preparing" : plan.approvalRequired ? "waiting_approval" : "queued",
@@ -842,6 +799,7 @@ export async function startCommandRun(command: string, options: StartCommandRunO
     metadata_json: {
       ...metadata,
       command,
+      ...(referenceWorkflowCanary ? { reference_workflow_canary: true } : {}),
       plan,
       ...buildCanonicalExecutionRoutingMetadata(routeDecision),
       ...(plan.runContract ? { run_contract: plan.runContract, contract_version: plan.contractVersion } : {}),
@@ -856,7 +814,7 @@ export async function startCommandRun(command: string, options: StartCommandRunO
             service_readiness_prior_receipt_reuse: false
           }
         : {}),
-      ai_adapters: ["codex_cli", "chatgpt_subscription", "playwright_cli"],
+      ai_adapters: ["codex_cli", "chatgpt_subscription", "browser_use_cli"],
       openai_api: "not_required"
     }
   });
@@ -1002,15 +960,47 @@ export async function runWorkerCycle(runId: string) {
   let blockedByApproval = false;
   const registeredExecutionResults: RegisteredExecutionResult[] = [];
   for (const step of steps) {
+    if (step.status === "completed" || step.status === "running") continue;
     const metadata = parseJson<Record<string, unknown>>(step.metadata_json, {});
+    const stepAwaitingExecution = step.status === "queued" || step.status === "waiting_approval";
+    const portableExternalWorkflowId = portableExternalApprovalWorkflowId(runId, metadata);
+    if (portableExternalWorkflowId && stepAwaitingExecution) {
+      const approvalStatus = ensurePortableExternalApproval({
+        runId,
+        step,
+        metadata,
+        workflowId: portableExternalWorkflowId
+      });
+      metadata.requires_approval = true;
+      if (approvalStatus !== "approved") {
+        blockedByApproval = true;
+        continue;
+      }
+    }
+    const registeredExternalWorkflowId = registeredExternalApprovalWorkflowId(runId, metadata);
+    if (
+      registeredExternalWorkflowId
+      && stepAwaitingExecution
+    ) {
+      const approvalStatus = ensureRegisteredExternalApproval({
+        runId,
+        step,
+        metadata,
+        workflowId: registeredExternalWorkflowId
+      });
+      metadata.requires_approval = true;
+      if (approvalStatus !== "approved") {
+        blockedByApproval = true;
+        continue;
+      }
+    }
     const requires = Boolean(metadata.requires_approval);
     if (requires && !protectedStepsAllowed) {
       blockedByApproval = true;
       continue;
     }
-    if (step.status === "completed" || step.status === "running") continue;
     if (step.status === "waiting_approval" || step.status === "queued") {
-      const result = await completeWorkerStep(step, metadata);
+      const result = await completeWorkerStep(step, metadata, protectedStepsAllowed);
       if (result) {
         registeredExecutionResults.push(result);
       } else {
@@ -1237,7 +1227,7 @@ function evaluateBrowserUseResultProofs(proofs: CodexProofRow[]) {
     }
     validResultTypes.add(proof.proof_type);
     present.push(`${proof.proof_type}:${stepId}`);
-    if (proof.proof_type === "playwright_check") {
+    if (proof.proof_type === "browser_use_check" || proof.proof_type === "playwright_check") {
       validResultStepIds.add(stepId);
     }
   }
@@ -1966,17 +1956,187 @@ function isPortableWorkerCanaryRun(runId: string): boolean {
 }
 
 function isPortableWorkerExternalRun(runId: string): boolean {
-  const run = querySql<{ execution_source: string; metadata_json: string }>(
-    `SELECT execution_source, metadata_json FROM runs WHERE id=${sqlValue(runId)} LIMIT 1`
+  const run = querySql<{ execution_source: string; automation_id: string | null; metadata_json: string }>(
+    `SELECT execution_source, automation_id, metadata_json FROM runs WHERE id=${sqlValue(runId)} LIMIT 1`
   )[0];
   if (run?.execution_source !== PORTABLE_EXECUTION_SOURCE) return false;
+  if (run.automation_id === "reference_workflow_canary") return false;
   const metadata = parseJson<Record<string, unknown>>(run.metadata_json, {});
   const invocation = metadata.portable_workflow_invocation;
   if (!invocation || typeof invocation !== "object" || Array.isArray(invocation)) return false;
   if (process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE === PORTABLE_WORKER_EXTERNAL_MODE) return true;
   const portableWorker = metadata.portable_worker;
-  return Boolean(portableWorker && typeof portableWorker === "object" && !Array.isArray(portableWorker)
-    && (portableWorker as Record<string, unknown>).mode === PORTABLE_WORKER_EXTERNAL_MODE);
+  if (portableWorker && typeof portableWorker === "object" && !Array.isArray(portableWorker)
+    && (portableWorker as Record<string, unknown>).mode === PORTABLE_WORKER_EXTERNAL_MODE) return true;
+  // A fixed workflow admitted through the portable entrypoint must never fall
+  // back to a legacy per-workflow runner just because the server process did
+  // not inherit an explicit mode. The external adapter itself still enforces
+  // approval, adapter configuration, and read-only/effect policy.
+  return !isPortableWorkerCanaryRun(runId);
+}
+
+function portableExternalApprovalWorkflowId(runId: string, metadata: Record<string, unknown>): PortableWorkflowId | null {
+  if (!isPortableWorkerExternalRun(runId)) return null;
+  const adapter = typeof metadata.adapter === "string" ? metadata.adapter : "";
+  const workflowId = portableWorkflowIdForWorkerAdapter(adapter);
+  if (!workflowId || portableWorkflowManifests[workflowId]?.external_effect_policy !== "approval_required") return null;
+  return workflowId;
+}
+
+function registeredExternalApprovalWorkflowId(runId: string, metadata: Record<string, unknown>): PortableWorkflowId | null {
+  // Portable canary runs are intentionally read-only and portable external
+  // runs use the more specific manifest-bound gate above. Every other
+  // registered runner must enter the same approval boundary before its
+  // runner, browser, connector, or workspace-write handoff is possible.
+  if (isPortableWorkerExternalRun(runId) || isPortableWorkerCanaryRun(runId) || isReferenceWorkflowCanaryRun(runId)) return null;
+  const adapter = typeof metadata.adapter === "string" ? metadata.adapter : "";
+  const workflowId = portableWorkflowIdForWorkerAdapter(adapter);
+  if (!workflowId || portableWorkflowManifests[workflowId]?.external_effect_policy !== "approval_required") return null;
+  return workflowId;
+}
+
+function isReferenceWorkflowCanaryRun(runId: string): boolean {
+  const run = querySql<{ execution_source: string; automation_id: string | null; metadata_json: string }>(
+    `SELECT execution_source, automation_id, metadata_json FROM runs WHERE id=${sqlValue(runId)} LIMIT 1`
+  )[0];
+  if (run?.execution_source !== PORTABLE_EXECUTION_SOURCE || run.automation_id !== "reference_workflow_canary") return false;
+  const metadata = parseJson<Record<string, unknown>>(run.metadata_json, {});
+  return metadata.reference_workflow_canary === true;
+}
+
+function ensurePortableExternalApproval(input: {
+  runId: string;
+  step: StepRow;
+  metadata: Record<string, unknown>;
+  workflowId: PortableWorkflowId;
+}): "pending" | "approved" {
+  const approvals = querySql<{ status: string; resource_locks_json: string }>(
+    `SELECT status, resource_locks_json FROM approvals WHERE run_id=${sqlValue(input.runId)} ORDER BY created_at ASC`
+  );
+  const approvalStatus = approvalStatusForResource(approvals, `portable_external:${input.workflowId}`);
+  if (approvalStatus) return approvalStatus;
+
+  const approval = createApprovalRequest({
+    runId: input.runId,
+    title: `Approve external effects: ${input.workflowId}`,
+    requestedBy: "automation-os-portable-worker",
+    approvalGroupId: `${input.runId}_portable_external_approval_group`,
+    resourceLocks: [`portable_external:${input.workflowId}`],
+    priority: "high"
+  });
+  insert("approvals", {
+    id: approval.id,
+    run_id: approval.runId,
+    title: approval.title,
+    requested_by: approval.requestedBy,
+    status: approval.status,
+    priority: approval.priority,
+    company_id: getRunCompanyId(input.runId),
+    approval_group_id: approval.approvalGroupId,
+    resource_locks_json: approval.resourceLocks,
+    created_at: approval.createdAt,
+    decided_at: null,
+    decision_note: null
+  });
+  const metadata = {
+    ...input.metadata,
+    requires_approval: true,
+    approval_required_reason: "portable_external_effect_policy_approval_required",
+    external_effect_policy: "approval_required",
+    exact_blocker: "portable_external_approval_required",
+    external_action_executed: false
+  };
+  execSql(
+    `UPDATE run_steps SET status='waiting_approval', started_at=NULL, completed_at=NULL, metadata_json=${sqlValue(metadata)} WHERE id=${sqlValue(input.step.id)};
+     UPDATE lanes SET status='blocked', progress=0, health='approval_required', updated_at=${sqlValue(nowIso())} WHERE id=${sqlValue(input.step.lane_id)};`
+  );
+  logWorkerEvent({
+    runId: input.runId,
+    stepId: input.step.id,
+    laneId: input.step.lane_id ?? undefined,
+    eventType: "worker_blocked",
+    message: "portable external effects require explicit approval",
+    metadata: {
+      workflow_id: input.workflowId,
+      exact_blocker: "portable_external_approval_required",
+      external_action_executed: false
+    }
+  });
+  return "pending";
+}
+
+function ensureRegisteredExternalApproval(input: {
+  runId: string;
+  step: StepRow;
+  metadata: Record<string, unknown>;
+  workflowId: PortableWorkflowId;
+}): "pending" | "approved" {
+  const approvals = querySql<{ status: string; resource_locks_json: string }>(
+    `SELECT status, resource_locks_json FROM approvals WHERE run_id=${sqlValue(input.runId)} ORDER BY created_at ASC`
+  );
+  const approvalStatus = approvalStatusForResource(approvals, `registered_external:${input.workflowId}`);
+  if (approvalStatus) return approvalStatus;
+
+  const approval = createApprovalRequest({
+    runId: input.runId,
+    title: `Approve registered external effects: ${input.workflowId}`,
+    requestedBy: "automation-os-worker",
+    approvalGroupId: `${input.runId}_registered_external_approval_group`,
+    resourceLocks: [`registered_external:${input.workflowId}`],
+    priority: "high"
+  });
+  insert("approvals", {
+    id: approval.id,
+    run_id: approval.runId,
+    title: approval.title,
+    requested_by: approval.requestedBy,
+    status: approval.status,
+    priority: approval.priority,
+    company_id: getRunCompanyId(input.runId),
+    approval_group_id: approval.approvalGroupId,
+    resource_locks_json: approval.resourceLocks,
+    created_at: approval.createdAt,
+    decided_at: null,
+    decision_note: null
+  });
+  const metadata = {
+    ...input.metadata,
+    requires_approval: true,
+    approval_required_reason: "registered_external_effect_policy_approval_required",
+    external_effect_policy: "approval_required",
+    exact_blocker: "registered_external_approval_required",
+    external_action_executed: false
+  };
+  execSql(
+    `UPDATE run_steps SET status='waiting_approval', started_at=NULL, completed_at=NULL, metadata_json=${sqlValue(metadata)} WHERE id=${sqlValue(input.step.id)};
+     UPDATE lanes SET status='blocked', progress=0, health='approval_required', updated_at=${sqlValue(nowIso())} WHERE id=${sqlValue(input.step.lane_id)};`
+  );
+  logWorkerEvent({
+    runId: input.runId,
+    stepId: input.step.id,
+    laneId: input.step.lane_id ?? undefined,
+    eventType: "worker_blocked",
+    message: "registered external effects require explicit approval",
+    metadata: {
+      workflow_id: input.workflowId,
+      exact_blocker: "registered_external_approval_required",
+      external_action_executed: false
+    }
+  });
+  return "pending";
+}
+
+function approvalStatusForResource(
+  approvals: Array<{ status: string; resource_locks_json: string }>,
+  resourceLock: string
+): "pending" | "approved" | null {
+  const matching = approvals.filter((approval) => {
+    const locks = parseJson<unknown>(approval.resource_locks_json, []);
+    return Array.isArray(locks) && locks.includes(resourceLock);
+  });
+  if (matching.some((approval) => approval.status === "approved")) return "approved";
+  if (matching.some((approval) => approval.status === "pending")) return "pending";
+  return null;
 }
 
 async function completePortableExternalWorkerStep(input: {
@@ -1985,6 +2145,7 @@ async function completePortableExternalWorkerStep(input: {
   selectedAdapter: WorkerAdapter;
   workflowId: PortableWorkflowId;
   now: string;
+  approvalGranted: boolean;
 }): Promise<RegisteredExecutionResult> {
   const runMetadataRow = querySql<{ metadata_json: string }>(
     `SELECT metadata_json FROM runs WHERE id=${sqlValue(input.step.run_id)} LIMIT 1`
@@ -2004,7 +2165,8 @@ async function completePortableExternalWorkerStep(input: {
     runId: input.step.run_id,
     stepId: input.step.id,
     sourceTrigger,
-    idempotencyKey
+    idempotencyKey,
+    approvalGranted: input.approvalGranted
   });
   const artifact = writeWorkerArtifact(input.step.run_id, input.step.id, {
     schema: "automation_os_portable_external_worker_receipt_v1",
@@ -2239,7 +2401,8 @@ function completePortableWorkerCanaryStep(input: {
 
 async function completeWorkerStep(
   step: StepRow,
-  metadata: Record<string, unknown>
+  metadata: Record<string, unknown>,
+  approvalGranted = false
 ): Promise<RegisteredExecutionResult | undefined> {
   const now = nowIso();
   const selectedAdapter = String(metadata.adapter ?? "local_worker") as WorkerAdapter;
@@ -2248,7 +2411,7 @@ async function completeWorkerStep(
     return completePortableWorkerCanaryStep({ step, metadata, selectedAdapter, workflowId: portableWorkflowId, now });
   }
   if (portableWorkflowId && isPortableWorkerExternalRun(step.run_id)) {
-    return completePortableExternalWorkerStep({ step, metadata, selectedAdapter, workflowId: portableWorkflowId, now });
+    return completePortableExternalWorkerStep({ step, metadata, selectedAdapter, workflowId: portableWorkflowId, now, approvalGranted });
   }
   const routeContext = buildCanonicalRouteBlockContext({ step, metadata, adapter: selectedAdapter });
   if (!routeContext.routeDecision) {
@@ -2353,7 +2516,8 @@ async function completeWorkerStep(
         proof_gate: result.proof_gate,
         proof_summary: result.proof_summary,
         issue_ledger_summary: result.metadata.issue_ledger_summary,
-        runner_safety
+        runner_safety,
+        external_action_executed: false
       })} WHERE id=${sqlValue(step.id)};
        UPDATE lanes SET status=${sqlValue(laneStatus)}, progress=${result.status === "complete" ? 100 : 50}, health=${sqlValue(
          laneHealth
@@ -2480,6 +2644,7 @@ async function completeWorkerStep(
   if (selectedAdapter === "job_submit_registered" || selectedAdapter === "job_followup_registered") {
     const runner_safety = runnerSafetyMetadata("billing_only");
     const workflowId = selectedAdapter;
+    const registeredWorkerMode = selectedAdapter === "job_submit_registered" ? "execute_job_submit_registered" : "execute_job_followup_registered";
     const result = runRegisteredCodexAutomation({ runId: step.run_id, workflowId });
     for (const proof of result.proofs) {
       insertRunProof(step.run_id, {
@@ -2504,6 +2669,14 @@ async function completeWorkerStep(
         adapter: selectedAdapter,
         command: routeContext.command,
         command_display: routeContext.command.display,
+        worker_mode: registeredWorkerMode,
+        execution_mode: registeredWorkerMode,
+        route_decision: routeContext.routeDecision ?? undefined,
+        route_decision_fingerprint: routeContext.routeDecision?.fingerprint ?? null,
+        route_readback: routeContext.routeReadback,
+        execution_routing: routeContext.routeReadback,
+        route_readback_fingerprint: routeContext.routeReadback.fingerprint,
+        adapter_policy: routeContext.adapterPolicy,
         registered_codex_status: result.status,
         registered_codex_artifact: pathToFileUri(result.artifactPath),
         registered_codex_exit_status: result.exitStatus,
@@ -2538,13 +2711,25 @@ async function completeWorkerStep(
       }
     });
     return {
-      workerMode: "execute_registered_codex_automation",
+      workerMode: registeredWorkerMode,
       status: result.status,
       proof_gate: result.proof_gate,
       proof_summary: result.proof_summary,
       metadata: {
         ...result.metadata,
+        adapter: selectedAdapter,
+        command: routeContext.command,
+        command_display: routeContext.command.display,
+        execution_mode: registeredWorkerMode,
+        worker_mode: registeredWorkerMode,
+        adapter_policy: routeContext.adapterPolicy,
+        route_decision: routeContext.routeDecision ?? undefined,
+        route_decision_fingerprint: routeContext.routeDecision?.fingerprint ?? null,
+        route_readback: routeContext.routeReadback,
+        execution_routing: routeContext.routeReadback,
+        route_readback_fingerprint: routeContext.routeReadback.fingerprint,
         runner_safety,
+        external_action_executed: false,
         registered_codex_executor: {
           command: result.command,
           artifact_path: result.artifactPath,
@@ -2866,6 +3051,13 @@ async function completeWorkerStep(
         command: routeContext.command,
         command_display: routeContext.command.display,
         execution_mode: "execute_browser_use",
+        worker_mode: "execute_browser_use",
+        adapter_policy: routeContext.adapterPolicy,
+        route_decision: routeContext.routeDecision ?? undefined,
+        route_decision_fingerprint: routeContext.routeDecision?.fingerprint ?? null,
+        route_readback: routeContext.routeReadback,
+        execution_routing: routeContext.routeReadback,
+        route_readback_fingerprint: routeContext.routeReadback.fingerprint,
         browser_use_status: "blocked",
         browser_use_exact_blocker: exactBlocker,
         browser_use_adapter_contract_status: "unverified",
@@ -2904,37 +3096,39 @@ async function completeWorkerStep(
   }
 
   if (selectedAdapter === "playwright_cli") {
-    const normalizedAdapter: WorkerAdapter = "playwright_cli";
-    const result = runLocalBrowserBridgeCheck({ command: routeContext.command.bin, env: routeContext.command.env });
+    // Historical metadata may still name this adapter, but its execution
+    // surface is now canonical Browser Use CLI only.
+    const normalizedAdapter: WorkerAdapter = "browser_use_cli";
+    const result = runBrowserUseLocalCheck({ command: routeContext.command.bin, env: routeContext.command.env });
     const exactBlocker =
       result.status === "ok"
         ? null
         : result.metadata.missingArtifacts[0]
-          ? `playwright_artifact_missing:${result.metadata.missingArtifacts[0]}`
-          : result.consoleErrorCount > 0
-            ? "playwright_console_errors"
-            : "playwright_check_blocked";
-    const artifact = writeNamedWorkerArtifact(step.run_id, `${step.id}-playwright-check.json`, {
+          ? `browser_use_artifact_missing:${result.metadata.missingArtifacts[0]}`
+            : (result.consoleErrorCount ?? 0) > 0
+            ? "browser_use_console_errors"
+            : "browser_use_check_blocked";
+    const artifact = writeNamedWorkerArtifact(step.run_id, `${step.id}-browser-use-check.json`, {
       runId: step.run_id,
       stepId: step.id,
       task: step.name,
       adapter: normalizedAdapter,
-      mode: "playwright_cli",
+      mode: "browser_use_cli",
       status: result.status,
       targetUrl: result.targetUrl,
       exactBlocker,
         command: routeContext.command,
         commandDisplay: routeContext.command.display,
         lane: routeContext.lane,
-        playwrightCheck: result,
+        browserUseCheck: result,
         createdAt: now
     });
     insertRunProof(step.run_id, {
         id: makeId("proof"),
         run_id: step.run_id,
         step_id: step.id,
-        proof_type: result.status === "ok" ? "playwright_check" : "playwright_blocked",
-        label: `Playwright check: ${step.name}`,
+        proof_type: result.status === "ok" ? "browser_use_check" : "browser_use_blocked",
+        label: `Browser Use CLI check: ${step.name}`,
         uri: artifact.uri,
         size_bytes: artifact.sizeBytes,
         created_at: nowIso(),
@@ -2942,7 +3136,7 @@ async function completeWorkerStep(
           adapter: normalizedAdapter,
           command: routeContext.command,
           command_display: routeContext.command.display,
-          execution_mode: "execute_playwright",
+          execution_mode: "execute_browser_use",
           status: result.status,
           exact_blocker: exactBlocker,
         check_id: result.id
@@ -2958,10 +3152,10 @@ async function completeWorkerStep(
         adapter: normalizedAdapter,
         command: routeContext.command,
         command_display: routeContext.command.display,
-        execution_mode: "execute_playwright",
-        playwright_status: result.status,
-        playwright_check_artifact: artifact.uri,
-        playwright_exact_blocker: exactBlocker
+        execution_mode: "execute_browser_use",
+        browser_use_status: result.status,
+        browser_use_check_artifact: artifact.uri,
+        browser_use_exact_blocker: exactBlocker
       })} WHERE id=${sqlValue(step.id)};
        UPDATE lanes SET status=${sqlValue(laneStatus)}, progress=${result.status === "ok" ? 100 : 50}, health=${sqlValue(laneHealth)}, updated_at=${sqlValue(
          completedAt
@@ -2972,19 +3166,19 @@ async function completeWorkerStep(
       stepId: step.id,
       laneId: step.lane_id ?? undefined,
       eventType: result.status === "ok" ? "worker_completed" : "worker_blocked",
-      message: result.status === "ok" ? `Playwright check completed at ${artifact.uri}` : `Playwright check blocked: ${exactBlocker}`,
+      message: result.status === "ok" ? `Browser Use CLI check completed at ${artifact.uri}` : `Browser Use CLI check blocked: ${exactBlocker}`,
       metadata: { adapter: normalizedAdapter, artifact, status: result.status, exact_blocker: exactBlocker }
     });
     return {
-      workerMode: "execute_playwright",
+      workerMode: "execute_browser_use",
       status: result.status === "ok" ? "complete" : "blocked",
       proof_gate:
         result.status === "ok"
-          ? { ok: true, missing: [], present: ["playwright_check", `playwright_check:${step.id}`] }
-          : { ok: false, missing: [exactBlocker ?? "playwright_check_blocked"], present: ["playwright_blocked", `playwright_blocked:${step.id}`] },
-      proof_summary: result.status === "ok" ? "complete: Playwright CLI screen proof captured" : `blocked: ${exactBlocker}`,
+          ? { ok: true, missing: [], present: ["browser_use_check", `browser_use_check:${step.id}`] }
+          : { ok: false, missing: [exactBlocker ?? "browser_use_check_blocked"], present: ["browser_use_blocked", `browser_use_blocked:${step.id}`] },
+      proof_summary: result.status === "ok" ? "complete: Browser Use CLI screen proof captured" : `blocked: ${exactBlocker}`,
       metadata: {
-        playwright_executor: {
+        browser_use_executor: {
           status: result.status,
           exact_blocker: exactBlocker,
           artifact_uri: artifact.uri
@@ -3646,6 +3840,8 @@ function reconcileStaleDailyAiRegisteredStep(input: { step: StepRow; staleAfterM
   const metadata = parseJson<Record<string, unknown>>(input.step.metadata_json, {});
   const staleMetadata = stripLegacyCompletionMetadata(metadata);
   const routeContext = buildCanonicalRouteBlockContext({ step: input.step, metadata, adapter: "daily_ai_registered" });
+  const exactBlocker = routeContext.exactBlocker ?? BROWSER_USE_CLI_STALE_RECONCILIATION_REQUIRED_BLOCKER;
+  const effectiveRouteReadback = staleReconciliationRouteReadback(routeContext.effectiveRouteReadback, exactBlocker, routeContext.adapterPolicy);
   blockStepForRouting(
     input.step,
     {
@@ -3658,21 +3854,21 @@ function reconcileStaleDailyAiRegisteredStep(input: { step: StepRow; staleAfterM
       adapter_policy: routeContext.adapterPolicy,
       route_decision: routeContext.routeDecision ?? undefined,
       route_decision_fingerprint: routeContext.routeDecisionFingerprint,
-      route_readback: routeContext.effectiveRouteReadback,
-      execution_routing: routeContext.effectiveRouteReadback,
-      route_readback_fingerprint: routeContext.effectiveRouteReadback.fingerprint,
-      proof_gate: { ok: false, missing: [routeContext.exactBlocker ?? "in_app_browser_required"], present: [] as string[] },
-      proof_summary: `blocked: ${routeContext.exactBlocker ?? "in_app_browser_required"}`,
-      stop_reason: routeContext.exactBlocker ?? "in_app_browser_required",
+      route_readback: effectiveRouteReadback,
+      execution_routing: effectiveRouteReadback,
+      route_readback_fingerprint: effectiveRouteReadback.fingerprint,
+      proof_gate: { ok: false, missing: [exactBlocker], present: [] as string[] },
+      proof_summary: `blocked: ${exactBlocker}`,
+      stop_reason: exactBlocker,
       external_action_executed: false,
       ...(routeContext.runnerSafety ? { runner_safety: routeContext.runnerSafety } : {}),
       reconciled_from_stale_registered_summary: true,
       stale_after_ms: input.staleAfterMs
     },
     completedAt,
-    routeContext.exactBlocker ?? "in_app_browser_required",
+    exactBlocker,
     routeContext.routeDecision ?? undefined,
-    routeContext.effectiveRouteReadback,
+    effectiveRouteReadback,
     routeContext.adapterPolicy,
     routeContext.workerMode,
     routeContext.command,
@@ -3686,13 +3882,13 @@ function reconcileStaleDailyAiRegisteredStep(input: { step: StepRow; staleAfterM
     message: "Daily AI registered stale running step blocked by canonical route policy before summary reconciliation",
     metadata: {
       adapter: "daily_ai_registered",
-      exact_blocker: routeContext.exactBlocker ?? "in_app_browser_required",
+      exact_blocker: exactBlocker,
       command_display: routeContext.command.display,
       route_decision_fingerprint: routeContext.routeDecisionFingerprint,
-      route_readback_fingerprint: routeContext.effectiveRouteReadback.fingerprint,
-      proof_gate: { ok: false, missing: [routeContext.exactBlocker ?? "in_app_browser_required"], present: [] as string[] },
-      proof_summary: `blocked: ${routeContext.exactBlocker ?? "in_app_browser_required"}`,
-      stop_reason: routeContext.exactBlocker ?? "in_app_browser_required",
+      route_readback_fingerprint: effectiveRouteReadback.fingerprint,
+      proof_gate: { ok: false, missing: [exactBlocker], present: [] as string[] },
+      proof_summary: `blocked: ${exactBlocker}`,
+      stop_reason: exactBlocker,
       external_action_executed: false,
       runner_safety: routeContext.runnerSafety,
       reconciled_from_stale_registered_summary: true
@@ -3724,6 +3920,8 @@ function reconcileStaleRegisteredCodexAutomationStep(input: { step: StepRow; sta
   const staleMetadata = stripLegacyCompletionMetadata(metadata);
   const adapter = String(metadata.adapter ?? "");
   const routeContext = buildCanonicalRouteBlockContext({ step: input.step, metadata, adapter: adapter as WorkerAdapter });
+  const exactBlocker = routeContext.exactBlocker ?? BROWSER_USE_CLI_STALE_RECONCILIATION_REQUIRED_BLOCKER;
+  const effectiveRouteReadback = staleReconciliationRouteReadback(routeContext.effectiveRouteReadback, exactBlocker, routeContext.adapterPolicy);
   blockStepForRouting(
     input.step,
     {
@@ -3736,21 +3934,21 @@ function reconcileStaleRegisteredCodexAutomationStep(input: { step: StepRow; sta
       adapter_policy: routeContext.adapterPolicy,
       route_decision: routeContext.routeDecision ?? undefined,
       route_decision_fingerprint: routeContext.routeDecisionFingerprint,
-      route_readback: routeContext.effectiveRouteReadback,
-      execution_routing: routeContext.effectiveRouteReadback,
-      route_readback_fingerprint: routeContext.effectiveRouteReadback.fingerprint,
-      proof_gate: { ok: false, missing: [routeContext.exactBlocker ?? "in_app_browser_required"], present: [] as string[] },
-      proof_summary: `blocked: ${routeContext.exactBlocker ?? "in_app_browser_required"}`,
-      stop_reason: routeContext.exactBlocker ?? "in_app_browser_required",
+      route_readback: effectiveRouteReadback,
+      execution_routing: effectiveRouteReadback,
+      route_readback_fingerprint: effectiveRouteReadback.fingerprint,
+      proof_gate: { ok: false, missing: [exactBlocker], present: [] as string[] },
+      proof_summary: `blocked: ${exactBlocker}`,
+      stop_reason: exactBlocker,
       external_action_executed: false,
       ...(routeContext.runnerSafety ? { runner_safety: routeContext.runnerSafety } : {}),
       reconciled_from_stale_registered_codex: true,
       stale_after_ms: input.staleAfterMs
     },
     completedAt,
-    routeContext.exactBlocker ?? "in_app_browser_required",
+    exactBlocker,
     routeContext.routeDecision ?? undefined,
-    routeContext.effectiveRouteReadback,
+    effectiveRouteReadback,
     routeContext.adapterPolicy,
     routeContext.workerMode,
     routeContext.command,
@@ -3761,16 +3959,16 @@ function reconcileStaleRegisteredCodexAutomationStep(input: { step: StepRow; sta
     stepId: input.step.id,
     laneId: input.step.lane_id ?? undefined,
     eventType: "worker_blocked",
-    message: `Registered Codex stale running step blocked without rerun: ${routeContext.exactBlocker ?? "in_app_browser_required"}`,
+    message: `Registered Codex stale running step blocked without rerun: ${exactBlocker}`,
     metadata: {
       adapter,
       status: "blocked",
       command_display: routeContext.command.display,
       route_decision_fingerprint: routeContext.routeDecisionFingerprint,
-      route_readback_fingerprint: routeContext.effectiveRouteReadback.fingerprint,
-      proof_gate: { ok: false, missing: [routeContext.exactBlocker ?? "in_app_browser_required"], present: [] as string[] },
-      proof_summary: `blocked: ${routeContext.exactBlocker ?? "in_app_browser_required"}`,
-      stop_reason: routeContext.exactBlocker ?? "in_app_browser_required",
+      route_readback_fingerprint: effectiveRouteReadback.fingerprint,
+      proof_gate: { ok: false, missing: [exactBlocker], present: [] as string[] },
+      proof_summary: `blocked: ${exactBlocker}`,
+      stop_reason: exactBlocker,
       external_action_executed: false,
       runner_safety: routeContext.runnerSafety,
       reconciled_from_stale_registered_codex: true
@@ -4452,6 +4650,12 @@ function buildCanonicalRouteBlockContext(input: {
   const routeDecision = routeDecisionReadback.routeDecision;
   const routeSource = routeDecision?.source ?? inferExecutionRoutingSource(runMetadata);
   const adapterPolicy = resolveWorkerAdapterPolicy(input.adapter);
+  // The isolated reference canary must prove the canonical Browser Use CLI
+  // stop boundary without ever invoking a registered workflow runner.  This
+  // is deliberately scoped to canary metadata; live runs still use the
+  // adapter's normal admission policy below.
+  const referenceCanaryBrowserUseSafeStop = runMetadata.reference_workflow_canary === true &&
+    adapterPolicy.classification === "browser_use_cli";
   const workerMode = workerModeForAdapter(input.adapter);
   const lane = input.step.lane_id
     ? querySql<LaneRow>(
@@ -4469,11 +4673,19 @@ function buildCanonicalRouteBlockContext(input: {
     selectedAdapter: input.adapter,
     capabilities: resolveWorkerCapabilities(runMetadata)
   });
-  const browserUseAdmitted = input.adapter === "browser_use_cli"
-    && input.metadata.browser_surface === "browser_use_cli"
-    && input.metadata.browser_adapter === browserUseAdapterEntryPoint
-    && input.metadata.browser_no_fallback === true;
-  const routeReadback = browserUseAdmitted && rawRouteReadback.exactBlocker === "in_app_browser_required"
+  const browserUseAdmitted = (
+    command.env?.AUTOMATION_OS_BROWSER_SURFACE === "browser_use_cli"
+    && command.env?.AUTOMATION_OS_BROWSER_DRIVER === "browser_use_cli"
+    && command.env?.AUTOMATION_OS_BROWSER_ADAPTER === browserUseAdapterEntryPoint
+    && command.env?.AUTOMATION_OS_BROWSER_NO_FALLBACK === "1"
+  ) || (
+    input.adapter === "daily_ai_registered"
+    && adapterPolicy.classification === "browser_use_cli"
+    && command.env?.DAILY_AI_BROWSER_DRIVER === "browser_use_cli"
+    && command.env?.DAILY_AI_CLI_REQUIRE_BROWSER_USE === "1"
+    && command.env?.DAILY_AI_CLI_RECORDING_REQUIRED === "1"
+  );
+  const routeReadback = browserUseAdmitted && (rawRouteReadback.exactBlocker === "in_app_browser_required" || rawRouteReadback.exactBlocker === BROWSER_USE_CLI_REQUIRED_BLOCKER)
     ? {
         ...rawRouteReadback,
         allowed: true,
@@ -4483,7 +4695,9 @@ function buildCanonicalRouteBlockContext(input: {
         evidence: uniqueStrings([...rawRouteReadback.evidence, "browser_use_cli_manifest_surface=browser_use_cli", "browser_use_cli_no_fallback=true"])
       }
     : rawRouteReadback;
-  const exactBlocker = routeReadback.exactBlocker ?? adapterPolicy.exactBlocker;
+  const exactBlocker = referenceCanaryBrowserUseSafeStop
+    ? BROWSER_USE_CLI_REQUIRED_BLOCKER
+    : routeReadback.exactBlocker ?? adapterPolicy.exactBlocker;
   const effectiveRouteReadback = exactBlocker
     ? {
         ...routeReadback,
@@ -4518,6 +4732,30 @@ function buildCanonicalRouteBlockContext(input: {
   };
 }
 
+function staleReconciliationRouteReadback(
+  base: ExecutionRoutingSnapshot,
+  exactBlocker: NonNullable<ExecutionRoutingSnapshot["exactBlocker"]>,
+  adapterPolicy: WorkerAdapterPolicySnapshot
+): ExecutionRoutingSnapshot {
+  return {
+    ...base,
+    allowed: false,
+    exactBlocker,
+    controller: {
+      ...base.controller,
+      status: "inventory_only",
+      reason: `blocked:${exactBlocker}`
+    },
+    fallbackReason: `blocked:${exactBlocker}`,
+    evidence: uniqueStrings([
+      ...base.evidence,
+      `exactBlocker=${exactBlocker}`,
+      `adapter_policy=${adapterPolicy.classification}`,
+      ...adapterPolicy.evidence
+    ])
+  };
+}
+
 function blockStepForRouting(
   step: StepRow,
   metadata: Record<string, unknown>,
@@ -4540,6 +4778,7 @@ function blockStepForRouting(
          updated_at=${sqlValue(now)},
          metadata_json=${sqlValue({
            ...runMetadata,
+           ...(typeof metadata.adapter === "string" ? { adapter: metadata.adapter } : {}),
            ...(workerMode ? { worker_mode: workerMode, execution_mode: workerMode } : {}),
            ...(command ? { command, command_display: command.display } : {}),
            ...(routeDecision ? { route_decision: routeDecision } : {}),
@@ -4600,7 +4839,7 @@ function blockStepForRouting(
       external_action_executed: false
     }
   });
-  if (runMetadata.reference_workflow_canary === true) {
+  if (isReferenceWorkflowCanaryRun(step.run_id)) {
     try {
       const runtimeBinding = serviceReadinessRuntimeBindingForStep(step.run_id, step.id, runMetadata);
       const registeredWorkflowStart = runMetadata.registered_workflow_start;

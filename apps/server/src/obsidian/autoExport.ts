@@ -1,7 +1,11 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { exportObsidianVault, type ObsidianBackupRetentionSummary, ObsidianExportOptions, ObsidianExportResult } from "./exporter.js";
+import { classifyObsidianBlocker, type ObsidianBlocker } from "./blockers.js";
+import { exportObsidianVault, type ObsidianBackupRetentionSummary, type ObsidianExportOptions, type ObsidianExportResult, type ObsidianLegacyAdoptionMetadata } from "./exporter.js";
+
+const exportOwner = `automation-os-export:${process.pid}`;
 
 export type ObsidianExportStatus = {
   enabled: boolean;
@@ -36,6 +40,15 @@ export type ObsidianExportStatus = {
   backupRetention?: ObsidianBackupRetentionSummary;
   generatedFileCheck: GeneratedFileCheck;
   reason: string | null;
+  run_state: "idle" | "queued" | "running" | "succeeded" | "succeeded_with_drift" | "failed" | "skipped_busy";
+  owner: string | null;
+  owner_heartbeat_at: string | null;
+  busy_skip_count: number;
+  last_busy_skip_at: string | null;
+  blocker: ObsidianBlocker | null;
+  export_run_id: string | null;
+  parity_manifest_file: string | null;
+  legacy_adoption: ObsidianLegacyAdoptionMetadata | null;
 };
 
 export type GeneratedFileCheck = {
@@ -86,7 +99,7 @@ export type ObsidianAutonomyLoopController = {
 
 type ObsidianExportStatusDraft = Omit<ObsidianExportStatus, "health" | "summary" | "nextStep">;
 
-const defaultPeriodicExportMs = 5 * 60 * 1000;
+const defaultPeriodicExportMs = 30 * 60 * 1000;
 const defaultRecoveryRetryMs = 60 * 1000;
 const defaultRecoveryRetryMaxMs = 30 * 60 * 1000;
 const defaultWeeklyDiagnosisMs = 7 * 24 * 60 * 60 * 1000;
@@ -152,7 +165,16 @@ const defaultStatus: ObsidianExportStatus = {
   orientationFiles: [],
   templateFiles: [],
   generatedFileCheck: defaultGeneratedFileCheck,
-  reason: null
+  reason: null,
+  run_state: "idle",
+  owner: null,
+  owner_heartbeat_at: null,
+  busy_skip_count: 0,
+  last_busy_skip_at: null,
+  blocker: null,
+  export_run_id: null,
+  parity_manifest_file: null,
+  legacy_adoption: null
 };
 
 let lastStatus: ObsidianExportStatus = readStatusFile();
@@ -168,7 +190,11 @@ export function getObsidianExportStatus(): ObsidianExportStatus {
 }
 
 export function runObsidianExportNow(reason = "manual", options: ObsidianExportOptions = {}): ObsidianExportStatus {
-  return recordExportAttempt(reason, () => exportObsidianVault(options));
+  const manualOptions: ObsidianExportOptions = {
+    ...options,
+    refreshCodexSessionIndex: options.refreshCodexSessionIndex ?? true
+  };
+  return recordExportAttempt(reason, () => exportObsidianVault(manualOptions));
 }
 
 export function runObsidianAutoExportBestEffort(reason = "api_state_change"): ObsidianExportStatus {
@@ -183,7 +209,7 @@ export function runObsidianAutoExportBestEffort(reason = "api_state_change"): Ob
     return getObsidianExportStatus();
   }
   if (!inlineAutoExportEnabled()) return queueDetachedAutoExport(reason);
-  return recordExportAttempt(reason, () => exportObsidianVault());
+  return recordExportAttempt(reason, () => exportObsidianVault({ skipNonGenerated: true, refreshCodexSessionIndex: false }));
 }
 
 export function startPeriodicObsidianExport(): PeriodicObsidianExportController {
@@ -245,17 +271,34 @@ function recordExportAttempt(reason: string, action: () => ObsidianExportResult)
   if (exportInFlight) return recordSkippedExport(reason);
   exportInFlight = true;
   const attemptedAt = new Date().toISOString();
+  const exportRunId = randomUUID();
+  lastStatus = decorateStatus({
+    ...lastStatus,
+    enabled: autoExportEnabled(),
+    lastAttemptAt: attemptedAt,
+    run_state: "running",
+    owner: exportOwner,
+    owner_heartbeat_at: attemptedAt,
+    blocker: null,
+    export_run_id: exportRunId,
+    parity_manifest_file: lastStatus.parity_manifest_file,
+    reason
+  });
+  writeStatusFile(lastStatus);
   try {
     const result = action();
+    const resultRunId = result.exportRunId ?? exportRunId;
+    if (result.legacyAdoption && result.legacyAdoption.export_run_id !== resultRunId) throw new Error("legacy_adoption_run_id_mismatch");
     const generatedFileCheck = checkGeneratedFiles(result, attemptedAt);
+    const parityDrift = !generatedFileCheck.ok;
     stopRecoveryRetryTimer();
     lastStatus = decorateStatus({
       enabled: autoExportEnabled(),
-      ok: true,
+      ok: !parityDrift,
       lastAttemptAt: attemptedAt,
-      lastSuccessAt: attemptedAt,
-      lastFailureAt: null,
-      lastError: null,
+      lastSuccessAt: parityDrift ? lastStatus.lastSuccessAt : attemptedAt,
+      lastFailureAt: parityDrift ? attemptedAt : null,
+      lastError: parityDrift ? `parity_drift:${generatedFileCheck.nonGenerated.join(",")}` : null,
       failureCount: 0,
       nextRecoveryAt: null,
       vaultPath: result.vaultPath,
@@ -278,43 +321,80 @@ function recordExportAttempt(reason: string, action: () => ObsidianExportResult)
       templateFiles: result.templateFiles,
       backupRetention: result.backupRetention,
       generatedFileCheck,
-      reason
+      reason: parityDrift ? `${reason}_parity_drift` : reason,
+      run_state: parityDrift ? "succeeded_with_drift" : "succeeded",
+      owner: exportOwner,
+      owner_heartbeat_at: new Date().toISOString(),
+      busy_skip_count: lastStatus.busy_skip_count,
+      last_busy_skip_at: lastStatus.last_busy_skip_at,
+      blocker: parityDrift ? classifyObsidianBlocker("parity_drift") : null,
+      export_run_id: resultRunId,
+      parity_manifest_file: result.parityManifestFile ?? null,
+      legacy_adoption: result.legacyAdoption ?? lastStatus.legacy_adoption
     });
   } catch (error) {
-    const failureCount = (lastStatus.failureCount ?? 0) + 1;
-    const nextRecoveryAt = new Date(Date.now() + recoveryRetryDelayMs(failureCount)).toISOString();
-    lastStatus = decorateStatus({
-      enabled: autoExportEnabled(),
-      ok: false,
-      lastAttemptAt: attemptedAt,
-      lastSuccessAt: lastStatus.lastSuccessAt,
-      lastFailureAt: attemptedAt,
-      lastError: error instanceof Error ? error.message : "unknown_error",
-      failureCount,
-      nextRecoveryAt,
-      vaultPath: null,
-      outputDir: null,
-      files: [],
-      runs: 0,
-      proofs: 0,
-      docs: 0,
-      controlPanelFile: null,
-      proofInboxFile: null,
-      resumeContractFile: null,
-      resumeContractJsonFile: null,
-      missionFiles: [],
-      secondBrainFiles: [],
-      secondBrainPolicy: defaultSecondBrainPolicy,
-      secondBrainReviewMetadata: lastStatus.secondBrainReviewMetadata,
-      dashboardFiles: [],
-      projectGovernanceFiles: [],
-      orientationFiles: [],
-      templateFiles: [],
-      backupRetention: undefined,
-      generatedFileCheck: defaultGeneratedFileCheck,
-      reason
-    });
-    scheduleRecoveryRetry(reason, failureCount);
+    const blocker = classifyObsidianBlocker(error);
+    if (blocker.category === "busy") {
+      lastStatus = decorateStatus({
+        ...lastStatus,
+        enabled: autoExportEnabled(),
+        ok: lastStatus.ok,
+        lastAttemptAt: attemptedAt,
+        lastError: lastStatus.lastError,
+        run_state: "skipped_busy",
+        owner: exportOwner,
+        owner_heartbeat_at: new Date().toISOString(),
+        busy_skip_count: (lastStatus.busy_skip_count ?? 0) + 1,
+        last_busy_skip_at: attemptedAt,
+        blocker,
+        reason: `${reason}_skipped_busy`
+      });
+      writeStatusFile(lastStatus);
+    } else {
+      const failureCount = (lastStatus.failureCount ?? 0) + 1;
+      const nextRecoveryAt = new Date(Date.now() + recoveryRetryDelayMs(failureCount)).toISOString();
+      lastStatus = decorateStatus({
+        enabled: autoExportEnabled(),
+        ok: false,
+        lastAttemptAt: attemptedAt,
+        lastSuccessAt: lastStatus.lastSuccessAt,
+        lastFailureAt: attemptedAt,
+        lastError: error instanceof Error ? error.message : "unknown_error",
+        failureCount,
+        nextRecoveryAt,
+        vaultPath: null,
+        outputDir: null,
+        files: [],
+        runs: 0,
+        proofs: 0,
+        docs: 0,
+        controlPanelFile: null,
+        proofInboxFile: null,
+        resumeContractFile: null,
+        resumeContractJsonFile: null,
+        missionFiles: [],
+        secondBrainFiles: [],
+        secondBrainPolicy: defaultSecondBrainPolicy,
+        secondBrainReviewMetadata: lastStatus.secondBrainReviewMetadata,
+        dashboardFiles: [],
+        projectGovernanceFiles: [],
+        orientationFiles: [],
+        templateFiles: [],
+        backupRetention: undefined,
+        generatedFileCheck: defaultGeneratedFileCheck,
+        reason,
+        run_state: "failed",
+        owner: exportOwner,
+        owner_heartbeat_at: new Date().toISOString(),
+        busy_skip_count: lastStatus.busy_skip_count,
+        last_busy_skip_at: lastStatus.last_busy_skip_at,
+        blocker,
+        export_run_id: exportRunId,
+        parity_manifest_file: lastStatus.parity_manifest_file,
+        legacy_adoption: legacyAdoptionFromError(error) ?? lastStatus.legacy_adoption
+      });
+      scheduleRecoveryRetry(reason, failureCount);
+    }
   }
   try {
     writeStatusFile(lastStatus);
@@ -324,11 +404,24 @@ function recordExportAttempt(reason: string, action: () => ObsidianExportResult)
   }
 }
 
+function legacyAdoptionFromError(error: unknown): ObsidianLegacyAdoptionMetadata | null {
+  if (!error || typeof error !== "object") return null;
+  const metadata = (error as { metadata?: unknown }).metadata;
+  return normalizeLegacyAdoption(metadata);
+}
+
 function recordSkippedExport(reason: string): ObsidianExportStatus {
+  const skippedAt = new Date().toISOString();
   lastStatus = {
     ...lastStatus,
     enabled: autoExportEnabled(),
-    lastAttemptAt: new Date().toISOString(),
+    lastAttemptAt: skippedAt,
+    run_state: "skipped_busy",
+    owner: lastStatus.owner,
+    owner_heartbeat_at: lastStatus.owner_heartbeat_at,
+    busy_skip_count: (lastStatus.busy_skip_count ?? 0) + 1,
+    last_busy_skip_at: skippedAt,
+    blocker: classifyObsidianBlocker("obsidian_export_in_flight"),
     reason: `${reason}_skipped_export_in_flight`
   };
   lastStatus = decorateStatus(lastStatus);
@@ -339,12 +432,19 @@ function recordSkippedExport(reason: string): ObsidianExportStatus {
 function queueDetachedAutoExport(reason: string): ObsidianExportStatus {
   if (exportInFlight) return recordSkippedExport(reason);
   exportInFlight = true;
+  const exportRunId = randomUUID();
   lastStatus = {
     ...lastStatus,
     enabled: autoExportEnabled(),
     ok: null,
     lastAttemptAt: new Date().toISOString(),
     lastError: null,
+    run_state: "queued",
+    owner: exportOwner,
+    owner_heartbeat_at: new Date().toISOString(),
+    blocker: null,
+    export_run_id: exportRunId,
+    parity_manifest_file: lastStatus.parity_manifest_file,
     reason: `${reason}_queued`
   };
   lastStatus = decorateStatus(lastStatus);
@@ -354,7 +454,13 @@ function queueDetachedAutoExport(reason: string): ObsidianExportStatus {
   const child = spawn(cli.command, [...cli.args, `--reason=${reason}`], {
     cwd: process.cwd(),
     detached: true,
-    env: process.env,
+    env: {
+      ...process.env,
+      AUTOMATION_OS_OBSIDIAN_EXPORT_RUN_ID: exportRunId,
+      AUTOMATION_OS_OBSIDIAN_EXPORT_SKIP_NON_GENERATED: "1",
+      AUTOMATION_OS_OBSIDIAN_REFRESH_CODEX_SESSION_INDEX: "0",
+      ...(isPeriodicExportReason(reason) ? { AUTOMATION_OS_OBSIDIAN_SKIP_MAINTENANCE: "1" } : {})
+    },
     stdio: "ignore"
   });
   child.once("error", (error) => {
@@ -371,7 +477,13 @@ function queueDetachedAutoExport(reason: string): ObsidianExportStatus {
       lastError: error.message,
       failureCount,
       nextRecoveryAt,
-      reason
+      reason,
+      run_state: "failed",
+      owner: exportOwner,
+      owner_heartbeat_at: new Date().toISOString(),
+      blocker: classifyObsidianBlocker(error),
+      export_run_id: exportRunId,
+      parity_manifest_file: lastStatus.parity_manifest_file
     };
     lastStatus = decorateStatus(lastStatus);
     scheduleRecoveryRetry(reason, failureCount);
@@ -384,6 +496,10 @@ function queueDetachedAutoExport(reason: string): ObsidianExportStatus {
   });
   child.unref();
   return getObsidianExportStatus();
+}
+
+function isPeriodicExportReason(reason: string): boolean {
+  return reason === "periodic" || reason.startsWith("periodic_");
 }
 
 function resolveExportCli(): { command: string; args: string[] } {
@@ -423,13 +539,21 @@ function writeStatusFile(status: ObsidianExportStatus): void {
     mkdirSync(dirname(path), { recursive: true });
     const tmpPath = `${path}.${process.pid}.${Date.now()}.tmp`;
     writeFileSync(tmpPath, JSON.stringify({ ...status, enabled: autoExportEnabled() }, null, 2));
+    const statusFd = openSync(tmpPath, "r");
+    try {
+      fsyncSync(statusFd);
+    } finally {
+      closeSync(statusFd);
+    }
     renameSync(tmpPath, path);
+    fsyncDirectory(dirname(path));
   } catch {
     // Status persistence is best-effort; export success must not depend on it.
   }
 }
 
 function normalizeStatus(status: ObsidianExportStatus): ObsidianExportStatus {
+  const legacyBusySkip = status.run_state === "idle" && typeof status.reason === "string" && status.reason.includes("skipped_export_in_flight");
   return {
     ...status,
     files: Array.isArray(status.files) ? status.files : [],
@@ -445,8 +569,51 @@ function normalizeStatus(status: ObsidianExportStatus): ObsidianExportStatus {
     generatedFileCheck: normalizeGeneratedFileCheck(status.generatedFileCheck),
     lastFailureAt: optionalString(status.lastFailureAt) ?? null,
     nextRecoveryAt: optionalString(status.nextRecoveryAt) ?? null,
-    failureCount: typeof status.failureCount === "number" && Number.isFinite(status.failureCount) && status.failureCount >= 0 ? Math.floor(status.failureCount) : 0
+    failureCount: typeof status.failureCount === "number" && Number.isFinite(status.failureCount) && status.failureCount >= 0 ? Math.floor(status.failureCount) : 0,
+    run_state: status.run_state === "queued" || status.run_state === "running" || status.run_state === "succeeded" || status.run_state === "succeeded_with_drift" || status.run_state === "failed" || status.run_state === "skipped_busy" ? status.run_state : legacyBusySkip ? "skipped_busy" : "idle",
+    owner: optionalString(status.owner) ?? null,
+    owner_heartbeat_at: optionalString(status.owner_heartbeat_at) ?? null,
+    busy_skip_count: typeof status.busy_skip_count === "number" && Number.isFinite(status.busy_skip_count) && status.busy_skip_count >= 0 ? Math.floor(status.busy_skip_count) : 0,
+    last_busy_skip_at: optionalString(status.last_busy_skip_at) ?? null,
+    blocker: status.blocker && typeof status.blocker === "object" ? status.blocker as ObsidianBlocker : null,
+    export_run_id: optionalString(status.export_run_id) ?? null,
+    parity_manifest_file: optionalString(status.parity_manifest_file) ?? null,
+    legacy_adoption: normalizeLegacyAdoption(status.legacy_adoption)
   };
+}
+
+function normalizeLegacyAdoption(value: unknown): ObsidianLegacyAdoptionMetadata | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Partial<ObsidianLegacyAdoptionMetadata>;
+  if (candidate.status !== "adopted" && candidate.status !== "blocked" && candidate.status !== "post_write_failed") return null;
+  if (typeof candidate.export_run_id !== "string" || typeof candidate.target_path !== "string" || typeof candidate.template_id !== "string" || typeof candidate.pre_sha256 !== "string") return null;
+  const readback = candidate.readback && typeof candidate.readback === "object" ? candidate.readback as Partial<ObsidianLegacyAdoptionMetadata["readback"]> : {};
+  return {
+    status: candidate.status,
+    export_run_id: candidate.export_run_id,
+    target_path: candidate.target_path,
+    template_id: candidate.template_id,
+    pre_sha256: candidate.pre_sha256,
+    post_sha256: typeof candidate.post_sha256 === "string" ? candidate.post_sha256 : null,
+    backup_path: typeof candidate.backup_path === "string" ? candidate.backup_path : null,
+    backup_sha256: typeof candidate.backup_sha256 === "string" ? candidate.backup_sha256 : null,
+    readback: {
+      attempted: readback.attempted === true,
+      ok: readback.ok === true,
+      sha256: typeof readback.sha256 === "string" ? readback.sha256 : null,
+      error: typeof readback.error === "string" ? readback.error : null
+    },
+    reason: typeof candidate.reason === "string" ? candidate.reason : undefined
+  };
+}
+
+function fsyncDirectory(path: string): void {
+  const fd = openSync(path, "r");
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
 }
 
 function decorateStatus(status: ObsidianExportStatusDraft): ObsidianExportStatus {
@@ -454,9 +621,12 @@ function decorateStatus(status: ObsidianExportStatusDraft): ObsidianExportStatus
   const hostedLocalWorkerRequired = hostedRuntime() && process.env.AUTOMATION_OS_OBSIDIAN_HOSTED_EXPORT !== "1";
   const failureCount = typeof status.failureCount === "number" && Number.isFinite(status.failureCount) ? Math.max(0, Math.floor(status.failureCount)) : 0;
   const effectiveOk = hostedLocalWorkerRequired ? false : status.ok;
-  const hasFailure = effectiveOk === false || Boolean(status.lastError) || failureCount > 0;
+  const busyOrQueued = status.run_state === "skipped_busy" || status.run_state === "queued" || status.run_state === "running";
+  const hasFailure = !busyOrQueued && (effectiveOk === false || Boolean(status.lastError) || failureCount > 0);
   const health: ObsidianExportStatus["health"] = !enabled
     ? "disabled"
+    : busyOrQueued
+      ? "recovering"
     : effectiveOk === true
       ? failureCount > 0
         ? "recovering"
@@ -468,7 +638,11 @@ function decorateStatus(status: ObsidianExportStatusDraft): ObsidianExportStatus
     health === "healthy"
       ? "Obsidian export is running normally."
       : health === "recovering"
-        ? `Obsidian export recovered, but ${failureCount} recent failure${failureCount === 1 ? "" : "s"} are still recorded.`
+        ? busyOrQueued
+          ? status.run_state === "skipped_busy"
+            ? `Obsidian export is busy; ${status.busy_skip_count} trigger${status.busy_skip_count === 1 ? "" : "s"} skipped without being counted as failure.`
+            : "Obsidian export is queued or running."
+          : `Obsidian export recovered, but ${failureCount} recent failure${failureCount === 1 ? "" : "s"} are still recorded.`
         : health === "degraded"
           ? status.lastError
             ? `Obsidian export needs attention: ${status.lastError}`
@@ -482,7 +656,9 @@ function decorateStatus(status: ObsidianExportStatusDraft): ObsidianExportStatus
     health === "healthy"
       ? "No action needed. Let the periodic and weekly loops continue."
       : health === "recovering"
-        ? status.nextRecoveryAt
+        ? busyOrQueued
+          ? "Wait for the current owner to finish, then inspect the parity manifest and readback."
+          : status.nextRecoveryAt
           ? `Wait for the scheduled retry at ${status.nextRecoveryAt}.`
           : "Wait for the scheduled retry."
         : health === "degraded"
@@ -525,7 +701,8 @@ function checkGeneratedFiles(result: ObsidianExportResult, checkedAt: string): G
     ...result.dashboardFiles,
     ...(result.projectGovernanceFiles ?? []),
     ...result.orientationFiles,
-    ...result.templateFiles
+    ...result.templateFiles,
+    result.parityManifestFile
   ].filter((path): path is string => typeof path === "string" && path.length > 0);
   const uniqueTargets = [...new Set(targets)];
   const files = uniqueTargets.map(checkGeneratedFile);

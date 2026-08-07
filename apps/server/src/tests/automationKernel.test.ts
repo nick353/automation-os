@@ -579,37 +579,18 @@ test("IAB stage receipts fail closed without capability evidence", () => {
       summary: "local stage complete"
     });
   }
-  control.runAutomationKernelControl({
-    ...base,
-    action: "claim",
-    effectId: "browser_video_qa_no_post_preflight",
-    unitId: "visual-preflight-1"
-  });
   assert.throws(
     () => control.runAutomationKernelControl({
       ...base,
-      action: "record",
+      action: "claim",
       effectId: "browser_video_qa_no_post_preflight",
       unitId: "visual-preflight-1",
-      outcome: "succeeded",
+      outcome: undefined,
       externalActionExecuted: false,
-      summary: "must not pass"
+      summary: undefined
     }),
-    /automation_kernel_in_app_browser_capability_evidence_required:browser_video_qa_no_post_preflight/
+    /automation_kernel_browser_use_cli_required:browser_video_qa_no_post_preflight/
   );
-  const admissionFailure = control.runAutomationKernelControl({
-    ...base,
-    action: "record",
-    effectId: "browser_video_qa_no_post_preflight",
-    unitId: "visual-preflight-1",
-    outcome: "failed",
-    externalActionExecuted: false,
-    summary: "IAB admission failed before browser use",
-    exactBlocker: "automation_kernel_in_app_browser_capability_evidence_required:test",
-    admissionFailed: true
-  }) as { snapshot: { status: string; exact_blocker: string | null } };
-  assert.equal(admissionFailure.snapshot.status, "blocked");
-    assert.equal(admissionFailure.snapshot.exact_blocker, "automation_kernel_in_app_browser_capability_evidence_required:test");
 });
 
 test("approval artifacts are private, content-addressed, current, and identity-bound", () => {

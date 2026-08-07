@@ -63,8 +63,12 @@ export function listStoredSecrets(companyId?: string): StoredSecretSummary[] {
     masked_value: string;
     updated_at: string;
     metadata_json: string;
-  }>(`SELECT id, company_id, kind, label, masked_value, updated_at, metadata_json FROM stored_secrets${where} ORDER BY updated_at DESC`).map((row) => {
+    storage_ref: string;
+  }>(`SELECT id, company_id, kind, label, masked_value, updated_at, metadata_json, storage_ref FROM stored_secrets${where} ORDER BY updated_at DESC`).map((row) => {
     const metadata = parseSecretMetadata(row.metadata_json);
+    const runtimeReadiness = row.kind === "postgres"
+      ? readStoredPostgresReadiness(row.storage_ref)
+      : undefined;
     return {
       id: row.id,
       companyId: row.company_id ?? undefined,
@@ -72,10 +76,10 @@ export function listStoredSecrets(companyId?: string): StoredSecretSummary[] {
       label: row.label,
       maskedValue: row.masked_value,
       updatedAt: row.updated_at,
-      state: metadata.state,
+      state: runtimeReadiness?.state ?? metadata.state,
       purpose: metadata.purpose,
       accountLabel: metadata.accountLabel,
-      availableToRunner: metadata.availableToRunner
+      availableToRunner: runtimeReadiness?.availableToRunner ?? metadata.availableToRunner
     };
   });
 }
@@ -204,15 +208,27 @@ function storeSecret(candidate: SecretCandidate, companyId?: string): StoredSecr
 }
 
 function secretRunnerAvailability(candidate: SecretCandidate): { state?: string; availableToRunner: boolean } {
-  if (candidate.kind !== "postgres") return { availableToRunner: true };
+  return secretRunnerAvailabilityForValue(candidate.kind, candidate.value);
+}
+
+function secretRunnerAvailabilityForValue(kind: string, value: string): { state?: string; availableToRunner: boolean } {
+  if (kind !== "postgres") return { availableToRunner: true };
   // A template may be valid on a particular Mac worker, but the control-plane
   // process cannot prove that worker-local variables exist. Keep the encrypted
   // value for the explicit worker lane while making the unresolved boundary
   // visible to Chat and secret summaries instead of claiming readiness.
-  if (/\$\{[A-Za-z_][A-Za-z0-9_]*\}/u.test(candidate.value)) {
+  if (/\$\{[A-Za-z_][A-Za-z0-9_]*\}/u.test(value)) {
     return { state: "template_reference_pending", availableToRunner: false };
   }
   return { availableToRunner: true };
+}
+
+function readStoredPostgresReadiness(storageRef: string): { state?: string; availableToRunner: boolean } | undefined {
+  try {
+    return secretRunnerAvailabilityForValue("postgres", decryptStoredSecret(storageRef));
+  } catch {
+    return { state: "stored_secret_read_failed", availableToRunner: false };
+  }
 }
 
 function scopedSecretId(kind: string, companyId?: string): string {

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -122,11 +123,45 @@ test("exportObsidianVault writes wiki-linked run, proof, and docs markdown", () 
       "captureType: article",
       "sourceOfTruth: source URL",
       "suggestedDestination: 06_Research",
+      "progressive_summary: This is the actual progressive summary from the reviewed source note.",
+      "distillation: Preserve the verified finding as reusable internal research context.",
+      "next_use: Reuse this finding when the next related research task starts.",
+      "unresolved_question: Which project should consume this finding next?",
+      "review_cycle: weekly",
+      "distillation_quality: substantive",
+      "knowledge_reuse_status: ready",
+      "processed_at: 2026-08-05T00:00:00.000Z",
       "---",
       "",
       "# Article URL",
       "",
       "Research memo about AI systems."
+    ].join("\n")
+  );
+  writeFileSync(
+    join(vaultPath, "09_Inbox", "Review Ready Duplicate.md"),
+    [
+      "---",
+      "title: Review Ready Duplicate",
+      "needsClassification: yes",
+      "status: open",
+      "processing_status: review_ready",
+      "sourceUrl: https://example.com/review-ready?s=20",
+      "captureType: article",
+      "sourceOfTruth: source URL",
+      "suggestedDestination: 06_Research",
+      "progressive_summary: Duplicate capture should remain a separate note.",
+      "distillation: Group only as a duplicate source reference.",
+      "next_use: Review the original and duplicate before reuse.",
+      "unresolved_question: Is the duplicate capture materially different?",
+      "review_cycle: weekly",
+      "distillation_quality: substantive",
+      "knowledge_reuse_status: review_needed",
+      "processed_at: 2026-08-05T00:00:00.000Z",
+      "---",
+      "",
+      "# Review Ready Duplicate",
+      ""
     ].join("\n")
   );
   writeFileSync(
@@ -389,6 +424,7 @@ test("exportObsidianVault writes wiki-linked run, proof, and docs markdown", () 
   const secondBrainAutoProcessor = readFileSync(join(vaultPath, "01_Control Panel", "Second Brain Auto Processor.md"), "utf8");
   const secondBrainWeeklyDigest = readFileSync(join(vaultPath, "00_Start Here", "Second Brain Weekly Digest.md"), "utf8");
   const activeSessions = readFileSync(join(vaultPath, "01_Control Panel", "Active Sessions.md"), "utf8");
+  const sessionKnowledgeDigest = readFileSync(join(vaultPath, "01_Control Panel", "Session Knowledge Digest.md"), "utf8");
   const skillRegistry = readFileSync(join(vaultPath, "01_Control Panel", "Skill Registry.md"), "utf8");
   const codexAppParityLedger = readFileSync(join(vaultPath, "01_Control Panel", "Codex App Parity Ledger.md"), "utf8");
   const projectMemoryMap = readFileSync(join(vaultPath, "00_Start Here", "Project Memory Map.md"), "utf8");
@@ -452,6 +488,7 @@ test("exportObsidianVault writes wiki-linked run, proof, and docs markdown", () 
   assert.ok(result.missionFiles.some((file) => file.endsWith(join("01_Control Panel", "Action Queue.md"))));
   assert.ok(result.missionFiles.some((file) => file.endsWith(join("01_Control Panel", "Command Queue Intake.md"))));
   assert.ok(result.missionFiles.some((file) => file.endsWith(join("01_Control Panel", "Active Sessions.md"))));
+  assert.ok(result.missionFiles.some((file) => file.endsWith(join("01_Control Panel", "Session Knowledge Digest.md"))));
   assert.ok(result.missionFiles.some((file) => file.endsWith(join("01_Control Panel", "Conversation Memory Cards.md"))));
   assert.ok(result.missionFiles.some((file) => file.endsWith(join("01_Control Panel", "User Signals.md"))));
   assert.ok(result.missionFiles.some((file) => file.endsWith(join("01_Control Panel", "Skill Registry.md"))));
@@ -572,6 +609,11 @@ test("exportObsidianVault writes wiki-linked run, proof, and docs markdown", () 
   assert.match(secondBrainReviewBase, /processing_status:/);
   assert.match(secondBrainReviewBase, /suggested_destination:/);
   assert.match(secondBrainReviewBase, /progressive_summary:/);
+  assert.match(secondBrainReviewBase, /distillation:/);
+  assert.match(secondBrainReviewBase, /next_use:/);
+  assert.match(secondBrainReviewBase, /unresolved_question:/);
+  assert.match(secondBrainReviewBase, /distillation_quality:/);
+  assert.match(secondBrainReviewBase, /knowledge_reuse_status:/);
   assert.match(secondBrainReviewBase, /source_of_truth:/);
   assert.match(secondBrainReviewBase, /external_action_required:/);
   assert.match(actionQueue, /generated_by: automation-os/);
@@ -640,6 +682,13 @@ test("exportObsidianVault writes wiki-linked run, proof, and docs markdown", () 
   assert.match(secondBrainAutoProcessor, /Destination allowlist: 05_Projects, 06_Research, 07_Decisions, 08_Runbooks, 09_Inbox, unknown/);
   assert.match(secondBrainAutoProcessor, /Raw Codex Request/);
   assert.match(secondBrainAutoProcessor, /Review Ready Candidate[\s\S]*processing_status: review_ready/);
+  assert.match(secondBrainAutoProcessor, /Article URL[\s\S]*progressive_summary: This is the actual progressive summary/);
+  assert.match(secondBrainAutoProcessor, /Article URL[\s\S]*distillation: Preserve the verified finding/);
+  assert.match(secondBrainAutoProcessor, /Article URL[\s\S]*next_use: Reuse this finding/);
+  assert.match(secondBrainAutoProcessor, /Article URL[\s\S]*unresolved_question: Which project/);
+  assert.match(secondBrainAutoProcessor, /Article URL[\s\S]*knowledge_reuse_status: ready/);
+  assert.match(secondBrainAutoProcessor, /Review Ready Candidate[\s\S]*duplicate_source_group: 2/);
+  assert.match(secondBrainAutoProcessor, /Review Ready Duplicate[\s\S]*duplicate_source_group: 2/);
   assert.match(secondBrainAutoProcessor, /Approval Required Research[\s\S]*suggested_destination: 06_Research/);
   assert.match(secondBrainAutoProcessor, /Approval Required Research[\s\S]*external_action_required: true/);
   assert.match(secondBrainAutoProcessor, /Approval Required Research[\s\S]*approval_required: true/);
@@ -741,6 +790,11 @@ test("exportObsidianVault writes wiki-linked run, proof, and docs markdown", () 
   assert.match(secondBrainWeeklyDigest, /preserve source pointer: https:\/\/\[redacted-auth\]@example\.com\/private\?access_token=\[redacted\]/);
   assert.match(secondBrainWeeklyDigest, /source_of_truth=Bearer \[redacted-token\]/);
   assert.match(secondBrainWeeklyDigest, /09_Inbox: \[\[09_Inbox\/Research Capture\|Research Capture\]\] \| kind=research/);
+  assert.match(sessionKnowledgeDigest, /coverage: all_redacted_session_index_inventory_plus_latest_50_user_owned_head_tail_detail/);
+  assert.match(sessionKnowledgeDigest, /All-session redacted index entries:/);
+  assert.match(sessionKnowledgeDigest, /raw_transcript_stored: false/);
+  assert.match(sessionKnowledgeDigest, /review_status: pending_human_review/);
+  assert.match(sessionKnowledgeDigest, /promotion_allowed: false/);
   assert.doesNotMatch(secondBrainWeeklyDigest, /\.\.\/\.\.\/Secrets/);
   assert.doesNotMatch(secondBrainWeeklyDigest, /user:pass/);
   assert.doesNotMatch(secondBrainWeeklyDigest, /N9sK2LmP8qRwT5yUi3OpAzXcVbNmQ1We/);
@@ -1225,6 +1279,188 @@ test("exportObsidianVault refuses to overwrite non-generated notes", () => {
   writeFileSync(join(outputDir, "Runs.md"), "---\nsystem: personal\n---\n\n# Hand written note\n");
 
   assert.throws(() => obsidian.exportObsidianVault({ vaultPath, docsDir }), /Refusing to overwrite non-generated/);
+});
+
+test("exportObsidianVault promotes only fail-closed reviewed Second Brain knowledge", () => {
+  const docsDir = join(tempRoot, "knowledge-promotion-docs");
+  const vaultPath = join(tempRoot, "Knowledge Promotion Vault");
+  const researchDir = join(vaultPath, "06_Research");
+  const outsideDir = join(tempRoot, "unrelated-session");
+  mkdirSync(docsDir, { recursive: true });
+  mkdirSync(researchDir, { recursive: true });
+  mkdirSync(outsideDir, { recursive: true });
+  writeFileSync(join(docsDir, "06-control-panel.md"), "# Control Panel\n");
+
+  const writeKnowledgeNote = (filename: string, fields: string[], options: { includeSafetyFlags?: boolean } = {}): void => {
+    writeFileSync(
+      join(researchDir, filename),
+      [
+        "---",
+        "title: Promotion fixture",
+        "auto_process: obsidian_internal_only",
+        "processing_status: review_ready",
+        "processed_by: automation-os-second-brain-processor",
+        "suggested_destination: 06_Research",
+        "knowledge_reuse_status: ready",
+        "distillation_quality: substantive",
+        ...(options.includeSafetyFlags === false ? [] : ["external_action_required: false", "approval_required: false"]),
+        "progressive_summary: This reviewed summary captures a reusable internal finding with enough context.",
+        "distillation: Reuse the finding as bounded internal context after checking the linked source note.",
+        "next_use: Apply this knowledge during the next matching research review and keep it read-only.",
+        "source_url: https://example.com/research/promotion-fixture",
+        "source_of_truth: Handwritten research note with a verified source pointer and review context.",
+        ...fields,
+        "---",
+        "",
+        `# ${filename}`,
+        "",
+        "Reviewed Second Brain fixture content.",
+        ""
+      ].join("\n")
+    );
+  };
+
+  writeKnowledgeNote("Approved Knowledge.md", []);
+  writeKnowledgeNote("Pending.md", ["processing_status: pending"]);
+  writeKnowledgeNote("Review Needed.md", ["knowledge_reuse_status: review_needed"]);
+  writeKnowledgeNote("Unknown Destination.md", ["suggested_destination: unknown"]);
+  writeKnowledgeNote("Inbox Destination.md", ["suggested_destination: 09_Inbox"]);
+  writeKnowledgeNote("External Action.md", ["external_action_required: true"]);
+  writeKnowledgeNote("Approval Required.md", ["approval_required: true"]);
+  writeKnowledgeNote("Missing Safety Flags.md", [], { includeSafetyFlags: false });
+  writeKnowledgeNote("Skill Candidate.md", ["skill_candidate: true"]);
+  writeKnowledgeNote("No Source Proof.md", ["source_of_truth: unknown"]);
+  writeKnowledgeNote("Secret Source.md", ["source_url: https://user:pass@example.com/private?access_token=secret-promotion-token"]);
+  writeKnowledgeNote("Generated Knowledge.md", ["generated_by: automation-os"]);
+  const unrelatedSession = join(outsideDir, "Unrelated Session.md");
+  writeFileSync(
+    unrelatedSession,
+    [
+      "---",
+      "title: Unrelated Session",
+      "auto_process: obsidian_internal_only",
+      "processing_status: review_ready",
+      "processed_by: automation-os-second-brain-processor",
+      "suggested_destination: 06_Research",
+      "knowledge_reuse_status: ready",
+      "distillation_quality: substantive",
+      "progressive_summary: This unrelated session must remain outside the vault read boundary.",
+      "distillation: Do not promote session material that is outside this vault.",
+      "next_use: Keep this as an unrelated session locator and do not use it as internal knowledge.",
+      "source_of_truth: Unrelated session outside the current vault boundary.",
+      "---",
+      "",
+      "# Unrelated Session",
+      ""
+    ].join("\n")
+  );
+  symlinkSync(unrelatedSession, join(researchDir, "Unrelated Session.md"), "file");
+
+  const result = obsidian.exportObsidianVault({ vaultPath, docsDir });
+  const knowledge = readFileSync(join(result.outputDir, "Knowledge.md"), "utf8");
+  const processor = readFileSync(join(vaultPath, "01_Control Panel", "Second Brain Auto Processor.md"), "utf8");
+  const approvedContentSha256 = createHash("sha256").update(readFileSync(join(researchDir, "Approved Knowledge.md"))).digest("hex");
+
+  assert.match(knowledge, /auto_promoted_internal_knowledge_count: 1/);
+  assert.match(knowledge, /## Auto-promoted internal knowledge/);
+  assert.match(knowledge, /\[\[06_Research\/Approved Knowledge\|Promotion fixture\]\]/);
+  assert.match(knowledge, /promotion_status: auto_promoted/);
+  assert.match(knowledge, /destination: 06_Research/);
+  assert.match(knowledge, /progressive_summary: This reviewed summary captures a reusable internal finding/);
+  assert.match(knowledge, /distillation: Reuse the finding as bounded internal context/);
+  assert.match(knowledge, /next_use: Apply this knowledge during the next matching research review/);
+  assert.match(knowledge, /source_url: https:\/\/example\.com\/research\/promotion-fixture/);
+  assert.match(knowledge, /source_of_truth: Handwritten research note with a verified source pointer/);
+  assert.match(knowledge, new RegExp(`content_sha256: ${approvedContentSha256}`));
+  assert.match(knowledge, /external_action_authorized: false/);
+  assert.match(knowledge, /internal\/read-only knowledge only; not external-action authorization/);
+  assert.match(processor, /Auto-promoted internal knowledge eligible count: 1/);
+  for (const title of ["Pending", "Review Needed", "Unknown Destination", "Inbox Destination", "External Action", "Approval Required", "Missing Safety Flags", "Skill Candidate", "No Source Proof", "Secret Source", "Generated Knowledge", "Unrelated Session"]) {
+    assert.doesNotMatch(knowledge, new RegExp(`\\[\\[06_Research/${title}`));
+  }
+  assert.doesNotMatch(knowledge, /secret-promotion-token/);
+  assert.doesNotMatch(knowledge, /user:pass/);
+});
+
+test("exportObsidianVault automatically adopts the exact legacy Decision Dashboard base", () => {
+  const docsDir = join(tempRoot, "legacy-dashboard-docs");
+  const vaultPath = join(tempRoot, "Legacy Dashboard Vault");
+  const dashboardDir = join(vaultPath, "10_Dashboards");
+  mkdirSync(docsDir, { recursive: true });
+  mkdirSync(dashboardDir, { recursive: true });
+  writeFileSync(join(docsDir, "06-control-panel.md"), "# Control Panel\n");
+  const legacyBody = [
+    "filters:",
+    "  and:",
+    "    - file.ext == \"md\"",
+    "    - file.inFolder(\"07_Decisions\")",
+    "properties:",
+    "  file.name:",
+    "    displayName: Note",
+    "  status:",
+    "    displayName: Status",
+    "  priority:",
+    "    displayName: Priority",
+    "  owner:",
+    "    displayName: Owner",
+    "  source_of_truth:",
+    "    displayName: Source of truth",
+    "  required_proof:",
+    "    displayName: Required proof",
+    "  next_action:",
+    "    displayName: Next action",
+    "  blocker:",
+    "    displayName: Blocker",
+    "  file.mtime:",
+    "    displayName: Modified",
+    "views:",
+    "  - type: table",
+    "    name: Decision Dashboard",
+    "    order:",
+    "      - file.name",
+    "      - status",
+    "      - priority",
+    "      - owner",
+    "      - source_of_truth",
+    "      - required_proof",
+    "      - next_action",
+    "      - blocker",
+    "      - file.mtime",
+    "    limit: 100"
+  ].join("\n");
+  const target = join(dashboardDir, "Decision Dashboard.base");
+  writeFileSync(target, `${legacyBody}\n`);
+  const preHash = createHash("sha256").update(readFileSync(target)).digest("hex");
+
+  const result = obsidian.exportObsidianVault({ vaultPath, docsDir });
+  const adopted = result.legacyAdoption;
+  assert.equal(adopted?.status, "adopted");
+  assert.equal(adopted?.export_run_id, result.exportRunId);
+  assert.equal(adopted?.pre_sha256, preHash);
+  assert.equal(adopted?.readback.ok, true);
+  assert.ok(adopted?.backup_path);
+  assert.equal(createHash("sha256").update(readFileSync(adopted.backup_path!)).digest("hex"), preHash);
+  assert.match(readFileSync(target, "utf8"), /^# generated_by: automation-os\n/);
+  const manifest = JSON.parse(readFileSync(join(vaultPath, "02_Systems", "automation-os", "obsidian-export-manifest.json"), "utf8")) as Record<string, any>;
+  assert.equal(manifest.legacy_adoption.status, "adopted");
+  assert.equal(manifest.export_run_id, result.exportRunId);
+  assert.equal(manifest.legacy_adoption.export_run_id, result.exportRunId);
+  assert.equal(manifest.legacy_adoption.pre_sha256, preHash);
+});
+
+test("exportObsidianVault keeps a near-match Decision Dashboard base protected", () => {
+  const docsDir = join(tempRoot, "near-match-dashboard-docs");
+  const vaultPath = join(tempRoot, "Near Match Dashboard Vault");
+  const dashboardDir = join(vaultPath, "10_Dashboards");
+  mkdirSync(docsDir, { recursive: true });
+  mkdirSync(dashboardDir, { recursive: true });
+  writeFileSync(join(docsDir, "06-control-panel.md"), "# Control Panel\n");
+  const target = join(dashboardDir, "Decision Dashboard.base");
+  writeFileSync(target, "filters:\n  and:\n    - file.ext == \"md\"\n    - file.inFolder(\"06_Research\")\n");
+  const before = readFileSync(target);
+
+  assert.throws(() => obsidian.exportObsidianVault({ vaultPath, docsDir }), /Refusing to overwrite non-generated/);
+  assert.deepEqual(readFileSync(target), before);
 });
 
 test("exportObsidianVault does not promote unrelated Codex sessions into resume brief", () => {

@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Proof } from "./proofGate.js";
+import { inspectBrowserUseCliRunner } from "./browserUseCliRunnerGuard.js";
 
 export type PromptTransferRegisteredStatus = "complete" | "partial" | "blocked";
 
@@ -27,22 +28,32 @@ export type PromptTransferRegisteredRunResult = {
 };
 
 const projectRoot = "/Users/nichikatanaka/.agents/skills/prompt-transfer-ukiyoe";
-export const defaultPromptTransferUkiyoeRunner = join(projectRoot, "scripts", "run_prompt_transfer_ukiyoe_playwright_sheets.py");
+export const defaultPromptTransferBrowserUseRunner = join(projectRoot, "scripts", "run_prompt_transfer_ukiyoe_browser_use.py");
+/** Storage/API compatibility name; it is not an execution-surface selector. */
+export const defaultPromptTransferUkiyoeRunner = defaultPromptTransferBrowserUseRunner;
 const defaultTimeoutMs = 15 * 60 * 1000;
 const planReadyProofType = "prompt_transfer_plan_ready";
 const externalCommitDoneProofType = "prompt_transfer_external_commit_done";
 const externalCommitApprovalRequired = "prompt_transfer_external_commit_approval_required";
-const playwrightRunnerMissing = "prompt_transfer_playwright_runner_missing";
+const browserUseRunnerMissing = "browser_use_cli_workflow_adapter_missing";
 
-export function resolvePromptTransferUkiyoeRunner(input: { defaultRunnerPath?: string } = {}): { runner?: string; source?: "env" | "default"; defaultRunnerPath: string } {
-  const configured = (process.env.AUTOMATION_OS_PROMPT_TRANSFER_UKIYOE_RUNNER || "").trim();
+export function resolvePromptTransferBrowserUseRunner(input: { defaultRunnerPath?: string } = {}): { runner?: string; source?: "env" | "default"; defaultRunnerPath: string } {
+  const configured = (
+    process.env.AUTOMATION_OS_PROMPT_TRANSFER_BROWSER_USE_RUNNER
+    || process.env.AUTOMATION_OS_PROMPT_TRANSFER_UKIYOE_RUNNER
+    || ""
+  ).trim();
   if (configured) {
     if (existsSync(configured)) return { runner: configured, source: "env", defaultRunnerPath: input.defaultRunnerPath ?? defaultPromptTransferUkiyoeRunner };
     return { defaultRunnerPath: configured };
   }
-  const defaultRunnerPath = input.defaultRunnerPath ?? defaultPromptTransferUkiyoeRunner;
+  const defaultRunnerPath = input.defaultRunnerPath ?? defaultPromptTransferBrowserUseRunner;
   if (existsSync(defaultRunnerPath)) return { runner: defaultRunnerPath, source: "default", defaultRunnerPath };
   return { defaultRunnerPath };
+}
+
+export function resolvePromptTransferUkiyoeRunner(input: { defaultRunnerPath?: string } = {}) {
+  return resolvePromptTransferBrowserUseRunner(input);
 }
 
 export function promptTransferOutputRoot() {
@@ -55,19 +66,24 @@ export function runPromptTransferRegisteredRunner(input: { runId: string; defaul
   const runId = sanitizeRunId(input.runId);
   const resultPath = join(outputRoot, "artifacts", "runs", runId, "result.json");
   const wrapperPath = join(outputRoot, "artifacts", "runs", runId, "ukiyoe_wrapper.json");
-  const resolvedRunner = resolvePromptTransferUkiyoeRunner({ defaultRunnerPath: input.defaultRunnerPath });
+  const resolvedRunner = resolvePromptTransferBrowserUseRunner({ defaultRunnerPath: input.defaultRunnerPath });
   const sourceUrl = optionalEnv("AUTOMATION_OS_PROMPT_TRANSFER_SOURCE_URL");
   const targetUrl = optionalEnv("AUTOMATION_OS_PROMPT_TRANSFER_TARGET_URL");
   const theme = optionalEnv("AUTOMATION_OS_PROMPT_TRANSFER_THEME");
+  const runnerInspection = resolvedRunner.runner ? inspectBrowserUseCliRunner(resolvedRunner.runner) : null;
+  const runnerBlocker = !resolvedRunner.runner
+    ? browserUseRunnerMissing
+    : runnerInspection?.exactBlocker ?? browserUseRunnerMissing;
 
-  if (!resolvedRunner.runner) {
+  if (!resolvedRunner.runner || !runnerInspection?.ok) {
     return blockedResult({
       runId,
-      reason: playwrightRunnerMissing,
+      reason: runnerBlocker,
       summaryPath: undefined,
       metadata: {
         runner_source: "missing",
         default_runner_path: resolvedRunner.defaultRunnerPath,
+        runner_inspection: runnerInspection,
         external_commit_requested: false,
         allow_external_commit: false
       },
@@ -86,6 +102,8 @@ export function runPromptTransferRegisteredRunner(input: { runId: string; defaul
     display: `python3 ${JSON.stringify(resolvedRunner.runner)} --run-id ${JSON.stringify(runId)} --out-root ${JSON.stringify(outputRoot)} --commit --allow-external-commit`,
     env: {
       AUTOMATION_OS_RUN_ID: runId,
+      AUTOMATION_OS_BROWSER_SURFACE: "browser_use_cli",
+      AUTOMATION_OS_BROWSER_NO_FALLBACK: "1",
       PROMPT_TRANSFER_EXTERNAL_COMMIT_REQUESTED: "1",
       PROMPT_TRANSFER_ALLOW_EXTERNAL_COMMIT: "1"
     }

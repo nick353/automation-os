@@ -1,4 +1,5 @@
 import { xLearningLane } from "./xLearningLane.js";
+import { getBrowserHealth } from "./health.js";
 
 export type XLearningHealthResult =
   | {
@@ -22,25 +23,14 @@ export type XLearningHealthResult =
     };
 
 export async function getXLearningChromeHealth(fetchImpl: typeof fetch = fetch): Promise<XLearningHealthResult> {
-  try {
-    const response = await fetchImpl(xLearningLane.versionUrl);
-    if (!response.ok) {
-      return blocked(`x_learning_cdp_http_${response.status}`, `CDP version endpoint returned HTTP ${response.status}`);
-    }
-    const raw = await response.json() as Record<string, unknown>;
-    return {
-      ok: true,
-      laneName: xLearningLane.name,
-      port: xLearningLane.port,
-      profileDir: xLearningLane.profileDir,
-      endpoint: xLearningLane.versionUrl,
-      browser: typeof raw.Browser === "string" ? raw.Browser : undefined,
-      webSocketDebuggerUrl: typeof raw.webSocketDebuggerUrl === "string" ? raw.webSocketDebuggerUrl : undefined,
-      raw
-    };
-  } catch (error) {
-    return blocked("x_learning_cdp_unavailable", error instanceof Error ? error.message : "CDP version endpoint is unavailable");
-  }
+  void fetchImpl;
+  const browserUse = getBrowserHealth().browserUseCli;
+  return blocked(
+    browserUse.available ? "browser_use_authority_required" : "browser_use_cli_missing",
+    browserUse.available
+      ? "Browser Use CLIはfresh authority/profile/portとsame-session readbackが必要です。"
+      : "Canonical Browser Use CLI helper is unavailable."
+  );
 }
 
 function blocked(exactBlocker: string, summary: string): XLearningHealthResult {

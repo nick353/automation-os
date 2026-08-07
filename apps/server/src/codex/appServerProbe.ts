@@ -1,4 +1,5 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams, type SpawnOptionsWithoutStdio } from "node:child_process";
+import { resolveCodexBin } from "./codexBin.js";
 
 export type CodexAppServerProbeResult = {
   ok: boolean;
@@ -87,7 +88,7 @@ export async function probeCodexAppServerSurface(options: {
   const enabled = options.enabled ?? process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_ENABLED === "1";
   const timeoutMs = normalizeProbeTimeoutMs(options.timeoutMs ?? Number(process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_TIMEOUT_MS ?? defaultTimeoutMs));
   const ttlMs = normalizeProbeTtlMs(options.ttlMs ?? Number(process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_TTL_MS ?? defaultTtlMs));
-  const command = (options.command ?? process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_COMMAND ?? "codex").trim();
+  const command = options.command?.trim() || resolveCodexBin(["AUTOMATION_OS_CODEX_APP_SERVER_PROBE_COMMAND"]);
   const args = options.args ?? ["app-server", "--listen", "stdio://"];
   const cacheKey = JSON.stringify({ enabled, command, args, timeoutMs, ttlMs });
 
@@ -191,6 +192,44 @@ async function runProbe(input: {
 
     const onStdout = (chunk: Buffer | string) => {
       appendBounded(state, chunk);
+      const parsed = parseInitializeResponse(readStdout(state));
+      if (!parsed) return;
+      if (parsed.error) {
+        finish(
+          buildBlockedResult({
+            generatedAt: input.generatedAt,
+            timeoutMs: input.timeoutMs,
+            exactBlocker: "initialize_rejected"
+          })
+        );
+        return;
+      }
+      if (!parsed.userAgent || !parsed.platformFamily || !parsed.platformOs) return;
+      try {
+        // Current Codex CLI keeps app-server alive after initialize. The probe
+        // is inventory-only, so terminate the worker-owned child once the
+        // initialize response itself has been verified.
+        child.kill("SIGTERM");
+      } catch {
+        // The process may have exited between the response and cleanup.
+      }
+      finish({
+        ok: true,
+        status: "ok",
+        generatedAt: input.generatedAt,
+        timeoutMs: input.timeoutMs,
+        protocol: "stdio",
+        platformFamily: parsed.platformFamily,
+        platformOs: parsed.platformOs,
+        version: normalizeProbeField(parsed.version),
+        userAgent: truncateProbeField(parsed.userAgent),
+        platform: process.platform,
+        exactBlocker: null,
+        initializedNotificationSent: false,
+        threadStarted: false,
+        turnStarted: false,
+        externalActionExecuted: false
+      });
     };
     const onStderr = (_chunk: Buffer | string) => {
       // Intentionally ignore stderr to keep the probe secret-safe.
@@ -318,7 +357,6 @@ async function runProbe(input: {
 
     try {
       child.stdin.write(`${initializeRequest}\n`);
-      child.stdin.end();
     } catch {
       state.stdinBroken = true;
     }

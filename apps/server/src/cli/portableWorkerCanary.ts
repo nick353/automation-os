@@ -8,7 +8,7 @@ const triggerArg = process.argv.find((arg) => arg.startsWith("--trigger="))?.sli
 const outputArg = process.argv.find((arg) => arg.startsWith("--output="))?.slice("--output=".length);
 
 if (!(workflowArg in portableWorkflowManifests)) throw new Error("portable_worker_workflow_required");
-if (!["automation_os_scheduler", "codex_app_bridge", "launchd", "github_actions"].includes(triggerArg)) {
+if (!["automation_os_scheduler", "automation_os_ui", "codex_app_bridge", "launchd", "github_actions"].includes(triggerArg)) {
   throw new Error("portable_worker_trigger_invalid");
 }
 

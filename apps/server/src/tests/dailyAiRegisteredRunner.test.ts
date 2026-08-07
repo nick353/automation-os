@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -24,6 +23,8 @@ const completeSummary = {
   cleanup_proof: { owned_process_count: 0 },
   full_flow_completion: { ok: true, failures: [] }
 };
+
+const canonicalBrowserUseCliRunnerMarker = "const BROWSER_USE_CLI_HELPER = '/Users/nichikatanaka/.local/bin/codex-browser-use'; const BROWSER_USE_CLI_ROUTE = 'browser_use_cli_registered_runner';";
 
 function withEnv<T>(updates: Record<string, string | undefined>, fn: () => T): T {
   const previous = new Map<string, string | undefined>();
@@ -277,6 +278,7 @@ test("blocks Daily AI registered runner when process exits nonzero even with com
   writeFileSync(
     runner,
     [
+      canonicalBrowserUseCliRunnerMarker,
       "import { mkdirSync, writeFileSync } from 'node:fs';",
       "import { join } from 'node:path';",
       "const outputDir = process.env.DAILY_AI_CLI_OUTPUT_DIR;",
@@ -285,9 +287,9 @@ test("blocks Daily AI registered runner when process exits nonzero even with com
       "process.exit(1);"
     ].join("\n")
   );
-  const previous = process.env.AUTOMATION_OS_DAILY_AI_PLAYWRIGHT_RUNNER;
+  const previous = process.env.AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER;
   const previousOutputRoot = process.env.AUTOMATION_OS_DAILY_AI_OUTPUT_ROOT;
-  process.env.AUTOMATION_OS_DAILY_AI_PLAYWRIGHT_RUNNER = runner;
+  process.env.AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER = runner;
   process.env.AUTOMATION_OS_DAILY_AI_OUTPUT_ROOT = join(dir, "runs");
   try {
     const result = runDailyAiRegisteredRunner({ runId: "daily-ai-nonzero", startedAtMs: Date.now() - 1_000 });
@@ -297,9 +299,9 @@ test("blocks Daily AI registered runner when process exits nonzero even with com
     assert.equal(result.metadata.blocker, "daily_ai_runner_exit_nonzero");
   } finally {
     if (previous === undefined) {
-      delete process.env.AUTOMATION_OS_DAILY_AI_PLAYWRIGHT_RUNNER;
+      delete process.env.AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER;
     } else {
-      process.env.AUTOMATION_OS_DAILY_AI_PLAYWRIGHT_RUNNER = previous;
+      process.env.AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER = previous;
     }
     if (previousOutputRoot === undefined) {
       delete process.env.AUTOMATION_OS_DAILY_AI_OUTPUT_ROOT;
@@ -315,6 +317,7 @@ test("blocks Daily AI registered runner when summary identity does not match Aut
   writeFileSync(
     runner,
     [
+      canonicalBrowserUseCliRunnerMarker,
       "import { mkdirSync, writeFileSync } from 'node:fs';",
       "import { join } from 'node:path';",
       "const outputDir = process.env.DAILY_AI_CLI_OUTPUT_DIR;",
@@ -322,9 +325,9 @@ test("blocks Daily AI registered runner when summary identity does not match Aut
       `writeFileSync(join(outputDir, "registered-playwright-cli-summary.json"), JSON.stringify({ ...${JSON.stringify(completeSummary)}, automation_os_run_id: "different-run", run_id: process.env.DAILY_AI_CLI_RUN_ID }, null, 2));`
     ].join("\n")
   );
-  const previous = process.env.AUTOMATION_OS_DAILY_AI_PLAYWRIGHT_RUNNER;
+  const previous = process.env.AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER;
   const previousOutputRoot = process.env.AUTOMATION_OS_DAILY_AI_OUTPUT_ROOT;
-  process.env.AUTOMATION_OS_DAILY_AI_PLAYWRIGHT_RUNNER = runner;
+  process.env.AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER = runner;
   process.env.AUTOMATION_OS_DAILY_AI_OUTPUT_ROOT = join(dir, "runs");
   try {
     const result = runDailyAiRegisteredRunner({ runId: "daily-ai-identity", startedAtMs: Date.now() - 1_000 });
@@ -334,9 +337,9 @@ test("blocks Daily AI registered runner when summary identity does not match Aut
     assert.equal(result.metadata.blocker, "daily_ai_runner_identity_mismatch");
   } finally {
     if (previous === undefined) {
-      delete process.env.AUTOMATION_OS_DAILY_AI_PLAYWRIGHT_RUNNER;
+      delete process.env.AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER;
     } else {
-      process.env.AUTOMATION_OS_DAILY_AI_PLAYWRIGHT_RUNNER = previous;
+      process.env.AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER = previous;
     }
     if (previousOutputRoot === undefined) {
       delete process.env.AUTOMATION_OS_DAILY_AI_OUTPUT_ROOT;
@@ -346,12 +349,13 @@ test("blocks Daily AI registered runner when summary identity does not match Aut
   }
 });
 
-test("Daily AI registered runner passes env run id and output dir to the Playwright CLI runner", () => {
+test("Daily AI registered runner passes env run id and output dir to the Browser Use CLI runner", () => {
   const dir = mkdtempSync(join(tmpdir(), "automation-os-daily-ai-env-"));
   const runner = join(dir, "runner.mjs");
   writeFileSync(
     runner,
     [
+      canonicalBrowserUseCliRunnerMarker,
       "import { mkdirSync, writeFileSync } from 'node:fs';",
       "import { join } from 'node:path';",
       "const outputDir = process.env.DAILY_AI_CLI_OUTPUT_DIR;",
@@ -360,9 +364,9 @@ test("Daily AI registered runner passes env run id and output dir to the Playwri
       `writeFileSync(join(outputDir, "registered-playwright-cli-summary.json"), JSON.stringify({ ...${JSON.stringify(completeSummary)}, automation_os_run_id: process.env.AUTOMATION_OS_RUN_ID, run_id: process.env.DAILY_AI_CLI_RUN_ID }, null, 2));`
     ].join("\n")
   );
-  const previous = process.env.AUTOMATION_OS_DAILY_AI_PLAYWRIGHT_RUNNER;
+  const previous = process.env.AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER;
   const previousOutputRoot = process.env.AUTOMATION_OS_DAILY_AI_OUTPUT_ROOT;
-  process.env.AUTOMATION_OS_DAILY_AI_PLAYWRIGHT_RUNNER = runner;
+  process.env.AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER = runner;
   process.env.AUTOMATION_OS_DAILY_AI_OUTPUT_ROOT = join(dir, "runs");
   try {
     const result = runDailyAiRegisteredRunner({ runId: "daily-ai/env contract", startedAtMs: Date.now() - 1_000 });
@@ -380,7 +384,7 @@ test("Daily AI registered runner passes env run id and output dir to the Playwri
     assert.ok(Number.parseInt(result.command.env.DAILY_AI_CLI_STEP_TIMEOUT_MS, 10) > Number(result.command.env.DAILY_AI_CLI_REPLENISH_BUFFER_TIMEOUT_MS));
     assert.equal(result.command.env.DAILY_AI_CLI_BROWSER_VIDEO_QA, "no-post-preflight");
     assert.equal("DAILY_AI_CLI_PROOF_ONLY_NO_POST_PREFLIGHT" in result.command.env, false);
-    assert.equal(result.command.env.DAILY_AI_CLI_RECORDING_REQUIRED, "0");
+    assert.equal(result.command.env.DAILY_AI_CLI_RECORDING_REQUIRED, "1");
     assert.equal(result.command.env.DAILY_AI_CLI_EXTERNAL_VIDEO_QA_REQUIRED, "0");
     assert.equal(result.command.env.DAILY_AI_CDP_PORT, "9333");
     assert.equal(result.command.env.DAILY_AI_CLI_PROFILE_DIR, "/Users/nichikatanaka/.daily-ai-playwright-chrome");
@@ -392,7 +396,7 @@ test("Daily AI registered runner passes env run id and output dir to the Playwri
     assert.match(result.command.display, /DAILY_AI_RUNWAY_MCP_TIMEOUT_SECONDS=300/);
     assert.match(result.command.display, /DAILY_AI_CLI_BROWSER_VIDEO_QA=no-post-preflight/);
     assert.doesNotMatch(result.command.display, /DAILY_AI_CLI_PROOF_ONLY_NO_POST_PREFLIGHT=true/);
-    assert.match(result.command.display, /DAILY_AI_CLI_RECORDING_REQUIRED=0/);
+    assert.match(result.command.display, /DAILY_AI_CLI_RECORDING_REQUIRED=1/);
     assert.match(result.command.display, /DAILY_AI_CLI_EXTERNAL_VIDEO_QA_REQUIRED=0/);
     assert.match(result.command.display, /DAILY_AI_CDP_PORT=9333/);
     assert.match(result.command.display, /DAILY_AI_CLI_HEADLESS=true/);
@@ -403,9 +407,9 @@ test("Daily AI registered runner passes env run id and output dir to the Playwri
     assert.equal(existsSync(result.summaryPath), true);
   } finally {
     if (previous === undefined) {
-      delete process.env.AUTOMATION_OS_DAILY_AI_PLAYWRIGHT_RUNNER;
+      delete process.env.AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER;
     } else {
-      process.env.AUTOMATION_OS_DAILY_AI_PLAYWRIGHT_RUNNER = previous;
+      process.env.AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER = previous;
     }
     if (previousOutputRoot === undefined) {
       delete process.env.AUTOMATION_OS_DAILY_AI_OUTPUT_ROOT;
@@ -421,6 +425,7 @@ test("Daily AI registered runner does not pass Gemini key to child env", () => {
   writeFileSync(
     runner,
     [
+      canonicalBrowserUseCliRunnerMarker,
       "import { mkdirSync, writeFileSync } from 'node:fs';",
       "import { join } from 'node:path';",
       "if (process.env.GEMINI_API_KEY !== undefined) throw new Error('Gemini key must not be passed');",
@@ -432,7 +437,7 @@ test("Daily AI registered runner does not pass Gemini key to child env", () => {
 
   withEnv(
     {
-      AUTOMATION_OS_DAILY_AI_PLAYWRIGHT_RUNNER: runner,
+      AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER: runner,
       AUTOMATION_OS_DAILY_AI_OUTPUT_ROOT: join(dir, "runs"),
       GEMINI_API_KEY: "AIza-test-daily-ai-gemini-key-1234567890"
     },
@@ -453,6 +458,7 @@ test("Daily AI registered runner leaves proof-only no-post preflight disabled by
   writeFileSync(
     runner,
     [
+      canonicalBrowserUseCliRunnerMarker,
       "import { mkdirSync, writeFileSync } from 'node:fs';",
       "import { join } from 'node:path';",
       "if (process.env.DAILY_AI_CLI_PROOF_ONLY_NO_POST_PREFLIGHT !== undefined) throw new Error('proof-only no-post preflight should be absent by default');",
@@ -464,7 +470,7 @@ test("Daily AI registered runner leaves proof-only no-post preflight disabled by
 
   withEnv(
     {
-      AUTOMATION_OS_DAILY_AI_PLAYWRIGHT_RUNNER: runner,
+      AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER: runner,
       AUTOMATION_OS_DAILY_AI_OUTPUT_ROOT: join(dir, "runs"),
       AUTOMATION_OS_DAILY_AI_PROOF_ONLY_NO_POST_PREFLIGHT: undefined
     },
@@ -475,7 +481,7 @@ test("Daily AI registered runner leaves proof-only no-post preflight disabled by
       assert.equal("DAILY_AI_CLI_PROOF_ONLY_NO_POST_PREFLIGHT" in result.command.env, false);
       assert.doesNotMatch(result.command.display, /DAILY_AI_CLI_PROOF_ONLY_NO_POST_PREFLIGHT=true/);
       assert.equal(result.command.env.DAILY_AI_CLI_BROWSER_VIDEO_QA, "no-post-preflight");
-      assert.equal(result.command.env.DAILY_AI_CLI_RECORDING_REQUIRED, "0");
+      assert.equal(result.command.env.DAILY_AI_CLI_RECORDING_REQUIRED, "1");
       assert.equal(result.command.env.DAILY_AI_CLI_EXTERNAL_VIDEO_QA_REQUIRED, "0");
     }
   );
@@ -487,6 +493,7 @@ test("Daily AI registered runner leaves proof-only no-post preflight disabled wh
   writeFileSync(
     runner,
     [
+      canonicalBrowserUseCliRunnerMarker,
       "import { mkdirSync, writeFileSync } from 'node:fs';",
       "import { join } from 'node:path';",
       "if (process.env.DAILY_AI_CLI_PROOF_ONLY_NO_POST_PREFLIGHT !== undefined) throw new Error('proof-only no-post preflight should be absent when opt-in is false');",
@@ -498,7 +505,7 @@ test("Daily AI registered runner leaves proof-only no-post preflight disabled wh
 
   withEnv(
     {
-      AUTOMATION_OS_DAILY_AI_PLAYWRIGHT_RUNNER: runner,
+      AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER: runner,
       AUTOMATION_OS_DAILY_AI_OUTPUT_ROOT: join(dir, "runs"),
       AUTOMATION_OS_DAILY_AI_PROOF_ONLY_NO_POST_PREFLIGHT: "false"
     },
@@ -509,7 +516,7 @@ test("Daily AI registered runner leaves proof-only no-post preflight disabled wh
       assert.equal("DAILY_AI_CLI_PROOF_ONLY_NO_POST_PREFLIGHT" in result.command.env, false);
       assert.doesNotMatch(result.command.display, /DAILY_AI_CLI_PROOF_ONLY_NO_POST_PREFLIGHT=true/);
       assert.equal(result.command.env.DAILY_AI_CLI_BROWSER_VIDEO_QA, "no-post-preflight");
-      assert.equal(result.command.env.DAILY_AI_CLI_RECORDING_REQUIRED, "0");
+      assert.equal(result.command.env.DAILY_AI_CLI_RECORDING_REQUIRED, "1");
       assert.equal(result.command.env.DAILY_AI_CLI_EXTERNAL_VIDEO_QA_REQUIRED, "0");
     }
   );
@@ -521,6 +528,7 @@ test("Daily AI registered runner includes proof-only no-post preflight only when
   writeFileSync(
     runner,
     [
+      canonicalBrowserUseCliRunnerMarker,
       "import { mkdirSync, writeFileSync } from 'node:fs';",
       "import { join } from 'node:path';",
       "if (process.env.DAILY_AI_CLI_PROOF_ONLY_NO_POST_PREFLIGHT !== 'true') throw new Error('proof-only no-post preflight opt-in missing');",
@@ -532,7 +540,7 @@ test("Daily AI registered runner includes proof-only no-post preflight only when
 
   withEnv(
     {
-      AUTOMATION_OS_DAILY_AI_PLAYWRIGHT_RUNNER: runner,
+      AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER: runner,
       AUTOMATION_OS_DAILY_AI_OUTPUT_ROOT: join(dir, "runs"),
       AUTOMATION_OS_DAILY_AI_PROOF_ONLY_NO_POST_PREFLIGHT: "true"
     },
@@ -543,7 +551,7 @@ test("Daily AI registered runner includes proof-only no-post preflight only when
       assert.equal(result.command.env.DAILY_AI_CLI_PROOF_ONLY_NO_POST_PREFLIGHT, "true");
       assert.match(result.command.display, /DAILY_AI_CLI_PROOF_ONLY_NO_POST_PREFLIGHT=true/);
       assert.equal(result.command.env.DAILY_AI_CLI_BROWSER_VIDEO_QA, "no-post-preflight");
-      assert.equal(result.command.env.DAILY_AI_CLI_RECORDING_REQUIRED, "0");
+      assert.equal(result.command.env.DAILY_AI_CLI_RECORDING_REQUIRED, "1");
       assert.equal(result.command.env.DAILY_AI_CLI_EXTERNAL_VIDEO_QA_REQUIRED, "0");
     }
   );
@@ -554,7 +562,7 @@ test("Daily AI registered runner leaves proof-only no-post preflight disabled fo
 
   withEnv(
     {
-      AUTOMATION_OS_DAILY_AI_PLAYWRIGHT_RUNNER: join(dir, "missing-runner.mjs"),
+      AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER: join(dir, "missing-runner.mjs"),
       AUTOMATION_OS_DAILY_AI_OUTPUT_ROOT: join(dir, "runs"),
       AUTOMATION_OS_DAILY_AI_PROOF_ONLY_NO_POST_PREFLIGHT: undefined
     },
@@ -562,11 +570,11 @@ test("Daily AI registered runner leaves proof-only no-post preflight disabled fo
       const result = runDailyAiRegisteredRunner({ runId: "daily-ai-missing-proof-only", startedAtMs: Date.now() - 1_000 });
 
       assert.equal(result.status, "blocked");
-      assert.equal(result.stderrTail, "playwright_cli_callable_surface_missing");
+      assert.equal(result.stderrTail, "browser_use_cli_registered_runner_missing");
       assert.equal("DAILY_AI_CLI_PROOF_ONLY_NO_POST_PREFLIGHT" in result.command.env, false);
       assert.doesNotMatch(result.command.display, /DAILY_AI_CLI_PROOF_ONLY_NO_POST_PREFLIGHT=true/);
       assert.equal(result.command.env.DAILY_AI_CLI_BROWSER_VIDEO_QA, "no-post-preflight");
-      assert.equal(result.command.env.DAILY_AI_CLI_RECORDING_REQUIRED, "0");
+      assert.equal(result.command.env.DAILY_AI_CLI_RECORDING_REQUIRED, "1");
       assert.equal(result.command.env.DAILY_AI_CLI_EXTERNAL_VIDEO_QA_REQUIRED, "0");
     }
   );
@@ -577,7 +585,7 @@ test("Daily AI registered runner includes proof-only no-post preflight for missi
 
   withEnv(
     {
-      AUTOMATION_OS_DAILY_AI_PLAYWRIGHT_RUNNER: join(dir, "missing-runner.mjs"),
+      AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER: join(dir, "missing-runner.mjs"),
       AUTOMATION_OS_DAILY_AI_OUTPUT_ROOT: join(dir, "runs"),
       AUTOMATION_OS_DAILY_AI_PROOF_ONLY_NO_POST_PREFLIGHT: "true"
     },
@@ -585,11 +593,11 @@ test("Daily AI registered runner includes proof-only no-post preflight for missi
       const result = runDailyAiRegisteredRunner({ runId: "daily-ai-missing-proof-only-opt-in", startedAtMs: Date.now() - 1_000 });
 
       assert.equal(result.status, "blocked");
-      assert.equal(result.stderrTail, "playwright_cli_callable_surface_missing");
+      assert.equal(result.stderrTail, "browser_use_cli_registered_runner_missing");
       assert.equal(result.command.env.DAILY_AI_CLI_PROOF_ONLY_NO_POST_PREFLIGHT, "true");
       assert.match(result.command.display, /DAILY_AI_CLI_PROOF_ONLY_NO_POST_PREFLIGHT=true/);
       assert.equal(result.command.env.DAILY_AI_CLI_BROWSER_VIDEO_QA, "no-post-preflight");
-      assert.equal(result.command.env.DAILY_AI_CLI_RECORDING_REQUIRED, "0");
+      assert.equal(result.command.env.DAILY_AI_CLI_RECORDING_REQUIRED, "1");
       assert.equal(result.command.env.DAILY_AI_CLI_EXTERNAL_VIDEO_QA_REQUIRED, "0");
     }
   );
@@ -599,37 +607,30 @@ test("Daily AI registered runner source does not expose the removed Gemini skip 
   const source = readFileSync(resolve(process.cwd(), "apps/server/src/runs/dailyAiRegisteredRunner.ts"), "utf8");
 
   assert.doesNotMatch(source, /DAILY_AI_CLI_BROWSER_VIDEO_QA_SKIP_GEMINI/);
-  assert.match(source, /display: "Daily AI Playwright CLI registered runner is not configured"/);
+  assert.match(source, /Daily AI Browser Use CLI registered runner is not configured/);
   assert.match(source, /DAILY_AI_CLI_BROWSER_VIDEO_QA: "no-post-preflight"/);
   assert.match(source, /DAILY_AI_CLI_EXTERNAL_VIDEO_QA_REQUIRED: "0"/);
 });
 
-test("real Daily AI Playwright CLI runner honors env run id and output dir in summary-only mode", () => {
-  const outputDir = mkdtempSync(join(tmpdir(), "automation-os-daily-ai-real-runner-"));
+test("blocks the legacy Daily AI browser runner before it can execute", () => {
+  const outputDir = mkdtempSync(join(tmpdir(), "automation-os-daily-ai-legacy-runner-"));
   const runnerPath = "/Users/nichikatanaka/Documents/New project/scripts/run_daily_ai_playwright_cli.mjs";
-  const runId = "automation-os-contract-test";
-  const automationRunId = "run_daily_ai_contract_test";
-  const result = spawnSync("node", [runnerPath], {
-    cwd: "/Users/nichikatanaka/Documents/New project",
-    env: {
-      ...process.env,
-      AUTOMATION_OS_RUN_ID: automationRunId,
-      DAILY_AI_CLI_RUN_ID: runId,
-      DAILY_AI_CLI_OUTPUT_DIR: outputDir,
-      DAILY_AI_CLI_SUMMARY_ONLY: "true"
-    },
-    encoding: "utf8",
-    timeout: 30_000
-  });
-
-  assert.equal(result.status, 0, result.stderr || result.stdout);
-  const summaryPath = join(outputDir, "registered-playwright-cli-summary.json");
-  const summary = JSON.parse(readFileSync(summaryPath, "utf8")) as Record<string, unknown>;
-
-  assert.equal(summary.run_id, runId);
-  assert.equal(summary.automation_os_run_id, automationRunId);
-  assert.equal(summary.current_stage, "summary_only");
-  assert.equal(summary.stage_status, "completed");
+  const previousRunner = process.env.AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER;
+  const previousOutputRoot = process.env.AUTOMATION_OS_DAILY_AI_OUTPUT_ROOT;
+  process.env.AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER = runnerPath;
+  process.env.AUTOMATION_OS_DAILY_AI_OUTPUT_ROOT = outputDir;
+  try {
+    const result = runDailyAiRegisteredRunner({ runId: "automation-os-legacy-runner-blocked" });
+    assert.equal(result.status, "blocked");
+    assert.equal(result.proof_gate.ok, false);
+    assert.deepEqual(result.proof_gate.missing, ["browser_use_cli_workflow_adapter_missing"]);
+    assert.equal(result.exitStatus, null);
+  } finally {
+    if (previousRunner === undefined) delete process.env.AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER;
+    else process.env.AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER = previousRunner;
+    if (previousOutputRoot === undefined) delete process.env.AUTOMATION_OS_DAILY_AI_OUTPUT_ROOT;
+    else process.env.AUTOMATION_OS_DAILY_AI_OUTPUT_ROOT = previousOutputRoot;
+  }
 });
 
 test("blocks Daily AI registered runner when CLI run id does not match the env contract", () => {
@@ -638,6 +639,7 @@ test("blocks Daily AI registered runner when CLI run id does not match the env c
   writeFileSync(
     runner,
     [
+      canonicalBrowserUseCliRunnerMarker,
       "import { mkdirSync, writeFileSync } from 'node:fs';",
       "import { join } from 'node:path';",
       "const outputDir = process.env.DAILY_AI_CLI_OUTPUT_DIR;",
@@ -645,9 +647,9 @@ test("blocks Daily AI registered runner when CLI run id does not match the env c
       `writeFileSync(join(outputDir, "registered-playwright-cli-summary.json"), JSON.stringify({ ...${JSON.stringify(completeSummary)}, automation_os_run_id: process.env.AUTOMATION_OS_RUN_ID, run_id: "timestamp-run" }, null, 2));`
     ].join("\n")
   );
-  const previous = process.env.AUTOMATION_OS_DAILY_AI_PLAYWRIGHT_RUNNER;
+  const previous = process.env.AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER;
   const previousOutputRoot = process.env.AUTOMATION_OS_DAILY_AI_OUTPUT_ROOT;
-  process.env.AUTOMATION_OS_DAILY_AI_PLAYWRIGHT_RUNNER = runner;
+  process.env.AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER = runner;
   process.env.AUTOMATION_OS_DAILY_AI_OUTPUT_ROOT = join(dir, "runs");
   try {
     const result = runDailyAiRegisteredRunner({ runId: "daily-ai-cli-identity", startedAtMs: Date.now() - 1_000 });
@@ -657,9 +659,9 @@ test("blocks Daily AI registered runner when CLI run id does not match the env c
     assert.equal(result.metadata.blocker, "daily_ai_cli_run_identity_mismatch");
   } finally {
     if (previous === undefined) {
-      delete process.env.AUTOMATION_OS_DAILY_AI_PLAYWRIGHT_RUNNER;
+      delete process.env.AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER;
     } else {
-      process.env.AUTOMATION_OS_DAILY_AI_PLAYWRIGHT_RUNNER = previous;
+      process.env.AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER = previous;
     }
     if (previousOutputRoot === undefined) {
       delete process.env.AUTOMATION_OS_DAILY_AI_OUTPUT_ROOT;

@@ -21,7 +21,7 @@ The hosted API and PostgreSQL form the control plane and source of truth. A Mac 
 7. Charts use typed event aggregations with an explicit date range and last-updated time, and show a clear empty/error state when data is unavailable.
 8. Daily AI, Job Application Manager, and NisenPrints each complete a reference path from definition to schedule/run, approval boundary, worker result, and proof without weakening workflow-owned safety rules.
 9. Automated contract, API, tenancy-isolation, and UI outcome tests report zero unexplained failures or skips for surviving controls.
-10. Production promotion requires clean-SHA build/test evidence plus authenticated Chrome Extension/Profile 2 readback; deployment and external actions remain separately approved stages.
+10. Production promotion requires clean-SHA build/test evidence plus authenticated Browser Use CLI authority/profile/port/readback; deployment and external actions remain separately approved stages.
 
 ## Strategic thesis
 

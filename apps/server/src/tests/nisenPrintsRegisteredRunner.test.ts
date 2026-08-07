@@ -7,7 +7,7 @@ import test from "node:test";
 
 const tempRoot = mkdtempSync(join(tmpdir(), "automation-os-nisenprints-registered-"));
 process.env.AUTOMATION_OS_NISENPRINTS_PLAYWRIGHT_OUTPUT_ROOT = join(tempRoot, "nisenprints-node-runs");
-const { evaluateNisenPrintsRegisteredSummary, resolveNisenPrintsPlaywrightRunner, runNisenPrintsRegisteredRunner } = await import("../runs/nisenPrintsRegisteredRunner.js");
+const { defaultNisenPrintsBrowserUseRunner, evaluateNisenPrintsRegisteredSummary, resolveNisenPrintsPlaywrightRunner, runNisenPrintsRegisteredRunner } = await import("../runs/nisenPrintsRegisteredRunner.js");
 const completeVisualAudit = makeVisualAudit("complete-visual-audit");
 
 function makeVisualAudit(name: string, stage = "pinterest_visit_site") {
@@ -43,7 +43,11 @@ function makeVisualAudit(name: string, stage = "pinterest_visit_site") {
   };
 }
 
-test("blocks NisenPrints registered runner when Playwright CLI runner is not configured", () => {
+test("default NisenPrints runner is the registered Browser Use CLI stage adapter", () => {
+  assert.match(defaultNisenPrintsBrowserUseRunner, /Etsy\/\.codex\/automation-kernel\/runners\/nisenprints-daily-product-canva-printify-etsy-pinterest\.mjs$/);
+});
+
+test("blocks NisenPrints registered runner when Browser Use CLI runner is not configured", () => {
   const previousRunner = process.env.AUTOMATION_OS_NISENPRINTS_PLAYWRIGHT_RUNNER;
   delete process.env.AUTOMATION_OS_NISENPRINTS_PLAYWRIGHT_RUNNER;
   try {
@@ -54,7 +58,7 @@ test("blocks NisenPrints registered runner when Playwright CLI runner is not con
 
     assert.equal(result.status, "blocked");
     assert.equal(result.proof_gate.ok, false);
-    assert.deepEqual(result.proof_gate.missing, ["nisenprints_playwright_runner_missing"]);
+    assert.deepEqual(result.proof_gate.missing, ["browser_use_cli_workflow_adapter_missing"]);
     assert.equal(result.exitStatus, null);
     assert.equal(result.command.bin, "node");
     assert.match(result.command.display, /not configured/);
@@ -95,7 +99,7 @@ test("exposes NisenPrints issue ledger summary from registered summary metadata"
   assert.equal(issueSummary.external_create_allowed, false);
 });
 
-test("resolves NisenPrints Playwright CLI runner from env before default", () => {
+test("resolves NisenPrints Browser Use CLI runner from env before default", () => {
   const previousRunner = process.env.AUTOMATION_OS_NISENPRINTS_PLAYWRIGHT_RUNNER;
   process.env.AUTOMATION_OS_NISENPRINTS_PLAYWRIGHT_RUNNER = "/tmp/env-nisenprints-runner.mjs";
   try {
@@ -109,13 +113,15 @@ test("resolves NisenPrints Playwright CLI runner from env before default", () =>
   }
 });
 
-test("runs NisenPrints registered runner from default Playwright CLI runner when env is unset", () => {
+test("runs NisenPrints registered runner from configured Browser Use CLI runner when env is unset", () => {
   const previousRunner = process.env.AUTOMATION_OS_NISENPRINTS_PLAYWRIGHT_RUNNER;
   delete process.env.AUTOMATION_OS_NISENPRINTS_PLAYWRIGHT_RUNNER;
   const fakeRunner = join(tempRoot, "fake-default-nisenprints-node-runner.mjs");
   writeFileSync(
     fakeRunner,
     `#!/usr/bin/env node
+// browser-use-cli/lib/stage-adapter.mjs
+// runBrowserUseCliFlowCommand
 import { writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 const videoPath = process.env.NISENPRINTS_OUTPUT_DIR + "/visit-site.webm";
@@ -168,15 +174,15 @@ writeFileSync(process.env.NISENPRINTS_REGISTERED_SUMMARY_PATH, JSON.stringify({
     assert.equal(result.proof_gate.ok, true);
     assert.equal(result.command.bin, "node");
     assert.deepEqual(result.command.args, [fakeRunner]);
-    assert.equal(result.command.env.NISENPRINTS_BROWSER_DRIVER, "playwright_cli");
-    assert.equal(result.command.env.NISENPRINTS_REQUIRE_BROWSER_USE, "0");
-    assert.equal(result.command.env.NISENPRINTS_RECORDING_REQUIRED, "0");
+    assert.equal(result.command.env.NISENPRINTS_BROWSER_DRIVER, "browser_use_cli");
+    assert.equal(result.command.env.NISENPRINTS_REQUIRE_BROWSER_USE, "1");
+    assert.equal(result.command.env.NISENPRINTS_RECORDING_REQUIRED, "1");
     assert.equal(result.command.env.NISENPRINTS_GEMINI_VIDEO_QA_REQUIRED, "0");
     assert.equal("BROWSER_USE_CDP_URL" in result.command.env, false);
     assert.equal("BROWSER_USE_SESSION" in result.command.env, false);
-    assert.match(result.command.display, /NISENPRINTS_BROWSER_DRIVER=playwright_cli/);
-    assert.doesNotMatch(result.command.display, /BROWSER_USE_/);
-    assert.match(result.command.env.NISENPRINTS_REGISTERED_SUMMARY_PATH ?? "", /registered-playlite-cli-summary\.json$/);
+    assert.match(result.command.display, /NISENPRINTS_BROWSER_DRIVER=browser_use_cli/);
+    assert.match(result.command.display, /NISENPRINTS_REQUIRE_BROWSER_USE=1/);
+    assert.match(result.command.env.NISENPRINTS_REGISTERED_SUMMARY_PATH ?? "", /registered-browser-use-cli-summary\.json$/);
   } finally {
     if (previousRunner === undefined) delete process.env.AUTOMATION_OS_NISENPRINTS_PLAYWRIGHT_RUNNER;
     else process.env.AUTOMATION_OS_NISENPRINTS_PLAYWRIGHT_RUNNER = previousRunner;
@@ -189,6 +195,8 @@ test("passes output and registered summary env to configured NisenPrints runner"
   writeFileSync(
     fakeRunner,
     `#!/usr/bin/env node
+// browser-use-cli/lib/stage-adapter.mjs
+// runBrowserUseCliFlowCommand
 import { writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 const videoPath = process.env.NISENPRINTS_OUTPUT_DIR + "/visit-site.webm";
@@ -246,8 +254,8 @@ writeFileSync(process.env.NISENPRINTS_REGISTERED_SUMMARY_PATH, JSON.stringify({
     assert.equal(summary.automation_os_run_id, "nisenprints-env-runner-ok");
     assert.equal(summary.output_dir_seen, result.command.env.NISENPRINTS_OUTPUT_DIR);
     assert.equal(summary.summary_path_seen, result.command.env.NISENPRINTS_REGISTERED_SUMMARY_PATH);
-    assert.equal(result.command.env.NISENPRINTS_REQUIRE_BROWSER_USE, "0");
-    assert.equal(result.command.env.NISENPRINTS_RECORDING_REQUIRED, "0");
+    assert.equal(result.command.env.NISENPRINTS_REQUIRE_BROWSER_USE, "1");
+    assert.equal(result.command.env.NISENPRINTS_RECORDING_REQUIRED, "1");
     assert.equal(result.command.env.NISENPRINTS_GEMINI_VIDEO_QA_REQUIRED, "0");
     assert.equal("BROWSER_USE_CDP_URL" in result.command.env, false);
     assert.equal("BROWSER_USE_SESSION" in result.command.env, false);
@@ -258,11 +266,11 @@ writeFileSync(process.env.NISENPRINTS_REGISTERED_SUMMARY_PATH, JSON.stringify({
   }
 });
 
-test("does not read legacy NisenPrints Browser Use runner env", () => {
+test("uses the canonical NisenPrints Browser Use runner env", () => {
   const previousBrowserUseRunner = process.env.AUTOMATION_OS_NISENPRINTS_BROWSER_USE_RUNNER;
   const previousPlaywrightRunner = process.env.AUTOMATION_OS_NISENPRINTS_PLAYWRIGHT_RUNNER;
   delete process.env.AUTOMATION_OS_NISENPRINTS_PLAYWRIGHT_RUNNER;
-  process.env.AUTOMATION_OS_NISENPRINTS_BROWSER_USE_RUNNER = join(tempRoot, "legacy-browser-use-runner-ignored.mjs");
+  process.env.AUTOMATION_OS_NISENPRINTS_BROWSER_USE_RUNNER = join(tempRoot, "missing-browser-use-runner.mjs");
   try {
     const result = runNisenPrintsRegisteredRunner({
       runId: "nisenprints-legacy-browser-use-env-ignored",
@@ -270,8 +278,8 @@ test("does not read legacy NisenPrints Browser Use runner env", () => {
     });
 
     assert.equal(result.status, "blocked");
-    assert.deepEqual(result.proof_gate.missing, ["nisenprints_playwright_runner_missing"]);
-    assert.equal(result.metadata.env_runner, "AUTOMATION_OS_NISENPRINTS_PLAYWRIGHT_RUNNER");
+    assert.deepEqual(result.proof_gate.missing, ["browser_use_cli_workflow_adapter_missing"]);
+    assert.equal(result.metadata.env_runner, "AUTOMATION_OS_NISENPRINTS_BROWSER_USE_RUNNER");
   } finally {
     if (previousBrowserUseRunner === undefined) delete process.env.AUTOMATION_OS_NISENPRINTS_BROWSER_USE_RUNNER;
     else process.env.AUTOMATION_OS_NISENPRINTS_BROWSER_USE_RUNNER = previousBrowserUseRunner;
@@ -287,6 +295,8 @@ test("blocks NisenPrints registered runner when process exits nonzero even with 
   writeFileSync(
     fakeRunner,
     `#!/usr/bin/env node
+// browser-use-cli/lib/stage-adapter.mjs
+// runBrowserUseCliFlowCommand
 import { writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 const videoPath = process.env.NISENPRINTS_OUTPUT_DIR + "/visit-site.webm";
@@ -340,6 +350,8 @@ test("blocks NisenPrints registered runner when summary run identity does not ma
   writeFileSync(
     fakeRunner,
     `#!/usr/bin/env node
+// browser-use-cli/lib/stage-adapter.mjs
+// runBrowserUseCliFlowCommand
 import { writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 const videoPath = process.env.NISENPRINTS_OUTPUT_DIR + "/visit-site.webm";
@@ -406,6 +418,8 @@ test("blocks NisenPrints registered runner when summary run identity is missing"
   writeFileSync(
     fakeRunner,
     `#!/usr/bin/env node
+// browser-use-cli/lib/stage-adapter.mjs
+// runBrowserUseCliFlowCommand
 import { writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 const videoPath = process.env.NISENPRINTS_OUTPUT_DIR + "/visit-site.webm";
@@ -471,6 +485,8 @@ test("blocks NisenPrints registered runner identity mismatch before trusting par
   writeFileSync(
     fakeRunner,
     `#!/usr/bin/env node
+// browser-use-cli/lib/stage-adapter.mjs
+// runBrowserUseCliFlowCommand
 import { writeFileSync } from "node:fs";
 writeFileSync(process.env.NISENPRINTS_REGISTERED_SUMMARY_PATH, JSON.stringify({
   automation_os_run_id: "different-partial-automation-os-run",

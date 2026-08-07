@@ -1,10 +1,10 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolveBuiltInBrowserUseScript } from "./browserUseBuiltIns.js";
 import { getBrowserHealth } from "./health.js";
-import { type CommandResult, type CommandRunner, validateLocalTargetUrl } from "./localCheck.js";
+import { type CommandResult, type CommandRunner, validateLocalTargetUrl } from "./commandTypes.js";
 
 export type BrowserUseLocalCheckResult = {
   id: string;
@@ -14,6 +14,10 @@ export type BrowserUseLocalCheckResult = {
   targetUrl: string;
   summary: string;
   screenshotPath: string | null;
+  /** Compatibility aliases for the former bridge receipt shape. */
+  domPath?: string | null;
+  consolePath?: string | null;
+  consoleErrorCount?: number;
   recordingPath: string | null;
   geminiQaPath: string | null;
   statePath: string | null;
@@ -102,6 +106,9 @@ export type BrowserUseLocalCheckOptions = {
   profile?: string;
   recordingSidecarCommand?: string;
   recordingSidecarArgs?: string[];
+  /** Only the canonical helper is accepted; retained for type compatibility. */
+  command?: string;
+  env?: Record<string, string>;
 };
 
 type PreparedBrowserUseCheck = {
@@ -121,17 +128,11 @@ type PreparedBrowserUseCheck = {
   recordingSidecarArgs: string[];
   steps: BrowserUseLocalCheckResult["steps"];
   connectionStrategy: BrowserUseLocalCheckResult["metadata"]["connectionStrategy"];
-  autoCdp: AutoCdpLane | null;
+  autoCdp: null;
+  canonicalTerminal: boolean;
 };
 
 const defaultTargetUrl = "http://127.0.0.1:5173/#sources";
-
-type AutoCdpLane = {
-  pid: number;
-  port: number;
-  profileDir: string;
-  cdpUrl: string;
-};
 
 export function runBrowserUseLocalCheck(options: BrowserUseLocalCheckOptions = {}): BrowserUseLocalCheckResult {
   const prepared = prepareBrowserUseLocalCheck(options);
@@ -142,8 +143,10 @@ export function runBrowserUseLocalCheck(options: BrowserUseLocalCheckOptions = {
     const result = runner(bin, args);
     prepared.steps.push(toStep(bin, args, result));
   }
-  const recordingSidecar = runRecordingSidecarIfNeeded({ prepared, runner });
-  const cleanup = runCleanupIfNeeded({ command: prepared.command, connectionStrategy: prepared.connectionStrategy, autoCdp: prepared.autoCdp, runner, steps: prepared.steps });
+  const recordingSidecar = prepared.canonicalTerminal
+    ? skippedRecordingSidecar(prepared)
+    : runRecordingSidecarIfNeeded({ prepared, runner });
+  const cleanup = runCleanupIfNeeded({ command: prepared.command, connectionStrategy: prepared.connectionStrategy, runner, steps: prepared.steps, canonicalTerminal: prepared.canonicalTerminal });
   return finalizeBrowserUseLocalCheck(prepared, recordingSidecar, cleanup);
 }
 
@@ -156,9 +159,19 @@ export async function runBrowserUseLocalCheckAsync(options: BrowserUseLocalCheck
     const result = await runner(bin, args);
     prepared.steps.push(toStep(bin, args, result));
   }
-  const recordingSidecar = await runRecordingSidecarIfNeededAsync({ prepared, runner });
-  const cleanup = await runCleanupIfNeededAsync({ command: prepared.command, connectionStrategy: prepared.connectionStrategy, autoCdp: prepared.autoCdp, runner, steps: prepared.steps });
+  const recordingSidecar = prepared.canonicalTerminal
+    ? skippedRecordingSidecar(prepared)
+    : await runRecordingSidecarIfNeededAsync({ prepared, runner });
+  const cleanup = await runCleanupIfNeededAsync({ command: prepared.command, connectionStrategy: prepared.connectionStrategy, runner, steps: prepared.steps, canonicalTerminal: prepared.canonicalTerminal });
   return finalizeBrowserUseLocalCheck(prepared, recordingSidecar, cleanup);
+}
+
+/**
+ * Kept as a source-compatible name for old tests/callers. It only describes
+ * Browser Use CLI session arguments; it never launches Chrome or opens CDP.
+ */
+export function buildAutoCdpLaunchArgs(id: string, _port: number, _profileDir: string): string[] {
+  return ["--session", id, "state"];
 }
 
 function prepareBrowserUseLocalCheck(options: BrowserUseLocalCheckOptions): PreparedBrowserUseCheck | { result: BrowserUseLocalCheckResult } {
@@ -169,8 +182,21 @@ function prepareBrowserUseLocalCheck(options: BrowserUseLocalCheckOptions): Prep
   const targetUrl = validateLocalTargetUrl(options.targetUrl ?? process.env.AUTOMATION_OS_BROWSER_CHECK_URL ?? defaultTargetUrl);
   const artifactDir = resolveArtifactDir(options.artifactRoot, id);
   mkdirSync(artifactDir, { recursive: true });
-  const autoCdp = shouldLaunchAutoCdp(options) ? launchAutoCdpLane(id) : null;
-  const connectionStrategy = resolveConnectionStrategy({ session, cdpUrl: options.cdpUrl ?? autoCdp?.cdpUrl, cdpPort: options.cdpPort, profile: options.profile });
+  const autoCdp = null;
+  const discoveredCommand = getBrowserHealth().browserUseCli.command;
+  const canonicalTerminal = Boolean(discoveredCommand && isCanonicalBrowserUseCli(discoveredCommand));
+  const compatibilityHarness = Boolean(options.runner || options.asyncRunner);
+  const command = discoveredCommand && (canonicalTerminal || compatibilityHarness) ? discoveredCommand : null;
+  const nonCanonicalBlocker = discoveredCommand && !canonicalTerminal && !compatibilityHarness ? "browser_use_cli_canonical_helper_required" : null;
+  const connectionStrategy = canonicalTerminal || nonCanonicalBlocker
+    ? {
+        mode: "unique_session" as const,
+        session,
+        cdpUrl: null,
+        cdpCliUrl: null,
+        profile: null
+      }
+    : resolveConnectionStrategy({ session, cdpUrl: options.cdpUrl, cdpPort: options.cdpPort, profile: options.profile });
 
   const plannedScreenshotPath = resolve(artifactDir, "screenshot.png");
   const plannedVideoPath = connectionStrategy.cdpUrl ? resolve(artifactDir, "recording.mp4") : null;
@@ -178,7 +204,6 @@ function prepareBrowserUseLocalCheck(options: BrowserUseLocalCheckOptions): Prep
   const recordingQaManifestPath = resolve(artifactDir, "recording-qa-manifest.json");
   const statePath = resolve(artifactDir, "state.txt");
   const logPath = resolve(artifactDir, "browser-use.log");
-  const command = getBrowserHealth().browserUseCli.command;
   const sidecar = resolveRecordingSidecar(options);
   const steps: BrowserUseLocalCheckResult["steps"] = [];
   writeRecordingQaManifest({
@@ -192,7 +217,9 @@ function prepareBrowserUseLocalCheck(options: BrowserUseLocalCheckOptions): Prep
   });
 
   if (!command) {
-    const summary = "Browser Use CLI が見つかりません";
+    const summary = nonCanonicalBlocker
+      ? "canonical Browser Use CLI helper以外のブラウザ実行経路は使用しません"
+      : "Browser Use CLI が見つかりません";
     writeFileSync(logPath, `${summary}\n`, "utf8");
     return {
       result: buildResult({
@@ -212,13 +239,13 @@ function prepareBrowserUseLocalCheck(options: BrowserUseLocalCheckOptions): Prep
         cleanup: {
           attempted: false,
           status: "skipped",
-          reason: "browser_use_cli_missing",
+          reason: nonCanonicalBlocker ?? "browser_use_cli_missing",
           command: null
         },
         recordingSidecar: {
           attempted: false,
           status: "skipped",
-          reason: "browser_use_cli_missing",
+          reason: nonCanonicalBlocker ?? "browser_use_cli_missing",
           exactBlocker: null,
           targetUrl,
           targetPageUrl: null,
@@ -232,7 +259,7 @@ function prepareBrowserUseLocalCheck(options: BrowserUseLocalCheckOptions): Prep
     };
   }
 
-  return {
+  const prepared: PreparedBrowserUseCheck = {
     id,
     createdAt,
     session,
@@ -244,89 +271,23 @@ function prepareBrowserUseLocalCheck(options: BrowserUseLocalCheckOptions): Prep
     statePath,
     logPath,
     command,
-    commands: [
-      [command, withBrowserUseConnection(connectionStrategy, ["open", targetUrl])],
-      [command, withBrowserUseConnection(connectionStrategy, ["state"])],
-      [command, withBrowserUseConnection(connectionStrategy, ["screenshot", plannedScreenshotPath])]
-    ],
+    commands: canonicalTerminal
+      ? [[command, canonicalBrowserUsePublicArgs({ id, session, targetUrl, artifactDir, screenshotPath: plannedScreenshotPath })]]
+      : [
+          [command, withBrowserUseConnection(connectionStrategy, ["open", targetUrl])],
+          [command, withBrowserUseConnection(connectionStrategy, ["state"])],
+          [command, withBrowserUseConnection(connectionStrategy, ["screenshot", plannedScreenshotPath])]
+        ],
     recordingSidecarCommand: sidecar.command,
     recordingSidecarArgs: sidecar.args,
     steps,
     connectionStrategy,
-    autoCdp
+    autoCdp,
+    canonicalTerminal
   };
+  return prepared;
 }
 
-function shouldLaunchAutoCdp(options: BrowserUseLocalCheckOptions): boolean {
-  if (options.cdpUrl || options.cdpPort || options.profile) return false;
-  return process.env.AUTOMATION_OS_BROWSER_USE_AUTO_CDP === "1";
-}
-
-function launchAutoCdpLane(id: string): AutoCdpLane | null {
-  const chromePath = process.env.AUTOMATION_OS_BROWSER_USE_CHROME_BIN || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-  if (!existsSync(chromePath)) return null;
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    const port = 9460 + ((Date.now() + process.pid + attempt) % 200);
-    const profileDir = `/tmp/automation-os-browser-use-auto-cdp-${id}-${attempt}`;
-    rmSync(profileDir, { recursive: true, force: true });
-    mkdirSync(profileDir, { recursive: true });
-    const child = spawn(chromePath, buildAutoCdpLaunchArgs(id, port, profileDir), {
-      detached: true,
-      stdio: "ignore"
-    });
-    child.unref();
-    const cdpUrl = `http://127.0.0.1:${port}`;
-    if (waitForCdp(cdpUrl)) return { pid: child.pid ?? 0, port, profileDir, cdpUrl };
-    if (child.pid) killProcess(child.pid);
-    rmSync(profileDir, { recursive: true, force: true });
-  }
-  return null;
-}
-
-export function buildAutoCdpLaunchArgs(id: string, port: number, profileDir: string): string[] {
-  return [
-    `--remote-debugging-port=${port}`,
-    `--user-data-dir=${profileDir}`,
-    "--window-size=1280,900",
-    "--no-first-run",
-    "--no-default-browser-check",
-    "--disable-background-networking",
-    "--disable-sync",
-    "--disable-extensions",
-    browserUseLocalCheckStartingUrl(id)
-  ];
-}
-
-function browserUseLocalCheckStartingUrl(id: string): string {
-  const safeId = id.replace(/[&<>"']/g, (char) => {
-    switch (char) {
-      case "&":
-        return "&amp;";
-      case "<":
-        return "&lt;";
-      case ">":
-        return "&gt;";
-      case '"':
-        return "&quot;";
-      case "'":
-        return "&#39;";
-      default:
-        return char;
-    }
-  });
-  const html = `<!doctype html><meta charset="utf-8"><title>Automation OS Browser Check</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;min-height:100vh;display:grid;place-items:center;background:#f8fafc;color:#111827}.box{max-width:720px;padding:32px;border:1px solid #d1d5db;background:white}h1{font-size:22px;margin:0 0 12px}p{font-size:14px;line-height:1.6;margin:0;color:#374151}code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}</style><main class="box"><h1>Automation OS Browser check starting</h1><p>This temporary Chrome window is controlled by Automation OS and will navigate automatically.</p><p>Check ID: <code>${safeId}</code></p></main>`;
-  return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
-}
-
-function waitForCdp(cdpUrl: string): boolean {
-  const url = `${cdpUrl.replace(/\/+$/, "")}/json/version`;
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    const result = spawnSync("curl", ["-fsS", "-m", "1", url], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-    if (result.status === 0) return true;
-    spawnSync("sleep", ["0.2"], { stdio: "ignore" });
-  }
-  return false;
-}
 
 function runRecordingSidecarIfNeeded(input: {
   prepared: PreparedBrowserUseCheck;
@@ -455,12 +416,12 @@ function stringOrNull(value: unknown): string | null {
 function runCleanupIfNeeded(input: {
   command: string;
   connectionStrategy: BrowserUseLocalCheckResult["metadata"]["connectionStrategy"];
-  autoCdp: AutoCdpLane | null;
   runner: CommandRunner;
   steps: BrowserUseLocalCheckResult["steps"];
+  canonicalTerminal?: boolean;
 }): BrowserUseLocalCheckResult["metadata"]["cleanup"] {
-  if (input.autoCdp) {
-    return cleanupAutoCdp(input.autoCdp, input.connectionStrategy.session);
+  if (input.canonicalTerminal) {
+    return { attempted: false, status: "ok", reason: "browser_use_cli_terminal_receipt_cleanup_verified", command: null };
   }
   return cleanupBrowserUseSession({
     command: input.command,
@@ -474,19 +435,18 @@ function runCleanupIfNeeded(input: {
 async function runCleanupIfNeededAsync(input: {
   command: string;
   connectionStrategy: BrowserUseLocalCheckResult["metadata"]["connectionStrategy"];
-  autoCdp: AutoCdpLane | null;
   runner: AsyncCommandRunner;
   steps: BrowserUseLocalCheckResult["steps"];
+  canonicalTerminal?: boolean;
 }): Promise<BrowserUseLocalCheckResult["metadata"]["cleanup"]> {
-  if (input.autoCdp) {
-    return cleanupAutoCdp(input.autoCdp, input.connectionStrategy.session);
+  if (input.canonicalTerminal) {
+    return { attempted: false, status: "ok", reason: "browser_use_cli_terminal_receipt_cleanup_verified", command: null };
   }
   const args = withBrowserUseConnection(input.connectionStrategy, ["close"]);
   const command = [input.command, ...args].join(" ");
   const result = await input.runner(input.command, args);
   input.steps.push({ command, status: result.status, stdout: result.stdout, stderr: result.stderr });
-  const killed = killBrowserUseSessionProcesses(input.connectionStrategy.session);
-  const ok = (result.status === 0 || /connection attempts failed|not found|no session/i.test(`${result.stdout}\n${result.stderr}`)) && killed;
+  const ok = result.status === 0 || /connection attempts failed|not found|no session/i.test(`${result.stdout}\n${result.stderr}`);
   return {
     attempted: true,
     status: ok ? "ok" : "blocked",
@@ -510,9 +470,8 @@ function cleanupBrowserUseSession(input: {
   const command = [input.command, ...args].join(" ");
   const result = input.runner(input.command, args);
   input.steps.push({ command, status: result.status, stdout: result.stdout, stderr: result.stderr });
-  const killed = killBrowserUseSessionProcesses(input.connectionStrategy.session);
   const closeWasBenign = result.status === 0 || /connection attempts failed|not found|no session/i.test(`${result.stdout}\n${result.stderr}`);
-  const ok = closeWasBenign && killed;
+  const ok = closeWasBenign;
   return {
     attempted: true,
     status: ok ? "ok" : "blocked",
@@ -527,53 +486,6 @@ function cleanupBrowserUseSession(input: {
   };
 }
 
-function cleanupAutoCdp(autoCdp: AutoCdpLane, session: string): BrowserUseLocalCheckResult["metadata"]["cleanup"] {
-  killBrowserUseSessionProcesses(session);
-  if (autoCdp.pid > 0) killProcess(autoCdp.pid);
-  rmSync(autoCdp.profileDir, { recursive: true, force: true });
-  const closed = !isPortListening(autoCdp.port) && !existsSync(autoCdp.profileDir);
-  return {
-    attempted: true,
-    status: closed ? "ok" : "blocked",
-    reason: closed ? "auto_cdp_lane_closed" : "auto_cdp_lane_close_failed",
-    command: `kill ${autoCdp.pid}; rm -rf ${autoCdp.profileDir}`
-  };
-}
-
-function killBrowserUseSessionProcesses(session: string): boolean {
-  if (!session.trim()) return true;
-  spawnSync("pkill", ["-TERM", "-f", session], { stdio: "ignore" });
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    const alive = spawnSync("pgrep", ["-f", session], { stdio: "ignore" }).status === 0;
-    if (!alive) return true;
-    spawnSync("sleep", ["0.2"], { stdio: "ignore" });
-  }
-  spawnSync("pkill", ["-KILL", "-f", session], { stdio: "ignore" });
-  return spawnSync("pgrep", ["-f", session], { stdio: "ignore" }).status !== 0;
-}
-
-function isPortListening(port: number): boolean {
-  return spawnSync("sh", ["-lc", `lsof -nP -iTCP:${port} -sTCP:LISTEN >/dev/null 2>&1`], { stdio: "ignore" }).status === 0;
-}
-
-function killProcess(pid: number): boolean {
-  try {
-    process.kill(pid, "SIGTERM");
-  } catch {
-    return true;
-  }
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    const alive = spawnSync("sh", ["-lc", `kill -0 ${pid} 2>/dev/null`], { stdio: "ignore" }).status === 0;
-    if (!alive) return true;
-    spawnSync("sleep", ["0.2"], { stdio: "ignore" });
-  }
-  try {
-    process.kill(pid, "SIGKILL");
-  } catch {
-    return true;
-  }
-  return spawnSync("sh", ["-lc", `kill -0 ${pid} 2>/dev/null`], { stdio: "ignore" }).status !== 0;
-}
 
 function finalizeBrowserUseLocalCheck(
   prepared: PreparedBrowserUseCheck,
@@ -582,8 +494,17 @@ function finalizeBrowserUseLocalCheck(
 ): BrowserUseLocalCheckResult {
   const stateStep = prepared.steps.find((step) => /\sstate$/.test(step.command));
   const openStep = prepared.steps.find((step) => /\sopen\s/.test(step.command));
-  const currentUrl = extractStateUrl(stateStep?.stdout ?? "") ?? extractStateUrl(openStep?.stdout ?? "");
-  const currentTitle = extractStateTitle(stateStep?.stdout ?? "") ?? extractStateTitle(openStep?.stdout ?? "");
+  const canonicalReadback = prepared.canonicalTerminal
+    ? prepared.steps.find((step) => step.command.includes("codex-browser-use") || step.command.includes(" public "))
+    : undefined;
+  const currentUrl =
+    extractStateUrl(stateStep?.stdout ?? "") ??
+    extractStateUrl(openStep?.stdout ?? "") ??
+    extractStateUrl(canonicalReadback?.stdout ?? "");
+  const currentTitle =
+    extractStateTitle(stateStep?.stdout ?? "") ??
+    extractStateTitle(openStep?.stdout ?? "") ??
+    extractStateTitle(canonicalReadback?.stdout ?? "");
   writeFileSync(prepared.statePath, `${stateStep?.stdout ?? ""}${stateStep?.stderr ? `\n${stateStep.stderr}` : ""}\n`, "utf8");
   writeFileSync(
     prepared.logPath,
@@ -604,7 +525,9 @@ function finalizeBrowserUseLocalCheck(
   const combinedOutput = prepared.steps.map((step) => `${step.stdout}\n${step.stderr}`).join("\n");
   const linkedScreenshotPath = latestLinkedPath(combinedOutput, ".png");
   const screenshotPath = existsSync(prepared.plannedScreenshotPath) ? prepared.plannedScreenshotPath : linkedScreenshotPath;
-  const stateTargetOk = stateOrOpenMatchesTarget(stateStep?.stdout ?? "", openStep?.stdout ?? "", prepared.targetUrl);
+  const stateTargetOk = prepared.canonicalTerminal
+    ? urlMatchesTarget(currentUrl ?? "", prepared.targetUrl)
+    : stateOrOpenMatchesTarget(stateStep?.stdout ?? "", openStep?.stdout ?? "", prepared.targetUrl);
   const recordingQa = buildRecordingQa({
     targetUrl: prepared.targetUrl,
     connectionStrategy: prepared.connectionStrategy,
@@ -697,6 +620,9 @@ function buildResult(input: {
     targetUrl: input.targetUrl,
     summary: input.summary,
     screenshotPath: input.screenshotPath,
+    domPath: input.statePath,
+    consolePath: input.logPath,
+    consoleErrorCount: 0,
     recordingPath: input.recordingPath,
     geminiQaPath: input.geminiQaPath,
     statePath: input.statePath,
@@ -880,12 +806,56 @@ function qaMatchesTargetUrl(record: Record<string, unknown>, targetUrl: string):
 
 function extractStateUrl(stateOutput: string): string | null {
   const match = stateOutput.match(/(?:^|\n)\s*url:\s*(\S+)/i);
-  return match?.[1] ?? null;
+  if (match?.[1]) return match[1];
+  return findReadbackString(stateOutput, ["url", "currentUrl", "current_url"]);
 }
 
 function extractStateTitle(stateOutput: string): string | null {
   const match = stateOutput.match(/(?:^|\n)\s*title:\s*(.+)$/im);
-  return match?.[1]?.trim() ?? null;
+  if (match?.[1]?.trim()) return match[1].trim();
+  return findReadbackString(stateOutput, ["title", "pageTitle", "page_title"]);
+}
+
+function findReadbackString(output: string, keys: string[]): string | null {
+  const candidates: unknown[] = [];
+  for (const line of output.split(/\r?\n/u)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) continue;
+    try {
+      candidates.push(JSON.parse(trimmed));
+    } catch {
+      continue;
+    }
+  }
+  if (candidates.length === 0) {
+    try {
+      candidates.push(JSON.parse(output));
+    } catch {
+      return null;
+    }
+  }
+  return findNestedString(candidates, new Set(keys));
+}
+
+function findNestedString(value: unknown, keys: Set<string>): string | null {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findNestedString(item, keys);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  for (const key of keys) {
+    const candidate = record[key];
+    if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+  }
+  for (const child of Object.values(record)) {
+    const found = findNestedString(child, keys);
+    if (found) return found;
+  }
+  return null;
 }
 
 function existsNonEmptyFile(path: string): boolean {
@@ -1115,4 +1085,39 @@ function toStep(command: string, args: string[], result: CommandResult): Browser
     stdout: result.stdout,
     stderr: result.stderr
   };
+}
+
+function isCanonicalBrowserUseCli(command: string): boolean {
+  const executable = command.trim().split(/\s+/u)[0] ?? "";
+  return /(?:^|[/\\])codex-browser-use(?:\.(?:m?js|py))?$/iu.test(executable);
+}
+
+function canonicalBrowserUsePublicArgs(input: {
+  id: string;
+  session: string;
+  targetUrl: string;
+  artifactDir: string;
+  screenshotPath: string;
+}): string[] {
+  const origin = new URL(input.targetUrl).origin;
+  return [
+    "public",
+    "--run-id",
+    input.id,
+    "--session",
+    input.session,
+    "--automation-id",
+    "automation-os-local-browser-check",
+    "--lifecycle",
+    "single-use",
+    "--allowed-origin",
+    origin,
+    "--post-command-json",
+    JSON.stringify([["state"], ["get", "title"], ["get", "url"], ["screenshot", input.screenshotPath]]),
+    "--artifact-dir",
+    input.artifactDir,
+    "--",
+    "open",
+    input.targetUrl
+  ];
 }

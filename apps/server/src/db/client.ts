@@ -16,9 +16,14 @@ if (!startupPolicy.ok) {
 const defaultDbPath = resolve(process.cwd(), "data", "automation-os.sqlite");
 const postgresUrl = process.env.AUTOMATION_OS_DATABASE_URL ?? process.env.DATABASE_URL;
 const postgresWorkerTimeoutMs = Number(process.env.AUTOMATION_OS_POSTGRES_WORKER_TIMEOUT_MS ?? 12000);
+// Read-only child processes are spawned by an already-started server. The
+// parent has already passed the database startup/bootstrap boundary, so
+// repeating the remote schema probe in every child only adds latency. The
+// flag is set by those read-only child launchers, never by public requests.
+const postgresSchemaAssumedCurrent = process.env.AUTOMATION_OS_POSTGRES_SCHEMA_ASSUMED_CURRENT === "1";
 // Bump when an idempotent migration adds a durable schema object that must be
 // applied to already-bootstrapped PostgreSQL databases.
-export const postgresSchemaBootstrapVersion = 4;
+export const postgresSchemaBootstrapVersion = 5;
 
 export const dbPath = process.env.AUTOMATION_OS_DB ?? defaultDbPath;
 export const dbBackend = postgresUrl ? "postgres" : "sqlite";
@@ -101,6 +106,11 @@ export function runSqlTransaction(steps: readonly SqlTransactionStep[]): void {
 
 export function initDb(): void {
   if (dbInitialized) return;
+  if (dbBackend === "postgres" && postgresSchemaAssumedCurrent) {
+    dbInitialized = true;
+    dbInitRunCount += 1;
+    return;
+  }
   if (dbBackend === "postgres" && process.env.AUTOMATION_OS_POSTGRES_BOOTSTRAP_LOCK_HELD !== "1") {
     if (postgresSchemaBootstrapCurrent()) {
       dbInitialized = true;
@@ -587,6 +597,24 @@ function runIdempotentMigrations(): void {
 
     CREATE INDEX IF NOT EXISTS mvp_idempotency_keys_company_idx ON mvp_idempotency_keys(company_id, scope, status, created_at DESC);
 
+    CREATE TABLE IF NOT EXISTS portable_workflow_invocations (
+      id TEXT PRIMARY KEY,
+      workflow_id TEXT NOT NULL,
+      source_trigger TEXT NOT NULL,
+      company_scope TEXT NOT NULL,
+      company_id TEXT,
+      idempotency_key TEXT NOT NULL,
+      request_hash TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'completed')),
+      run_id TEXT REFERENCES runs(id) ON DELETE SET NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(workflow_id, source_trigger, company_scope, idempotency_key)
+    );
+
+    CREATE INDEX IF NOT EXISTS portable_workflow_invocations_run_idx
+      ON portable_workflow_invocations(run_id, status, updated_at DESC);
+
     CREATE TABLE IF NOT EXISTS company_memory_entries (
       id TEXT PRIMARY KEY,
       company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
@@ -900,6 +928,7 @@ export function resetDemoData(): void {
     DELETE FROM proofs;
     DELETE FROM approvals;
     DELETE FROM run_steps;
+    DELETE FROM portable_workflow_invocations;
     DELETE FROM lanes;
     DELETE FROM runs;
     DELETE FROM research_plans;

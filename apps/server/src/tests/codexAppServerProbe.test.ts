@@ -54,6 +54,42 @@ test("app server probe stays blocked when disabled and does not spawn a process"
   assert.equal(result.exactBlocker, "disabled");
 });
 
+test("app server probe prefers the configured official Codex CLI when the command override is blank", async () => {
+  clearAppServerProbeCache();
+  const child = new FakeChild();
+  child.stdin.onWrite = () => {
+    child.stdout.emit(
+      "data",
+      Buffer.from(JSON.stringify({ id: 1, result: { userAgent: "Codex", platformFamily: "unix", platformOs: "macos" } }) + "\n")
+    );
+  };
+  const previousProbeCommand = process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_COMMAND;
+  const previousCodexBin = process.env.AUTOMATION_OS_CODEX_BIN;
+  const previousCliPath = process.env.CODEX_CLI_PATH;
+  process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_COMMAND = " ";
+  process.env.AUTOMATION_OS_CODEX_BIN = " ";
+  process.env.CODEX_CLI_PATH = "/usr/local/bin/codex";
+  let observedCommand = "";
+  try {
+    const result = await probeCodexAppServerSurface({
+      enabled: true,
+      runner: (command) => {
+        observedCommand = command;
+        return child as never;
+      }
+    });
+    assert.equal(observedCommand, "/usr/local/bin/codex");
+    assert.equal(result.ok, true);
+  } finally {
+    if (previousProbeCommand === undefined) delete process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_COMMAND;
+    else process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_COMMAND = previousProbeCommand;
+    if (previousCodexBin === undefined) delete process.env.AUTOMATION_OS_CODEX_BIN;
+    else process.env.AUTOMATION_OS_CODEX_BIN = previousCodexBin;
+    if (previousCliPath === undefined) delete process.env.CODEX_CLI_PATH;
+    else process.env.CODEX_CLI_PATH = previousCliPath;
+  }
+});
+
 test("app server probe accepts an official initialize response without version", async () => {
   clearAppServerProbeCache();
   const child = new FakeChild();
@@ -85,6 +121,36 @@ test("app server probe accepts an official initialize response without version",
   assert.equal(result.ok, true);
   assert.equal(result.status, "ok");
   assert.equal(result.version, null);
+});
+
+test("app server probe resolves from initialize while the server remains alive", async () => {
+  clearAppServerProbeCache();
+  const child = new FakeChild();
+  child.stdin.onWrite = () => {
+    child.stdout.emit(
+      "data",
+      Buffer.from(
+        JSON.stringify({
+          id: 1,
+          result: {
+            userAgent: "Codex Desktop/0.145.0",
+            platformFamily: "unix",
+            platformOs: "macos"
+          }
+        }) + "\n"
+      )
+    );
+  };
+  const result = await probeCodexAppServerSurface({
+    enabled: true,
+    command: "node",
+    timeoutMs: 500,
+    runner: () => child as never
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.exactBlocker, null);
+  assert.deepEqual(child.killCalls, ["SIGTERM"]);
 });
 
 test("app server probe scans JSONL lines until a matching initialize response appears", async () => {
@@ -479,7 +545,7 @@ test("app server probe sends only initialize to the child process", async () => 
 
   assert.equal(child.stdin.writes.length, 1);
   assert.match(child.stdin.writes[0], /"method":"initialize"/);
-  assert.equal(child.stdin.ended, true);
+  assert.equal(child.stdin.ended, false);
 });
 
 function delay(ms: number): Promise<void> {

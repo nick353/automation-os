@@ -1,6 +1,6 @@
 # Automation OS
 
-Automation OS is a local control surface for recurring automation work across Codex, Obsidian, Playwright, and project-specific runners. Its job is to answer three questions quickly: what is running, what is blocked, and what proof exists.
+Automation OS is a local control surface for recurring automation work across Codex, Obsidian, the canonical Browser Use CLI, and project-specific connectors. Its job is to answer three questions quickly: what is running, what is blocked, and what proof exists.
 
 The repository contains the app, server, workflow contracts, docs, and local runner glue. It does not contain live SQLite databases, browser profiles, artifacts, logs, screenshots, API keys, OAuth tokens, or personal execution state.
 
@@ -9,7 +9,7 @@ The repository contains the app, server, workflow contracts, docs, and local run
 - `apps/server` exposes the local API, workflow registry, worker engine, proof gates, Obsidian ingest/export, and runner adapters.
 - `apps/web` is the local dashboard for sources, runs, approvals, and actionable next steps.
 - `docs` records architecture, roadmap, Codex app parity, local worker rules, and Obsidian export design.
-- `scripts` contains local wrappers for development and selected Playwright-based workflow lanes.
+- `scripts` contains local wrappers for development, the canonical Browser Use CLI boundary, and connector-only workflows.
 - `STATE.md` is the human-readable project state. Runtime truth lives in the configured database, plus workflow-owned artifacts.
 
 ## Local Setup
@@ -61,7 +61,16 @@ AUTOMATION_OS_DB=/data/automation-os.sqlite
 AUTOMATION_OS_REQUIRE_WRITE_TOKEN=1
 AUTOMATION_OS_REQUIRE_API_TOKEN=1
 AUTOMATION_OS_WRITE_TOKEN=<set in the host secret manager>
+# Set one read-only token in the host secret manager for authenticated QA/replay
+# readback. The value must never be committed or pasted into chat.
+AUTOMATION_OS_READ_TOKEN=<set in the host secret manager>
 ```
+
+`npm run qa:production` and `npm run qa:production:replay` look for
+`AUTOMATION_OS_READ_TOKEN`, `AUTOMATION_OS_QA_READ_TOKEN`, then
+`AUTOMATION_OS_REPLAY_READ_TOKEN`. If none is injected into the QA process,
+the exact blocker is `production_read_token_missing`; the tools do not guess a
+write token or bypass the protected API.
 
 To copy an existing SQLite database into an empty PostgreSQL database, run this from a trusted local shell. The confirmation variable is intentional because the target PostgreSQL tables are replaced:
 
@@ -80,14 +89,14 @@ After every deployment, run:
 npm run qa:production -- https://automation-os.zeabur.app
 ```
 
-This checks the public JSON APIs and captures desktop/mobile screenshots under `/tmp/automation-os-production-qa-*` when Playwright CLI is available.
+This checks the public JSON APIs. Browser/UI QA must use a fresh, same-run canonical Browser Use CLI authority/profile/port and recording proof; if that surface is unavailable, QA stops with an exact blocker rather than falling back to Playwright, direct Chrome, CDP, or the Codex in-app browser.
 
 ## Git Boundary
 
 The following are intentionally ignored:
 
 - `data/`, including SQLite databases, `resume-contract.json`, secret store files, and local run state.
-- `artifacts/`, `output/`, `logs/`, `test-results/`, and Playwright session folders.
+- `artifacts/`, `output/`, `logs/`, `test-results/`, and browser session folders.
 - `.env` files and private key material.
 
 Before publishing or pushing, run a secret scan against the staged files and verify that only source code, docs, package manifests, and safe templates are included.
@@ -100,6 +109,6 @@ Before publishing or pushing, run a secret scan against the staged files and ver
 
 Generated Obsidian pages and handoff notes are locators, not proof. Before resuming work, read `data/resume-contract.json`, the Obsidian handoff index/current-work notes, then this repository's `STATE.md`, DB rows, and latest workflow artifacts.
 
-Browser Use CLI is the canonical Automation OS browser surface. Workflow-owned runners may remain Playwright or another explicit contract until that workflow is migrated; those runner receipts must not be presented as Browser Use CLI proof.
+Browser Use CLI is the only permitted Automation OS browser surface. Every browser-backed adapter must either call the canonical helper through the shared flow adapter with fresh authority/profile/port, same-session readback, and cleanup proof, or fail closed with `browser_use_cli_required` / `browser_use_cli_workflow_adapter_missing`. Playwright, direct Chrome, direct CDP, extension-backed browser lanes, and Codex in-app browser fallbacks are retired from registered automation execution.
 
 Billing, purchase, payment, checkout, paid subscription, invoice, or billing-equivalent screens are the hard stops. Non-billing post, publish, submit, send, save, and in-scope delete actions require workflow-owned evidence and readback rather than a generic approval stop.

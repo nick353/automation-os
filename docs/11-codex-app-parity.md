@@ -13,8 +13,8 @@ Current rule:
 - Home may show the short Obsidian sync status card under "次にやること"; internal vault paths stay collapsed.
 - The Obsidian sync card may show `generatedFileCheck` as a small health line. This is file-generation health only; it is not proof of external execution.
 - Data and advanced operations show system details: Codex skills, plugin cache, automations, detailed Obsidian status, and browser readiness.
-- Browser and Chrome plugin actions are bridge-backed. The local app can report readiness, but direct in-app Browser or Chrome Extension execution still requires the Codex runtime/plugin bridge.
-- `GET /api/browser/health` now separates `codexBrowserBridge` and `chromeExtension` readback. `chromeExtension` stays blocked when local app direct execution is unavailable, even if Chrome binaries or a CDP lane exist, so the UI can show the bridge requirement explicitly instead of implying direct control.
+- Browser UI execution is owned by the Mac worker's canonical Browser Use CLI lane. Codex App and the local API are UI/trigger and inventory surfaces; they do not become a second browser authority.
+- `GET /api/browser/health` reports Browser Use CLI readiness, canonical helper/runtime binding, current-run authority requirements, and the non-executable Codex bridge boundary. Chrome binaries, Playwright, direct CDP, and in-app browser state are not execution fallbacks.
 - `child_codex` is connected for local read-only child Codex execution. It can inspect, review, test-plan, and report results back into `child_runs`, `child_codex_result` / `child_codex_blocked` proofs, and Runs detail UI.
 - The UI should explicitly preserve the boundary that the external executor is not connected. Obsidian sync, local receipts, and generated handoff notes must not be presented as completed protected external work.
 
@@ -22,7 +22,7 @@ Surface routing should prefer the narrowest verified lane that can still prove c
 
 - local repo work -> `codex exec`
 - parallel or long-running repo work -> `worktrees` or `cloud`
-- signed-in browser/profile work -> `Chrome Extension`
+- signed-in browser/profile work -> Mac worker + Browser Use CLI with a fresh authorized authority/profile/port/readback
 - external tool access -> `MCP` / plugin surface
 - remote supervision or resume -> `remote connections`
 - desktop app interaction -> `Computer Use`
@@ -32,9 +32,9 @@ Implemented local API:
 
 - `GET /api/codex/capabilities` scans local Codex skills, agent skills, plugin cache, automations, and bridge-backed capabilities.
 - `POST /api/codex/capabilities/probe` refreshes the read-only MCP inventory snapshot, and `POST /api/codex/app-server/probe` refreshes the read-only Codex App Server inventory snapshot. Both stay inventory-only: success does not mean authority, connected execution, or completion proof.
-- `GET /api/browser/health` reports Playwright CLI readiness, Browser Use CLI readiness, and the Codex Browser bridge boundary.
-- `POST /api/bridge/browser-check` is the Playwright CLI primary local UI check. It only accepts local URLs, opens the app, captures a DOM snapshot, screenshot, and console-error report, stores the result in `system_checks`, shows it in Data, and triggers Obsidian auto-export. For generic Automation OS local UI work, this Playwright-owned artifact bundle is the current completion proof.
-- `POST /api/bridge/browser-use-check` remains available as a diagnostic recording path for local URLs: it can capture screenshot/state/log plus recording/Gemini metadata, and blocks when its recording-specific requirements are not met. Browser Use diagnostic proof strengthens or vetoes completion, but normal Automation OS local UI completion is based on Playwright-owned DOM/screenshot/console artifacts and their readback.
+- `GET /api/browser/health` reports Browser Use CLI readiness and the Codex Browser bridge boundary.
+- `POST /api/bridge/browser-check` is the canonical Browser Use CLI local UI check. It accepts guarded local URLs, captures state/screenshot/log and same-run readback metadata, stores the result in `system_checks`, and triggers Obsidian auto-export. It never falls back to Playwright, direct Chrome, direct CDP, or the Codex in-app browser.
+- `POST /api/bridge/browser-use-check` remains the explicit Browser Use CLI recording/readback path for local URLs. It uses the same helper and fail-closed authority/cleanup contract; recording-specific requirements are reported as exact blockers rather than being replaced by another browser driver.
 - `GET /api/bridge/actions` exposes the beginner-safe Trusted Bridge catalog.
 - `POST /api/bridge/actions/:id/run` runs safe local bridge actions immediately and records protected actions as approval requests without executing external work.
 - `POST /api/bridge/actions/:id/execute` checks for an approved Trusted Bridge approval, then records an executor ledger entry. Until a real trusted executor is connected, it returns `bridge_executor_not_connected` and does not perform external work.
@@ -42,15 +42,15 @@ Implemented local API:
 - `POST /api/knowledge/refresh` refreshes reusable knowledge notes for Obsidian and the Data view.
 - `POST /api/obsidian/export` manually refreshes the Obsidian LLM Wiki.
 - `POST /api/planner/research-plan` stores a pre-start Research Planner contract. The Create view shows Web/X/Reddit/YouTube/MCP/API toggles and the visible arrow flow; source-of-truth, proof boundary, and approval boundary details are retained internally.
-- `POST /api/planner/:planId/demo` is limited to a local Automation OS Browser Use check. It must not operate external sites; X/Reddit/YouTube research starts as visible read-only browser/CDP/profile work rather than paid API usage.
+- `POST /api/planner/:planId/demo` is limited to a local Automation OS Browser Use CLI check. It must not operate external sites; X/Reddit/YouTube research starts as visible read-only Browser Use CLI work in a dedicated fresh profile/port rather than paid API usage.
 - `POST /api/planner/:planId/start` creates the real run through the existing worker path and attaches `research_plan_snapshot` to run metadata. That snapshot is planning evidence only, not completion proof.
 - `POST /api/planner/:planId/regularize` registers a demoed Research Planner entry in `registered_workflows` as `research_plan_registered`. The server scheduler reads those entries on a one-minute interval and starts only due Research Planner registrations; fixed native workflows remain owned by their existing registered automation entrypoints.
-- `ops/launchd/com.nichikatanaka.automation-os.plist` restores the existing Automation OS server at login through `scripts/start-automation-os-server.sh`. The recovery path now defaults to Obsidian auto export on, a 5 minute periodic export timer, and sqlite fallback when stored Postgres cannot be restored cleanly. This is still a recovery mechanism for the server-hosted Research Planner scheduler, not a second scheduler daemon and not completion proof; truth remains the live server process, SQLite `registered_workflows`, and workflow-owned artifacts/provenance.
+- `ops/launchd/com.nichikatanaka.automation-os.plist` restores the existing Automation OS server at login through `scripts/start-automation-os-server.sh`. The recovery path now defaults to Obsidian auto export on, a 30 minute periodic export timer, and sqlite fallback when stored Postgres cannot be restored cleanly. This is still a recovery mechanism for the server-hosted Research Planner scheduler, not a second scheduler daemon and not completion proof; truth remains the live server process, SQLite `registered_workflows`, and workflow-owned artifacts/provenance.
 - `POST /api/planner/:planId/capture/web-url` attaches a no-API-cost readable public Web URL capture to a started Research Planner run. On success it stores `readable_source_snapshot:web` proof and re-evaluates the Research Planner proof gate. It is a guarded server-side URL capture, not browser-visible DOM/screenshot proof.
 - `POST /api/planner/:planId/capture/youtube-transcript` attaches a no-API-cost read-only YouTube transcript capture to a started Research Planner run. On success it stores `visible_source_snapshot:youtube` proof and re-evaluates the existing Research Planner proof gate. Blocked or rejected captures remain missing proof.
 - `route_decision`, `route_readback`, and the route fingerprint must fail closed. A readback mismatch or missing decision fingerprint is a routing blocker, not a partial success.
 - State-changing APIs trigger best-effort Obsidian export automatically.
-- Server startup begins a periodic best-effort Obsidian export unless `NODE_TEST_CONTEXT` is truthy. `AUTOMATION_OS_OBSIDIAN_AUTO_EXPORT=1` explicitly enables it for tests. The interval defaults to 5 minutes, can be changed with `AUTOMATION_OS_OBSIDIAN_PERIODIC_EXPORT_MS`, and `0` disables the periodic timer.
+- Server startup begins a periodic best-effort Obsidian export unless `NODE_TEST_CONTEXT` is truthy. `AUTOMATION_OS_OBSIDIAN_AUTO_EXPORT=1` explicitly enables it for tests. The interval defaults to 30 minutes, can be changed with `AUTOMATION_OS_OBSIDIAN_PERIODIC_EXPORT_MS`, and `0` disables the periodic timer. Automatic exports reuse the redacted session index; only an explicit full refresh performs the raw session scan.
 - The Codex Stop hook runs `npm run obsidian:export -- --reason=codex_stop_hook`; Sources shows that reason as "Codex終了時の自動同期" while the raw value remains in details/status JSON.
 - The same Stop hook also writes a compact Codex memory handoff note to `~/.codex/memories/extensions/ad_hoc/notes/`, so the next local Codex session can recover the Automation OS state without relying only on this chat transcript.
 - `/api/obsidian/status` persists and restores `generatedFileCheck` after successful export. Markdown targets require `generated_by: automation-os` frontmatter, Bases targets require `# generated_by: automation-os`, and JSON targets such as `resume-contract.json` are existence/mtime only.
@@ -72,7 +72,7 @@ Obsidian Control Panel parity:
 
 Trusted Bridge policy:
 
-- Safe local actions can run now: Playwright CLI local screen checks as the primary local UI proof, Browser Use recording/Gemini diagnostics, Codex capability inventory, and Obsidian export.
+- Safe local actions can run now: Browser Use CLI local screen checks and recording/readback, Codex capability inventory, and Obsidian export. A missing helper, authority, profile/port, or same-session readback is an exact blocker.
 - Protected actions create an approval first: signed-in Chrome work, Gmail/Drive/Calendar writes, Supabase/Shopify changes, send, submit, publish, delete, billing, and payment operations.
 - The approval receipt must say that the external operation has not started.
 - Approved protected actions still need the executor ledger to show a connected executor and a completed receipt. If the executor is not connected, Automation OS records that fact and stops safely.
@@ -87,22 +87,21 @@ Codex App capability map from the current Codex manual:
 - Local, Worktree, and Cloud thread modes.
 - Git diff, comments, staging, commit, push, and pull request operations.
 - Integrated terminal.
-- In-app Browser for unauthenticated local/file/public pages.
-- Browser Use through the Browser plugin.
-- Chrome Extension for signed-in browser/profile work.
+- Browser Use CLI through the canonical local helper for public and authorized browser work.
+- Codex App Browser/plugin inventory as a non-authoritative capability surface only.
 - Computer Use for desktop apps.
 - Record & Replay for demonstrated reusable GUI workflow skills when Computer Use is available.
 - MCP support, web search, image generation, non-code artifact preview, and IDE sync.
 
-Automation OS should treat this list as a product parity backlog. Capabilities that require Codex runtime tools should be represented honestly as approval-required bridge actions until the trusted executor exists. The current bridge verifies local app screens primarily through Playwright CLI DOM/screenshot/console artifacts, keeps Browser Use recording/Gemini as diagnostic and veto evidence, prepares approval records for protected work, and records approved-but-not-connected executor attempts; it does not silently perform signed-in external browser work or irreversible plugin actions.
+Automation OS should treat this list as a product parity backlog. Capabilities that require a missing workflow-owned Browser Use CLI adapter, current authority, or provider connector must be represented honestly as an exact blocker until that lane is wired. The current bridge verifies local app screens through Browser Use CLI state/screenshot/log and same-run cleanup/readback artifacts, prepares approval records for protected work, and records approved-but-not-connected executor attempts; it does not silently perform signed-in external browser work or irreversible plugin actions.
 
 Record & Replay / Computer Use standard:
 
 - Record & Replay is for stable repeated GUI workflows that are easier to demonstrate than describe, such as Dashboard readback, Runs proof drawer inspection, Schedule row-to-run checks, and operator preference capture. The output must be refined into a skill before it becomes a standard workflow.
-- Computer Use is for scoped desktop app or Codex app UI work when files, APIs, connectors, and Playwright cannot prove the state. It requires app permission plus macOS Screen Recording and Accessibility.
+- Computer Use is for scoped non-browser desktop app work when files, APIs, connectors, and Browser Use CLI cannot prove the state. It requires app permission plus macOS Screen Recording and Accessibility.
 - Screenshots are supporting evidence. Completion still requires URL/DOM or accessibility text, API/DB readback, proof rows, artifact URI, exact blocker when incomplete, and cleanup/no-residual-process proof where applicable.
 
-Browser Use can still run session-parallel diagnostic local checks and dedicated Browser Use registration workflows. Session-only checks must clean up their temporary Browser Use window with the same `--session`; cleanup status is part of the bridge receipt. Fully separated authenticated profiles require the CDP/profile lane (`--cdp-url http://127.0.0.1:<port>` plus `--profile`), and local checks must preserve that lane rather than closing it. Send/post/publish flows still require resource locks so commits are serialized.
+Browser Use CLI can run session-parallel diagnostic local checks and dedicated registered workflows. Session-only checks must clean up their temporary Browser Use room with the same session; cleanup status is part of the receipt. Authenticated profiles are allocated by the canonical helper from a fresh authority/profile/port lease; callers must not attach directly to CDP or manage Chrome lifecycle themselves. Send/post/publish flows still require resource locks so commits are serialized.
 
 YouTube transcript research starts with the visible YouTube transcript UI or public captions in a dedicated browser/profile. YouTube Data API `captions.download` requires authorization, so it is not the default no-cost research route.
-The connected no-cost route uses `youtube_visible_transcript_cdp` on port `9337`, opens only YouTube watch/youtu.be video URLs, reveals only the official transcript panel, saves redacted transcript artifacts, and never treats the pre-start planner snapshot as completion proof.
+The connected no-cost route uses the Browser Use CLI YouTube stage adapter, opens only YouTube watch/youtu.be video URLs, reveals only the official transcript panel, saves redacted transcript artifacts, and never treats the pre-start planner snapshot as completion proof.

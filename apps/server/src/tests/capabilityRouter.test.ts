@@ -23,9 +23,9 @@ test("capability router recommends existing capture routes and records missing d
   assert.equal(youtubeRoute?.authority, "catalog");
   assert.equal(youtubeRoute?.proof, "read_only");
   assert.ok(routeIds.includes("x_authenticated_capture"));
-  assert.equal(xRoute?.status, "partial");
-  assert.equal(xRoute?.authority, "catalog");
-  assert.equal(xRoute?.proof, "none");
+  assert.equal(xRoute?.status, "ready");
+  assert.equal(xRoute?.authority, "connected");
+  assert.equal(xRoute?.proof, "read_only");
   assert.ok(routeIds.includes("price_checker"));
   assert.ok(routeIds.includes("web_to_image_prompts"));
   assert.ok(gapIds.includes("chat_capability_router"));

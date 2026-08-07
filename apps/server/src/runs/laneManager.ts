@@ -43,6 +43,7 @@ export type RegisteredBrowserLane = {
   profileStrategy: "cdp_profile_lane";
   laneVisibility: "visible" | "hidden" | "headless";
   cleanupStrategy: "port_and_profile_owned_processes";
+  browserSurface: "browser_use_cli";
 };
 
 export const registeredBrowserLanes: RegisteredBrowserLane[] = [
@@ -193,7 +194,8 @@ function registeredLane(input: {
     browserUseCdpUrl: `http://127.0.0.1:${input.cdpPort}`,
     browserUseProfile: input.profileDir,
     profileStrategy: "cdp_profile_lane",
-    cleanupStrategy: "port_and_profile_owned_processes"
+    cleanupStrategy: "port_and_profile_owned_processes",
+    browserSurface: "browser_use_cli"
   };
 }
 

@@ -26,7 +26,7 @@ test("execution routing chooses Codex server as controller and preserves the str
   assert.equal(routing.executionSurface, "browser_lane");
   assert.equal(routing.routeAuthority, "catalog");
   assert.equal(routing.routeProof, "read_only");
-  assert.equal(routing.fallbackReason, "blocked:in_app_browser_required");
+  assert.equal(routing.fallbackReason, "blocked:browser_use_cli_required");
 });
 
 test("execution routing keeps the automation_os_api controller even when MCP is connected", () => {
@@ -64,12 +64,12 @@ test("execution routing blocks legacy browser adapters before any worker command
     capabilityRouter: router
   });
 
-  assert.equal(routing.exactBlocker, "in_app_browser_required");
+  assert.equal(routing.exactBlocker, "browser_use_cli_required");
   assert.match(routing.evidence.join(" "), /adapter=playwright_cli/);
-  assert.match(routing.evidence.join(" "), /adapter_policy=in_app_browser_only/);
+  assert.match(routing.evidence.join(" "), /adapter_policy=legacy_browser_adapter_disabled/);
 });
 
-test("execution routing blocks browser_use_cli with the same in-app Browser gate", () => {
+test("execution routing blocks browser_use_cli until the canonical CLI flow is admitted", () => {
   const capabilities = fixtureCapabilities();
   const router = buildCapabilityRouterSnapshot({
     command: "safe local smoke",
@@ -85,7 +85,7 @@ test("execution routing blocks browser_use_cli with the same in-app Browser gate
   });
 
   assert.equal(routing.phase, "route_decision");
-  assert.equal(routing.exactBlocker, "in_app_browser_required");
+  assert.equal(routing.exactBlocker, "browser_use_cli_required");
   assert.match(routing.evidence.join(" "), /adapter=browser_use_cli/);
   assert.match(routing.evidence.join(" "), /adapter_policy=browser_use_cli_no_fallback/);
 });

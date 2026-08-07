@@ -191,7 +191,9 @@ test("Obsidian generated file check records missing, non-generated, and JSON not
   }));
   const persisted = JSON.parse(readFileSync(statusFile, "utf8")) as RowLike;
 
-  assert.equal(status.ok, true);
+  assert.equal(status.ok, false);
+  assert.equal(status.run_state, "succeeded_with_drift");
+  assert.equal(status.blocker?.code, "parity_drift");
   assert.equal(status.generatedFileCheck.ok, false);
   assert.equal(status.generatedFileCheck.total, 5);
   assert.deepEqual(status.generatedFileCheck.missing, [missingFile]);
@@ -450,14 +452,14 @@ test("Periodic Obsidian export is disabled when interval is zero", async () => {
   delete process.env.AUTOMATION_OS_OBSIDIAN_PERIODIC_EXPORT_MS;
 });
 
-test("Periodic Obsidian export defaults to five minutes when interval is unset", async () => {
+test("Periodic Obsidian export defaults to thirty minutes when interval is unset", async () => {
   const previousInterval = process.env.AUTOMATION_OS_OBSIDIAN_PERIODIC_EXPORT_MS;
   delete process.env.AUTOMATION_OS_OBSIDIAN_PERIODIC_EXPORT_MS;
   const autoExport = await import(`../obsidian/autoExport.js?periodic-default=${Date.now()}`);
   const controller = autoExport.startPeriodicObsidianExport();
 
   assert.equal(controller.enabled, true);
-  assert.equal(controller.intervalMs, 300000);
+  assert.equal(controller.intervalMs, 1800000);
   controller.stop();
   if (previousInterval === undefined) delete process.env.AUTOMATION_OS_OBSIDIAN_PERIODIC_EXPORT_MS;
   else process.env.AUTOMATION_OS_OBSIDIAN_PERIODIC_EXPORT_MS = previousInterval;
@@ -518,6 +520,8 @@ test("Obsidian exports share one single-flight boundary across manual, state-cha
   });
 
   assert.equal(outer.ok, true);
+  assert.equal(outer.run_state, "succeeded");
+  assert.equal(outer.busy_skip_count, 3);
   assert.equal(outer.reason, "outer_export");
   assert.deepEqual(
     nestedStatuses.map((status) => status.reason),

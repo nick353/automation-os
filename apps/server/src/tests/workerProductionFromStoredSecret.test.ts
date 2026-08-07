@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { workerChildSpawnFailureSummary } from "../cli/workerProductionErrors.js";
+import { signalWorkerProcessGroup } from "../cli/workerProcessGroup.js";
 
 const tempRoot = mkdtempSync(join(tmpdir(), "automation-os-worker-production-stored-secret-"));
 const secretDir = join(tempRoot, "secrets");
@@ -109,6 +110,26 @@ test("worker child spawn failure summary is stable and secret-free", () => {
     mode: "proof"
   });
   assert.doesNotMatch(JSON.stringify(summary), /credential-like-text|DATABASE_URL|\/Users\/private\/config/u);
+});
+
+test("worker process-group signalling terminates an owned detached child", async () => {
+  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 60_000)"], {
+    detached: true,
+    stdio: "ignore"
+  });
+  assert.ok(child.pid);
+  try {
+    assert.equal(signalWorkerProcessGroup(child.pid, "SIGTERM"), true);
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("worker_process_group_test_timeout")), 2_000);
+      child.once("exit", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) signalWorkerProcessGroup(child.pid, "SIGKILL");
+  }
 });
 
 test("workerProductionFromStoredSecret blocks unresolved postgres templates before spawning", () => {

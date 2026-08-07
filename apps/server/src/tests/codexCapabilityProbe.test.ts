@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import type { SpawnSyncReturns } from "node:child_process";
 import test from "node:test";
-import { clearCapabilityProbeCache, probeCodexMcpSurface } from "../codex/capabilityProbe.js";
+import { clearCapabilityProbeCache, parseMcpListOutput, probeCodexMcpSurface } from "../codex/capabilityProbe.js";
 
 test("codex MCP probe caches read-only results within TTL", () => {
   clearCapabilityProbeCache();
@@ -101,4 +101,46 @@ test("codex MCP probe fails closed on malformed output", () => {
   assert.equal(result.state.connected, false);
   assert.equal(result.entries.length, 0);
   assert.equal(result.parsedFrom, "none");
+});
+
+test("codex MCP probe parses the official column-formatted mcp list", () => {
+  const output = [
+    "Name  Command  Args  Cwd  Status  Auth",
+    "browser  node  server.mjs  /tmp  Unsupported  -",
+    "gmail  node  server.mjs  /tmp  Connected  OAuth"
+  ].join("\n");
+
+  const parsed = parseMcpListOutput(output);
+
+  assert.equal(parsed.parsedFrom, "text");
+  assert.equal(parsed.parseOk, true);
+  assert.deepEqual(parsed.entries, [
+    { name: "browser", status: "Unsupported", enabled: false, connected: false, source: "text" },
+    { name: "gmail", status: "Connected", enabled: true, connected: true, source: "text" }
+  ]);
+});
+
+test("codex MCP probe passes a cold-start-safe timeout to the read-only CLI", () => {
+  clearCapabilityProbeCache();
+  let observedTimeout: number | undefined;
+  const result = probeCodexMcpSurface({
+    command: "fake-codex",
+    timeoutMs: 9_000,
+    ttlMs: 0,
+    runner: (_command, _args, options) => {
+      observedTimeout = options.timeout as number;
+      return {
+        pid: 123,
+        output: [],
+        stdout: "[]",
+        stderr: "",
+        status: 0,
+        signal: null
+      } as SpawnSyncReturns<string>;
+    }
+  });
+
+  assert.equal(observedTimeout, 9_000);
+  assert.equal(result.status, "ok");
+  assert.equal(result.exactBlocker, null);
 });

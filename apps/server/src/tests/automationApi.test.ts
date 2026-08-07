@@ -208,7 +208,9 @@ test("registered automation readback is company-scoped and HTTP execution remain
   assert.equal(portable.json.portable.app_dependency, false);
   assert.equal(portable.json.portable.source_trigger, "automation_os_ui");
   assert.equal(portable.json.portable.external_action_executed, false);
-  assert.equal(portable.json.workerProtocol, "mac_worker_polling_required");
+  assert.equal(portable.json.workerProtocol, "local_worker_loop_required");
+  assert.equal(portable.json.portable.execution_mode, "external");
+  assert.equal(portable.json.portable.browser_surface, "browser_use_cli");
 
   const portableReplay = await requestJson(
     "POST",

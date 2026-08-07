@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { basename } from "node:path";
 import { resolveBuiltInBrowserUseScript } from "./browserUseBuiltIns.js";
 import { readStoredSecretByKind } from "../secrets/secretStore.js";
 
@@ -57,17 +57,8 @@ export type BrowserHealth = {
 };
 
 export function getBrowserHealth(): BrowserHealth {
-  const overrideCommand = process.env.AUTOMATION_OS_PLAYWRIGHT_CLI;
-  const browserUseOverrideCommand = process.env.AUTOMATION_OS_BROWSER_USE_CLI;
-  const localPlaywright = join(process.cwd(), "node_modules", ".bin", "playwright-cli");
-  const localBrowserUse = join(process.cwd(), "node_modules", ".bin", "browser-use");
-  const directCommand = overrideCommand || (commandExists("playwright-cli") ? "playwright-cli" : null);
-  const localCommand = existsSync(localPlaywright) ? localPlaywright : null;
-  const command = directCommand ?? localCommand;
-  const browserUseDisabled = browserUseOverrideCommand === "";
-  const browserUseDirectCommand = browserUseDisabled ? null : browserUseOverrideCommand || (commandExists("browser-use") ? "browser-use" : null);
-  const browserUseLocalCommand = existsSync(localBrowserUse) ? localBrowserUse : null;
-  const browserUseCommand = browserUseDisabled ? null : browserUseDirectCommand ?? browserUseLocalCommand;
+  const command = null;
+  const browserUseCommand = resolveCanonicalBrowserUseCli();
   const browserUseRecordingQa = getBrowserUseRecordingQaHealth(Boolean(browserUseCommand));
   const chromeBinary = resolveChromeBinary();
   const cdpLaneConfigured = Boolean(
@@ -79,9 +70,9 @@ export function getBrowserHealth(): BrowserHealth {
   return {
     generatedAt: new Date().toISOString(),
     playwrightCli: {
-      available: Boolean(command),
-      command,
-      status: command ? "available" : "missing"
+      available: false,
+      command: null,
+      status: "missing"
     },
     browserUseCli: {
       available: Boolean(browserUseCommand),
@@ -197,9 +188,22 @@ function builtInGeminiRunnerAvailable(): boolean {
 }
 
 function autoCdpLaunchConfigured(): boolean {
-  if (process.env.AUTOMATION_OS_BROWSER_USE_AUTO_CDP !== "1") return false;
-  const chromePath = process.env.AUTOMATION_OS_BROWSER_USE_CHROME_BIN || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-  return existsSync(chromePath);
+  return false;
+}
+
+function resolveCanonicalBrowserUseCli(): string | null {
+  if (process.env.AUTOMATION_OS_BROWSER_USE_HELPER !== undefined && !process.env.AUTOMATION_OS_BROWSER_USE_HELPER.trim()) return null;
+  if (process.env.AUTOMATION_OS_BROWSER_USE_CLI !== undefined && !process.env.AUTOMATION_OS_BROWSER_USE_CLI.trim()) return null;
+  const explicit = firstNonEmpty(process.env.AUTOMATION_OS_BROWSER_USE_HELPER)
+    ?? firstNonEmpty(process.env.AUTOMATION_OS_BROWSER_USE_CLI);
+  if (explicit) return isLegacyBrowserExecutable(explicit) ? null : explicit;
+  const configured = "/Users/nichikatanaka/.local/bin/codex-browser-use";
+  return executableExists(configured) ? configured : null;
+}
+
+function isLegacyBrowserExecutable(command: string): boolean {
+  const executable = basename(command.trim().split(/\s+/u, 1)[0] ?? "").toLowerCase();
+  return /(?:^|[-_.])(playwright|puppeteer|chrome|chromium)(?:$|[-_.])/u.test(executable);
 }
 
 function resolveChromeBinary(): string | null {

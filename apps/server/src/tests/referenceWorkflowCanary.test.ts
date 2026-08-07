@@ -66,7 +66,7 @@ test("reference workflow canary proves three runner routes stop before external 
     "nisenprints-daily-product-canva-printify-etsy-pinterest"
   ]);
   assert.ok(receipt.paths.every((path) => path.status === "proof_backed_safe_stop_verified"));
-  assert.ok(receipt.paths.every((path) => path.exact_blocker === "in_app_browser_required"));
+  assert.ok(receipt.paths.every((path) => path.exact_blocker === "browser_use_cli_required"));
   assert.ok(receipt.paths.every((path) => path.run_blocked && path.step_blocked));
   assert.ok(receipt.paths.every((path) => path.proof_gate_ok === false));
   assert.ok(receipt.paths.every((path) => path.runner_exit_status === null));
@@ -139,4 +139,33 @@ test("reference workflow canary rejects a temporary symlink that escapes the iso
   assert.notEqual(result.status, 0);
   assert.match(`${result.stdout}\n${result.stderr}`, /reference_workflow_canary_isolated_temp_paths_required/);
   assert.equal(existsSync(join(process.cwd(), "escaped-canary.sqlite")), false);
+});
+
+test("metadata-only reference canary markers cannot bypass the registered approval gate", async () => {
+  const { startCommandRun, runWorkerOnce } = await import("../runs/workerEngine.js");
+  const { querySql, sqlValue } = await import("../db/client.js");
+  const summary = await startCommandRun("Daily AI registered workflow run full flow", {
+    deferWorker: true,
+    companyId: "company_reference_canary",
+    metadata: {
+      reference_workflow_canary: true,
+      registeredWorkflowId: "daily-ai-research-publish-run",
+      registered_workflow_id: "daily-ai-research-publish-run"
+    }
+  });
+
+  await runWorkerOnce(summary.runId);
+
+  const run = querySql<{ status: string; execution_source: string; automation_id: string | null }>(
+    `SELECT status, execution_source, automation_id FROM runs WHERE id=${sqlValue(summary.runId)} LIMIT 1`
+  )[0];
+  const approvals = querySql<{ status: string; resource_locks_json: string }>(
+    `SELECT status, resource_locks_json FROM approvals WHERE run_id=${sqlValue(summary.runId)} ORDER BY created_at ASC`
+  );
+  assert.equal(run?.execution_source, "automation-os");
+  assert.equal(run?.automation_id, null);
+  assert.equal(run?.status, "waiting_approval");
+  assert.equal(approvals.length, 1);
+  assert.equal(approvals[0]?.status, "pending");
+  assert.match(approvals[0]?.resource_locks_json ?? "", /registered_external:daily-ai-research-publish-run/);
 });

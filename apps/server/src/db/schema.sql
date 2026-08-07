@@ -512,6 +512,24 @@ CREATE TABLE IF NOT EXISTS mvp_idempotency_keys (
 
 CREATE INDEX IF NOT EXISTS mvp_idempotency_keys_company_idx ON mvp_idempotency_keys(company_id, scope, status, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS portable_workflow_invocations (
+  id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  source_trigger TEXT NOT NULL,
+  company_scope TEXT NOT NULL,
+  company_id TEXT,
+  idempotency_key TEXT NOT NULL,
+  request_hash TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'completed')),
+  run_id TEXT REFERENCES runs(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(workflow_id, source_trigger, company_scope, idempotency_key)
+);
+
+CREATE INDEX IF NOT EXISTS portable_workflow_invocations_run_idx
+  ON portable_workflow_invocations(run_id, status, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS company_memory_entries (
   id TEXT PRIMARY KEY,
   company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,

@@ -1,101 +1,41 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { makeId } from "../db/client.js";
-import { ensureYouTubeTranscriptChromeReady, youtubeTranscriptLane } from "../browser/youtubeTranscriptLane.js";
+import { youtubeTranscriptLane } from "../browser/youtubeTranscriptLane.js";
 import { runObsidianIngest, type ObsidianIngestResult } from "./ingest.js";
 import { redactSensitiveText } from "./redaction.js";
 import { guardObsidianVaultPath } from "./vaultGuard.js";
 
 const defaultArtifactRoot = "data/artifacts/youtube-transcript-captures";
-const maxExtractionAttemptCount = 3;
-const maxRevealAttemptCount = 3;
-const cdpOpenTimeoutMs = 15000;
-const cdpEvaluateTimeoutMs = 12000;
-const cdpCloseTimeoutMs = 5000;
+const browserUseCliTimeoutMs = 30000;
+const execFileAsync = promisify(execFile);
 
-export const transcriptRevealExpression = `(() => {
-  const normalizeText = (value) => String(value || "").replace(/\\s+/gu, " ").trim();
-  const isTranscriptControl = (element) => {
-    const text = normalizeText([element.textContent, element.getAttribute("aria-label"), element.getAttribute("title")].filter(Boolean).join(" "));
-    return /show transcript|transcript|文字起こし|トランスクリプト|字幕を表示/iu.test(text);
-  };
-  const descriptionTranscriptSection = document.querySelector("ytd-video-description-transcript-section-renderer");
-  const descriptionTranscriptControl = descriptionTranscriptSection?.querySelector?.("button, yt-button-shape, ytd-button-renderer, #primary-button");
-  if (descriptionTranscriptSection instanceof HTMLElement) {
-    descriptionTranscriptSection.scrollIntoView({ block: "center" });
-  }
-  if (descriptionTranscriptControl instanceof HTMLElement) {
-    descriptionTranscriptControl.scrollIntoView({ block: "center" });
-    const rect = descriptionTranscriptControl.getBoundingClientRect();
-    descriptionTranscriptControl.click();
-    return {
-      title: document.title,
-      currentUrl: String(location.href),
-      revealAttempted: true,
-      revealMethod: "description_transcript_section_click",
-      clickTarget: { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
-    };
-  }
-  const visibleButtons = Array.from(document.querySelectorAll("button, ytd-button-renderer, tp-yt-paper-button"))
-    .filter((element) => element instanceof HTMLElement && element.offsetParent !== null);
-  const control = visibleButtons.find(isTranscriptControl);
-  if (control instanceof HTMLElement) {
-    control.click();
-  }
-  return {
-    title: document.title,
-    currentUrl: String(location.href),
-    revealAttempted: Boolean(control),
-    revealMethod: control ? "visible_transcript_control_click" : null
-  };
-})()`;
-
-export const transcriptExtractionExpression = `(() => {
-  const normalizeText = (value) => String(value || "").replace(/\\s+/gu, " ").trim();
-  const sampleVisibleText = (selector, label) => Array.from(document.querySelectorAll(selector))
-    .filter((element) => element instanceof HTMLElement && element.offsetParent !== null)
-    .map((element) => normalizeText(element.textContent).slice(0, 240))
-    .filter(Boolean)
-    .slice(0, 3)
-    .map((text) => ({ selector: label, text }));
-  const panel = document.querySelector("ytd-engagement-panel-section-list-renderer[target-id='engagement-panel-searchable-transcript']");
-  const transcriptRoot = panel?.querySelector?.("ytd-transcript-renderer");
-  const segments = [];
-  if (transcriptRoot) {
-    for (const row of Array.from(transcriptRoot.querySelectorAll("ytd-transcript-segment-renderer"))) {
-      const textNode = row.querySelector("yt-formatted-string.segment-text") || row.querySelector(".segment-text");
-      const text = normalizeText(textNode?.textContent);
-      const timestamp = normalizeText(row.querySelector(".segment-timestamp, [class*='timestamp']")?.textContent);
-      if (text) segments.push({ selector: "ytd-transcript-segment-renderer", timestamp, text });
-    }
-  }
-  const headingRoot = transcriptRoot || panel;
-  const panelHeadings = headingRoot
-    ? Array.from(headingRoot.querySelectorAll("h2, h3, yt-formatted-string"))
-        .map((element) => normalizeText(element.textContent))
-        .filter((text) => /transcript|文字起こし|トランスクリプト/iu.test(text))
-        .slice(0, 5)
-    : [];
-  return {
-    title: document.title,
-    currentUrl: String(location.href),
-    officialPanelVisible: Boolean(transcriptRoot),
-    panelHeadings,
-    visibleTextSamples: [
-      ...sampleVisibleText("button, ytd-button-renderer, tp-yt-paper-button", "visible_transcript_controls"),
-      ...sampleVisibleText("ytd-player-error-message-renderer, .ytp-error-content-wrap", "player_error"),
-      ...sampleVisibleText("ytd-consent-bump-v2-lightbox, tp-yt-paper-dialog", "consent_or_dialog")
-    ].slice(0, 8),
-    segments
-  };
-})()`;
-
-export type YouTubeTranscriptCdpClient = {
-  openUrl(url: string): Promise<{ targetId?: string; webSocketDebuggerUrl?: string }>;
-  evaluate(expression: string): Promise<unknown>;
-  clickAt?(x: number, y: number): Promise<void>;
-  close?(): Promise<void>;
+export type YouTubeTranscriptBrowserUseCliReadback = {
+  openAndRead(input: {
+    url: string;
+    runId: string;
+    session: string;
+    automationId: string;
+    artifactDir: string;
+  }): Promise<YouTubeTranscriptBrowserUseCliReadbackResult>;
 };
+
+export type YouTubeTranscriptBrowserUseCliReadbackResult =
+  | {
+      ok: true;
+      currentUrl: string;
+      title: string;
+      readback: Record<string, unknown>;
+      receipt?: string;
+    }
+  | {
+      ok: false;
+      exactBlocker: string;
+      summary: string;
+      readback?: Record<string, unknown>;
+    };
 
 export type YouTubeTranscriptCaptureInput = {
   url?: string;
@@ -103,7 +43,7 @@ export type YouTubeTranscriptCaptureInput = {
   vaultPath?: string;
   capturedAt?: string;
   artifactRoot?: string;
-  cdpClient?: YouTubeTranscriptCdpClient;
+  browserUseCliReadback?: YouTubeTranscriptBrowserUseCliReadback;
   publicCaptionFetch?: typeof fetch;
   publicCaptionOnly?: boolean;
 };
@@ -142,17 +82,6 @@ export type YouTubeTranscriptCaptureResult =
       files?: Partial<YouTubeTranscriptCaptureFiles>;
       ingest?: ObsidianIngestResult;
     };
-
-type ExtractedTranscript = {
-  title: string;
-  currentUrl: string;
-  panelHeadings: string[];
-  visibleTextSamples: Array<{ selector: string; text: string }>;
-  officialPanelVisible: boolean;
-  segments: Array<{ selector: string; timestamp: string; text: string }>;
-  transcriptText: string;
-  segmentCount: number;
-};
 
 export async function runYouTubeTranscriptCapture(input: YouTubeTranscriptCaptureInput): Promise<YouTubeTranscriptCaptureResult> {
   const captureId = makeId("youtube_transcript");
@@ -245,147 +174,30 @@ export async function runYouTubeTranscriptCapture(input: YouTubeTranscriptCaptur
     });
   }
 
-  const cdpClient = input.cdpClient ?? createCdpClient();
-  try {
-    if (!input.cdpClient) {
-      const laneReady = await ensureYouTubeTranscriptChromeReady();
-      if (!laneReady.ok) {
-        writeJson(files.stageOpen, {
-          status: "blocked",
-          requestedUrl,
-          laneName: youtubeTranscriptLane.name,
-          cdpPort: youtubeTranscriptLane.port,
-          profileDir: youtubeTranscriptLane.profileDir,
-          exactBlocker: laneReady.exactBlocker,
-          summary: redactSensitiveText(laneReady.summary),
-          attempts: laneReady.attempts,
-          opened: laneReady.opened ? { pid: laneReady.opened.pid ?? null, url: laneReady.opened.url } : null
-        });
-        return blocked({
-          files,
-          manifestBase,
-          artifactDir,
-          captureId,
-          requestedUrl,
-          exactBlocker: laneReady.exactBlocker,
-          summary: laneReady.summary,
-          stage: {
-            status: "blocked",
-            exactBlocker: laneReady.exactBlocker,
-            summary: redactSensitiveText(laneReady.summary),
-            requestedUrl,
-            laneName: youtubeTranscriptLane.name,
-            cdpPort: youtubeTranscriptLane.port,
-            profileDir: youtubeTranscriptLane.profileDir,
-            attempts: laneReady.attempts
-          }
-        });
-      }
-    }
-    const opened = await withTimeout(cdpClient.openUrl(parsed.url.toString()), "youtube_transcript_cdp_open_timeout", cdpOpenTimeoutMs);
-    writeJson(files.stageOpen, {
-      status: "ok",
-      requestedUrl,
-      laneName: youtubeTranscriptLane.name,
-      cdpPort: youtubeTranscriptLane.port,
-      targetId: opened.targetId ?? null,
-      webSocketDebuggerUrl: opened.webSocketDebuggerUrl ? redactSensitiveText(opened.webSocketDebuggerUrl) : null
-    });
+  const cliReadback = input.browserUseCliReadback ?? createBrowserUseCliReadback();
+  const cliResult = await cliReadback.openAndRead({
+    url: parsed.url.toString(),
+    runId: captureId,
+    session: `aos-youtube-${captureId}`,
+    automationId: "youtube-visible-transcript-capture",
+    artifactDir
+  });
+  const safeCliReadback = cliResult.ok ? redactReadback(cliResult.readback) as Record<string, unknown> : undefined;
+  writeJson(files.stageOpen, {
+    status: cliResult.ok ? "ok" : "blocked",
+    requestedUrl,
+    surface: "browser_use_cli",
+    laneName: youtubeTranscriptLane.name,
+    ...(cliResult.ok
+      ? { currentUrl: redactSensitiveText(cliResult.currentUrl), title: redactSensitiveText(cliResult.title), readback: safeCliReadback }
+      : { exactBlocker: cliResult.exactBlocker, summary: redactSensitiveText(cliResult.summary) })
+  });
 
-    const revealResult = await revealWithBoundedRetry(cdpClient);
-    await clickRevealTargetIfSupported(cdpClient, revealResult);
-    const firstExtraction = await withTimeout(cdpClient.evaluate(transcriptExtractionExpression), "youtube_transcript_cdp_evaluate_timeout", cdpEvaluateTimeoutMs);
-    const extraction = await extractWithBoundedRetry(cdpClient, firstExtraction);
-    const currentUrlValidation = validateYouTubeTranscriptUrl(extraction.currentUrl);
-    if (!currentUrlValidation.ok) {
-      return blocked({
-        files,
-        manifestBase,
-        artifactDir,
-        captureId,
-        requestedUrl,
-        exactBlocker: currentUrlValidation.exactBlocker,
-        summary: currentUrlValidation.summary,
-        stage: {
-          status: "blocked",
-          exactBlocker: currentUrlValidation.exactBlocker,
-          requestedUrl,
-          currentUrl: redactSensitiveText(extraction.currentUrl),
-          title: redactSensitiveText(extraction.title),
-          reveal: summarizeReveal(revealResult),
-          visibleTextSamples: extraction.visibleTextSamples.map((sample) => ({ selector: sample.selector, text: redactSensitiveText(sample.text) })),
-          segmentCount: extraction.segmentCount
-        }
-      });
-    }
-    if (!extraction.officialPanelVisible || extraction.segmentCount === 0 || !extraction.transcriptText.trim()) {
-      const exactBlocker = extraction.officialPanelVisible ? "youtube_transcript_segments_not_visible" : "youtube_transcript_official_panel_not_visible";
-      const fallback = await capturePublicTimedTextFallback({
-        url: parsed.url,
-        fetchImpl: input.publicCaptionFetch ?? fetch
-      });
-      if (fallback.ok) {
-        return persistCapturedTranscript({
-          input,
-          vaultPath: vaultGuard.vaultPath,
-          files,
-          manifestBase,
-          artifactDir,
-          captureId,
-          requestedUrl,
-          currentUrl: parsed.url.toString(),
-          sourceTitle: fallback.title,
-          transcriptText: fallback.transcriptText,
-          segmentCount: fallback.segmentCount,
-          capturedAt,
-          extractionMethods: ["public YouTube timedtext captionTracks", fallback.trackName].filter(Boolean),
-          stage: {
-            status: "ok",
-            requestedUrl,
-            currentUrl: redactSensitiveText(parsed.url.toString()),
-            title: redactSensitiveText(fallback.title),
-            reveal: summarizeReveal(revealResult),
-            officialPanelVisible: extraction.officialPanelVisible,
-            publicCaptionFallback: {
-              status: "captured",
-              trackName: fallback.trackName,
-              languageCode: fallback.languageCode,
-              segmentCount: fallback.segmentCount
-            }
-          }
-        });
-      }
-      return blocked({
-        files,
-        manifestBase,
-        artifactDir,
-        captureId,
-        requestedUrl,
-        exactBlocker,
-        summary: extraction.officialPanelVisible
-          ? "No visible YouTube transcript segments were found after opening the transcript panel"
-          : "The official YouTube transcript panel was not visible after the reveal attempt",
-        stage: {
-          status: "blocked",
-          exactBlocker,
-          requestedUrl,
-          currentUrl: redactSensitiveText(extraction.currentUrl),
-          title: redactSensitiveText(extraction.title),
-          reveal: summarizeReveal(revealResult),
-          officialPanelVisible: extraction.officialPanelVisible,
-          panelHeadings: extraction.panelHeadings,
-          visibleTextSamples: extraction.visibleTextSamples.map((sample) => ({ selector: sample.selector, text: redactSensitiveText(sample.text) })),
-          segmentCount: extraction.segmentCount,
-          publicCaptionFallback: {
-            status: "blocked",
-            exactBlocker: fallback.exactBlocker,
-            summary: fallback.summary,
-            transcriptEndpoint: fallback.transcriptEndpoint
-          }
-        }
-      });
-    }
-
+  const fallback = await capturePublicTimedTextFallback({
+    url: parsed.url,
+    fetchImpl: input.publicCaptionFetch ?? fetch
+  });
+  if (fallback.ok) {
     return persistCapturedTranscript({
       input,
       vaultPath: vaultGuard.vaultPath,
@@ -394,87 +206,66 @@ export async function runYouTubeTranscriptCapture(input: YouTubeTranscriptCaptur
       artifactDir,
       captureId,
       requestedUrl,
-      currentUrl: extraction.currentUrl,
-      sourceTitle: extraction.title,
-      transcriptText: extraction.transcriptText,
-      segmentCount: extraction.segmentCount,
+      currentUrl: cliResult.ok ? cliResult.currentUrl : parsed.url.toString(),
+      sourceTitle: fallback.title || (cliResult.ok ? cliResult.title : "YouTube transcript capture"),
+      transcriptText: fallback.transcriptText,
+      segmentCount: fallback.segmentCount,
       capturedAt,
-      extractionMethods: ["document.title", "location.href", "visible transcript panel selectors"],
+      extractionMethods: [
+        ...(cliResult.ok ? ["Browser Use CLI public state/title/url readback"] : []),
+        "public YouTube timedtext captionTracks",
+        fallback.trackName
+      ].filter(Boolean),
       stage: {
         status: "ok",
         requestedUrl,
-        currentUrl: redactSensitiveText(extraction.currentUrl),
-        title: redactSensitiveText((normalizeScalar(input.sourceTitle) ?? extraction.title) || "YouTube transcript capture"),
-        reveal: summarizeReveal(revealResult),
-        panelHeadings: extraction.panelHeadings.map(redactSensitiveText),
-        segmentCount: extraction.segmentCount
+        currentUrl: redactSensitiveText(cliResult.ok ? cliResult.currentUrl : parsed.url.toString()),
+        title: redactSensitiveText((normalizeScalar(input.sourceTitle) ?? fallback.title ?? (cliResult.ok ? cliResult.title : "YouTube transcript capture"))),
+        browserUseCliReadback: cliResult.ok ? safeCliReadback : {
+          status: "blocked",
+          exactBlocker: cliResult.exactBlocker,
+          summary: redactSensitiveText(cliResult.summary)
+        },
+        publicCaptionFallback: {
+          status: "captured",
+          trackName: fallback.trackName,
+          languageCode: fallback.languageCode,
+          segmentCount: fallback.segmentCount
+        }
       }
     });
-  } catch (error) {
-    const summary = error instanceof Error ? error.message : "CDP transcript capture failed";
-    const exactBlocker = runtimeExactBlocker(summary);
-    if (!existsSync(files.stageOpen)) {
-      writeJson(files.stageOpen, { status: "blocked", requestedUrl, laneName: youtubeTranscriptLane.name, cdpPort: youtubeTranscriptLane.port, exactBlocker });
-    }
-    const fallback = await capturePublicTimedTextFallback({
-      url: parsed.url,
-      fetchImpl: input.publicCaptionFetch ?? fetch
-    });
-    if (fallback.ok) {
-      return persistCapturedTranscript({
-        input,
-        vaultPath: vaultGuard.vaultPath,
-        files,
-        manifestBase,
-        artifactDir,
-        captureId,
-        requestedUrl,
-        currentUrl: parsed.url.toString(),
-        sourceTitle: fallback.title,
-        transcriptText: fallback.transcriptText,
-        segmentCount: fallback.segmentCount,
-        capturedAt,
-        extractionMethods: ["public YouTube timedtext captionTracks", fallback.trackName].filter(Boolean),
-        stage: {
-          status: "ok",
-          requestedUrl,
-          currentUrl: redactSensitiveText(parsed.url.toString()),
-          title: redactSensitiveText(fallback.title),
-          cdpFallbackFrom: exactBlocker,
-          publicCaptionFallback: {
-            status: "captured",
-            trackName: fallback.trackName,
-            languageCode: fallback.languageCode,
-            segmentCount: fallback.segmentCount
-          }
-        }
-      });
-    }
-    return blocked({
-      files,
-      manifestBase,
-      artifactDir,
-      captureId,
-      requestedUrl,
+  }
+
+  const exactBlocker = cliResult.ok ? fallback.exactBlocker : cliResult.exactBlocker;
+  const summary = cliResult.ok
+    ? fallback.summary
+    : `${cliResult.summary}; ${fallback.summary}`;
+  return blocked({
+    files,
+    manifestBase,
+    artifactDir,
+    captureId,
+    requestedUrl,
+    exactBlocker,
+    summary: redactSensitiveText(summary),
+    stage: {
+      status: "blocked",
       exactBlocker,
       summary: redactSensitiveText(summary),
-      stage: {
+      requestedUrl,
+      browserUseCliReadback: cliResult.ok ? safeCliReadback : {
         status: "blocked",
-        exactBlocker,
-        summary: redactSensitiveText(summary),
-        requestedUrl,
-        publicCaptionFallback: {
-          status: "blocked",
-          exactBlocker: fallback.exactBlocker,
-          summary: fallback.summary,
-          transcriptEndpoint: fallback.transcriptEndpoint
-        }
+        exactBlocker: cliResult.exactBlocker,
+        summary: redactSensitiveText(cliResult.summary)
+      },
+      publicCaptionFallback: {
+        status: "blocked",
+        exactBlocker: fallback.exactBlocker,
+        summary: fallback.summary,
+        transcriptEndpoint: fallback.transcriptEndpoint
       }
-    });
-  } finally {
-    const closePromise = cdpClient.close?.();
-    if (closePromise) await withTimeout(closePromise, "youtube_transcript_cdp_close_timeout", cdpCloseTimeoutMs).catch(() => undefined);
-  }
+    }
+  });
 }
 
 export function validateYouTubeTranscriptUrl(value: unknown):
@@ -511,215 +302,118 @@ export function validateYouTubeTranscriptUrl(value: unknown):
   return { ok: true, url };
 }
 
-function createCdpClient(): YouTubeTranscriptCdpClient {
-  return new ChromeCdpClient();
-}
-
-class ChromeCdpClient implements YouTubeTranscriptCdpClient {
-  private transport?: CdpWebSocketTransport;
-
-  async openUrl(url: string): Promise<{ targetId?: string; webSocketDebuggerUrl?: string }> {
-    const target = await openCdpTarget(url);
-    const wsUrl = typeof target.webSocketDebuggerUrl === "string" ? target.webSocketDebuggerUrl : undefined;
-    if (!wsUrl) throw new Error("youtube_transcript_cdp_target_missing_websocket");
-      this.transport = await CdpWebSocketTransport.connect(wsUrl, cdpOpenTimeoutMs);
-      await this.transport.send("Runtime.enable", undefined, cdpEvaluateTimeoutMs);
-    return { targetId: typeof target.id === "string" ? target.id : undefined, webSocketDebuggerUrl: wsUrl };
-  }
-
-  async evaluate(expression: string): Promise<unknown> {
-    if (!this.transport) throw new Error("youtube_transcript_cdp_not_connected");
-    await delay(1200);
-    const envelope = await this.transport.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, cdpEvaluateTimeoutMs);
-    return parseRuntimeEvaluateByValue(envelope);
-  }
-
-  async clickAt(x: number, y: number): Promise<void> {
-    if (!this.transport) throw new Error("youtube_transcript_cdp_not_connected");
-    await this.transport.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y }, cdpEvaluateTimeoutMs);
-    await this.transport.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 }, cdpEvaluateTimeoutMs);
-    await this.transport.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 }, cdpEvaluateTimeoutMs);
-    await delay(1200);
-  }
-
-  async close(): Promise<void> {
-    await this.transport?.close();
-  }
-}
-
-class CdpWebSocketTransport {
-  private id = 0;
-  private pending = new Map<number, { resolve(value: unknown): void; reject(error: Error): void }>();
-
-  private constructor(private readonly socket: WebSocketLike) {}
-
-  static connect(url: string, timeoutMs: number): Promise<CdpWebSocketTransport> {
-    const WebSocketCtor = globalThis.WebSocket as WebSocketConstructor | undefined;
-    if (!WebSocketCtor) return Promise.reject(new Error("youtube_transcript_websocket_unavailable"));
-    return new Promise((resolveConnect, rejectConnect) => {
-      const socket = new WebSocketCtor(url) as WebSocketLike;
-      const transport = new CdpWebSocketTransport(socket);
-      let settled = false;
-      const timer = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        socket.close();
-        rejectConnect(new Error("youtube_transcript_websocket_connect_timeout"));
-      }, timeoutMs);
-      socket.addEventListener("open", () => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        resolveConnect(transport);
-      }, { once: true });
-      socket.addEventListener("error", () => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        rejectConnect(new Error("youtube_transcript_websocket_connect_failed"));
-      }, { once: true });
-      socket.addEventListener("message", (event) => transport.onMessage(event));
-      socket.addEventListener("close", () => transport.rejectAll(new Error("youtube_transcript_websocket_closed")));
-    });
-  }
-
-  send(method: string, params?: Record<string, unknown>, timeoutMs = cdpEvaluateTimeoutMs): Promise<unknown> {
-    const id = ++this.id;
-    const message = JSON.stringify({ id, method, params });
-    return new Promise((resolveSend, rejectSend) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        rejectSend(new Error("youtube_transcript_cdp_send_timeout"));
-      }, timeoutMs);
-      this.pending.set(id, {
-        resolve: (value) => {
-          clearTimeout(timer);
-          resolveSend(value);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          rejectSend(error);
+function createBrowserUseCliReadback(): YouTubeTranscriptBrowserUseCliReadback {
+  const helper = process.env.AUTOMATION_OS_BROWSER_USE_CLI?.trim()
+    || process.env.BROWSER_USE_CLI_PATH?.trim()
+    || "/Users/nichikatanaka/.local/bin/codex-browser-use";
+  return {
+    async openAndRead(input) {
+      const args = [
+        "public",
+        "--run-id", input.runId,
+        "--session", input.session,
+        "--automation-id", input.automationId,
+        "--lifecycle", "single-use",
+        "--allowed-origin", "https://www.youtube.com",
+        "--allowed-origin", "https://youtu.be",
+        "--allowed-origin", "https://m.youtube.com",
+        "--post-command-json", JSON.stringify([["state"], ["get", "title"], ["get", "url"]]),
+        "--artifact-dir", input.artifactDir,
+        "--",
+        "open", input.url
+      ];
+      try {
+        const result = await execFileAsync(helper, args, {
+          encoding: "utf8",
+          timeout: browserUseCliTimeoutMs,
+          maxBuffer: 512 * 1024
+        });
+        const parsed = parseLastJsonLine(result.stdout);
+        if (!parsed || parsed.status !== "completed" || parsed.finalized !== true) {
+          return {
+            ok: false,
+            exactBlocker: stringValue(parsed?.exact_blocker) || "browser_use_cli_receipt_missing",
+            summary: "Browser Use CLI did not return a finalized public read-only receipt"
+          };
         }
-      });
-      this.socket.send(message);
-    });
-  }
-
-  async close(): Promise<void> {
-    this.rejectAll(new Error("youtube_transcript_websocket_closed"));
-    this.socket.close();
-  }
-
-  private onMessage(event: { data: unknown }): void {
-    const text = typeof event.data === "string" ? event.data : Buffer.isBuffer(event.data) ? event.data.toString("utf8") : "";
-    if (!text) return;
-    const message = JSON.parse(text) as { id?: number; result?: unknown; error?: { message?: string } };
-    if (typeof message.id !== "number") return;
-    const pending = this.pending.get(message.id);
-    if (!pending) return;
-    this.pending.delete(message.id);
-    if (message.error) pending.reject(new Error(message.error.message ?? "cdp_error"));
-    else pending.resolve({ result: message.result });
-  }
-
-  private rejectAll(error: Error): void {
-    for (const pending of this.pending.values()) pending.reject(error);
-    this.pending.clear();
-  }
-}
-
-export function parseRuntimeEvaluateByValue(envelope: unknown): unknown {
-  if (!isRecord(envelope) || !hasOwn(envelope, "result")) throw new Error("youtube_transcript_runtime_evaluate_missing_result");
-  const evaluateResult = envelope.result;
-  if (!isRecord(evaluateResult)) throw new Error("youtube_transcript_runtime_evaluate_missing_result");
-  if (evaluateResult.exceptionDetails !== undefined) throw new Error("youtube_transcript_runtime_evaluate_exception");
-  if (!hasOwn(evaluateResult, "result") || !isRecord(evaluateResult.result)) throw new Error("youtube_transcript_runtime_evaluate_missing_remote_object");
-  const remoteObject = evaluateResult.result;
-  if (hasOwn(remoteObject, "value")) return remoteObject.value;
-  if (typeof remoteObject.objectId === "string" && remoteObject.objectId.trim()) throw new Error("youtube_transcript_runtime_evaluate_object_id_only");
-  return undefined;
-}
-
-async function openCdpTarget(url: string): Promise<Record<string, unknown>> {
-  const encoded = encodeURIComponent(url);
-  const endpoint = `http://127.0.0.1:${youtubeTranscriptLane.port}/json/new?${encoded}`;
-  let response = await fetch(endpoint, { method: "PUT" });
-  if (response.status === 405 || response.status === 404) response = await fetch(endpoint);
-  if (!response.ok) throw new Error(`youtube_transcript_cdp_new_target_http_${response.status}`);
-  return await response.json() as Record<string, unknown>;
-}
-
-async function extractWithBoundedRetry(cdpClient: YouTubeTranscriptCdpClient, firstValue: unknown): Promise<ExtractedTranscript> {
-  let extracted = normalizeExtractedTranscript(firstValue);
-  let attempts = 1;
-  while (extracted.segmentCount === 0 && attempts < maxExtractionAttemptCount) {
-    extracted = normalizeExtractedTranscript(await withTimeout(cdpClient.evaluate(transcriptExtractionExpression), "youtube_transcript_cdp_evaluate_timeout", cdpEvaluateTimeoutMs));
-    attempts += 1;
-  }
-  return extracted;
-}
-
-async function revealWithBoundedRetry(cdpClient: YouTubeTranscriptCdpClient): Promise<unknown> {
-  let result: unknown;
-  for (let attempt = 1; attempt <= maxRevealAttemptCount; attempt += 1) {
-    result = await withTimeout(cdpClient.evaluate(transcriptRevealExpression), "youtube_transcript_cdp_evaluate_timeout", cdpEvaluateTimeoutMs);
-    if (summarizeReveal(result).revealAttempted) return result;
-    if (attempt < maxRevealAttemptCount) await delay(800);
-  }
-  return result;
-}
-
-async function clickRevealTargetIfSupported(cdpClient: YouTubeTranscriptCdpClient, revealResult: unknown): Promise<void> {
-  if (!cdpClient.clickAt) return;
-  const page = isRecord(revealResult) ? revealResult : {};
-  const target = isRecord(page.clickTarget) ? page.clickTarget : undefined;
-  const x = typeof target?.x === "number" ? target.x : undefined;
-  const y = typeof target?.y === "number" ? target.y : undefined;
-  if (x === undefined || y === undefined) return;
-  await withTimeout(cdpClient.clickAt(x, y), "youtube_transcript_cdp_click_timeout", cdpEvaluateTimeoutMs);
-}
-
-function normalizeExtractedTranscript(value: unknown): ExtractedTranscript {
-  const page = isRecord(value) ? value : {};
-  const rawSegments = Array.isArray(page.segments) ? page.segments : [];
-  const seen = new Set<string>();
-  const segments = rawSegments.flatMap((entry) => {
-    if (!isRecord(entry)) return [];
-    const text = normalizeWhitespace(typeof entry.text === "string" ? entry.text : "");
-    const timestamp = normalizeWhitespace(typeof entry.timestamp === "string" ? entry.timestamp : "");
-    const selector = normalizeWhitespace(typeof entry.selector === "string" ? entry.selector : "");
-    if (!text || !selector || !isAllowedSegmentSelector(selector)) return [];
-    const key = `${timestamp}\0${text}`;
-    if (seen.has(key)) return [];
-    seen.add(key);
-    return [{ selector, timestamp, text }];
-  });
-  const transcriptText = segments.map((segment) => segment.timestamp ? `${segment.timestamp} ${segment.text}` : segment.text).join("\n");
-  return {
-    title: typeof page.title === "string" ? page.title : "",
-    currentUrl: typeof page.currentUrl === "string" ? page.currentUrl : "",
-    panelHeadings: Array.isArray(page.panelHeadings) ? page.panelHeadings.filter((item): item is string => typeof item === "string").slice(0, 5) : [],
-    visibleTextSamples: normalizeVisibleTextSamples(page.visibleTextSamples),
-    officialPanelVisible: Boolean(page.officialPanelVisible),
-    segments,
-    transcriptText,
-    segmentCount: segments.length
+        const readback = isRecord(parsed.captured_readback) ? parsed.captured_readback : {};
+        const currentUrl = findReadbackString(readback, ["currentUrl", "url"]);
+        const title = findReadbackString(readback, ["title"]);
+        if (!currentUrl || !title) {
+          return {
+            ok: false,
+            exactBlocker: "browser_use_cli_semantic_readback_unavailable",
+            summary: "Browser Use CLI receipt lacks the required same-run URL/title readback",
+            readback: redactReadback(readback) as Record<string, unknown>
+          };
+        }
+        const validatedUrl = validateYouTubeTranscriptUrl(currentUrl);
+        if (!validatedUrl.ok) {
+          return {
+            ok: false,
+            exactBlocker: "browser_use_cli_navigation_readback_mismatch",
+            summary: "Browser Use CLI readback is not a YouTube video URL",
+            readback: redactReadback(readback) as Record<string, unknown>
+          };
+        }
+        return {
+          ok: true,
+          currentUrl: validatedUrl.url.toString(),
+          title: redactSensitiveText(title),
+          readback: redactReadback(readback) as Record<string, unknown>,
+          receipt: stringValue(parsed.receipt)
+        };
+      } catch (error) {
+        const stdout = isRecord(error) && typeof error.stdout === "string" ? error.stdout : "";
+        const parsed = parseLastJsonLine(stdout);
+        return {
+          ok: false,
+          exactBlocker: stringValue(parsed?.exact_blocker) || (error instanceof Error && /timed out|timeout/i.test(error.message)
+            ? "browser_use_cli_timeout"
+            : "browser_use_cli_unavailable"),
+          summary: "Browser Use CLI public read-only execution was not completed"
+        };
+      }
+    }
   };
 }
 
-function isAllowedSegmentSelector(selector: string): boolean {
-  return [
-    "ytd-transcript-segment-renderer"
-  ].includes(selector);
+function parseLastJsonLine(value: string): Record<string, unknown> | null {
+  const lines = String(value || "").split(/\r?\n/u).map((line) => line.trim()).filter(Boolean).reverse();
+  for (const line of lines) {
+    try {
+      const parsed = JSON.parse(line) as unknown;
+      if (isRecord(parsed)) return parsed;
+    } catch {
+      // helper diagnostics are intentionally ignored; only the final JSON receipt is trusted
+    }
+  }
+  return null;
 }
 
-function summarizeReveal(value: unknown) {
-  const page = isRecord(value) ? value : {};
-  return {
-    currentUrl: redactSensitiveText(typeof page.currentUrl === "string" ? page.currentUrl : ""),
-    revealAttempted: Boolean(page.revealAttempted),
-    revealMethod: typeof page.revealMethod === "string" ? page.revealMethod : null
-  };
+function findReadbackString(value: unknown, keys: string[]): string {
+  if (!isRecord(value)) return "";
+  for (const key of keys) {
+    const candidate = value[key];
+    if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+  }
+  for (const child of Object.values(value)) {
+    const found = findReadbackString(child, keys);
+    if (found) return found;
+  }
+  return "";
+}
+
+function redactReadback(value: unknown, depth = 0): unknown {
+  if (depth > 6) return "[redacted-depth]";
+  if (typeof value === "string") return redactSensitiveText(value);
+  if (Array.isArray(value)) return value.slice(0, 32).map((item) => redactReadback(item, depth + 1));
+  if (!isRecord(value)) return value;
+  return Object.fromEntries(Object.entries(value).slice(0, 64).map(([key, item]) => [key, redactReadback(item, depth + 1)]));
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === "string" && value.trim() ? value.trim() : "";
 }
 
 function blocked(input: {
@@ -874,9 +568,9 @@ type TranscriptEndpointDiagnostic = {
 
 async function capturePublicTimedTextFallback(input: { url: URL; fetchImpl: typeof fetch }): Promise<PublicTimedTextFallbackResult> {
   try {
-    const watchResponse = await fetchWithTimeout(input.fetchImpl, input.url.toString(), "youtube_public_captions_watch_timeout", cdpEvaluateTimeoutMs);
+    const watchResponse = await fetchWithTimeout(input.fetchImpl, input.url.toString(), "youtube_public_captions_watch_timeout", browserUseCliTimeoutMs);
     if (!watchResponse.ok) return { ok: false, exactBlocker: `youtube_public_captions_watch_http_${watchResponse.status}`, summary: `watch page returned HTTP ${watchResponse.status}` };
-    const watchHtml = await withTimeout(watchResponse.text(), "youtube_public_captions_watch_timeout", cdpEvaluateTimeoutMs);
+    const watchHtml = await withTimeout(watchResponse.text(), "youtube_public_captions_watch_timeout", browserUseCliTimeoutMs);
     const playerResponse = extractInitialPlayerResponse(watchHtml);
     if (!playerResponse) return { ok: false, exactBlocker: "youtube_public_captions_player_response_missing", summary: "ytInitialPlayerResponse was not found" };
     const transcriptEndpoint = extractTranscriptEndpointDiagnostic(watchHtml);
@@ -895,7 +589,7 @@ async function capturePublicTimedTextFallback(input: { url: URL; fetchImpl: type
     const selected = selectCaptionTrack(tracks);
     const captionUrl = timedTextJsonUrl(selected.baseUrl);
     if (!captionUrl) return { ok: false, exactBlocker: "youtube_public_captions_url_invalid", summary: "caption track baseUrl was invalid", transcriptEndpoint };
-    const captionResponse = await fetchWithTimeout(input.fetchImpl, captionUrl, "youtube_public_captions_timedtext_timeout", cdpEvaluateTimeoutMs);
+    const captionResponse = await fetchWithTimeout(input.fetchImpl, captionUrl, "youtube_public_captions_timedtext_timeout", browserUseCliTimeoutMs);
     if (!captionResponse.ok) {
       if (transcriptEndpoint.present) {
         return {
@@ -907,7 +601,7 @@ async function capturePublicTimedTextFallback(input: { url: URL; fetchImpl: type
       }
       return { ok: false, exactBlocker: `youtube_public_captions_timedtext_http_${captionResponse.status}`, summary: `timedtext returned HTTP ${captionResponse.status}`, transcriptEndpoint };
     }
-    const captionBody = await withTimeout(captionResponse.text(), "youtube_public_captions_timedtext_timeout", cdpEvaluateTimeoutMs);
+    const captionBody = await withTimeout(captionResponse.text(), "youtube_public_captions_timedtext_timeout", browserUseCliTimeoutMs);
     const transcript = parseTimedTextBody(captionBody);
     if (!transcript.transcriptText.trim()) {
       if (transcriptEndpoint.present) {
@@ -1181,15 +875,6 @@ function captureFiles(artifactDir: string): YouTubeTranscriptCaptureFiles {
   };
 }
 
-function runtimeExactBlocker(summary: string): string {
-  if (/runtime_evaluate_object_id_only/.test(summary)) return "youtube_transcript_runtime_evaluate_object_id_only";
-  if (/runtime_evaluate_exception/.test(summary)) return "youtube_transcript_runtime_evaluate_exception";
-  if (/timeout/i.test(summary)) return "youtube_transcript_cdp_timeout";
-  if (/fetch failed|cdp_unavailable|connection refused/i.test(summary)) return "youtube_transcript_cdp_unavailable";
-  if (/websocket|cdp|target/i.test(summary)) return "youtube_transcript_cdp_failed";
-  return "youtube_transcript_capture_failed";
-}
-
 function normalizeCapturedAt(value: unknown): string | undefined {
   if (value === undefined || value === null || value === "") return new Date().toISOString();
   if (typeof value !== "string") return undefined;
@@ -1205,26 +890,12 @@ function normalizeWhitespace(value: string): string {
   return value.replace(/\s+/gu, " ").trim();
 }
 
-function normalizeVisibleTextSamples(value: unknown): Array<{ selector: string; text: string }> {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((entry) => {
-    if (!isRecord(entry)) return [];
-    const selector = normalizeWhitespace(typeof entry.selector === "string" ? entry.selector : "");
-    const text = normalizeWhitespace(typeof entry.text === "string" ? entry.text : "").slice(0, 240);
-    return selector && text ? [{ selector, text }] : [];
-  }).slice(0, 8);
-}
-
 function redactUnknown(value: unknown): string | undefined {
   return typeof value === "string" ? redactSensitiveText(value) : undefined;
 }
 
 function writeJson(path: string, value: unknown): void {
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
 }
 
 function withTimeout<T>(promise: Promise<T>, exactBlocker: string, timeoutMs: number): Promise<T> {
@@ -1246,15 +917,3 @@ function withTimeout<T>(promise: Promise<T>, exactBlocker: string, timeoutMs: nu
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-
-function hasOwn(value: Record<string, unknown>, key: string): boolean {
-  return Object.prototype.hasOwnProperty.call(value, key);
-}
-
-type WebSocketConstructor = new (url: string) => WebSocketLike;
-type WebSocketLike = {
-  send(data: string): void;
-  close(): void;
-  addEventListener(type: "open" | "error" | "close", listener: () => void, options?: { once?: boolean }): void;
-  addEventListener(type: "message", listener: (event: { data: unknown }) => void): void;
-};

@@ -34,8 +34,8 @@ export const trustedBridgeActions: TrustedBridgeAction[] = [
     category: "browser",
     status: "ready",
     riskLevel: "safe",
-    visibleSummary: "このアプリの画面をPlaywright CLI primaryとして確認します。",
-    backendSummary: "Primary local check: Playwright CLIでlocal URLだけを開き、DOM snapshot、screenshot、console logをsystem_checksへ保存します。現在のlocal UI completion proofはPlaywright-owned artifact readbackです。",
+    visibleSummary: "このアプリの画面をcanonical Browser Use CLIでread-only確認します。",
+    backendSummary: "canonical Browser Use CLIのpublic single-use経路でlocal URLだけを開き、同一runのstate/title/url/screenshot readbackとterminal receipt/cleanupを保存します。Playwright、In-App Browser、直接CDPへはフォールバックしません。",
     buttonLabel: "確認"
   },
   {
@@ -45,7 +45,7 @@ export const trustedBridgeActions: TrustedBridgeAction[] = [
     status: "ready",
     riskLevel: "safe",
     visibleSummary: "Browser Use CLIでローカル画面の録画/Gemini診断を記録します。",
-    backendSummary: "Diagnostic recording path: browser-use --session <unique> open/state/screenshot/close をlocal URLだけに実行し、recording/Gemini metadataをsystem_checksとbridge receiptへ保存します。Recording/Geminiは補助 proof または completion veto であり、通常のlocal UI completion proofはPlaywright CLIです。",
+    backendSummary: "canonical Browser Use CLIのpublic single-use経路でlocal URLだけを開き、同一runのstate/title/url/screenshot readbackを保存します。録画/Geminiは別のcompletion vetoで、CLIのterminal receipt/cleanupが確認できない操作は成功扱いにしません。",
     buttonLabel: "確認"
   },
   {
@@ -80,12 +80,12 @@ export const trustedBridgeActions: TrustedBridgeAction[] = [
   },
   {
     id: "chrome_authenticated_action",
-    label: "ログイン済みChrome操作",
+    label: "ログイン済みBrowser Use操作",
     category: "browser",
     status: "ready",
     riskLevel: "protected",
     visibleSummary: "ログインが必要な外部サイトを操作します。課金・購入・支払い・決済だけ停止します。",
-    backendSummary: "Chrome extension/profile laneが必要。投稿・送信・公開・削除はstage evidence/readbackを残して進め、billing/purchase/payment/checkoutだけ停止する。",
+    backendSummary: "current-run authority付きのcanonical Browser Use CLI authorized/temporary経路と専用profile/portを使います。same-session readback、外部効果の承認、receipt、cleanupが揃わない場合は停止し、Chrome extension、直接CDP、手動UIへはフォールバックしません。",
     buttonLabel: "準備"
   },
   {

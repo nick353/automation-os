@@ -6,6 +6,7 @@ import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { refreshRegisteredWorkflows } from "../registeredWorkflows.js";
 import { resolveWorkerAdapterPolicy, runWorkerOnce, startCommandRun, type WorkerAdapter } from "./workerEngine.js";
+import { BROWSER_USE_CLI_REQUIRED_BLOCKER } from "./workerEngine.js";
 import {
   projectReferenceWorkflowAdmission,
   type ReferenceWorkflowAdmissionProjectionV1
@@ -164,7 +165,9 @@ export async function runReferenceWorkflowCanary(): Promise<ReferenceWorkflowCan
         registeredSchedule.kind === "cron" &&
         typeof registeredSchedule.rrule === "string" &&
         registeredSchedule.rrule.trim() !== "" &&
-        policy.exactBlocker === "in_app_browser_required"
+        policy.classification === "browser_use_cli" &&
+        policy.evidence.includes("surface:browser_use_cli") &&
+        policy.evidence.includes("no_fallback:true")
     );
     if (!registrationOk) {
       throw new Error(`reference_workflow_canary_precondition_failed:${reference.id}`);
@@ -173,6 +176,7 @@ export async function runReferenceWorkflowCanary(): Promise<ReferenceWorkflowCan
     const summary = await startCommandRun(reference.command, {
       deferWorker: true,
       companyId: canaryIdentity.companyId,
+      referenceWorkflowCanary: true,
       metadata: {
         reference_workflow_canary: true,
         registeredWorkflowId: reference.id,
@@ -235,7 +239,7 @@ export async function runReferenceWorkflowCanary(): Promise<ReferenceWorkflowCan
       registrationOk &&
       before.runStatus === "blocked" &&
       before.stepStatus === "blocked" &&
-      before.exactBlocker === "in_app_browser_required" &&
+      before.exactBlocker === BROWSER_USE_CLI_REQUIRED_BLOCKER &&
       before.proofGateOk === false &&
       before.runnerExitStatus === null &&
       !before.runnerStarted &&
@@ -386,7 +390,7 @@ function readCanaryState(runId: string, exitStatusKey: string, expected: {
     validFingerprint(routeReadbackFingerprint) &&
     guardMetadata.route_decision_fingerprint === routeDecisionFingerprint &&
     guardMetadata.route_readback_fingerprint === routeReadbackFingerprint &&
-    guardMetadata.exact_blocker === "in_app_browser_required" &&
+    guardMetadata.exact_blocker === BROWSER_USE_CLI_REQUIRED_BLOCKER &&
     guardMetadata.worker_outcome === "blocked_before_runner" &&
     guardMetadata.completion_claimed === false &&
     guardMetadata.operation_proof_gate_ok === false &&
@@ -588,7 +592,7 @@ function verifyGuardArtifact(
       lineageMatches(parseRecord(artifact.registered_workflow_start), input.expected) &&
       artifact.route_decision_fingerprint === input.routeDecisionFingerprint &&
       artifact.route_readback_fingerprint === input.routeReadbackFingerprint &&
-      artifact.exact_blocker === "in_app_browser_required" &&
+      artifact.exact_blocker === BROWSER_USE_CLI_REQUIRED_BLOCKER &&
       artifact.worker_outcome === "blocked_before_runner" &&
       artifact.completion_claimed === false &&
       artifact.operation_proof_gate_ok === false &&

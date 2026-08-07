@@ -1,5 +1,6 @@
 import type { CodexCapabilitiesSummary } from "./capabilities.js";
 import type { TrustedBridgeAction } from "../bridge/trustedBridge.js";
+import { getBrowserHealth } from "../browser/health.js";
 
 export type CapabilityRouteStatus = "ready" | "partial" | "missing";
 export type CapabilityRouteAuthority = "catalog" | "runtime" | "connected";
@@ -79,9 +80,8 @@ function buildRoutes(input: RouterInput, context: CommandContext): CapabilityRou
   const routes: CapabilityRoute[] = [];
   const skillNames = new Set(input.capabilities.capabilities.skills.map((skill) => cleanName(skill.name)));
   const bridgeIds = new Set(input.bridgeActions.map((action) => action.id));
-  const chromeState = input.capabilities.capabilities.chrome.state;
   const automationOsApiState = input.capabilities.capabilities.automationOsApi.state;
-  const browserConnected = chromeState.connected;
+  const browserUseConnected = getBrowserHealth().browserUseCli.available;
 
   if (context.urls.length > 0) {
     routes.push({
@@ -115,13 +115,13 @@ function buildRoutes(input: RouterInput, context: CommandContext): CapabilityRou
     routes.push({
       id: "x_authenticated_capture",
       label: "X投稿を読み取り保存する",
-      status: browserConnected ? "ready" : "partial",
+      status: browserUseConnected ? "ready" : "partial",
       lane: "X read-only lane",
       nextAction: "投稿URLをX captureへ渡し、レビューキューへ接続する",
       evidence: ["投稿本文", "capture manifest", "レビュー候補"],
       signals: context.xStatusUrls.map((url) => url.href),
-      authority: browserConnected ? "connected" : "catalog",
-      proof: browserConnected ? "read_only" : "none"
+      authority: browserUseConnected ? "connected" : "catalog",
+      proof: browserUseConnected ? "read_only" : "none"
     });
   }
 
@@ -159,7 +159,7 @@ function buildRoutes(input: RouterInput, context: CommandContext): CapabilityRou
       label: "価格を確認する",
       status: "partial",
       lane: "Price checker skill",
-      nextAction: "Playwright版価格確認runnerへ移植してから実行導線に入れる",
+      nextAction: "Browser Use CLI版価格確認runnerへ移植してから実行導線に入れる",
       evidence: ["価格候補", "画面確認", "cleanup"],
       signals: ["price-intent"],
       authority: "catalog",
@@ -253,13 +253,13 @@ function buildGapBacklog(input: RouterInput, context: CommandContext): Capabilit
       action: createGapAction("Reddit、公式API、連携先から公開情報を調べて、証跡付きで整理して")
     },
     {
-      id: "price_checker_playwright",
-      label: "価格チェックをPlaywright化する",
+      id: "price_checker_browser_use_cli",
+      label: "価格チェックをBrowser Use CLI化する",
       priority: "medium",
       status: skillNames.has("price-checker") ? "legacy_lane" : "not_connected",
       why: "price-checker SkillはあるがBrowser Use前提で、現在のprimary laneとずれている",
-      nextAction: "Playwright CLIで価格・スクショ・DOM・cleanup proofを保存するrunnerへ移植する",
-      action: createGapAction("この商品の価格をPlaywrightで確認して、証跡付きで保存して")
+      nextAction: "Browser Use CLIで価格・画面・cleanup proofを保存するrunnerへ移植する",
+      action: createGapAction("この商品の価格をBrowser Use CLIで確認して、証跡付きで保存して")
     },
     {
       id: "image_prompt_pipeline",

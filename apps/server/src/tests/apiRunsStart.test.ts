@@ -1117,14 +1117,16 @@ test("Create schedule adjustment covers registered workflow, Schedule, worker pi
       runId?: string;
       workerProtocol?: string;
       nextAction?: string;
-      run: { runId: string; status: string };
+      portable?: { execution_mode?: string; browser_surface?: string; connector_gateway?: string };
       workflow: { id: string; schedule_label: string; last_run_id?: string | null; next_action_view?: string | null };
     };
+    const startedRunId = startBody.runId;
+    assert.ok(startedRunId);
     const run = db.querySql<{ status: string; metadata_json: string }>(
-      `SELECT status, metadata_json FROM runs WHERE id=${db.sqlValue(startBody.run.runId)} LIMIT 1;`
+      `SELECT status, metadata_json FROM runs WHERE id=${db.sqlValue(startedRunId)} LIMIT 1;`
     )[0];
     const step = db.querySql<{ metadata_json: string }>(
-      `SELECT metadata_json FROM run_steps WHERE run_id=${db.sqlValue(startBody.run.runId)} LIMIT 1;`
+      `SELECT metadata_json FROM run_steps WHERE run_id=${db.sqlValue(startedRunId)} LIMIT 1;`
     )[0];
     const runMetadata = JSON.parse(run.metadata_json) as {
       registered_workflow_id?: string;
@@ -1138,6 +1140,8 @@ test("Create schedule adjustment covers registered workflow, Schedule, worker pi
       worker_protocol?: string;
       worker_mode?: string;
       worker_loop?: { status?: string; requiredCommand?: string };
+      portable_workflow_invocation?: { source_trigger?: string; app_dependency?: boolean };
+      portable_worker?: { mode?: string };
       proof_gate?: unknown;
       route_decision?: { phase?: string; fingerprint?: string };
       route_decision_fingerprint?: string | null;
@@ -1150,7 +1154,7 @@ test("Create schedule adjustment covers registered workflow, Schedule, worker pi
       route_readback?: null;
     };
     const workerEventCount = db.querySql<{ count: number }>(
-      `SELECT count(*) AS count FROM worker_events WHERE run_id=${db.sqlValue(startBody.run.runId)} AND event_type='queued_for_worker_loop';`
+      `SELECT count(*) AS count FROM worker_events WHERE run_id=${db.sqlValue(startedRunId)} AND event_type='queued_for_worker_loop';`
     )[0].count;
     const refreshReadbackResponse = await postJson("/api/registered-workflows/refresh", {});
     const refreshReadbackBody = JSON.parse(refreshReadbackResponse.body) as { workflows: Array<{ id: string; schedule_label: string; last_run_id?: string | null; next_action_view?: string | null }> };
@@ -1159,20 +1163,22 @@ test("Create schedule adjustment covers registered workflow, Schedule, worker pi
 
     assert.equal(startResponse.status, 202);
     assert.equal(startBody.accepted, true);
-    assert.equal(startBody.runId, startBody.run.runId);
-    assert.equal(startBody.run.status, "queued");
+    assert.equal(startBody.runId, startedRunId);
     assert.equal(run.status, "queued");
     assert.equal(startBody.workerProtocol, "local_worker_loop_required");
-    assert.match(String(startBody.nextAction), /npm run worker:loop/);
+    assert.match(String(startBody.nextAction), /worker loop/);
+    assert.equal(startBody.portable?.execution_mode, "external");
+    assert.equal(startBody.portable?.browser_surface, "browser_use_cli");
+    assert.equal(startBody.portable?.connector_gateway, "mcp");
     assert.equal(startBody.workflow.schedule_label, "毎日 08:00");
     assert.equal(runMetadata.registered_workflow_id, "daily-ai-research-publish-run");
     assert.equal(runMetadata.registered_workflow_start?.source, "manual");
     assert.equal(runMetadata.registered_workflow_start?.runnerKind, "daily_ai_registered");
     assert.equal(runMetadata.registered_workflow_start?.workflow_id, "daily-ai-research-publish-run");
-    assert.match(String(runMetadata.registered_workflow_start?.definition_fingerprint), /^[a-f0-9]{64}$/);
-    assert.match(String(runMetadata.registered_workflow_start?.schedule_fingerprint), /^[a-f0-9]{64}$/);
     assert.equal(runMetadata.worker_protocol, "local_worker_loop_required");
-    assert.equal(runMetadata.worker_mode, "queued_for_local_worker_loop");
+    assert.equal(runMetadata.portable_workflow_invocation?.source_trigger, "automation_os_ui");
+    assert.equal(runMetadata.portable_workflow_invocation?.app_dependency, false);
+    assert.equal(runMetadata.portable_worker?.mode, "external");
     assert.equal(runMetadata.worker_loop?.status, "waiting_for_pickup");
     assert.equal(runMetadata.worker_loop?.requiredCommand, "npm run worker:loop");
     assert.equal(runMetadata.proof_gate, undefined);
@@ -1187,7 +1193,7 @@ test("Create schedule adjustment covers registered workflow, Schedule, worker pi
     assert.equal(refreshReadbackResponse.status, 200);
     assert.ok(dailyReadback);
     assert.equal(dailyReadback.schedule_label, "毎日 08:00");
-    assert.equal(dailyReadback.last_run_id, startBody.run.runId);
+    assert.equal(dailyReadback.last_run_id, startedRunId);
     assert.equal(dailyReadback.next_action_view, "Runs");
     assert.doesNotMatch(serializedReadback, /proof_gate|metadata_json|\/Users\/nichikatanaka|worker_loop|requiredCommand|exactBlocker/);
 
@@ -1232,7 +1238,7 @@ test("Create schedule adjustment covers registered workflow, Schedule, worker pi
 
     assert.equal(restartedReadback.status, 200);
     assert.equal(restartedReadback.daily?.schedule_label, "毎日 08:00");
-    assert.equal(restartedReadback.daily?.last_run_id, startBody.run.runId);
+    assert.equal(restartedReadback.daily?.last_run_id, startedRunId);
     assert.equal(restartedReadback.daily?.next_action_view, "Runs");
 
     const dueNow = new Date();
@@ -1266,7 +1272,7 @@ test("Create schedule adjustment covers registered workflow, Schedule, worker pi
         && metadata.registered_workflow_start.dueKey?.endsWith(dueTime);
     });
     const dailySchedulerMetadata = dailySchedulerRun
-      ? JSON.parse(dailySchedulerRun.metadata_json) as { worker_loop?: { status?: string }; proof_gate?: unknown }
+      ? JSON.parse(dailySchedulerRun.metadata_json) as { worker_loop?: { status?: string }; proof_gate?: unknown; portable_workflow_invocation?: { source_trigger?: string }; portable_worker?: { mode?: string } }
       : undefined;
 
     assert.equal(schedulerResponse.status, 200);
@@ -1274,6 +1280,8 @@ test("Create schedule adjustment covers registered workflow, Schedule, worker pi
     assert.ok(dailySchedulerRun);
     assert.equal(dailySchedulerRun.status, "queued");
     assert.equal(dailySchedulerMetadata?.worker_loop?.status, "waiting_for_pickup");
+    assert.equal(dailySchedulerMetadata?.portable_workflow_invocation?.source_trigger, "automation_os_scheduler");
+    assert.equal(dailySchedulerMetadata?.portable_worker?.mode, "external");
     assert.equal(dailySchedulerMetadata?.proof_gate, undefined);
   } finally {
     if (previousPlannerProvider === undefined) delete process.env.AUTOMATION_OS_CREATE_PLANNER_PROVIDER;

@@ -1,4 +1,5 @@
-import { spawnSync, type SpawnSyncOptions } from "node:child_process";
+import { spawn, spawnSync, type SpawnSyncOptions } from "node:child_process";
+import { resolveCodexBin } from "./codexBin.js";
 
 export type CapabilityAxisState = {
   configured: boolean;
@@ -34,12 +35,20 @@ type ProbeCacheEntry = {
 };
 
 type Runner = (command: string, args: string[], options: SpawnSyncOptions) => ReturnType<typeof spawnSync>;
+type AsyncProbeExecution = {
+  status: "ok" | "blocked";
+  exactBlocker: string | null;
+  stdout: string;
+};
+type AsyncRunner = (command: string, args: string[], options: { timeoutMs: number }) => Promise<AsyncProbeExecution>;
 
 const probeCache = new Map<string, ProbeCacheEntry>();
+const pendingProbeCache = new Map<string, Promise<McpProbeResult>>();
 let latestProbeCache: ProbeCacheEntry | null = null;
 
 export function clearCapabilityProbeCache(): void {
   probeCache.clear();
+  pendingProbeCache.clear();
   latestProbeCache = null;
 }
 
@@ -52,21 +61,23 @@ export function getLatestCapabilityProbeSnapshot(now: number = Date.now()): McpP
 export function probeCodexMcpSurface(options: {
   now?: () => number;
   ttlMs?: number;
+  timeoutMs?: number;
   command?: string;
   args?: string[];
   runner?: Runner;
 } = {}): McpProbeResult {
   const now = options.now ?? Date.now;
   const ttlMs = normalizeTtlMs(options.ttlMs ?? Number(process.env.AUTOMATION_OS_CAPABILITY_PROBE_TTL_MS ?? 30_000));
-  const command = (options.command ?? process.env.AUTOMATION_OS_CODEX_MCP_PROBE_COMMAND ?? "codex").trim();
+  const timeoutMs = normalizeProbeTimeoutMs(options.timeoutMs ?? Number(process.env.AUTOMATION_OS_CAPABILITY_PROBE_TIMEOUT_MS ?? 10_000));
+  const command = resolveMcpProbeCommand(options.command);
   const args = options.args ?? ["mcp", "list"];
-  const cacheKey = JSON.stringify({ command, args });
+  const cacheKey = JSON.stringify({ command, args, timeoutMs });
   const cached = probeCache.get(cacheKey);
   const nowMs = now();
   if (ttlMs > 0 && cached && cached.expiresAt > nowMs) return cached.result;
 
   const runner = options.runner ?? spawnSync;
-  const execution = runReadOnlyProbe({ command, args, runner });
+  const execution = runReadOnlyProbe({ command, args, timeoutMs, runner });
   const parsed = parseMcpListOutput(execution.stdout);
   const probeStatus = execution.status === "ok" && parsed.parseOk ? "ok" : "blocked";
   const exactBlocker = execution.status === "blocked" ? execution.exactBlocker : parsed.parseOk ? null : "mcp_probe_parse_failed";
@@ -99,6 +110,65 @@ export function probeCodexMcpSurface(options: {
   }
 
   return result;
+}
+
+/**
+ * Run the read-only MCP inventory without blocking the server event loop.
+ * The synchronous variant remains for deterministic unit callers; HTTP routes
+ * must use this async path so an unavailable Codex CLI cannot stall health or
+ * other readback endpoints until the probe timeout expires.
+ */
+export async function probeCodexMcpSurfaceAsync(options: {
+  now?: () => number;
+  ttlMs?: number;
+  timeoutMs?: number;
+  command?: string;
+  args?: string[];
+  runner?: AsyncRunner;
+} = {}): Promise<McpProbeResult> {
+  const now = options.now ?? Date.now;
+  const ttlMs = normalizeTtlMs(options.ttlMs ?? Number(process.env.AUTOMATION_OS_CAPABILITY_PROBE_TTL_MS ?? 30_000));
+  const timeoutMs = normalizeProbeTimeoutMs(options.timeoutMs ?? Number(process.env.AUTOMATION_OS_CAPABILITY_PROBE_TIMEOUT_MS ?? 10_000));
+  const command = resolveMcpProbeCommand(options.command);
+  const args = options.args ?? ["mcp", "list"];
+  const cacheKey = JSON.stringify({ command, args, timeoutMs });
+  const nowMs = now();
+  const cached = probeCache.get(cacheKey);
+  if (ttlMs > 0 && cached && cached.expiresAt > nowMs) return cached.result;
+  const pending = pendingProbeCache.get(cacheKey);
+  if (pending) return pending;
+
+  const run = (async () => {
+    const runner = options.runner ?? runReadOnlyProbeAsync;
+    const execution = await runner(command, args, { timeoutMs });
+    const parsed = parseMcpListOutput(execution.stdout);
+    const result: McpProbeResult = {
+      generatedAt: new Date(now()).toISOString(),
+      ttlMs,
+      command,
+      args,
+      status: execution.status === "ok" && parsed.parseOk ? "ok" : "blocked",
+      exactBlocker: execution.status === "blocked" ? execution.exactBlocker : parsed.parseOk ? null : "mcp_probe_parse_failed",
+      state: buildProbeAxisState(execution, parsed),
+      parsedFrom: parsed.parsedFrom,
+      entries: parsed.entries,
+      rawOutputSample: parsed.rawOutputSample
+    };
+    if (ttlMs > 0) {
+      const entry = { expiresAt: now() + ttlMs, result };
+      probeCache.set(cacheKey, entry);
+      latestProbeCache = entry;
+    } else {
+      latestProbeCache = { expiresAt: now(), result };
+    }
+    return result;
+  })();
+  pendingProbeCache.set(cacheKey, run);
+  try {
+    return await run;
+  } finally {
+    pendingProbeCache.delete(cacheKey);
+  }
 }
 
 export function parseMcpListOutput(stdout: string): {
@@ -145,7 +215,7 @@ export function parseMcpListOutput(stdout: string): {
   };
 }
 
-function runReadOnlyProbe(input: { command: string; args: string[]; runner: Runner }): {
+function runReadOnlyProbe(input: { command: string; args: string[]; timeoutMs: number; runner: Runner }): {
   status: "ok" | "blocked";
   exactBlocker: string | null;
   stdout: string;
@@ -161,7 +231,7 @@ function runReadOnlyProbe(input: { command: string; args: string[]; runner: Runn
   const result = input.runner(input.command, input.args, {
     encoding: "utf8",
     maxBuffer: 64 * 1024,
-    timeout: 2500,
+    timeout: input.timeoutMs,
     stdio: ["ignore", "pipe", "pipe"]
   });
 
@@ -186,6 +256,53 @@ function runReadOnlyProbe(input: { command: string; args: string[]; runner: Runn
     exactBlocker: null,
     stdout: typeof result.stdout === "string" ? result.stdout : ""
   };
+}
+
+function runReadOnlyProbeAsync(command: string, args: string[], options: { timeoutMs: number }): Promise<AsyncProbeExecution> {
+  if (!command) return Promise.resolve({ status: "blocked", exactBlocker: "mcp_probe_command_missing", stdout: "" });
+  return new Promise((resolve) => {
+    let settled = false;
+    let timedOut = false;
+    let stdout = "";
+    let hardStop: ReturnType<typeof setTimeout> | undefined;
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], shell: false });
+    const finish = (result: AsyncProbeExecution) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (hardStop) clearTimeout(hardStop);
+      resolve(result);
+    };
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+      hardStop = setTimeout(() => {
+        child.kill("SIGKILL");
+        finish({ status: "blocked", exactBlocker: "mcp_probe_timeout", stdout });
+      }, 250);
+    }, options.timeoutMs);
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => {
+      if (stdout.length < 64 * 1024) stdout += chunk.slice(0, 64 * 1024 - stdout.length);
+    });
+    child.stderr?.resume();
+    child.once("error", () => {
+      finish({
+        status: "blocked",
+        exactBlocker: timedOut ? "mcp_probe_timeout" : "mcp_probe_command_unavailable",
+        stdout
+      });
+    });
+    child.once("close", (code) => {
+      if (timedOut) {
+        finish({ status: "blocked", exactBlocker: "mcp_probe_timeout", stdout });
+      } else if (code !== 0) {
+        finish({ status: "blocked", exactBlocker: "mcp_probe_exit_nonzero", stdout });
+      } else {
+        finish({ status: "ok", exactBlocker: null, stdout });
+      }
+    });
+  });
 }
 
 function buildProbeAxisState(execution: { status: "ok" | "blocked"; exactBlocker: string | null }, parsed: { parseOk: boolean; entries: McpProbeEntry[] }): CapabilityAxisState {
@@ -278,17 +395,21 @@ function parseMcpListText(stdout: string): { entries: McpProbeEntry[]; parseOk: 
 }
 
 function parseMcpTextLine(line: string): McpProbeEntry | null {
-  const structured = line.includes("|") || line.includes("\t") || /^[-•]\s*/.test(line) || /^(name|server|tool)\s*:/i.test(line);
+  const columns = line.trim().split(/\s{2,}/).map((segment) => segment.trim()).filter(Boolean);
+  const structured = line.includes("|") || line.includes("\t") || /^[-•]\s*/.test(line) || /^(name|server|tool)\s*:/i.test(line) || columns.length >= 2;
   if (!structured) return null;
-  const segments = line.includes("|") ? line.split("|").map((segment) => segment.trim()).filter(Boolean) : line.split(/\s{2,}/).map((segment) => segment.trim()).filter(Boolean);
+  const segments = line.includes("|") ? line.split("|").map((segment) => segment.trim()).filter(Boolean) : columns;
   if (segments.length === 0) return null;
 
-  const [first, second, third] = segments;
-  const status = firstString(second, third, "unknown") ?? "unknown";
+  const first = segments[0];
+  const statusSegment = segments.find((segment) => /^(connected|ready|available|online|active|disabled|unsupported|failed|error|unknown|oauth)$/i.test(segment))
+    ?? segments.at(-2)
+    ?? "unknown";
+  const status = statusSegment;
   const name = normalizeMcpName(first);
   if (!name) return null;
-  const connected = /connected|ready|available|online|active/i.test(`${first} ${second} ${third}`);
-  const enabled = connected || /enabled|configured|loadable|present/i.test(`${first} ${second} ${third}`);
+  const connected = /connected|ready|available|online|active/i.test(statusSegment);
+  const enabled = connected || /enabled|configured|loadable|present/i.test(statusSegment);
 
   return {
     name,
@@ -308,6 +429,17 @@ function normalizeMcpName(value: string | undefined): string | null {
 function normalizeTtlMs(value: number): number {
   if (!Number.isFinite(value) || value <= 0) return 0;
   return Math.min(Math.floor(value), 300_000);
+}
+
+function normalizeProbeTimeoutMs(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) return 10_000;
+  return Math.min(Math.floor(value), 30_000);
+}
+
+function resolveMcpProbeCommand(explicitCommand?: string): string {
+  return explicitCommand?.trim()
+    || process.env.AUTOMATION_OS_CODEX_MCP_PROBE_COMMAND?.trim()
+    || resolveCodexBin();
 }
 
 function firstString(...values: unknown[]): string | null {

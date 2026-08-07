@@ -1,20 +1,15 @@
-import { type ChildProcess, spawn } from "node:child_process";
-import { mkdirSync } from "node:fs";
 import { registeredBrowserLaneForWorkflow } from "../runs/laneManager.js";
+import { getBrowserHealth } from "./health.js";
 
 const registeredLane = registeredBrowserLaneForWorkflow("youtube-visible-transcript-capture");
 
 export const youtubeTranscriptLane = {
-  name: "youtube_visible_transcript_cdp",
+  name: "youtube_visible_transcript_browser_use_cli",
   port: registeredLane?.cdpPort ?? 9337,
-  profileDir: registeredLane?.profileDir ?? "/Users/nichikatanaka/.youtube-transcript-playwright-chrome",
-  profileDirectory: "Default",
+  profileDir: registeredLane?.profileDir ?? "[fresh-browser-use-profile-required]",
   homeUrl: "https://www.youtube.com/",
-  versionUrl: `http://127.0.0.1:${registeredLane?.cdpPort ?? 9337}/json/version`
+  versionUrl: "browser-use-cli://youtube/transcript-session"
 } as const;
-
-const defaultChromePath = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-const healthCheckTimeoutMs = 2000;
 
 export type YouTubeTranscriptChromeCommand = {
   bin: string;
@@ -75,14 +70,15 @@ export type YouTubeTranscriptChromeEnsureResult =
     };
 
 export function buildOpenYouTubeTranscriptChromeCommand(
-  chromePath = process.env.AUTOMATION_OS_YOUTUBE_TRANSCRIPT_CHROME_BIN || defaultChromePath
+  _ignoredLegacyChromePath?: string
 ): YouTubeTranscriptChromeCommand {
+  const command = getBrowserHealth().browserUseCli.command || "/Users/nichikatanaka/.local/bin/codex-browser-use";
   return {
-    bin: chromePath,
+    bin: command,
     args: [
-      `--remote-debugging-port=${youtubeTranscriptLane.port}`,
-      `--user-data-dir=${youtubeTranscriptLane.profileDir}`,
-      `--profile-directory=${youtubeTranscriptLane.profileDirectory}`,
+      "--session",
+      "aos-youtube-transcript",
+      "open",
       youtubeTranscriptLane.homeUrl
     ],
     laneName: youtubeTranscriptLane.name,
@@ -92,55 +88,25 @@ export function buildOpenYouTubeTranscriptChromeCommand(
 }
 
 export async function openYouTubeTranscriptChrome(): Promise<YouTubeTranscriptChromeOpenResult> {
-  mkdirSync(youtubeTranscriptLane.profileDir, { recursive: true });
   const command = buildOpenYouTubeTranscriptChromeCommand();
-  const child = spawn(command.bin, command.args, {
-    detached: true,
-    stdio: "ignore"
-  });
-  const spawnError = await observeSpawnError(child, 300);
-  if (spawnError) {
-    return {
-      ok: false,
-      ...command,
-      url: youtubeTranscriptLane.homeUrl,
-      exactBlocker: "youtube_transcript_cdp_open_failed",
-      summary: spawnError.message
-    };
-  }
-  child.unref();
   return {
-    ok: true,
+    ok: false,
     ...command,
-    pid: child.pid,
     url: youtubeTranscriptLane.homeUrl,
-    summary: "Opened the fixed YouTube visible transcript CDP lane without fallback."
+    exactBlocker: getBrowserHealth().browserUseCli.available ? "browser_use_authority_required" : "browser_use_cli_missing",
+    summary: "YouTube transcriptはcanonical Browser Use CLIのfresh authority/sessionからのみ実行します。Chrome/CDPの直接起動はしません。"
   };
 }
 
 export async function getYouTubeTranscriptChromeHealth(fetchImpl: typeof fetch = fetch): Promise<YouTubeTranscriptChromeHealthResult> {
-  try {
-    const response = await withTimeout(fetchImpl(youtubeTranscriptLane.versionUrl), "youtube_transcript_cdp_health_timeout", healthCheckTimeoutMs);
-    if (!response.ok) {
-      return blocked(`youtube_transcript_cdp_http_${response.status}`, `CDP version endpoint returned HTTP ${response.status}`);
-    }
-    const raw = await withTimeout(response.json() as Promise<Record<string, unknown>>, "youtube_transcript_cdp_health_timeout", healthCheckTimeoutMs);
-    return {
-      ok: true,
-      laneName: youtubeTranscriptLane.name,
-      port: youtubeTranscriptLane.port,
-      profileDir: youtubeTranscriptLane.profileDir,
-      endpoint: youtubeTranscriptLane.versionUrl,
-      browser: typeof raw.Browser === "string" ? raw.Browser : undefined,
-      webSocketDebuggerUrl: typeof raw.webSocketDebuggerUrl === "string" ? raw.webSocketDebuggerUrl : undefined,
-      raw
-    };
-  } catch (error) {
-    return blocked(
-      "youtube_transcript_cdp_unavailable",
-      error instanceof Error ? error.message : "CDP version endpoint is unavailable"
-    );
-  }
+  void fetchImpl;
+  const browserUse = getBrowserHealth().browserUseCli;
+  return blocked(
+    browserUse.available ? "browser_use_authority_required" : "browser_use_cli_missing",
+    browserUse.available
+      ? "Browser Use CLIはfresh authority/profile/portとsame-session readbackが必要です。"
+      : "Canonical Browser Use CLI helper is unavailable."
+  );
 }
 
 export async function ensureYouTubeTranscriptChromeReady(options: {
@@ -236,34 +202,4 @@ function ensureBlocked(
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
-}
-
-function withTimeout<T>(promise: Promise<T>, exactBlocker: string, timeoutMs: number): Promise<T> {
-  return new Promise((resolveTimeout, rejectTimeout) => {
-    const timer = setTimeout(() => rejectTimeout(new Error(exactBlocker)), timeoutMs);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolveTimeout(value);
-      },
-      (error) => {
-        clearTimeout(timer);
-        rejectTimeout(error);
-      }
-    );
-  });
-}
-
-function observeSpawnError(child: ChildProcess, timeoutMs: number): Promise<Error | undefined> {
-  return new Promise((resolveObserve) => {
-    const timer = setTimeout(() => {
-      child.off("error", onError);
-      resolveObserve(undefined);
-    }, timeoutMs);
-    const onError = (error: Error) => {
-      clearTimeout(timer);
-      resolveObserve(error);
-    };
-    child.once("error", onError);
-  });
 }
