@@ -192,7 +192,7 @@ test("initDb adds Browser Use lane columns to an existing lanes table", () => {
   assert.ok(columns.includes("lane_visibility"));
 
   const legacyLane = db.querySql<{ profile_strategy: string; lane_visibility: string }>("SELECT profile_strategy, lane_visibility FROM lanes WHERE id='lane_legacy'")[0];
-  assert.equal(legacyLane.profile_strategy, "cdp_profile_lane");
+  assert.equal(legacyLane.profile_strategy, "browser_use_cli_lifecycle");
   assert.equal(legacyLane.lane_visibility, "visible");
 
   const plannerColumns = db.querySql<{ name: string }>("PRAGMA table_info(create_planner_jobs)").map((row) => row.name);
@@ -473,7 +473,8 @@ test("initDb backfills empty Browser Use lane defaults when columns already exis
     )
     VALUES
       ('lane_null_defaults', 'run_null', 'browser', 9333, '/tmp/profile-null', '/tmp/workdir-null', NULL, NULL, NULL, NULL, NULL, 'idle', 'legacy', 0, 'good', '[]', '2026-06-11T01:00:00.000Z'),
-      ('lane_empty_defaults', 'run_empty', 'browser', 9334, '/tmp/profile-empty', '/tmp/workdir-empty', NULL, NULL, NULL, '', '   ', 'idle', 'legacy', 0, 'good', '[]', '2026-06-11T01:01:00.000Z');
+      ('lane_empty_defaults', 'run_empty', 'browser', 9334, '/tmp/profile-empty', '/tmp/workdir-empty', NULL, NULL, NULL, '', '   ', 'idle', 'legacy', 0, 'good', '[]', '2026-06-11T01:01:00.000Z'),
+      ('lane_explicit_legacy', 'run_legacy', 'browser', 9335, '/tmp/profile-legacy', '/tmp/workdir-legacy', NULL, NULL, NULL, 'cdp_profile_lane', 'visible', 'idle', 'historical', 0, 'good', '[]', '2026-06-11T01:02:00.000Z');
   `);
 
   db.initDb();
@@ -482,8 +483,9 @@ test("initDb backfills empty Browser Use lane defaults when columns already exis
     "SELECT id, profile_strategy, lane_visibility FROM lanes ORDER BY id"
   );
   assert.deepEqual(lanes, [
-    { id: "lane_empty_defaults", profile_strategy: "cdp_profile_lane", lane_visibility: "visible" },
-    { id: "lane_null_defaults", profile_strategy: "cdp_profile_lane", lane_visibility: "visible" }
+    { id: "lane_empty_defaults", profile_strategy: "browser_use_cli_lifecycle", lane_visibility: "visible" },
+    { id: "lane_explicit_legacy", profile_strategy: "cdp_profile_lane", lane_visibility: "visible" },
+    { id: "lane_null_defaults", profile_strategy: "browser_use_cli_lifecycle", lane_visibility: "visible" }
   ]);
 });
 

@@ -2840,6 +2840,98 @@ esac
   }
 });
 
+test("POST /api/bridge/node-check keeps canonical Browser Use lifecycle and reserved lane identity visible", async () => {
+  db.initDb();
+  db.resetDemoData();
+  seedOwnerCompany();
+  db.execSql("DELETE FROM system_checks; DELETE FROM bridge_actions;");
+  const previousCli = process.env.AUTOMATION_OS_BROWSER_USE_CLI;
+  const previousArtifactDir = process.env.AUTOMATION_OS_BROWSER_USE_ARTIFACT_DIR;
+  const browserUseCli = join(tempRoot, "codex-browser-use");
+  const canonicalScript = [
+    "#!/bin/sh",
+    "set -eu",
+    "artifact=''",
+    "while [ \"$#\" -gt 0 ]; do",
+    "  if [ \"$1\" = \"--artifact-dir\" ]; then artifact=\"$2\"; shift 2; continue; fi",
+    "  if [ \"$1\" = \"--\" ]; then shift; break; fi",
+    "  shift",
+    "done",
+    "mkdir -p \"$artifact\"",
+    "printf '%s' 'png' > \"$artifact/screenshot.png\"",
+    "printf '%s\\n' '{\"status\":\"completed\",\"finalized\":true,\"captured_readback\":{\"0\":\"{\\\"data\\\":{\\\"url\\\":\\\"http://127.0.0.1:5173/#lanes\\\",\\\"title\\\":\\\"Automation OS\\\"}}\",\"1\":\"{\\\"data\\\":{\\\"title\\\":\\\"Automation OS\\\"}}\",\"2\":\"{\\\"data\\\":{\\\"url\\\":\\\"http://127.0.0.1:5173/#lanes\\\"}}\"}}}'"
+  ].join("\n") + "\n";
+  writeFileSync(browserUseCli, canonicalScript, "utf8");
+  chmodSync(browserUseCli, 0o755);
+  process.env.AUTOMATION_OS_BROWSER_USE_CLI = browserUseCli;
+  process.env.AUTOMATION_OS_BROWSER_USE_ARTIFACT_DIR = join(tempRoot, "canonical-lane-artifacts");
+  const now = "2026-06-12T00:05:00.000Z";
+  db.insert("runs", {
+    id: "run_api_canonical_lane",
+    name: "Canonical Browser Use lane API run",
+    status: "running",
+    objective: "Keep canonical lifecycle and reservation visible",
+    created_at: now,
+    updated_at: now,
+    metadata_json: {}
+  });
+  db.insert("lanes", {
+    id: "lane_api_canonical",
+    run_id: "run_api_canonical_lane",
+    role: "browser",
+    cdp_port: 19882,
+    profile_dir: "/Users/nichikatanaka/.browser-use-cli/profiles/scheduled/daily-ai",
+    workdir: "/tmp/workdir-canonical",
+    browser_use_session: "node-canonical-lane",
+    browser_use_cdp_url: "http://127.0.0.1:19882",
+    browser_use_profile: "/Users/nichikatanaka/.browser-use-cli/profiles/scheduled/daily-ai",
+    profile_strategy: "cdp_profile_lane",
+    lane_visibility: "headless",
+    status: "active",
+    current_task: "Canonical Browser Use lane check",
+    progress: 50,
+    health: "unknown",
+    resource_locks_json: ["browser_lane"],
+    updated_at: "2026-06-11T00:05:00.000Z"
+  });
+
+  try {
+    const response = await postJson("/api/bridge/node-check", {
+      laneId: "lane_api_canonical",
+      targetUrl: "http://127.0.0.1:5173/#lanes"
+    });
+    const body = JSON.parse(response.body) as {
+      status: string;
+      metadata: { connectionStrategy: { mode: string; cdpUrl: string | null; profile: string | null } };
+    };
+    const lane = db.querySql<{
+      cdp_port: number;
+      profile_dir: string;
+      browser_use_cdp_url: string;
+      browser_use_profile: string;
+      profile_strategy: string;
+      lane_visibility: string;
+    }>("SELECT cdp_port, profile_dir, browser_use_cdp_url, browser_use_profile, profile_strategy, lane_visibility FROM lanes WHERE id='lane_api_canonical'")[0];
+
+    assert.equal(response.status, 200);
+    assert.equal(body.status, "blocked");
+    assert.equal(body.metadata.connectionStrategy.mode, "unique_session");
+    assert.equal(body.metadata.connectionStrategy.cdpUrl, null);
+    assert.equal(body.metadata.connectionStrategy.profile, null);
+    assert.equal(lane.cdp_port, 19882);
+    assert.equal(lane.profile_dir, "/Users/nichikatanaka/.browser-use-cli/profiles/scheduled/daily-ai");
+    assert.equal(lane.browser_use_cdp_url, "http://127.0.0.1:19882");
+    assert.equal(lane.browser_use_profile, "/Users/nichikatanaka/.browser-use-cli/profiles/scheduled/daily-ai");
+    assert.equal(lane.profile_strategy, "browser_use_cli_lifecycle");
+    assert.equal(lane.lane_visibility, "headless");
+  } finally {
+    if (previousCli === undefined) delete process.env.AUTOMATION_OS_BROWSER_USE_CLI;
+    else process.env.AUTOMATION_OS_BROWSER_USE_CLI = previousCli;
+    if (previousArtifactDir === undefined) delete process.env.AUTOMATION_OS_BROWSER_USE_ARTIFACT_DIR;
+    else process.env.AUTOMATION_OS_BROWSER_USE_ARTIFACT_DIR = previousArtifactDir;
+  }
+});
+
 test("POST /api/bridge/node-check records blocked lane observations resolved by cdpPort", async () => {
   db.initDb();
   db.resetDemoData();

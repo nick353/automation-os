@@ -2675,8 +2675,7 @@ async function runBrowserUseBridgeLocalCheck(
 ): Promise<{ result: BrowserUseLocalCheckResult; receipt?: ReturnType<typeof createBridgeReceipt> }> {
   const request = parseBrowserUseCheckRequest(body);
   const lane = resolveBrowserUseLane(request);
-  const fallback = lane || hasExplicitBrowserUseConnectionRequest(request) ? undefined : findLatestSafeBrowserUseCdpFallback();
-  const result = await runBrowserUseLocalCheckAsync(buildBrowserUseCheckOptions(request, lane, fallback));
+  const result = await runBrowserUseLocalCheckAsync(buildBrowserUseCheckOptions(request, lane));
   storeSystemCheck(result);
   recordBrowserUseLaneObservation(lane, result);
   const action = findTrustedBridgeAction("browser_use_local_check");
@@ -8449,11 +8448,6 @@ type BrowserUseCheckRequest = {
   profile?: string;
 };
 
-type BrowserUseCdpFallback = {
-  cdpUrl: string;
-  profile?: string;
-};
-
 type BrowserUseLaneRow = {
   id: string;
   run_id: string | null;
@@ -8482,18 +8476,14 @@ function parseBrowserUseCheckRequest(body: unknown): BrowserUseCheckRequest {
   };
 }
 
-function buildBrowserUseCheckOptions(request: BrowserUseCheckRequest, lane?: BrowserUseLaneRow, fallback?: BrowserUseCdpFallback): BrowserUseLocalCheckOptions {
+function buildBrowserUseCheckOptions(request: BrowserUseCheckRequest, lane?: BrowserUseLaneRow): BrowserUseLocalCheckOptions {
   return {
     targetUrl: request.targetUrl,
     session: lane?.browser_use_session ?? undefined,
-    cdpUrl: request.cdpUrl ?? lane?.browser_use_cdp_url ?? cdpUrlFromPort(lane?.cdp_port) ?? fallback?.cdpUrl,
-    cdpPort: request.cdpUrl || fallback?.cdpUrl ? undefined : request.cdpPort ?? lane?.cdp_port,
-    profile: request.profile ?? lane?.browser_use_profile ?? lane?.profile_dir ?? fallback?.profile
+    cdpUrl: request.cdpUrl ?? lane?.browser_use_cdp_url ?? cdpUrlFromPort(lane?.cdp_port),
+    cdpPort: request.cdpUrl ? undefined : request.cdpPort ?? lane?.cdp_port,
+    profile: request.profile ?? lane?.browser_use_profile ?? lane?.profile_dir
   };
-}
-
-function hasExplicitBrowserUseConnectionRequest(request: BrowserUseCheckRequest): boolean {
-  return Boolean(request.laneId || request.cdpUrl || request.cdpPort !== undefined || request.profile);
 }
 
 function resolveBrowserUseLane(request: BrowserUseCheckRequest): BrowserUseLaneRow | undefined {
@@ -8526,58 +8516,31 @@ function requestCdpIdentifiersAgree(request: BrowserUseCheckRequest): boolean {
   return request.cdpUrl === cdpUrlFromPort(request.cdpPort);
 }
 
-function findLatestSafeBrowserUseCdpFallback(): BrowserUseCdpFallback | undefined {
-  const checks = querySql<{ status: string; metadata_json: string }>(
-    "SELECT status, metadata_json FROM system_checks ORDER BY created_at DESC LIMIT 100"
-  );
-  for (const check of checks) {
-    if (check.status !== "ok") continue;
-    const metadata = parseJson<Record<string, unknown>>(check.metadata_json, {});
-    const nestedMetadata = asRecord(metadata.metadata);
-    const driver = stringValue(metadata.driver) ?? stringValue(nestedMetadata.driver);
-    const connectionStrategy = asRecord(nestedMetadata.connectionStrategy ?? metadata.connectionStrategy);
-    const recordingQa = asRecord(nestedMetadata.recordingQa ?? metadata.recordingQa);
-    const geminiVideoQa = asRecord(nestedMetadata.geminiVideoQa ?? metadata.geminiVideoQa);
-    const artifactValidationStatus = stringValue(nestedMetadata.artifactValidationStatus ?? metadata.artifactValidationStatus);
-    const cdpUrl = normalizeSafeLocalCdpUrl(stringValue(connectionStrategy.cdpUrl));
-    const profile = nonEmptyString(connectionStrategy.profile);
-
-    if (driver !== "browser_use_cli") continue;
-    if (stringValue(connectionStrategy.mode) !== "cdp_profile_lane") continue;
-    if (stringValue(recordingQa.status) !== "present") continue;
-    if (stringValue(geminiVideoQa.status) !== "present") continue;
-    if (geminiVideoQa.exactBlocker !== null) continue;
-    if (artifactValidationStatus !== "ok") continue;
-    if (!cdpUrl) continue;
-    if (!isLiveLocalCdpUrl(cdpUrl)) continue;
-    return { cdpUrl, profile };
-  }
-  return undefined;
-}
-
-function isLiveLocalCdpUrl(cdpUrl: string): boolean {
-  if (process.env.AUTOMATION_OS_BROWSER_USE_SYNC_CDP_PROBE !== "1") return true;
-  const result = spawnSync("curl", ["-fsS", "-m", "1", `${cdpUrl.replace(/\/+$/, "")}/json/version`], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"]
-  });
-  return result.status === 0;
-}
-
 function recordBrowserUseLaneObservation(lane: BrowserUseLaneRow | undefined, result: BrowserUseLocalCheckResult) {
   if (!lane) return;
   const connection = result.metadata.connectionStrategy;
   const admissionBlocked = result.summary === "canonical Browser Use CLI helper以外のブラウザ実行経路は使用しません"
     || result.metadata.cleanup.reason === "browser_use_cli_canonical_helper_required"
     || result.metadata.recordingSidecar.reason === "browser_use_cli_canonical_helper_required";
-  const profileStrategy = connection.mode;
+  const canonicalLifecycle = !admissionBlocked && connection.mode === "unique_session";
+  const profileStrategy = canonicalLifecycle ? "browser_use_cli_lifecycle" : connection.mode;
+  const browserUseCdpUrl = admissionBlocked
+    ? lane.browser_use_cdp_url
+    : connection.mode === "cdp_profile_lane"
+      ? connection.cdpUrl
+      : lane.browser_use_cdp_url ?? cdpUrlFromPort(lane.cdp_port);
+  const browserUseProfile = admissionBlocked
+    ? lane.browser_use_profile
+    : connection.mode === "cdp_profile_lane"
+      ? connection.profile
+      : lane.browser_use_profile ?? lane.profile_dir;
   const laneVisibility = nonEmptyString(lane.lane_visibility) ?? (connection.mode === "cdp_profile_lane" ? "visible" : "hidden");
   const health = result.status === "ok" ? "good" : "blocked";
   execSql(
     `UPDATE lanes
      SET browser_use_session=${sqlValue(result.metadata.session)},
-         browser_use_cdp_url=${sqlValue(admissionBlocked ? lane.browser_use_cdp_url : connection.cdpUrl)},
-         browser_use_profile=${sqlValue(admissionBlocked ? lane.browser_use_profile : connection.profile)},
+         browser_use_cdp_url=${sqlValue(browserUseCdpUrl)},
+         browser_use_profile=${sqlValue(browserUseProfile)},
          profile_strategy=${sqlValue(admissionBlocked ? lane.profile_strategy : profileStrategy)},
          lane_visibility=${sqlValue(laneVisibility)},
          health=${sqlValue(health)},
@@ -8603,12 +8566,6 @@ function normalizeCdpUrl(value: string | undefined): string | undefined {
   if (!value) return undefined;
   const match = value.match(/^https?:\/\/(?:localhost|127\.0\.0\.1):(\d+)\/?$/);
   return match ? `http://127.0.0.1:${match[1]}` : value.replace(/\/+$/, "");
-}
-
-function normalizeSafeLocalCdpUrl(value: string | undefined): string | undefined {
-  if (!value) return undefined;
-  const match = value.match(/^https?:\/\/(?:localhost|127\.0\.0\.1):(\d+)\/?$/);
-  return match ? `http://127.0.0.1:${match[1]}` : undefined;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -8807,7 +8764,7 @@ async function startRegisteredPostgresRunFast(input: {
       `INSERT INTO lanes
        (id, run_id, role, cdp_port, profile_dir, workdir, browser_use_session, browser_use_cdp_url, browser_use_profile,
         profile_strategy, lane_visibility, status, current_task, progress, health, resource_locks_json, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'cdp_profile_lane', $10, 'active', $11, 10, 'good', $12, $13)`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'active', $12, 10, 'good', $13, $14)`,
       [
         laneId,
         runId,
@@ -8818,6 +8775,7 @@ async function startRegisteredPostgresRunFast(input: {
         lane?.browserUseSession ?? `browser-use-${input.workflow.id}`,
         lane?.browserUseCdpUrl ?? "",
         lane?.browserUseProfile ?? `/tmp/automation-os/profiles/${input.workflow.id}`,
+        lane?.profileStrategy ?? "browser_use_cli_lifecycle",
         lane?.laneVisibility ?? "visible",
         input.command,
         JSON.stringify(lane ? [`browser:${input.workflow.id}`, "registered_workflow"] : ["registered_workflow"]),

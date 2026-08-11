@@ -500,7 +500,7 @@ function runIdempotentMigrations(): void {
   ensureColumn("lanes", "browser_use_session", "TEXT");
   ensureColumn("lanes", "browser_use_cdp_url", "TEXT");
   ensureColumn("lanes", "browser_use_profile", "TEXT");
-  ensureColumn("lanes", "profile_strategy", "TEXT NOT NULL DEFAULT 'cdp_profile_lane'");
+  ensureColumn("lanes", "profile_strategy", "TEXT NOT NULL DEFAULT 'browser_use_cli_lifecycle'");
   ensureColumn("lanes", "lane_visibility", "TEXT NOT NULL DEFAULT 'visible'");
   ensureColumn("registered_workflows", "start_command_json", "TEXT NOT NULL DEFAULT '{}'");
   ensureColumn("research_plans", "sources_json", "TEXT NOT NULL DEFAULT '[]'");
@@ -955,7 +955,7 @@ function runIdempotentMigrations(): void {
 function normalizeLaneDefaults(): void {
   execSql(`
     UPDATE lanes
-    SET profile_strategy='cdp_profile_lane'
+    SET profile_strategy='browser_use_cli_lifecycle'
     WHERE profile_strategy IS NULL OR trim(profile_strategy)='';
 
     UPDATE lanes

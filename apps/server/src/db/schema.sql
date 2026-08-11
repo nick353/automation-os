@@ -94,7 +94,7 @@ CREATE TABLE IF NOT EXISTS lanes (
   browser_use_session TEXT,
   browser_use_cdp_url TEXT,
   browser_use_profile TEXT,
-  profile_strategy TEXT NOT NULL DEFAULT 'cdp_profile_lane',
+  profile_strategy TEXT NOT NULL DEFAULT 'browser_use_cli_lifecycle',
   lane_visibility TEXT NOT NULL DEFAULT 'visible',
   status TEXT NOT NULL,
   current_task TEXT,
