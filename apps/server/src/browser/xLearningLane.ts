@@ -2,11 +2,13 @@ import { registeredBrowserLaneForWorkflow } from "../runs/laneManager.js";
 import { getBrowserHealth } from "./health.js";
 
 const registeredLane = registeredBrowserLaneForWorkflow("x-authenticated-browser-lane");
+const fallbackPort = 19885;
+const fallbackProfileDir = "/Users/nichikatanaka/.browser-use-cli/profiles/scheduled/x-authenticated-browser-lane";
 
 export const xLearningLane = {
   name: "x_learning_authenticated_browser_use_cli",
-  port: registeredLane?.cdpPort ?? 9336,
-  profileDir: registeredLane?.profileDir ?? "[fresh-browser-use-profile-required]",
+  port: registeredLane?.cdpPort ?? fallbackPort,
+  profileDir: registeredLane?.profileDir ?? fallbackProfileDir,
   homeUrl: "https://x.com/home",
   versionUrl: "browser-use-cli://x-learning/authenticated-session"
 } as const;

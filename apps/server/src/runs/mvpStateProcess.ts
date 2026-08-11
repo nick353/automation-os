@@ -105,8 +105,29 @@ function resolveMvpStateCli(fileExists: (path: string) => boolean): { command: s
   if (fileExists(compiledCli)) return { command: process.execPath, args: [compiledCli] };
   const sourceCli = resolve(moduleDir, "../cli/mvpStateReadOnce.ts");
   if (!fileExists(sourceCli)) return undefined;
-  const loaderArgs = process.execArgv.filter((arg) => /^(?:--import|--loader|--require)(?:=|$)/u.test(arg));
+  const loaderArgs = preserveLoaderArgs(process.execArgv);
   return { command: process.execPath, args: [...loaderArgs, sourceCli] };
+}
+
+function preserveLoaderArgs(execArgv: readonly string[]): string[] {
+  const loaderFlags = new Set(["--import", "--loader", "--require"]);
+  const result: string[] = [];
+  for (let index = 0; index < execArgv.length; index += 1) {
+    const argument = execArgv[index];
+    if (typeof argument !== "string") continue;
+    if (Array.from(loaderFlags).some((flag) => argument.startsWith(`${flag}=`))) {
+      result.push(argument);
+      continue;
+    }
+    if (!loaderFlags.has(argument)) continue;
+    result.push(argument);
+    const value = execArgv[index + 1];
+    if (typeof value === "string" && value.length > 0) {
+      result.push(value);
+      index += 1;
+    }
+  }
+  return result;
 }
 
 function boundedTimeout(value: number | string | undefined): number {

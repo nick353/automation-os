@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { execSql, nowIso, querySql, sqlValue, upsert } from "./db/client.js";
+import { execSql, execSqlAsync, nowIso, querySql, querySqlAsync, sqlValue, upsert, type SqlValue } from "./db/client.js";
 import { canonicalJson } from "./automations/idempotency.js";
 import { scopedCompanyPredicate } from "./companies/scopedResources.js";
 import type { ResearchPlanSnapshot } from "./planner/researchPlanner.js";
@@ -138,6 +138,7 @@ const weekdayLabels: Record<string, string> = {
   SA: "土"
 };
 const legacySplitJobWorkflowIds = ["job-application-daily-submit-queue", "job-application-follow-up-inbox-2"];
+let asyncRegisteredWorkflowSeed: Promise<RegisteredWorkflowRow[]> | undefined;
 
 function automationTomlPath(id: string): string {
   return `${automationsRoot}/${id}/automation.toml`;
@@ -411,6 +412,7 @@ function workflowMatchesDefinition(existing: RegisteredWorkflowRow, expected: St
 }
 
 export function refreshRegisteredWorkflows(definitions: RegisteredWorkflowDefinition[] = fixedRegisteredWorkflows): RegisteredWorkflowRow[] {
+  asyncRegisteredWorkflowSeed = undefined;
   const now = nowIso();
   if (definitions.some((workflow) => workflow.id === "job-application-manager")) {
     execSql(`DELETE FROM registered_workflows WHERE id IN (${legacySplitJobWorkflowIds.map((id) => sqlValue(id)).join(", ")});`);
@@ -434,8 +436,64 @@ export function refreshRegisteredWorkflows(definitions: RegisteredWorkflowDefini
   return listRegisteredWorkflows();
 }
 
+async function upsertAsync(table: string, row: Record<string, SqlValue>, conflictColumn = "id"): Promise<void> {
+  const columns = Object.keys(row);
+  const values = columns.map((column) => sqlValue(row[column]));
+  const updates = columns
+    .filter((column) => column !== conflictColumn)
+    .map((column) => `${column}=excluded.${column}`)
+    .join(", ");
+  await execSqlAsync(
+    `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${values.join(", ")}) ` +
+      `ON CONFLICT(${conflictColumn}) DO UPDATE SET ${updates};`
+  );
+}
+
+/**
+ * Async HTTP boundary counterpart to refreshRegisteredWorkflows.  The
+ * synchronous variant remains for CLI/worker callers, while public request
+ * handlers use this path so a PostgreSQL child/query cannot block Node's
+ * event loop.
+ */
+export async function refreshRegisteredWorkflowsAsync(definitions: RegisteredWorkflowDefinition[] = fixedRegisteredWorkflows): Promise<RegisteredWorkflowRow[]> {
+  asyncRegisteredWorkflowSeed = undefined;
+  const now = nowIso();
+  if (definitions.some((workflow) => workflow.id === "job-application-manager")) {
+    await execSqlAsync(`DELETE FROM registered_workflows WHERE id IN (${legacySplitJobWorkflowIds.map((id) => sqlValue(id)).join(", ")});`);
+  }
+  const existingRows = definitions.length
+    ? await querySqlAsync<RegisteredWorkflowRow>(`SELECT * FROM registered_workflows WHERE id IN (${definitions.map((workflow) => sqlValue(workflow.id)).join(", ")});`)
+    : [];
+  const existingById = new Map(existingRows.map((row) => [row.id, row]));
+  for (const workflow of definitions) {
+    const existing = existingById.get(workflow.id);
+    const expected = withRuntimeProvenance(storedWorkflowFields(workflow), existing);
+    if (existing && workflowMatchesDefinition(existing, expected)) continue;
+    await upsertAsync("registered_workflows", {
+      ...expected,
+      created_at: existing?.created_at ?? now,
+      updated_at: now
+    });
+  }
+  return listRegisteredWorkflowsAsync();
+}
+
 export function listRegisteredWorkflows(): RegisteredWorkflowRow[] {
   return querySql<RegisteredWorkflowRow>(`
+    SELECT *
+    FROM registered_workflows
+    ORDER BY
+      CASE runner_status
+        WHEN 'connected' THEN 0
+        WHEN 'registered_runner_pending' THEN 1
+        ELSE 2
+      END,
+      id ASC;
+  `);
+}
+
+export async function listRegisteredWorkflowsAsync(): Promise<RegisteredWorkflowRow[]> {
+  return querySqlAsync<RegisteredWorkflowRow>(`
     SELECT *
     FROM registered_workflows
     ORDER BY
@@ -463,8 +521,27 @@ export function listRegisteredWorkflowsForCompanies(companyIds: readonly string[
   `);
 }
 
+export async function listRegisteredWorkflowsForCompaniesAsync(companyIds: readonly string[]): Promise<RegisteredWorkflowRow[]> {
+  return querySqlAsync<RegisteredWorkflowRow>(`
+    SELECT *
+    FROM registered_workflows
+    WHERE ${registeredWorkflowScopePredicate(companyIds)}
+    ORDER BY
+      CASE runner_status
+        WHEN 'connected' THEN 0
+        WHEN 'registered_runner_pending' THEN 1
+        ELSE 2
+      END,
+      id ASC;
+  `);
+}
+
 export function getRegisteredWorkflow(id: string): RegisteredWorkflowRow | undefined {
   return querySql<RegisteredWorkflowRow>(`SELECT * FROM registered_workflows WHERE id=${sqlValue(id)} LIMIT 1;`)[0];
+}
+
+export async function getRegisteredWorkflowAsync(id: string): Promise<RegisteredWorkflowRow | undefined> {
+  return (await querySqlAsync<RegisteredWorkflowRow>(`SELECT * FROM registered_workflows WHERE id=${sqlValue(id)} LIMIT 1;`))[0];
 }
 
 export function getRegisteredWorkflowForCompanies(id: string, companyIds: readonly string[]): RegisteredWorkflowRow | undefined {
@@ -474,6 +551,15 @@ export function getRegisteredWorkflowForCompanies(id: string, companyIds: readon
       AND ${registeredWorkflowScopePredicate(companyIds)}
     LIMIT 1;
   `)[0];
+}
+
+export async function getRegisteredWorkflowForCompaniesAsync(id: string, companyIds: readonly string[]): Promise<RegisteredWorkflowRow | undefined> {
+  return (await querySqlAsync<RegisteredWorkflowRow>(`
+    SELECT * FROM registered_workflows
+    WHERE id=${sqlValue(id)}
+      AND ${registeredWorkflowScopePredicate(companyIds)}
+    LIMIT 1;
+  `))[0];
 }
 
 export function isRegisteredWorkflowSchedulePaused(workflow: Pick<RegisteredWorkflowRow, "provenance_json">): boolean {
@@ -610,6 +696,16 @@ export function listOrSeedRegisteredWorkflows(): RegisteredWorkflowRow[] {
 
 export function initRegisteredWorkflows(): RegisteredWorkflowRow[] {
   return listOrSeedRegisteredWorkflows();
+}
+
+export async function initRegisteredWorkflowsAsync(): Promise<RegisteredWorkflowRow[]> {
+  if (!asyncRegisteredWorkflowSeed) {
+    asyncRegisteredWorkflowSeed = refreshRegisteredWorkflowsAsync().catch((error) => {
+      asyncRegisteredWorkflowSeed = undefined;
+      throw error;
+    });
+  }
+  return asyncRegisteredWorkflowSeed;
 }
 
 export function findFixedRegisteredWorkflow(id: string): RegisteredWorkflowDefinition | undefined {

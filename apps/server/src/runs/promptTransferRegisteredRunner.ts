@@ -4,6 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Proof } from "./proofGate.js";
 import { inspectBrowserUseCliRunner } from "./browserUseCliRunnerGuard.js";
+import { WEB_OPERATION_CONTRACT_SCHEMA_V1 } from "./webOperationContract.js";
 
 export type PromptTransferRegisteredStatus = "complete" | "partial" | "blocked";
 
@@ -105,7 +106,9 @@ export function runPromptTransferRegisteredRunner(input: { runId: string; defaul
       AUTOMATION_OS_BROWSER_SURFACE: "browser_use_cli",
       AUTOMATION_OS_BROWSER_NO_FALLBACK: "1",
       PROMPT_TRANSFER_EXTERNAL_COMMIT_REQUESTED: "1",
-      PROMPT_TRANSFER_ALLOW_EXTERNAL_COMMIT: "1"
+      PROMPT_TRANSFER_ALLOW_EXTERNAL_COMMIT: "1",
+      AUTOMATION_OS_WEB_OPERATION_CONTRACT_SCHEMA: WEB_OPERATION_CONTRACT_SCHEMA_V1,
+      AUTOMATION_OS_WEB_OPERATION_ADAPTIVE: "semantic_live_state_bounded_exploration"
     }
   };
   const result = spawnSync(command.bin, command.args, {
@@ -233,7 +236,9 @@ function missingCommand(runId: string, outputRoot: string) {
       AUTOMATION_OS_RUN_ID: runId,
       PROMPT_TRANSFER_OUTPUT_ROOT: outputRoot,
       PROMPT_TRANSFER_EXTERNAL_COMMIT_REQUESTED: "0",
-      PROMPT_TRANSFER_ALLOW_EXTERNAL_COMMIT: "0"
+      PROMPT_TRANSFER_ALLOW_EXTERNAL_COMMIT: "0",
+      AUTOMATION_OS_WEB_OPERATION_CONTRACT_SCHEMA: WEB_OPERATION_CONTRACT_SCHEMA_V1,
+      AUTOMATION_OS_WEB_OPERATION_ADAPTIVE: "semantic_live_state_bounded_exploration"
     }
   };
 }

@@ -1,12 +1,20 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams, type SpawnOptionsWithoutStdio } from "node:child_process";
 import { resolveCodexBin } from "./codexBin.js";
+import { CodexAppServerClient, type AppServerWebSocketFactory } from "./appServerClient.js";
+import {
+  codexAppServerRemotePromotionBlocker,
+  getCodexAppServerConnectionReadback,
+  hasCodexAppServerRemoteAuth,
+  resolveCodexAppServerConnection
+} from "./appServerConnection.js";
 
 export type CodexAppServerProbeResult = {
   ok: boolean;
   status: "ok" | "blocked";
   generatedAt: string;
   timeoutMs: number;
-  protocol: "stdio";
+  protocol: "stdio" | "websocket";
+  endpoint?: string;
   platformFamily: string | null;
   platformOs: string | null;
   version: string | null;
@@ -19,10 +27,47 @@ export type CodexAppServerProbeResult = {
     | "initialize_rejected"
     | "protocol_error"
     | "version_unavailable"
+    | "codex_app_server_remote_url_invalid"
+    | "codex_app_server_remote_tls_required"
+    | "codex_app_server_remote_auth_missing"
+    | "codex_app_server_remote_cwd_invalid"
+    | "codex_app_server_remote_connect_failed"
+    | "codex_app_server_remote_initialize_failed"
     | null;
-  initializedNotificationSent: false;
+  transportSupport: "supported_local_stdio" | "experimental_remote_websocket";
+  productionRemoteCutoverAllowed: boolean | null;
+  productionPromotionBlocker: string | null;
+  initializedNotificationSent: boolean;
   threadStarted: false;
   turnStarted: false;
+  externalActionExecuted: false;
+};
+
+export type CodexAppServerThreadTurnCanaryResult = {
+  schema: "codex_app_server_thread_turn_canary.v1";
+  ok: boolean;
+  status: "ok" | "blocked";
+  generatedAt: string;
+  timeoutMs: number;
+  protocol: "websocket";
+  endpoint?: string;
+  transportSupport: "experimental_remote_websocket";
+  productionReady: false;
+  productionRemoteCutoverAllowed: false;
+  productionPromotionBlocker: string;
+  initialized: boolean;
+  accountRead: boolean;
+  accountPresent: boolean | null;
+  requiresOpenaiAuth: boolean | null;
+  threadStarted: boolean;
+  turnStarted: boolean;
+  turnCompletionObserved: boolean;
+  errorNotificationObserved: boolean;
+  threadId?: string;
+  turnId?: string;
+  turnStatus?: string;
+  eventMethods: string[];
+  exactBlocker: string | null;
   externalActionExecuted: false;
 };
 
@@ -60,17 +105,238 @@ const maxUserAgentLength = 256;
 
 const probeCache = new Map<string, ProbeCacheEntry>();
 const inflightProbes = new Map<string, Promise<CodexAppServerProbeResult>>();
+const inflightCanaries = new Map<string, Promise<CodexAppServerThreadTurnCanaryResult>>();
+const lastCanaryStartedAt = new Map<string, number>();
 let latestProbeCache: ProbeCacheEntry | null = null;
 
 export function clearAppServerProbeCache(): void {
   probeCache.clear();
   inflightProbes.clear();
+  lastCanaryStartedAt.clear();
   latestProbeCache = null;
 }
 
 export function getLatestAppServerProbeSnapshot(now: number = Date.now()): CodexAppServerProbeResult | null {
   if (!latestProbeCache || latestProbeCache.expiresAt <= now) return null;
   return latestProbeCache.result;
+}
+
+/**
+ * Runs one same-connection, read-only remote protocol canary. This is kept
+ * separate from the inventory probe because it intentionally creates an
+ * ephemeral thread and turn; it never uses local stdio and never permits
+ * caller-supplied prompt text.
+ */
+export function runCodexAppServerThreadTurnCanary(options: {
+  remoteUrl?: string;
+  remoteToken?: string;
+  remoteCwd?: string;
+  timeoutMs?: number;
+  cooldownMs?: number;
+  webSocketFactory?: AppServerWebSocketFactory;
+} = {}): Promise<CodexAppServerThreadTurnCanaryResult> {
+  const readback = getCodexAppServerConnectionReadback({
+    remoteUrl: options.remoteUrl,
+    remoteToken: options.remoteToken,
+    remoteCwd: options.remoteCwd
+  });
+  const key = JSON.stringify({ endpoint: readback.endpoint, remoteCwd: options.remoteCwd ?? null });
+  const existing = inflightCanaries.get(key);
+  if (existing) return existing;
+  const promise = runCodexAppServerThreadTurnCanaryInternal(options).finally(() => {
+    if (inflightCanaries.get(key) === promise) inflightCanaries.delete(key);
+  });
+  inflightCanaries.set(key, promise);
+  return promise;
+}
+
+async function runCodexAppServerThreadTurnCanaryInternal(options: {
+  remoteUrl?: string;
+  remoteToken?: string;
+  remoteCwd?: string;
+  timeoutMs?: number;
+  cooldownMs?: number;
+  webSocketFactory?: AppServerWebSocketFactory;
+}): Promise<CodexAppServerThreadTurnCanaryResult> {
+  const generatedAt = new Date().toISOString();
+  const timeoutMs = normalizeCanaryTimeoutMs(options.timeoutMs ?? Number(process.env.AUTOMATION_OS_CODEX_APP_SERVER_CANARY_TIMEOUT_MS ?? 60_000));
+  const productionPromotionBlocker = codexAppServerRemotePromotionBlocker;
+  let connection: ReturnType<typeof resolveCodexAppServerConnection>;
+  try {
+    connection = resolveCodexAppServerConnection({
+      remoteUrl: options.remoteUrl,
+      remoteToken: options.remoteToken,
+      remoteCwd: options.remoteCwd
+    });
+  } catch (error) {
+    return buildThreadTurnCanaryBlocked({
+      generatedAt,
+      timeoutMs,
+      exactBlocker: threadTurnCanaryBlocker(error, "codex_app_server_remote_url_invalid"),
+      endpoint: getCodexAppServerConnectionReadback({
+        remoteUrl: options.remoteUrl,
+        remoteToken: options.remoteToken,
+        remoteCwd: options.remoteCwd
+      }).endpoint,
+      productionPromotionBlocker
+    });
+  }
+
+  if (connection.mode !== "remote_websocket") {
+    return buildThreadTurnCanaryBlocked({
+      generatedAt,
+      timeoutMs,
+      exactBlocker: "codex_app_server_remote_required_for_thread_turn_canary",
+      endpoint: getCodexAppServerConnectionReadback({
+        remoteUrl: options.remoteUrl,
+        remoteToken: options.remoteToken,
+        remoteCwd: options.remoteCwd
+      }).endpoint,
+      productionPromotionBlocker
+    });
+  }
+
+  const cooldownMs = normalizeCanaryCooldownMs(options.cooldownMs ?? Number(process.env.AUTOMATION_OS_CODEX_APP_SERVER_CANARY_COOLDOWN_MS ?? 10_000));
+  const now = Date.now();
+  const previousStart = lastCanaryStartedAt.get(connection.endpoint) ?? 0;
+  if (previousStart > 0 && now - previousStart < cooldownMs) {
+    return buildThreadTurnCanaryBlocked({
+      generatedAt,
+      timeoutMs,
+      exactBlocker: "codex_app_server_canary_rate_limited",
+      endpoint: getCodexAppServerConnectionReadback({
+        remoteUrl: options.remoteUrl,
+        remoteToken: options.remoteToken,
+        remoteCwd: options.remoteCwd
+      }).endpoint,
+      productionPromotionBlocker
+    });
+  }
+  lastCanaryStartedAt.set(connection.endpoint, now);
+
+  const eventMethods: string[] = [];
+  let threadId: string | undefined;
+  let initialized = false;
+  let accountRead = false;
+  let accountPresent: boolean | null = null;
+  let requiresOpenaiAuth: boolean | null = null;
+  let threadStarted = false;
+  let turnStarted = false;
+  let errorNotificationObserved = false;
+  const observeEvent = (event: { method: string }) => {
+    if (event.method === "error") errorNotificationObserved = true;
+    if (event.method === "thread/started") threadStarted = true;
+    if (event.method === "turn/started") turnStarted = true;
+    if (eventMethods.length < 64 && !eventMethods.includes(event.method)) eventMethods.push(event.method);
+  };
+  const client = new CodexAppServerClient({
+    remoteUrl: options.remoteUrl,
+    remoteToken: options.remoteToken,
+    remoteCwd: options.remoteCwd,
+    timeoutMs,
+    webSocketFactory: options.webSocketFactory,
+    onEvent: observeEvent
+  });
+  try {
+    await client.start();
+    initialized = true;
+    const account = await client.readAccount();
+    accountRead = true;
+    accountPresent = account.accountPresent;
+    requiresOpenaiAuth = account.requiresOpenaiAuth;
+    if (!account.accountPresent) {
+      return {
+        ...buildThreadTurnCanaryBlocked({
+          generatedAt,
+          timeoutMs,
+          exactBlocker: "codex_app_server_chatgpt_login_required",
+          endpoint: getCodexAppServerConnectionReadback({
+            remoteUrl: options.remoteUrl,
+            remoteToken: options.remoteToken,
+            remoteCwd: options.remoteCwd
+          }).endpoint,
+          productionPromotionBlocker
+        }),
+        initialized,
+        accountRead,
+        accountPresent,
+        requiresOpenaiAuth,
+        eventMethods
+      };
+    }
+    // Keep the canary thread ephemeral so a technical probe does not create a
+    // durable conversation in the remote App Server state store.
+    threadId = await client.startOrResumeThread(undefined, { ephemeral: true });
+    threadStarted = true;
+    const turn = await client.startTurn({
+      threadId,
+      text: "Read-only protocol canary. Return a short readiness statement. Do not use tools, modify files, access external services, or perform any side effect.",
+      onEvent: observeEvent
+    });
+    turnStarted = true;
+    for (const event of turn.events) {
+      if (eventMethods.length >= 64 || eventMethods.includes(event.method)) continue;
+      eventMethods.push(event.method);
+    }
+    const turnCompletionObserved = eventMethods.includes("turn/completed");
+    const completed = turn.status === "completed" && turnCompletionObserved;
+    return {
+      schema: "codex_app_server_thread_turn_canary.v1",
+      ok: completed,
+      status: completed ? "ok" : "blocked",
+      generatedAt,
+      timeoutMs,
+      protocol: "websocket",
+      endpoint: getCodexAppServerConnectionReadback({
+        remoteUrl: options.remoteUrl,
+        remoteToken: options.remoteToken,
+        remoteCwd: options.remoteCwd
+      }).endpoint,
+      transportSupport: "experimental_remote_websocket",
+      productionReady: false,
+      productionRemoteCutoverAllowed: false,
+      productionPromotionBlocker,
+      initialized,
+      accountRead,
+      accountPresent,
+      requiresOpenaiAuth,
+      threadStarted,
+      turnStarted,
+      turnCompletionObserved,
+      errorNotificationObserved,
+      threadId,
+      turnId: turn.turnId,
+      turnStatus: turn.status,
+      eventMethods,
+      exactBlocker: completed ? null : turn.exactBlocker ?? "codex_app_server_turn_completion_not_verified",
+      externalActionExecuted: false
+    };
+  } catch (error) {
+    return {
+      ...buildThreadTurnCanaryBlocked({
+        generatedAt,
+        timeoutMs,
+        exactBlocker: threadTurnCanaryBlocker(error, "codex_app_server_remote_thread_turn_failed"),
+        endpoint: getCodexAppServerConnectionReadback({
+          remoteUrl: options.remoteUrl,
+          remoteToken: options.remoteToken,
+          remoteCwd: options.remoteCwd
+        }).endpoint,
+        productionPromotionBlocker
+      }),
+        initialized,
+        accountRead,
+        accountPresent,
+        requiresOpenaiAuth,
+        threadStarted,
+      turnStarted,
+      threadId,
+      eventMethods,
+      errorNotificationObserved
+    };
+  } finally {
+    client.close();
+  }
 }
 
 export async function probeCodexAppServerSurface(options: {
@@ -80,6 +346,10 @@ export async function probeCodexAppServerSurface(options: {
   ttlMs?: number;
   command?: string;
   args?: string[];
+  remoteUrl?: string;
+  remoteToken?: string;
+  remoteCwd?: string;
+  webSocketFactory?: AppServerWebSocketFactory;
   runner?: AppServerProbeRunner;
   forceRefresh?: boolean;
 } = {}): Promise<CodexAppServerProbeResult> {
@@ -90,7 +360,19 @@ export async function probeCodexAppServerSurface(options: {
   const ttlMs = normalizeProbeTtlMs(options.ttlMs ?? Number(process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_TTL_MS ?? defaultTtlMs));
   const command = options.command?.trim() || resolveCodexBin(["AUTOMATION_OS_CODEX_APP_SERVER_PROBE_COMMAND"]);
   const args = options.args ?? ["app-server", "--listen", "stdio://"];
-  const cacheKey = JSON.stringify({ enabled, command, args, timeoutMs, ttlMs });
+  const remoteConfigured = options.remoteUrl?.trim() || process.env.AUTOMATION_OS_CODEX_APP_SERVER_REMOTE_URL?.trim();
+  const cacheKey = JSON.stringify({
+    enabled,
+    command,
+    args,
+    timeoutMs,
+    ttlMs,
+    remoteUrl: remoteConfigured || null,
+    remoteAuthConfigured: Boolean(remoteConfigured) && hasCodexAppServerRemoteAuth({
+      remoteToken: options.remoteToken
+    }),
+    remoteCwd: options.remoteCwd || process.env.AUTOMATION_OS_CODEX_APP_SERVER_REMOTE_CWD || null
+  });
 
   if (!options.forceRefresh) {
     const cached = probeCache.get(cacheKey);
@@ -100,7 +382,16 @@ export async function probeCodexAppServerSurface(options: {
   }
 
   const probePromise = enabled
-    ? runProbe({ command, args, timeoutMs, runner: options.runner, generatedAt: new Date(nowMs).toISOString() })
+    ? remoteConfigured
+      ? runRemoteProbe({
+          timeoutMs,
+          generatedAt: new Date(nowMs).toISOString(),
+          remoteUrl: options.remoteUrl,
+          remoteToken: options.remoteToken,
+          remoteCwd: options.remoteCwd,
+          webSocketFactory: options.webSocketFactory
+        })
+      : runProbe({ command, args, timeoutMs, runner: options.runner, generatedAt: new Date(nowMs).toISOString() })
     : Promise.resolve(
         buildBlockedResult({
           generatedAt: new Date(nowMs).toISOString(),
@@ -225,6 +516,9 @@ async function runProbe(input: {
         userAgent: truncateProbeField(parsed.userAgent),
         platform: process.platform,
         exactBlocker: null,
+        transportSupport: "supported_local_stdio",
+        productionRemoteCutoverAllowed: null,
+        productionPromotionBlocker: null,
         initializedNotificationSent: false,
         threadStarted: false,
         turnStarted: false,
@@ -305,6 +599,9 @@ async function runProbe(input: {
         userAgent: truncateProbeField(parsed.userAgent),
         platform: process.platform,
         exactBlocker: null,
+        transportSupport: "supported_local_stdio",
+        productionRemoteCutoverAllowed: null,
+        productionPromotionBlocker: null,
         initializedNotificationSent: false,
         threadStarted: false,
         turnStarted: false,
@@ -363,28 +660,188 @@ async function runProbe(input: {
   });
 }
 
+async function runRemoteProbe(input: {
+  timeoutMs: number;
+  generatedAt: string;
+  remoteUrl?: string;
+  remoteToken?: string;
+  remoteCwd?: string;
+  webSocketFactory?: AppServerWebSocketFactory;
+}): Promise<CodexAppServerProbeResult> {
+  let connection: ReturnType<typeof resolveCodexAppServerConnection>;
+  try {
+    connection = resolveCodexAppServerConnection({
+      remoteUrl: input.remoteUrl,
+      remoteToken: input.remoteToken,
+      remoteCwd: input.remoteCwd
+    });
+  } catch (error) {
+    return buildBlockedResult({
+      generatedAt: input.generatedAt,
+      timeoutMs: input.timeoutMs,
+      exactBlocker: remoteProbeBlocker(error, "codex_app_server_remote_url_invalid"),
+      protocol: "websocket",
+      endpoint: getCodexAppServerConnectionReadback({
+        remoteUrl: input.remoteUrl,
+        remoteToken: input.remoteToken,
+        remoteCwd: input.remoteCwd
+      }).endpoint
+    });
+  }
+  if (connection.mode !== "remote_websocket") {
+    return buildBlockedResult({
+      generatedAt: input.generatedAt,
+      timeoutMs: input.timeoutMs,
+      exactBlocker: "codex_app_server_remote_url_invalid",
+      protocol: "websocket",
+      endpoint: "invalid://redacted"
+    });
+  }
+  const client = new CodexAppServerClient({
+    remoteUrl: input.remoteUrl,
+    remoteToken: input.remoteToken,
+    remoteCwd: input.remoteCwd,
+    timeoutMs: input.timeoutMs,
+    webSocketFactory: input.webSocketFactory
+  });
+  try {
+    await client.start();
+    return {
+      ok: true,
+      status: "ok",
+      generatedAt: input.generatedAt,
+      timeoutMs: input.timeoutMs,
+      protocol: "websocket",
+      endpoint: getCodexAppServerConnectionReadback({
+        remoteUrl: input.remoteUrl,
+        remoteToken: input.remoteToken,
+        remoteCwd: input.remoteCwd
+      }).endpoint,
+      platformFamily: "remote",
+      platformOs: "remote",
+      version: null,
+      userAgent: "Codex App Server remote websocket",
+      platform: process.platform,
+      exactBlocker: null,
+      transportSupport: "experimental_remote_websocket",
+      productionRemoteCutoverAllowed: false,
+      productionPromotionBlocker: codexAppServerRemotePromotionBlocker,
+      initializedNotificationSent: true,
+      threadStarted: false,
+      turnStarted: false,
+      externalActionExecuted: false
+    };
+  } catch (error) {
+    return buildBlockedResult({
+      generatedAt: input.generatedAt,
+      timeoutMs: input.timeoutMs,
+      exactBlocker: remoteProbeBlocker(error, "codex_app_server_remote_initialize_failed"),
+      protocol: "websocket",
+      endpoint: getCodexAppServerConnectionReadback({
+        remoteUrl: input.remoteUrl,
+        remoteToken: input.remoteToken,
+        remoteCwd: input.remoteCwd
+      }).endpoint
+    });
+  } finally {
+    client.close();
+  }
+}
+
 function buildBlockedResult(input: {
   generatedAt: string;
   timeoutMs: number;
   exactBlocker: NonNullable<CodexAppServerProbeResult["exactBlocker"]>;
+  protocol?: CodexAppServerProbeResult["protocol"];
+  endpoint?: string;
 }): CodexAppServerProbeResult {
   return {
     ok: false,
     status: "blocked",
     generatedAt: input.generatedAt,
     timeoutMs: input.timeoutMs,
-    protocol: "stdio",
+    protocol: input.protocol ?? "stdio",
+    ...(input.endpoint ? { endpoint: input.endpoint } : {}),
     platformFamily: null,
     platformOs: null,
     version: null,
     userAgent: null,
     platform: process.platform,
     exactBlocker: input.exactBlocker,
+    transportSupport: input.protocol === "websocket" ? "experimental_remote_websocket" : "supported_local_stdio",
+    productionRemoteCutoverAllowed: input.protocol === "websocket" ? false : null,
+    productionPromotionBlocker: input.protocol === "websocket" ? input.exactBlocker : null,
     initializedNotificationSent: false,
     threadStarted: false,
     turnStarted: false,
     externalActionExecuted: false
   };
+}
+
+function remoteProbeBlocker(
+  error: unknown,
+  fallback: Extract<NonNullable<CodexAppServerProbeResult["exactBlocker"]>, `codex_app_server_remote_${string}`>
+): NonNullable<CodexAppServerProbeResult["exactBlocker"]> {
+  const value = error instanceof Error ? error.message : "";
+  if (value === "codex_app_server_remote_url_invalid") return value;
+  if (value === "codex_app_server_remote_tls_required") return value;
+  if (value === "codex_app_server_remote_auth_missing") return value;
+  if (value === "codex_app_server_remote_cwd_invalid") return value;
+  if (value === "codex_app_server_remote_connect_failed") return value;
+  return fallback;
+}
+
+function buildThreadTurnCanaryBlocked(input: {
+  generatedAt: string;
+  timeoutMs: number;
+  exactBlocker: string;
+  endpoint?: string;
+  productionPromotionBlocker: string;
+}): CodexAppServerThreadTurnCanaryResult {
+  return {
+    schema: "codex_app_server_thread_turn_canary.v1",
+    ok: false,
+    status: "blocked",
+    generatedAt: input.generatedAt,
+    timeoutMs: input.timeoutMs,
+    protocol: "websocket",
+    ...(input.endpoint ? { endpoint: input.endpoint } : {}),
+    transportSupport: "experimental_remote_websocket",
+    productionReady: false,
+    productionRemoteCutoverAllowed: false,
+    productionPromotionBlocker: input.productionPromotionBlocker,
+    initialized: false,
+    accountRead: false,
+    accountPresent: null,
+    requiresOpenaiAuth: null,
+    threadStarted: false,
+    turnStarted: false,
+    turnCompletionObserved: false,
+    errorNotificationObserved: false,
+    eventMethods: [],
+    exactBlocker: input.exactBlocker,
+    externalActionExecuted: false
+  };
+}
+
+function threadTurnCanaryBlocker(error: unknown, fallback: string): string {
+  const value = error instanceof Error ? error.message : "";
+  const known = new Set([
+    "codex_app_server_remote_url_invalid",
+    "codex_app_server_remote_tls_required",
+    "codex_app_server_remote_auth_missing",
+    "codex_app_server_remote_cwd_invalid",
+    "codex_app_server_remote_connect_failed",
+    "codex_app_server_remote_initialize_failed",
+    "codex_app_server_initialize_rejected",
+    "codex_app_server_thread_id_missing",
+    "codex_app_server_turn_id_missing",
+    "codex_app_server_turn_timeout",
+    "codex_app_server_turn_failed",
+    "codex_app_server_unavailable",
+    "codex_app_server_closed"
+  ]);
+  return known.has(value) ? value : fallback;
 }
 
 function parseInitializeResponse(stdout: string): {
@@ -457,6 +914,16 @@ function normalizeProbeTimeoutMs(value: number): number {
 function normalizeProbeTtlMs(value: number): number {
   if (!Number.isFinite(value) || value <= 0) return defaultTtlMs;
   return Math.min(Math.floor(value), maxTtlMs);
+}
+
+function normalizeCanaryTimeoutMs(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) return 60_000;
+  return Math.min(Math.floor(value), 120_000);
+}
+
+function normalizeCanaryCooldownMs(value: number): number {
+  if (!Number.isFinite(value)) return 10_000;
+  return Math.min(Math.max(Math.trunc(value), 0), 5 * 60 * 1000);
 }
 
 function commandExists(command: string): boolean {

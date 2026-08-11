@@ -130,6 +130,163 @@ test("automation readback exposes the truthful scheduled dry-run contract", asyn
   assert.equal(item.scheduler_effect, "queues_scheduled_dry_run");
   assert.equal(item.external_action_allowed, false);
   assert.match(item.execution_label, /dry-run/);
+  assert.equal(item.schedule, "09:00");
+  assert.equal(item.cadence, "daily");
+  assert.equal(item.schedule_status, "active");
+  assert.equal(item.schedule_enabled, true);
+  assert.equal(item.schedule_timezone, "Asia/Tokyo");
+  assert.equal(item.pinned_schedule_version_id, schedule.json.schedule.automationVersionId);
+  assert.ok(Number.isFinite(Date.parse(item.next_run_at)), listed.raw);
+});
+
+test("AOS control-plane readiness is a company-scoped no-effect bridge contract", async () => {
+  seedMembership("api_control_plane_readiness", "api_control_plane_owner", "owner");
+  seedMembership("api_control_plane_viewer", "api_control_plane_viewer", "viewer");
+  seedMembership("api_control_plane_unaffiliated", "api_control_plane_unaffiliated", "owner");
+  setActor("api_control_plane_owner");
+  const beforeJobs = countRows("durable_jobs", "1=1");
+  const beforeRuns = countRows("runs", "1=1");
+
+  const response = await requestJson(
+    "GET",
+    "/api/v1/companies/api_control_plane_readiness/control-plane/readiness"
+  );
+  assert.equal(response.status, 200, response.raw);
+  assert.equal(response.json.schema, "aos.control_plane_readiness.v1");
+  assert.equal(response.json.status, "ready_for_no_effect_trigger");
+  assert.equal(response.json.readiness_basis, "runtime_control_plane_handler_presence");
+  assert.equal(response.json.exact_blocker, null);
+  assert.deepEqual(response.json.company_scope, {
+    enforced: true,
+    company_id: "api_control_plane_readiness"
+  });
+  assert.deepEqual(response.json.authority, {
+    provider: "aos.control_plane",
+    contract: "aos.execution_provider.v1",
+    owner: "automation_os_control_plane",
+    source_of_truth: "aos_scheduler_durable_queue",
+    worker_boundary: "mac_browser_use_cli_worker"
+  });
+  assert.equal(response.json.routes.manual_trigger.available, true);
+  assert.equal(response.json.routes.manual_trigger.execution_mode, "preflight_no_effect");
+  assert.equal(response.json.routes.manual_trigger.idempotency_key_required, true);
+  assert.equal(response.json.routes.manual_trigger.external_action_allowed, false);
+  assert.equal(response.json.routes.scheduler_run_once.server_owned, true);
+  assert.equal(response.json.routes.scheduler_run_once.scheduler_owner, "server");
+  assert.equal(response.json.routes.scheduler_run_once.execution_mode, "durable_queue_materialization");
+  assert.equal(response.json.queue.durable, true);
+  assert.equal(response.json.queue.business_completion, false);
+  assert.equal(response.json.client_boundary.client_neutral, true);
+  assert.equal(response.json.client_boundary.codex_app_role, "thin_trigger_only");
+  assert.equal(response.json.client_boundary.alternate_llm_role, "thin_trigger_only");
+  assert.equal(response.json.production_guard.token_value_exposed, false);
+  assert.equal(response.json.external_action_executed, false);
+  assert.equal(response.json.secrets_read, false);
+  assert.doesNotMatch(response.raw, /AUTOMATION_OS_(?:READ|WRITE)_TOKEN|Bearer\s+|secret_value|password|sentinel-read-token|sentinel-write-token/iu);
+  assert.equal(response.headers["cache-control"], "no-store");
+  assert.doesNotMatch(JSON.stringify(response.headers), /sentinel-read-token|sentinel-write-token/iu);
+  assert.equal(countRows("durable_jobs", "1=1"), beforeJobs);
+  assert.equal(countRows("runs", "1=1"), beforeRuns);
+
+  setActor("api_owner_a");
+  const forbidden = await requestJson(
+    "GET",
+    "/api/v1/companies/api_control_plane_readiness/control-plane/readiness"
+  );
+  assert.equal(forbidden.status, 404, forbidden.raw);
+  assert.equal(forbidden.json.error, "company_scope_forbidden");
+
+  setActor("api_control_plane_viewer");
+  const disallowedRole = await requestJson(
+    "GET",
+    "/api/v1/companies/api_control_plane_viewer/control-plane/readiness"
+  );
+  assert.equal(disallowedRole.status, 404, disallowedRole.raw);
+  assert.equal(disallowedRole.json.error, "company_scope_forbidden");
+
+  setActor("api_control_plane_unaffiliated");
+  const unaffiliated = await requestJson(
+    "GET",
+    "/api/v1/companies/api_control_plane_readiness/control-plane/readiness"
+  );
+  assert.equal(unaffiliated.status, 404, unaffiliated.raw);
+  assert.equal(unaffiliated.json.error, "company_scope_forbidden");
+
+  const previousRequireApi = process.env.AUTOMATION_OS_REQUIRE_API_TOKEN;
+  const previousReadToken = process.env.AUTOMATION_OS_READ_TOKEN;
+  const previousWriteToken = process.env.AUTOMATION_OS_WRITE_TOKEN;
+  process.env.AUTOMATION_OS_REQUIRE_API_TOKEN = "1";
+  process.env.AUTOMATION_OS_READ_TOKEN = "sentinel-read-token";
+  process.env.AUTOMATION_OS_WRITE_TOKEN = "sentinel-write-token";
+  try {
+    const missingToken = await requestJson(
+      "GET",
+      "/api/v1/companies/api_control_plane_readiness/control-plane/readiness"
+    );
+    assert.equal(missingToken.status, 401, missingToken.raw);
+    assert.equal(missingToken.json.exactBlocker, "production_token_required");
+    assert.doesNotMatch(missingToken.raw, /sentinel-read-token|sentinel-write-token/iu);
+
+    const invalidToken = await requestJson(
+      "GET",
+      "/api/v1/companies/api_control_plane_readiness/control-plane/readiness",
+      undefined,
+      { "x-automation-os-token": "wrong-sentinel-token" }
+    );
+    assert.equal(invalidToken.status, 401, invalidToken.raw);
+    assert.equal(invalidToken.json.exactBlocker, "production_token_required");
+
+    setActor("api_control_plane_owner");
+    const tokenAllowed = await requestJson(
+      "GET",
+      "/api/v1/companies/api_control_plane_readiness/control-plane/readiness",
+      undefined,
+      { "x-automation-os-token": "sentinel-read-token" }
+    );
+    assert.equal(tokenAllowed.status, 200, tokenAllowed.raw);
+    assert.doesNotMatch(tokenAllowed.raw, /sentinel-read-token|sentinel-write-token/iu);
+    assert.doesNotMatch(JSON.stringify(tokenAllowed.headers), /sentinel-read-token|sentinel-write-token/iu);
+  } finally {
+    if (previousRequireApi === undefined) delete process.env.AUTOMATION_OS_REQUIRE_API_TOKEN;
+    else process.env.AUTOMATION_OS_REQUIRE_API_TOKEN = previousRequireApi;
+    if (previousReadToken === undefined) delete process.env.AUTOMATION_OS_READ_TOKEN;
+    else process.env.AUTOMATION_OS_READ_TOKEN = previousReadToken;
+    if (previousWriteToken === undefined) delete process.env.AUTOMATION_OS_WRITE_TOKEN;
+    else process.env.AUTOMATION_OS_WRITE_TOKEN = previousWriteToken;
+  }
+});
+
+test("operator capability separates read-only and write tokens without returning token values", async () => {
+  const previousRequireApi = process.env.AUTOMATION_OS_REQUIRE_API_TOKEN;
+  const previousReadToken = process.env.AUTOMATION_OS_READ_TOKEN;
+  const previousWriteToken = process.env.AUTOMATION_OS_WRITE_TOKEN;
+  process.env.AUTOMATION_OS_REQUIRE_API_TOKEN = "1";
+  process.env.AUTOMATION_OS_READ_TOKEN = "capability-read-sentinel";
+  process.env.AUTOMATION_OS_WRITE_TOKEN = "capability-write-sentinel";
+  try {
+    const missing = await requestJson("GET", "/api/auth/capability");
+    assert.equal(missing.status, 401, missing.raw);
+    assert.equal(missing.json.exactBlocker, "production_token_required");
+
+    const read = await requestJson("GET", "/api/auth/capability", undefined, { "x-automation-os-token": "capability-read-sentinel" });
+    assert.equal(read.status, 200, read.raw);
+    assert.equal(read.json.scope, "read");
+    assert.equal(read.json.read_only, true);
+    assert.doesNotMatch(read.raw, /capability-read-sentinel|capability-write-sentinel/iu);
+
+    const write = await requestJson("GET", "/api/auth/capability", undefined, { "x-automation-os-token": "capability-write-sentinel" });
+    assert.equal(write.status, 200, write.raw);
+    assert.equal(write.json.scope, "write");
+    assert.equal(write.json.read_only, false);
+    assert.doesNotMatch(write.raw, /capability-read-sentinel|capability-write-sentinel/iu);
+  } finally {
+    if (previousRequireApi === undefined) delete process.env.AUTOMATION_OS_REQUIRE_API_TOKEN;
+    else process.env.AUTOMATION_OS_REQUIRE_API_TOKEN = previousRequireApi;
+    if (previousReadToken === undefined) delete process.env.AUTOMATION_OS_READ_TOKEN;
+    else process.env.AUTOMATION_OS_READ_TOKEN = previousReadToken;
+    if (previousWriteToken === undefined) delete process.env.AUTOMATION_OS_WRITE_TOKEN;
+    else process.env.AUTOMATION_OS_WRITE_TOKEN = previousWriteToken;
+  }
 });
 
 test("presentation profile is company-scoped and revisioned", async () => {
@@ -185,6 +342,11 @@ test("registered automation readback is company-scoped and HTTP execution remain
   assert.equal(readback.json.automations[0].can_run, false);
   assert.equal(readback.json.automations[0].toml_ref, null);
   assert.doesNotMatch(readback.raw, /\/Users\//);
+  const dailyLane = readback.json.automations.find((item: any) => item.id === "daily-ai-research-publish-run")?.browser_use_lane;
+  assert.equal(dailyLane?.profileRef, "scheduled/daily-ai");
+  assert.equal(dailyLane?.reservedPort, 19882);
+  assert.equal(dailyLane?.liveReadbackStatus, "not_claimed");
+  assert.doesNotMatch(JSON.stringify(dailyLane), /profileDir|lockPath|browserUseCdpUrl|\/Users\//);
 
   const run = await requestJson(
     "POST",
@@ -278,6 +440,9 @@ test("connection lifecycle is revisioned and Admin diagnostics are owner-only", 
   assert.ok(ownerDiagnostics.json.pc);
   assert.ok(ownerDiagnostics.json.browser);
   assert.ok(ownerDiagnostics.json.obsidian);
+  assert.equal(ownerDiagnostics.json.provider_registry.selected_provider, "aos.control_plane");
+  assert.equal(ownerDiagnostics.json.provider_registry.provider_status, "available");
+  assert.equal(ownerDiagnostics.json.provider_registry.external_action_allowed, false);
   assert.equal(ownerDiagnostics.json.company_release_readiness.status, "blocked");
   assert.equal(ownerDiagnostics.json.company_release_readiness.activation_authorized, false);
   assert.equal(ownerDiagnostics.json.company_release_evidence.status, "blocked");
@@ -497,6 +662,90 @@ test("state reload includes schedules, memory, and account refs, and archive pau
   assert.ok(scheduleAfterArchive.json.schedule.pausedAt);
 });
 
+test("AOS catalog adopts all six flows and routes browser schedules through the portable Mac worker", async () => {
+  seedMembership("api_company_aos", "api_aos_owner", "owner");
+  setActor("api_aos_owner");
+
+  const catalogRead = await requestJson("GET", "/api/v1/registered-automation-catalog");
+  assert.equal(catalogRead.status, 200, catalogRead.raw);
+  assert.equal(catalogRead.json.catalog.length, 6);
+  assert.equal(catalogRead.json.external_action_executed, false);
+
+  const adopted = await requestJson(
+    "POST",
+    "/api/v1/companies/api_company_aos/registered-automations/adopt",
+    { enable_schedules: true },
+    { "idempotency-key": "api-aos-adopt-all" }
+  );
+  assert.equal(adopted.status, 201, adopted.raw);
+  assert.equal(adopted.json.adopted.length, 6);
+  assert.equal(adopted.json.external_action_executed, false);
+  assert.ok(adopted.json.adopted.every((item: any) => item.automation.companyId === "api_company_aos"));
+  assert.ok(adopted.json.adopted.every((item: any) => item.adoption.externalActionAllowed === false));
+  assert.equal(adopted.json.adopted.find((item: any) => item.sourceAutomationId === "automation-3").adoption.stages[2].id, "identity_admission");
+
+  const list = await requestJson("GET", "/api/v1/companies/api_company_aos/automations");
+  assert.equal(list.status, 200, list.raw);
+  assert.equal(list.json.automations.length, 6);
+  const webAutomations = list.json.automations.filter((item: any) => ["job_submit_registered", "daily_ai_registered", "nisenprints_registered"].includes(item.worker_command_kind));
+  assert.equal(webAutomations.length, 3);
+  assert.ok(webAutomations.every((item: any) => item.execution_mode === "portable_mac_worker_queue"));
+  assert.ok(webAutomations.every((item: any) => item.scheduler_effect === "queues_portable_mac_worker"));
+  assert.ok(webAutomations.every((item: any) => item.portable_dispatch?.worker_protocol === "mac_worker_polling_required"));
+
+  const jobAutomation = adopted.json.adopted.find((item: any) => item.sourceAutomationId === "automation-3").automation;
+  const trigger = await requestJson(
+    "POST",
+    `/api/v1/companies/api_company_aos/automations/${jobAutomation.id}/trigger`,
+    { requested_stage: "identity_admission" },
+    { "idempotency-key": "api-aos-identity-preflight" }
+  );
+  assert.equal(trigger.status, 202, trigger.raw);
+  assert.equal(trigger.json.schema, "aos.portable_workflow_trigger.v1");
+  assert.equal(trigger.json.portable, true);
+  assert.equal(trigger.json.source_trigger, "aos_trigger_api");
+  assert.equal(trigger.json.provider_neutral, true);
+  assert.equal(trigger.json.external_action_executed, false);
+  assert.equal(trigger.json.worker_protocol, "mac_worker_polling_required");
+  assert.equal(trigger.json.run.company_id, "api_company_aos");
+
+  const replay = await requestJson(
+    "POST",
+    `/api/v1/companies/api_company_aos/automations/${jobAutomation.id}/trigger`,
+    { requested_stage: "identity_admission" },
+    { "idempotency-key": "api-aos-identity-preflight" }
+  );
+  assert.equal(replay.status, 202, replay.raw);
+  assert.equal(replay.json.run.id, trigger.json.run.id);
+  assert.equal(replay.json.portable, true);
+  assert.equal(replay.json.queued, true);
+});
+
+test("service identity bootstrap is company-scoped and never returns secret material", async () => {
+  seedMembership("api_company_service_identity", "api_service_owner", "owner");
+  setActor("api_service_owner");
+  const first = await requestJson(
+    "POST",
+    "/api/v1/companies/api_company_service_identity/service-identities",
+    {},
+    { "idempotency-key": "api-service-identity-bootstrap" }
+  );
+  assert.equal(first.status, 201, first.raw);
+  assert.equal(first.json.schema, "aos.service_identity.v1");
+  assert.equal(first.json.service_identity.role, "operator");
+  assert.equal(first.json.secret_material_included, false);
+  assert.match(first.json.service_identity.userId, /^aos_service_/u);
+  assert.doesNotMatch(first.raw, /token|secret_value|password|api_key/iu);
+  const second = await requestJson(
+    "POST",
+    "/api/v1/companies/api_company_service_identity/service-identities",
+    {},
+    { "idempotency-key": "api-service-identity-bootstrap-replay" }
+  );
+  assert.equal(second.status, 201, second.raw);
+  assert.equal(second.json.service_identity.userId, first.json.service_identity.userId);
+});
+
 function setActor(actorId: string): void {
   process.env.AUTOMATION_OS_OWNER_USER_ID = actorId;
 }
@@ -554,13 +803,13 @@ async function requestJson(
   path: string,
   body?: unknown,
   extraHeaders: Record<string, string> = {}
-): Promise<{ status: number; raw: string; json: any }> {
+): Promise<{ status: number; raw: string; json: any; headers: Record<string, string> }> {
   const response = await request(method, path, body, extraHeaders);
-  return { status: response.status, raw: response.body, json: JSON.parse(response.body) };
+  return { status: response.status, raw: response.body, json: JSON.parse(response.body), headers: response.headers };
 }
 
 function request(method: string, path: string, body?: unknown, extraHeaders: Record<string, string> = {}) {
-  return new Promise<{ status: number; body: string }>((resolve, reject) => {
+  return new Promise<{ status: number; body: string; headers: Record<string, string> }>((resolve, reject) => {
     const payload = body === undefined ? "" : JSON.stringify(body);
     const req = Readable.from(payload ? [Buffer.from(payload, "utf8")] : []) as NodeJS.ReadableStream & {
       method?: string;
@@ -582,7 +831,11 @@ function request(method: string, path: string, body?: unknown, extraHeaders: Rec
       removeHeader(name: string) { headers.delete(name.toLowerCase()); },
       end(chunk?: string | Buffer) {
         if (chunk) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-        resolve({ status: this.statusCode, body: Buffer.concat(chunks).toString("utf8") });
+        resolve({
+          status: this.statusCode,
+          body: Buffer.concat(chunks).toString("utf8"),
+          headers: Object.fromEntries([...headers.entries()].map(([name, value]) => [name, String(value)]))
+        });
         return this;
       }
     };

@@ -320,6 +320,7 @@ test("production API access guard protects operator readbacks while health stays
 
   try {
     const health = await requestJson("GET", "/api/health");
+    const readyz = await requestJson("GET", "/readyz");
     const blocked = await requestJson("GET", "/api/mvp/state");
     const blockedMixedCase = await requestJson("GET", "/API/mvp/state");
     const blockedBody = JSON.parse(blocked.body) as { error: string };
@@ -335,6 +336,9 @@ test("production API access guard protects operator readbacks while health stays
     const healthBody = JSON.parse(health.body) as Record<string, unknown>;
     assert.deepEqual(Object.keys(healthBody).sort(), ["ok", "service", "time"]);
     assert.doesNotMatch(health.body, /database|deployment|\/Users\/|webDistDir|tokenConfigured/);
+    assert.equal(readyz.status, 200);
+    assert.deepEqual(Object.keys(JSON.parse(readyz.body) as Record<string, unknown>).sort(), ["ok", "service", "status", "time"]);
+    assert.match(readyz.body, /"status":"ready"/u);
     assert.equal(blocked.status, 401);
     assert.equal(blockedMixedCase.status, 401);
     assert.equal(blockedBody.error, "production_token_required");
@@ -467,6 +471,53 @@ test("POST /api/create/plan accepts content-shaped chat messages", async () => {
     assert.equal(body.plan.operation, "manage_workflow");
     assert.equal(body.plan.executionDecision, "demo_first");
     assert.match(body.plan.nextAction, /本番画面で会話を再現/);
+  } finally {
+    if (previousPlannerProvider === undefined) delete process.env.AUTOMATION_OS_CREATE_PLANNER_PROVIDER;
+    else process.env.AUTOMATION_OS_CREATE_PLANNER_PROVIDER = previousPlannerProvider;
+  }
+});
+
+test("POST /api/create/plan attaches the common adaptive Web intake without starting a run", async () => {
+  db.initDb();
+  db.resetDemoData();
+  const previousPlannerProvider = process.env.AUTOMATION_OS_CREATE_PLANNER_PROVIDER;
+  process.env.AUTOMATION_OS_CREATE_PLANNER_PROVIDER = "local";
+
+  try {
+    const response = await postJson("/api/create/plan", {
+      messages: [{
+        role: "user",
+        text: [
+          "目的: publish",
+          "サイトまたはURL: https://example.com",
+          "会社とアカウント: example / brand",
+          "対象（意味で指定。例: 公開、保存、応募、削除）: 公開対象",
+          "内容（本文・画像・ファイル・応募内容など）: 安全な下書き",
+          "公開先・送信先・対象範囲: exampleのブランドアカウント"
+        ].join("\n")
+      }]
+    });
+    const body = JSON.parse(response.body) as {
+      ok: boolean;
+      plan: {
+        webOperationIntake?: {
+          applicable: boolean;
+          status: string;
+          operation: string | null;
+          external_action_executed: boolean;
+          web_operation_contract: { adaptive_layer: { no_fixed_css_selector_authority: boolean } };
+        };
+      };
+    };
+
+    assert.equal(response.status, 200);
+    assert.equal(body.ok, true);
+    assert.equal(body.plan.webOperationIntake?.applicable, true);
+    assert.equal(body.plan.webOperationIntake?.status, "approval_required");
+    assert.equal(body.plan.webOperationIntake?.operation, "publish");
+    assert.equal(body.plan.webOperationIntake?.external_action_executed, false);
+    assert.equal(body.plan.webOperationIntake?.web_operation_contract.adaptive_layer.no_fixed_css_selector_authority, true);
+    assert.equal(db.querySql<{ count: number }>("SELECT count(*) AS count FROM runs")[0].count, 0);
   } finally {
     if (previousPlannerProvider === undefined) delete process.env.AUTOMATION_OS_CREATE_PLANNER_PROVIDER;
     else process.env.AUTOMATION_OS_CREATE_PLANNER_PROVIDER = previousPlannerProvider;

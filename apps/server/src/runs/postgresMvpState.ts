@@ -1,6 +1,8 @@
 import pg from "pg";
 import { sanitizeDashboardRows } from "../dashboardSanitizer.js";
-import { buildBrowserUseRuntimeSnapshot } from "../browser/runtimeSnapshot.js";
+import { buildBrowserUseRuntimeSnapshotAsync, publicBrowserUseLaneBinding } from "../browser/runtimeSnapshot.js";
+import { registeredBrowserLaneForWorkflow } from "./laneManager.js";
+import { classifyPortableWorkerHeartbeat } from "./portableWorkerHeartbeat.js";
 
 type JsonObject = Record<string, unknown>;
 
@@ -19,6 +21,14 @@ let warmupPromise: Promise<void> | undefined;
 const stateCache = new Map<string, { state: JsonObject; expiresAt: number }>();
 const stateInFlight = new Map<string, Promise<JsonObject>>();
 const STATE_CACHE_TTL_MS = 5_000;
+const DEFAULT_STATE_POOL_MAX = 12;
+
+function boundedStatePoolMax(): number {
+  const configured = Number(process.env.AUTOMATION_OS_POSTGRES_MVP_STATE_POOL_MAX ?? DEFAULT_STATE_POOL_MAX);
+  return Number.isInteger(configured) && configured >= 4 && configured <= 32
+    ? configured
+    : DEFAULT_STATE_POOL_MAX;
+}
 
 function getPool(): pg.Pool {
   if (pool) return pool;
@@ -26,7 +36,13 @@ function getPool(): pg.Pool {
   if (!databaseUrl) throw new Error("postgres_database_url_missing");
   pool = new pg.Pool({
     connectionString: databaseUrl,
-    max: 4,
+    // The MVP state read is an intentionally read-only fan-out across the
+    // control-plane tables.  Four connections serialized the 15 queries into
+    // several waves, making the dashboard appear hung even though the HTTP
+    // event loop was no longer blocked.  Keep this pool isolated and bounded
+    // so the state fan-out can finish concurrently without changing the
+    // smaller write/request pool used by the rest of the server.
+    max: boundedStatePoolMax(),
     idleTimeoutMillis: 300_000,
     connectionTimeoutMillis: 15_000,
     query_timeout: 15_000,
@@ -46,6 +62,11 @@ export function warmPostgresMvpStatePool(): Promise<void> {
       throw error;
     });
   return warmupPromise;
+}
+
+/** Warm the scoped dashboard snapshot without delaying server readiness. */
+export function warmPostgresMvpState(options: PostgresMvpStateOptions = {}): Promise<void> {
+  return readPostgresMvpState(options).then(() => undefined);
 }
 
 export async function readPostgresMvpState(options: PostgresMvpStateOptions = {}): Promise<JsonObject> {
@@ -161,8 +182,43 @@ async function readPostgresMvpStateUncached(options: PostgresMvpStateOptions = {
     const queuedJobs = publicJobs.filter((job) => job.status === "queued");
     const leasedJobs = publicJobs.filter((job) => job.status === "leased");
     const latestCheck = checks.find((row) => row.id === "local_codex_worker_heartbeat" || row.kind === "local_codex_worker");
-    const workerStatus = latestCheck?.status === "blocked" ? "blocked" : leasedJobs.length > 0 ? "running" : "idle";
-    const workerBlocker = typeof latestCheck?.metadata_json === "string" ? parseObject(latestCheck.metadata_json).exactBlocker : null;
+    const portableHeartbeat = checks
+      .filter((row) => row.kind === "portable_mac_worker")
+      .map((row) => ({ row, metadata: parseObject(row.metadata_json) }))
+      .filter(({ metadata }) => metadata.company_id === undefined || metadata.company_id === companyIds[0])
+      .sort((left, right) => String(right.row.created_at ?? "").localeCompare(String(left.row.created_at ?? "")))
+      .at(0);
+    const portableMetadata = portableHeartbeat?.metadata ?? {};
+    const portableHeartbeatAt = portableHeartbeat
+      ? typeof portableMetadata.heartbeat_at === "string"
+        ? portableMetadata.heartbeat_at
+        : typeof portableHeartbeat.row.created_at === "string" ? portableHeartbeat.row.created_at : null
+      : null;
+    const portableHeartbeatFreshness = portableHeartbeat
+      ? classifyPortableWorkerHeartbeat({
+        heartbeatAt: portableHeartbeatAt,
+        staleAfterSeconds: Number(process.env.AUTOMATION_OS_PORTABLE_WORKER_HEARTBEAT_STALE_SECONDS ?? 300)
+      })
+      : null;
+    const portableHeartbeatBlocker = portableHeartbeatFreshness?.exactBlocker
+      ?? (portableHeartbeat?.row.status === "blocked" ? "portable_worker_heartbeat_blocked" : null);
+    const workerStatus = latestCheck?.status === "blocked"
+      ? "blocked"
+      : portableHeartbeat?.row.status === "blocked"
+        ? "blocked"
+        : portableHeartbeat?.row.status === "running" && portableHeartbeatFreshness?.heartbeatFresh === true
+          ? "running"
+          : portableHeartbeat && portableHeartbeatFreshness?.heartbeatFresh === false
+            ? "blocked"
+        : leasedJobs.length > 0 ? "running" : "idle";
+    const workerBlocker = typeof portableMetadata.exact_blocker === "string"
+      ? portableMetadata.exact_blocker
+      : portableHeartbeatBlocker
+        ?? (typeof latestCheck?.metadata_json === "string" ? parseObject(latestCheck.metadata_json).exactBlocker : null);
+    const browserRuntime = await buildBrowserUseRuntimeSnapshotAsync({ controlPlaneCompanyIds: companyIds });
+    const workerScope = browserRuntime.processReadback.portableRemoteWorker.scopeReadback;
+    const resolvedWorkerBlocker = workerScope.exactBlocker ?? (typeof workerBlocker === "string" ? workerBlocker : null);
+    const resolvedWorkerStatus = workerScope.exactBlocker ? "blocked" : workerStatus;
     const publicWorkflows = workflows.map(publicRegisteredWorkflowRow);
     const capturedAt = new Date().toISOString();
     return {
@@ -207,19 +263,26 @@ async function readPostgresMvpStateUncached(options: PostgresMvpStateOptions = {
       },
       worker: {
         id: "durable-company-queue",
-        status: workerStatus,
-        label: workerStatus === "blocked" ? "Mac worker要確認" : "会社別durable queue",
-        detail: workerBlocker ? `Mac worker readback: ${workerBlocker}` : `queued ${queuedJobs.length} / leased ${leasedJobs.length}`,
+        status: resolvedWorkerStatus,
+        label: resolvedWorkerStatus === "blocked" ? "Mac worker要確認" : "会社別durable queue",
+        detail: resolvedWorkerBlocker ? `Mac worker readback: ${resolvedWorkerBlocker}` : `queued ${queuedJobs.length} / leased ${leasedJobs.length}`,
         queue_depth: queuedJobs.length,
         active_leases: leasedJobs.length,
-        heartbeat_at: latestCheck?.created_at ?? null,
+        heartbeat_at: portableHeartbeatAt ?? latestCheck?.created_at ?? null,
+        heartbeat_age_seconds: portableHeartbeatFreshness?.heartbeatAgeSeconds,
+        heartbeat_fresh: portableHeartbeatFreshness?.heartbeatFresh,
         last_run_id: String(publicJobs[0]?.run_id ?? sanitizedRuns[0]?.id ?? "") || null,
-        readback_status: "stored",
-        exact_blocker: typeof workerBlocker === "string" ? workerBlocker : null,
-        next_action: workerBlocker ? "Mac workerのreadbackを確認してください。" : queuedJobs.length > 0 ? "登録済みservice workerのclaimを待っています。" : "待機中のjobはありません。",
+        readback_status: portableHeartbeatFreshness?.readbackStatus ?? "stored",
+        exact_blocker: resolvedWorkerBlocker,
+        next_action: workerScope.exactBlocker
+          ? workerScope.nextAction
+          : workerBlocker ? "Mac workerのreadbackを確認してください。" : queuedJobs.length > 0 ? "登録済みservice workerのclaimを待っています。" : "待機中のjobはありません。",
+        queue_scope: { source: "postgres_persistent_read_pool", company_ids: companyIds },
+        worker_scope: workerScope,
+        portable_remote_worker: browserRuntime.processReadback.portableRemoteWorker,
         external_action_executed: false
       },
-      browser_use_runtime: buildBrowserUseRuntimeSnapshot(),
+      browser_use_runtime: browserRuntime,
       company_scope: { enforced: true, company_ids: companyIds, actor_user_id: actorUserId },
       updated_at: capturedAt,
       readback_source: "postgres_persistent_read_pool",
@@ -375,14 +438,17 @@ function publicViewport(value: JsonObject): JsonObject {
 
 function publicRegisteredWorkflowRow(row: JsonObject): JsonObject {
   const schedule = parseObject(row.schedule_json);
+  const workflowId = String(row.id ?? "");
+  const browserUseLane = publicBrowserUseLaneBinding(registeredBrowserLaneForWorkflow(workflowId));
   return {
-    id: row.id,
+    id: workflowId,
     company_id: row.company_id ?? null,
     name: row.name,
     title: row.name,
     status: row.status,
     runnerStatus: row.runner_status,
     runnerKind: row.runner_kind,
+    ...(browserUseLane ? { browser_use_lane: browserUseLane } : {}),
     schedule: {
       ...(typeof schedule.rrule === "string" ? { rrule: schedule.rrule } : {}),
       ...(typeof schedule.label === "string" ? { label: schedule.label } : {})

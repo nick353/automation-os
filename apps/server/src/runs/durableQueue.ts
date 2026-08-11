@@ -15,7 +15,13 @@ import type {
   IabExternalExecutorResultV1,
   IabExternalReservationV1
 } from "../serviceReadiness/iabExternalExecutor.js";
+import { buildAutomationProviderMetadata } from "../providers/automationProvider.js";
 import { PORTABLE_EXECUTION_SOURCE } from "./portableWorkerIsolation.js";
+
+// Scheduled work must not wait behind an operator-triggered dry-run backlog.
+// Both lanes remain no-effect control-plane work, but due schedules are the
+// liveness contract for the AOS scheduler and therefore get queue precedence.
+const SCHEDULED_DRY_RUN_PRIORITY = 200;
 
 export class DurableQueueError extends Error {
   constructor(public readonly code: string) {
@@ -111,8 +117,10 @@ type DurableJobRow = {
 
 function serviceReadinessRunMetadata(runId: string, payload: Record<string, unknown>): Record<string, unknown> {
   const workflowId = referenceWorkflowIdFromMetadata(payload);
-  if (!workflowId) return {};
-  return {
+  const metadata = {
+    trigger_source: payload.scheduler_source === "durable_scheduler" ? "automation_os_scheduler" : "automation_os_manual",
+    execution_provider: buildAutomationProviderMetadata(payload.execution_provider ?? payload.provider_id),
+    ...(workflowId ? {
     service_readiness_root_id: deriveServiceReadinessRootId(runId),
     service_readiness_workflow_id: workflowId,
     service_readiness_surface: "in_app_browser",
@@ -120,7 +128,9 @@ function serviceReadinessRunMetadata(runId: string, payload: Record<string, unkn
     service_readiness_external_action_executed: false,
     service_readiness_legacy_surfaces_forbidden: true,
     service_readiness_prior_receipt_reuse: false
+    } : {})
   };
+  return metadata;
 }
 
 function serviceReadinessBindingForDurableAttempt(input: {
@@ -292,7 +302,7 @@ export function materializeDurableScheduleOccurrence(input: {
                concurrency_key, max_concurrency, lease_owner, lease_expires_at, fencing_token, heartbeat_at,
                last_error, created_at, updated_at)
               VALUES (${sqlValue(jobId)}, ${sqlValue(companyId)}, ${sqlValue(runId)}, ${sqlValue(schedule.automation_id)}, ${sqlValue(schedule.automation_version_id)}, ${sqlValue(occurrenceId)}, 'scheduled_dry_run', 'queued',
-                      ${sqlValue(payloadJson)}, ${sqlValue(payloadHash)}, ${sqlValue(key)}, 50, 3, 0, ${sqlValue(scheduledFor)},
+                      ${sqlValue(payloadJson)}, ${sqlValue(payloadHash)}, ${sqlValue(key)}, ${SCHEDULED_DRY_RUN_PRIORITY}, 3, 0, ${sqlValue(scheduledFor)},
                       ${sqlValue(concurrencyKey)}, ${maxConcurrency}, NULL, NULL, 0, NULL, NULL, ${sqlValue(timestamp)}, ${sqlValue(timestamp)})`,
         expectChanges: 1
       },
@@ -664,6 +674,8 @@ export function completeDurableDryRun(input: {
     ...input.result,
     dry_run: true,
     external_action_executed: false,
+    trigger_source: runMetadata.trigger_source ?? "automation_os_manual",
+    execution_provider: runMetadata.execution_provider ?? buildAutomationProviderMetadata(null),
     ...(serviceReadinessBinding ? { service_readiness_runtime_binding: serviceReadinessBinding } : {})
   };
   const resultContentText = canonicalJson(resultContent);

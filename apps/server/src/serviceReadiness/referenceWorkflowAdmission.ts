@@ -8,10 +8,23 @@ import {
   type IabRootStageAdmissionInputV1,
   type IabRootStageAdmissionValidationResultV1
 } from "./rootStageAdmission.js";
+import {
+  workflowAdapterIdForReferenceWorkflow,
+  workflowAdapterReadback
+} from "../providers/workflowAdapterRegistry.js";
+import {
+  prepareReferenceBrowserUseExternalIntentV1,
+  type PreparedReferenceBrowserUseExternalIntentV1
+} from "./workflowAdapters.js";
+import {
+  readReferenceBrowserUseWorkflowAdaptersV1,
+  type ReferenceBrowserUseWorkflowAdapterV1
+} from "./workflowAdapters.js";
 
 export { IAB_EXTERNAL_EFFECT_CAPABILITY_BLOCKER };
 
 export const REFERENCE_WORKFLOW_ADMISSION_SCHEMA_V1 = "service_readiness_reference_workflow_admission.v1" as const;
+export const REFERENCE_BROWSER_USE_WORKFLOW_ADMISSION_SCHEMA_V1 = "service_readiness_browser_use_reference_workflow_admission.v1" as const;
 
 export type ReferenceWorkflowAdmissionInputV1 = {
   workflow_id: string;
@@ -38,6 +51,7 @@ export type ReferenceWorkflowAdmissionProjectionV1 = {
   status: "blocked" | "admitted";
   exact_blocker: string | null;
   root_admission: IabRootStageAdmissionValidationResultV1;
+  aos_workflow_adapter: Record<string, unknown>;
 };
 
 function noContractAdmission(): IabRootStageAdmissionValidationResultV1 {
@@ -81,7 +95,8 @@ export function projectReferenceWorkflowAdmission(
       contract_provided: contractWasProvided(input),
       status: "blocked",
       exact_blocker: rootAdmission.exact_blocker,
-      root_admission: rootAdmission
+      root_admission: rootAdmission,
+      aos_workflow_adapter: workflowAdapterReadback(input.workflow_id)
     };
   }
 
@@ -110,9 +125,86 @@ export function projectReferenceWorkflowAdmission(
     contract_provided: contractWasProvided(input),
     status: rootAdmission.ok ? "admitted" : "blocked",
     exact_blocker: rootAdmission.ok ? null : rootAdmission.exact_blocker,
-    root_admission: rootAdmission
+    root_admission: rootAdmission,
+    aos_workflow_adapter: workflowAdapterReadback(workflowAdapterIdForReferenceWorkflow(adapter.workflow_id) ?? adapter.workflow_id)
   };
 }
 
 export const buildReferenceWorkflowAdmission = projectReferenceWorkflowAdmission;
 export const createReferenceWorkflowAdmissionMetadata = projectReferenceWorkflowAdmission;
+
+export type ReferenceBrowserUseWorkflowAdmissionProjectionV1 = {
+  schema: typeof REFERENCE_BROWSER_USE_WORKFLOW_ADMISSION_SCHEMA_V1;
+  workflow_id: string;
+  contract_schema: string;
+  adapter: ReferenceBrowserUseWorkflowAdapterV1 | null;
+  browser_surface: "browser_use_cli";
+  legacy_surfaces_forbidden: true;
+  prior_receipt_reuse: false;
+  capability_mode: "read_only";
+  external_action_executed: false;
+  contract_provided: boolean;
+  status: "blocked";
+  exact_blocker: string;
+  root_admission: {
+    ok: false;
+    status: "blocked";
+    exact_blocker: string;
+  };
+  aos_workflow_adapter: Record<string, unknown>;
+  external_intent: PreparedReferenceBrowserUseExternalIntentV1 | null;
+};
+
+/**
+ * Current reference-canary admission projection.  The historical IAB
+ * projection above remains readable for old artifacts, but no current
+ * reference workflow may use it as its browser authority.  This projection
+ * is deliberately non-live: it records the Browser Use CLI contract and
+ * stops until a fresh same-run authority/readback is supplied.
+ */
+export function projectReferenceBrowserUseWorkflowAdmission(
+  input: ReferenceWorkflowAdmissionInputV1
+): ReferenceBrowserUseWorkflowAdmissionProjectionV1 {
+  const adapter = readReferenceBrowserUseWorkflowAdaptersV1().find((candidate) => candidate.workflow_id === input.workflow_id) ?? null;
+  const contractProvided = contractWasProvided(input);
+  const externalIntent = adapter && contractProvided
+    ? prepareReferenceBrowserUseExternalIntentV1({
+      workflow_id: input.workflow_id as "daily-ai" | "job-application-manager" | "nisenprints",
+      contract: input.workflow_contract ?? input.contract
+    })
+    : null;
+  const exactBlocker = !adapter
+    ? "reference_workflow_admission_unknown_workflow"
+    : externalIntent?.status === "blocked"
+      ? (externalIntent.exact_blocker ?? "browser_use_external_contract_invalid")
+      : "browser_use_cli_authority_missing";
+  return {
+    schema: REFERENCE_BROWSER_USE_WORKFLOW_ADMISSION_SCHEMA_V1,
+    workflow_id: input.workflow_id,
+    contract_schema: adapter?.workflow_id === "daily-ai"
+      ? "daily_ai.workflow_contract.v1"
+      : adapter?.workflow_id === "job-application-manager"
+        ? "job_manager.workflow_contract.v1"
+        : adapter?.workflow_id === "nisenprints"
+          ? "nisenprints.service_readiness.v1"
+          : "unknown",
+    adapter,
+    browser_surface: "browser_use_cli",
+    legacy_surfaces_forbidden: true,
+    prior_receipt_reuse: false,
+    capability_mode: "read_only",
+    external_action_executed: false,
+    contract_provided: contractProvided,
+    status: "blocked",
+    exact_blocker: exactBlocker,
+    root_admission: {
+      ok: false,
+      status: "blocked",
+      exact_blocker: exactBlocker
+    },
+    aos_workflow_adapter: workflowAdapterReadback(workflowAdapterIdForReferenceWorkflow(input.workflow_id) ?? input.workflow_id),
+    external_intent: externalIntent
+  };
+}
+
+export const buildReferenceBrowserUseWorkflowAdmission = projectReferenceBrowserUseWorkflowAdmission;

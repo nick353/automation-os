@@ -1,13 +1,30 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 
 const tempRoot = mkdtempSync(join(tmpdir(), "automation-os-durable-queue-"));
 process.env.AUTOMATION_OS_DB = join(tempRoot, "automation-os.sqlite");
+
+// Child processes must use the same runtime generation as the parent test.
+// Source-mode tsx tests otherwise resolve `../*.js` to a non-existent source
+// path, while the normal npm test command executes the compiled dist tests.
+function compiledRuntimeModule(relativePath: string, sourceRelativeUrl: string): string {
+  const compiledPath = join(process.cwd(), "apps/server", "dist", relativePath);
+  return existsSync(compiledPath)
+    ? pathToFileURL(compiledPath).href
+    : new URL(sourceRelativeUrl, import.meta.url).href;
+}
+
+function compiledRuntimeEntry(relativePath: string, sourceRelativeUrl: string): string {
+  const compiledPath = join(process.cwd(), "apps/server", "dist", relativePath);
+  return existsSync(compiledPath)
+    ? compiledPath
+    : fileURLToPath(new URL(sourceRelativeUrl, import.meta.url));
+}
 
 const db = await import("../db/client.js");
 const {
@@ -217,7 +234,11 @@ test("dry-run completion writes an integrity-checked artifact and tampering is d
 
   const artifact = readRunArtifact(seed.companyId, result.artifactId);
   assert.ok(artifact);
-  assert.equal(JSON.parse(artifact.contentText).dry_run, true);
+  const artifactBody = JSON.parse(artifact.contentText);
+  assert.equal(artifactBody.dry_run, true);
+  assert.equal(artifactBody.external_action_executed, false);
+  assert.equal(artifactBody.trigger_source, "automation_os_manual");
+  assert.equal(artifactBody.execution_provider.selected_provider, "aos.control_plane");
   assert.equal(getJob(seed.companyId, job.id)?.status, "completed");
   assert.equal(activeSlotCount(seed.companyId, job.concurrencyKey), 0);
 
@@ -437,7 +458,7 @@ test("P5 no-effect canary coordinates two schedulers and three workers, then rec
     updated_at: claimNow
   });
 
-  const moduleUrl = new URL("../runs/durableQueue.js", import.meta.url).href;
+  const moduleUrl = compiledRuntimeModule("runs/durableQueue.js", "../runs/durableQueue.js");
   const schedulerCode = `
     const queue = await import(${JSON.stringify(moduleUrl)});
     const result = queue.materializeDurableScheduleOccurrence({ companyId: ${JSON.stringify(seed.companyId)}, serviceUserId: ${JSON.stringify(seed.serviceUserId)}, scheduleId: "schedule_p5_canary", scheduledFor: ${JSON.stringify(claimNow)}, expectedScheduleRevision: 1 });
@@ -604,7 +625,7 @@ test("100 concurrent worker processes produce exactly one claim winner for one j
   resetDurableState();
   const seed = seedDurableCompany("company_concurrent", "service_concurrent", "automation_concurrent", "version_concurrent");
   const job = enqueueAutomationDryRun({ companyId: seed.companyId, actorUserId: seed.serviceUserId, automationId: seed.automationId, idempotencyKey: "concurrent-job" });
-  const moduleUrl = new URL("../runs/durableQueue.js", import.meta.url).href;
+  const moduleUrl = compiledRuntimeModule("runs/durableQueue.js", "../runs/durableQueue.js");
   const code = `
     const queue = await import(${JSON.stringify(moduleUrl)});
     const claim = queue.claimNextDurableJob({ companyId: ${JSON.stringify(seed.companyId)}, serviceUserId: ${JSON.stringify(seed.serviceUserId)}, now: ${JSON.stringify(claimNow)} });
@@ -768,7 +789,7 @@ function runClaimProcess(code: string): Promise<string> {
 
 function runWorkerLoopProcess(serviceUserId = ""): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const workerLoopPath = fileURLToPath(new URL("../cli/workerLoop.js", import.meta.url));
+    const workerLoopPath = compiledRuntimeEntry("cli/workerLoop.js", "../cli/workerLoop.js");
     const child = spawn(process.execPath, [workerLoopPath, "--max-cycles=1"], {
       cwd: process.cwd(),
       env: { ...process.env, AUTOMATION_OS_DB: process.env.AUTOMATION_OS_DB!, AUTOMATION_OS_DURABLE_SERVICE_USER_ID: serviceUserId },

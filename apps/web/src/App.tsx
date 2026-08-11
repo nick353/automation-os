@@ -41,6 +41,7 @@ import {
 import "./styles.css";
 
 type Status = "running" | "waiting" | "approved" | "blocked" | "enabled" | "disabled" | "draft";
+type ApiTokenScope = "unknown" | "read" | "write" | "unrestricted";
 
 const subTabLabels = [
   ["定期実行", "automations"],
@@ -176,10 +177,84 @@ function workerFreshnessLabel(worker: Partial<NonNullable<MvpState["worker"]>> &
 
 function publicBrowserUseRuntimeStatus(runtime: MvpState["browser_use_runtime"]) {
   if (!runtime) return "未確認";
+  const processBlocker = runtime.processReadback?.exactBlocker;
+  if (processBlocker === "browser_use_unregistered_live_process") return "未登録Browserあり（照合待ち）";
+  if (processBlocker === "browser_use_live_process_binding_mismatch") return "profile / port不一致（照合待ち）";
+  if (runtime.processReadback?.status === "unavailable") return "process readback取得不可";
   if (runtime.status === "verified") return "確認済み";
   if (runtime.status === "readback_pending") return "Mac worker確認待ち";
   if (runtime.status === "blocked") return "要確認";
   return "未確認";
+}
+
+function publicBrowserUseLaneReadbackStatus(lane: BrowserUseLaneBinding) {
+  const value = String(lane.liveReadbackStatus ?? "not_claimed");
+  if (value === "verified" || value === "same_run_verified") return "same-run実測済み";
+  if (value === "blocked") return "same-run readback停止";
+  return "未claim（予約のみ）";
+}
+
+function publicBrowserUseLaneProcessReadbackStatus(lane: BrowserUseLaneBinding) {
+  const value = String(lane.processReadbackStatus ?? "not_observed");
+  if (value === "present") return "process検出（profile/port一致）";
+  if (value === "binding_mismatch") return "process検出（profile/port不一致）";
+  if (value === "absent") return "process未検出";
+  if (value === "unavailable") return "process readback取得不可";
+  return "process未観測";
+}
+
+function publicBrowserUseLaneNextCheck(lane: BrowserUseLaneBinding, runtime: MvpState["browser_use_runtime"]) {
+  const readback = String(lane.liveReadbackStatus ?? "not_claimed");
+  if (readback === "verified" || readback === "same_run_verified") return "同一Runのreceipt / cleanupを確認";
+  if (readback === "blocked") return "exact blockerを解消して再読戻し";
+  if (runtime?.runtimeRole === "control_plane") return "Mac workerの同一Run readback待ち";
+  return "profile/port lockとprocess identityを同一Runで確認";
+}
+
+function publicBrowserUseRuntimeNextCheck(runtime: MvpState["browser_use_runtime"]) {
+  if (!runtime) return "AOS stateを同期してBrowser Use runtimeを確認";
+  if (runtime.processReadback?.exactBlocker) return `foreign / process bindingを変更せず、同一Runのroom・authority・recordingを照合（${runtime.processReadback.exactBlocker}）`;
+  if (runtime.processReadback?.status === "unavailable") return "Mac workerからprocess identityとprofile/port lockのreadbackを取得";
+  if (runtime.status === "readback_pending") return "Mac worker heartbeatと同一RunのBrowser Use readbackを確認";
+  if (runtime.status === "blocked") return runtime.exactBlocker ? `exact blocker: ${runtime.exactBlocker}` : "Mac worker runtimeのexact blockerを確認";
+  if (runtime.status === "verified") return "実行時はauthority・profile/port lock・receipt・cleanupを確認";
+  return runtime.nextAction ?? "Browser Use runtimeのreadbackを確認";
+}
+
+function publicBrowserUseProcessReadbackStatus(readback: BrowserUseProcessReadback | undefined) {
+  if (!readback) return "未確認";
+  if (readback.status === "available") return "同一ホストprocess実測済み";
+  if (readback.status === "unavailable") return "同一ホストprocess未取得";
+  return "未確認";
+}
+
+function publicBrowserOperationalAuthenticationStatus(readback: BrowserUseOperationalReadback | undefined) {
+  const status = readback?.authentication?.status;
+  if (status === "waiting_auth") return "認証待ち（人間入力）";
+  if (status === "verified") return "同一Run認証readback済み";
+  if (status === "not_required") return "認証不要を同一Run確認";
+  return "未確認（画面readback必須）";
+}
+
+function publicBrowserOperationalEffectStatus(readback: BrowserUseOperationalReadback | undefined) {
+  const effect = readback?.externalEffect;
+  if (effect?.status === "executed" && effect.externalActionExecuted === true) return "実行済み（receipt照合待ち）";
+  if (effect?.status === "approval_pending") return "承認待ち";
+  if (effect?.status === "reconciliation_required") return "作用不明（再実行禁止）";
+  return "未検証（provider receipt必須）";
+}
+
+function publicBrowserOperationalCompletionStatus(readback: BrowserUseOperationalReadback | undefined) {
+  const completion = readback?.businessCompletion;
+  if (completion?.status === "verified" && completion.businessCompletionVerified === true) return "業務完了verified";
+  if (completion?.status === "blocked") return "blocked";
+  return "業務完了未claim";
+}
+
+function publicBrowserOperationalProofStatus(readback: BrowserUseOperationalReadback | undefined) {
+  const receipt = readback?.receipt?.status ?? "not_claimed";
+  const sourceSync = readback?.sourceSync?.status ?? "not_claimed";
+  return `receipt=${receipt} / source sync=${sourceSync}`;
 }
 
 function runDispositionRank(run: any) {
@@ -232,12 +307,103 @@ type ScheduleDraft = {
   enabled: boolean;
 };
 
+type BrowserUseLaneBinding = {
+  id?: string;
+  workflowId?: string;
+  runnerKind?: string;
+  canonicalBrowserSurface?: string;
+  executionContract?: string;
+  visibility?: string;
+  status?: string;
+  lifecycle?: string;
+  profileRef?: string;
+  profileName?: string;
+  reservedPort?: number;
+  portStatus?: string;
+  ownership?: string;
+  bindingStatus?: string;
+  liveReadbackStatus?: string;
+  processReadbackStatus?: string;
+  processPid?: number | null;
+  processReadbackCapturedAt?: string | null;
+};
+
+type BrowserUseProcessReadback = {
+  schema?: string;
+  status?: string;
+  source?: string;
+  capturedAt?: string;
+  exactBlocker?: string | null;
+  nextAction?: string;
+  unregisteredBrowserProcessCount?: number;
+  bindingMismatchCount?: number;
+  registeredLanes?: Array<{ laneId?: string; workflowId?: string; profileRef?: string; reservedPort?: number; processStatus?: string; matchingPid?: number | null; mismatchPid?: number | null }>;
+  browserProcesses?: Array<{ kind?: string; pid?: number; processCount?: number; profileRef?: string; profileName?: string; port?: number; laneId?: string | null; workflowId?: string | null; bindingStatus?: string; ownership?: string; readbackStatus?: string }>;
+  workerScopeReadback?: {
+    status?: string;
+    controlPlaneCompanyIds?: string[];
+    remoteWorkerCompanyIds?: string[];
+    remoteOrigins?: string[];
+    workerIds?: string[];
+    alignmentCandidates?: Array<{ scope?: string; status?: string; companyIds?: string[]; origins?: string[]; workerIds?: string[] }>;
+    alignmentDecisionRequired?: boolean;
+    exactBlocker?: string | null;
+    nextAction?: string;
+  };
+  portableRemoteWorker?: {
+    status?: string;
+    processCount?: number;
+    pids?: number[];
+    mode?: string;
+    effects?: string;
+    durableOnly?: boolean | null;
+    processes?: Array<{ pid?: number; workerId?: string | null; remoteOrigin?: string | null; remoteCompanyId?: string | null; mode?: string; effects?: string; durableOnly?: boolean | null }>;
+    scopeReadback?: {
+      status?: string;
+      controlPlaneCompanyIds?: string[];
+      remoteWorkerCompanyIds?: string[];
+      remoteOrigins?: string[];
+      workerIds?: string[];
+      alignmentCandidates?: Array<{ scope?: string; status?: string; companyIds?: string[]; origins?: string[]; workerIds?: string[] }>;
+      alignmentDecisionRequired?: boolean;
+      exactBlocker?: string | null;
+      nextAction?: string;
+    };
+    transportReadback?: {
+      status?: string;
+      heartbeatStatus?: string;
+      heartbeatExactBlocker?: string | null;
+      heartbeatAt?: string | null;
+      lastSuccessfulHeartbeatAt?: string | null;
+      lastAttemptAt?: string | null;
+      claimStatus?: string;
+      generationStartedAt?: string | null;
+      updatedAt?: string | null;
+      pid?: number | null;
+      workerId?: string | null;
+      remoteOrigin?: string | null;
+    };
+  };
+};
+
+type BrowserUseOperationalReadback = {
+  schema?: string;
+  scope?: string;
+  capturedAt?: string;
+  authentication?: { status?: string; exactBlocker?: string | null; source?: string };
+  externalEffect?: { status?: string; externalActionExecuted?: boolean; exactBlocker?: string; source?: string };
+  businessCompletion?: { status?: string; businessCompletionVerified?: boolean; exactBlocker?: string; source?: string };
+  receipt?: { status?: string; sameRunReceipt?: boolean; exactBlocker?: string };
+  sourceSync?: { status?: string; sameRunSourceSync?: boolean; exactBlocker?: string };
+  worker?: { processStatus?: string; transportStatus?: string; heartbeatStatus?: string; claimStatus?: string; receiptStatus?: string; sourceSyncStatus?: string; exactBlocker?: string | null };
+};
+
 function normalizeScheduleKind(value: unknown): ScheduleKind {
   return value === "manual" || value === "daily" || value === "weekly" || value === "cron" ? value : "daily";
 }
 type MvpState = {
   updated_at?: string;
-  worker?: { id: string; status: string; heartbeat_at: string | null; queue_depth: number; last_run_id: string | null; heartbeat_age_seconds?: number | null; heartbeat_fresh?: boolean; readback_status?: string; exact_blocker?: string | null; next_action?: string; external_action_executed?: boolean };
+  worker?: { id: string; status: string; heartbeat_at: string | null; queue_depth: number; last_run_id: string | null; heartbeat_age_seconds?: number | null; heartbeat_fresh?: boolean; readback_status?: string; exact_blocker?: string | null; next_action?: string; queue_scope?: { source?: string; company_ids?: string[] }; worker_scope?: NonNullable<BrowserUseProcessReadback["portableRemoteWorker"]>["scopeReadback"]; portable_remote_worker?: BrowserUseProcessReadback["portableRemoteWorker"]; external_action_executed?: boolean };
   obsidian?: {
     ok?: boolean | null;
     enabled?: boolean;
@@ -275,7 +441,7 @@ type MvpState = {
     runs_count?: number;
   };
   presentation_profiles?: Array<{ id: string; kind: string; label: string; source?: string; revision?: number; exactBlocker?: string | null; purpose?: string; freshnessSlaMinutes?: number; browserUseLane?: string; stopBoundary?: string; primaryMetrics?: string[]; widgets?: string[]; preferredGrouping?: string; explanation?: string }>;
-  browser_use_runtime?: { surface?: string; helper?: string; runtimeRole?: string; status?: string; exactBlocker?: string | null; readbackStatus?: string; summary?: string; nextAction?: string; fallbackPolicy?: string; contract?: string[]; lanes?: any[] };
+  browser_use_runtime?: { surface?: string; helper?: string; runtimeRole?: string; status?: string; exactBlocker?: string | null; readbackStatus?: string; summary?: string; nextAction?: string; fallbackPolicy?: string; contract?: string[]; lanes?: BrowserUseLaneBinding[]; processReadback?: BrowserUseProcessReadback; operationalReadback?: BrowserUseOperationalReadback; workflowInventory?: { sets?: Record<string, string[]>; relationships?: { browser_and_catalog_overlap?: string[]; browser_only?: string[]; catalog_only?: string[]; lane_only?: string[]; browser_and_portable_match?: boolean; catalog_and_adapter_match?: boolean } } };
   schedules?: any[];
   runs?: any[];
   jobs?: any[];
@@ -516,6 +682,29 @@ type PlannerReadback = {
   chat_events?: PlannerEvent[];
   proposed_changes?: PlannerChange[];
   requires_confirmation?: string[];
+  web_operation_intake?: WebOperationIntake;
+};
+
+type WebOperationIntake = {
+  schema: string;
+  applicable: boolean;
+  status: "not_applicable" | "needs_input" | "ready_for_read" | "approval_required" | "blocked";
+  operation: "read" | "create" | "update" | "publish" | "submit" | "delete" | null;
+  site_or_url: string | null;
+  account_ref: string | null;
+  semantic_target: string | null;
+  payload_hash: string | null;
+  payload_present: boolean;
+  scope: string | null;
+  missing_fields: string[];
+  questions: string[];
+  fixed_locator_detected: boolean;
+  exact_blocker: string | null;
+  next_stage: "not_applicable" | "clarify" | "read" | "approval";
+  external_action_executed: false;
+  readback_required: true;
+  no_replay: true;
+  web_operation_contract?: { schema?: string; operation_model?: { target_resolution?: string; fixed_playbook_policy?: string; unknown_effect_policy?: string } };
 };
 
 type PlannerChange = {
@@ -569,6 +758,7 @@ type ServerPlannerResult = {
   executionDecision?: string;
   proposedChanges?: PlannerChange[];
   requiresConfirmation?: string[];
+  webOperationIntake?: WebOperationIntake;
 };
 
 type ChatMessage = {
@@ -1034,7 +1224,8 @@ async function requestChatPlan(
     chat_stream_text_length: typeof job.metadata?.streamTextLength === "number" ? job.metadata.streamTextLength : 0,
     chat_events: plannerProgressFromJob(body.job.id!, job).events,
     proposed_changes: Array.isArray(serverPlan.proposedChanges) ? serverPlan.proposedChanges : [],
-    requires_confirmation: Array.isArray(serverPlan.requiresConfirmation) ? serverPlan.requiresConfirmation : []
+    requires_confirmation: Array.isArray(serverPlan.requiresConfirmation) ? serverPlan.requiresConfirmation : [],
+    web_operation_intake: serverPlan.webOperationIntake
   };
 }
 
@@ -1220,6 +1411,14 @@ async function readMvpState() {
   const response = await mvpFetch("/api/mvp/state", { cache: "no-store" });
   if (!response.ok) throw new Error(`mvp_state_http_${response.status}`);
   return response.json();
+}
+
+async function readApiTokenCapability(): Promise<ApiTokenScope> {
+  const response = await mvpFetch("/api/auth/capability", { cache: "no-store" });
+  const body = await response.json().catch(() => ({})) as { ok?: boolean; scope?: string; exactBlocker?: string };
+  if (!response.ok || body.ok !== true) throw new Error(body.exactBlocker || `api_capability_http_${response.status}`);
+  if (body.scope === "read" || body.scope === "write" || body.scope === "unrestricted") return body.scope;
+  return "unknown";
 }
 
 type ProjectOption = { id: string; label: string; role: string };
@@ -1418,6 +1617,15 @@ function chatHref({ companyId, projectId, context, runId, scheduleId, automation
   return `#/chat${query ? `?${query}` : ""}`;
 }
 
+const COMMON_WEB_OPERATION_PROMPT_TEMPLATE = [
+  "目的: read / create / update / publish / submit / delete のどれか",
+  "サイトまたはURL:",
+  "会社とアカウント:",
+  "対象（意味で指定。例: 公開、保存、応募、削除）:",
+  "内容（本文・画像・ファイル・応募内容など）:",
+  "公開先・送信先・対象範囲:",
+].join("\n");
+
 function projectSlugFromRoute(route: string) {
   return routePath(route).match(/\/projects\/([^/]+)/)?.[1] ?? "";
 }
@@ -1517,10 +1725,12 @@ function App() {
   const [mvpLoadStatus, setMvpLoadStatus] = useState<MvpLoadStatus>("loading");
   const [feedbackReadback, setFeedbackReadback] = useState<MvpState["feedbacks"]>([]);
   const [apiAccessRequired, setApiAccessRequired] = useState(false);
+  const [apiTokenScope, setApiTokenScope] = useState<ApiTokenScope>("unknown");
   const [accessChecking, setAccessChecking] = useState(false);
   React.useEffect(() => {
     readMvpState()
-      .then((state) => {
+      .then(async (state) => {
+        setApiTokenScope(await readApiTokenCapability().catch((): ApiTokenScope => "unknown"));
         setMvpState(state);
         setMvpLoadStatus("ready");
         setAutomationRows(toAutomationRows(state.automations ?? []));
@@ -1577,12 +1787,18 @@ function App() {
     persistWriteToken(writeToken);
     try {
       const state = await readMvpState();
+      const scope = await readApiTokenCapability().catch(() => "unknown" as const);
+      setApiTokenScope(scope);
       setMvpState(state);
       setMvpLoadStatus("ready");
       setAutomationRows(toAutomationRows(state.automations ?? []));
       setFeedbackReadback(state.feedbacks ?? []);
       setApiAccessRequired(false);
-      setReceipt("管理者用の利用キーを確認しました。このタブでAutomation OSを利用できます。");
+      setReceipt(scope === "read"
+        ? "読み取り専用キーを確認しました。閲覧とreadbackを利用できます。作成・更新・実行・承認には書き込みキーが必要です。"
+        : scope === "write"
+          ? "書き込みキーを確認しました。このタブでAutomation OSを利用できます。"
+          : "APIキーを確認しました。このタブでAutomation OSを利用できます。");
     } catch (error) {
       clearWriteToken();
       const message = error instanceof Error ? error.message : "";
@@ -1625,9 +1841,9 @@ function App() {
           <PageTitle title="Automation OS" desc="この画面は管理者専用です。" />
           <Panel title="管理者アクセス" controlId="shell.operator.panel">
             <form className="access-form" onSubmit={(event) => { event.preventDefault(); void unlockOperatorAccess(); }}>
-              <label className="operator-token-label" htmlFor="shell.operator.token-input">管理者用の利用キー</label>
-              <p id="operator-token-help" className="muted">通常のログインパスワードではありません。ZeaburのAutomation OSサービスにあるVariablesで <code>AUTOMATION_OS_WRITE_TOKEN</code> を表示してコピーし、ここに貼り付けてください。確認時だけAPIの認証ヘッダーとして使い、チャット本文には入りません。このタブのsessionStorageにだけ保存し、タブを閉じると破棄します。Variablesを見られない場合は、管理者に確認してください。</p>
-              <input id="shell.operator.token-input" data-control-id="shell.operator.token-input" type="password" value={writeToken} onChange={(event) => setWriteToken(event.target.value)} autoComplete="current-password" autoFocus aria-describedby="operator-token-help operator-token-status" />
+              <label className="operator-token-label" htmlFor="shell.operator.token-input">Automation OS APIキー</label>
+              <p id="operator-token-help" className="muted">通常のログインパスワードではありません。閲覧とreadbackだけなら <code>AUTOMATION_OS_READ_TOKEN</code>、作成・更新・実行・承認まで行うなら <code>AUTOMATION_OS_WRITE_TOKEN</code> を、ZeaburのVariablesからコピーしてください。確認時だけAPIの認証ヘッダーとして使い、チャット本文には入りません。このタブのsessionStorageにだけ保存し、タブを閉じると破棄します。Variablesを見られない場合は、管理者に確認してください。</p>
+              <input id="shell.operator.token-input" data-control-id="shell.operator.token-input" type="password" value={writeToken} onChange={(event) => setWriteToken(event.target.value)} autoComplete="off" autoFocus aria-describedby="operator-token-help operator-token-status" />
               <div className="button-row"><Button controlId="shell.operator.open" type="submit" variant="primary" disabled={accessChecking}>{accessChecking ? "確認中" : "確認して開く"}</Button></div>
               <div id="operator-token-status" className="action-note" role="status">{receipt}</div>
             </form>
@@ -1641,7 +1857,7 @@ function App() {
     <div className="app">
       <Sidebar route={route} isOwner={hasOwnerAdminAccess(mvpState)} />
       <main className="main">
-        <TopHeader receipt={receipt} setReceipt={setReceipt} onSync={syncState} isOwner={hasOwnerAdminAccess(mvpState)} mvpState={mvpState} mvpLoadStatus={mvpLoadStatus} />
+        <TopHeader receipt={receipt} setReceipt={setReceipt} onSync={syncState} isOwner={hasOwnerAdminAccess(mvpState)} mvpState={mvpState} mvpLoadStatus={mvpLoadStatus} apiTokenScope={apiTokenScope} />
         {page}
       </main>
       <FeedbackWidget route={route} setReceipt={setReceipt} setMvpState={setMvpState} />
@@ -1696,7 +1912,7 @@ function Sidebar({ route, isOwner }: { route: string; isOwner: boolean }) {
   );
 }
 
-function TopHeader({ receipt, setReceipt, onSync, isOwner, mvpState, mvpLoadStatus }: { receipt: string; setReceipt: (value: string) => void; onSync: () => Promise<void>; isOwner: boolean; mvpState: MvpState; mvpLoadStatus: MvpLoadStatus }) {
+function TopHeader({ receipt, setReceipt, onSync, isOwner, mvpState, mvpLoadStatus, apiTokenScope }: { receipt: string; setReceipt: (value: string) => void; onSync: () => Promise<void>; isOwner: boolean; mvpState: MvpState; mvpLoadStatus: MvpLoadStatus; apiTokenScope: ApiTokenScope }) {
   const [query, setQuery] = useState("");
   const companyCount = projectOptionsFromState(mvpState).length;
   const canStartAutomation = mvpLoadStatus === "ready" && companyCount > 0;
@@ -1753,6 +1969,9 @@ function TopHeader({ receipt, setReceipt, onSync, isOwner, mvpState, mvpLoadStat
           <button data-control-id="shell.top-header.search-submit" type="submit">移動</button>
         </form>
         <div className="top-receipt" role="status" title={receipt}>{receipt}</div>
+        <div className="muted" data-control-id="shell.operator.scope" aria-label="APIキーの権限範囲">
+          {apiTokenScope === "read" ? "API: 読み取り専用" : apiTokenScope === "write" ? "API: 書き込み許可" : apiTokenScope === "unrestricted" ? "API: ローカル保護なし" : "API: 権限範囲未確認"}
+        </div>
       </div>
       <div className="top-actions">
         <IconButton controlId="shell.top-header.sync" label="同期" onClick={() => { void onSync(); }}><RefreshCw size={16} /></IconButton>
@@ -1972,6 +2191,148 @@ function FeedbackFixQueue({ feedbacks, state, setReceipt, setFeedbackReadback }:
   );
 }
 
+function WebOperationAdmissionPanel({ model, projectId }: { model: AppModel; projectId?: string }) {
+  const runtime = model.mvpState.browser_use_runtime;
+  const selectedProjectId = projectId || resolveProjectSelection(model.mvpState);
+  const selectedProject = selectedProjectId ? projectLabelFromState(model.mvpState, selectedProjectId) : "未選択";
+  const runtimeStatus = runtime?.status === "verified" ? "enabled" : runtime?.status === "blocked" ? "blocked" : "waiting";
+  const runtimeLabel = publicBrowserUseRuntimeStatus(runtime);
+  const registeredWorkflowCount = (model.mvpState.registered_workflow_ids ?? []).length;
+  const registeredLanes = runtime?.lanes ?? [];
+  const processReadback = runtime?.processReadback;
+  const operationalReadback = runtime?.operationalReadback;
+  const liveBrowserProcesses = processReadback?.browserProcesses ?? [];
+  const portableRemoteWorker = processReadback?.portableRemoteWorker;
+  const workerScope = portableRemoteWorker?.scopeReadback ?? processReadback?.workerScopeReadback;
+  const queueScope = model.mvpState.worker?.queue_scope;
+  const workerTransport = portableRemoteWorker?.transportReadback;
+  const workerTransportLabel = workerTransport?.heartbeatStatus === "ok"
+    ? `受理済み / ${relativeAgeLabel(workerTransport.lastSuccessfulHeartbeatAt ?? workerTransport.heartbeatAt ?? null)}`
+    : workerTransport?.heartbeatStatus === "blocked"
+      ? `blocked / ${workerTransport.heartbeatExactBlocker ?? "transport blocker不明"}`
+      : "未確認";
+  const workflowInventory = runtime?.workflowInventory;
+  const nextAction = runtime?.nextAction
+    ? redactDisplayPaths(runtime.nextAction)
+    : selectedProjectId
+      ? "目的・対象・アカウントをチャットに入力し、まず読み取り計画を確認してください。"
+      : "会社を選択してから、目的・対象・アカウントを入力してください。";
+  const openChat = () => {
+    if (!selectedProjectId) {
+      go("#/projects");
+      return;
+    }
+    rememberProject(selectedProjectId);
+    go(chatHref({ companyId: selectedProjectId, context: "web-operation-admission" }));
+  };
+  return (
+    <Panel title="Web操作の共通入口" controlId="web-admission.panel">
+      <p className="muted">初見のサイトでも、固定されたクリック手順ではなく、現在の画面の意味・状態・対象候補を読み直して進めます。ここではまだブラウザ起動、投稿、送信、削除、認証、課金は実行しません。</p>
+      <div className="action-note" role="status" data-control-id="web-admission.status">Browser Use CLI: {runtimeLabel} / role={runtime?.runtimeRole ?? "unknown"} / registered workflow {registeredWorkflowCount}件 / company: {selectedProject} / external_action=false</div>
+      {workflowInventory?.sets && (
+        <div className="preview-box" data-control-id="web-admission.workflow-inventory">
+          <strong>登録集合の意味</strong>
+          <p className="muted">Browser/portable {workflowInventory.sets.registered_browser_workflows?.length ?? 0}件 / Company catalog {workflowInventory.sets.company_automation_catalog_workflows?.length ?? 0}件 / Browser lane {workflowInventory.sets.browser_lane_workflows?.length ?? 0}件。YouTubeの一時laneなど、実行workflowとlane専用項目は別集合として表示しています。</p>
+        </div>
+      )}
+      <div className="preview-box" data-control-id="web-admission.lane-binding">
+        <strong>Browser Useのprofile / port対応（AOS登録値）</strong>
+        <p className="muted">ここに表示するprofileは秘密情報を含まない論理参照名、portはworkflow-ownedの予約portです。lifecycle（scheduled / single-use / temporary）も併記します。「使用中」「ログイン済み」「実行可能」とは解釈しません。実プロセスのlistenは別表の実測process port、認証状態と画面readbackはMac workerが同一Runで返した場合だけ反映します。</p>
+        <div className="lane-binding-summary" data-control-id="web-admission.lane-binding.summary" role="status">
+          <span><strong>Browser surface:</strong> {runtime?.surface ?? "browser_use_cli"}</span>
+          <span><strong>runtime:</strong> {runtimeLabel}</span>
+          <span><strong>次の確認:</strong> {publicBrowserUseRuntimeNextCheck(runtime)}</span>
+        </div>
+        {registeredLanes.length ? <DataTable controlId="web-admission.lane-binding.table" headers={["Workflow", "lifecycle", "論理profile", "予約port (AOS)", "process readback", "所有 / binding", "same-run readback", "次の確認"]} rows={registeredLanes.map((lane) => [
+          lane.workflowId ?? "-",
+          lane.lifecycle ?? "-",
+          <code>{lane.profileRef ?? lane.profileName ?? "-"}</code>,
+          lane.reservedPort == null ? "-" : String(lane.reservedPort),
+          `${publicBrowserUseLaneProcessReadbackStatus(lane)}${lane.processPid ? ` / pid=${lane.processPid}` : ""}`,
+          `${lane.ownership ?? "workflow_owned"} / ${lane.bindingStatus ?? "registered"}`,
+          publicBrowserUseLaneReadbackStatus(lane),
+          publicBrowserUseLaneNextCheck(lane, runtime)
+        ])} /> : <p className="muted">Browser Useの登録Lane定義はありません。固定値を補って表示せず、AOS inventoryのreadback待ちです。</p>}
+        <div className="lane-binding-summary" data-control-id="web-admission.process-readback" role="status">
+          <span><strong>同一ホストprocess:</strong> {publicBrowserUseProcessReadbackStatus(processReadback)}</span>
+          <span><strong>remote worker:</strong> {portableRemoteWorker?.status ?? "未確認"} / effects={portableRemoteWorker?.effects ?? "unknown"}</span>
+          <span><strong>queue scope:</strong> {workerScope?.status ?? "未確認"} / AOS={workerScope?.controlPlaneCompanyIds?.join(", ") ?? "未確認"} / worker={workerScope?.remoteWorkerCompanyIds?.join(", ") ?? "未確認"}</span>
+          <span><strong>heartbeat transport:</strong> {workerTransportLabel} / claim={workerTransport?.claimStatus ?? "unknown"}</span>
+          <span><strong>未登録Browser:</strong> {processReadback?.unregisteredBrowserProcessCount ?? "未確認"}件</span>
+        </div>
+        {workerScope && <div className="preview-box" data-control-id="web-admission.scope-alignment">
+          <strong>Queue / Workerのscope候補</strong>
+          <p className="muted">AOSが現在読んでいるqueueと、同一ホストで観測したremote workerのendpoint/companyを分けて表示します。候補が一致するまで、remote workerへのclaimを実行可能とは扱いません。</p>
+          <DataTable controlId="web-admission.scope-alignment.table" headers={["候補", "readback", "company", "endpoint", "worker"]} rows={(workerScope.alignmentCandidates ?? []).map((candidate) => [
+            candidate.scope === "control_plane_queue" ? "現在のAOS control-plane queue" : candidate.scope === "portable_remote_worker" ? "同一ホストのremote worker" : candidate.scope ?? "unknown",
+            candidate.status ?? "unknown",
+            candidate.companyIds?.join(", ") || "未確認",
+            candidate.origins?.join(", ") || "未確認",
+            candidate.workerIds?.join(", ") || "未確認"
+          ])} />
+          <div className="preview-box" data-control-id="web-admission.scope-alignment.plan">
+            <strong>正本の選択と必要な整合（自動切替なし）</strong>
+            <p className="muted">現在のAOS queue source={queueScope?.source ?? "未確認"} / company={queueScope?.company_ids?.join(", ") || workerScope.controlPlaneCompanyIds?.join(", ") || "未確認"}。remote workerのendpoint/companyと一致する正本を人間が決め、fresh config readback後にだけclaimへ進みます。</p>
+            <DataTable controlId="web-admission.scope-alignment.plan.table" headers={["正本候補", "必要な変更", "現在の扱い", "選択前"]} rows={workerScope.alignmentDecisionRequired ? [
+              ["AOS control-plane queue", "remote workerの到達先endpoint・company・backendを、このAOS queueと同じ正本へ揃える", "未整合", "claim不可"],
+              ["portable remote worker", "AOSのendpoint・database backend・companyをremote workerが参照する正本へ揃え、local queueを別系統として隔離する", "未整合", "claim不可"]
+            ] : [
+              ["一致したcompany scope", "fresh config / heartbeat / queue readbackを再確認する", "一致確認済み", "receipt・source syncまで別途必要"]
+            ]} />
+            <p className="muted">選択後の順序: config readback → 新世代heartbeat → 同一company queue readback → claim → receipt → source sync → cleanup。ここではendpoint、company、databaseを変更しません。</p>
+          </div>
+          <p className="muted">{workerScope.alignmentDecisionRequired ? "判断が必要: AOS queueとremote workerのcompany/endpointを同じ正本へ揃えるまでclaimしません。" : workerScope.exactBlocker ? `readback blocker: ${workerScope.exactBlocker}` : "scope候補の比較は完了しています。claim・receipt・source syncは別の同一Run証跡です。"}</p>
+        </div>}
+        {liveBrowserProcesses.length ? <DataTable controlId="web-admission.process-readback.table" headers={["検出対象", "論理profile", "process port", "AOS binding", "同一ホストreadback"]} rows={liveBrowserProcesses.map((process) => [
+          process.kind ?? "browser_use_chrome",
+          <code>{process.profileRef ?? process.profileName ?? "-"}</code>,
+          process.port == null ? "-" : String(process.port),
+          `${process.bindingStatus ?? "unknown"} / ${process.workflowId ?? "AOS未登録"}`,
+          `${process.readbackStatus ?? "unknown"} / pid=${process.pid ?? "?"} / tree=${process.processCount ?? 1}`
+        ])} /> : <p className="muted">同一ホストで検出されたBrowser Use Chromeはありません。これはAOS予約値が使用中・ログイン済み・実行可能という意味ではありません。</p>}
+        <p className="muted">process readbackはprofile / portの同一ホスト実測と登録bindingだけを示します。ログイン状態、画面状態、外部効果、同一Runの完了は別証跡が必要です。{processReadback?.exactBlocker ? ` exact blocker=${processReadback.exactBlocker}` : " external_action=false"}</p>
+        {portableRemoteWorker?.status === "present" && <p className="muted">portable remote workerのプロセス存在とHeartbeat HTTP受理を分離表示しています。heartbeat・queue claim・receipt・source syncは別に確認します。read-only境界: effects={portableRemoteWorker.effects ?? "unknown"} / mode={portableRemoteWorker.mode ?? "unknown"} / transport={workerTransportLabel}。queue scope={workerScope?.status ?? "unknown"}{workerScope?.exactBlocker ? ` / exact blocker=${workerScope.exactBlocker}` : ""}。</p>}
+        {workerScope?.status === "mismatch" && <p className="muted">AOS queue と Mac worker が別会社scopeを見ています。endpoint/companyを同じ対象へ揃えるまで claim は実行しません。remote origin={workerScope.remoteOrigins?.join(", ") || "未確認"}。</p>}
+        <p className="muted">判定境界: {runtime?.summary ?? "runtime readbackなし"} / {runtime?.exactBlocker ? `exact blocker=${runtime.exactBlocker}` : "external_action=false"}</p>
+      </div>
+      <div className="preview-box" data-control-id="web-admission.operational-readback">
+        <strong>認証・外部作用・業務完了のreadback</strong>
+        <p className="muted">この表示は現在のcontrol-plane snapshotです。run固有の画面・provider receipt・source-of-truth syncが返るまで、認証済み・作用済み・業務完了とは解釈しません。</p>
+        <div className="lane-binding-summary" role="status">
+          <span><strong>認証:</strong> {publicBrowserOperationalAuthenticationStatus(operationalReadback)}</span>
+          <span><strong>外部作用:</strong> {publicBrowserOperationalEffectStatus(operationalReadback)}</span>
+          <span><strong>業務完了:</strong> {publicBrowserOperationalCompletionStatus(operationalReadback)}</span>
+          <span><strong>証跡:</strong> {publicBrowserOperationalProofStatus(operationalReadback)}</span>
+        </div>
+        <p className="muted">blocker: auth={operationalReadback?.authentication?.exactBlocker ?? "unknown"} / effect={operationalReadback?.externalEffect?.exactBlocker ?? "unknown"} / completion={operationalReadback?.businessCompletion?.exactBlocker ?? "unknown"}</p>
+      </div>
+      <DataTable controlId="web-admission.checklist" headers={["確認項目", "共通の扱い", "初見ユーザーが入力するもの"]} rows={[
+        ["操作の種類", "read / create / update / publish / submit / delete を区別", "何をしたいかを自然文で書く"],
+        ["アカウント", "会社scope + account_refを同一Runに束縛", "使う会社・サービス・アカウントを指定"],
+        ["対象", "live semantic candidateの唯一一致。固定CSS/XPath/DOM順は権威にしない", "URLまたはサイト名と、対象の意味（例: 公開、保存、応募）"],
+        ["内容", "本文・画像・応募内容・削除対象をpayload hashで同一Runに固定", "投稿文、ファイル、応募内容、削除範囲など"],
+        ["認証", "ログイン・OTP・CAPTCHA・本人確認は人間境界。secretは保存・表示しない", "必要なら画面上で自分でログインし、完了後に続行"],
+        ["外部効果", "read以外は明示承認 → 1回のaction → provider/source readback", "公開先・送信先・対象範囲・承認判断"],
+        ["完了条件", "同一Runのreceipt、source-of-truth sync、cleanupが揃うまで完了扱いにしない", "結果URL・受付番号・更新状態が見えるかを確認"]
+      ]} />
+      <div className="preview-box">
+        <strong>固定化しないための停止条件</strong>
+        <p>候補が0件・複数件、画面状態が変わった、必要情報が未知、認証待ち、外部効果が不明な場合は停止して質問または照合に戻ります。古いスクショ・selector・成功扱い・外部効果不明の状態から再実行しません。</p>
+        <p className="muted">次: {nextAction}</p>
+      </div>
+      <div className="preview-box" data-control-id="web-admission.prompt-template">
+        <strong>Chatに渡す入力テンプレート</strong>
+        <pre>{COMMON_WEB_OPERATION_PROMPT_TEMPLATE}</pre>
+        <p className="muted">サイト固有のselectorやクリック順は不要です。未入力の項目はplannerが質問し、認証・OTP・CAPTCHAは人間境界で停止します。</p>
+      </div>
+      <div className="button-row">
+        <Button controlId="web-admission.chat" variant="primary" icon={<MessageSquare size={14} />} onClick={openChat}>{selectedProjectId ? "この条件で依頼を始める" : "会社を選んで依頼を始める"}</Button>
+        <Button controlId="web-admission.approvals" icon={<ClipboardCheck size={14} />} onClick={() => go("#/approvals")}>承認キューを見る</Button>
+      </div>
+    </Panel>
+  );
+}
+
 type AppModel = {
   setReceipt: (value: string) => void;
   writeToken: string;
@@ -2001,7 +2362,7 @@ function TruthfulLanesPage({ model }: { model: AppModel }) {
       <ProjectScopeNotice projectId={companyId} mvpState={model.mvpState} />
       <Panel title="登録済みLane定義" controlId="truthful.lanes.registry.panel">
         <p className="muted">Browser Use CLIがAutomation OSの正規ブラウザ面です。下表のrunnerはworkflow固有の実行契約で、プロセス起動中・ログイン済み・実行可能とは解釈しません。Playwright等のrunner名が残る行は、Browser Use CLIへ移行済みという意味ではありません。実際の会社Runで観測されたLaneは下の表に分けて表示します。</p>
-        {registeredLanes.length ? <DataTable controlId="truthful.lanes.registry.table" headers={["Lane", "Workflow", "Runner契約", "正規ブラウザ面", "表示", "定義状態"]} rows={registeredLanes.map((lane: any) => [lane.id ?? "-", lane.workflowId ?? "-", lane.runnerKind ?? lane.executionContract ?? "-", lane.canonicalBrowserSurface ?? "browser_use_cli", lane.visibility ?? "-", lane.status ?? "registered"])} /> : <p className="muted">登録済みLane定義はありません。</p>}
+        {registeredLanes.length ? <DataTable controlId="truthful.lanes.registry.table" headers={["Lane", "Workflow", "lifecycle", "論理profile", "予約port (AOS)", "Runner契約", "process readback", "Live readback", "定義状態"]} rows={registeredLanes.map((lane: BrowserUseLaneBinding) => [lane.id ?? "-", lane.workflowId ?? "-", lane.lifecycle ?? "-", <code>{lane.profileRef ?? lane.profileName ?? "-"}</code>, lane.reservedPort == null ? "-" : String(lane.reservedPort), lane.runnerKind ?? lane.executionContract ?? "-", `${publicBrowserUseLaneProcessReadbackStatus(lane)}${lane.processPid ? ` / pid=${lane.processPid}` : ""}`, publicBrowserUseLaneReadbackStatus(lane), `${lane.ownership ?? "workflow_owned"} / ${lane.bindingStatus ?? lane.status ?? "registered"}`])} /> : <p className="muted">登録済みLane定義はありません。</p>}
       </Panel>
       <Panel title="永続化済みLane情報" controlId="truthful.lanes.panel">
         {observedLanes.length ? (
@@ -3049,6 +3410,7 @@ function HomePage({ model }: { model: AppModel }) {
             <Button controlId="home.first-use.open-projects" variant="primary" onClick={() => go("#/projects")}>会社名を登録する</Button>
           </div>
         </Panel>
+        <WebOperationAdmissionPanel model={model} />
       </section>
     );
   }
@@ -3072,6 +3434,7 @@ function HomePage({ model }: { model: AppModel }) {
             </div>
           </div>
         </Panel>
+        <WebOperationAdmissionPanel model={model} projectId={companyOptions[0].id} />
       </section>
     );
   }
@@ -3087,6 +3450,7 @@ function HomePage({ model }: { model: AppModel }) {
             </div>
           </div>
         </Panel>
+        <WebOperationAdmissionPanel model={model} />
       </section>
     );
   }
@@ -3151,6 +3515,7 @@ function HomePage({ model }: { model: AppModel }) {
       <PageTitle title="ホーム" desc="すべての会社と自動化の状態を確認できます。">
         <Button controlId="home.next.open" variant="primary" icon={nextAction.icon} onClick={() => go(nextAction.route)}>{nextAction.label}</Button>
       </PageTitle>
+      <WebOperationAdmissionPanel model={model} />
       <div className="cards four">
         {projectCards.map((card) => <MetricCard controlId={`home.metric.${card.title === "会社" ? "company" : card.title === "承認" ? "approvals" : card.title === "実行履歴" ? "runs" : "jobs"}`} key={card.title} title={card.title} value={card.value} sub={card.sub} status={card.status as Status} />)}
       </div>
@@ -3222,6 +3587,7 @@ function ChatPage({ model }: { model: AppModel }) {
   const plannerAbortRef = useRef<AbortController | null>(null);
   const activePlannerJobRef = useRef("");
   const createIdempotencyRef = useRef<{ fingerprint: string; key: string } | null>(null);
+  const webOperationTemplateAppliedRef = useRef(false);
   const canonicalProjects = projectOptionsFromState(mvpState);
   React.useEffect(() => {
     if (model.mvpLoadStatus !== "ready") return;
@@ -3234,6 +3600,13 @@ function ChatPage({ model }: { model: AppModel }) {
       return next;
     });
   }, [model.mvpLoadStatus, mvpState, requestedProjectId]);
+  React.useEffect(() => {
+    if (requestedChatContext.context !== "web-operation-admission" || webOperationTemplateAppliedRef.current) return;
+    if (prompt.trim() || requestText.trim()) return;
+    webOperationTemplateAppliedRef.current = true;
+    setPrompt(COMMON_WEB_OPERATION_PROMPT_TEMPLATE);
+    setChatNote("初見Web操作の入力テンプレートを用意しました。内容を埋めてから送信してください。まだ外部操作は実行していません。");
+  }, [prompt, requestText, requestedChatContext.context]);
   const platformOptions = ["Instagram", "TikTok", "Facebook"];
   const allPlatformsSelected = selectedPlatforms.length === platformOptions.length;
   const draftPrompt = prompt.trim();
@@ -3746,6 +4119,7 @@ function ChatPage({ model }: { model: AppModel }) {
             questions: plan.questions,
             safety_note: plan.safetyNote,
             approval_policy: plan.approvalPolicy,
+            web_operation_intake: plannerReadback.web_operation_intake ?? null,
             external_action_allowed: false
           }
         })
@@ -3895,6 +4269,7 @@ function ChatPage({ model }: { model: AppModel }) {
       {mvpState.browser_use_runtime && <div className="notice-row" role="note">
         Browser Use: {publicBrowserUseRuntimeStatus(mvpState.browser_use_runtime)} / {mvpState.browser_use_runtime.summary ?? "runtime readback待ち"} / {mvpState.browser_use_runtime.fallbackPolicy ?? "readback待ち"} / registered lanes {mvpState.browser_use_runtime.lanes?.length ?? 0}
       </div>}
+      <WebOperationAdmissionPanel model={model} projectId={targetProject} />
       <div className="choice-row" aria-label="司令室ショートカット">
         {["システム全体を確認", "定期実行を作成", "既存定期実行を調整", "失敗を確認"].map((shortcut) => (
           <button data-control-id={`chat.shortcut.${shortcut}`} disabled={planning || creating} key={shortcut} onClick={() => {
@@ -3983,6 +4358,15 @@ function ChatPage({ model }: { model: AppModel }) {
             <p className="muted">source: {plannerAdapter} / mode: {plannerMode}{plannerPublicBlocker ? ` / ${plannerPublicBlocker}` : ""}</p>
             {plannerReadback?.chat_job_id && <p className="muted">job: {plannerReadback.chat_job_id} / thread: {plannerReadback.chat_thread_id ?? "未接続"} / turn: {plannerReadback.chat_turn_id ?? "未確定"}</p>}
             <p>{plannerReadback?.server_reply}</p>
+            {plannerReadback?.web_operation_intake?.applicable && (
+              <div className="question-box" data-control-id="chat.web-operation-intake" role="status">
+                <strong>共通Web操作の判定（外部操作なし）</strong>
+                <p>状態: {plannerReadback.web_operation_intake.status} / 目的: {plannerReadback.web_operation_intake.operation ?? "未確定"} / 次: {plannerReadback.web_operation_intake.next_stage}</p>
+                <p className="muted">対象: {plannerReadback.web_operation_intake.semantic_target ?? "未確認"} / account: {plannerReadback.web_operation_intake.account_ref ?? "未確認"} / site: {plannerReadback.web_operation_intake.site_or_url ?? "未確認"}</p>
+                {plannerReadback.web_operation_intake.questions.map((question) => <p key={question}>{question}</p>)}
+                <p className="muted">固定selector・XPath・DOM順は権威にせず、現在画面の意味候補を1件に解決します。外部効果は承認・同一Run readback・cleanupが揃うまで完了扱いにしません。</p>
+              </div>
+            )}
             {plannerReadback?.proposed_changes?.length ? <div className="question-box"><strong>保存候補の変更</strong>{plannerReadback.proposed_changes.map((change) => <p key={`${change.target}-${change.field}`}>{change.target} / {change.field}: {change.before ? `${change.before} → ` : ""}{change.after}</p>)}</div> : null}
             {plannerReadback?.requires_confirmation?.length ? <div className="question-box"><strong>確認が必要なこと</strong>{plannerReadback.requires_confirmation.map((item) => <p key={item}>{item}</p>)}</div> : null}
             {plan.steps.map((s, i) => <div className="step-line" key={s}><span>{i + 1}</span>{s}</div>)}
@@ -4256,10 +4640,11 @@ function AutomationsPage({ model }: { model: AppModel }) {
           <p className="muted">{projectName}の登録6本をAOSで共通管理します。Codex AppはUI/トリガー、AOSがスケジュールとrunの正本、Mac workerがBrowser Use CLI/MCPの実行層です。外部作用の完了はworker receipt/readbackでのみ確認します。</p>
           <DataTable
             controlId="projects.registered.table"
-            headers={["名前", "状態", "実行クラス", "判定", "Blocker / Proof", "操作"]}
+            headers={["名前", "状態", "Browser Use Lane", "実行クラス", "判定", "Blocker / Proof", "操作"]}
             rows={(registeredReadback.automations ?? []).length ? (registeredReadback.automations ?? []).map((item) => [
               item.name ?? item.id,
               item.status ?? "-",
+              item.browser_use_lane ? <div><strong>{item.browser_use_lane.profileRef ?? item.browser_use_lane.profileName ?? "-"}</strong><small>予約port {item.browser_use_lane.reservedPort ?? "-"} / {item.browser_use_lane.lifecycle ?? "-"} / live={publicBrowserUseLaneReadbackStatus(item.browser_use_lane)}</small></div> : "未束縛",
               item.execution_class ?? "-",
               <StatusBadge status={item.can_run ? "enabled" : item.latest_proof ? "approved" : "blocked"} label={item.action_label ?? item.ui_action ?? "read-only"} />,
               item.latest_proof ? `${item.latest_proof.status ?? "proof"} / 保存済み記録あり` : publicBlockerSummary(item.exact_blocker ?? item.blocked_action),
@@ -4309,7 +4694,7 @@ function AutomationsPage({ model }: { model: AppModel }) {
                 <IconButton controlId={`projects.registered.detail.${item.id}`} label={`${item.name ?? item.id}: 詳細`} onClick={() => describeRegistered(item)}><MoreHorizontal size={14} /></IconButton>
                 {registeredReceipts[item.id] && <small className="inline-action-receipt">{registeredReceipts[item.id]}</small>}
               </div>
-            ]) : [["Codex App登録自動化のreadbackがありません", registeredReadback.exact_boundary ?? "unavailable", "-", "-", "-", <StatusBadge status="waiting" label="read-only" />]]}
+            ]) : [["Codex App登録自動化のreadbackがありません", registeredReadback.exact_boundary ?? "unavailable", "-", "-", "-", "-", <StatusBadge status="waiting" label="read-only" />]]}
           />
           <div className="receipt-strip">company-scoped readback / count={registeredReadback.automation_count ?? registeredReadback.automations?.length ?? 0} / external_action=false</div>
         </Panel>
@@ -4953,6 +5338,15 @@ function PcStatusPage({ model }: { model: AppModel }) {
   const { setReceipt, mvpState, setMvpState, setAutomationRows } = model;
   const worker = mvpState.worker;
   const workerSummary = workerStatusSummary(worker);
+  const processReadback = mvpState.browser_use_runtime?.processReadback;
+  const portableRemoteWorker = processReadback?.portableRemoteWorker;
+  const workerScope = portableRemoteWorker?.scopeReadback ?? processReadback?.workerScopeReadback;
+  const workerTransport = portableRemoteWorker?.transportReadback;
+  const workerTransportLabel = workerTransport?.heartbeatStatus === "ok"
+    ? `受理済み / ${relativeAgeLabel(workerTransport.lastSuccessfulHeartbeatAt ?? workerTransport.heartbeatAt ?? null)}`
+    : workerTransport?.heartbeatStatus === "blocked"
+      ? `blocked / ${workerTransport.heartbeatExactBlocker ?? "transport blocker不明"}`
+      : "未確認";
   const [pcNote, setPcNote] = useState("PC状態を開きました。再確認結果はここにも表示します。");
   const refresh = async () => {
     try {
@@ -4979,7 +5373,7 @@ function PcStatusPage({ model }: { model: AppModel }) {
         <MetricCard controlId="pc.metric.queue" title="Queue" value={String(worker?.queue_depth ?? 0)} sub="待機中の実行候補" status={(worker?.queue_depth ?? 0) > 0 ? "running" : "enabled"} />
         <MetricCard controlId="pc.metric.last-run" title="Last Run" value={worker?.last_run_id ? "あり" : "なし"} sub={worker?.last_run_id ?? "未実行"} status={worker?.last_run_id ? "enabled" : "waiting"} />
       </div>
-      <Panel title="Local Agent readback" controlId="pc.readback.panel"><DataTable controlId="pc.readback.table" headers={["項目", "状態", "次に見ること"]} rows={[["接続状態", workerSummary.fresh ? "接続確認済み" : workerSummary.stored ? "API保存済み / heartbeat未確認" : "要確認", workerSummary.nextAction], ["Worker", worker?.status ?? "unknown", worker?.id ?? "unknown"], ["Heartbeat", workerSummary.freshness, workerSummary.blocker ?? (workerSummary.stored ? "Mac heartbeat未取得" : "問題なし")], ["Queue", String(worker?.queue_depth ?? 0), "外部操作は各workflowの承認境界で停止"]]} /></Panel>
+      <Panel title="Local Agent readback" controlId="pc.readback.panel"><DataTable controlId="pc.readback.table" headers={["項目", "状態", "次に見ること"]} rows={[["接続状態", workerSummary.fresh ? "接続確認済み" : workerSummary.stored ? "API保存済み / heartbeat未確認" : "要確認", workerSummary.nextAction], ["Worker", worker?.status ?? "unknown", worker?.id ?? "unknown"], ["Queue scope", workerScope?.status ?? "未確認", `AOS=${worker?.queue_scope?.company_ids?.join(", ") ?? workerScope?.controlPlaneCompanyIds?.join(", ") ?? "未確認"} / worker=${workerScope?.remoteWorkerCompanyIds?.join(", ") ?? "未確認"}`], ["Heartbeat", workerSummary.freshness, workerSummary.blocker ?? (workerSummary.stored ? "Mac heartbeat未取得" : "問題なし")], ["Heartbeat transport", workerTransportLabel, workerTransport?.claimStatus === "idle" ? "claimなし。queue claim/receipt/source syncは未完了" : workerTransport?.heartbeatExactBlocker ?? "同一Runのclaim/receiptを確認"], ["Queue", String(worker?.queue_depth ?? 0), worker?.queue_scope?.source === "local_sqlite" ? "ローカルSQLite queueです。remote workerの本番scopeとは別物です。" : "外部操作は各workflowの承認境界で停止"], ["Portable remote worker process", portableRemoteWorker?.status ?? "未確認", portableRemoteWorker?.status === "present" ? `effects=${portableRemoteWorker.effects ?? "unknown"}。process存在だけではheartbeat・queue claim・receipt・source syncを完了扱いにしません。` : "同一ホストprocess readbackを確認してください。"], ["Browser Use live resource", processReadback?.unregisteredBrowserProcessCount != null ? `未登録 ${processReadback.unregisteredBrowserProcessCount}件 / mismatch ${processReadback.bindingMismatchCount ?? 0}件` : "未確認", processReadback?.exactBlocker ?? workerScope?.exactBlocker ?? "登録profile/portの同一Run readbackを確認してください。"]]} /></Panel>
       <Panel title="実行中ローカルタスク" controlId="pc.running.panel"><DataTable controlId="pc.running.table" headers={["Run", "Automation", "開始時刻", "ステータス", "Blocker"]} rows={(mvpState.runs ?? []).filter((run) => ["queued", "running", "blocked"].includes(run.status)).slice(0, 8).map((run) => [run.id, run.automation_name ?? run.automation_id, run.started_at ?? run.queued_at ?? "-", <StatusBadge status={run.status === "blocked" ? "blocked" : run.status === "running" ? "running" : "waiting"} label={run.status} />, run.exact_blocker ?? "-"])} /></Panel>
     </section>
   );

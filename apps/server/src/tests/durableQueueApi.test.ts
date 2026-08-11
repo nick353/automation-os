@@ -11,6 +11,7 @@ process.env.AUTOMATION_OS_DB = join(tempRoot, "automation-os.sqlite");
 // worker state file. The production API may surface that file, but this test
 // asserts the tenant queue projection in isolation.
 process.env.AUTOMATION_OS_WORKER_STATE_PATH = join(tempRoot, "worker-state-does-not-exist.json");
+process.env.AUTOMATION_OS_READ_LIVE_PROCESS_TABLE = "0";
 process.env.NODE_TEST_CONTEXT = "1";
 process.env.AUTOMATION_OS_OWNER_USER_ID = "api_bootstrap_owner";
 
@@ -46,6 +47,9 @@ test("dry-run enqueue returns a durable job receipt and requires an idempotency 
   assert.equal(first.json.queued, true);
   assert.equal(first.json.external_action_executed, false);
   assert.equal(first.json.receipt.action, "automation.dry_run.enqueued");
+  assert.equal(first.json.source_trigger, "automation_os_manual");
+  assert.equal(first.json.execution_authority, "automation_os_control_plane");
+  assert.equal(first.json.provider_adapter, "optional_and_not_required_for_control_plane_dry_run");
   assert.equal(first.json.job.status, "queued");
   assert.equal(first.json.job.kind, "dry_run");
   assert.equal(first.json.job.company_id, "api_company_a");
@@ -157,6 +161,14 @@ test("retry, artifact view, bound approval, and state readback use durable tenan
   assert.equal(JSON.parse(artifact.body).external_action_executed, false);
   assert.match(String(artifact.headers["x-artifact-sha256"]), /^[a-f0-9]{64}$/);
   assert.doesNotMatch(artifact.body, /\/Users\/|file:\/\//);
+
+  const proofView = await requestJson("GET", `/api/proofs/${completed.proofId}/view`);
+  assert.equal(proofView.status, 200, proofView.raw);
+  assert.equal(proofView.json.status, "ok");
+  assert.equal(proofView.json.preview_kind, "json");
+  assert.match(proofView.json.preview, /external_action_executed/);
+  assert.equal(proofView.json.truncated, false);
+  assert.doesNotMatch(proofView.raw, /\/Users\/|file:\/\//);
 
   const retryCandidate = await requestJson("POST", `/api/v1/companies/api_company_wave3/automations/${automation.id}/dry-runs`, {}, { "idempotency-key": "wave3-retry-candidate" });
   const retryJobId = retryCandidate.json.job.id as string;

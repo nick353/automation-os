@@ -55,8 +55,7 @@ export function seedDailyAiDemo() {
       role: task.laneRole,
       resources: task.resources,
       dangerousAction: task.dangerousAction
-    })),
-    { basePort: 9333, profileRoot: "/tmp/automation-os/daily-ai/profiles", workdirRoot: "/tmp/automation-os/daily-ai/workdirs" }
+    }))
   );
 
   lanePlan.lanes.forEach((lane, index) => {

@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
+import { WebSocketServer } from "ws";
 import { PassThrough, Writable } from "node:stream";
 import type { SpawnOptionsWithoutStdio } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { CodexAppServerClient, safeAppServerEnvironment, selectAppServerCommand, type AppServerChildLike } from "../codex/appServerClient.js";
+import { CodexAppServerClient, safeAppServerEnvironment, selectAppServerCommand, type AppServerChildLike, type AppServerWebSocketLike } from "../codex/appServerClient.js";
 
 class FakeAppServerChild implements AppServerChildLike {
   readonly stdout = new PassThrough();
@@ -110,6 +111,123 @@ test("CodexAppServerClient completes a read-only turn and resumes the same threa
   assert.ok(turnEvents.includes("turn/completed"));
   client.close();
   assert.ok(child);
+});
+
+class FakeAppServerWebSocket implements AppServerWebSocketLike {
+  readonly sent: string[] = [];
+  private readonly listeners = new Map<string, Set<(event: { data?: unknown; code?: number; reason?: string }) => void>>();
+  private threadCounter = 0;
+  private turnCounter = 0;
+
+  constructor(readonly url: string, readonly init: { headers: Record<string, string> }) {
+    queueMicrotask(() => this.emit("open", {}));
+  }
+
+  addEventListener(event: "open" | "message" | "error" | "close", listener: (event: { data?: unknown; code?: number; reason?: string }) => void): void {
+    const listeners = this.listeners.get(event) ?? new Set();
+    listeners.add(listener);
+    this.listeners.set(event, listeners);
+  }
+
+  send(data: string): void {
+    this.sent.push(data);
+    const message = JSON.parse(data) as { id?: number; method?: string; params?: Record<string, unknown> };
+    if (message.method === "initialize") {
+      queueMicrotask(() => this.emitMessage({ id: message.id, result: { userAgent: "remote-fake", platformFamily: "linux", platformOs: "linux" } }));
+      return;
+    }
+    if (message.method === "thread/start") {
+      const id = `remote_thread_${++this.threadCounter}`;
+      queueMicrotask(() => this.emitMessage({ id: message.id, result: { thread: { id } } }));
+      return;
+    }
+    if (message.method === "turn/start") {
+      const threadId = String(message.params?.threadId ?? "");
+      const turnId = `remote_turn_${++this.turnCounter}`;
+      queueMicrotask(() => {
+        this.emitMessage({ id: message.id, result: { turn: { id: turnId, status: "inProgress" } } });
+        this.emitMessage({ method: "item/agentMessage/delta", params: { threadId, turnId, delta: "remote read-only result" } });
+        this.emitMessage({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: "completed" } } });
+      });
+    }
+  }
+
+  close(): void {
+    this.emit("close", { code: 1000, reason: "test" });
+  }
+
+  private emitMessage(message: Record<string, unknown>): void {
+    this.emit("message", { data: JSON.stringify(message) });
+  }
+
+  private emit(event: string, payload: { data?: unknown; code?: number; reason?: string }): void {
+    for (const listener of this.listeners.get(event) ?? []) listener(payload);
+  }
+}
+
+test("Codex App Server remote websocket preserves auth boundary and completes a read-only turn", async () => {
+  let socket: FakeAppServerWebSocket | undefined;
+  const client = new CodexAppServerClient({
+    remoteUrl: "wss://codex.example.test:4500/app-server",
+    remoteToken: "unit-test-token",
+    remoteCwd: "/workspace/company1",
+    timeoutMs: 1_000,
+    webSocketFactory: (url, init) => {
+      socket = new FakeAppServerWebSocket(url, init);
+      return socket;
+    }
+  });
+
+  const threadId = await client.startOrResumeThread();
+  const result = await client.startTurn({ threadId, text: "read-only remote status" });
+  const requests = socket?.sent.map((value) => JSON.parse(value) as { method?: string; params?: Record<string, unknown> }) ?? [];
+  const threadStart = requests.find((request) => request.method === "thread/start");
+  const turnStart = requests.find((request) => request.method === "turn/start");
+  assert.equal(socket?.url, "wss://codex.example.test:4500/app-server");
+  assert.equal(socket?.init.headers.Authorization, "Bearer unit-test-token");
+  assert.equal(threadStart?.params?.cwd, "/workspace/company1");
+  assert.equal(threadStart?.params?.approvalPolicy, "never");
+  assert.equal(threadStart?.params?.sandbox, "read-only");
+  assert.equal(turnStart?.params?.cwd, "/workspace/company1");
+  assert.equal(turnStart?.params?.approvalPolicy, "never");
+  assert.equal(turnStart?.params?.permissionProfile, ":read-only");
+  assert.equal(result.status, "completed");
+  assert.match(result.text, /remote read-only result/u);
+  assert.equal(JSON.stringify(requests).includes("unit-test-token"), false);
+  client.close();
+});
+
+test("default remote websocket transport sends the capability token as an Authorization header", async () => {
+  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  await new Promise<void>((resolve, reject) => {
+    server.once("listening", () => resolve());
+    server.once("error", reject);
+  });
+  let authorization: string | undefined;
+  server.on("connection", (socket, request) => {
+    authorization = request.headers.authorization;
+    socket.on("message", (data) => {
+      const message = JSON.parse(data.toString()) as { id?: number; method?: string };
+      if (message.method === "initialize") {
+        socket.send(JSON.stringify({ id: message.id, result: { userAgent: "test", platformFamily: "linux", platformOs: "linux" } }));
+      }
+    });
+  });
+
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  const client = new CodexAppServerClient({
+    remoteUrl: `ws://127.0.0.1:${address.port}`,
+    remoteToken: "default-transport-test-token",
+    timeoutMs: 1_000
+  });
+  try {
+    await client.start();
+    assert.equal(authorization, "Bearer default-transport-test-token");
+  } finally {
+    client.close();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
 });
 
 test("safeAppServerEnvironment excludes API/database secrets", () => {

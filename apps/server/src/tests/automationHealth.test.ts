@@ -154,6 +154,26 @@ test("same-run contract prose is not reported as a missing executable entrypoint
   assert.deepEqual(report.automations[0]?.entrypoints.map((entrypoint) => entrypoint.target), ["scripts/run_demo.mjs"]);
 });
 
+test("workflow safety markers are not reported as executable entrypoints", () => {
+  const fixture = tempFixture();
+  const id = "demo-safety-marker";
+  const prompt = [
+    "/goal",
+    "AOS_TRIGGER_BRIDGE_V1",
+    "skip-gmail",
+    "Run node scripts/run_demo.mjs.",
+    "Never call Gmail or perform an external action."
+  ].join("\\n");
+  const body = toml({ id, cwd: fixture.cwd, prompt });
+  writeAutomation(fixture.automationRoot, id, body);
+  createDb(fixture.dbPath, [{ id, prompt, status: "ACTIVE", rrule: "FREQ=DAILY;BYHOUR=9;BYMINUTE=0;BYSECOND=0", cwds: [fixture.cwd] }]);
+
+  const report = runAutomationHealth({ automationRoot: fixture.automationRoot, dbPath: fixture.dbPath, outputRoot: fixture.outputRoot });
+
+  assert.equal(report.summary.missing_entrypoints, 0);
+  assert.deepEqual(report.automations[0]?.entrypoints.map((entrypoint) => entrypoint.target), ["scripts/run_demo.mjs"]);
+});
+
 test("DB drift is reported as a blocker", () => {
   const fixture = tempFixture();
   const id = "demo-drift";
@@ -275,6 +295,29 @@ test("read-only canary wording does not require video QA when effects are explic
   assert.equal(report.automations[0]?.video_qa.status, "not_required");
 });
 
+test("AOS no-effect bridge prose does not trigger the publish video QA classifier", () => {
+  const fixture = tempFixture();
+  const id = "daily-ai-research-publish-run";
+  const prompt = [
+    "/goal",
+    "AOS_TRIGGER_BRIDGE_V1",
+    "You are the thin Codex App trigger for Company 1's AOS workflow.",
+    "Run exactly this provider-neutral, no-effect trigger from the registered local environment:",
+    "node scripts/aos-trigger.mjs",
+    "Do not use Browser Use, publish, engagement, upload, Sheets write, or any external action from this trigger.",
+    "Return external_action_executed and exactBlocker; a queued or completed dry-run is not a publish completion."
+  ].join("\n");
+  const body = toml({ id, cwd: fixture.cwd, prompt });
+  writeAutomation(fixture.automationRoot, id, body);
+  createDb(fixture.dbPath, [{ id, prompt, status: "ACTIVE", rrule: "FREQ=DAILY;BYHOUR=9;BYMINUTE=0;BYSECOND=0", cwds: [fixture.cwd] }]);
+
+  const report = runAutomationHealth({ automationRoot: fixture.automationRoot, dbPath: fixture.dbPath, outputRoot: fixture.outputRoot, psText: "" });
+
+  assert.equal(report.summary.video_qa_issues, 0);
+  assert.equal(report.automations[0]?.video_qa.likely_required, false);
+  assert.equal(report.automations[0]?.video_qa.status, "not_required");
+});
+
 test("parser supports multiline prompt and singular cwd TOML shape", () => {
   const parsed = parseAutomationToml(
     [
@@ -336,6 +379,24 @@ test("capitalized prose with hyphen is not treated as an entrypoint", () => {
   const entrypointTargets = report.automations[0]?.entrypoints.map((entrypoint) => entrypoint.target) ?? [];
 
   assert.deepEqual(entrypointTargets, ["scripts/run_demo.mjs"]);
+  assert.equal(report.summary.missing_entrypoints, 0);
+});
+
+test("shell script suffix in Japanese path prose is not treated as a sh command", () => {
+  const fixture = tempFixture();
+  const id = "demo-shell-suffix-prose";
+  const prompt = [
+    "Browser Use は必ず /tmp/project/scripts/sync-live.sh の経路だけを使い、IAB/Chrome直接操作へfallbackしない。",
+    "フックと認証情報は自動変更せず、fresh readback 後に停止する。"
+  ].join("\n");
+  const body = toml({ id, cwd: fixture.cwd, prompt });
+  writeAutomation(fixture.automationRoot, id, body);
+  createDb(fixture.dbPath, [{ id, prompt, status: "ACTIVE", rrule: "FREQ=DAILY;BYHOUR=9;BYMINUTE=0;BYSECOND=0", cwds: [fixture.cwd] }]);
+
+  const report = runAutomationHealth({ automationRoot: fixture.automationRoot, dbPath: fixture.dbPath, outputRoot: fixture.outputRoot, psText: "" });
+  const entrypointTargets = report.automations[0]?.entrypoints.map((entrypoint) => entrypoint.target) ?? [];
+
+  assert.deepEqual(entrypointTargets, []);
   assert.equal(report.summary.missing_entrypoints, 0);
 });
 

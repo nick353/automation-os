@@ -15,6 +15,10 @@ test("run detail endpoint fetches run-scoped rows beyond dashboard limits", () =
 
   assert.match(serverSource, /app\.get\("\/api\/runs\/:id"/);
   assert.match(serverSource, /export function getRunDetail/);
+  assert.match(serverSource, /export async function getRunDetailAsync/);
+  assert.match(serverSource, /await getRunDetailAsync\(req\.params\.id, await actorCompanyIdsAsync\(\)\)/);
+  assert.match(serverSource, /listActorCompaniesAsync,/);
+  assert.match(serverSource, /querySqlAsync\(`SELECT \* FROM run_steps WHERE run_id/);
   assert.match(serverSource, /FROM run_steps WHERE run_id/);
   assert.match(serverSource, /FROM proofs WHERE run_id/);
   assert.match(serverSource, /FROM worker_events WHERE run_id/);

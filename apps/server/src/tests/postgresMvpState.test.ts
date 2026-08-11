@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+// This projection test must not classify an unrelated host worker as its fixture worker.
+process.env.AUTOMATION_OS_READ_LIVE_PROCESS_TABLE = "0";
 import {
   readPostgresMvpState,
   type PostgresMvpStateQueryClient
@@ -60,6 +62,40 @@ test("Postgres MVP readback enforces company scope and remains read-only", async
       .every(({ values }) => values[0] === "actor_postgres_state_test"),
     true
   );
+});
+
+test("Postgres MVP readback never claims a stale portable worker heartbeat is fresh", async () => {
+  const staleHeartbeat = "2026-08-11T00:00:00.000Z";
+  const client: PostgresMvpStateQueryClient = {
+    async query(text) {
+      if (text.includes("FROM company_memberships")) {
+        return { rows: [{ id: "company_stale_worker", slug: "stale-worker", name: "Stale Worker", status: "active", role: "owner" }] };
+      }
+      if (text.includes("FROM system_checks")) {
+        return {
+          rows: [{
+            id: "portable-worker-heartbeat-stale",
+            kind: "portable_mac_worker",
+            status: "running",
+            created_at: staleHeartbeat,
+            metadata_json: JSON.stringify({ company_id: "company_stale_worker", heartbeat_at: staleHeartbeat })
+          }]
+        };
+      }
+      return { rows: [] };
+    }
+  };
+  const state = await readPostgresMvpState({
+    actorUserId: "actor_stale_worker",
+    companyId: "company_stale_worker",
+    queryClient: client
+  });
+  const worker = state.worker as Record<string, unknown>;
+  assert.equal(worker.status, "blocked");
+  assert.equal(worker.readback_status, "portable_worker_heartbeat_stale");
+  assert.equal(worker.heartbeat_fresh, false);
+  assert.equal(worker.exact_blocker, "portable_worker_heartbeat_stale");
+  assert.equal(worker.external_action_executed, false);
 });
 
 test("Postgres MVP readback exposes explicit public fields without internal job or workflow data", async () => {

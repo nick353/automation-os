@@ -3,13 +3,29 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import test from "node:test";
+import nodeTest from "node:test";
+
+// Every test in this file changes process.env to exercise an isolated export
+// configuration. Node's default test concurrency lets those environment
+// mutations overlap, which can make a detached export wait on another test's
+// status path. Keep this environment-mutating file serial while leaving the
+// rest of the suite's concurrency policy unchanged.
+const test = (name: string, fn: () => void | Promise<void>) =>
+  nodeTest(name, { concurrency: false }, fn);
 
 type RowLike = Record<string, any>;
 
 const tempRoot = mkdtempSync(join(tmpdir(), "automation-os-obsidian-status-"));
 process.env.AUTOMATION_OS_DB = join(tempRoot, "automation-os.sqlite");
 process.env.AUTOMATION_OS_OBSIDIAN_AUTO_EXPORT = "1";
+// Keep export tests hermetic. Without these bindings, the manual-export path
+// scans the user's full ~/.codex/sessions tree and can rewrite the real
+// session-index file, making the suite both slow and stateful.
+const testSessionsDir = join(tempRoot, "codex-sessions");
+const testSessionIndexFile = join(tempRoot, "session-index.jsonl");
+mkdirSync(testSessionsDir, { recursive: true });
+process.env.AUTOMATION_OS_CODEX_SESSIONS_DIR = testSessionsDir;
+process.env.AUTOMATION_OS_CODEX_SESSION_INDEX = testSessionIndexFile;
 
 const db = await import("../db/client.js");
 
@@ -422,11 +438,15 @@ test("Obsidian auto export can run detached without blocking the API process", a
     assert.equal(status.reason, "detached_api_state_change_queued");
     assert.ok(Date.now() - startedAt < 2000);
 
+    // Detached exports intentionally run outside the API process. Under the
+    // full serial suite, the hermetic export can exceed the old 30s probe
+    // window while still completing successfully; keep the test bounded but
+    // avoid treating suite-wide load as a detached-export failure.
     await waitFor(() => {
       if (!existsSync(statusFile)) return false;
       const persisted = JSON.parse(readFileSync(statusFile, "utf8")) as { ok?: boolean; reason?: string };
       return persisted.ok === true && persisted.reason === "detached_api_state_change";
-    }, 30000);
+    }, 120000);
   } finally {
     if (previousDetached === undefined) delete process.env.AUTOMATION_OS_OBSIDIAN_AUTO_EXPORT_DETACHED;
     else process.env.AUTOMATION_OS_OBSIDIAN_AUTO_EXPORT_DETACHED = previousDetached;

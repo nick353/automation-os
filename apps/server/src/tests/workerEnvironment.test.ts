@@ -16,6 +16,7 @@ test("safe worker environment omits inherited secret-shaped variables", () => {
     AUTOMATION_OS_CUSTOM_SECRET: "fixture-custom-secret",
     DATABASE_URL: "postgres://fixture:password@example.invalid/db",
     CODEX_CLI_PATH: "/opt/codex/bin/codex",
+    BROWSER_USE_CLI_HELPER: "/tmp/source-codex-browser-use",
     AUTOMATION_OS_SECRET_DIR: "/tmp/automation-os-secrets",
     AUTOMATION_OS_DB: "/tmp/automation-os.sqlite"
   });
@@ -24,6 +25,7 @@ test("safe worker environment omits inherited secret-shaped variables", () => {
   assert.equal(env.AUTOMATION_OS_SECRET_DIR, "/tmp/automation-os-secrets");
   assert.equal(env.AUTOMATION_OS_DB, "/tmp/automation-os.sqlite");
   assert.equal(env.CODEX_CLI_PATH, "/opt/codex/bin/codex");
+  assert.equal(env.BROWSER_USE_CLI_HELPER, "/tmp/source-codex-browser-use");
   assert.equal(env.AUTOMATION_OS_WRITE_TOKEN, undefined);
   assert.equal(env.OPENAI_API_KEY, undefined);
   assert.equal(env.POSTGRES_PASSWORD, undefined);
@@ -52,6 +54,17 @@ test("stored database URL is injected only when explicitly bound to the worker",
   assert.equal(env.AUTOMATION_OS_WRITE_TOKEN, undefined);
 });
 
+test("job business no-launch preflight flag crosses the safe worker boundary", () => {
+  const env = safeWorkerEnvironment({
+    PATH: "/bin",
+    AUTOMATION_OS_PORTABLE_BUSINESS_NO_LAUNCH: "1",
+    AUTOMATION_OS_PORTABLE_EXTERNAL_INPUT_BUNDLE_PATH: "/tmp/run/portable-input-bundle.v1.json",
+  });
+
+  assert.equal(env.AUTOMATION_OS_PORTABLE_BUSINESS_NO_LAUNCH, "1");
+  assert.equal(env.AUTOMATION_OS_PORTABLE_EXTERNAL_INPUT_BUNDLE_PATH, "/tmp/run/portable-input-bundle.v1.json");
+});
+
 test("stored production worker can bind the explicit production startup role", () => {
   const env = safeWorkerEnvironment(
     { PATH: "/bin", AUTOMATION_OS_ENV_ROLE: "recovery" },
@@ -64,6 +77,15 @@ test("stored production worker can bind the explicit production startup role", (
   assert.equal(env.AUTOMATION_OS_ENV_ROLE, "production");
   assert.equal(env.AUTOMATION_OS_DATABASE_URL, "postgres://bound:password@example.invalid/db");
   assert.equal(env.DATABASE_URL, "postgres://bound:password@example.invalid/db");
+});
+
+test("durable-only worker lane crosses the safe child boundary", () => {
+  const env = safeWorkerEnvironment({
+    PATH: "/bin",
+    AUTOMATION_OS_WORKER_DURABLE_ONLY: "1"
+  });
+
+  assert.equal(env.AUTOMATION_OS_WORKER_DURABLE_ONLY, "1");
 });
 
 test("worker output redaction removes credential values before persistence", () => {

@@ -25,6 +25,13 @@ process.env.AUTOMATION_OS_SNS_MULTI_POSTER_RUNNER = join(tempRoot, "missing-sns-
 process.env.AUTOMATION_OS_PROMPT_TRANSFER_UKIYOE_RUNNER = join(tempRoot, "missing-prompt-transfer-runner.py");
 process.env.AUTOMATION_OS_CODEX_BIN = join(tempRoot, "missing-codex-bin");
 process.env.AUTOMATION_OS_GLOBAL_SYSTEM_SERVICE_USER_ID = "user_test_global_service";
+// Keep API compatibility fixtures independent from unrelated host-owned worker processes.
+process.env.AUTOMATION_OS_READ_LIVE_PROCESS_TABLE = "0";
+// This file exercises local API compatibility fixtures directly. Production
+// token behavior is covered explicitly in apiRunsStart.test.ts; keeping this
+// fixture lane open prevents its refresh call from being mistaken for a
+// scheduler/admission failure.
+process.env.AUTOMATION_OS_REQUIRE_API_TOKEN = "0";
 
 const { app, classifyWorkerOnceExit, markRunsResumeSuppressed, runResearchPlanSchedulerOnce } = await import("../index.js");
 const db = await import("../db/client.js");
@@ -35,6 +42,7 @@ const urlCapture = await import("../obsidian/urlCapture.js");
 
 const publicRegisteredWorkflowKeys = [
   "boundary_label",
+  "browser_use_lane",
   "check_kind",
   "check_label",
   "freshness_kind",
@@ -580,6 +588,154 @@ test("POST /api/codex/app-server/probe stays blocked by default and does not mut
   }
 });
 
+test("GET /api/codex/app-server/readiness reports local fallback without starting an App Server process", async () => {
+  const previousRemoteUrl = process.env.AUTOMATION_OS_CODEX_APP_SERVER_REMOTE_URL;
+  const previousRemoteToken = process.env.AUTOMATION_OS_CODEX_APP_SERVER_REMOTE_TOKEN;
+  delete process.env.AUTOMATION_OS_CODEX_APP_SERVER_REMOTE_URL;
+  delete process.env.AUTOMATION_OS_CODEX_APP_SERVER_REMOTE_TOKEN;
+  clearAppServerProbeCache();
+  try {
+    const response = await getJson("/api/codex/app-server/readiness");
+    const body = JSON.parse(response.body) as {
+      ok: boolean;
+      mode: string;
+      connection: {
+        local_stdio_fallback: boolean;
+        exact_blocker: string | null;
+        transport_support: string;
+        production_remote_cutover_allowed: boolean | null;
+        production_promotion_blocker: string | null;
+      };
+      technical_ok: boolean;
+      production_ready: boolean;
+      readiness: { checked: boolean; protocol: string; exact_blocker: string };
+      external_action_executed: boolean;
+    };
+    assert.equal(response.status, 200);
+    assert.equal(body.ok, true);
+    assert.equal(body.mode, "local_stdio");
+    assert.equal(body.connection.local_stdio_fallback, true);
+    assert.equal(body.connection.exact_blocker, null);
+    assert.equal(body.connection.transport_support, "supported_local_stdio");
+    assert.equal(body.connection.production_remote_cutover_allowed, null);
+    assert.equal(body.connection.production_promotion_blocker, null);
+    assert.equal(body.technical_ok, true);
+    assert.equal(body.production_ready, false);
+    assert.equal(body.readiness.checked, false);
+    assert.equal(body.readiness.protocol, "stdio");
+    assert.equal(body.readiness.exact_blocker, "codex_app_server_stdio_process_probe_required");
+    assert.equal(body.external_action_executed, false);
+  } finally {
+    clearAppServerProbeCache();
+    if (previousRemoteUrl === undefined) delete process.env.AUTOMATION_OS_CODEX_APP_SERVER_REMOTE_URL;
+    else process.env.AUTOMATION_OS_CODEX_APP_SERVER_REMOTE_URL = previousRemoteUrl;
+    if (previousRemoteToken === undefined) delete process.env.AUTOMATION_OS_CODEX_APP_SERVER_REMOTE_TOKEN;
+    else process.env.AUTOMATION_OS_CODEX_APP_SERVER_REMOTE_TOKEN = previousRemoteToken;
+  }
+});
+
+test("GET /api/codex/app-server/readiness reflects the latest successful local stdio probe", async () => {
+  const previousProbeEnabled = process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_ENABLED;
+  const previousProbeCommand = process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_COMMAND;
+  const previousProbeTimeout = process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_TIMEOUT_MS;
+  const probeCommand = join(tempRoot, "fake-codex-app-server-readiness-cache.sh");
+  writeFileSync(
+    probeCommand,
+    [
+      "#!/bin/sh",
+      "set -eu",
+      "cat <<'JSON'",
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          userAgent: "Codex App Server",
+          platformFamily: "unix",
+          platformOs: "darwin",
+          version: "0.1.0"
+        }
+      }),
+      "JSON"
+    ].join("\n")
+  );
+  chmodSync(probeCommand, 0o755);
+  process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_ENABLED = "1";
+  process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_COMMAND = probeCommand;
+  process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_TIMEOUT_MS = "5000";
+  clearAppServerProbeCache();
+
+  try {
+    const probeResponse = await postJson("/api/codex/app-server/probe", {});
+    assert.equal(probeResponse.status, 200);
+    const readinessResponse = await getJson("/api/codex/app-server/readiness");
+    const body = JSON.parse(readinessResponse.body) as {
+      readiness: {
+        checked: boolean;
+        protocol: string;
+        status?: string;
+        exact_blocker: string | null;
+      };
+      external_action_executed: boolean;
+    };
+    assert.equal(readinessResponse.status, 200);
+    assert.equal(body.readiness.checked, true);
+    assert.equal(body.readiness.protocol, "stdio");
+    assert.equal(body.readiness.status, "ok");
+    assert.equal(body.readiness.exact_blocker, null);
+    assert.equal(body.external_action_executed, false);
+  } finally {
+    clearAppServerProbeCache();
+    if (previousProbeEnabled === undefined) delete process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_ENABLED;
+    else process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_ENABLED = previousProbeEnabled;
+    if (previousProbeCommand === undefined) delete process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_COMMAND;
+    else process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_COMMAND = previousProbeCommand;
+    if (previousProbeTimeout === undefined) delete process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_TIMEOUT_MS;
+    else process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_TIMEOUT_MS = previousProbeTimeout;
+  }
+});
+
+test("POST /api/codex/app-server/thread-turn-canary keeps local stdio fallback and reports a remote-only blocker", async () => {
+  const previousRemoteUrl = process.env.AUTOMATION_OS_CODEX_APP_SERVER_REMOTE_URL;
+  const previousRemoteToken = process.env.AUTOMATION_OS_CODEX_APP_SERVER_REMOTE_TOKEN;
+  const beforeRuns = db.querySql<{ count: number }>("SELECT count(*) AS count FROM runs")[0].count;
+  delete process.env.AUTOMATION_OS_CODEX_APP_SERVER_REMOTE_URL;
+  delete process.env.AUTOMATION_OS_CODEX_APP_SERVER_REMOTE_TOKEN;
+  try {
+    const response = await postJson("/api/codex/app-server/thread-turn-canary", {});
+    const body = JSON.parse(response.body) as {
+      schema: string;
+      ok: boolean;
+      status: string;
+      exactBlocker: string | null;
+      initialized: boolean;
+      threadStarted: boolean;
+      turnStarted: boolean;
+      productionReady: boolean;
+      productionRemoteCutoverAllowed: boolean;
+      externalActionExecuted: boolean;
+    };
+    const afterRuns = db.querySql<{ count: number }>("SELECT count(*) AS count FROM runs")[0].count;
+
+    assert.equal(response.status, 200);
+    assert.equal(body.schema, "codex_app_server_thread_turn_canary.v1");
+    assert.equal(body.ok, false);
+    assert.equal(body.status, "blocked");
+    assert.equal(body.exactBlocker, "codex_app_server_remote_required_for_thread_turn_canary");
+    assert.equal(body.initialized, false);
+    assert.equal(body.threadStarted, false);
+    assert.equal(body.turnStarted, false);
+    assert.equal(body.productionReady, false);
+    assert.equal(body.productionRemoteCutoverAllowed, false);
+    assert.equal(body.externalActionExecuted, false);
+    assert.equal(beforeRuns, afterRuns);
+  } finally {
+    if (previousRemoteUrl === undefined) delete process.env.AUTOMATION_OS_CODEX_APP_SERVER_REMOTE_URL;
+    else process.env.AUTOMATION_OS_CODEX_APP_SERVER_REMOTE_URL = previousRemoteUrl;
+    if (previousRemoteToken === undefined) delete process.env.AUTOMATION_OS_CODEX_APP_SERVER_REMOTE_TOKEN;
+    else process.env.AUTOMATION_OS_CODEX_APP_SERVER_REMOTE_TOKEN = previousRemoteToken;
+  }
+});
+
 test("POST /api/codex/app-server/probe initializes read-only and keeps appServer disconnected from authority", async () => {
   db.initDb();
   db.resetDemoData();
@@ -627,6 +783,9 @@ test("POST /api/codex/app-server/probe initializes read-only and keeps appServer
         threadStarted: false;
         turnStarted: false;
         externalActionExecuted: false;
+        transportSupport: string;
+        productionRemoteCutoverAllowed: boolean | null;
+        productionPromotionBlocker: string | null;
         userAgent: string | null;
       };
       matrix: {
@@ -646,6 +805,9 @@ test("POST /api/codex/app-server/probe initializes read-only and keeps appServer
     assert.equal(body.probe.ok, true);
     assert.equal(body.probe.status, "ok");
     assert.equal(body.probe.exactBlocker, null);
+    assert.equal(body.probe.transportSupport, "supported_local_stdio");
+    assert.equal(body.probe.productionRemoteCutoverAllowed, null);
+    assert.equal(body.probe.productionPromotionBlocker, null);
     assert.equal(body.probe.initializedNotificationSent, false);
     assert.equal(body.probe.threadStarted, false);
     assert.equal(body.probe.turnStarted, false);
@@ -1774,6 +1936,7 @@ test("registered workflow start API creates Automation OS runs from fixed entryp
 test("registered workflow scheduler starts due fixed registered workflows with provenance metadata", async () => {
   db.initDb();
   db.resetDemoData();
+  seedOwnerCompany();
   seedGlobalSystemService();
   db.execSql("DELETE FROM registered_workflows;");
   await postJson("/api/registered-workflows/refresh", {});

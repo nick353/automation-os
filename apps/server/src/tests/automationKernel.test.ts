@@ -411,7 +411,9 @@ test("all globally registered and reference workflow manifests compile determini
     "utf8"
   )) as { entries: Array<{ manifest: string }> };
   const paths = [...new Set([
-    ...registry.entries.map((entry) => entry.manifest),
+    ...registry.entries
+      .map((entry) => entry.manifest)
+      .filter((manifest): manifest is string => typeof manifest === "string" && manifest.trim().length > 0),
     "/Users/nichikatanaka/Documents/Codex/external-repos/heavy-chain/.codex/automation-kernel/manifests/heavy-chain.json"
   ])];
   paths.forEach((path) => {

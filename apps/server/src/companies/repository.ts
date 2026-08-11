@@ -1,4 +1,5 @@
-import { execSql, insert, makeId, nowIso, querySql, runSqlTransaction, sqlValue, type SqlTransactionStep } from "../db/client.js";
+import { createHash } from "node:crypto";
+import { execSql, insert, makeId, nowIso, querySql, querySqlAsync, runSqlTransaction, sqlValue, type SqlTransactionStep } from "../db/client.js";
 import { requireIdempotencyKey } from "../automations/contracts.js";
 import { canonicalJson, hashIdempotencyRequest, readIdempotencyReplay } from "../automations/idempotency.js";
 
@@ -60,6 +61,21 @@ export function listActorCompanies(actorUserId = currentActorUserId()): CompanyA
   `);
 }
 
+export async function listActorCompaniesAsync(actorUserId = currentActorUserId()): Promise<CompanyAccess[]> {
+  return querySqlAsync<CompanyAccess>(`
+    SELECT companies.id, companies.slug, companies.name, companies.status,
+           company_memberships.role, companies.created_at, companies.updated_at
+    FROM company_memberships
+    JOIN companies ON companies.id=company_memberships.company_id
+    JOIN users ON users.id=company_memberships.user_id
+    WHERE company_memberships.user_id=${sqlValue(actorUserId)}
+      AND company_memberships.status='active'
+      AND companies.status!='archived'
+      AND users.status='active'
+    ORDER BY lower(companies.name), companies.id
+  `);
+}
+
 export function requireCompanyAccess(
   companyId: string,
   allowedRoles: readonly CompanyRole[] = companyRoles,
@@ -67,6 +83,29 @@ export function requireCompanyAccess(
 ): CompanyAccess {
   if (!companyId.trim()) throw new Error("company_scope_required");
   const company = listActorCompanies(actorUserId).find((item) => item.id === companyId);
+  if (!company || !allowedRoles.includes(company.role)) throw new Error("company_scope_forbidden");
+  return company;
+}
+
+export async function requireCompanyAccessAsync(
+  companyId: string,
+  allowedRoles: readonly CompanyRole[] = companyRoles,
+  actorUserId = currentActorUserId()
+): Promise<CompanyAccess> {
+  if (!companyId.trim()) throw new Error("company_scope_required");
+  const company = (await querySqlAsync<CompanyAccess>(`
+    SELECT companies.id, companies.slug, companies.name, companies.status,
+           company_memberships.role, companies.created_at, companies.updated_at
+    FROM company_memberships
+    JOIN companies ON companies.id=company_memberships.company_id
+    JOIN users ON users.id=company_memberships.user_id
+    WHERE company_memberships.company_id=${sqlValue(companyId)}
+      AND company_memberships.user_id=${sqlValue(actorUserId)}
+      AND company_memberships.status='active'
+      AND companies.status!='archived'
+      AND users.status='active'
+    LIMIT 1
+  `))[0];
   if (!company || !allowedRoles.includes(company.role)) throw new Error("company_scope_forbidden");
   return company;
 }
@@ -105,6 +144,41 @@ export function requireExistingServiceIdentity(actorUserId: string): void {
     LIMIT 1
   `)[0];
   if (!user) throw new Error("service_identity_invalid");
+}
+
+export function ensureCompanyServiceIdentity(input: { companyId: string; actorUserId?: string }): { userId: string; companyId: string; role: "operator" } {
+  const actorUserId = input.actorUserId ?? currentActorUserId();
+  const company = requireCompanyAccess(input.companyId, ["owner", "admin"], actorUserId);
+  const userId = `aos_service_${createHash("sha256").update(company.id, "utf8").digest("hex").slice(0, 20)}`;
+  const timestamp = nowIso();
+  const existingUser = querySql<{ id: string; kind: string; status: string }>(`SELECT id, kind, status FROM users WHERE id=${sqlValue(userId)} LIMIT 1`)[0];
+  if (existingUser && (existingUser.kind !== "service" || existingUser.status !== "active")) throw new Error("service_identity_conflict");
+  const existingMembership = querySql<{ role: string; status: string }>(`SELECT role, status FROM company_memberships WHERE company_id=${sqlValue(company.id)} AND user_id=${sqlValue(userId)} LIMIT 1`)[0];
+  if (existingMembership && (existingMembership.role !== "operator" || existingMembership.status !== "active")) throw new Error("service_identity_membership_conflict");
+  const steps: SqlTransactionStep[] = [];
+  if (!existingUser) {
+    steps.push({
+      sql: `INSERT INTO users (id, auth_provider, auth_subject, email, display_name, kind, status, created_at, updated_at)
+            VALUES (${sqlValue(userId)}, 'automation_os', ${sqlValue(userId)}, NULL, ${sqlValue(`${company.name} AOS Service`)}, 'service', 'active', ${sqlValue(timestamp)}, ${sqlValue(timestamp)})`,
+      expectChanges: 1
+    });
+  }
+  if (!existingMembership) {
+    steps.push({
+      sql: `INSERT INTO company_memberships (id, company_id, user_id, role, status, created_at, updated_at)
+            VALUES (${sqlValue(makeId("membership"))}, ${sqlValue(company.id)}, ${sqlValue(userId)}, 'operator', 'active', ${sqlValue(timestamp)}, ${sqlValue(timestamp)})`,
+      expectChanges: 1
+    });
+  }
+  if (steps.length > 0) {
+    steps.push({
+      sql: `INSERT INTO company_audit_events (id, company_id, actor_user_id, action, entity_type, entity_id, before_json, after_json, created_at)
+            VALUES (${sqlValue(makeId("audit"))}, ${sqlValue(company.id)}, ${sqlValue(actorUserId)}, 'service_identity.created_or_reconciled', 'service_identity', ${sqlValue(userId)}, '{}', ${sqlValue({ user_id: userId, role: "operator", secret_material_included: false })}, ${sqlValue(timestamp)})`,
+      expectChanges: 1
+    });
+    runSqlTransaction(steps);
+  }
+  return { userId, companyId: company.id, role: "operator" };
 }
 
 export function createCompanyForActor(input: { name?: unknown; slug?: unknown }, actorUserId = currentActorUserId(), idempotencyKey?: string): CompanyAccess {

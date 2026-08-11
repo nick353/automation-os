@@ -1,6 +1,13 @@
 import { spawn, type SpawnOptionsWithoutStdio } from "node:child_process";
+import WebSocket from "ws";
 import { redactSensitiveText } from "../obsidian/redaction.js";
 import { resolveBoundedWorkspacePath } from "../security/processEnvironment.js";
+import {
+  remoteWorkspaceCwd,
+  resolveCodexAppServerConnection,
+  type CodexAppServerConnectionOptions,
+  type ResolvedCodexAppServerConnection
+} from "./appServerConnection.js";
 
 type WritableLike = {
   write(chunk: string): boolean;
@@ -30,6 +37,17 @@ export type AppServerProcessFactory = (
   options: SpawnOptionsWithoutStdio
 ) => AppServerChildLike;
 
+export type AppServerWebSocketLike = {
+  addEventListener(event: "open" | "message" | "error" | "close", listener: (event: { data?: unknown; code?: number; reason?: string }) => void, options?: { once?: boolean }): void;
+  send(data: string): void;
+  close(code?: number, reason?: string): void;
+};
+
+export type AppServerWebSocketFactory = (
+  url: string,
+  init: { headers: Record<string, string> }
+) => AppServerWebSocketLike;
+
 export type CodexAppServerEvent = {
   method: string;
   threadId?: string;
@@ -48,6 +66,13 @@ export type CodexAppServerTurnResult = {
   structured: Record<string, unknown> | null;
   events: CodexAppServerEvent[];
   exactBlocker?: string;
+};
+
+export type CodexAppServerAccountReadback = {
+  accountPresent: boolean;
+  accountType: string | null;
+  planType: string | null;
+  requiresOpenaiAuth: boolean;
 };
 
 type PendingRequest = {
@@ -83,6 +108,7 @@ const maxEventsPerTurn = 160;
  */
 export class CodexAppServerClient {
   private child: AppServerChildLike | null = null;
+  private connection: ResolvedCodexAppServerConnection | null = null;
   private initialized = false;
   private connecting: Promise<void> | null = null;
   private nextRequestId = 1;
@@ -103,6 +129,10 @@ export class CodexAppServerClient {
     workspaceRoot?: string;
     timeoutMs?: number;
     processFactory?: AppServerProcessFactory;
+    webSocketFactory?: AppServerWebSocketFactory;
+    remoteUrl?: string;
+    remoteToken?: string;
+    remoteCwd?: string;
     onEvent?: (event: CodexAppServerEvent) => void;
   } = {}) {}
 
@@ -115,25 +145,23 @@ export class CodexAppServerClient {
     return this.connecting;
   }
 
-  async startOrResumeThread(threadId?: string): Promise<string> {
+  async startOrResumeThread(threadId?: string, options: { ephemeral?: boolean } = {}): Promise<string> {
     await this.start();
-    const cwd = appServerCwd(this.options.cwd, this.options.workspaceRoot ?? process.env.AUTOMATION_OS_WORKER_WORKSPACE_ROOT);
     const method = threadId?.trim() ? "thread/resume" : "thread/start";
     const params: Record<string, unknown> = threadId?.trim()
       ? {
           threadId: threadId.trim(),
-          cwd,
           approvalPolicy: "never",
           sandbox: "read-only",
           serviceName: "automation_os_chat"
         }
       : {
-          cwd,
           approvalPolicy: "never",
           sandbox: "read-only",
           serviceName: "automation_os_chat",
-          ephemeral: false
+          ephemeral: options.ephemeral ?? false
         };
+    this.applyCwd(params);
     const response = await this.request(method, params);
     const returnedThread = response.result && typeof response.result === "object"
       ? (response.result as Record<string, unknown>).thread
@@ -145,6 +173,23 @@ export class CodexAppServerClient {
       throw new Error("codex_app_server_thread_id_missing");
     }
     return returnedId.trim();
+  }
+
+  async readAccount(): Promise<CodexAppServerAccountReadback> {
+    await this.start();
+    const response = await this.request("account/read", { refreshToken: false });
+    const result = response.result && typeof response.result === "object"
+      ? (response.result as Record<string, unknown>)
+      : {};
+    const account = result.account && typeof result.account === "object"
+      ? (result.account as Record<string, unknown>)
+      : null;
+    return {
+      accountPresent: Boolean(account),
+      accountType: typeof account?.type === "string" ? account.type : null,
+      planType: typeof account?.planType === "string" ? account.planType : null,
+      requiresOpenaiAuth: result.requiresOpenaiAuth === true
+    };
   }
 
   async startTurn(input: {
@@ -160,17 +205,18 @@ export class CodexAppServerClient {
     await this.start();
 
     if (input.onEvent) this.pendingTurnListeners.set(threadId, input.onEvent);
-    const responsePromise = this.request("turn/start", {
+    const params: Record<string, unknown> = {
       threadId,
       input: [{ type: "text", text, text_elements: [] }],
-      cwd: appServerCwd(this.options.cwd, this.options.workspaceRoot ?? process.env.AUTOMATION_OS_WORKER_WORKSPACE_ROOT),
       approvalPolicy: "never",
       // Codex CLI 0.145+ removed the legacy sandboxPolicy.access shape for
       // restricted reads. Keep the turn on the built-in read-only profile so
       // the worker remains unable to approve or write external effects.
       permissionProfile: ":read-only",
       ...(input.outputSchema ? { outputSchema: input.outputSchema } : {})
-    });
+    };
+    this.applyCwd(params);
+    const responsePromise = this.request("turn/start", params);
     let response: Record<string, unknown>;
     try {
       response = await responsePromise;
@@ -213,6 +259,7 @@ export class CodexAppServerClient {
   close(): void {
     this.closed = true;
     this.initialized = false;
+    this.connection = null;
     this.rejectAll(new Error("codex_app_server_closed"));
     const child = this.child;
     this.child = null;
@@ -226,19 +273,25 @@ export class CodexAppServerClient {
 
   private async startInternal(): Promise<void> {
     this.closed = false;
-    const command = selectAppServerCommand(this.options);
-    if (!command) throw new Error("codex_app_server_command_missing");
-    const cwd = appServerCwd(this.options.cwd, this.options.workspaceRoot ?? process.env.AUTOMATION_OS_WORKER_WORKSPACE_ROOT);
-    const factory = this.options.processFactory ?? (spawn as unknown as AppServerProcessFactory);
+    const connection = resolveCodexAppServerConnection(this.options, process.env);
+    this.connection = connection;
     let child: AppServerChildLike;
-    try {
-      child = factory(command, ["app-server", "--listen", "stdio://"], {
-        cwd,
-        env: safeAppServerEnvironment(process.env),
-        stdio: ["pipe", "pipe", "pipe"]
-      });
-    } catch {
-      throw new Error("codex_app_server_spawn_failed");
+    if (connection.mode === "remote_websocket") {
+      child = await createRemoteAppServerChild(connection, this.options.webSocketFactory);
+    } else {
+      const command = selectAppServerCommand(this.options);
+      if (!command) throw new Error("codex_app_server_command_missing");
+      const cwd = appServerCwd(this.options.cwd, this.options.workspaceRoot ?? process.env.AUTOMATION_OS_WORKER_WORKSPACE_ROOT);
+      const factory = this.options.processFactory ?? (spawn as unknown as AppServerProcessFactory);
+      try {
+        child = factory(command, ["app-server", "--listen", "stdio://"], {
+          cwd,
+          env: safeAppServerEnvironment(process.env),
+          stdio: ["pipe", "pipe", "pipe"]
+        });
+      } catch {
+        throw new Error("codex_app_server_spawn_failed");
+      }
     }
     this.child = child;
     const onData = (chunk: Buffer | string) => this.consumeStdout(chunk);
@@ -259,6 +312,15 @@ export class CodexAppServerClient {
     if (!initialize.result || initialize.error) throw new Error("codex_app_server_initialize_rejected");
     this.write({ method: "initialized", params: {} });
     this.initialized = true;
+  }
+
+  private applyCwd(params: Record<string, unknown>): void {
+    if (this.connection?.mode === "remote_websocket") {
+      const remoteCwd = remoteWorkspaceCwd(this.connection);
+      if (remoteCwd) params.cwd = remoteCwd;
+      return;
+    }
+    params.cwd = appServerCwd(this.options.cwd, this.options.workspaceRoot ?? process.env.AUTOMATION_OS_WORKER_WORKSPACE_ROOT);
   }
 
   private request(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -411,6 +473,7 @@ export class CodexAppServerClient {
     if (this.closed) return;
     this.closed = true;
     this.initialized = false;
+    this.connection = null;
     const child = this.child;
     this.child = null;
     this.rejectAll(error);
@@ -435,6 +498,178 @@ export class CodexAppServerClient {
       this.completions.delete(key);
     }
   }
+}
+
+async function createRemoteAppServerChild(
+  connection: ResolvedCodexAppServerConnection,
+  factory?: AppServerWebSocketFactory
+): Promise<AppServerChildLike> {
+  if (!connection.token) throw new Error("codex_app_server_remote_auth_missing");
+  const socketFactory = factory ?? defaultAppServerWebSocketFactory;
+  let socket: AppServerWebSocketLike;
+  try {
+    socket = socketFactory(connection.endpoint, { headers: { Authorization: `Bearer ${connection.token}` } });
+  } catch {
+    throw new Error("codex_app_server_remote_connect_failed");
+  }
+  const child = webSocketChild(socket);
+  await waitForWebSocketOpen(socket);
+  return child;
+}
+
+function defaultAppServerWebSocketFactory(
+  url: string,
+  init: { headers: Record<string, string> }
+): AppServerWebSocketLike {
+  // Node's WHATWG WebSocket constructor does not provide a portable way to
+  // set an Authorization header. The `ws` client does, and Codex App Server's
+  // capability-token mode requires that header on the WebSocket handshake.
+  const socket = new WebSocket(url, { headers: init.headers });
+  return adaptNodeWebSocket(socket);
+}
+
+function adaptNodeWebSocket(socket: WebSocket): AppServerWebSocketLike {
+  return {
+    addEventListener(event, listener, options) {
+      const once = options?.once === true;
+      if (event === "open") {
+        const handler = () => listener({});
+        once ? socket.once("open", handler) : socket.on("open", handler);
+        return;
+      }
+      if (event === "message") {
+        const handler = (data: unknown) => listener({ data: normalizeNodeWebSocketData(data) });
+        once ? socket.once("message", handler) : socket.on("message", handler);
+        return;
+      }
+      if (event === "error") {
+        const handler = () => listener({});
+        once ? socket.once("error", handler) : socket.on("error", handler);
+        return;
+      }
+      const handler = (code: number, reason: Buffer) => listener({
+        code,
+        reason: reason.toString("utf8")
+      });
+      once ? socket.once("close", handler) : socket.on("close", handler);
+    },
+    send(data) {
+      socket.send(data);
+    },
+    close(code, reason) {
+      socket.close(code, reason);
+    }
+  };
+}
+
+function normalizeNodeWebSocketData(value: unknown): string | ArrayBuffer {
+  if (typeof value === "string") return value;
+  if (Buffer.isBuffer(value)) return value.toString("utf8");
+  if (value instanceof ArrayBuffer) return value;
+  if (Array.isArray(value) && value.every((item) => Buffer.isBuffer(item))) {
+    return Buffer.concat(value).toString("utf8");
+  }
+  return String(value);
+}
+
+function waitForWebSocketOpen(socket: AppServerWebSocketLike): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      if (error) reject(error);
+      else resolve();
+    };
+    socket.addEventListener("open", () => finish());
+    socket.addEventListener("error", () => finish(new Error("codex_app_server_remote_connect_failed")));
+    socket.addEventListener("close", () => finish(new Error("codex_app_server_remote_connect_failed")));
+  });
+}
+
+function webSocketChild(socket: AppServerWebSocketLike): AppServerChildLike {
+  const dataListeners = new Set<(chunk: Buffer | string) => void>();
+  const errorListeners = new Set<(error: Error) => void>();
+  const closeListeners = new Set<(code: number | null, signal: NodeJS.Signals | null) => void>();
+  let closed = false;
+  const emitError = (error: Error) => {
+    for (const listener of errorListeners) listener(error);
+  };
+  const emitClose = (code: number | null, signal: NodeJS.Signals | null) => {
+    if (closed) return;
+    closed = true;
+    for (const listener of closeListeners) listener(code, signal);
+  };
+  socket.addEventListener("message", (event) => {
+    const data = event.data;
+    if (typeof data === "string") {
+      for (const listener of dataListeners) listener(`${data}\n`);
+      return;
+    }
+    if (data instanceof ArrayBuffer) {
+      const text = Buffer.from(data).toString("utf8");
+      for (const listener of dataListeners) listener(`${text}\n`);
+      return;
+    }
+    if (data && typeof data === "object" && "text" in data && typeof (data as { text?: unknown }).text === "function") {
+      void (data as { text: () => Promise<string> }).text().then((text) => {
+        for (const listener of dataListeners) listener(`${text}\n`);
+      }).catch(() => emitError(new Error("codex_app_server_remote_message_failed")));
+      return;
+    }
+    emitError(new Error("codex_app_server_remote_protocol_error"));
+  });
+  socket.addEventListener("error", () => emitError(new Error("codex_app_server_remote_socket_error")));
+  socket.addEventListener("close", (event) => emitClose(typeof event.code === "number" ? event.code : null, null));
+
+  const stdin: WritableLike = {
+    write(chunk: string): boolean {
+      if (closed) throw new Error("codex_app_server_remote_socket_closed");
+      socket.send(chunk);
+      return true;
+    },
+    on(): unknown { return stdin; },
+    removeListener(): unknown { return stdin; }
+  };
+  const stdout: ReadableLike = {
+    on(event: "data", listener: (chunk: Buffer | string) => void): unknown {
+      dataListeners.add(listener);
+      return stdout;
+    },
+    removeListener(event: "data", listener: (chunk: Buffer | string) => void): unknown {
+      dataListeners.delete(listener);
+      return stdout;
+    }
+  };
+  const stderr: ReadableLike = { on(): unknown { return stderr; }, removeListener(): unknown { return stderr; } };
+  return {
+    stdin,
+    stdout,
+    stderr,
+    on(event: "error", listener: (error: Error) => void): unknown {
+      errorListeners.add(listener);
+      return this;
+    },
+    once(event: "close", listener: (code: number | null, signal: NodeJS.Signals | null) => void): unknown {
+      const onceListener = (code: number | null, signal: NodeJS.Signals | null) => {
+        closeListeners.delete(onceListener);
+        listener(code, signal);
+      };
+      closeListeners.add(onceListener);
+      return this;
+    },
+    removeListener(event: "error" | "close", listener: ((error: Error) => void) | ((code: number | null, signal: NodeJS.Signals | null) => void)): unknown {
+      if (event === "error") errorListeners.delete(listener as (error: Error) => void);
+      else closeListeners.delete(listener as (code: number | null, signal: NodeJS.Signals | null) => void);
+      return this;
+    },
+    kill(): boolean {
+      if (closed) return false;
+      socket.close(1000, "automation_os_client_close");
+      emitClose(1000, null);
+      return true;
+    }
+  };
 }
 
 export function safeAppServerEnvironment(input: NodeJS.ProcessEnv): NodeJS.ProcessEnv {

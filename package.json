@@ -16,9 +16,10 @@
     "qa:all-page-buttons": "node scripts/all_page_button_qa.mjs",
     "qa:load": "npm run build:server && node apps/server/dist/cli/loadReadiness.js",
     "qa:production-operations-monitor": "node scripts/production_operations_monitor.mjs",
+    "qa:zeabur-codex-app-server-source": "node scripts/codex-app-server-zeabur-preflight.mjs",
     "db:migrate:postgres": "node scripts/migrateSqliteToPostgres.mjs",
     "db:audit-tenancy": "npm run build:server && node apps/server/dist/cli/auditTenancy.js",
-    "build": "npm run build:server && npm run build:web",
+    "build": "npm run build:server && npm run build:web && node scripts/write-runtime-parity-manifest.mjs",
     "build:server": "tsc -p apps/server/tsconfig.json && cp apps/server/src/db/schema.sql apps/server/dist/db/schema.sql && chmod +x apps/server/dist/browser/geminiVideoQaRunner.js",
     "build:web": "vite build apps/web",
     "import:codex": "npm run build:server && node apps/server/dist/cli/importCodex.js",
@@ -41,6 +42,8 @@
     "nisenprints:reconcile-completion": "npm run build:server && node apps/server/dist/cli/reconcileNisenPrintsCompletion.js",
     "prompt-transfer:reconcile-blocker": "npm run build:server && node apps/server/dist/cli/reconcilePromptTransferBlocker.js",
     "automation:health": "node apps/server/dist/cli/automationHealth.js",
+    "aos:trigger": "node scripts/aos-trigger.mjs",
+    "aos:worker-once": "node scripts/aos-durable-worker-once.mjs",
     "clean:dev-data": "npm run build:server && node apps/server/dist/cli/cleanDevData.js",
     "obsidian:export": "npm run build:server && node apps/server/dist/cli/exportObsidian.js",
     "obsidian:maintain": "npm run build:server && node apps/server/dist/cli/maintainObsidian.js",
@@ -65,7 +68,10 @@
     "second-brain:process": "npm run build:server && node apps/server/dist/cli/secondBrainProcess.js",
     "typecheck:web": "tsc -p apps/web/tsconfig.json",
     "test": "npm run build:server && node --test --test-concurrency=1 apps/server/dist/tests/*.test.js",
-    "test:postgres": "node scripts/testPostgresFixture.mjs"
+    "test:postgres": "node scripts/testPostgresFixture.mjs",
+    "test:e2e:fixture": "node --test scripts/tests/e2eReadinessFixture.test.mjs",
+    "test:e2e:contract": "node --test scripts/tests/browserUseCliStageAdapter.test.mjs scripts/tests/aosPortableBrowserUseRunner.test.mjs scripts/tests/webOperationAdaptiveRuntime.test.mjs scripts/tests/webOperationEffectExecutor.test.mjs scripts/tests/webOperationEntrypointE2E.test.mjs scripts/tests/allPageButtonQa.test.mjs",
+    "test:e2e:web-operation": "node --test scripts/tests/webOperationEffectExecutor.test.mjs scripts/tests/webOperationEntrypointE2E.test.mjs"
   },
   "dependencies": {
     "@types/pg": "^8.20.0",
@@ -77,7 +83,8 @@
     "pg": "^8.22.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "vite": "^6.0.1"
+    "vite": "^6.0.1",
+    "ws": "^8.21.3"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
@@ -85,6 +92,7 @@
     "@types/node": "^22.10.2",
     "@types/react": "^19.0.1",
     "@types/react-dom": "^19.0.1",
+    "@types/ws": "^8.18.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   }

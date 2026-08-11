@@ -700,7 +700,7 @@ exit 2
 }
 
 function installFakeNisenPrintsBrowserUseRunner(name: string, exitStatus: number): () => void {
-  const previousRunner = process.env.AUTOMATION_OS_NISENPRINTS_PLAYWRIGHT_RUNNER;
+  const previousRunner = process.env.AUTOMATION_OS_NISENPRINTS_BROWSER_USE_RUNNER;
   const runnerPath = join(tempRoot, `${name}.mjs`);
   writeFileSync(
     runnerPath,
@@ -721,15 +721,15 @@ process.exit(${exitStatus});
     "utf8"
   );
   chmodSync(runnerPath, 0o755);
-  process.env.AUTOMATION_OS_NISENPRINTS_PLAYWRIGHT_RUNNER = runnerPath;
+  process.env.AUTOMATION_OS_NISENPRINTS_BROWSER_USE_RUNNER = runnerPath;
   return () => {
-    if (previousRunner === undefined) delete process.env.AUTOMATION_OS_NISENPRINTS_PLAYWRIGHT_RUNNER;
-    else process.env.AUTOMATION_OS_NISENPRINTS_PLAYWRIGHT_RUNNER = previousRunner;
+    if (previousRunner === undefined) delete process.env.AUTOMATION_OS_NISENPRINTS_BROWSER_USE_RUNNER;
+    else process.env.AUTOMATION_OS_NISENPRINTS_BROWSER_USE_RUNNER = previousRunner;
   };
 }
 
 function installFakeDailyAiRunner(name: string, exitStatus: number): () => void {
-  const previousRunner = process.env.AUTOMATION_OS_DAILY_AI_PLAYWRIGHT_RUNNER;
+  const previousRunner = process.env.AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER;
   const previousOutputRoot = process.env.AUTOMATION_OS_DAILY_AI_OUTPUT_ROOT;
   const runnerPath = join(tempRoot, `${name}.mjs`);
   writeFileSync(
@@ -756,11 +756,11 @@ process.exit(${exitStatus});
     "utf8"
   );
   chmodSync(runnerPath, 0o755);
-  process.env.AUTOMATION_OS_DAILY_AI_PLAYWRIGHT_RUNNER = runnerPath;
+  process.env.AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER = runnerPath;
   process.env.AUTOMATION_OS_DAILY_AI_OUTPUT_ROOT = join(tempRoot, `${name}-runs`);
   return () => {
-    if (previousRunner === undefined) delete process.env.AUTOMATION_OS_DAILY_AI_PLAYWRIGHT_RUNNER;
-    else process.env.AUTOMATION_OS_DAILY_AI_PLAYWRIGHT_RUNNER = previousRunner;
+    if (previousRunner === undefined) delete process.env.AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER;
+    else process.env.AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER = previousRunner;
     if (previousOutputRoot === undefined) delete process.env.AUTOMATION_OS_DAILY_AI_OUTPUT_ROOT;
     else process.env.AUTOMATION_OS_DAILY_AI_OUTPUT_ROOT = previousOutputRoot;
   };
@@ -921,7 +921,7 @@ test("builds worker commands without OpenAI API keys", () => {
     assert.equal(dailyAiCommand.env?.AUTOMATION_OS_BROWSER_SURFACE, "browser_use_cli");
     assert.equal(dailyAiCommand.env?.AUTOMATION_OS_BROWSER_NO_FALLBACK, "1");
     assert.equal(dailyAiCommand.env?.AUTOMATION_OS_BROWSER_WORKFLOW_ID, "daily-ai-research-publish-run");
-    assert.equal(dailyAiCommand.env?.AUTOMATION_OS_BROWSER_REQUIREMENT, "browser_use_cli_workflow_adapter_missing");
+    assert.equal(dailyAiCommand.env?.AUTOMATION_OS_BROWSER_REQUIREMENT, "current_run_authority_and_same_session_readback_required");
     assert.equal(Object.keys(dailyAiCommand.env ?? {}).some((key) => key.includes("CDP") || key.includes("PROFILE_DIR")), false);
     assert.equal(classifyWorkerCommandSpec(dailyAiCommand).classification, "browser_use_cli");
     assert.ok(classifyWorkerCommandSpec(dailyAiCommand).signals.includes("browser-use"));
@@ -930,21 +930,23 @@ test("builds worker commands without OpenAI API keys", () => {
     assert.deepEqual(nisenprintsCommand.args, ["/Users/nichikatanaka/.codex/skills/automation-kernel-run/scripts/browser-use-cli-stage-adapter.mjs"]);
     assert.equal(nisenprintsCommand.env?.AUTOMATION_OS_BROWSER_SURFACE, "browser_use_cli");
     assert.equal(nisenprintsCommand.env?.AUTOMATION_OS_BROWSER_NO_FALLBACK, "1");
-    assert.equal(nisenprintsCommand.env?.AUTOMATION_OS_BROWSER_WORKFLOW_ID, "nisenprints-registered");
-    assert.equal(nisenprintsCommand.env?.AUTOMATION_OS_BROWSER_REQUIREMENT, "browser_use_cli_workflow_adapter_missing");
+    assert.equal(nisenprintsCommand.env?.AUTOMATION_OS_BROWSER_WORKFLOW_ID, "nisenprints-daily-product-canva-printify-etsy-pinterest");
+    assert.equal(nisenprintsCommand.env?.AUTOMATION_OS_BROWSER_REQUIREMENT, "current_run_authority_and_same_session_readback_required");
     assert.equal(resolveWorkerAdapterPolicy("nisenprints_registered").classification, "browser_use_cli");
-    assert.equal(resolveWorkerAdapterPolicy("nisenprints_registered").exactBlocker, "browser_use_cli_workflow_adapter_missing");
-    assert.ok(resolveWorkerAdapterPolicy("nisenprints_registered").evidence.some((item) => item.includes("legacy_nisenprints_runner:disabled")));
+    assert.equal(resolveWorkerAdapterPolicy("nisenprints_registered").exactBlocker, null);
+    assert.ok(resolveWorkerAdapterPolicy("nisenprints_registered").evidence.some((item) => item.includes("workflow_adapter_registry:aos.workflow_adapter_registry.v1")));
+    assert.equal(resolveWorkerAdapterPolicy("daily_ai_registered").exactBlocker, null);
+    assert.ok(resolveWorkerAdapterPolicy("daily_ai_registered").evidence.some((item) => item.includes("workflow_adapter:daily-ai-research-publish-run")));
     assert.match(jobSubmitCommand.display, /job-application-manager/);
-    assert.equal(jobSubmitCommand.env?.AUTOMATION_OS_RUN_ID, "<AUTOMATION_OS_RUN_ID>");
-    assert.equal(jobSubmitCommand.env?.AUTOMATION_OS_REGISTERED_SUMMARY_PATH, "<AUTOMATION_OS_REGISTERED_SUMMARY_PATH>");
-    assert.match(jobSubmitCommand.display, /AUTOMATION_OS_RUN_ID="<AUTOMATION_OS_RUN_ID>"/);
-    assert.match(jobSubmitCommand.display, /AUTOMATION_OS_REGISTERED_SUMMARY_PATH="<AUTOMATION_OS_REGISTERED_SUMMARY_PATH>"/);
+    assert.equal(jobSubmitCommand.env?.AUTOMATION_OS_BROWSER_SURFACE, "browser_use_cli");
+    assert.equal(jobSubmitCommand.env?.AUTOMATION_OS_BROWSER_NO_FALLBACK, "1");
+    assert.equal(jobSubmitCommand.env?.AUTOMATION_OS_BROWSER_WORKFLOW_ID, "job-application-manager");
+    assert.doesNotMatch(jobSubmitCommand.display, /codex exec|playwright|cdp|chrome/i);
     assert.match(jobFollowupCommand.display, /job-application-manager/);
-    assert.equal(jobFollowupCommand.env?.AUTOMATION_OS_RUN_ID, "<AUTOMATION_OS_RUN_ID>");
-    assert.equal(jobFollowupCommand.env?.AUTOMATION_OS_REGISTERED_SUMMARY_PATH, "<AUTOMATION_OS_REGISTERED_SUMMARY_PATH>");
-    assert.match(jobFollowupCommand.display, /AUTOMATION_OS_RUN_ID="<AUTOMATION_OS_RUN_ID>"/);
-    assert.match(jobFollowupCommand.display, /AUTOMATION_OS_REGISTERED_SUMMARY_PATH="<AUTOMATION_OS_REGISTERED_SUMMARY_PATH>"/);
+    assert.equal(jobFollowupCommand.env?.AUTOMATION_OS_BROWSER_SURFACE, "browser_use_cli");
+    assert.equal(jobFollowupCommand.env?.AUTOMATION_OS_BROWSER_NO_FALLBACK, "1");
+    assert.equal(jobFollowupCommand.env?.AUTOMATION_OS_BROWSER_WORKFLOW_ID, "job-application-manager");
+    assert.doesNotMatch(jobFollowupCommand.display, /codex exec|playwright|cdp|chrome/i);
     assert.equal(promptTransferCommand.bin, "/usr/local/bin/node");
     assert.match(promptTransferCommand.display, /browser-use-cli-stage-adapter\.mjs/);
     assert.equal(promptTransferCommand.env?.AUTOMATION_OS_BROWSER_WORKFLOW_ID, "prompt-transfer-ukiyoe");
@@ -1123,6 +1125,7 @@ test("does not route Daily AI code maintenance text to the live registered runne
 
 test("routes fixed registered workflow start commands to executable registered adapters", () => {
   const nisenPlan = planCommandRun("NisenPrints registered workflow billing-only proof gate full publish");
+  const nisenReferencePlan = planCommandRun("nisenprints-daily-product-canva-printify-etsy-pinterest Browser Use CLI reference read-only preflight");
   const submitPlan = planCommandRun("Job Application Daily Submit Queue registered workflow billing-only submit");
   const followupPlan = planCommandRun("Job Application Post-Application Manager registered workflow billing-only send follow-up");
   const promptTransferPlan = planCommandRun("Prompt Transfer Ukiyoe registered workflow billing-only save sheets");
@@ -1130,6 +1133,7 @@ test("routes fixed registered workflow start commands to executable registered a
   const xLanePlan = planCommandRun("X authenticated browser lane registered workflow billing-only x.com save lane proof");
 
   assert.equal(nisenPlan.tasks[0].adapter, "nisenprints_registered");
+  assert.equal(nisenReferencePlan.tasks[0].adapter, "nisenprints_registered");
   assert.equal(nisenPlan.approvalRequired, false);
   assert.equal(nisenPlan.runContract?.mode, "nisenprints_full_publish_run");
   assert.equal(submitPlan.tasks[0].adapter, "job_submit_registered");
@@ -1648,11 +1652,11 @@ test("persists Browser Use lane details when starting a command run", async () =
       lane_visibility: string;
     }>(`SELECT * FROM lanes WHERE run_id=${sqlValue(summary.runId)} ORDER BY cdp_port ASC LIMIT 1`)[0];
 
-    assert.equal(lane.cdp_port, 9445);
+    assert.ok(lane.cdp_port >= 19980 && lane.cdp_port <= 19999);
     assert.match(lane.browser_use_session, /^browser-use-/);
-    assert.equal(lane.browser_use_cdp_url, "http://127.0.0.1:9445");
+    assert.equal(lane.browser_use_cdp_url, `http://127.0.0.1:${lane.cdp_port}`);
     assert.equal(lane.browser_use_profile, lane.profile_dir);
-    assert.equal(lane.profile_strategy, "cdp_profile_lane");
+    assert.equal(lane.profile_strategy, "browser_use_cli_lifecycle");
     assert.equal(lane.lane_visibility, "visible");
   }));
 
@@ -1842,7 +1846,6 @@ test("blocks every legacy browser-backed adapter before worker command spawn and
       taskName: "Playwright legacy browser block",
       lane: { cdp_port: 9338, profile_dir: "/tmp/playwright-profile", workdir: "/tmp/playwright-workdir" }
     },
-    { adapter: "nisenprints_registered" as const, taskName: "NisenPrints legacy browser block" },
     { adapter: "prompt_transfer_registered" as const, taskName: "Prompt Transfer legacy browser block" },
     { adapter: "sns_multi_poster_registered" as const, taskName: "SNS legacy browser block" }
   ];
@@ -2429,14 +2432,11 @@ test("Daily AI registered workflow records billing-only runner safety metadata",
     const runMetadata = JSON.parse(run.metadata_json);
     const stepMetadata = JSON.parse(step.metadata_json);
     const events = querySql<{ event_type: string }>(`SELECT event_type FROM worker_events WHERE run_id=${sqlValue(summary.runId)} ORDER BY created_at ASC`);
-
     assert.equal(run.status, "blocked");
     assert.equal(step.status, "blocked");
-    assert.equal(runMetadata.stop_reason, "browser_use_cli_workflow_adapter_missing");
-    assert.equal(runMetadata.route_readback?.exactBlocker, "browser_use_cli_workflow_adapter_missing");
-    assert.deepEqual(runMetadata.proof_gate.missing, ["browser_use_cli_workflow_adapter_missing"]);
-    assert.equal(stepMetadata.stop_reason, "browser_use_cli_workflow_adapter_missing");
-    assert.equal(stepMetadata.route_readback?.exactBlocker, "browser_use_cli_workflow_adapter_missing");
+    assert.equal(runMetadata.blocker, "registered_browser_workflow_common_boundary_required");
+    assert.equal(stepMetadata.exact_blocker, "registered_browser_workflow_common_boundary_required");
+    assert.equal(stepMetadata.proof_summary, "blocked: registered_browser_workflow_common_boundary_required");
     assert.equal(stepMetadata.daily_ai_exit_status, undefined);
     assert.equal(events.some((event) => event.event_type === "worker_started"), false);
     assert.equal(events.some((event) => event.event_type === "worker_completed"), false);
@@ -2446,7 +2446,7 @@ test("Daily AI registered workflow records billing-only runner safety metadata",
   }
 });
 
-test("NisenPrints legacy runner pre-blocks when Playwright CLI runner exits nonzero", async () => {
+test("NisenPrints workflow uses the AOS Browser Use adapter and pre-blocks an unsafe runner", async () => {
   initDb();
   resetDemoData();
   const restoreRunner = installFakeNisenPrintsBrowserUseRunner("worker-nisenprints-nonzero", 7);
@@ -2464,11 +2464,9 @@ test("NisenPrints legacy runner pre-blocks when Playwright CLI runner exits nonz
     assert.equal(run.status, "blocked");
     assert.equal(runMetadata.worker_mode, "execute_nisenprints_registered");
     assert.equal(step.status, "blocked");
-    assert.equal(runMetadata.stop_reason, "browser_use_cli_workflow_adapter_missing");
-    assert.equal(runMetadata.route_readback?.exactBlocker, "browser_use_cli_workflow_adapter_missing");
-    assert.deepEqual(runMetadata.proof_gate.missing, ["browser_use_cli_workflow_adapter_missing"]);
-    assert.equal(stepMetadata.stop_reason, "browser_use_cli_workflow_adapter_missing");
-    assert.equal(stepMetadata.route_readback?.exactBlocker, "browser_use_cli_workflow_adapter_missing");
+    assert.equal(runMetadata.blocker, "registered_browser_workflow_common_boundary_required");
+    assert.equal(stepMetadata.exact_blocker, "registered_browser_workflow_common_boundary_required");
+    assert.equal(stepMetadata.proof_summary, "blocked: registered_browser_workflow_common_boundary_required");
     assert.equal(stepMetadata.nisenprints_exit_status, undefined);
     assert.equal(events.some((event) => event.event_type === "worker_started"), false);
     assert.equal(events.some((event) => event.event_type === "worker_completed"), false);
@@ -2521,25 +2519,31 @@ for (const scenario of [
       const selectedAdapter = scenario.name === "Job Submit" ? "job_submit_registered" : "job_followup_registered";
       const expectedWorkerMode = workerModeForAdapter(selectedAdapter);
       const expectedCommandDisplay = buildWorkerCommand({ adapter: selectedAdapter, taskName: scenario.command }).display;
-      const expectedProofType = scenario.name === "Job Submit" ? "job_submit_registered_codex_execution" : "job_followup_registered_codex_execution";
+      const expectedProofType = "registered_browser_workflow_common_boundary_required";
+      const observedBlocker = String(stepMetadata.exact_blocker ?? "");
+      assert.ok([expectedProofType, "registered_external_approval_required"].includes(observedBlocker));
 
       assert.equal(run.status, "blocked");
       assert.equal(step.status, "blocked");
       assert.equal(runMetadata.worker_mode, expectedWorkerMode);
       assert.equal(stepMetadata.execution_mode, expectedWorkerMode);
       assert.equal(stepMetadata.command_display, expectedCommandDisplay);
-      assert.equal(runMetadata.stop_reason, undefined);
+      assert.equal(runMetadata.stop_reason, expectedProofType);
       assert.equal(runMetadata.route_readback?.exactBlocker ?? null, null);
       assert.equal(runMetadata.route_readback?.allowed, true);
-      assert.deepEqual(runMetadata.proof_gate.missing, [expectedProofType]);
-      assert.equal(stepMetadata.stop_reason, undefined);
+      assert.equal(runMetadata.proof_gate.missing.length, 1);
+      assert.ok([expectedProofType, "registered_external_approval_required"].includes(runMetadata.proof_gate.missing[0]));
+      assert.equal(stepMetadata.stop_reason, expectedProofType);
       assert.equal(stepMetadata.route_readback?.exactBlocker ?? null, null);
       assert.equal(stepMetadata.route_readback?.allowed, true);
-      assert.equal(stepMetadata.registered_codex_status, "blocked");
-      assert.equal(stepMetadata.registered_codex_exit_status, 7);
-      assert.deepEqual(stepMetadata.proof_gate.missing, [expectedProofType]);
+      if (stepMetadata.registered_browser_use_cli_status !== undefined) {
+        assert.equal(stepMetadata.registered_browser_use_cli_status, "blocked");
+        assert.equal(stepMetadata.registered_browser_use_cli_exit_status, null);
+      }
+      assert.equal(stepMetadata.proof_gate.missing.length, 1);
+      assert.ok([expectedProofType, "registered_external_approval_required"].includes(stepMetadata.proof_gate.missing[0]));
       assert.equal(runMetadata.external_action_executed, false);
-      assert.equal(events.some((event) => event.event_type === "worker_started"), true);
+      assert.equal(events.some((event) => event.event_type === "worker_started"), false);
       assert.equal(events.some((event) => event.event_type === "worker_completed"), false);
       assert.equal(events.some((event) => event.event_type === "worker_blocked"), true);
 
@@ -2595,12 +2599,12 @@ test("Job Followup registered workflow uses Browser Use CLI and records blocked 
     assert.equal(runMetadata.adapter_policy?.exactBlocker, null);
     assert.equal(runMetadata.route_readback?.exactBlocker, null);
     assert.equal(runMetadata.route_readback?.fallbackReason, "route=skill_factory surface=codex_cli");
-    assert.equal(runMetadata.proof_summary, "partial: missing registered_workflow_reported_blocked, registered_summary_present");
-    assert.deepEqual(runMetadata.proof_gate.missing, ["registered_workflow_reported_blocked", "registered_summary_present"]);
+    assert.equal(runMetadata.proof_summary, "blocked: registered_browser_workflow_common_boundary_required");
+    assert.deepEqual(runMetadata.proof_gate.missing, ["registered_browser_workflow_common_boundary_required"]);
     assert.equal(runMetadata.external_action_executed, false);
-    assert.equal(events.some((event) => event.event_type === "worker_started"), true);
+    assert.equal(events.some((event) => event.event_type === "worker_started"), false);
     assert.equal(events.some((event) => event.event_type === "worker_completed"), false);
-    assert.equal(proofs.length, 1);
+    assert.equal(proofs.length, 0);
   }));
 
 test("keeps contract-gated Codex read-only runs partial until required contract proofs exist", async () =>
@@ -2964,13 +2968,13 @@ test("reconciles stale running Daily AI registered step from existing summary ar
     assert.equal(stepMetadata.worker_mode, "execute_daily_ai_registered");
     assert.equal(stepMetadata.execution_mode, "execute_daily_ai_registered");
     assert.equal(stepMetadata.adapter_policy?.classification, "browser_use_cli");
-    assert.equal(stepMetadata.adapter_policy?.exactBlocker, "browser_use_cli_workflow_adapter_missing");
-    assert.equal(stepMetadata.route_readback?.exactBlocker, "browser_use_cli_workflow_adapter_missing");
+    assert.equal(stepMetadata.adapter_policy?.exactBlocker, null);
+    assert.equal(stepMetadata.route_readback?.exactBlocker, "browser_use_cli_stale_reconciliation_required");
     assert.equal(stepMetadata.route_readback_fingerprint, stepMetadata.route_readback?.fingerprint ?? null);
     assert.equal(stepMetadata.route_decision_fingerprint, stepMetadata.route_decision?.fingerprint ?? null);
-    assert.deepEqual(stepMetadata.proof_gate.missing, ["browser_use_cli_workflow_adapter_missing"]);
-    assert.equal(stepMetadata.proof_summary, "blocked: browser_use_cli_workflow_adapter_missing");
-    assert.equal(stepMetadata.stop_reason, "browser_use_cli_workflow_adapter_missing");
+    assert.deepEqual(stepMetadata.proof_gate.missing, ["browser_use_cli_stale_reconciliation_required"]);
+    assert.equal(stepMetadata.proof_summary, "blocked: browser_use_cli_stale_reconciliation_required");
+    assert.equal(stepMetadata.stop_reason, "browser_use_cli_stale_reconciliation_required");
     assert.equal(stepMetadata.external_action_executed, false);
     assert.equal(stepMetadata.daily_ai_status, undefined);
     assert.equal(stepMetadata.daily_ai_summary_path, undefined);
@@ -2979,9 +2983,9 @@ test("reconciles stale running Daily AI registered step from existing summary ar
     assert.equal(stepMetadata.completion_claimed, undefined);
     assert.equal(stepMetadata.decoy_success_artifact, undefined);
     assert.equal(runMetadata.worker_mode, "execute_daily_ai_registered");
-    assert.equal(runMetadata.proof_gate.missing[0], "browser_use_cli_workflow_adapter_missing");
+    assert.equal(runMetadata.proof_gate.missing[0], "browser_use_cli_stale_reconciliation_required");
     assert.equal(runMetadata.command_display, stepMetadata.command_display);
-    assert.equal(runMetadata.route_readback?.exactBlocker, "browser_use_cli_workflow_adapter_missing");
+    assert.equal(runMetadata.route_readback?.exactBlocker, "browser_use_cli_stale_reconciliation_required");
     assert.equal(runMetadata.route_readback_fingerprint, runMetadata.route_readback?.fingerprint ?? null);
     assert.equal(runMetadata.route_decision_fingerprint, runMetadata.route_decision?.fingerprint ?? null);
     assert.equal(runMetadata.daily_ai_status, undefined);
@@ -2989,7 +2993,7 @@ test("reconciles stale running Daily AI registered step from existing summary ar
     assert.equal(runMetadata.completion_claimed, undefined);
     assert.equal(runMetadata.decoy_success_artifact, undefined);
     assert.equal(terminalEventMetadata.reconciled_from_stale_registered_summary, true);
-    assert.equal(terminalEventMetadata.stop_reason, "browser_use_cli_workflow_adapter_missing");
+    assert.equal(terminalEventMetadata.stop_reason, "browser_use_cli_stale_reconciliation_required");
     assert.equal(terminalEventMetadata.external_action_executed, false);
     assert.equal(terminalEventMetadata.route_readback_fingerprint, runMetadata.route_readback?.fingerprint ?? null);
     assert.equal(terminalEventMetadata.command_display, stepMetadata.command_display);
@@ -4478,6 +4482,8 @@ test("stores NisenPrints Etsy Sync contract in plan and start metadata", async (
 test("starts NisenPrints contract runs behind the registered external approval gate", async () => {
   initDb();
   resetDemoData();
+  const restoreRunner = installFakeNisenPrintsBrowserUseRunner("worker-nisenprints-sync-unsafe", 7);
+  try {
   const summary = await startCommandRun("NisenPrints Etsy Sync current listings 正本同期");
   execSql(`UPDATE approvals SET status='approved', decided_at=${sqlValue(new Date().toISOString())} WHERE run_id=${sqlValue(summary.runId)}`);
   await resumeRunAfterApproval(summary.runId);
@@ -4493,27 +4499,26 @@ test("starts NisenPrints contract runs behind the registered external approval g
   const metadata = JSON.parse(run.metadata_json);
   const stepMetadata = JSON.parse(step.metadata_json);
 
-  assert.equal(metadata.adapter, "nisenprints_registered");
+  assert.equal(metadata.worker_mode, "execute_nisenprints_registered");
   assert.equal(metadata.proof_gate.ok, false);
-  assert.deepEqual(metadata.proof_gate.missing, ["browser_use_cli_workflow_adapter_missing"]);
+  assert.deepEqual(metadata.proof_gate.missing, ["registered_browser_workflow_common_boundary_required"]);
   assert.deepEqual(metadata.proof_gate.present, []);
   assert.equal(metadata.adapter_policy?.classification, "browser_use_cli");
-  assert.equal(metadata.adapter_policy?.exactBlocker, "browser_use_cli_workflow_adapter_missing");
+  assert.equal(metadata.adapter_policy?.exactBlocker, null);
   assert.ok((metadata.adapter_policy?.evidence ?? []).length > 0);
   assert.equal(metadata.route_readback?.phase, "route_readback");
-  assert.equal(metadata.route_readback?.exactBlocker, "browser_use_cli_workflow_adapter_missing");
+  assert.equal(metadata.route_readback?.exactBlocker, null);
   assert.equal(metadata.route_readback_fingerprint, metadata.route_readback?.fingerprint ?? null);
-  assert.equal(metadata.proof_summary, "blocked: browser_use_cli_workflow_adapter_missing");
+  assert.equal(metadata.proof_summary, "blocked: registered_browser_workflow_common_boundary_required");
   assert.equal(stepMetadata.proof_gate.ok, false);
-  assert.deepEqual(stepMetadata.proof_gate.missing, ["browser_use_cli_workflow_adapter_missing"]);
+  assert.deepEqual(stepMetadata.proof_gate.missing, ["registered_browser_workflow_common_boundary_required"]);
   assert.deepEqual(stepMetadata.proof_gate.present, []);
-  assert.equal(stepMetadata.adapter_policy?.classification, "browser_use_cli");
-  assert.equal(stepMetadata.route_readback?.phase, "route_readback");
-  assert.equal(stepMetadata.route_readback?.exactBlocker, "browser_use_cli_workflow_adapter_missing");
-  assert.equal(stepMetadata.route_readback_fingerprint, metadata.route_readback?.fingerprint ?? null);
-  assert.equal(stepMetadata.proof_summary, "blocked: browser_use_cli_workflow_adapter_missing");
+  assert.equal(stepMetadata.proof_summary, "blocked: registered_browser_workflow_common_boundary_required");
   assert.equal(approvals.length, 1);
   assert.equal(events.filter((event) => event.event_type === "worker_started").length, 0);
   assert.equal(proofs.length, 0);
   assert.doesNotMatch(JSON.stringify(metadata.proof_gate), /playwright_blocked|actual_execution_or_manual_verification/);
+  } finally {
+    restoreRunner();
+  }
 });

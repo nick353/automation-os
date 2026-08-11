@@ -487,6 +487,65 @@ test("initDb backfills empty Browser Use lane defaults when columns already exis
   ]);
 });
 
+test("initDb repairs the legacy durable job attempt service-user foreign key without losing rows", () => {
+  db.execSql(`
+    INSERT OR IGNORE INTO users (id, auth_subject, display_name, kind, status, created_at, updated_at)
+    VALUES ('user_legacy_attempt', 'legacy-attempt', 'Legacy Attempt', 'service', 'active', '2026-06-11T02:00:00.000Z', '2026-06-11T02:00:00.000Z');
+    INSERT OR IGNORE INTO durable_jobs (
+      id, company_id, concurrency_key, kind, payload_hash, idempotency_key,
+      available_at, created_at, updated_at
+    ) VALUES (
+      'job_legacy_attempt', 'company_legacy', 'legacy-attempt', 'test', 'legacy-payload-hash',
+      'legacy-attempt-idempotency', '2026-06-11T02:00:00.000Z', '2026-06-11T02:00:00.000Z', '2026-06-11T02:00:00.000Z'
+    );
+    PRAGMA foreign_keys = OFF;
+    DROP TABLE durable_job_attempts;
+    CREATE TABLE durable_job_attempts (
+      id TEXT PRIMARY KEY,
+      company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+      job_id TEXT NOT NULL REFERENCES durable_jobs(id) ON DELETE CASCADE,
+      attempt_no INTEGER NOT NULL,
+      service_user_id TEXT NOT NULL REFERENCES company_users(id) ON DELETE RESTRICT,
+      fencing_token INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'running',
+      provider_called INTEGER NOT NULL DEFAULT 0,
+      provider_called_at TEXT,
+      reservation_id TEXT,
+      reconciliation_started_at TEXT,
+      reconciliation_owner TEXT,
+      started_at TEXT NOT NULL,
+      heartbeat_at TEXT NOT NULL,
+      finished_at TEXT,
+      error_code TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(job_id, attempt_no)
+    );
+    INSERT INTO durable_job_attempts (
+      id, company_id, job_id, attempt_no, service_user_id, fencing_token, status,
+      started_at, heartbeat_at, created_at, updated_at
+    ) VALUES (
+      'attempt_legacy_fk', 'company_legacy', 'job_legacy_attempt', 1, 'user_legacy_attempt', 0, 'running',
+      '2026-06-11T02:00:00.000Z', '2026-06-11T02:00:00.000Z', '2026-06-11T02:00:00.000Z', '2026-06-11T02:00:00.000Z'
+    );
+    PRAGMA foreign_keys = ON;
+  `);
+
+  db.initDb();
+
+  const tableSql = db.querySql<{ sql: string }>(
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name='durable_job_attempts'"
+  )[0]?.sql ?? "";
+  assert.match(tableSql, /REFERENCES users\(id\)/);
+  assert.doesNotMatch(tableSql, /REFERENCES company_users\(id\)/);
+  assert.deepEqual(
+    db.querySql<{ id: string; service_user_id: string }>(
+      "SELECT id, service_user_id FROM durable_job_attempts WHERE id='attempt_legacy_fk'"
+    ),
+    [{ id: "attempt_legacy_fk", service_user_id: "user_legacy_attempt" }]
+  );
+});
+
 test("initDb adds Research Planner JSON columns to an existing research_plans table", () => {
   db.execSql(`
     DROP TABLE research_plans;

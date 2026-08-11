@@ -25,6 +25,7 @@ export function materializeDueAutomationOccurrences(input: {
   serviceUserId: string;
   now?: string;
   limit?: number;
+  excludeScheduleIds?: readonly string[];
 }): { initializedScheduleIds: string[]; occurrences: DurableScheduleOccurrence[] } {
   const companyId = required(input.companyId, "company_id_required");
   const serviceUserId = required(input.serviceUserId, "service_user_id_required");
@@ -34,6 +35,7 @@ export function materializeDueAutomationOccurrences(input: {
   const limit = boundedLimit(input.limit ?? 100);
   const initializedScheduleIds: string[] = [];
   const occurrences: DurableScheduleOccurrence[] = [];
+  const excludedScheduleIds = new Set(input.excludeScheduleIds ?? []);
 
   const schedules = querySql<ScheduleRow>(`
     SELECT schedule.id, schedule.company_id, schedule.kind, schedule.expression, schedule.timezone, schedule.revision,
@@ -48,6 +50,7 @@ export function materializeDueAutomationOccurrences(input: {
   `);
 
   for (const schedule of schedules) {
+    if (excludedScheduleIds.has(schedule.id)) continue;
     if (!schedule.next_run_at) {
       const nextRunAt = computeNextAutomationOccurrence(schedule, now);
       try {

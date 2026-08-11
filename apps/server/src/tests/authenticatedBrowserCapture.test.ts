@@ -27,7 +27,7 @@ test("X learning lane command delegates to Browser Use CLI with no Chrome fallba
   const serialized = [command.bin, ...command.args].join(" ");
 
   assert.equal(command.laneName, "x_learning_authenticated_browser_use_cli");
-  assert.equal(command.port, 9336);
+  assert.equal(command.port, 19885);
   assert.equal(command.profileDir, xLearningLane.profileDir);
   assert.match(serialized, /codex-browser-use/iu);
   assert.deepEqual(command.args.slice(-2), ["open", "https://x.com/home"]);
@@ -38,14 +38,14 @@ test("X learning health reports Browser Use CLI admission instead of probing Chr
   const seen: string[] = [];
   const result = await getXLearningChromeHealth(async (url) => {
     seen.push(String(url));
-    return new Response(JSON.stringify({ Browser: "Chrome/Test", webSocketDebuggerUrl: "ws://127.0.0.1:9336/devtools/browser/test" }), {
+    return new Response(JSON.stringify({ Browser: "Chrome/Test", webSocketDebuggerUrl: "ws://127.0.0.1:19885/devtools/browser/test" }), {
       status: 200,
       headers: { "content-type": "application/json" }
     });
   });
 
   assert.equal(result.ok, false);
-  assert.equal(result.port, 9336);
+  assert.equal(result.port, 19885);
   assert.equal(result.profileDir, xLearningLane.profileDir);
   assert.equal(result.exactBlocker, "browser_use_authority_required");
   assert.deepEqual(seen, []);

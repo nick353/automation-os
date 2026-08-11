@@ -21,15 +21,15 @@ test("finds only Automation OS managed stale browser and daemon processes", () =
 812 1 812 22:10:00 /usr/local/bin/node /tmp/node_modules/playwright-core/lib/entry/cliDaemon.js aos-ges6q4
 900 1 900 00:02:00 /usr/local/bin/node /tmp/node_modules/playwright-core/lib/entry/cliDaemon.js aos-new
 1001 1 1001 07:00:00 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=/tmp/playwright_chromiumdev_profile-A --remote-debugging-port=51234
-1002 1 1002 07:00:00 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-port=9333 --user-data-dir=/Users/nichikatanaka/.daily-ai-playwright-chrome
-1003 1 1003 07:00:00 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-port=9339 --user-data-dir=/Users/nichikatanaka/.sns-multi-poster-ukiyoe-playwright-chrome
+1002 1 1002 07:00:00 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-port=19882 --user-data-dir=/Users/nichikatanaka/.browser-use-cli/profiles/scheduled/daily-ai
+1003 1 1003 07:00:00 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-port=20081 --user-data-dir=/Users/nichikatanaka/.browser-use-cli/profiles/temporary/sns-multi-poster-ukiyoe
 1004 1 1004 07:00:00 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --profile-directory=Default https://example.com
-1005 1 1005 00:05:00 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-port=9335 --user-data-dir=/Users/nichikatanaka/.nisenprints-playwright-chrome
+1005 1 1005 00:05:00 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-port=19884 --user-data-dir=/Users/nichikatanaka/.browser-use-cli/profiles/scheduled/nisenprints
   `);
 
   const matches = findAutomationManagedProcesses(rows, { maxAgeSeconds: 6 * 60 * 60 });
   assert.deepEqual(matches.map((row) => row.pid), [812, 1001, 1002]);
-  assert.equal(matches.find((row) => row.pid === 1002)?.laneId, "daily-ai-playwright-cli");
+  assert.equal(matches.find((row) => row.pid === 1002)?.laneId, "daily-ai-browser-use-cli-scheduled");
   assert.equal(matches.some((row) => row.pid === 1003), false);
   assert.equal(matches.some((row) => row.pid === 1004), false);
   assert.equal(matches.some((row) => row.pid === 1005), false);
@@ -37,7 +37,7 @@ test("finds only Automation OS managed stale browser and daemon processes", () =
 
 test("visible registered lanes require explicit include flag", () => {
   const rows = parsePsRows(
-    "1003 1 1003 07:00:00 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-port=9339 --user-data-dir=/Users/nichikatanaka/.sns-multi-poster-ukiyoe-playwright-chrome"
+    "1003 1 1003 07:00:00 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-port=20081 --user-data-dir=/Users/nichikatanaka/.browser-use-cli/profiles/temporary/sns-multi-poster-ukiyoe"
   );
 
   assert.equal(findAutomationManagedProcesses(rows, { maxAgeSeconds: 0 }).length, 0);

@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { redactSensitiveText } from "../obsidian/redaction.js";
 import { CodexAppServerClient, type CodexAppServerEvent } from "../codex/appServerClient.js";
 import { resolveCodexBin } from "../codex/codexBin.js";
+import { buildWebOperationIntake, type WebOperationIntakeV1 } from "../runs/webOperationIntake.js";
 
 export type CreatePlannerMessage = {
   role: "assistant" | "user";
@@ -35,6 +36,7 @@ export type CreatePlannerResult = {
   confidence: "low" | "medium" | "high";
   proposedChanges?: CreatePlannerChange[];
   requiresConfirmation?: string[];
+  webOperationIntake?: WebOperationIntakeV1;
 };
 
 const fallbackQuestions = {
@@ -134,6 +136,7 @@ export function buildLocalPlanner(messages: CreatePlannerMessage[], exactBlocker
   const userMessages = messages.filter((message) => message.role === "user");
   const latestUserText = userMessages.at(-1)?.text ?? "";
   const conversationText = userMessages.map((message) => message.text).join("\n");
+  const webOperationIntake = buildWebOperationIntake(conversationText);
   const lower = conversationText.toLowerCase();
   const facts = detectFacts(conversationText);
   const hasConcreteCadence = hasConcreteCadenceRequest(conversationText);
@@ -412,7 +415,8 @@ export function buildLocalPlanner(messages: CreatePlannerMessage[], exactBlocker
     openQuestions,
     nextAction,
     executionDecision: decision,
-    confidence: openQuestions.length ? "medium" : "high"
+    confidence: openQuestions.length ? "medium" : "high",
+    webOperationIntake
   };
 }
 
@@ -756,7 +760,8 @@ function sanitizePlannerResult(result: CreatePlannerResult, messages?: CreatePla
     executionDecision,
     confidence,
     ...(sanitizePlannerChanges(result.proposedChanges).length ? { proposedChanges: sanitizePlannerChanges(result.proposedChanges) } : {}),
-    ...(stringArrayOr(result.requiresConfirmation, [], 8, 180).length ? { requiresConfirmation: stringArrayOr(result.requiresConfirmation, [], 8, 180) } : {})
+    ...(stringArrayOr(result.requiresConfirmation, [], 8, 180).length ? { requiresConfirmation: stringArrayOr(result.requiresConfirmation, [], 8, 180) } : {}),
+    webOperationIntake: buildWebOperationIntake((messages ?? []).map((message) => message.text).join("\n"))
   };
 }
 

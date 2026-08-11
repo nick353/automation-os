@@ -6,13 +6,13 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync,
 import { hostname } from "node:os";
 import { extname, isAbsolute, join, relative, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
-import { dbBackend, execSql, initDb, insert, makeId, nowIso, querySql, querySqlBatch, runSqlTransaction, sqlValue, upsert } from "./db/client.js";
+import { dbBackend, execSql, initDb, insert, makeId, nowIso, querySql, querySqlAsync, querySqlBatch, runSqlTransaction, runSqlTransactionAsync, sqlValue, upsert } from "./db/client.js";
 import { importCodexAssets } from "./ingest/codexAssets.js";
 import { seedDailyAiDemo } from "./seedDailyAiDemo.js";
 import { seedResearchKnowledge } from "./planner/advisor.js";
 import { sanitizeDashboardRows } from "./dashboardSanitizer.js";
 import { getBrowserHealth } from "./browser/health.js";
-import { buildBrowserUseRuntimeSnapshot } from "./browser/runtimeSnapshot.js";
+import { buildBrowserUseRuntimeSnapshot, publicBrowserUseLaneBinding } from "./browser/runtimeSnapshot.js";
 import { applyProjectPresentationProfileOverride, buildProjectPresentationProfile, parseProjectPresentationProfileOverride, type ProjectPresentationProfile } from "./projects/presentationProfile.js";
 import { readCanonicalIabOwnerDiagnostics } from "./browser/iabCanonicalLoader.js";
 import {
@@ -35,9 +35,11 @@ import {
   storeBridgeReceipt
 } from "./bridge/trustedBridge.js";
 import { getCodexCapabilities } from "./codex/capabilities.js";
+import { defaultAutomationProviderRegistry } from "./providers/automationProvider.js";
 import { buildCanonicalExecutionRoutingMetadata, buildExecutionRoutingSnapshot } from "./codex/executionRouting.js";
 import { getLatestCapabilityProbeSnapshot, probeCodexMcpSurface, probeCodexMcpSurfaceAsync } from "./codex/capabilityProbe.js";
-import { getLatestAppServerProbeSnapshot, probeCodexAppServerSurface } from "./codex/appServerProbe.js";
+import { getLatestAppServerProbeSnapshot, probeCodexAppServerSurface, runCodexAppServerThreadTurnCanary } from "./codex/appServerProbe.js";
+import { getCodexAppServerConnectionReadback, resolveCodexAppServerConnection } from "./codex/appServerConnection.js";
 import { buildCapabilityRouterSnapshot } from "./codex/capabilityRouter.js";
 import { serializeAutomationOsChatSnapshot } from "./codex/chatSnapshot.js";
 import {
@@ -71,6 +73,8 @@ import {
   rollbackPreparedResearchPlanRunAtomic
 } from "./planner/researchPlanLineage.js";
 import { getRunWorkerProgressState, resolveWorkerAdapterPolicy, startCommandRun, type RunWorkerProgressState } from "./runs/workerEngine.js";
+import { portableWorkerHeartbeatId, PORTABLE_WORKER_HEARTBEAT_KIND, validatePortableWorkerHeartbeat } from "./runs/portableWorkerHeartbeat.js";
+import { portableExternalRunnerConfigured } from "./runs/portableExternalRunnerConfig.js";
 import {
   cancelDurableJob,
   enqueueAutomationDryRun,
@@ -109,11 +113,14 @@ import { runSecondBrainProcessor } from "./obsidian/secondBrainProcessor.js";
 import { customObsidianExportError, customObsidianExportSummary, guardObsidianVaultPath } from "./obsidian/vaultGuard.js";
 import {
   fixedRegisteredWorkflows,
+  getRegisteredWorkflowForCompaniesAsync,
   getRegisteredWorkflowForCompanies,
   getRegisteredWorkflowStartCommand,
   getRegisteredWorkflowEffectiveSchedule,
+  initRegisteredWorkflowsAsync,
   initRegisteredWorkflows,
   isRegisteredWorkflowSchedulePaused,
+  listRegisteredWorkflowsForCompaniesAsync,
   listRegisteredWorkflowsForCompanies,
   refreshRegisteredWorkflows,
   registerResearchPlanWorkflow,
@@ -126,15 +133,18 @@ import { getResumeContract } from "./resumeContract.js";
 import {
   createCompanyForActor,
   currentActorUserId,
+  ensureCompanyServiceIdentity,
   listActorCompanies,
+  listActorCompaniesAsync,
   recordCompanyAudit,
+  requireCompanyAccessAsync,
   requireCompanyAccess,
   requireExistingCompanyAccess,
   requireExistingServiceIdentity,
   updateCompanyForActor,
   type CompanyRole
 } from "./companies/repository.js";
-import { findScopedApproval, findScopedProof, findScopedRun, scopedCompanyPredicate } from "./companies/scopedResources.js";
+import { findScopedApproval, findScopedProof, findScopedRun, findScopedRunAsync, scopedCompanyPredicate } from "./companies/scopedResources.js";
 import {
   AutomationContractError,
   parseAutomationCreate,
@@ -146,11 +156,14 @@ import {
 } from "./automations/contracts.js";
 import {
   AutomationRepositoryError,
+  activateAutomationRecord,
   archiveAutomationRecord,
   createAutomationRecord,
   getAutomationRecord,
   listAutomationRecords,
+  listAutomationRecordsAsync,
   listAutomationSchedules,
+  listAutomationSchedulesAsync,
   listAutomationVersions,
   listCompanyConnectionRefs,
   listCompanyMemory,
@@ -161,21 +174,36 @@ import {
   saveCompanyMemory,
   setAutomationSchedulePaused,
   updateAutomationRecord,
-  type AutomationRecord
+  type AutomationRecord,
+  type AutomationScheduleRecord
 } from "./automations/repository.js";
+import {
+  adoptRegisteredAutomationCatalog,
+  listRegisteredAutomationCatalog
+} from "./automations/registeredCatalog.js";
+import { buildRegisteredWorkflowInventoryReadback } from "./workflowInventory.js";
 import { IdempotencyError } from "./automations/idempotency.js";
 import { buildCompanyAnalytics, CompanyAnalyticsError } from "./analytics/companyAnalytics.js";
 import { computeNextAutomationOccurrence } from "./runs/automationScheduler.js";
+import { durableSchedulerOwner, runDurableAutomationSchedulerOnce } from "./runs/durableAutomationScheduler.js";
 import {
   PORTABLE_WORKER_CANARY_MODE,
   PORTABLE_WORKER_EXTERNAL_MODE,
   portableWorkflowIdForWorkerAdapter
 } from "./runs/portableWorkflowWorker.js";
 import { startPortableWorkflowRun } from "./runs/portableWorkflowEntrypoint.js";
+import { portableLocalReadOnlyStageForScheduledWorkflow, type PortableLocalWorkflowId } from "./runs/portableLocalWorkflow.js";
+import { startPortableLocalWorkflowRun } from "./runs/portableLocalWorkflowEntrypoint.js";
 import { portableWorkflowManifests } from "./runs/portableWorkflowContract.js";
+import { portableReadOnlyStageForScheduledWorkflow, portableScheduleDispatchForRegisteredAutomation, portableWorkflowIdForRegisteredAutomation, portableLocalWorkflowIdForRegisteredAutomation } from "./runs/portableScheduleDispatch.js";
 import { runMvpStateInChild } from "./runs/mvpStateProcess.js";
 import { runResearchPlanSchedulerInChild } from "./runs/researchPlanSchedulerProcess.js";
-import { readPostgresMvpState, warmPostgresMvpStatePool } from "./runs/postgresMvpState.js";
+import { readPostgresMvpState, warmPostgresMvpState, warmPostgresMvpStatePool } from "./runs/postgresMvpState.js";
+import {
+  claimPortableMacWorker,
+  recordPortableMacWorkerReceipt,
+  requeuePortableMacWorkerAfterApproval
+} from "./runs/portableRemoteWorker.js";
 
 export const app = express();
 app.set("case sensitive routing", true);
@@ -213,6 +241,39 @@ app.get("/api/health", (_req, res) => {
   });
 });
 
+// Keep the platform health probe separate from the SPA fallback.  Zeabur and
+// other operators need a stable public JSON readiness surface; returning
+// index.html for /readyz makes a healthy deployment look ambiguous to both
+// humans and monitors.
+app.get("/readyz", (_req, res) => {
+  res.json({
+    ok: true,
+    service: "automation-os",
+    status: "ready",
+    time: nowIso()
+  });
+});
+
+app.get("/api/auth/capability", (req, res) => {
+  const guard = getProductionApiAccessGuardStatus();
+  const providedToken = readRequestWriteToken(req);
+  const writeToken = readProductionWriteToken();
+  const readToken = readProductionReadToken();
+  const scope = !guard.required
+    ? "unrestricted"
+    : secureTokenEqual(providedToken, writeToken)
+      ? "write"
+      : Boolean(readToken) && secureTokenEqual(providedToken, readToken)
+        ? "read"
+        : "unknown";
+  res.json({
+    ok: true,
+    scope,
+    read_only: scope === "read",
+    allowed_methods: scope === "read" ? ["GET", "HEAD"] : ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]
+  });
+});
+
 app.get("/api/companies", (_req, res) => {
   initDb();
   const actor_user_id = currentActorUserId();
@@ -230,6 +291,24 @@ app.post("/api/companies", (req, res) => {
   }
 });
 
+app.post("/api/v1/companies/:companyId/service-identities", (req, res) => {
+  try {
+    initDb();
+    const idempotencyKey = requireIdempotencyKey(req.header("idempotency-key"));
+    const serviceIdentity = ensureCompanyServiceIdentity({ companyId: String(req.params.companyId ?? "").trim(), actorUserId: currentActorUserId() });
+    res.status(201).json({
+      ok: true,
+      schema: "aos.service_identity.v1",
+      service_identity: serviceIdentity,
+      idempotency_key_fingerprint: createHash("sha256").update(idempotencyKey, "utf8").digest("hex").slice(0, 16),
+      secret_material_included: false,
+      external_action_executed: false
+    });
+  } catch (error) {
+    sendCompanyScopeError(res, error, "service_identity_create_failed");
+  }
+});
+
 app.patch("/api/companies/:companyId", (req, res) => {
   try {
     initDb();
@@ -240,16 +319,66 @@ app.patch("/api/companies/:companyId", (req, res) => {
   }
 });
 
-app.get("/api/v1/companies/:companyId/automations", (req, res) => {
+app.get("/api/v1/companies/:companyId/automations", async (req, res) => {
   try {
-    initDb();
+    if (dbBackend !== "postgres") initDb();
     const companyId = String(req.params.companyId ?? "").trim();
-    requireCompanyAccess(companyId);
+    if (dbBackend === "postgres") {
+      await requireCompanyAccessAsync(companyId);
+    } else {
+      requireCompanyAccess(companyId);
+    }
     const includeArchived = String(req.query.include_archived ?? "") === "true";
-    const automations = listAutomationRecords(companyId, includeArchived).map(automationApiView);
+    const [records, schedules] = dbBackend === "postgres"
+      ? await Promise.all([
+        listAutomationRecordsAsync(companyId, includeArchived),
+        listAutomationSchedulesAsync(companyId)
+      ])
+      : [listAutomationRecords(companyId, includeArchived), listAutomationSchedules(companyId)];
+    const scheduleMap = new Map(schedules.map((schedule) => [schedule.automationId, schedule]));
+    const automations = records
+      .map((automation) => automationApiView(automation, scheduleMap.get(automation.id) ?? null));
     res.json({ ok: true, automations, count: automations.length, company_scope: { enforced: true, company_id: companyId } });
   } catch (error) {
     sendAutomationApiError(res, error, "automation_list_failed");
+  }
+});
+
+app.get("/api/v1/registered-automation-catalog", (_req, res) => {
+  res.json({
+    ok: true,
+    schema: "aos.registered_automation_catalog.v1",
+    catalog: listRegisteredAutomationCatalog(),
+    external_action_executed: false
+  });
+});
+
+app.post("/api/v1/companies/:companyId/registered-automations/adopt", (req, res) => {
+  try {
+    initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    requireCompanyAccess(companyId, ["owner", "admin", "operator"]);
+    const idempotencyKey = requireIdempotencyKey(req.header("idempotency-key"));
+    const requested = req.body?.source_automation_ids;
+    if (requested !== undefined && (!Array.isArray(requested) || requested.some((item: unknown) => typeof item !== "string"))) {
+      throw new AutomationContractError("registered_automation_source_ids_invalid");
+    }
+    const adoption = adoptRegisteredAutomationCatalog({
+      companyId,
+      actorUserId: currentActorUserId(),
+      sourceAutomationIds: requested as string[] | undefined,
+      enableSchedules: req.body?.enable_schedules === undefined ? true : Boolean(req.body.enable_schedules)
+    });
+    res.status(201).json({
+      ok: true,
+      schema: "aos.registered_automation_adoption.v1",
+      idempotency_key_fingerprint: createHash("sha256").update(idempotencyKey, "utf8").digest("hex").slice(0, 16),
+      ...adoption,
+      company_scope: { enforced: true, company_id: companyId },
+      external_action_executed: false
+    });
+  } catch (error) {
+    sendAutomationApiError(res, error, "registered_automation_adoption_failed");
   }
 });
 
@@ -318,10 +447,11 @@ app.get("/api/v1/companies/:companyId/automations/:automationId", (req, res) => 
     requireCompanyAccess(companyId);
     const automation = getAutomationRecord(companyId, String(req.params.automationId ?? "").trim(), true);
     if (!automation) throw new AutomationRepositoryError("automation_not_found");
+    const schedule = listAutomationSchedules(companyId, automation.id)[0] ?? null;
     res.json({
       ok: true,
-      automation: automationApiView(automation),
-      schedule: listAutomationSchedules(companyId, automation.id)[0] ?? null,
+      automation: automationApiView(automation, schedule),
+      schedule,
       deep_link: `#/projects/${encodeURIComponent(companyId)}/automations/${encodeURIComponent(automation.id)}/edit`,
       company_scope: { enforced: true, company_id: companyId }
     });
@@ -456,24 +586,223 @@ app.post("/api/v1/companies/:companyId/automations/:automationId/dry-runs", (req
       idempotencyKey,
       payload: req.body ?? {}
     });
+    const runReadback = durableJobRunReadback(job);
     res.status(202).json({
       ok: true,
       dry_run: true,
-      queued: true,
+      queued: runReadback.queued,
       job: durableJobApiView(job),
       run: {
         id: job.runId,
-        status: "queued",
+        status: runReadback.status,
         company_id: job.companyId,
         automation_id: job.automationId,
         automation_version_id: job.automationVersionId
       },
       receipt: durableJobReceipt("automation.dry_run.enqueued", job),
+      source_trigger: "automation_os_manual",
+      execution_authority: "automation_os_control_plane",
+      provider_adapter: "optional_and_not_required_for_control_plane_dry_run",
       external_action_executed: false,
       company_scope: { enforced: true, company_id: companyId }
     });
   } catch (error) {
     sendAutomationApiError(res, error, "automation_dry_run_failed");
+  }
+});
+
+/**
+ * Stable provider-neutral entrypoint for Codex App, Claude, or another caller.
+ * The trigger only admits an AOS control-plane preflight/no-effect job. An
+ * external effect must be started by a later, workflow-specific adapter after
+ * its own approval and readback gates pass.
+ */
+app.post("/api/v1/companies/:companyId/automations/:automationId/trigger", async (req, res) => {
+  try {
+    initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    requireCompanyAccess(companyId, ["owner", "admin", "operator"]);
+    const idempotencyHeader = req.header("idempotency-key");
+    if (!idempotencyHeader?.trim()) throw new AutomationContractError("idempotency_key_required");
+    const idempotencyKey = requireIdempotencyKey(idempotencyHeader);
+    const automationId = String(req.params.automationId ?? "").trim();
+    const automation = getAutomationRecord(companyId, automationId, false);
+    if (!automation) throw new AutomationRepositoryError("automation_not_found");
+    const portableWorkflowId = portableWorkflowIdForRegisteredAutomation(automation);
+    const localWorkflowId = portableLocalWorkflowIdForRegisteredAutomation(automation);
+    if (portableWorkflowId || localWorkflowId) {
+      const started = portableWorkflowId
+        ? await startPortableWorkflowRun({
+            workflowId: portableWorkflowId,
+            sourceTrigger: "automation_os_ui",
+            idempotencyKey,
+            companyId,
+            readOnlyStage: portableReadOnlyStageForScheduledWorkflow(portableWorkflowId),
+            ...(req.body?.input_bundle !== undefined ? { inputBundle: req.body.input_bundle } : {}),
+            ...(req.body?.web_operation_intent !== undefined ? { webOperationIntent: req.body.web_operation_intent } : {})
+          })
+        : await startPortableLocalWorkflowRun({
+            workflowId: localWorkflowId!,
+            sourceTrigger: "automation_os_ui",
+            idempotencyKey,
+            companyId,
+            readOnlyStage: portableLocalReadOnlyStageForScheduledWorkflow(localWorkflowId!)
+          });
+      if (!started.replayed) recordRunAwaitingWorkerLoop(started.runId, "portable_workflow_aos_trigger");
+      res.status(202).json({
+        ok: true,
+        schema: "aos.portable_workflow_trigger.v1",
+        accepted: true,
+        queued: true,
+        portable: true,
+        workflow_id: portableWorkflowId ?? localWorkflowId,
+        run: { id: started.runId, status: started.status ?? "queued", company_id: companyId, automation_id: automation.id, automation_version_id: automation.currentVersionId },
+        source_trigger: "aos_trigger_api",
+        execution_authority: "automation_os_control_plane",
+        worker_protocol: "mac_worker_polling_required",
+        provider_neutral: true,
+        operation_surface: portableWorkflowId ? "browser_use_cli" : "mac_local_worker",
+        external_action_executed: false,
+        company_scope: { enforced: true, company_id: companyId }
+      });
+      return;
+    }
+    const builderSpec = automation.builderSpec as Record<string, unknown>;
+    const adoptionSchema = builderSpec.schema === "aos.registered_automation_adoption.v1"
+      ? builderSpec.schema
+      : "aos.automation_trigger.v1";
+    const job = enqueueAutomationDryRun({
+      companyId,
+      actorUserId: currentActorUserId(),
+      automationId,
+      idempotencyKey,
+      payload: {
+        ...(req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {}),
+        trigger_source: "aos_trigger_api",
+        execution_mode: "preflight_no_effect",
+        external_action_allowed: false,
+        provider_neutral: true,
+        trigger_contract: adoptionSchema
+      }
+    });
+    const runReadback = durableJobRunReadback(job);
+    res.status(202).json({
+      ok: true,
+      schema: "aos.automation_trigger.v1",
+      queued: runReadback.queued,
+      dry_run: true,
+      job: durableJobApiView(job),
+      run: { id: job.runId, status: runReadback.status, company_id: job.companyId, automation_id: job.automationId, automation_version_id: job.automationVersionId },
+      source_trigger: "aos_trigger_api",
+      execution_authority: "automation_os_control_plane",
+      provider_neutral: true,
+      external_action_executed: false,
+      company_scope: { enforced: true, company_id: companyId }
+    });
+  } catch (error) {
+    sendAutomationApiError(res, error, "automation_trigger_failed");
+  }
+});
+
+app.post("/api/v1/companies/:companyId/scheduler/run-once", async (req, res) => {
+  try {
+    initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    requireCompanyAccess(companyId, ["owner", "admin", "operator"]);
+    const result = await runDurableAutomationSchedulerOnce({
+      serviceUserId: process.env.AUTOMATION_OS_DURABLE_SERVICE_USER_ID,
+      now: nowIso()
+    });
+    if (result.status !== "idle" && !result.checkedCompanyIds.includes(companyId)) {
+      res.status(404).json({ ok: false, error: "scheduler_company_not_found", exactBlocker: "scheduler_company_not_found", external_action_executed: false });
+      return;
+    }
+    res.status(result.status === "blocked" ? 503 : 200).json({
+      ok: result.status !== "blocked",
+      ...result,
+      source_trigger: "automation_os_manual_scheduler_tick",
+      execution_authority: "automation_os_control_plane",
+      external_action_executed: false,
+      company_scope: { enforced: true, company_id: companyId }
+    });
+  } catch (error) {
+    sendAutomationApiError(res, error, "automation_scheduler_run_once_failed");
+  }
+});
+
+/**
+ * Provider-neutral readiness contract for the AOS-first bridge. This is
+ * intentionally GET-only: it exposes the control-plane boundary without
+ * creating a queue item, starting a worker, or granting external-effect
+ * authority to Codex App, Claude, or another caller.
+ */
+app.get("/api/v1/companies/:companyId/control-plane/readiness", (req, res) => {
+  try {
+    initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    requireCompanyAccess(companyId, ["owner", "admin", "operator"]);
+    const productionGuard = getProductionApiAccessGuardStatus();
+    const manualTriggerAvailable = typeof enqueueAutomationDryRun === "function";
+    const schedulerRunOnceAvailable = typeof runDurableAutomationSchedulerOnce === "function";
+    const schedulerOwner = durableSchedulerOwner();
+    const noEffectBoundaryReady = manualTriggerAvailable && schedulerRunOnceAvailable;
+    res.setHeader("cache-control", "no-store");
+    res.json({
+      schema: "aos.control_plane_readiness.v1",
+      ok: true,
+      status: noEffectBoundaryReady ? "ready_for_no_effect_trigger" : "blocked",
+      readiness_basis: "runtime_control_plane_handler_presence",
+      exact_blocker: noEffectBoundaryReady ? null : "aos_no_effect_control_plane_handler_unavailable",
+      company_scope: { enforced: true, company_id: companyId },
+      authority: {
+        provider: "aos.control_plane",
+        contract: "aos.execution_provider.v1",
+        owner: "automation_os_control_plane",
+        source_of_truth: "aos_scheduler_durable_queue",
+        worker_boundary: "mac_browser_use_cli_worker"
+      },
+      routes: {
+        manual_trigger: {
+          method: "POST",
+          path_template: `/api/v1/companies/${companyId}/automations/:automationId/trigger`,
+          available: manualTriggerAvailable,
+          execution_mode: "preflight_no_effect",
+          provider_neutral: true,
+          idempotency_key_required: true,
+          external_action_allowed: false
+        },
+        scheduler_run_once: {
+          method: "POST",
+          path_template: `/api/v1/companies/${companyId}/scheduler/run-once`,
+          available: schedulerRunOnceAvailable,
+          execution_mode: "durable_queue_materialization",
+          scheduler_owner: schedulerOwner,
+          server_owned: schedulerOwner === "server",
+          external_action_allowed: false
+        }
+      },
+      queue: {
+        durable: true,
+        company_scope_enforced: true,
+        receipt: "durable_job_receipt",
+        business_completion: false
+      },
+      client_boundary: {
+        client_neutral: true,
+        codex_app_role: "thin_trigger_only",
+        alternate_llm_role: "thin_trigger_only",
+        external_effect_authority: "workflow_specific_approval_and_readback"
+      },
+      production_guard: {
+        required: productionGuard.required,
+        mode: productionGuard.mode,
+        token_value_exposed: false
+      },
+      external_action_executed: false,
+      secrets_read: false
+    });
+  } catch (error) {
+    sendAutomationApiError(res, error, "control_plane_readiness_failed");
   }
 });
 
@@ -834,6 +1163,7 @@ app.get("/api/v1/admin/diagnostics", (_req, res) => {
         canonical_browser_use: readReferenceBrowserUseWorkflowAdaptersV1(),
         legacy_iab_compatibility: readReferenceIabWorkflowAdaptersV1()
       },
+      provider_registry: defaultAutomationProviderRegistry.readback(),
       company_release_readiness: buildBlockedCompanyReleaseReadinessV1(),
       company_release_evidence: buildBlockedCompanyReleaseEvidenceV1(),
       codex: {
@@ -967,28 +1297,39 @@ app.post("/api/mvp/worker/once", (req, res) => {
   });
 });
 
-app.get("/api/mvp/automations", (req, res) => {
-  initDb();
-  let companyIds: string[];
+app.get("/api/mvp/automations", async (req, res) => {
   try {
-    companyIds = resolveCompanyScope(req, false).companyIds;
+    if (dbBackend === "postgres") {
+      const companyId = requestedCompanyId(req, false);
+      const state = await readPostgresMvpState({ companyId: companyId || undefined });
+      const automations = Array.isArray(state.automations) ? state.automations : [];
+      res.json({
+        ok: true,
+        automations,
+        builder_specs: Array.isArray(state.builder_specs) ? state.builder_specs : [],
+        state,
+        company_scope: state.company_scope ?? { enforced: true, company_ids: [] }
+      });
+      return;
+    }
+    initDb();
+    const companyIds = resolveCompanyScope(req, false).companyIds;
+    const automations = readMvpAutomations(companyIds);
+    res.json({
+      ok: true,
+      automations,
+      builder_specs: automations.map((item) => ({
+        automation_id: item.id,
+        project_id: item.project_id,
+        updated_at: item.updated_at,
+        spec: item.builder_spec
+      })),
+      state: getMvpStateReadback(companyIds),
+      company_scope: { enforced: true, company_ids: companyIds }
+    });
   } catch (error) {
     sendCompanyScopeError(res, error, "automation_list_scope_failed");
-    return;
   }
-  const automations = readMvpAutomations(companyIds);
-  res.json({
-    ok: true,
-    automations,
-    builder_specs: automations.map((item) => ({
-      automation_id: item.id,
-      project_id: item.project_id,
-      updated_at: item.updated_at,
-      spec: item.builder_spec
-    })),
-    state: getMvpStateReadback(companyIds),
-    company_scope: { enforced: true, company_ids: companyIds }
-  });
 });
 
 app.post("/api/mvp/automations", (req, res) => {
@@ -1089,6 +1430,8 @@ app.put("/api/mvp/automations/:automationId/builder-spec", (req, res) => {
 let researchPlanSchedulerTimer: ReturnType<typeof setInterval> | undefined;
 let researchPlanSchedulerInFlight = false;
 const researchPlanSchedulerInFlightDueKeys = new Set<string>();
+let durableAutomationSchedulerTimer: ReturnType<typeof setInterval> | undefined;
+let durableAutomationSchedulerInFlight = false;
 
 app.post("/api/mvp/feedback", (req, res) => {
   initDb();
@@ -1331,12 +1674,15 @@ app.patch("/api/mvp/approvals/:approvalId", async (req, res, next) => {
   }
 });
 
-app.get("/api/mvp/registered-automations", (req, res) => {
+app.get("/api/mvp/registered-automations", async (req, res) => {
   try {
-    initDb();
+    // PostgreSQL is initialized before listen and this read path is fully
+    // async. Re-running the synchronous schema probe here would block the
+    // Node event loop on a cold/invalidated connection and make /health wait.
+    if (dbBackend !== "postgres") initDb();
     const companyId = requestedCompanyId(req);
-    requireCompanyAccess(companyId);
-    res.json(buildCompanyRegisteredAutomationReadback(companyId));
+    await requireCompanyAccessAsync(companyId);
+    res.json(await buildCompanyRegisteredAutomationReadback(companyId));
   } catch (error) {
     sendCompanyScopeError(res, error, "registered_automation_read_failed");
   }
@@ -1360,16 +1706,18 @@ app.post("/api/mvp/registered-automations/:id/run", (req, res) => {
 
 app.post("/api/portable-workflows/:id/run", async (req, res, next) => {
   try {
-    initDb();
-    initRegisteredWorkflows();
+    // PostgreSQL startup owns the schema boundary. Repeating the legacy
+    // synchronous probe here would reintroduce the event-loop stall this
+    // portable HTTP lane is meant to avoid.
+    if (dbBackend !== "postgres") initDb();
     const projectId = requestedCompanyId(req);
-    requireCompanyAccess(projectId, ["owner", "admin", "operator"]);
+    await requireCompanyAccessAsync(projectId, ["owner", "admin", "operator"]);
     const fixedWorkflow = fixedRegisteredWorkflows.find((item) => item.id === req.params.id);
     if (!fixedWorkflow) {
       res.status(404).json({ ok: false, error: "portable_workflow_not_found", exact_blocker: "portable_workflow_not_found", external_action_executed: false });
       return;
     }
-    const workflow = getRegisteredWorkflowForCompanies(req.params.id, [projectId]);
+    const workflow = await getRegisteredWorkflowForCompaniesAsync(req.params.id, [projectId]);
     if (!workflow) {
       res.status(404).json({ ok: false, error: "registered_workflow_not_found", exact_blocker: "registered_workflow_not_found", external_action_executed: false });
       return;
@@ -1390,7 +1738,11 @@ app.post("/api/portable-workflows/:id/run", async (req, res, next) => {
       workflowId: workflow.id as Parameters<typeof startPortableWorkflowRun>[0]["workflowId"],
       sourceTrigger: "automation_os_ui",
       idempotencyKey,
-      companyId: projectId
+      companyId: projectId,
+      ...(req.body?.read_only_stage !== undefined ? { readOnlyStage: req.body.read_only_stage } : {}),
+      ...(req.body?.effect_stage !== undefined ? { effectStage: req.body.effect_stage } : {}),
+      ...(req.body?.input_bundle !== undefined ? { inputBundle: req.body.input_bundle } : {}),
+      ...(req.body?.web_operation_intent !== undefined ? { webOperationIntent: req.body.web_operation_intent } : {})
     });
     if (!started.replayed) recordRunAwaitingWorkerLoop(started.runId, "portable_workflow_manual_start");
     const mode = started.executionMode;
@@ -1401,7 +1753,11 @@ app.post("/api/portable-workflows/:id/run", async (req, res, next) => {
       replayed: started.replayed,
       runId: started.runId,
       status: started.status ?? "queued",
-      workflow: publicRegisteredWorkflowById(workflow.id),
+      // The route already has the company-scoped workflow row from the
+      // async admission check. Do not rebuild the full migration ledger here;
+      // that legacy read scans hundreds of runs synchronously and would stall
+      // every other HTTP request on the Postgres child worker.
+      workflow: publicRegisteredWorkflow(workflow),
       portable: {
         workflow_id: workflow.id,
         source_trigger: "automation_os_ui",
@@ -1409,7 +1765,7 @@ app.post("/api/portable-workflows/:id/run", async (req, res, next) => {
         app_dependency: false,
         browser_surface: "browser_use_cli",
         connector_gateway: "mcp",
-        external_runner_configured: Boolean(process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_RUNNER?.trim()),
+        external_runner_configured: portableExternalRunnerConfigured(),
         external_action_executed: false
       },
       workerProtocol,
@@ -1419,6 +1775,82 @@ app.post("/api/portable-workflows/:id/run", async (req, res, next) => {
           : "local worker loopがrunを拾い、portable external adapterのreceiptを保存します。")
         : "canaryとしてrun binding/readbackを確認します。外部操作を開始するにはportable external adapterの設定が必要です。"
     });
+  } catch (error) {
+    // Scope/admission failures must remain actionable for a first-time UI
+    // caller. Do not collapse an invalid company label or missing scope into
+    // the generic Express internal_error response.
+    sendCompanyScopeError(res, error, "portable_workflow_run_failed");
+  }
+});
+
+/**
+ * Cross-filesystem Mac worker bridge. Zeabur owns the durable run; the Mac
+ * owns Browser Use CLI. Read-only stages are the default; business stages
+ * require a target-bound approved admission created by AOS.
+ */
+app.post("/api/portable-worker/claim", (req, res, next) => {
+  try {
+    initDb();
+    const companyId = requestedCompanyId(req);
+    requireCompanyAccess(companyId, ["owner", "admin", "operator"]);
+    const workerId = typeof req.body?.worker_id === "string" ? req.body.worker_id.trim() : "";
+    const runId = typeof req.body?.run_id === "string" ? req.body.run_id.trim() : null;
+    const run = claimPortableMacWorker({ companyId, workerId, requestedRunId: runId });
+    res.json({ ok: true, claimed: Boolean(run), external_action_executed: false, run });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/portable-worker/heartbeat", (req, res, next) => {
+  try {
+    initDb();
+    const companyId = requestedCompanyId(req);
+    requireCompanyAccess(companyId, ["owner", "admin", "operator"]);
+    const validated = validatePortableWorkerHeartbeat(req.body);
+    if (!validated.ok) {
+      res.status(400).json({ ok: false, error: validated.exactBlocker, exact_blocker: validated.exactBlocker, external_action_executed: false });
+      return;
+    }
+    const capturedAt = nowIso();
+    const heartbeat = validated.value;
+    upsert("system_checks", {
+      id: portableWorkerHeartbeatId(companyId, heartbeat.workerId),
+      kind: PORTABLE_WORKER_HEARTBEAT_KIND,
+      status: heartbeat.status,
+      target_url: null,
+      summary: `Portable Mac worker heartbeat: ${heartbeat.status}`,
+      artifact_uri: null,
+      created_at: capturedAt,
+      metadata_json: {
+        schema: "aos.portable_worker_heartbeat.v1",
+        company_id: companyId,
+        worker_id: heartbeat.workerId,
+        heartbeat_at: capturedAt,
+        queue_depth: heartbeat.queueDepth,
+        exact_blocker: heartbeat.exactBlocker,
+        external_action_executed: false
+      }
+    });
+    res.json({ ok: true, heartbeat_at: capturedAt, external_action_executed: false });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/portable-worker/:runId/receipt", (req, res, next) => {
+  try {
+    initDb();
+    const companyId = requestedCompanyId(req);
+    requireCompanyAccess(companyId, ["owner", "admin", "operator"]);
+    const workerId = typeof req.body?.worker_id === "string" ? req.body.worker_id.trim() : "";
+    const result = recordPortableMacWorkerReceipt({
+      companyId,
+      workerId,
+      runId: req.params.runId,
+      receipt: req.body?.receipt
+    });
+    res.json({ ok: true, ...result, external_action_executed: result.receipt.external_action_executed });
   } catch (error) {
     next(error);
   }
@@ -1452,6 +1884,109 @@ app.post("/api/codex/app-server/probe", async (_req, res, next) => {
     });
   } catch (error) {
     next(error);
+  }
+});
+
+app.post("/api/codex/app-server/thread-turn-canary", async (_req, res, next) => {
+  try {
+    const canary = await runCodexAppServerThreadTurnCanary();
+    res.json(canary);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/codex/app-server/readiness", async (_req, res, next) => {
+  const connection = getCodexAppServerConnectionReadback();
+  if (connection.mode === "local_stdio") {
+    const latestProbe = getLatestAppServerProbeSnapshot();
+    res.json({
+      ok: connection.exact_blocker === null,
+      technical_ok: connection.exact_blocker === null,
+      production_ready: false,
+      production_remote_cutover_allowed: connection.production_remote_cutover_allowed,
+      production_promotion_blocker: connection.production_promotion_blocker,
+      mode: connection.mode,
+      connection,
+      readiness: latestProbe
+        ? {
+          checked: true,
+          protocol: latestProbe.protocol,
+          status: latestProbe.status,
+          generated_at: latestProbe.generatedAt,
+          transport_support: latestProbe.transportSupport,
+          exact_blocker: latestProbe.exactBlocker
+        }
+        : {
+          checked: false,
+          protocol: "stdio",
+          exact_blocker: "codex_app_server_stdio_process_probe_required"
+        },
+      external_action_executed: false
+    });
+    return;
+  }
+  if (connection.exact_blocker) {
+    res.json({
+      ok: false,
+      technical_ok: false,
+      production_ready: false,
+      production_remote_cutover_allowed: connection.production_remote_cutover_allowed,
+      production_promotion_blocker: connection.production_promotion_blocker,
+      mode: connection.mode,
+      connection,
+      readiness: {
+        checked: false,
+        exact_blocker: connection.exact_blocker
+      },
+      external_action_executed: false
+    });
+    return;
+  }
+  try {
+    const resolved = resolveCodexAppServerConnection();
+    const endpoint = new URL(resolved.endpoint);
+    endpoint.protocol = endpoint.protocol === "wss:" ? "https:" : "http:";
+    endpoint.pathname = `${endpoint.pathname.replace(/\/$/u, "")}/readyz`;
+    const timeoutMs = Math.min(5000, Math.max(500, Number(process.env.AUTOMATION_OS_CODEX_APP_SERVER_READINESS_TIMEOUT_MS ?? 2000)));
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(endpoint, { method: "GET", signal: controller.signal });
+      res.json({
+        ok: response.status === 200,
+        technical_ok: response.status === 200,
+        production_ready: false,
+        production_remote_cutover_allowed: connection.production_remote_cutover_allowed,
+        production_promotion_blocker: connection.production_promotion_blocker,
+        mode: connection.mode,
+        connection,
+        readiness: {
+          checked: true,
+          status_code: response.status,
+          endpoint: `${endpoint.protocol}//${endpoint.host}${endpoint.pathname}`,
+          exact_blocker: response.status === 200 ? null : "codex_app_server_remote_readyz_not_ok"
+        },
+        external_action_executed: false
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch (error) {
+    const exactBlocker = error instanceof Error && error.name === "AbortError"
+      ? "codex_app_server_remote_readyz_timeout"
+      : "codex_app_server_remote_readyz_unavailable";
+    res.json({
+      ok: false,
+      technical_ok: false,
+      production_ready: false,
+      production_remote_cutover_allowed: connection.production_remote_cutover_allowed,
+      production_promotion_blocker: connection.production_promotion_blocker,
+      mode: connection.mode,
+      connection,
+      readiness: { checked: true, exact_blocker: exactBlocker },
+      external_action_executed: false
+    });
   }
 });
 
@@ -1767,7 +2302,14 @@ app.post("/api/codex/capabilities", (_req, res) => {
 app.get("/api/registered-workflows", (_req, res) => {
   initDb();
   initRegisteredWorkflows();
-  res.json({ workflows: publicRegisteredWorkflowRows(listRegisteredWorkflowsForCompanies(actorCompanyIds())) });
+  res.json({
+    workflows: publicRegisteredWorkflowRows(listRegisteredWorkflowsForCompanies(actorCompanyIds())),
+    workflow_inventory: buildRegisteredWorkflowInventoryReadback()
+  });
+});
+
+app.get("/api/registered-workflow-inventory", (_req, res) => {
+  res.json(buildRegisteredWorkflowInventoryReadback());
 });
 
 app.post("/api/registered-workflows/refresh", (_req, res) => {
@@ -1893,10 +2435,16 @@ app.post("/api/registered-workflows/:id/start", async (req, res, next) => {
         res.status(400).json({ error: "portable_idempotency_key_invalid", exactBlocker: "portable_idempotency_key_invalid" });
         return;
       }
+      const requestedCompanyScope = requestedCompanyId(req, false);
       const portableStarted = await startPortableWorkflowRun({
         workflowId: workflow.id as Parameters<typeof startPortableWorkflowRun>[0]["workflowId"],
         sourceTrigger: "automation_os_ui",
-        idempotencyKey
+        idempotencyKey,
+        ...(requestedCompanyScope ? { companyId: requestedCompanyScope } : {}),
+        ...(req.body?.read_only_stage !== undefined ? { readOnlyStage: req.body.read_only_stage } : {}),
+        ...(req.body?.effect_stage !== undefined ? { effectStage: req.body.effect_stage } : {}),
+        ...(req.body?.input_bundle !== undefined ? { inputBundle: req.body.input_bundle } : {}),
+        ...(req.body?.web_operation_intent !== undefined ? { webOperationIntent: req.body.web_operation_intent } : {})
       });
       if (!portableStarted.replayed) recordRunAwaitingWorkerLoop(portableStarted.runId, "portable_workflow_manual_start");
       recordRegisteredWorkflowManualStart(workflow, portableStarted.runId);
@@ -1920,7 +2468,7 @@ app.post("/api/registered-workflows/:id/start", async (req, res, next) => {
           app_dependency: false,
           browser_surface: "browser_use_cli",
           connector_gateway: "mcp",
-          external_runner_configured: Boolean(process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_RUNNER?.trim()),
+          external_runner_configured: portableExternalRunnerConfigured(),
           external_action_executed: false
         },
         workerProtocol,
@@ -2421,14 +2969,20 @@ app.post("/api/obsidian/url-capture", async (req, res, next) => {
   }
 });
 
-app.get("/api/runs/:id", (req, res) => {
-  initDb();
-  const detail = getRunDetail(req.params.id, actorCompanyIds());
-  if (!detail) {
-    res.status(404).json({ error: "run_not_found" });
-    return;
+app.get("/api/runs/:id", async (req, res, next) => {
+  try {
+    // The PostgreSQL schema boundary is owned by startup.  Never re-enter
+    // the synchronous child-process probe from an HTTP readback.
+    if (dbBackend !== "postgres") initDb();
+    const detail = await getRunDetailAsync(req.params.id, await actorCompanyIdsAsync());
+    if (!detail) {
+      res.status(404).json({ error: "run_not_found" });
+      return;
+    }
+    res.json(detail);
+  } catch (error) {
+    next(error);
   }
-  res.json(detail);
 });
 
 app.get("/api/proofs/:id/view", (req, res) => {
@@ -3286,8 +3840,12 @@ function requestedCompanyId(req: Parameters<RequestHandler>[0], required = true)
   return companyId;
 }
 
-function automationApiView(automation: AutomationRecord) {
+function automationApiView(automation: AutomationRecord, schedule?: AutomationScheduleRecord | null) {
   const execution = automationExecutionContract(automation.workerCommandKind);
+  const portableDispatch = portableScheduleDispatchForRegisteredAutomation(automation);
+  const resolvedSchedule = schedule === undefined
+    ? listAutomationSchedules(automation.companyId, automation.id)[0] ?? null
+    : schedule;
   return {
     id: automation.id,
     company_id: automation.companyId,
@@ -3299,13 +3857,23 @@ function automationApiView(automation: AutomationRecord) {
     description: automation.description,
     desc: automation.description,
     goal: automation.goal,
-    schedule: "manual",
-    cadence: "manual",
+    schedule: resolvedSchedule?.expression ?? resolvedSchedule?.kind ?? "manual",
+    cadence: resolvedSchedule?.kind ?? "manual",
+    schedule_id: resolvedSchedule?.id ?? null,
+    schedule_status: resolvedSchedule?.status ?? null,
+    schedule_enabled: resolvedSchedule?.enabled ?? false,
+    schedule_revision: resolvedSchedule?.revision ?? null,
+    schedule_timezone: resolvedSchedule?.timezone ?? null,
+    schedule_paused_at: resolvedSchedule?.pausedAt ?? null,
+    pinned_schedule_version_id: resolvedSchedule?.automationVersionId ?? null,
+    next_run_at: resolvedSchedule?.nextRunAt ?? null,
+    last_run_at: resolvedSchedule?.lastRunAt ?? null,
     lane: automation.lane,
     risk_level: automation.riskLevel,
     approval_policy: automation.approvalPolicy,
     worker_command_kind: automation.workerCommandKind,
     ...execution,
+    portable_dispatch: portableDispatch,
     create_approval: automation.createApproval,
     builder_spec: automation.builderSpec,
     status: automation.status,
@@ -3317,9 +3885,9 @@ function automationApiView(automation: AutomationRecord) {
 }
 
 function automationExecutionContract(workerCommandKind: unknown): {
-  execution_mode: "control_plane_dry_run" | "registered_workflow_readback" | "unverified";
+  execution_mode: "control_plane_dry_run" | "registered_workflow_readback" | "portable_mac_worker_queue" | "unverified";
   execution_label: string;
-  scheduler_effect: "queues_scheduled_dry_run" | "requires_registered_runner_readback" | "not_configured";
+  scheduler_effect: "queues_scheduled_dry_run" | "queues_portable_mac_worker" | "requires_registered_runner_readback" | "not_configured";
   external_action_allowed: false;
 } {
   const kind = typeof workerCommandKind === "string" ? workerCommandKind.trim().toLowerCase() : "";
@@ -3328,6 +3896,14 @@ function automationExecutionContract(workerCommandKind: unknown): {
       execution_mode: "control_plane_dry_run",
       execution_label: "制御面の予約・dry-runのみ（外部処理なし）",
       scheduler_effect: "queues_scheduled_dry_run",
+      external_action_allowed: false
+    };
+  }
+  if (["daily_ai_registered", "job_submit_registered", "nisenprints_registered"].includes(kind)) {
+    return {
+      execution_mode: "portable_mac_worker_queue",
+      execution_label: "AOS portable workflow → Mac Browser Use CLI worker queue",
+      scheduler_effect: "queues_portable_mac_worker",
       external_action_allowed: false
     };
   }
@@ -3393,6 +3969,22 @@ function durableJobApiView(job: {
     created_at: job.createdAt,
     updated_at: job.updatedAt
   };
+}
+
+function durableJobRunReadback(job: {
+  companyId: string;
+  runId: string;
+  status: string;
+}): { status: string; queued: boolean } {
+  const run = querySql<{ status: string }>(`
+    SELECT status FROM runs
+    WHERE id=${sqlValue(job.runId)} AND company_id=${sqlValue(job.companyId)}
+    LIMIT 1
+  `)[0];
+  const status = typeof run?.status === "string" && run.status.trim()
+    ? run.status.trim()
+    : job.status === "completed" ? "complete" : job.status;
+  return { status, queued: job.status === "queued" };
 }
 
 function durableAttemptApiView(attempt: {
@@ -3613,6 +4205,12 @@ function actorCompanyIds(allowedRoles?: readonly CompanyRole[]): string[] {
     .map((company) => company.id);
 }
 
+async function actorCompanyIdsAsync(allowedRoles?: readonly CompanyRole[]): Promise<string[]> {
+  return (await listActorCompaniesAsync())
+    .filter((company) => !allowedRoles || allowedRoles.includes(company.role))
+    .map((company) => company.id);
+}
+
 function sendCompanyScopeError(
   res: Parameters<RequestHandler>[1],
   error: unknown,
@@ -3746,11 +4344,30 @@ app.use((req, res, next) => {
 app.use(apiErrorHandler);
 
 export function startServer() {
+  // Complete the synchronous legacy schema probe before accepting HTTP.  If
+  // this is deferred to the first request, the first Browser Use admission
+  // stalls the entire Node event loop while the PostgreSQL child starts.
+  if (dbBackend === "postgres") initDb();
+  // Warm the fixed registered-workflow seed before the first dashboard read.
+  // The request path shares this promise, so a first-use read never starts a
+  // second refresh, while the server remains available for health probes.
+  void initRegisteredWorkflowsAsync().catch(() => {
+    // The authenticated readback will return the exact database blocker.
+  });
   const server = app.listen(port, host, () => {
     if (dbBackend === "postgres") {
       void warmPostgresMvpStatePool().catch(() => {
         // The first authenticated read will return the exact database blocker.
       });
+      const startupCompanyId = process.env.AUTOMATION_OS_COMPANY_ID?.trim();
+      if (startupCompanyId) {
+        // Keep the first company-scoped dashboard read off the critical
+        // request path.  This is a read-only snapshot warm-up; if it fails,
+        // the authenticated request still returns the exact blocker.
+        void warmPostgresMvpState({ companyId: startupCompanyId }).catch(() => {
+          // The first authenticated read will return the exact database blocker.
+        });
+      }
     }
     const backgroundStartupDisabled =
       process.env.AUTOMATION_OS_RESEARCH_PLAN_SCHEDULER_MS === "0" &&
@@ -3760,6 +4377,7 @@ export function startServer() {
         runObsidianAutoExportBestEffort("startup-recovery");
         startPeriodicObsidianExport();
         startObsidianAutonomyLoops();
+        startDurableAutomationScheduler();
         startResearchPlanScheduler();
       }, 100);
       backgroundStartup.unref?.();
@@ -3769,6 +4387,7 @@ export function startServer() {
   server.on("close", () => {
     stopPeriodicObsidianExport();
     stopObsidianAutonomyLoops();
+    stopDurableAutomationScheduler();
     stopResearchPlanScheduler();
   });
   return server;
@@ -3838,6 +4457,32 @@ function getServedAssetNames() {
   }
 }
 
+function getRuntimeParityReadback() {
+  const manifestPath = join(process.cwd(), "apps/server", "dist", "runtime-parity-manifest.json");
+  try {
+    const parsed = JSON.parse(readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
+    const artifactHash = typeof parsed.artifact_hash === "string" ? parsed.artifact_hash : "";
+    const fileCount = typeof parsed.file_count === "number" ? parsed.file_count : 0;
+    return {
+      status: /^\b[a-f0-9]{64}\b$/u.test(artifactHash) && fileCount > 0 ? "ready" : "invalid",
+      schema: typeof parsed.schema === "string" ? parsed.schema : "",
+      artifactHash,
+      fileCount,
+      generatedAt: typeof parsed.generated_at === "string" ? parsed.generated_at : "",
+      exactBlocker: /^\b[a-f0-9]{64}\b$/u.test(artifactHash) && fileCount > 0 ? null : "runtime_parity_manifest_invalid"
+    };
+  } catch {
+    return {
+      status: "missing",
+      schema: "",
+      artifactHash: "",
+      fileCount: 0,
+      generatedAt: "",
+      exactBlocker: "runtime_parity_manifest_missing"
+    };
+  }
+}
+
 function getDeploymentReadback() {
   const envCommit = getGitCommitFromEnv();
   const gitCommit = envCommit || getGitCommitFromWorktree();
@@ -3869,7 +4514,8 @@ function getDeploymentReadback() {
       blocker: plannerExecutionMode === "blocked" ? "openai_api_key_required_for_forced_openai_planner" : ""
     },
     nodeEnv: process.env.NODE_ENV ?? "",
-    assets: getServedAssetNames()
+    assets: getServedAssetNames(),
+    runtimeParity: getRuntimeParityReadback()
   };
 }
 
@@ -4286,6 +4932,10 @@ export function getMvpStateReadback(companyIds: string[]) {
     ? storedWorkerState.status
     : null;
   const workerStatus = storedWorkerStatus ?? (leasedJobs.length > 0 ? "running" : "idle");
+  const browserRuntime = buildBrowserUseRuntimeSnapshot({ controlPlaneCompanyIds: companyIds });
+  const workerScope = browserRuntime.processReadback.portableRemoteWorker.scopeReadback;
+  const workerBlocker = storedWorkerState?.exactBlocker ?? workerScope.exactBlocker ?? null;
+  const resolvedWorkerStatus = workerScope.exactBlocker ? "blocked" : workerStatus;
   return {
     projects: allowed.map((company) => ({ id: company.id, project_id: company.id, name: company.name, status: company.status, role: company.role })),
     companies: allowed,
@@ -4373,22 +5023,27 @@ export function getMvpStateReadback(companyIds: string[]) {
     company_scope: { enforced: true, company_ids: scopedIds, actor_user_id: currentActorUserId() },
     worker: {
       id: "durable-company-queue",
-      status: workerStatus,
-      label: workerStatus === "blocked" ? "Mac worker要確認" : "会社別durable queue",
-      detail: storedWorkerState?.exactBlocker
-        ? `Mac worker readback: ${storedWorkerState.exactBlocker}`
+      status: resolvedWorkerStatus,
+      label: resolvedWorkerStatus === "blocked" ? "Mac worker要確認" : "会社別durable queue",
+      detail: workerBlocker
+        ? `Mac worker readback: ${workerBlocker}`
         : `queued ${queuedJobs.length} / leased ${leasedJobs.length}`,
       queue_depth: queuedJobs.length,
       active_leases: leasedJobs.length,
       heartbeat_at: storedWorkerState?.updatedAt ?? latestHeartbeat,
       last_run_id: durableJobs[0]?.runId ?? null,
       readback_status: "stored",
-      exact_blocker: storedWorkerState?.exactBlocker ?? null,
-      next_action: storedWorkerState?.nextAction
+      exact_blocker: workerBlocker,
+      next_action: workerScope.exactBlocker
+        ? workerScope.nextAction
+        : storedWorkerState?.nextAction
         ?? (queuedJobs.length > 0 ? "登録済みservice workerのclaimを待っています。" : "待機中のjobはありません。"),
+      queue_scope: { source: dbBackend === "postgres" ? "postgres" : "local_sqlite", company_ids: companyIds },
+      worker_scope: workerScope,
+      portable_remote_worker: browserRuntime.processReadback.portableRemoteWorker,
       external_action_executed: false
     },
-    browser_use_runtime: buildBrowserUseRuntimeSnapshot(),
+    browser_use_runtime: browserRuntime,
     updated_at: capturedAt
   };
 }
@@ -4443,18 +5098,8 @@ function readMvpAutomations(companyIds?: string[]) {
   return scopedIds.flatMap((companyId) => {
     const schedules = new Map(listAutomationSchedules(companyId).map((schedule) => [schedule.automationId, schedule]));
     return listAutomationRecords(companyId).map((automation) => {
-      const view = automationApiView(automation);
       const schedule = schedules.get(automation.id);
-      return schedule ? {
-        ...view,
-        schedule: schedule.expression ?? schedule.kind,
-        cadence: schedule.kind,
-        schedule_status: schedule.status,
-        schedule_revision: schedule.revision,
-        pinned_schedule_version_id: schedule.automationVersionId,
-        next_run_at: schedule.nextRunAt,
-        last_run_at: schedule.lastRunAt
-      } : view;
+      return automationApiView(automation, schedule ?? null);
     });
   });
 }
@@ -4897,6 +5542,11 @@ function getSchedulerStatus() {
   const intervalMs = researchPlanSchedulerIntervalMs();
   const enabled = intervalMs > 0;
   const running = Boolean(researchPlanSchedulerTimer);
+  const durableRaw = process.env.AUTOMATION_OS_DURABLE_SCHEDULER_MS;
+  const durableIntervalMs = durableAutomationSchedulerIntervalMs();
+  const durableEnabled = durableIntervalMs > 0;
+  const durableOwner = durableSchedulerOwner();
+  const durableRunning = durableOwner === "server" && Boolean(durableAutomationSchedulerTimer);
   return {
     enabled,
     running,
@@ -4907,7 +5557,18 @@ function getSchedulerStatus() {
       : enabled
         ? "サーバー起動後に時刻ベースの自動確認を開始します。"
       : "安全のため、時刻ベースの自動確認は停止しています。各行の再生ボタンで一回実行できます。",
-    source: raw === undefined || raw.trim() === "" ? "default" : "environment"
+    source: raw === undefined || raw.trim() === "" ? "default" : "environment",
+    durable_control_plane: {
+      enabled: durableEnabled,
+      running: durableRunning,
+      intervalMs: durableIntervalMs,
+      source: durableRaw === undefined || durableRaw.trim() === "" ? "default" : "environment",
+      owner: durableOwner,
+      authority: "automation_os_control_plane",
+      effect: "materializes_due_occurrences_to_durable_queue",
+      serviceUserConfigured: Boolean((process.env.AUTOMATION_OS_DURABLE_SERVICE_USER_ID ?? "").trim()),
+      externalActionExecuted: false
+    }
   };
 }
 
@@ -5048,6 +5709,7 @@ function publicRegisteredWorkflow(workflow: ReturnType<typeof initRegisteredWork
   const freshnessKind = publicRegisteredWorkflowFreshnessKind(ledgerItem, workflow.updated_at);
   const safetyKind = publicRegisteredWorkflowSafetyKind(provenance);
   const lastAction = publicRegisteredWorkflowLastAction({ paused, checkKind, provenance, ledgerItem });
+  const browserUseLane = publicBrowserUseLaneBinding(registeredBrowserLaneForWorkflow(workflow.id));
   const lastRunId = typeof ledgerItem?.latestRunId === "string" && ledgerItem.latestRunId.trim()
     ? ledgerItem.latestRunId.trim()
     : null;
@@ -5070,7 +5732,8 @@ function publicRegisteredWorkflow(workflow: ReturnType<typeof initRegisteredWork
     last_result_label: lastAction.result,
     next_action_label: lastAction.next,
     last_run_id: lastRunId,
-    next_action_view: publicRegisteredWorkflowNextActionView(lastAction.next, lastRunId)
+    next_action_view: publicRegisteredWorkflowNextActionView(lastAction.next, lastRunId),
+    ...(browserUseLane ? { browser_use_lane: browserUseLane } : {})
   };
 }
 
@@ -5527,10 +6190,44 @@ function buildScopedRegisteredAutomationLedger(companyId: string, workflows: Ret
   }).items);
 }
 
-function buildCompanyRegisteredAutomationReadback(projectId: string) {
-  initRegisteredWorkflows();
-  const workflows = filterRegisteredWorkflowList(listRegisteredWorkflowsForCompanies([projectId]));
-  const ledgerByWorkflowId = buildScopedRegisteredAutomationLedger(projectId, workflows);
+async function buildScopedRegisteredAutomationLedgerAsync(companyId: string, workflows: Awaited<ReturnType<typeof listRegisteredWorkflowsForCompaniesAsync>>) {
+  const companyPredicate = scopedCompanyPredicate("company_id", [companyId]);
+  const [runs, proofs, approvals] = await Promise.all([
+    querySqlAsync<CodexAutomationMigrationRunRow>(`
+      SELECT id, name, status, objective, created_at, updated_at, metadata_json
+      FROM runs
+      WHERE ${companyPredicate}
+      ORDER BY updated_at DESC
+      LIMIT 500
+    `),
+    querySqlAsync<CodexAutomationMigrationProofRow>(`
+      SELECT run_id, proof_type, created_at, metadata_json
+      FROM proofs
+      WHERE run_id IN (SELECT id FROM runs WHERE ${companyPredicate})
+        AND ${companyPredicate.replace("company_id", "proofs.company_id")}
+      ORDER BY created_at DESC
+      LIMIT 2000
+    `),
+    querySqlAsync<CodexAutomationMigrationApprovalRow>(`
+      SELECT id, run_id, status, created_at
+      FROM approvals
+      WHERE ${companyPredicate.replace("company_id", "approvals.company_id")}
+      ORDER BY created_at DESC
+      LIMIT 2000
+    `)
+  ]);
+  return indexMigrationLedgerByRegisteredWorkflowId(buildCodexAutomationMigrationLedger({
+    registeredWorkflows: workflows,
+    runs,
+    proofs,
+    approvals
+  }).items);
+}
+
+async function buildCompanyRegisteredAutomationReadback(projectId: string) {
+  await initRegisteredWorkflowsAsync();
+  const workflows = filterRegisteredWorkflowList(await listRegisteredWorkflowsForCompaniesAsync([projectId]));
+  const ledgerByWorkflowId = await buildScopedRegisteredAutomationLedgerAsync(projectId, workflows);
   const automations = workflows.map((workflow) => {
     const ledger = ledgerByWorkflowId.get(workflow.id);
     const paused = isRegisteredWorkflowSchedulePaused(workflow);
@@ -5541,6 +6238,7 @@ function buildCompanyRegisteredAutomationReadback(projectId: string) {
           source_ref: null
         }
       : null;
+    const browserUseLane = publicBrowserUseLaneBinding(registeredBrowserLaneForWorkflow(workflow.id));
     return {
       id: workflow.id,
       name: publicWorkflowName(workflow),
@@ -5562,6 +6260,7 @@ function buildCompanyRegisteredAutomationReadback(projectId: string) {
         ? "この定期実行を再開してから、local runnerのreadbackを確認してください。"
         : "local runnerでpreflightを実行し、proof/readbackを確認してください。HTTP APIから外部作用は開始しません。",
       latest_proof: latestProof,
+      ...(browserUseLane ? { browser_use_lane: browserUseLane } : {}),
       portable: (() => {
         const portableId = portableWorkflowIdForWorkerAdapter(workflow.runner_kind);
         const manifest = portableId ? portableWorkflowManifests[portableId] : undefined;
@@ -5570,7 +6269,7 @@ function buildCompanyRegisteredAutomationReadback(projectId: string) {
               supported: true,
               workflow_id: portableId,
               execution_mode: portableAdmissionExecutionMode(),
-              external_runner_configured: Boolean(process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_RUNNER?.trim()),
+              external_runner_configured: portableExternalRunnerConfigured(),
               app_dependency: false,
               browser_surface: manifest.execution.browser_surface,
               connector_gateway: manifest.execution.connector_gateway,
@@ -5578,7 +6277,24 @@ function buildCompanyRegisteredAutomationReadback(projectId: string) {
               manual_endpoint: `/api/portable-workflows/${portableId}/run`,
               schedule_admission: isPortableSchedulerAdmission(workflow)
             }
-          : { supported: false, exact_blocker: "portable_workflow_manifest_missing" };
+          : (() => {
+              const localId = portableLocalWorkflowIdForRegisteredAutomation({ workerCommandKind: workflow.runner_kind });
+              return localId
+                ? {
+                    supported: true,
+                    workflow_id: localId,
+                    execution_mode: "read_only",
+                    external_runner_configured: false,
+                    app_dependency: false,
+                    browser_surface: "none",
+                    connector_gateway: "none",
+                    external_effect_policy: "read_only_requires_approval_for_write_stage",
+                    manual_endpoint: `/api/v1/companies/${encodeURIComponent(projectId)}/automations/${encodeURIComponent(workflow.id)}/trigger`,
+                    schedule_admission: isPortableSchedulerAdmission(workflow),
+                    operation_surface: "mac_local_worker"
+                  }
+                : { supported: false, exact_blocker: "portable_workflow_manifest_missing" };
+            })();
       })()
     };
   });
@@ -5907,12 +6623,43 @@ export function getRunDetail(runId: string, companyIds?: readonly string[]) {
   };
 }
 
+export async function getRunDetailAsync(runId: string, companyIds?: readonly string[]) {
+  if (!companyIds && dbBackend === "postgres") throw new Error("postgres_async_company_scope_required");
+  if (!companyIds) normalizeReceiptOnlyRuns();
+  const rawRun = companyIds
+    ? await findScopedRunAsync(runId, companyIds)
+    : (await querySqlAsync(`SELECT * FROM runs WHERE id=${sqlValue(runId)} LIMIT 1`))[0];
+  const run = rawRun ? sanitizeDashboardRows([rawRun])[0] : undefined;
+  if (!run) return undefined;
+  const companyId = String((rawRun as Record<string, unknown>).company_id ?? "");
+  const metadata = parseJson<Record<string, unknown>>(typeof run.metadata_json === "string" ? run.metadata_json : "{}", {});
+  const executionRouting =
+    metadata.execution_routing && typeof metadata.execution_routing === "object" ? metadata.execution_routing : null;
+  const [rawSteps, rawProofs, rawChildren, rawWorkerEvents] = await Promise.all([
+    querySqlAsync(`SELECT * FROM run_steps WHERE run_id=${sqlValue(runId)} ORDER BY COALESCE(started_at, completed_at, '') ASC LIMIT 500`),
+    querySqlAsync(companyIds
+      ? `SELECT * FROM proofs WHERE run_id=${sqlValue(runId)} AND company_id=${sqlValue(companyId)} ORDER BY created_at ASC LIMIT 1000`
+      : `SELECT * FROM proofs WHERE run_id=${sqlValue(runId)} ORDER BY created_at ASC LIMIT 1000`),
+    querySqlAsync(`SELECT * FROM child_runs WHERE parent_run_id=${sqlValue(runId)} ORDER BY created_at ASC LIMIT 1000`),
+    querySqlAsync(`SELECT * FROM worker_events WHERE run_id=${sqlValue(runId)} ORDER BY created_at ASC LIMIT 2000`)
+  ]);
+  return {
+    run,
+    executionRouting,
+    steps: sanitizeDashboardRows(rawSteps),
+    proofs: sanitizeDashboardRows(rawProofs),
+    children: sanitizeDashboardRows(rawChildren),
+    workerEvents: sanitizeDashboardRows(rawWorkerEvents)
+  };
+}
+
 type ProofViewStatus = "ok" | "blocked" | "not_found";
 type ProofViewRow = {
   id: string;
   company_id: string;
   run_id: string;
   step_id: string | null;
+  artifact_id: string | null;
   proof_type: string;
   label: string;
   uri: string;
@@ -5935,6 +6682,12 @@ export function getProofView(proofId: string, companyIds?: readonly string[]) {
   if (!proof) return { status: "not_found" as ProofViewStatus, id: proofId, error: "proof_not_found" };
 
   const base = publicProofViewBase(proof);
+  const durableArtifact = resolveDurableProofArtifact(proof);
+  if (durableArtifact) {
+    if (!durableArtifact.ok) return { ...base, status: "blocked" as ProofViewStatus, blocked_reason: durableArtifact.reason };
+    return proofContentView(base, durableArtifact.contentText, durableArtifact.mimeType, durableArtifact.sizeBytes);
+  }
+
   const target = resolveProofTarget(proof);
   if (!target.ok) return { ...base, status: "blocked" as ProofViewStatus, blocked_reason: target.reason };
 
@@ -5956,12 +6709,41 @@ export function getProofView(proofId: string, companyIds?: readonly string[]) {
   }
 
   const mime = proofMimeType(target.path);
-  const common = { ...base, status: "ok" as ProofViewStatus, size_bytes: stats.size, mime_type: mime, saved: "保存記録あり" };
+  return proofFileView(base, target.path, mime, stats.size);
+}
+
+function proofContentView(base: ReturnType<typeof publicProofViewBase>, contentText: string, mime: string, size: number) {
+  if (size > proofViewMaxBytes) {
+    return {
+      ...base,
+      status: "blocked" as ProofViewStatus,
+      blocked_reason: "file_too_large",
+      size_bytes: size,
+      max_size_bytes: proofViewMaxBytes
+    };
+  }
+  if (!(proofTextMimeTypes.has(mime) || mime.startsWith("text/"))) {
+    return { ...base, status: "blocked" as ProofViewStatus, blocked_reason: "unsupported_file_type", preview_kind: "unsupported" };
+  }
+  return {
+    ...base,
+    status: "ok" as ProofViewStatus,
+    size_bytes: size,
+    mime_type: mime,
+    saved: "保存記録あり",
+    preview_kind: mime === "application/json" ? "json" : "text",
+    preview: redactProofPreview(contentText.slice(0, proofPreviewMaxBytes)),
+    truncated: Buffer.byteLength(contentText) > proofPreviewMaxBytes
+  };
+}
+
+function proofFileView(base: ReturnType<typeof publicProofViewBase>, filePath: string, mime: string, size: number) {
+  const common = { ...base, status: "ok" as ProofViewStatus, size_bytes: size, mime_type: mime, saved: "保存記録あり" };
   if (proofImageMimeTypes.has(mime)) {
-    return { ...common, preview_kind: "image", image: imageMetadata(target.path, mime) };
+    return { ...common, preview_kind: "image", image: imageMetadata(filePath, mime) };
   }
   if (proofTextMimeTypes.has(mime) || mime.startsWith("text/")) {
-    const buffer = readFileSync(target.path);
+    const buffer = readFileSync(filePath);
     return {
       ...common,
       preview_kind: mime === "application/json" ? "json" : "text",
@@ -5970,6 +6752,38 @@ export function getProofView(proofId: string, companyIds?: readonly string[]) {
     };
   }
   return { ...common, status: "blocked" as ProofViewStatus, blocked_reason: "unsupported_file_type", preview_kind: "unsupported" };
+}
+
+type DurableProofArtifactResolution =
+  | { ok: true; contentText: string; mimeType: string; sizeBytes: number }
+  | { ok: false; reason: string };
+
+function resolveDurableProofArtifact(proof: ProofViewRow): DurableProofArtifactResolution | null {
+  const raw = typeof proof.uri === "string" ? proof.uri.trim() : "";
+  const match = raw.match(/^\/api\/v1\/companies\/([^/]+)\/artifacts\/([^/?#]+)$/u);
+  if (!match) return null;
+
+  let companyId: string;
+  let artifactId: string;
+  try {
+    companyId = decodeURIComponent(match[1]);
+    artifactId = decodeURIComponent(match[2]);
+  } catch {
+    return { ok: false, reason: "invalid_artifact_reference" };
+  }
+  if (!companyId || companyId !== proof.company_id) return { ok: false, reason: "artifact_company_mismatch" };
+  if (proof.artifact_id && proof.artifact_id !== artifactId) return { ok: false, reason: "artifact_reference_mismatch" };
+
+  try {
+    const artifact = readRunArtifact(companyId, artifactId);
+    if (!artifact) return { ok: false, reason: "artifact_not_found" };
+    if (artifact.runId !== proof.run_id || artifact.companyId !== proof.company_id) {
+      return { ok: false, reason: "artifact_run_mismatch" };
+    }
+    return { ok: true, contentText: artifact.contentText, mimeType: artifact.mimeType, sizeBytes: artifact.sizeBytes };
+  } catch (error) {
+    return { ok: false, reason: error instanceof Error && error.message === "artifact_integrity_mismatch" ? "artifact_integrity_mismatch" : "artifact_unavailable" };
+  }
 }
 
 function publicProofViewBase(proof: ProofViewRow) {
@@ -7019,7 +7833,8 @@ export async function runResearchPlanSchedulerOnce(
 
 function isPortableSchedulerAdmission(workflow: Pick<RegisteredWorkflowRow, "id" | "runner_kind" | "company_id">): boolean {
   if (workflow.company_id) return false;
-  return portableWorkflowIdForWorkerAdapter(workflow.runner_kind) === workflow.id;
+  return portableWorkflowIdForWorkerAdapter(workflow.runner_kind) === workflow.id
+    || portableLocalWorkflowIdForRegisteredAutomation({ workerCommandKind: workflow.runner_kind }) === workflow.id;
 }
 
 function portableAdmissionExecutionMode(): typeof PORTABLE_WORKER_CANARY_MODE | typeof PORTABLE_WORKER_EXTERNAL_MODE {
@@ -7065,6 +7880,47 @@ function stopResearchPlanScheduler() {
   if (!researchPlanSchedulerTimer) return;
   clearInterval(researchPlanSchedulerTimer);
   researchPlanSchedulerTimer = undefined;
+}
+
+function startDurableAutomationScheduler() {
+  if (durableSchedulerOwner() !== "server") return;
+  const intervalMs = durableAutomationSchedulerIntervalMs();
+  if (intervalMs <= 0 || durableAutomationSchedulerTimer) return;
+  const tick = () => {
+    if (durableAutomationSchedulerInFlight) return;
+    durableAutomationSchedulerInFlight = true;
+    void runDurableAutomationSchedulerOnce()
+      .then((result) => {
+        if (result.status === "blocked") {
+          console.error(`AOS durable scheduler blocked: ${result.exactBlocker}`);
+        }
+      })
+      .catch((error) => {
+        const exactBlocker = error instanceof Error ? error.message : "durable_scheduler_tick_failed";
+        console.error(`AOS durable scheduler failed: ${exactBlocker}`);
+      })
+      .finally(() => {
+        durableAutomationSchedulerInFlight = false;
+      });
+  };
+  durableAutomationSchedulerTimer = setInterval(tick, intervalMs);
+  durableAutomationSchedulerTimer.unref?.();
+  tick();
+}
+
+function stopDurableAutomationScheduler() {
+  if (!durableAutomationSchedulerTimer) return;
+  clearInterval(durableAutomationSchedulerTimer);
+  durableAutomationSchedulerTimer = undefined;
+  durableAutomationSchedulerInFlight = false;
+}
+
+function durableAutomationSchedulerIntervalMs(): number {
+  const raw = process.env.AUTOMATION_OS_DURABLE_SCHEDULER_MS;
+  if (raw === undefined || raw.trim() === "") return 60_000;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return 60_000;
+  return Math.floor(parsed);
 }
 
 function researchPlanSchedulerIntervalMs(): number {
@@ -7793,6 +8649,14 @@ async function decideStoredApproval(id: string, status: "approved" | "rejected" 
     return { statusCode: 404, body: { error: "approval_not_found" } };
   }
   if (existing.status !== "pending") {
+    // A deployment or worker restart can occur after the approval decision and
+    // before the queue wake-up is observed. A repeated approve call is still
+    // idempotent, but for an already-approved portable business run it may
+    // safely re-run the exact lock-bound recovery transition. It never grants
+    // approval or executes the external effect by itself.
+    if (status === "approved" && existing.status === "approved" && existing.run_id) {
+      startWorkerOnceAfterApproval(existing.run_id);
+    }
     return { statusCode: 409, body: { error: "approval_already_decided", id, status: existing.status } };
   }
   const decidedAt = nowIso();
@@ -7820,7 +8684,8 @@ async function decideStoredApproval(id: string, status: "approved" | "rejected" 
 }
 
 function startWorkerOnceAfterApproval(runId: string): void {
-  recordRunAwaitingWorkerLoop(runId, "approval_decided");
+  const portableRecovery = requeuePortableMacWorkerAfterApproval(runId);
+  if (!portableRecovery.requeued) recordRunAwaitingWorkerLoop(runId, "approval_decided");
 }
 
 function publicFixedRegisteredWorkflowFast(workflow: RegisteredWorkflowDefinition) {
@@ -8057,13 +8922,20 @@ function readRunCompanyId(runId: string): string | null {
 }
 
 function recordRunAwaitingWorkerLoop(runId: string, launchReason: string) {
+  if (dbBackend === "postgres") {
+    setImmediate(() => {
+      void recordRunAwaitingWorkerLoopPostgres(runId, launchReason).catch((error) => {
+        console.error("recordRunAwaitingWorkerLoopPostgres failed", error instanceof Error ? error.message : String(error));
+      });
+    });
+    return;
+  }
   const now = nowIso();
   const current = querySql<{ metadata_json: string }>(`SELECT metadata_json FROM runs WHERE id=${sqlValue(runId)} LIMIT 1`)[0];
   const metadata = parseJson<Record<string, unknown>>(current?.metadata_json, {});
-  const postgres = dbBackend === "postgres";
-  const workerProtocol = postgres ? "mac_worker_polling_required" : "local_worker_loop_required";
-  const workerMode = postgres ? "queued_for_mac_worker" : "queued_for_local_worker_loop";
-  const requiredCommand = postgres ? "npm run worker:loop:stored" : "npm run worker:loop";
+  const workerProtocol = "local_worker_loop_required";
+  const workerMode = "queued_for_local_worker_loop";
+  const requiredCommand = "npm run worker:loop";
   execSql(
     `UPDATE runs
      SET metadata_json=${sqlValue({
@@ -8092,10 +8964,8 @@ function recordRunAwaitingWorkerLoop(runId: string, launchReason: string) {
     run_id: runId,
     step_id: null,
     lane_id: null,
-    event_type: postgres ? "queued_for_mac_worker" : "queued_for_worker_loop",
-    message: postgres
-      ? "Run saved to production database and waiting for Mac worker pickup"
-      : "Run saved to local database and waiting for worker loop pickup",
+    event_type: "queued_for_worker_loop",
+    message: "Run saved to local database and waiting for worker loop pickup",
     created_at: now,
     metadata_json: {
       worker_protocol: workerProtocol,
@@ -8103,6 +8973,39 @@ function recordRunAwaitingWorkerLoop(runId: string, launchReason: string) {
       required_command: requiredCommand
     }
   });
+}
+
+async function recordRunAwaitingWorkerLoopPostgres(runId: string, launchReason: string): Promise<void> {
+  const now = nowIso();
+  const current = (await querySqlAsync<{ company_id: string | null; metadata_json: string }>(
+    `SELECT company_id, metadata_json FROM runs WHERE id=${sqlValue(runId)} LIMIT 1`
+  ))[0];
+  if (!current) return;
+  const metadata = parseJson<Record<string, unknown>>(current.metadata_json, {});
+  const workerProtocol = "mac_worker_polling_required";
+  const workerMode = "queued_for_mac_worker";
+  const requiredCommand = "npm run worker:loop:stored";
+  await runSqlTransactionAsync([
+    {
+      sql: `UPDATE runs
+            SET metadata_json=${sqlValue({
+              ...metadata,
+              worker_protocol: workerProtocol,
+              worker_mode: workerMode,
+              worker_loop: { status: "waiting_for_pickup", launchReason, queuedAt: now, requiredCommand },
+              mac_worker: { status: "waiting_for_pickup", launchReason, queuedAt: now, requiredCommand }
+            })},
+                updated_at=${sqlValue(now)}
+            WHERE id=${sqlValue(runId)}`
+    },
+    {
+      sql: `INSERT INTO worker_events
+            (id, company_id, run_id, step_id, lane_id, event_type, message, created_at, metadata_json)
+            VALUES (${sqlValue(makeId("evt"))}, ${sqlValue(current.company_id)}, ${sqlValue(runId)}, NULL, NULL,
+                    'queued_for_mac_worker', 'Run saved to production database and waiting for Mac worker pickup',
+                    ${sqlValue(now)}, ${sqlValue({ worker_protocol: workerProtocol, launch_reason: launchReason, required_command: requiredCommand })})`
+    }
+  ]);
 }
 
 export function classifyWorkerOnceExit(runId: string): { exactBlocker: string; progress: RunWorkerProgressState } {
@@ -8339,7 +9242,7 @@ function buildAutomationOsChatSnapshot(companyIds: string[]): string {
     })),
     worker: state.worker,
     registeredWorkflows,
-    browserUse: buildBrowserUseRuntimeSnapshot(),
+    browserUse: buildBrowserUseRuntimeSnapshot({ controlPlaneCompanyIds: companyIds }),
     freshness: { capturedAt, stalePolicy: "show_stale_and_exact_blocker" },
     boundaries: {
       externalActionExecuted: false,

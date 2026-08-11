@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
-import { clearAppServerProbeCache, probeCodexAppServerSurface } from "../codex/appServerProbe.js";
+import type { AppServerWebSocketLike } from "../codex/appServerClient.js";
+import { clearAppServerProbeCache, probeCodexAppServerSurface, runCodexAppServerThreadTurnCanary } from "../codex/appServerProbe.js";
 
 test.afterEach(() => {
   clearAppServerProbeCache();
@@ -37,6 +38,83 @@ class FakeChild extends EventEmitter {
   }
 }
 
+class FakeProbeWebSocket implements AppServerWebSocketLike {
+  private readonly listeners = new Map<string, Set<(event: { data?: unknown; code?: number; reason?: string }) => void>>();
+
+  constructor(readonly url: string, readonly init: { headers: Record<string, string> }, readonly emitErrorNotification = false, readonly accountPresent = true) {
+    queueMicrotask(() => this.emit("open", {}));
+  }
+
+  addEventListener(event: "open" | "message" | "error" | "close", listener: (event: { data?: unknown; code?: number; reason?: string }) => void): void {
+    const listeners = this.listeners.get(event) ?? new Set();
+    listeners.add(listener);
+    this.listeners.set(event, listeners);
+  }
+
+  send(data: string): void {
+    const message = JSON.parse(data) as { id?: number; method?: string; params?: Record<string, unknown> };
+    if (message.method === "initialize") {
+      queueMicrotask(() => this.emit("message", {
+        data: JSON.stringify({ id: message.id, result: { userAgent: "remote-probe", platformFamily: "linux", platformOs: "linux" } })
+      }));
+      return;
+    }
+    if (message.method === "account/read") {
+      queueMicrotask(() => this.emit("message", {
+        data: JSON.stringify({
+          id: message.id,
+          result: this.accountPresent
+            ? { account: { type: "chatgpt", planType: "pro" }, requiresOpenaiAuth: false }
+            : { requiresOpenaiAuth: true }
+        })
+      }));
+      return;
+    }
+    if (message.method === "thread/start") {
+      queueMicrotask(() => {
+        this.emit("message", {
+          data: JSON.stringify({ method: "thread/started", params: { thread: { id: "thread_canary_1" } } })
+        });
+        this.emit("message", {
+          data: JSON.stringify({ id: message.id, result: { thread: { id: "thread_canary_1" } } })
+        });
+      });
+      return;
+    }
+    if (message.method === "turn/start") {
+      const threadId = String(message.params?.threadId ?? "thread_canary_1");
+      queueMicrotask(() => {
+        this.emit("message", {
+          data: JSON.stringify({ method: "turn/started", params: { threadId, turn: { id: "turn_canary_1", status: "inProgress" } } })
+        });
+        this.emit("message", {
+          data: JSON.stringify({ id: message.id, result: { turn: { id: "turn_canary_1", status: "inProgress" } } })
+        });
+        if (this.emitErrorNotification) {
+          this.emit("message", {
+            data: JSON.stringify({ method: "error", params: { error: { message: "upstream unavailable" } } })
+          });
+          return;
+        }
+        this.emit("message", {
+          data: JSON.stringify({ method: "item/agentMessage/delta", params: { threadId, turnId: "turn_canary_1", delta: "ready" } })
+        });
+        this.emit("message", {
+          data: JSON.stringify({ method: "turn/completed", params: { threadId, turn: { id: "turn_canary_1", status: "completed" } } })
+        });
+      });
+    }
+  }
+
+  close(): void {
+    this.emit("close", { code: 1000, reason: "probe" });
+  }
+
+  private emit(event: string, payload: { data?: unknown; code?: number; reason?: string }): void {
+    for (const listener of this.listeners.get(event) ?? []) listener(payload);
+  }
+}
+
 test("app server probe stays blocked when disabled and does not spawn a process", async () => {
   clearAppServerProbeCache();
   let runnerCalls = 0;
@@ -52,6 +130,172 @@ test("app server probe stays blocked when disabled and does not spawn a process"
   assert.equal(runnerCalls, 0);
   assert.equal(result.ok, false);
   assert.equal(result.exactBlocker, "disabled");
+});
+
+test("app server probe can verify a remote websocket initialize without starting a thread or turn", async () => {
+  clearAppServerProbeCache();
+  let socket: FakeProbeWebSocket | undefined;
+  const result = await probeCodexAppServerSurface({
+    enabled: true,
+    remoteUrl: "wss://codex.example.test:4500/",
+    remoteToken: "unit-test-token",
+    timeoutMs: 500,
+    webSocketFactory: (url, init) => {
+      socket = new FakeProbeWebSocket(url, init);
+      return socket;
+    }
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.protocol, "websocket");
+  assert.equal(result.initializedNotificationSent, true);
+  assert.equal(result.threadStarted, false);
+  assert.equal(result.turnStarted, false);
+  assert.equal(result.externalActionExecuted, false);
+  assert.equal(result.transportSupport, "experimental_remote_websocket");
+  assert.equal(result.productionRemoteCutoverAllowed, false);
+  assert.equal(result.productionPromotionBlocker, "codex_app_server_remote_transport_experimental_unsupported");
+  assert.equal(socket?.url, "wss://codex.example.test:4500/");
+  assert.equal(socket?.init.headers.Authorization, "Bearer unit-test-token");
+});
+
+test("remote thread-turn canary completes on one authenticated read-only connection and remains non-production", async () => {
+  clearAppServerProbeCache();
+  let socket: FakeProbeWebSocket | undefined;
+  const result = await runCodexAppServerThreadTurnCanary({
+    remoteUrl: "wss://codex.example.test:4500/",
+    remoteToken: "unit-test-token",
+    remoteCwd: "/workspace/company1",
+    timeoutMs: 500,
+    webSocketFactory: (url, init) => {
+      socket = new FakeProbeWebSocket(url, init);
+      return socket;
+    }
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.status, "ok");
+  assert.equal(result.initialized, true);
+  assert.equal(result.accountRead, true);
+  assert.equal(result.accountPresent, true);
+  assert.equal(result.requiresOpenaiAuth, false);
+  assert.equal(result.threadStarted, true);
+  assert.equal(result.turnStarted, true);
+  assert.equal(result.turnCompletionObserved, true);
+  assert.equal(result.threadId, "thread_canary_1");
+  assert.equal(result.turnId, "turn_canary_1");
+  assert.equal(result.turnStatus, "completed");
+  assert.ok(result.eventMethods.includes("turn/completed"));
+  assert.equal(result.productionReady, false);
+  assert.equal(result.productionRemoteCutoverAllowed, false);
+  assert.equal(result.productionPromotionBlocker, "codex_app_server_remote_transport_experimental_unsupported");
+  assert.equal(result.externalActionExecuted, false);
+  assert.equal(socket?.init.headers.Authorization, "Bearer unit-test-token");
+});
+
+test("remote thread-turn canary records an error notification before a timeout", async () => {
+  clearAppServerProbeCache();
+  const result = await runCodexAppServerThreadTurnCanary({
+    remoteUrl: "wss://codex.example.test:4500/",
+    remoteToken: "unit-test-token",
+    timeoutMs: 100,
+    webSocketFactory: (url, init) => new FakeProbeWebSocket(url, init, true)
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.exactBlocker, "codex_app_server_turn_timeout");
+  assert.equal(result.threadStarted, true);
+  assert.equal(result.turnStarted, true);
+  assert.equal(result.errorNotificationObserved, true);
+  assert.ok(result.eventMethods.includes("error"));
+  assert.equal(result.externalActionExecuted, false);
+});
+
+test("remote thread-turn canary stops after account/read when the dedicated server is unauthenticated", async () => {
+  clearAppServerProbeCache();
+  const result = await runCodexAppServerThreadTurnCanary({
+    remoteUrl: "wss://codex.example.test:4500/",
+    remoteToken: "unit-test-token",
+    timeoutMs: 100,
+    webSocketFactory: (url, init) => new FakeProbeWebSocket(url, init, false, false)
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.exactBlocker, "codex_app_server_chatgpt_login_required");
+  assert.equal(result.initialized, true);
+  assert.equal(result.accountRead, true);
+  assert.equal(result.accountPresent, false);
+  assert.equal(result.threadStarted, false);
+  assert.equal(result.turnStarted, false);
+  assert.equal(result.externalActionExecuted, false);
+});
+
+test("remote thread-turn canary deduplicates concurrent probes by endpoint", async () => {
+  clearAppServerProbeCache();
+  let factoryCalls = 0;
+  const options = {
+    remoteUrl: "wss://codex.example.test:4500/",
+    remoteToken: "unit-test-token",
+    remoteCwd: "/workspace/company1",
+    timeoutMs: 500,
+    webSocketFactory: (url: string, init: { headers: Record<string, string> }) => {
+      factoryCalls += 1;
+      return new FakeProbeWebSocket(url, init);
+    }
+  };
+  const [first, second] = await Promise.all([
+    runCodexAppServerThreadTurnCanary(options),
+    runCodexAppServerThreadTurnCanary(options)
+  ]);
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, true);
+  assert.equal(factoryCalls, 1);
+});
+
+test("remote thread-turn canary rate-limits repeated sequential probes", async () => {
+  clearAppServerProbeCache();
+  const options = {
+    remoteUrl: "wss://codex.example.test:4500/",
+    remoteToken: "unit-test-token",
+    remoteCwd: "/workspace/company1",
+    timeoutMs: 500,
+    cooldownMs: 5_000,
+    webSocketFactory: (url: string, init: { headers: Record<string, string> }) => new FakeProbeWebSocket(url, init)
+  };
+  const first = await runCodexAppServerThreadTurnCanary(options);
+  const second = await runCodexAppServerThreadTurnCanary(options);
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, false);
+  assert.equal(second.exactBlocker, "codex_app_server_canary_rate_limited");
+});
+
+test("remote thread-turn canary refuses local stdio fallback without starting a process", async () => {
+  clearAppServerProbeCache();
+  const result = await runCodexAppServerThreadTurnCanary({ timeoutMs: 500 });
+  assert.equal(result.ok, false);
+  assert.equal(result.exactBlocker, "codex_app_server_remote_required_for_thread_turn_canary");
+  assert.equal(result.threadStarted, false);
+  assert.equal(result.turnStarted, false);
+  assert.equal(result.externalActionExecuted, false);
+});
+
+test("remote app server probe fails closed before connecting when auth is absent", async () => {
+  clearAppServerProbeCache();
+  let factoryCalls = 0;
+  const result = await probeCodexAppServerSurface({
+    enabled: true,
+    remoteUrl: "wss://codex.example.test:4500/",
+    timeoutMs: 500,
+    webSocketFactory: () => {
+      factoryCalls += 1;
+      throw new Error("must not connect");
+    }
+  });
+
+  assert.equal(factoryCalls, 0);
+  assert.equal(result.ok, false);
+  assert.equal(result.exactBlocker, "codex_app_server_remote_auth_missing");
+  assert.equal(result.externalActionExecuted, false);
 });
 
 test("app server probe prefers the configured official Codex CLI when the command override is blank", async () => {

@@ -653,14 +653,32 @@ test("frontend fails closed behind an operator-token gate on protected productio
   assert.match(appSource, /const unlockOperatorAccess = async \(\) =>/);
   assert.match(appSource, /persistWriteToken\(writeToken\);[\s\S]*const state = await readMvpState\(\)/);
   assert.match(appSource, /setApiAccessRequired\(false\)/);
+  assert.match(appSource, /readApiTokenCapability/);
+  assert.match(appSource, /AUTOMATION_OS_READ_TOKEN/);
   assert.match(appSource, /title="管理者アクセス"/);
-  assert.match(appSource, /管理者用の利用キー/);
+  assert.match(appSource, /Automation OS APIキー/);
   assert.match(appSource, /AUTOMATION_OS_WRITE_TOKEN/);
   assert.match(appSource, /認証ヘッダー/);
   assert.match(appSource, /通常のログインパスワードではありません/);
   assert.match(appSource, /確認して開く/);
+  assert.match(appSource, /読み取り専用キーを確認しました/);
   assert.doesNotMatch(appSource, /管理者だけが使う確認キーです/);
   assert.match(appSource, /type="password"/);
+  assert.match(appSource, /autoComplete="off"/);
+});
+
+test("first-use documentation keeps read and write token scopes truthful", () => {
+  const readme = readFileSync(resolve(process.cwd(), "README.md"), "utf8");
+  const envExample = readFileSync(resolve(process.cwd(), ".env.example"), "utf8");
+
+  assert.match(readme, /閲覧・readbackだけなら `AUTOMATION_OS_READ_TOKEN`/);
+  assert.match(readme, /作成・更新・実行・承認まで行うなら `AUTOMATION_OS_WRITE_TOKEN`/);
+  assert.match(readme, /6項目がChat入力欄へ下書きとして自動入力されます/);
+  assert.match(readme, /テンプレートは操作を開始せず/);
+  assert.match(readme, /キーはこのタブのsessionStorageだけで扱い/);
+  assert.doesNotMatch(readme, /All `\/api\/\*` routes except `\/api\/health` require `AUTOMATION_OS_WRITE_TOKEN`/);
+  assert.match(envExample, /GET\/HEAD readbacks accept a read-only token/);
+  assert.match(envExample, /state-changing calls require the write token/);
 });
 
 test("frontend selects actionable runs and repairs stale selections on refresh and polling", () => {
@@ -785,7 +803,7 @@ test("server worker heartbeat accounting and same-host pid checks remain fail cl
 
   assert.match(loopSource, /lastProcessed = summaries\.length/);
   assert.match(loopSource, /lastRunIds = summaries\.map/);
-  assert.match(loopSource, /materializeDueAutomationOccurrences/);
+  assert.match(loopSource, /runDurableAutomationSchedulerOnce/);
   assert.match(loopSource, /runDurableDryRunWorkerOnce/);
   assert.match(loopSource, /AUTOMATION_OS_DURABLE_SERVICE_USER_ID/);
   assert.match(loopSource, /durable_service_user_id_missing_with_pending_work/);

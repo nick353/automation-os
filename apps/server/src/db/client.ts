@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import pg from "pg";
 import { evaluateServerStartupPolicy } from "../cli/serverStartupPolicy.js";
 
 const moduleDir = dirname(fileURLToPath(import.meta.url));
@@ -23,7 +24,7 @@ const postgresWorkerTimeoutMs = Number(process.env.AUTOMATION_OS_POSTGRES_WORKER
 const postgresSchemaAssumedCurrent = process.env.AUTOMATION_OS_POSTGRES_SCHEMA_ASSUMED_CURRENT === "1";
 // Bump when an idempotent migration adds a durable schema object that must be
 // applied to already-bootstrapped PostgreSQL databases.
-export const postgresSchemaBootstrapVersion = 5;
+export const postgresSchemaBootstrapVersion = 6;
 
 export const dbPath = process.env.AUTOMATION_OS_DB ?? defaultDbPath;
 export const dbBackend = postgresUrl ? "postgres" : "sqlite";
@@ -38,6 +39,7 @@ let dbInitialized = false;
 let dbInitializing = false;
 let dbInitRunCount = 0;
 let dbConnection: Database.Database | undefined;
+let postgresAsyncPool: pg.Pool | undefined;
 
 export function sqlValue(value: SqlValue): string {
   if (value === null || value === undefined) return "NULL";
@@ -104,6 +106,118 @@ export function runSqlTransaction(steps: readonly SqlTransactionStep[]): void {
   transaction();
 }
 
+function getPostgresAsyncPool(): pg.Pool {
+  if (postgresAsyncPool) return postgresAsyncPool;
+  if (!postgresUrl) throw new Error("PostgreSQL backend selected but DATABASE_URL/AUTOMATION_OS_DATABASE_URL is missing");
+  postgresAsyncPool = new pg.Pool({
+    connectionString: postgresUrl,
+    max: 4,
+    idleTimeoutMillis: 300_000,
+    connectionTimeoutMillis: 15_000,
+    query_timeout: 15_000,
+    statement_timeout: 15_000,
+    allowExitOnIdle: true
+  });
+  return postgresAsyncPool;
+}
+
+/**
+ * Async database boundary for request handlers.  The legacy SQL helpers are
+ * intentionally synchronous because worker/CLI code still uses them, but a
+ * public HTTP request must never spawn the PostgreSQL child synchronously on
+ * Node's event loop.
+ */
+export async function querySqlAsync<T = Record<string, unknown>>(sql: string): Promise<T[]> {
+  assertAsyncDatabaseReady();
+  if (dbBackend !== "postgres") return querySql<T>(sql);
+  if (isPragmaTableInfo(sql)) {
+    const table = extractPragmaTable(sql, "table_info");
+    const result = await getPostgresAsyncPool().query(
+      `SELECT column_name AS name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=$1 ORDER BY ordinal_position;`,
+      [table]
+    );
+    return result.rows as T[];
+  }
+  if (isPragmaIndexList(sql)) {
+    const table = extractPragmaTable(sql, "index_list");
+    const result = await getPostgresAsyncPool().query(
+      `SELECT indexname AS name FROM pg_indexes WHERE schemaname=current_schema() AND tablename=$1 ORDER BY indexname;`,
+      [table]
+    );
+    return result.rows as T[];
+  }
+  const result = await getPostgresAsyncPool().query(translateSqlForPostgres(sql));
+  return result.rows as T[];
+}
+
+export async function execSqlAsync(sql: string): Promise<void> {
+  assertAsyncDatabaseReady();
+  if (dbBackend !== "postgres") {
+    execSql(sql);
+    return;
+  }
+  await getPostgresAsyncPool().query(translateSqlForPostgres(sql));
+  if (!dbInitializing && affectsSchema(sql)) dbInitialized = false;
+}
+
+export async function runSqlTransactionAsync(steps: readonly SqlTransactionStep[]): Promise<void> {
+  assertAsyncDatabaseReady();
+  if (steps.length === 0) return;
+  if (dbBackend !== "postgres") {
+    runSqlTransaction(steps);
+    return;
+  }
+  const client = await getPostgresAsyncPool().connect();
+  try {
+    await client.query("BEGIN");
+    for (const step of steps) {
+      const result = await client.query(translateSqlForPostgres(step.sql));
+      if (step.expectChanges !== undefined && (result.rowCount ?? 0) !== step.expectChanges) {
+        throw new Error(`sql_transaction_expected_changes:${step.expectChanges}:actual:${result.rowCount ?? 0}`);
+      }
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/** Execute one atomic PostgreSQL transaction as a single network round trip. */
+export async function runSqlScriptAsync(statements: readonly string[]): Promise<void> {
+  if (statements.length === 0) return;
+  assertAsyncDatabaseReady();
+  if (dbBackend !== "postgres") {
+    runSqlTransaction(statements.map((sql) => ({ sql })));
+    return;
+  }
+  const client = await getPostgresAsyncPool().connect();
+  try {
+    const script = ["BEGIN", ...statements.map((sql) => translateSqlForPostgres(sql)), "COMMIT"].join(";\n");
+    await client.query(script);
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Async request/worker paths must never fall back to the synchronous
+ * PostgreSQL schema probe. Startup owns that boundary; if it is not ready,
+ * fail closed with a restartable blocker instead of stalling the event loop.
+ */
+function assertAsyncDatabaseReady(): void {
+  if (dbBackend !== "postgres") {
+    initDb();
+    return;
+  }
+  if (!dbInitialized) throw new Error("postgres_async_schema_not_ready");
+}
+
 export function initDb(): void {
   if (dbInitialized) return;
   if (dbBackend === "postgres" && postgresSchemaAssumedCurrent) {
@@ -161,12 +275,100 @@ function initializeDatabaseSchema(): void {
   try {
     const schemaSql = readFileSync(schemaPath, "utf8");
     execSql(schemaSqlForCurrentDatabase(schemaSql));
+    repairLegacyDurableJobAttemptForeignKey();
     runIdempotentMigrations();
     if (dbBackend === "postgres") recordPostgresSchemaBootstrap();
     dbInitialized = true;
     dbInitRunCount += 1;
   } finally {
     dbInitializing = false;
+  }
+}
+
+function repairLegacyDurableJobAttemptForeignKey(): void {
+  if (dbBackend !== "sqlite") return;
+
+  const database = getDb();
+  const table = database
+    .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='durable_job_attempts'")
+    .get() as { sql?: string } | undefined;
+  const tableSql = table?.sql ?? "";
+  if (!/REFERENCES\s+company_users\s*\(/i.test(tableSql)) return;
+
+  const stagingExists = database
+    .prepare("SELECT 1 AS present FROM sqlite_master WHERE type='table' AND name='durable_job_attempts__repaired'")
+    .get() as { present?: number } | undefined;
+  if (stagingExists?.present === 1) {
+    throw new Error("durable_job_attempts_repair_staging_exists");
+  }
+
+  const columns = listTableColumns("durable_job_attempts");
+  const source = (column: string, fallback: string): string => columns.has(column) ? column : fallback;
+  const startedAt = source("started_at", source("created_at", "strftime('%Y-%m-%dT%H:%M:%fZ','now')"));
+  const createdAt = source("created_at", startedAt);
+  const updatedAt = source("updated_at", createdAt);
+
+  database.pragma("foreign_keys = OFF");
+  try {
+    database.exec(`
+      CREATE TABLE durable_job_attempts__repaired (
+        id TEXT PRIMARY KEY,
+        company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        job_id TEXT NOT NULL REFERENCES durable_jobs(id) ON DELETE CASCADE,
+        attempt_no INTEGER NOT NULL,
+        service_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        fencing_token INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'running',
+        provider_called INTEGER NOT NULL DEFAULT 0,
+        provider_called_at TEXT,
+        reservation_id TEXT,
+        reconciliation_started_at TEXT,
+        reconciliation_owner TEXT,
+        started_at TEXT NOT NULL,
+        heartbeat_at TEXT NOT NULL,
+        finished_at TEXT,
+        error_code TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(job_id, attempt_no)
+      );
+
+      INSERT INTO durable_job_attempts__repaired (
+        id, company_id, job_id, attempt_no, service_user_id, fencing_token, status,
+        provider_called, provider_called_at, reservation_id, reconciliation_started_at,
+        reconciliation_owner, started_at, heartbeat_at, finished_at, error_code,
+        created_at, updated_at
+      )
+      SELECT
+        ${source("id", "NULL")},
+        ${source("company_id", "'legacy'")},
+        ${source("job_id", "'legacy_job'")},
+        ${source("attempt_no", "1")},
+        ${source("service_user_id", "'legacy_service'")},
+        ${source("fencing_token", "0")},
+        ${source("status", "'running'")},
+        ${source("provider_called", "0")},
+        ${source("provider_called_at", "NULL")},
+        ${source("reservation_id", "NULL")},
+        ${source("reconciliation_started_at", "NULL")},
+        ${source("reconciliation_owner", "NULL")},
+        ${startedAt},
+        ${source("heartbeat_at", startedAt)},
+        ${source("finished_at", "NULL")},
+        ${source("error_code", "NULL")},
+        ${createdAt},
+        ${updatedAt}
+      FROM durable_job_attempts;
+
+      DROP TABLE durable_job_attempts;
+      ALTER TABLE durable_job_attempts__repaired RENAME TO durable_job_attempts;
+      CREATE INDEX IF NOT EXISTS durable_job_attempts_company_idx
+        ON durable_job_attempts(company_id, status, created_at DESC);
+      CREATE INDEX IF NOT EXISTS durable_job_attempts_job_idx
+        ON durable_job_attempts(job_id, attempt_no DESC);
+    `);
+  } finally {
+    database.pragma("foreign_keys = ON");
   }
 }
 
@@ -383,6 +585,7 @@ function runIdempotentMigrations(): void {
       automation_type TEXT NOT NULL,
       name TEXT NOT NULL,
       description TEXT NOT NULL,
+      "desc" TEXT NOT NULL DEFAULT '',
       goal TEXT NOT NULL,
       schedule TEXT NOT NULL,
       cadence TEXT NOT NULL,
@@ -405,11 +608,13 @@ function runIdempotentMigrations(): void {
   `);
   ensureColumn("mvp_automations", "company_id", "TEXT NOT NULL DEFAULT ''");
   ensureColumn("mvp_automations", "description", "TEXT NOT NULL DEFAULT ''");
+  ensureColumn("mvp_automations", "desc", "TEXT NOT NULL DEFAULT ''");
   ensureColumn("mvp_automations", "current_version_id", "TEXT");
   ensureColumn("mvp_automations", "revision", "INTEGER NOT NULL DEFAULT 1");
   ensureColumn("mvp_automations", "archived_at", "TEXT");
   if (listTableColumns("mvp_automations").has("desc")) {
-    execSql("UPDATE mvp_automations SET description=desc WHERE trim(description)='' AND desc IS NOT NULL;");
+    execSql("UPDATE mvp_automations SET description=\"desc\" WHERE trim(description)='' AND \"desc\" IS NOT NULL;");
+    execSql("UPDATE mvp_automations SET \"desc\"=description WHERE trim(\"desc\")='' AND description IS NOT NULL;");
   }
   execSql("CREATE INDEX IF NOT EXISTS mvp_automations_company_idx ON mvp_automations(company_id);");
   execSql("CREATE INDEX IF NOT EXISTS mvp_automations_current_version_idx ON mvp_automations(current_version_id);");

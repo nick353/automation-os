@@ -60,7 +60,8 @@ export type DailyAiRegisteredRunResult = DailyAiRegisteredEvaluation & {
 // Keep the established receipt filename for storage compatibility. The
 // receipt payload and command surface are Browser Use CLI-only; the filename
 // is not a transport selector.
-const summaryFileName = "registered-playwright-cli-summary.json";
+const summaryFileName = "registered-browser-summary.json";
+const compatibilitySummaryFileName = "registered-playwright-cli-summary.json";
 const projectRoot = "/Users/nichikatanaka/Documents/New project";
 const fixedOutputRoot = join(projectRoot, "artifacts", "automation-os-daily-ai-runs");
 const defaultBrowserUseRunner = join(projectRoot, "scripts", "run_daily_ai_browser_use_cli_registered.mjs");
@@ -68,6 +69,8 @@ const defaultRunnerTimeoutMs = 90 * 60 * 1000;
 const defaultCliStepTimeoutMs = 45 * 60 * 1000;
 const browserUseRunnerMissing = "browser_use_cli_registered_runner_missing";
 const dailyAiRunnerPathPrefix = ["/Users/nichikatanaka/.local/bin", "/opt/homebrew/bin", "/usr/local/bin"];
+const dailyAiFallbackBrowserPort = 19882;
+const dailyAiFallbackBrowserProfile = "/Users/nichikatanaka/.browser-use-cli/profiles/scheduled/daily-ai";
 
 function externalEffectsEnabled(): boolean {
   const value = (
@@ -141,8 +144,8 @@ export function runDailyAiRegisteredRunner(input: { runId: string; startedAtMs?:
         DAILY_AI_CLI_REQUIRE_SHIP_NOW_BUFFER: "false",
         DAILY_AI_CLI_REPLENISH_BUFFER_TIMEOUT_MS: "600000",
         DAILY_AI_RUNWAY_MCP_TIMEOUT_SECONDS: "300",
-        DAILY_AI_CDP_PORT: String(dailyAiBrowserLane?.cdpPort ?? 9333),
-        DAILY_AI_CLI_PROFILE_DIR: dailyAiBrowserLane?.profileDir ?? "/Users/nichikatanaka/.daily-ai-playwright-chrome",
+        DAILY_AI_CDP_PORT: String(dailyAiBrowserLane?.cdpPort ?? dailyAiFallbackBrowserPort),
+        DAILY_AI_CLI_PROFILE_DIR: dailyAiBrowserLane?.profileDir ?? dailyAiFallbackBrowserProfile,
         DAILY_AI_CLI_HEADLESS: dailyAiBrowserLane?.laneVisibility === "headless" ? "true" : "false",
         DAILY_AI_CLI_SHOW_BROWSER: dailyAiBrowserLane?.laneVisibility === "visible" ? "true" : "false",
         ...proofOnlyNoPostPreflightEnv,
@@ -178,8 +181,8 @@ export function runDailyAiRegisteredRunner(input: { runId: string; startedAtMs?:
       `DAILY_AI_CLI_RUN_ID=${JSON.stringify(cliRunId)} DAILY_AI_CLI_OUTPUT_DIR=${JSON.stringify(outputDir)} ` +
       `DAILY_AI_BROWSER_DRIVER=browser_use_cli DAILY_AI_CLI_BROWSER_VIDEO_QA=no-post-preflight ` +
       `DAILY_AI_CLI_REQUIRE_BROWSER_USE=1 DAILY_AI_CLI_RECORDING_REQUIRED=1 DAILY_AI_CLI_EXTERNAL_VIDEO_QA_REQUIRED=0 ` +
-      `DAILY_AI_CDP_PORT=${String(dailyAiBrowserLane?.cdpPort ?? 9333)} DAILY_AI_CLI_PROFILE_DIR=${JSON.stringify(
-        dailyAiBrowserLane?.profileDir ?? "/Users/nichikatanaka/.daily-ai-playwright-chrome"
+      `DAILY_AI_CDP_PORT=${String(dailyAiBrowserLane?.cdpPort ?? dailyAiFallbackBrowserPort)} DAILY_AI_CLI_PROFILE_DIR=${JSON.stringify(
+        dailyAiBrowserLane?.profileDir ?? dailyAiFallbackBrowserProfile
       )} DAILY_AI_CLI_HEADLESS=${dailyAiBrowserLane?.laneVisibility === "headless" ? "true" : "false"} DAILY_AI_CLI_SHOW_BROWSER=${
         dailyAiBrowserLane?.laneVisibility === "visible" ? "true" : "false"
       } ` +
@@ -202,8 +205,8 @@ export function runDailyAiRegisteredRunner(input: { runId: string; startedAtMs?:
       DAILY_AI_CLI_REQUIRE_SHIP_NOW_BUFFER: "false",
       DAILY_AI_CLI_REPLENISH_BUFFER_TIMEOUT_MS: "600000",
       DAILY_AI_RUNWAY_MCP_TIMEOUT_SECONDS: "300",
-      DAILY_AI_CDP_PORT: String(dailyAiBrowserLane?.cdpPort ?? 9333),
-      DAILY_AI_CLI_PROFILE_DIR: dailyAiBrowserLane?.profileDir ?? "/Users/nichikatanaka/.daily-ai-playwright-chrome",
+      DAILY_AI_CDP_PORT: String(dailyAiBrowserLane?.cdpPort ?? dailyAiFallbackBrowserPort),
+      DAILY_AI_CLI_PROFILE_DIR: dailyAiBrowserLane?.profileDir ?? dailyAiFallbackBrowserProfile,
       DAILY_AI_CLI_HEADLESS: dailyAiBrowserLane?.laneVisibility === "headless" ? "true" : "false",
       DAILY_AI_CLI_SHOW_BROWSER: dailyAiBrowserLane?.laneVisibility === "visible" ? "true" : "false",
       ...proofOnlyNoPostPreflightEnv,
@@ -250,6 +253,8 @@ function dailyAiProofOnlyNoPostPreflightEnv(): { DAILY_AI_CLI_PROOF_ONLY_NO_POST
 export function findDailyAiRegisteredSummary(input: { outputDir?: string; startedAtMs?: number } = {}): string | undefined {
   const fixedSummary = input.outputDir ? join(input.outputDir, summaryFileName) : undefined;
   if (fixedSummary && existsSync(fixedSummary)) return fixedSummary;
+  const compatibilitySummary = input.outputDir ? join(input.outputDir, compatibilitySummaryFileName) : undefined;
+  if (compatibilitySummary && existsSync(compatibilitySummary)) return compatibilitySummary;
   return undefined;
 }
 

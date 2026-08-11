@@ -1,7 +1,7 @@
 import { initDb, nowIso, querySql, sqlValue, upsert } from "../db/client.js";
 import { closeSharedAppServerClient, processQueuedCreatePlannerJobs } from "../planner/createPlannerJobs.js";
-import { runWorkerOnce } from "../runs/workerEngine.js";
-import { materializeDueAutomationOccurrences } from "../runs/automationScheduler.js";
+import { runPortableMacWorkerOnce, runWorkerOnce } from "../runs/workerEngine.js";
+import { durableSchedulerOwner, runDurableAutomationSchedulerOnce } from "../runs/durableAutomationScheduler.js";
 import { runDurableDryRunWorkerOnce } from "../runs/durableDryRunWorker.js";
 import { runDurableExternalWorkerOnce } from "../runs/durableExternalWorker.js";
 import { resolveCodexBin } from "../codex/codexBin.js";
@@ -13,10 +13,12 @@ const intervalMs = boundedNumber(readArgValue("--interval-ms") ?? process.env.AU
 });
 const runId = readArgValue("--run-id");
 const durableServiceUserId = (readArgValue("--durable-service-user-id") ?? process.env.AUTOMATION_OS_DURABLE_SERVICE_USER_ID ?? "").trim();
+const durableOnly = process.env.AUTOMATION_OS_WORKER_DURABLE_ONLY?.trim() === "1";
 const maxCycles = boundedNumber(readArgValue("--max-cycles") ?? process.env.AUTOMATION_OS_WORKER_LOOP_MAX_CYCLES, Number.POSITIVE_INFINITY, {
   min: 1,
   max: Number.POSITIVE_INFINITY
 });
+const workerOwnsDurableScheduler = durableSchedulerOwner() === "worker";
 
 let stopping = false;
 let fatalBlocker: string | null = null;
@@ -27,6 +29,7 @@ let lastPlannerJobIds: string[] = [];
 let lastDurableJobIds: string[] = [];
 let lastDurableExternalJobIds: string[] = [];
 let lastDurableExternalBlockers: string[] = [];
+let lastPortableRunIds: string[] = [];
 
 process.on("SIGINT", () => {
   stopping = true;
@@ -62,6 +65,8 @@ console.log(JSON.stringify({
   maxCycles: Number.isFinite(maxCycles) ? maxCycles : null,
   codexBin: resolveCodexBin(["AUTOMATION_OS_CHILD_CODEX_BIN"]),
   plannerProvider: process.env.AUTOMATION_OS_CREATE_PLANNER_PROVIDER ?? "auto",
+  durableSchedulerOwner: durableSchedulerOwner(),
+  durableOnly,
   usesApiKey: Boolean(process.env.OPENAI_API_KEY || process.env.CODEX_API_KEY),
   durableServiceUserConfigured: Boolean(durableServiceUserId)
 }));
@@ -73,16 +78,29 @@ for (let cycle = 1; !stopping && cycle <= maxCycles; cycle += 1) {
       const coverageBlocker = durableWorkerCoverageBlocker(durableServiceUserId);
       if (coverageBlocker) throw new Error(coverageBlocker);
     }
-    const summaries = await runWorkerOnce(runId);
+    const summaries = durableOnly ? [] : await runWorkerOnce(runId);
+    const portableSummaries = durableOnly ? await runPortableMacWorkerOnce() : [];
+    // The worker-owned scheduler uses the same AOS scheduler tick as the
+    // server-owned scheduler. This keeps registered Browser Use schedules on
+    // the portable Mac-worker queue instead of recreating the legacy generic
+    // dry-run queue inside the worker loop.
+    const durableSchedulerTick = workerOwnsDurableScheduler && !runId && durableServiceUserId
+      ? await runDurableAutomationSchedulerOnce({ serviceUserId: durableServiceUserId, now: startedAt })
+      : null;
     const durableResults = runId || !durableServiceUserId
       ? []
       : await Promise.all(listDurableWorkerCompanyIds(durableServiceUserId).map(async (companyId) => {
-          const scheduler = materializeDueAutomationOccurrences({ companyId, serviceUserId: durableServiceUserId, now: startedAt });
+          const scheduler = durableSchedulerTick
+            ? {
+                initializedScheduleIds: [] as string[],
+                occurrences: durableSchedulerTick.occurrences.filter((occurrence) => occurrence.companyId === companyId)
+              }
+            : { initializedScheduleIds: [] as string[], occurrences: [] };
           const worker = runDurableDryRunWorkerOnce({ companyId, serviceUserId: durableServiceUserId, now: startedAt });
           const externalWorker = await runDurableExternalWorkerOnce({ companyId, serviceUserId: durableServiceUserId, now: startedAt });
           return { companyId, scheduler, worker, externalWorker };
         }));
-    const plannerJobs = runId ? [] : await processQueuedCreatePlannerJobs(1);
+    const plannerJobs = runId || durableOnly ? [] : await processQueuedCreatePlannerJobs(1);
     lastProcessed = summaries.length;
     lastPlannerJobsProcessed = plannerJobs.length;
     lastRunIds = summaries.map((summary) => String(summary.runId ?? "")).filter(Boolean).slice(0, 10);
@@ -90,7 +108,8 @@ for (let cycle = 1; !stopping && cycle <= maxCycles; cycle += 1) {
     lastDurableJobIds = durableResults.flatMap((result) => result.worker.status === "completed" ? [result.worker.job.id] : []);
     lastDurableExternalJobIds = durableResults.flatMap((result) => result.externalWorker.status === "completed" ? [result.externalWorker.job?.id ?? ""].filter(Boolean) : []);
     lastDurableExternalBlockers = durableResults.flatMap((result) => result.externalWorker.exactBlocker ? [result.externalWorker.exactBlocker] : []);
-    const totalProcessed = lastProcessed + lastPlannerJobsProcessed + lastDurableJobIds.length + lastDurableExternalJobIds.length;
+    lastPortableRunIds = portableSummaries.map((summary) => String(summary.runId ?? "")).filter(Boolean).slice(0, 10);
+    const totalProcessed = lastProcessed + portableSummaries.length + lastPlannerJobsProcessed + lastDurableJobIds.length + lastDurableExternalJobIds.length;
     const heartbeatSummary = totalProcessed
       ? `${totalProcessed}件の処理を確認しました`
       : lastDurableExternalBlockers.length
@@ -101,6 +120,8 @@ for (let cycle = 1; !stopping && cycle <= maxCycles; cycle += 1) {
       cycle,
       processed: lastProcessed,
       plannerJobsProcessed: lastPlannerJobsProcessed,
+      portableRunsProcessed: portableSummaries.length,
+      portableRunIds: lastPortableRunIds,
       durableJobsProcessed: lastDurableJobIds.length,
       runIds: lastRunIds,
       plannerJobIds: lastPlannerJobIds,
@@ -114,8 +135,11 @@ for (let cycle = 1; !stopping && cycle <= maxCycles; cycle += 1) {
       startedAt,
       completedAt: new Date().toISOString(),
       runId: runId ?? null,
+      durableOnly,
       processed: totalProcessed,
       runProcessed: lastProcessed,
+      portableRunsProcessed: portableSummaries.length,
+      portableRunIds: lastPortableRunIds,
       plannerJobsProcessed: lastPlannerJobsProcessed,
       summaries,
       plannerJobs: plannerJobs.map((job) => ({
@@ -144,6 +168,7 @@ for (let cycle = 1; !stopping && cycle <= maxCycles; cycle += 1) {
     lastDurableJobIds = [];
     lastDurableExternalJobIds = [];
     lastDurableExternalBlockers = [];
+    lastPortableRunIds = [];
     writeWorkerHeartbeat("blocked", "Mac workerの確認が止まりました", {
       lifecycle: "blocked",
       cycle,
@@ -179,6 +204,7 @@ writeWorkerHeartbeat(fatalBlocker ? "blocked" : "idle", fatalBlocker ? "Durable 
   durableJobIds: lastDurableJobIds,
   durableExternalJobIds: lastDurableExternalJobIds,
   durableExternalBlockers: lastDurableExternalBlockers,
+  portableRunIds: lastPortableRunIds,
   blocker: fatalBlocker
 });
 
@@ -196,7 +222,7 @@ function listDurableWorkerCompanyIds(serviceUserId: string): string[] {
 }
 
 function durableWorkerCoverageBlocker(serviceUserId: string): string | null {
-  const requiredCompanyIds = listDurableWorkCompanyIds();
+  const requiredCompanyIds = listDurableWorkCompanyIds(workerOwnsDurableScheduler);
   if (requiredCompanyIds.length === 0) return null;
   if (!serviceUserId) return "durable_service_user_id_missing_with_pending_work";
   const authorizedCompanyIds = new Set(listDurableWorkerCompanyIds(serviceUserId));
@@ -207,17 +233,18 @@ function durableWorkerCoverageBlocker(serviceUserId: string): string | null {
   return null;
 }
 
-function listDurableWorkCompanyIds(): string[] {
+function listDurableWorkCompanyIds(includeScheduledSchedules: boolean): string[] {
   return querySql<{ company_id: string }>(`
     SELECT company_id FROM durable_jobs
     WHERE status IN ('queued', 'leased', 'reconciliation_required')
-    UNION
+    ${includeScheduledSchedules ? "UNION" : ""}
+    ${includeScheduledSchedules ? `
     SELECT schedule.company_id
     FROM mvp_automation_schedules schedule
     JOIN mvp_automations automation
       ON automation.id=schedule.automation_id AND automation.company_id=schedule.company_id
     WHERE schedule.enabled=1 AND schedule.status='active' AND schedule.kind!='manual'
-      AND automation.status='active'
+      AND automation.status='active'` : ""}
     ORDER BY company_id
   `).map((row) => row.company_id);
 }
@@ -240,6 +267,7 @@ function writeWorkerHeartbeat(status: "running" | "ok" | "blocked" | "idle", sum
       host: hostname(),
       codexBin: resolveCodexBin(["AUTOMATION_OS_CHILD_CODEX_BIN"]),
       plannerProvider: process.env.AUTOMATION_OS_CREATE_PLANNER_PROVIDER ?? "auto",
+      durableOnly,
       usesApiKey: Boolean(process.env.OPENAI_API_KEY || process.env.CODEX_API_KEY),
       pid: process.pid,
       ...extra,

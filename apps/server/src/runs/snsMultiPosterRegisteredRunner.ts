@@ -4,6 +4,7 @@ import { basename, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Proof } from "./proofGate.js";
 import { inspectBrowserUseCliRunner } from "./browserUseCliRunnerGuard.js";
+import { WEB_OPERATION_CONTRACT_SCHEMA_V1 } from "./webOperationContract.js";
 
 export type SnsMultiPosterRegisteredStatus = "complete" | "partial" | "blocked";
 
@@ -293,7 +294,9 @@ function baseCommand(
       SNS_MULTI_POSTER_HARD_STOPS: "billing,purchase,payment,checkout",
       SNS_MULTI_POSTER_RESOLVED_INPUT_SOURCE: resolvedInput?.source ?? "missing",
       AUTOMATION_OS_BROWSER_SURFACE: "browser_use_cli",
-      AUTOMATION_OS_BROWSER_NO_FALLBACK: "1"
+      AUTOMATION_OS_BROWSER_NO_FALLBACK: "1",
+      AUTOMATION_OS_WEB_OPERATION_CONTRACT_SCHEMA: WEB_OPERATION_CONTRACT_SCHEMA_V1,
+      AUTOMATION_OS_WEB_OPERATION_ADAPTIVE: "semantic_live_state_bounded_exploration"
     },
     resolvedRunner
   };

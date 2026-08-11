@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { listTrustedBridgeActions } from "../bridge/trustedBridge.js";
 import { buildCapabilityRouterSnapshot } from "../codex/capabilityRouter.js";
-import { buildExecutionRoutingSnapshot, inferExecutionRoutingSource } from "../codex/executionRouting.js";
+import { buildExecutionRoutingSnapshot, buildPortableWorkerExecutionRoutingSnapshot, inferExecutionRoutingSource } from "../codex/executionRouting.js";
 import type { CodexCapabilitiesSummary } from "../codex/capabilities.js";
 
 test("execution routing chooses Codex server as controller and preserves the strongest browser lane", () => {
@@ -115,6 +115,23 @@ test("execution routing source inference keeps scheduler and create view paths s
     inferExecutionRoutingSource({ create_session_source: "create_view" }),
     "create_view"
   );
+});
+
+test("portable workflow routing is owned by the AOS worker and never inherits a Codex route", () => {
+  const routing = buildPortableWorkerExecutionRoutingSnapshot({
+    command: "Daily AI registered workflow run full flow",
+    source: "manual",
+    workflowId: "daily-ai-research-publish-run"
+  });
+
+  assert.equal(routing.executionSurface, "worker_loop");
+  assert.equal(routing.selectedRouteId, "automation_os_portable_worker");
+  assert.equal(routing.authority, "runtime");
+  assert.equal(routing.routeProof, "read_only");
+  assert.deepEqual(routing.plannedAdapters, ["browser_use_cli"]);
+  assert.equal(routing.exactBlocker, null);
+  assert.match(routing.evidence.join(" "), /codex_app_run_now_required=false/);
+  assert.match(routing.evidence.join(" "), /codex_not_execution_authority=true/);
 });
 
 function fixtureCapabilities(): CodexCapabilitiesSummary {

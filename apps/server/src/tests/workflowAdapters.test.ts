@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
-import { prepareReferenceIabExternalIntentV1, readReferenceBrowserUseWorkflowAdaptersV1 } from "../serviceReadiness/workflowAdapters.js";
+import { prepareReferenceBrowserUseExternalIntentV1, prepareReferenceIabExternalIntentV1, readReferenceBrowserUseWorkflowAdaptersV1 } from "../serviceReadiness/workflowAdapters.js";
 
 const hash = (letter: string) => letter.repeat(64);
 const jobTargetHash = createHash("sha256").update("https://jobs.example.test/listing/123").digest("hex");
@@ -142,5 +142,23 @@ test("Browser Use workflow adapters are canonical and cannot substitute IAB rece
     assert.match(adapter.adapter_entrypoint, /browser-use-cli-stage-adapter\.mjs$/);
     assert.equal(adapter.receipt_discriminator, "browser_use_cli_stage_observation.v1");
     assert.equal(adapter.iab_receipt_substitution, "forbidden");
+    assert.equal(adapter.external_intent_schema, "service_readiness_browser_use_external_intent.v1");
+    assert.equal(adapter.external_effect_ready, false);
+    assert.equal(adapter.external_executor_status, "authorized_business_runner_pending");
+    assert.equal(adapter.business_runner_entrypoint, "scripts/aos-portable-business-runner.mjs");
+  }
+});
+
+test("Browser Use external intent is current, authority-bound, and never an IAB receipt", () => {
+  for (const [workflow_id, contract] of [["daily-ai", daily()], ["job-application-manager", job()], ["nisenprints", nisen()]] as const) {
+    const prepared = prepareReferenceBrowserUseExternalIntentV1({ workflow_id, contract });
+    assert.equal(prepared.schema, "service_readiness_browser_use_external_intent.v1");
+    assert.equal(prepared.browser_surface, "browser_use_cli");
+    assert.equal(prepared.authority_required, true);
+    assert.equal(prepared.external_effect_ready, false);
+    assert.equal(prepared.external_executor_status, "authorized_business_runner_pending");
+    assert.equal(prepared.business_runner_entrypoint, "scripts/aos-portable-business-runner.mjs");
+    assert.equal(prepared.external_action_executed, false);
+    assert.equal(JSON.stringify(prepared).includes("iab"), false);
   }
 });

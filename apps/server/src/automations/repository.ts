@@ -1,4 +1,4 @@
-import { makeId, nowIso, querySql, runSqlTransaction, sqlValue, type SqlTransactionStep } from "../db/client.js";
+import { makeId, nowIso, querySql, querySqlAsync, runSqlTransaction, sqlValue, type SqlTransactionStep } from "../db/client.js";
 import { requireCompanyAccess } from "../companies/repository.js";
 import type {
   AutomationDefinitionInput,
@@ -68,6 +68,19 @@ export function listAutomationRecords(companyId: string, includeArchived = false
     WHERE company_id=${sqlValue(company)} ${includeArchived ? "" : "AND archived_at IS NULL"}
     ORDER BY updated_at DESC, id ASC
   `).map(toAutomationRecord);
+}
+
+export async function listAutomationRecordsAsync(companyId: string, includeArchived = false): Promise<AutomationRecord[]> {
+  const company = required(companyId, "company_id_required");
+  const rows = await querySqlAsync<AutomationRow>(`
+    SELECT id, company_id, revision, current_version_id, automation_type, name, description, goal, lane,
+           risk_level, approval_policy, worker_command_kind, create_approval, builder_spec_json, status,
+           archived_at, created_at, updated_at
+    FROM mvp_automations
+    WHERE company_id=${sqlValue(company)} ${includeArchived ? "" : "AND archived_at IS NULL"}
+    ORDER BY updated_at DESC, id ASC
+  `);
+  return rows.map(toAutomationRecord);
 }
 
 export function getAutomationRecord(companyId: string, automationId: string, includeArchived = false): AutomationRecord | undefined {
@@ -200,6 +213,33 @@ export function updateAutomationRecord(input: {
   return requiredAutomation(next.companyId, next.id, true);
 }
 
+export function activateAutomationRecord(input: {
+  companyId: string;
+  actorUserId: string;
+  automationId: string;
+  expectedRevision: number;
+}): AutomationRecord {
+  requireCompanyAccess(required(input.companyId, "company_id_required"), ["owner", "admin", "operator"], required(input.actorUserId, "actor_user_id_required"));
+  const current = requiredAutomation(input.companyId, input.automationId, true);
+  if (current.archivedAt) throw new AutomationRepositoryError("automation_archived");
+  if (current.revision !== input.expectedRevision) throw new AutomationRepositoryError("automation_revision_conflict");
+  if (current.status === "active") return current;
+  const timestamp = nowIso();
+  const next: AutomationRecord = {
+    ...current,
+    revision: current.revision + 1,
+    currentVersionId: makeId("automation_version"),
+    status: "active",
+    updatedAt: timestamp
+  };
+  runSqlTransaction([
+    insertVersionStep(next),
+    updateAutomationStep(next, current.revision),
+    auditStep(next.companyId, required(input.actorUserId, "actor_user_id_required"), "automation.activated", "automation", next.id, current, next, timestamp)
+  ]);
+  return requiredAutomation(next.companyId, next.id, true);
+}
+
 export function archiveAutomationRecord(input: {
   companyId: string;
   actorUserId: string;
@@ -254,6 +294,13 @@ export function listAutomationSchedules(companyId: string, automationId?: string
   const company = required(companyId, "company_id_required");
   const scopedAutomation = automationId ? ` AND automation_id=${sqlValue(required(automationId, "automation_id_required"))}` : "";
   return querySql<any>(`SELECT * FROM mvp_automation_schedules WHERE company_id=${sqlValue(company)}${scopedAutomation} ORDER BY updated_at DESC`).map(toScheduleRecord);
+}
+
+export async function listAutomationSchedulesAsync(companyId: string, automationId?: string): Promise<AutomationScheduleRecord[]> {
+  const company = required(companyId, "company_id_required");
+  const scopedAutomation = automationId ? ` AND automation_id=${sqlValue(required(automationId, "automation_id_required"))}` : "";
+  const rows = await querySqlAsync<any>(`SELECT * FROM mvp_automation_schedules WHERE company_id=${sqlValue(company)}${scopedAutomation} ORDER BY updated_at DESC`);
+  return rows.map(toScheduleRecord);
 }
 
 export function saveAutomationSchedule(input: {
@@ -405,7 +452,7 @@ function recordFromDefinition(input: { id: string; companyId: string; revision: 
 }
 
 function insertAutomationStep(record: AutomationRecord): SqlTransactionStep {
-  return { sql: `INSERT INTO mvp_automations (id, company_id, project_id, automation_type, name, description, goal, schedule, cadence, lane, risk_level, approval_policy, worker_command_kind, create_approval, status, builder_spec_json, current_version_id, revision, archived_at, created_at, updated_at) VALUES (${sqlValue(record.id)}, ${sqlValue(record.companyId)}, ${sqlValue(record.companyId)}, ${sqlValue(record.automationType)}, ${sqlValue(record.name)}, ${sqlValue(record.description)}, ${sqlValue(record.goal)}, 'manual', 'manual', ${sqlValue(record.lane)}, ${sqlValue(record.riskLevel)}, ${sqlValue(record.approvalPolicy)}, ${sqlValue(record.workerCommandKind)}, ${record.createApproval ? 1 : 0}, ${sqlValue(record.status)}, ${sqlValue(record.builderSpec)}, ${sqlValue(record.currentVersionId)}, ${record.revision}, ${sqlValue(record.archivedAt)}, ${sqlValue(record.createdAt)}, ${sqlValue(record.updatedAt)})`, expectChanges: 1 };
+  return { sql: `INSERT INTO mvp_automations (id, company_id, project_id, automation_type, name, description, "desc", goal, schedule, cadence, lane, risk_level, approval_policy, worker_command_kind, create_approval, status, builder_spec_json, current_version_id, revision, archived_at, created_at, updated_at) VALUES (${sqlValue(record.id)}, ${sqlValue(record.companyId)}, ${sqlValue(record.companyId)}, ${sqlValue(record.automationType)}, ${sqlValue(record.name)}, ${sqlValue(record.description)}, ${sqlValue(record.description)}, ${sqlValue(record.goal)}, 'manual', 'manual', ${sqlValue(record.lane)}, ${sqlValue(record.riskLevel)}, ${sqlValue(record.approvalPolicy)}, ${sqlValue(record.workerCommandKind)}, ${record.createApproval ? 1 : 0}, ${sqlValue(record.status)}, ${sqlValue(record.builderSpec)}, ${sqlValue(record.currentVersionId)}, ${record.revision}, ${sqlValue(record.archivedAt)}, ${sqlValue(record.createdAt)}, ${sqlValue(record.updatedAt)})`, expectChanges: 1 };
 }
 
 function insertVersionStep(record: AutomationRecord): SqlTransactionStep {
@@ -413,7 +460,7 @@ function insertVersionStep(record: AutomationRecord): SqlTransactionStep {
 }
 
 function updateAutomationStep(record: AutomationRecord, expectedRevision: number): SqlTransactionStep {
-  return { sql: `UPDATE mvp_automations SET automation_type=${sqlValue(record.automationType)}, name=${sqlValue(record.name)}, description=${sqlValue(record.description)}, goal=${sqlValue(record.goal)}, lane=${sqlValue(record.lane)}, risk_level=${sqlValue(record.riskLevel)}, approval_policy=${sqlValue(record.approvalPolicy)}, worker_command_kind=${sqlValue(record.workerCommandKind)}, create_approval=${record.createApproval ? 1 : 0}, status=${sqlValue(record.status)}, builder_spec_json=${sqlValue(record.builderSpec)}, current_version_id=${sqlValue(record.currentVersionId)}, revision=${record.revision}, archived_at=${sqlValue(record.archivedAt)}, updated_at=${sqlValue(record.updatedAt)} WHERE id=${sqlValue(record.id)} AND company_id=${sqlValue(record.companyId)} AND revision=${expectedRevision}`, expectChanges: 1 };
+  return { sql: `UPDATE mvp_automations SET automation_type=${sqlValue(record.automationType)}, name=${sqlValue(record.name)}, description=${sqlValue(record.description)}, "desc"=${sqlValue(record.description)}, goal=${sqlValue(record.goal)}, lane=${sqlValue(record.lane)}, risk_level=${sqlValue(record.riskLevel)}, approval_policy=${sqlValue(record.approvalPolicy)}, worker_command_kind=${sqlValue(record.workerCommandKind)}, create_approval=${record.createApproval ? 1 : 0}, status=${sqlValue(record.status)}, builder_spec_json=${sqlValue(record.builderSpec)}, current_version_id=${sqlValue(record.currentVersionId)}, revision=${record.revision}, archived_at=${sqlValue(record.archivedAt)}, updated_at=${sqlValue(record.updatedAt)} WHERE id=${sqlValue(record.id)} AND company_id=${sqlValue(record.companyId)} AND revision=${expectedRevision}`, expectChanges: 1 };
 }
 
 function insertScheduleStep(row: AutomationScheduleRecord): SqlTransactionStep { return { sql: `INSERT INTO mvp_automation_schedules (id, company_id, project_id, automation_id, automation_version_id, kind, expression, timezone, enabled, status, revision, next_run_at, last_run_at, paused_at, created_at, updated_at) VALUES (${sqlValue(row.id)}, ${sqlValue(row.companyId)}, ${sqlValue(row.companyId)}, ${sqlValue(row.automationId)}, ${sqlValue(row.automationVersionId)}, ${sqlValue(row.kind)}, ${sqlValue(row.expression)}, ${sqlValue(row.timezone)}, ${row.enabled ? 1 : 0}, ${sqlValue(row.status)}, ${row.revision}, ${sqlValue(row.nextRunAt)}, ${sqlValue(row.lastRunAt)}, ${sqlValue(row.pausedAt)}, ${sqlValue(row.createdAt)}, ${sqlValue(row.updatedAt)})`, expectChanges: 1 }; }

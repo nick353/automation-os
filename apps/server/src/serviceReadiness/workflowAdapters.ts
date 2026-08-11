@@ -24,6 +24,10 @@ export type ReferenceBrowserUseWorkflowAdapterV1 = {
   no_fallback: true;
   receipt_discriminator: "browser_use_cli_stage_observation.v1";
   iab_receipt_substitution: "forbidden";
+  external_intent_schema: "service_readiness_browser_use_external_intent.v1";
+  external_effect_ready: false;
+  external_executor_status: "authorized_business_runner_pending";
+  business_runner_entrypoint: "scripts/aos-portable-business-runner.mjs";
   status: "configured";
 };
 
@@ -41,6 +45,10 @@ const browserUseAdapters: readonly ReferenceBrowserUseWorkflowAdapterV1[] = ( [
   no_fallback: true,
   receipt_discriminator: "browser_use_cli_stage_observation.v1",
   iab_receipt_substitution: "forbidden",
+  external_intent_schema: "service_readiness_browser_use_external_intent.v1",
+  external_effect_ready: false,
+  external_executor_status: "authorized_business_runner_pending",
+  business_runner_entrypoint: "scripts/aos-portable-business-runner.mjs",
   status: "configured"
 })) as ReferenceBrowserUseWorkflowAdapterV1[];
 
@@ -147,6 +155,15 @@ export type PreparedReferenceIabExternalIntentV1 = {
   safe_resume_step: string | null;
 };
 
+export type PreparedReferenceBrowserUseExternalIntentV1 = Omit<PreparedReferenceIabExternalIntentV1, "schema"> & {
+  schema: "service_readiness_browser_use_external_intent.v1";
+  browser_surface: "browser_use_cli";
+  authority_required: true;
+  external_effect_ready: false;
+  external_executor_status: "authorized_business_runner_pending";
+  business_runner_entrypoint: "scripts/aos-portable-business-runner.mjs";
+};
+
 function blockedIntent(workflowId: PreparedReferenceIabExternalIntentV1["workflow_id"], exactBlocker: string, safeResumeStep = "repair_workflow_contract_before_external_admission"): PreparedReferenceIabExternalIntentV1 {
   return {
     schema: "service_readiness_iab_external_intent.v1",
@@ -231,4 +248,32 @@ export function prepareReferenceIabExternalIntentV1(input: {
   } catch (error) {
     return blockedIntent(input.workflow_id, error instanceof Error ? error.message : "workflow_external_contract_invalid");
   }
+}
+
+/**
+ * Current provider-neutral external-intent projection for Browser Use CLI.
+ *
+ * The IAB-named parser above remains a compatibility boundary for historical
+ * contracts.  This projection is the current surface: it deliberately emits
+ * a Browser Use schema, requires a fresh authority later, and never grants a
+ * capability or calls a provider.
+ */
+export function prepareReferenceBrowserUseExternalIntentV1(input: {
+  workflow_id: PreparedReferenceBrowserUseExternalIntentV1["workflow_id"];
+  contract: unknown;
+}): PreparedReferenceBrowserUseExternalIntentV1 {
+  const prepared = prepareReferenceIabExternalIntentV1(input);
+  const exactBlocker = prepared.exact_blocker?.replaceAll("iab", "browser_use_cli") ?? null;
+  const safeResumeStep = prepared.safe_resume_step?.replaceAll("iab", "browser_use_cli") ?? null;
+  return {
+    ...prepared,
+    schema: "service_readiness_browser_use_external_intent.v1",
+    browser_surface: "browser_use_cli",
+    authority_required: true,
+    external_effect_ready: false,
+    external_executor_status: "authorized_business_runner_pending",
+    business_runner_entrypoint: "scripts/aos-portable-business-runner.mjs",
+    exact_blocker: exactBlocker,
+    safe_resume_step: safeResumeStep
+  };
 }

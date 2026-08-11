@@ -52,3 +52,21 @@ test("mvp state child fails closed on scope errors, malformed output, and missin
   assert.deepEqual(malformed, { status: "blocked", exactBlocker: "mvp_state_child_invalid_output" });
   assert.deepEqual(missing, { status: "blocked", exactBlocker: "mvp_state_cli_missing" });
 });
+
+test("mvp state child preserves loader flag values when running the source CLI", async () => {
+  let childArgs: string[] = [];
+  const outcome = await runMvpStateInChild({
+    execFileImpl: (_command, args, _options, callback) => {
+      childArgs = args;
+      callback(null, JSON.stringify({ ok: true, state }) + "\n", "");
+    },
+    fileExists: (path) => path.endsWith("mvpStateReadOnce.ts")
+  });
+
+  assert.deepEqual(outcome, { status: "completed", exactBlocker: null, state });
+  for (const flag of ["--import", "--loader", "--require"]) {
+    const index = childArgs.indexOf(flag);
+    if (index >= 0) assert.ok(childArgs[index + 1], `${flag} must retain its value`);
+  }
+  assert.ok(childArgs.at(-1)?.endsWith("mvpStateReadOnce.ts"));
+});

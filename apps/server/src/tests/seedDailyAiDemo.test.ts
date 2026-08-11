@@ -30,11 +30,12 @@ test("seedDailyAiDemo persists Browser Use lane details", () => {
     lane_visibility: string;
   }>("SELECT * FROM lanes WHERE run_id='run_demo_daily_ai' ORDER BY cdp_port ASC LIMIT 1")[0];
 
-  assert.equal(lane.cdp_port, 9333);
-  assert.match(lane.browser_use_session, /^browser-use-/);
-  assert.equal(lane.browser_use_cdp_url, "http://127.0.0.1:9333");
+  assert.equal(lane.cdp_port, 19882);
+  assert.match(lane.browser_use_session, /^browser-use-scheduled-/);
+  assert.equal(lane.browser_use_cdp_url, `http://127.0.0.1:${lane.cdp_port}`);
   assert.equal(lane.browser_use_profile, lane.profile_dir);
-  assert.equal(lane.profile_strategy, "cdp_profile_lane");
+  assert.equal(lane.browser_use_profile, "/Users/nichikatanaka/.browser-use-cli/profiles/scheduled/daily-ai");
+  assert.equal(lane.profile_strategy, "browser_use_cli_lifecycle");
   assert.equal(lane.lane_visibility, "visible");
 });
 

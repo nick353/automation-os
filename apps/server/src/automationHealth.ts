@@ -118,13 +118,23 @@ const VIDEO_QA_TERMS = [
   "anomaly_detected=false"
 ];
 
+const AOS_NO_EFFECT_BRIDGE_MARKERS = [
+  "aos_trigger_bridge_v1",
+  "provider-neutral, no-effect trigger",
+  "external_action_executed",
+  "do not use browser use"
+];
+
 const BROWSER_LANE_TERMS = [
-  "9333",
-  "9334",
-  "9335",
-  "Profile 2",
-  ".daily-ai-playwright-chrome",
-  ".nisenprints-playwright-chrome",
+  "19881",
+  "19882",
+  "19884",
+  "19980",
+  "20080",
+  ".browser-use-cli/profiles/scheduled",
+  ".browser-use-cli/profiles/single-use",
+  ".browser-use-cli/profiles/temporary",
+  "Browser Use CLI",
   "chrome_extension",
   "write lock"
 ];
@@ -311,7 +321,7 @@ function extractEntrypoints(prompt: string, cwds: string[]): AutomationHealthEnt
   const cwd = cwds[0] ?? process.cwd();
   const entrypoints: AutomationHealthEntry["entrypoints"] = [];
   const commandRegex =
-    /\b(node|python3?|tsx|bash|sh)\s+(?!-)([^\s"'`]+(?:\.(?:mjs|cjs|js|ts|py|sh)|\/[^\s"'`]+))/g;
+    /(?<![A-Za-z0-9_.-])\b(node|python3?|tsx|bash|sh)\s+(?!-)([^\s"'`]+(?:\.(?:mjs|cjs|js|ts|py|sh)|\/[^\s"'`]+))/g;
   for (const match of prompt.matchAll(commandRegex)) {
     const target = cleanToken(match[2]);
     const resolved = resolveCandidatePath(target, cwd);
@@ -374,6 +384,10 @@ function parseShellCommandLine(line: string, inEntrypointBlock: boolean): string
   const command = tokens[0];
   if (!command) return null;
   if (/^[A-Z]/.test(command)) return null;
+  // Registered prompts may contain workflow safety directives that look like
+  // hyphenated shell commands. They are contract markers, not executable
+  // entrypoints and must not create false ACTIVE health blockers.
+  if (/^skip-gmail$/i.test(command)) return null;
   // Contract prose such as "same-run source-of-truth readback" is not an
   // executable path. Keep the shell heuristic conservative for these
   // hyphenated lifecycle terms so they do not become false blockers.
@@ -556,6 +570,8 @@ function detectVideoQa(automation: AutomationTomlRecord): AutomationHealthEntry[
   const lower = `${automation.id}\n${automation.name}\n${automation.status}\n${prompt}`.toLowerCase();
   const wordingFound = VIDEO_QA_TERMS.filter((term) => lower.includes(term.toLowerCase()));
   if (automation.status !== "ACTIVE") return { likely_required: false, wording_found: wordingFound, status: "not_required" };
+  const isAosNoEffectBridge = AOS_NO_EFFECT_BRIDGE_MARKERS.every((marker) => lower.includes(marker));
+  if (isAosNoEffectBridge) return { likely_required: false, wording_found: wordingFound, status: "not_required" };
   const hasPositiveEffectInstruction = prompt.split(/\r?\n/u).some((line) => {
     const normalized = line.toLowerCase();
     const effectTerm = /(publish|post|posting|pinterest|etsy|printify|linkedin|direct_publish|write|writes|send|submit|calendar|sheets)/.test(normalized);

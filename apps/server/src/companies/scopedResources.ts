@@ -1,4 +1,4 @@
-import { querySql, sqlValue } from "../db/client.js";
+import { querySql, querySqlAsync, sqlValue } from "../db/client.js";
 
 export type ScopedRunRow = Record<string, unknown> & {
   id: string;
@@ -37,6 +37,16 @@ export function findScopedRun(runId: string, companyIds: readonly string[]): Sco
       AND ${scopedCompanyPredicate("runs.company_id", companyIds)}
     LIMIT 1
   `)[0];
+}
+
+export async function findScopedRunAsync(runId: string, companyIds: readonly string[]): Promise<ScopedRunRow | undefined> {
+  return (await querySqlAsync<ScopedRunRow>(`
+    SELECT runs.*
+    FROM runs
+    WHERE runs.id=${sqlValue(runId)}
+      AND ${scopedCompanyPredicate("runs.company_id", companyIds)}
+    LIMIT 1
+  `))[0];
 }
 
 export function findScopedApproval(approvalId: string, companyIds: readonly string[]): ScopedApprovalRow | undefined {

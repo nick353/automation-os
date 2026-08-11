@@ -7,7 +7,7 @@ export type ExecutionRoutingSource = "manual" | "scheduler" | "create_view" | "r
 export type ExecutionRoutingController = "automation_os_api";
 export type ExecutionRoutingSurface = "browser_lane" | "codex_cli" | "registered_runner" | "worker_loop";
 export type ExecutionRoutingPhase = "route_decision" | "route_readback";
-export type ExecutionRoutingExactBlocker = "chrome_extension_required" | "in_app_browser_required" | "route_readback_mismatch" | "route_decision_missing" | "browser_use_cli_required" | "browser_use_cli_workflow_adapter_missing" | "browser_use_cli_external_effects_disabled" | "browser_use_cli_stale_reconciliation_required" | null;
+export type ExecutionRoutingExactBlocker = "chrome_extension_required" | "in_app_browser_required" | "route_readback_mismatch" | "route_decision_missing" | "browser_use_cli_required" | "browser_use_cli_workflow_adapter_missing" | "browser_use_cli_external_effects_disabled" | "browser_use_cli_stale_reconciliation_required" | "registered_browser_workflow_common_boundary_required" | null;
 
 export type ExecutionRoutingSnapshot = {
   generatedAt: string;
@@ -81,6 +81,89 @@ export function buildCanonicalExecutionRoutingMetadataForCommand(input: {
       capabilityRouter: input.capabilityRouter
     })
   );
+}
+
+/**
+ * Fixed portable workflows are owned by the AOS worker contract. They must
+ * not inherit the generic capability-router recommendation (which is meant
+ * for interactive Codex-facing commands) into their durable run evidence.
+ */
+export function buildPortableWorkerExecutionRoutingSnapshot(input: {
+  command: string;
+  source?: ExecutionRoutingSource;
+  workflowId: string;
+  plannedAdapters?: string[];
+  selectedLane?: string;
+}): ExecutionRoutingSnapshot {
+  const source = input.source ?? "manual";
+  const executionSurface: ExecutionRoutingSurface = "worker_loop";
+  const selectedRouteId = "automation_os_portable_worker";
+  const selectedRouteLabel = "Automation OS portable worker";
+  const selectedLane = input.selectedLane ?? "portable_external_worker";
+  const plannedAdapters = input.plannedAdapters ?? ["browser_use_cli"];
+  const authority: CapabilityRouteAuthority = "runtime";
+  const routeStatus: CapabilityRouteStatus = "ready";
+  const routeProof: CapabilityRouteProof = "read_only";
+  const controller = {
+    name: "automation_os_api" as const,
+    status: "connected" as const,
+    reason: "portable_worker_route"
+  };
+  const intent = normalizeCommand(input.command);
+  const fingerprint = buildRoutingFingerprint({
+    schema: "route_decision",
+    controllerName: controller.name,
+    intent,
+    surface: executionSurface,
+    plannedAdapters,
+    authority,
+    source,
+    selectedRouteId,
+    selectedRouteLabel,
+    selectedLane
+  });
+  return {
+    generatedAt: new Date().toISOString(),
+    schema: "route_decision",
+    phase: "route_decision",
+    source,
+    command: input.command,
+    intent,
+    controller,
+    executionSurface,
+    surface: executionSurface,
+    selectedRouteId,
+    selectedRouteLabel,
+    routeAuthority: authority,
+    authority,
+    routeProof,
+    routeStatus,
+    selectedLane,
+    plannedAdapters,
+    allowed: true,
+    routerPrimaryAction: `AOS portable worker dispatch for ${input.workflowId}`,
+    routerCounts: { ready: 1, partial: 0, missing: 0, gaps: 0 },
+    fingerprint,
+    decisionFingerprint: null,
+    exactBlocker: null,
+    evidence: [
+      "schema=route_decision",
+      "controller=automation_os_api",
+      "controller_status=connected",
+      "phase=route_decision",
+      "surface=worker_loop",
+      "route=automation_os_portable_worker",
+      "authority=runtime",
+      "proof=read_only",
+      "planned_adapters=browser_use_cli",
+      `workflow_id=${input.workflowId}`,
+      "codex_app_run_now_required=false",
+      "codex_not_execution_authority=true",
+      `fingerprint=${fingerprint}`,
+      "exactBlocker=none"
+    ],
+    fallbackReason: "route=automation_os_portable_worker surface=worker_loop"
+  };
 }
 
 type RoutingFingerprintFields = {

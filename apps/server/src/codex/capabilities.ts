@@ -5,6 +5,7 @@ import { basename, join, relative } from "node:path";
 import { getBrowserHealth } from "../browser/health.js";
 import type { CodexAppServerProbeResult } from "./appServerProbe.js";
 import type { CapabilityAxisState, McpProbeResult } from "./capabilityProbe.js";
+import { getCodexAppServerConnectionReadback } from "./appServerConnection.js";
 
 type CapabilityItem = {
   id: string;
@@ -65,9 +66,12 @@ export function getCodexCapabilities(options: {
   const browserHealth = getBrowserHealth();
   const mcpProbe = options.mcpProbe ?? null;
   const appServerProbe = options.appServerProbe ?? null;
+  const appServerConnection = getCodexAppServerConnectionReadback();
   const codexRuntimeAvailable = commandExists("codex");
   const appServerEnabled = process.env.AUTOMATION_OS_CODEX_APP_SERVER_PROBE_ENABLED === "1";
-  const appServerConfigured = codexRuntimeAvailable;
+  const appServerConfigured = appServerConnection.mode === "remote_websocket"
+    ? appServerConnection.exact_blocker === null
+    : codexRuntimeAvailable;
   const mcpState = mcpProbe?.state ?? {
     configured: codexRuntimeAvailable,
     enabled: codexRuntimeAvailable,
@@ -120,7 +124,7 @@ export function getCodexCapabilities(options: {
       appServer: {
         id: "codex-app-server",
         name: "Codex App Server",
-        path: "codex-app-server://stdio",
+        path: appServerConnection.mode === "remote_websocket" ? appServerConnection.endpoint : "codex-app-server://stdio",
         status: appServerConfigured ? "available_with_codex_runtime" : "missing",
         kind: "codex_app_server",
         state: appServerState
@@ -154,8 +158,8 @@ export function getCodexCapabilities(options: {
       `Browser bridge readback: localApp.canReportHealth=${browserHealth.localApp.canReportHealth}, localApp.canExecuteBrowserPlugin=${browserHealth.localApp.canExecuteBrowserPlugin}.`,
       `Browser bridge directCallableFromLocalApp=${browserHealth.codexBrowserBridge.directCallableFromLocalApp}.`,
       appServerProbe
-        ? `Codex App Server probe is read-only and bounded; status=${appServerProbe.status}, exactBlocker=${appServerProbe.exactBlocker ?? "none"}, protocol=${appServerProbe.protocol}.`
-        : "Codex App Server probe not run yet; capability state stays inventory-only until POST /api/codex/app-server/probe refreshes it.",
+        ? `Codex App Server probe is read-only and bounded; status=${appServerProbe.status}, exactBlocker=${appServerProbe.exactBlocker ?? "none"}, protocol=${appServerProbe.protocol}, transportSupport=${appServerProbe.transportSupport}, productionReady=${appServerProbe.productionRemoteCutoverAllowed === false ? "false" : "not_applicable"}, promotionBlocker=${appServerProbe.productionPromotionBlocker ?? "none"}.`
+        : `Codex App Server connection mode=${appServerConnection.mode}, exactBlocker=${appServerConnection.exact_blocker ?? "none"}, transportSupport=${appServerConnection.transport_support}, promotionBlocker=${appServerConnection.production_promotion_blocker ?? "none"}; probe not run yet, so capability state stays inventory-only until POST /api/codex/app-server/probe refreshes it.`,
       mcpProbe
         ? `MCP probe is read-only, bounded, and TTL-cached; parsed entries=${mcpProbe.entries.length}, parsedFrom=${mcpProbe.parsedFrom}.`
         : codexRuntimeAvailable

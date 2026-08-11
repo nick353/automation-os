@@ -386,8 +386,8 @@ test("Daily AI registered runner passes env run id and output dir to the Browser
     assert.equal("DAILY_AI_CLI_PROOF_ONLY_NO_POST_PREFLIGHT" in result.command.env, false);
     assert.equal(result.command.env.DAILY_AI_CLI_RECORDING_REQUIRED, "1");
     assert.equal(result.command.env.DAILY_AI_CLI_EXTERNAL_VIDEO_QA_REQUIRED, "0");
-    assert.equal(result.command.env.DAILY_AI_CDP_PORT, "9333");
-    assert.equal(result.command.env.DAILY_AI_CLI_PROFILE_DIR, "/Users/nichikatanaka/.daily-ai-playwright-chrome");
+    assert.equal(result.command.env.DAILY_AI_CDP_PORT, "19882");
+    assert.equal(result.command.env.DAILY_AI_CLI_PROFILE_DIR, "/Users/nichikatanaka/.browser-use-cli/profiles/scheduled/daily-ai");
     assert.equal(result.command.env.DAILY_AI_CLI_HEADLESS, "true");
     assert.equal(result.command.env.DAILY_AI_CLI_SHOW_BROWSER, "false");
     assert.equal("DAILY_AI_CLI_BROWSER_VIDEO_QA_SKIP_GEMINI" in result.command.env, false);
@@ -398,7 +398,7 @@ test("Daily AI registered runner passes env run id and output dir to the Browser
     assert.doesNotMatch(result.command.display, /DAILY_AI_CLI_PROOF_ONLY_NO_POST_PREFLIGHT=true/);
     assert.match(result.command.display, /DAILY_AI_CLI_RECORDING_REQUIRED=1/);
     assert.match(result.command.display, /DAILY_AI_CLI_EXTERNAL_VIDEO_QA_REQUIRED=0/);
-    assert.match(result.command.display, /DAILY_AI_CDP_PORT=9333/);
+    assert.match(result.command.display, /DAILY_AI_CDP_PORT=19882/);
     assert.match(result.command.display, /DAILY_AI_CLI_HEADLESS=true/);
     assert.match(result.command.display, /DAILY_AI_CLI_SHOW_BROWSER=false/);
     assert.doesNotMatch(result.command.display, /DAILY_AI_CLI_BROWSER_VIDEO_QA_SKIP_GEMINI/);

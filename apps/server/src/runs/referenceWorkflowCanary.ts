@@ -8,14 +8,13 @@ import { refreshRegisteredWorkflows } from "../registeredWorkflows.js";
 import { resolveWorkerAdapterPolicy, runWorkerOnce, startCommandRun, type WorkerAdapter } from "./workerEngine.js";
 import { BROWSER_USE_CLI_REQUIRED_BLOCKER } from "./workerEngine.js";
 import {
-  projectReferenceWorkflowAdmission,
-  type ReferenceWorkflowAdmissionProjectionV1
+  projectReferenceBrowserUseWorkflowAdmission,
+  type ReferenceBrowserUseWorkflowAdmissionProjectionV1
 } from "../serviceReadiness/referenceWorkflowAdmission.js";
 import {
-  assertServiceReadinessRuntimeBindingMatches,
   deriveServiceReadinessRootId,
   referenceWorkflowIdFromMetadata,
-  validateServiceReadinessRuntimeBindingV1
+  validateServiceReadinessBrowserUseRuntimeBindingV1
 } from "../serviceReadiness/runtimeBinding.js";
 import {
   assertServiceReadinessCleanupReceiptMatches,
@@ -85,7 +84,7 @@ export type ReferenceWorkflowCanaryPath = {
   operation_proof_gate_ok: false;
   definition_fingerprint: string;
   schedule_fingerprint: string;
-  reference_workflow_admission: ReferenceWorkflowAdmissionProjectionV1;
+  reference_workflow_admission: ReferenceBrowserUseWorkflowAdmissionProjectionV1;
 };
 
 export type ReferenceWorkflowCanaryReceipt = {
@@ -156,7 +155,7 @@ export async function runReferenceWorkflowCanary(): Promise<ReferenceWorkflowCan
       company_id: canaryIdentity.companyId
     };
     const policy = resolveWorkerAdapterPolicy(reference.adapter);
-    const referenceWorkflowAdmission = projectReferenceWorkflowAdmission({ workflow_id: reference.adapterWorkflowId });
+    const referenceWorkflowAdmission = projectReferenceBrowserUseWorkflowAdmission({ workflow_id: reference.adapterWorkflowId });
     const registrationOk = Boolean(
       registration &&
         registration.status === "active" &&
@@ -333,13 +332,15 @@ function readCanaryState(runId: string, exitStatusKey: string, expected: {
   const guardMetadata = parseObject(guardProof?.metadata_json);
   const guardLineage = parseRecord(guardMetadata.registered_workflow_start);
   const expectedServiceWorkflowId = referenceWorkflowIdFromMetadata({ registeredWorkflowId: expected.workflowId });
-  const runtimeBindingResult = validateServiceReadinessRuntimeBindingV1(stepMetadata.service_readiness_runtime_binding);
+  const runtimeBindingResult = validateServiceReadinessBrowserUseRuntimeBindingV1(stepMetadata.service_readiness_runtime_binding);
   const runtimeBindingVerified = runtimeBindingResult.ok && runtimeBindingResult.value.status === "blocked" &&
-    runtimeBindingResult.value.exact_blocker === "in_app_browser_runtime_unavailable" &&
+    runtimeBindingResult.value.exact_blocker === "service_readiness_browser_use_effective_session_missing" &&
+    runtimeBindingResult.value.surface === "browser_use_cli" &&
     runtimeBindingResult.value.root_id === deriveServiceReadinessRootId(runId) &&
     runtimeBindingResult.value.workflow_id === expectedServiceWorkflowId &&
     runtimeBindingResult.value.run_id === runId &&
     runtimeBindingResult.value.stage_id === step?.id &&
+    runtimeBindingResult.value.readback_status === "required" &&
     runtimeBindingResult.value.external_action_executed === false;
   const cleanupReceipt = readCanaryCleanupReceipt(expected.artifactRoot, runId);
   const cleanupReceiptVerified = cleanupReceipt.ok && cleanupReceipt.value.workflow_id === expectedServiceWorkflowId;
@@ -351,7 +352,7 @@ function readCanaryState(runId: string, exitStatusKey: string, expected: {
         run_id: runId,
         stage_id: step?.id ?? "",
         attempt_id: runtimeBindingResult.ok ? runtimeBindingResult.value.attempt_id : "",
-        fencing_token: runtimeBindingResult.ok ? runtimeBindingResult.value.fencing_token : 0
+        fencing_token: 1
       });
     } catch {
       // The boolean below is the proof boundary; a mismatched receipt is not accepted.
@@ -366,7 +367,7 @@ function readCanaryState(runId: string, exitStatusKey: string, expected: {
             run_id: runId,
             stage_id: step?.id ?? "",
             attempt_id: runtimeBindingResult.ok ? runtimeBindingResult.value.attempt_id : "",
-            fencing_token: runtimeBindingResult.ok ? runtimeBindingResult.value.fencing_token : 0
+            fencing_token: 1
           });
           return true;
         } catch {
@@ -428,7 +429,7 @@ function readCanaryState(runId: string, exitStatusKey: string, expected: {
     cleanupReceiptSha256: cleanupReceipt.ok ? cleanupReceipt.sha256 : null,
     stepId: step?.id ?? "",
     attemptId: runtimeBindingResult.ok ? runtimeBindingResult.value.attempt_id : "",
-    fencingToken: runtimeBindingResult.ok ? runtimeBindingResult.value.fencing_token : 0,
+    fencingToken: 1,
     eventTypes: events.map((event) => event.event_type)
   };
 }
@@ -490,22 +491,16 @@ function readCanaryCleanupReceipt(artifactRoot: string, runId: string): { ok: tr
 }
 
 function validateGuardRuntimeBinding(value: unknown, runId: string, stepId: string, workflowId: string): boolean {
-  const result = validateServiceReadinessRuntimeBindingV1(value);
+  const result = validateServiceReadinessBrowserUseRuntimeBindingV1(value);
   if (!result.ok || result.value.status !== "blocked") return false;
-  try {
-    assertServiceReadinessRuntimeBindingMatches(result.value, {
-      root_id: deriveServiceReadinessRootId(runId),
-      workflow_id: workflowId as "daily-ai" | "job-application-manager" | "nisenprints",
-      run_id: runId,
-      stage_id: stepId,
-      attempt_id: result.value.attempt_id,
-      fencing_token: result.value.fencing_token,
-      effect_key: null
-    });
-    return result.value.exact_blocker === "in_app_browser_runtime_unavailable" && result.value.external_action_executed === false;
-  } catch {
-    return false;
-  }
+  return result.value.exact_blocker === "service_readiness_browser_use_effective_session_missing" &&
+    result.value.surface === "browser_use_cli" &&
+    result.value.root_id === deriveServiceReadinessRootId(runId) &&
+    result.value.workflow_id === workflowId &&
+    result.value.run_id === runId &&
+    result.value.stage_id === stepId &&
+    result.value.readback_status === "required" &&
+    result.value.external_action_executed === false;
 }
 
 function seedReferenceCanaryCompany() {
