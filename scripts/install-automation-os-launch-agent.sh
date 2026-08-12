@@ -37,6 +37,27 @@ print_status() {
   health_readback || true
 }
 
+wait_for_port_release() {
+  local attempt
+  for attempt in {1..30}; do
+    if ! lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  printf 'port still listening after launchd stop: %s\n' "$PORT" >&2
+  return 1
+}
+
+reload_agent() {
+  launchctl bootout "$DOMAIN/$LABEL" >/dev/null 2>&1 || true
+  wait_for_port_release
+  if ! launchctl bootstrap "$DOMAIN" "$TARGET_PLIST" >/dev/null 2>&1; then
+    sleep 1
+    launchctl bootstrap "$DOMAIN" "$TARGET_PLIST"
+  fi
+}
+
 install_agent() {
   plutil -lint "$SOURCE_PLIST"
   mkdir -p "$TARGET_DIR"
@@ -44,12 +65,7 @@ install_agent() {
   cp "$REPO_ROOT/scripts/start-automation-os-server.sh" "$HELPER_SCRIPT"
   chmod +x "$HELPER_SCRIPT"
   cp "$SOURCE_PLIST" "$TARGET_PLIST"
-  launchctl bootout "$DOMAIN/$LABEL" >/dev/null 2>&1 || true
-  if ! launchctl bootstrap "$DOMAIN" "$TARGET_PLIST" >/dev/null 2>&1; then
-    sleep 1
-    launchctl bootstrap "$DOMAIN" "$TARGET_PLIST"
-  fi
-  launchctl kickstart -k "$DOMAIN/$LABEL"
+  reload_agent
   health_readback
 }
 
@@ -72,7 +88,7 @@ case "${1:-}" in
     uninstall_agent
     ;;
   restart)
-    launchctl kickstart -k "$DOMAIN/$LABEL"
+    reload_agent
     health_readback
     ;;
   *)

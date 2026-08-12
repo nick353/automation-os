@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   classifyPortableWorkerHeartbeat,
   portableWorkerHeartbeatId,
+  resolvePortableWorkerHeartbeatAt,
   validatePortableWorkerHeartbeat
 } from "../runs/portableWorkerHeartbeat.js";
 
@@ -44,4 +45,22 @@ test("portable worker heartbeat readback distinguishes fresh, stale, and future 
     nowMs,
     staleAfterSeconds: 300
   }).exactBlocker, "portable_worker_heartbeat_timestamp_future");
+});
+
+test("live worker transport heartbeat takes precedence over stale persisted state", () => {
+  assert.equal(resolvePortableWorkerHeartbeatAt({
+    liveLastSuccessfulHeartbeatAt: "2026-08-12T01:02:32.256Z",
+    liveHeartbeatAt: "2026-08-12T01:02:32.256Z",
+    persistedHeartbeatAt: "2026-08-09T23:37:13.015Z"
+  }), "2026-08-12T01:02:32.256Z");
+  assert.equal(resolvePortableWorkerHeartbeatAt({
+    liveLastSuccessfulHeartbeatAt: null,
+    liveHeartbeatAt: null,
+    persistedHeartbeatAt: "2026-08-09T23:37:13.015Z"
+  }), "2026-08-09T23:37:13.015Z");
+  assert.equal(resolvePortableWorkerHeartbeatAt({
+    liveLastSuccessfulHeartbeatAt: "not-a-timestamp",
+    liveHeartbeatAt: null,
+    persistedHeartbeatAt: null
+  }), null);
 });

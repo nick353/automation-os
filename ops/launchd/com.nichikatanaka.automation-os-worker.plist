@@ -27,20 +27,44 @@
   <dict>
     <key>AUTOMATION_OS_REPO_ROOT</key>
     <string>/Users/nichikatanaka/Documents/Codex/automation-os</string>
+    <key>AUTOMATION_OS_DATABASE_MODE</key>
+    <string>postgres</string>
+    <key>AUTOMATION_OS_DURABLE_SCHEDULER_OWNER</key>
+    <string>server</string>
+    <key>AUTOMATION_OS_ASSUME_EXISTING_POSTGRES_SCHEMA</key>
+    <string>1</string>
+    <key>AUTOMATION_OS_POSTGRES_SCHEMA_ASSUMED_CURRENT</key>
+    <string>1</string>
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>AUTOMATION_OS_PORTABLE_WORKER_MODE</key>
     <string>external</string>
+    <key>AUTOMATION_OS_PORTABLE_REMOTE_URL</key>
+    <string>https://automation-os.zeabur.app</string>
+    <key>AUTOMATION_OS_PORTABLE_REMOTE_COMPANY_ID</key>
+    <string>company_2560580981cedfd106b66245</string>
+    <key>AUTOMATION_OS_PORTABLE_REMOTE_POLL_MS</key>
+    <string>30000</string>
+    <key>AUTOMATION_OS_PORTABLE_REMOTE_ARTIFACT_ROOT</key>
+    <string>/Users/nichikatanaka/Documents/Codex/automation-os/data/artifacts/portable-remote-worker</string>
+    <key>AUTOMATION_OS_WORKER_DURABLE_ONLY</key>
+    <string>1</string>
     <key>AUTOMATION_OS_DURABLE_SERVICE_USER_ID</key>
-    <string>service_automation_os_worker</string>
-    <key>AUTOMATION_OS_PORTABLE_EXTERNAL_RUNNER</key>
-    <string>/Users/nichikatanaka/Documents/Codex/automation-os/scripts/portable-external-runner.mjs</string>
+    <string>aos_service_0f4e6b6c65edf796364e</string>
     <key>AUTOMATION_OS_PORTABLE_EXTERNAL_WORKDIR</key>
     <string>/Users/nichikatanaka/Documents/Codex/automation-os</string>
     <key>AUTOMATION_OS_PORTABLE_EXTERNAL_TIMEOUT_MS</key>
     <string>3600000</string>
     <key>AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS</key>
-    <string>enabled</string>
+    <string>read_only</string>
+    <key>AUTOMATION_OS_BROWSER_USE_PROJECT_ROOT</key>
+    <string>/Users/nichikatanaka/Documents/New project</string>
+    <key>AUTOMATION_OS_PORTABLE_BUSINESS_RUNNER_JOB_APPLICATION</key>
+    <string>/Users/nichikatanaka/Documents/New project/scripts/browser_use/job_manager_browser_use_cli_business_runner.mjs</string>
+    <key>AUTOMATION_OS_PORTABLE_BUSINESS_RUNNER_DAILY_AI</key>
+    <string>/Users/nichikatanaka/Documents/Codex/automation-os/scripts/aos-daily-ai-business-runner.mjs</string>
+    <key>AUTOMATION_OS_PORTABLE_BUSINESS_RUNNER_NISENPRINTS</key>
+    <string>/Users/nichikatanaka/Documents/Codex/automation-os/scripts/aos-nisenprints-business-runner.mjs</string>
   </dict>
 </dict>
 </plist>

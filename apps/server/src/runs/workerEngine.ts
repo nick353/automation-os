@@ -18,7 +18,7 @@ import {
 import { countConsoleErrors } from "../browser/localCheck.js";
 import { runBrowserUseLocalCheck } from "../browser/browserUseLocalCheck.js";
 import { sanitizeDashboardRows } from "../dashboardSanitizer.js";
-import { dbBackend, execSql, insert, makeId, nowIso, querySql, runSqlScriptAsync, sqlValue, type SqlValue } from "../db/client.js";
+import { dbBackend, execSql, insert, makeId, nowIso, querySql, querySqlAsync, runSqlScriptAsync, sqlValue, type SqlValue } from "../db/client.js";
 import { decomposeGoal, PlannedTask } from "../planner/decompose.js";
 import { createApprovalRequest, requiresApproval } from "./approvalGate.js";
 import { runDailyAiRegisteredRunner } from "./dailyAiRegisteredRunner.js";
@@ -1244,13 +1244,14 @@ export async function runWorkerOnce(runId?: string) {
  * explicitly handed to the Mac worker are eligible.  Legacy/local runs and
  * durable_jobs rows stay on their existing lanes.
  */
-export async function runPortableMacWorkerOnce() {
-  const rows = querySql<{ id: string; metadata_json: string }>(`
+export async function runPortableMacWorkerOnce(targetRunId?: string) {
+  const rows = await querySqlAsync<{ id: string; metadata_json: string }>(`
     SELECT id, metadata_json FROM runs
     WHERE status IN ('queued', 'running', 'waiting_approval')
       AND execution_source=${sqlValue(PORTABLE_EXECUTION_SOURCE)}
       AND quarantined=0
       AND NOT EXISTS (SELECT 1 FROM durable_jobs WHERE durable_jobs.run_id=runs.id)
+      ${targetRunId ? `AND id=${sqlValue(targetRunId)}` : ""}
     ORDER BY created_at ASC, id ASC
     LIMIT 50
   `);
@@ -1264,8 +1265,162 @@ export async function runPortableMacWorkerOnce() {
     })
     .map((row) => row.id);
   const summaries = [];
-  for (const id of runIds) summaries.push(await runWorkerCycle(id));
+  for (const id of runIds) {
+    const row = rows.find((candidate) => candidate.id === id);
+    const metadata = parseJson<Record<string, unknown>>(row?.metadata_json, {});
+    const plan = metadata.plan && typeof metadata.plan === "object" && !Array.isArray(metadata.plan)
+      ? metadata.plan as Record<string, unknown>
+      : undefined;
+    const tasks = Array.isArray(plan?.tasks) ? plan.tasks : [];
+    const adapter = typeof tasks[0] === "object" && tasks[0] !== null && !Array.isArray(tasks[0])
+      ? String((tasks[0] as Record<string, unknown>).adapter ?? "")
+      : "";
+    const localWorkflowId = localWorkflowIdForWorkerAdapter(adapter);
+    if (localWorkflowId && isPortableLocalRun(metadata, localWorkflowId)) {
+      summaries.push(await runPortableLocalWorkerCycle(id));
+    } else {
+      summaries.push(await runWorkerCycle(id));
+    }
+  }
   return summaries;
+}
+
+/**
+ * The Mac-owned portable local queue is also the PostgreSQL worker's narrow
+ * read-only boundary.  Keep it on the async pool: the generic worker engine
+ * still has legacy synchronous callers, but a queued local receipt must not
+ * spawn a blocking postgres child for every intermediate read/write.
+ */
+async function runPortableLocalWorkerCycle(runId: string) {
+  const run = (await querySqlAsync<{
+    id: string;
+    status: string;
+    company_id: string | null;
+    metadata_json: string;
+  }>(`SELECT id, status, company_id, metadata_json FROM runs WHERE id=${sqlValue(runId)} LIMIT 1`))[0];
+  if (!run) return { runId, status: "missing" };
+
+  const steps = await querySqlAsync<StepRow>(`SELECT * FROM run_steps WHERE run_id=${sqlValue(runId)} ORDER BY id ASC`);
+  const step = steps.find((candidate) => candidate.status === "queued" || candidate.status === "waiting_approval");
+  if (!step) return { runId, status: run.status };
+
+  const runMetadata = parseJson<Record<string, unknown>>(run.metadata_json, {});
+  const metadata = parseJson<Record<string, unknown>>(step.metadata_json, {});
+  const selectedAdapter = String(metadata.adapter ?? "local_worker") as WorkerAdapter;
+  const workflowId = localWorkflowIdForWorkerAdapter(selectedAdapter);
+  if (!workflowId || !isPortableLocalRun(runMetadata, workflowId)) {
+    return { runId, status: "skipped", exactBlocker: "portable_local_worker_route_not_bound" };
+  }
+
+  const now = nowIso();
+  await runSqlScriptAsync([
+    `UPDATE runs SET status='running', updated_at=${sqlValue(now)}, metadata_json=${sqlValue({
+      ...runMetadata,
+      worker_protocol: "mac_worker_polling_required",
+      worker_mode: "queued_for_mac_worker",
+      active_step_id: step.id,
+      active_adapter: selectedAdapter
+    })} WHERE id=${sqlValue(runId)}`,
+    `UPDATE run_steps SET status='running', started_at=COALESCE(started_at, ${sqlValue(now)}) WHERE id=${sqlValue(step.id)}`,
+    `UPDATE lanes SET status='active', progress=50, updated_at=${sqlValue(now)} WHERE id=${sqlValue(step.lane_id)}`
+  ]);
+
+  const receipt = runPortableLocalWorkflowReadOnly({
+    workflowId,
+    workerRole: process.env.AUTOMATION_OS_WORKER_ROLE?.trim()
+  });
+  const artifact = writeNamedWorkerArtifact(runId, `${step.id}-portable-local-worker.json`, {
+    schema: "aos.portable_local_worker_receipt.v1",
+    ...receipt,
+    run_id: runId,
+    step_id: step.id,
+    adapter: selectedAdapter,
+    created_at: now
+  });
+  const completed = receipt.status === "complete" && receipt.exact_blocker === null;
+  const stepStatus = completed ? "completed" : "blocked";
+  const laneStatus = completed ? "idle" : "blocked";
+  const proofGate = completed
+    ? { ok: true, missing: [] as string[], present: ["portable_local_worker_receipt", "cleanup_verified"] }
+    : { ok: false, missing: [receipt.exact_blocker ?? "portable_local_worker_business_completion_pending"], present: ["portable_local_worker_receipt", "cleanup_verified"] };
+  const proofSummary = completed
+    ? "complete: Mac local read-only adapter returned a verified receipt"
+    : `blocked: ${receipt.exact_blocker ?? "portable_local_worker_business_completion_pending"}`;
+  const proofMetadata = {
+    adapter: selectedAdapter,
+    execution_mode: "portable_local_read_only",
+    workflow_id: workflowId,
+    exact_blocker: receipt.exact_blocker,
+    readback_verified: receipt.readback_verified,
+    business_completion_verified: false,
+    external_action_executed: false,
+    ...(runMetadata.registered_workflow_start && typeof runMetadata.registered_workflow_start === "object" && !Array.isArray(runMetadata.registered_workflow_start)
+      ? { registered_workflow_start: runMetadata.registered_workflow_start }
+      : {})
+  };
+  const updatedStepMetadata = {
+    ...metadata,
+    adapter: selectedAdapter,
+    execution_mode: "portable_local_read_only",
+    portable_local_workflow_id: workflowId,
+    portable_local_receipt: receipt,
+    portable_local_artifact: artifact.uri,
+    proof_gate: proofGate,
+    proof_summary: proofSummary,
+    exact_blocker: receipt.exact_blocker,
+    external_action_executed: false,
+    business_completion_verified: false
+  };
+  const portableLocalWorkerMetadata = {
+    workflow_id: workflowId,
+    adapter: selectedAdapter,
+    artifact_uri: artifact.uri,
+    receipt,
+    external_action_executed: false,
+    business_completion_verified: false
+  };
+  const finalStatus = completed ? "complete" : "blocked";
+  const finalRunMetadata = {
+    ...runMetadata,
+    worker_protocol: "mac_worker_polling_required",
+    worker_mode: "queued_for_mac_worker",
+    active_step_id: null,
+    active_adapter: null,
+    portable_local_worker: portableLocalWorkerMetadata,
+    proof_gate: proofGate,
+    proof_summary: proofSummary
+  };
+  await runSqlScriptAsync([
+    `INSERT INTO proofs
+      (id, run_id, step_id, proof_type, label, uri, size_bytes, created_at, metadata_json, company_id)
+      VALUES (${sqlValue(makeId("proof"))}, ${sqlValue(runId)}, ${sqlValue(step.id)}, 'worker_receipt',
+              ${sqlValue(`${workflowId} Mac local worker read-only receipt`)}, ${sqlValue(artifact.uri)},
+              ${sqlValue(artifact.sizeBytes)}, ${sqlValue(now)}, ${sqlValue(proofMetadata)}, ${sqlValue(run.company_id)})`,
+    `UPDATE run_steps SET status=${sqlValue(stepStatus)}, completed_at=${sqlValue(now)}, metadata_json=${sqlValue(updatedStepMetadata)} WHERE id=${sqlValue(step.id)}`,
+    `UPDATE lanes SET status=${sqlValue(laneStatus)}, progress=${completed ? 100 : 50}, health=${sqlValue(completed ? "good" : "blocked")}, updated_at=${sqlValue(now)} WHERE id=${sqlValue(step.lane_id)}`,
+    `INSERT INTO worker_events
+      (id, company_id, run_id, step_id, lane_id, event_type, message, created_at, metadata_json)
+      VALUES (${sqlValue(makeId("evt"))}, ${sqlValue(run.company_id)}, ${sqlValue(runId)}, ${sqlValue(step.id)},
+              ${sqlValue(step.lane_id)}, ${sqlValue(completed ? "worker_completed" : "worker_blocked")},
+              ${sqlValue(proofSummary)}, ${sqlValue(now)}, ${sqlValue({
+                adapter: selectedAdapter,
+                workflow_id: workflowId,
+                artifact_uri: artifact.uri,
+                exact_blocker: receipt.exact_blocker,
+                external_action_executed: false,
+                business_completion_verified: false
+              })})`,
+    `UPDATE runs SET status=${sqlValue(finalStatus)}, updated_at=${sqlValue(now)}, metadata_json=${sqlValue(finalRunMetadata)} WHERE id=${sqlValue(runId)}`
+  ]);
+
+  return {
+    runId,
+    status: finalStatus,
+    workerMode: "execute_portable_local_read_only" as const,
+    proof_gate: proofGate,
+    proof_summary: proofSummary,
+    metadata: { portable_local_worker: portableLocalWorkerMetadata }
+  };
 }
 
 export async function runWorkerCycle(runId: string) {

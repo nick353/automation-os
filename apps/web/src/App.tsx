@@ -338,7 +338,8 @@ type BrowserUseProcessReadback = {
   unregisteredBrowserProcessCount?: number;
   bindingMismatchCount?: number;
   registeredLanes?: Array<{ laneId?: string; workflowId?: string; profileRef?: string; reservedPort?: number; processStatus?: string; matchingPid?: number | null; mismatchPid?: number | null }>;
-  browserProcesses?: Array<{ kind?: string; pid?: number; processCount?: number; profileRef?: string; profileName?: string; port?: number; laneId?: string | null; workflowId?: string | null; bindingStatus?: string; ownership?: string; readbackStatus?: string }>;
+  roomReadback?: { status?: string; source?: string; reconciliation?: string | null; activeRoomCount?: number; matchedProcessCount?: number; exactBlocker?: string | null };
+  browserProcesses?: Array<{ kind?: string; pid?: number; processCount?: number; profileRef?: string; profileName?: string; port?: number; laneId?: string | null; workflowId?: string | null; bindingStatus?: string; ownership?: string; readbackStatus?: string; roomId?: string | null; roomState?: string | null; roomLifecycle?: string | null; roomOwnerKind?: string | null; roomOwnerId?: string | null; roomTaskId?: string | null; roomAutomationId?: string | null; roomCurrentActivity?: string | null; roomMatchStatus?: string; roomOwnership?: string; roomReclaimAllowed?: boolean | null; roomReadbackStatus?: string }>;
   workerScopeReadback?: {
     status?: string;
     controlPlaneCompanyIds?: string[];
@@ -2283,14 +2284,17 @@ function WebOperationAdmissionPanel({ model, projectId }: { model: AppModel; pro
           </div>
           <p className="muted">{workerScope.alignmentDecisionRequired ? "判断が必要: AOS queueとremote workerのcompany/endpointを同じ正本へ揃えるまでclaimしません。" : workerScope.exactBlocker ? `readback blocker: ${workerScope.exactBlocker}` : "scope候補の比較は完了しています。claim・receipt・source syncは別の同一Run証跡です。"}</p>
         </div>}
-        {liveBrowserProcesses.length ? <DataTable controlId="web-admission.process-readback.table" headers={["検出対象", "論理profile", "process port", "AOS binding", "同一ホストreadback"]} rows={liveBrowserProcesses.map((process) => [
+        {liveBrowserProcesses.length ? <DataTable controlId="web-admission.process-readback.table" headers={["検出対象", "論理profile", "process port", "AOS binding", "room owner/readback", "同一ホストreadback"]} rows={liveBrowserProcesses.map((process) => [
           process.kind ?? "browser_use_chrome",
           <code>{process.profileRef ?? process.profileName ?? "-"}</code>,
           process.port == null ? "-" : String(process.port),
           `${process.bindingStatus ?? "unknown"} / ${process.workflowId ?? "AOS未登録"}`,
+          process.roomId
+            ? `${process.roomOwnership ?? "bound"} / ${process.roomOwnerKind ?? "owner"}:${process.roomOwnerId ?? "unknown"} / room=${process.roomId} / ${process.roomMatchStatus ?? "unknown"} / reclaim=${process.roomReclaimAllowed === false ? "no" : "unknown"}`
+            : `room=${process.roomReadbackStatus ?? "unknown"} / owner=${process.ownership ?? "unknown"}`,
           `${process.readbackStatus ?? "unknown"} / pid=${process.pid ?? "?"} / tree=${process.processCount ?? 1}`
         ])} /> : <p className="muted">同一ホストで検出されたBrowser Use Chromeはありません。これはAOS予約値が使用中・ログイン済み・実行可能という意味ではありません。</p>}
-        <p className="muted">process readbackはprofile / portの同一ホスト実測と登録bindingだけを示します。ログイン状態、画面状態、外部効果、同一Runの完了は別証跡が必要です。{processReadback?.exactBlocker ? ` exact blocker=${processReadback.exactBlocker}` : " external_action=false"}</p>
+        <p className="muted">process readbackはprofile / portの同一ホスト実測、登録binding、Browser Use canonical room registryのowner readbackを分けて示します。room ownerが表示されてもAOSがforeign roomを回収・利用できる意味ではありません。ログイン状態、画面状態、外部効果、同一Runの完了は別証跡が必要です。{processReadback?.exactBlocker ? ` exact blocker=${processReadback.exactBlocker}` : " external_action=false"} / room={processReadback?.roomReadback?.status ?? "unknown"} / active rooms={processReadback?.roomReadback?.activeRoomCount ?? "未確認"}</p>
         {portableRemoteWorker?.status === "present" && <p className="muted">portable remote workerのプロセス存在とHeartbeat HTTP受理を分離表示しています。heartbeat・queue claim・receipt・source syncは別に確認します。read-only境界: effects={portableRemoteWorker.effects ?? "unknown"} / mode={portableRemoteWorker.mode ?? "unknown"} / transport={workerTransportLabel}。queue scope={workerScope?.status ?? "unknown"}{workerScope?.exactBlocker ? ` / exact blocker=${workerScope.exactBlocker}` : ""}。</p>}
         {workerScope?.status === "mismatch" && <p className="muted">AOS queue と Mac worker が別会社scopeを見ています。endpoint/companyを同じ対象へ揃えるまで claim は実行しません。remote origin={workerScope.remoteOrigins?.join(", ") || "未確認"}。</p>}
         <p className="muted">判定境界: {runtime?.summary ?? "runtime readbackなし"} / {runtime?.exactBlocker ? `exact blocker=${runtime.exactBlocker}` : "external_action=false"}</p>

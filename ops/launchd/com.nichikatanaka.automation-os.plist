@@ -45,6 +45,14 @@
     <string>/Users/nichikatanaka/.local/bin/codex</string>
     <key>AUTOMATION_OS_REQUIRE_API_TOKEN</key>
     <string>0</string>
+  <key>AUTOMATION_OS_DATABASE_MODE</key>
+    <string>postgres</string>
+  <key>AUTOMATION_OS_DURABLE_SCHEDULER_OWNER</key>
+    <string>worker</string>
+    <key>AUTOMATION_OS_DURABLE_SERVICE_USER_ID</key>
+    <string>aos_service_4c33e3f8454c8030b0eb</string>
+    <key>AUTOMATION_OS_DURABLE_SCHEDULER_MS</key>
+    <string>60000</string>
     <key>AUTOMATION_OS_REPO_ROOT</key>
     <string>/Users/nichikatanaka/Documents/Codex/automation-os</string>
     <key>AUTOMATION_OS_SKIP_BUILD_CHECK</key>

@@ -88,6 +88,17 @@ test("durable-only worker lane crosses the safe child boundary", () => {
   assert.equal(env.AUTOMATION_OS_WORKER_DURABLE_ONLY, "1");
 });
 
+test("worker preserves the trusted PostgreSQL readiness and Mac-role markers", () => {
+  const env = safeWorkerEnvironment({
+    PATH: "/bin",
+    AUTOMATION_OS_POSTGRES_SCHEMA_ASSUMED_CURRENT: "1",
+    AUTOMATION_OS_WORKER_ROLE: "mac"
+  });
+
+  assert.equal(env.AUTOMATION_OS_POSTGRES_SCHEMA_ASSUMED_CURRENT, "1");
+  assert.equal(env.AUTOMATION_OS_WORKER_ROLE, "mac");
+});
+
 test("worker output redaction removes credential values before persistence", () => {
   const output = redactWorkerOutput(Buffer.from([
     "AUTOMATION_OS_DATABASE_URL=postgres://user:password@example.invalid/db",

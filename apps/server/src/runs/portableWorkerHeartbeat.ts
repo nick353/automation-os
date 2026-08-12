@@ -60,6 +60,29 @@ export type PortableWorkerHeartbeatFreshness = {
 };
 
 /**
+ * Live worker-status evidence is stronger than the last persisted
+ * system-check row. Prefer the last successful live heartbeat, then the live
+ * heartbeat, and only fall back to persisted state when live transport has
+ * no usable timestamp.
+ */
+export function resolvePortableWorkerHeartbeatAt(input: {
+  liveLastSuccessfulHeartbeatAt?: string | null;
+  liveHeartbeatAt?: string | null;
+  persistedHeartbeatAt?: string | null;
+}): string | null {
+  const candidates = [
+    input.liveLastSuccessfulHeartbeatAt,
+    input.liveHeartbeatAt,
+    input.persistedHeartbeatAt
+  ];
+  return candidates.find((candidate) => (
+    typeof candidate === "string"
+    && candidate.trim().length > 0
+    && Number.isFinite(Date.parse(candidate))
+  ))?.trim() ?? null;
+}
+
+/**
  * A persisted heartbeat is evidence of the last observation, not proof that a
  * worker is connected now. Keep the freshness decision pure so API readback
  * and its regression tests share the same boundary.

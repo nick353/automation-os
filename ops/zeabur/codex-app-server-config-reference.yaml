@@ -1,0 +1,19 @@
+# Zeabur Template Service Specification fragment.
+# This file contains no credential. Apply it only through an approved Zeabur
+# Config Editor/template boundary after the secret value and private ingress
+# have been approved and can be read back without exposing the value.
+configs:
+  - path: /run/secrets/codex-app-server-token
+    template: '${CODEX_APP_SERVER_REMOTE_TOKEN}'
+    envsubst: true
+    permission: 256
+
+env:
+  CODEX_APP_SERVER_TOKEN_FILE:
+    default: /run/secrets/codex-app-server-token
+  CODEX_APP_SERVER_BIND_HOST:
+    default: 127.0.0.1
+  CODEX_APP_SERVER_NON_LOOPBACK_APPROVED:
+    default: "0"
+  CODEX_APP_SERVER_TLS_TERMINATED:
+    default: "0"

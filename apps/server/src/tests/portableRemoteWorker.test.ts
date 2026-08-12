@@ -12,6 +12,7 @@ process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE = "canary";
 
 const db = await import("../db/client.js");
 const { initRegisteredWorkflows } = await import("../registeredWorkflows.js");
+const { startPortableLocalWorkflowRun } = await import("../runs/portableLocalWorkflowEntrypoint.js");
 const { startPortableWorkflowRun } = await import("../runs/portableWorkflowEntrypoint.js");
 const {
   claimPortableMacWorker,
@@ -99,8 +100,21 @@ test("remote Mac worker claim and receipt stay Company-scoped, idempotent, and r
       readback_verified: true,
       effects_mode: "read_only",
       read_only_stage_bound: true,
+      same_run_receipt: true,
       external_executor_status: "candidate_supply_readback",
       adapter_result: {
+        stage: "job_candidate_supply",
+        status: "ready",
+        ready: true,
+        read_only: true,
+        candidate_count: 1,
+        requested_count: 1,
+        artifact_uri: "file:///redacted/candidate.json",
+        browser_authority_path: "file:///redacted/authority.json",
+        browser_flow_receipt_path: "file:///redacted/flow-receipt.json",
+        browser_flow_manifest_path: "file:///redacted/manifest.json",
+        cleanup_verified: true,
+        browser_flow_status: "finalized",
         browser_runtime_readback: {
           requested_session: "aos-requested-session",
           effective_session: "aos-effective-session",
@@ -114,7 +128,8 @@ test("remote Mac worker claim and receipt stay Company-scoped, idempotent, and r
   });
   assert.equal(receipt.replayed, false);
   assert.equal(receipt.receipt.external_action_executed, false);
-  assert.equal(receipt.receipt.exact_blocker, "portable_remote_read_only_business_completion_proof_pending");
+  assert.equal(receipt.receipt.exact_blocker, null);
+  assert.equal(receipt.receipt.read_only_proof_verified, true);
 
   const receiptReplay = recordPortableMacWorkerReceipt({
     companyId,
@@ -141,10 +156,10 @@ test("remote Mac worker claim and receipt stay Company-scoped, idempotent, and r
     `SELECT status, company_id, metadata_json FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`,
   )[0];
   const metadata = JSON.parse(run.metadata_json) as { external_action_executed?: boolean; exact_blocker?: string };
-  assert.equal(run.status, "blocked");
+  assert.equal(run.status, "complete");
   assert.equal(run.company_id, companyId);
   assert.equal(metadata.external_action_executed, false);
-  assert.equal(metadata.exact_blocker, "portable_remote_read_only_business_completion_proof_pending");
+  assert.equal(metadata.exact_blocker, null);
   const stepMetadata = JSON.parse(db.querySql<{ metadata_json: string }>(
     `SELECT metadata_json FROM run_steps WHERE run_id=${db.sqlValue(started.runId)} ORDER BY id ASC LIMIT 1`,
   )[0].metadata_json) as { service_readiness_runtime_binding?: Record<string, unknown> };
@@ -152,6 +167,98 @@ test("remote Mac worker claim and receipt stay Company-scoped, idempotent, and r
   assert.equal(stepMetadata.service_readiness_runtime_binding?.reserved_port, 19881);
   assert.equal(stepMetadata.service_readiness_runtime_binding?.readback_status, "verified");
   assert.equal(stepMetadata.service_readiness_runtime_binding?.status, "verified");
+});
+
+test("read-only completion remains blocked when the candidate artifact proof is incomplete", async () => {
+  const companyId = "portable_remote_read_only_proof_regression_company";
+  const started = await startPortableWorkflowRun({
+    workflowId: "job-application-manager",
+    sourceTrigger: "automation_os_scheduler",
+    idempotencyKey: "portable-remote-read-only-proof-regression",
+    companyId,
+    readOnlyStage: "candidate_supply",
+    inputBundle: {
+      source_snapshot_id: "snapshot-read-only-proof-regression",
+      supply_run_id: "supply-read-only-proof-regression",
+      bucket: "japan_targeted",
+      remaining: 1,
+      margin: 0,
+    },
+  });
+  const claim = claimPortableMacWorker({ companyId, workerId: "mac-read-only-proof-regression", requestedRunId: started.runId });
+  assert.ok(claim);
+  const receipt = recordPortableMacWorkerReceipt({
+    companyId,
+    workerId: "mac-read-only-proof-regression",
+    runId: started.runId,
+    receipt: {
+      status: "complete",
+      exact_blocker: null,
+      external_action_executed: false,
+      browser_surface: "browser_use_cli",
+      workflow_id: claim.workflow_id,
+      run_id: claim.run_id,
+      step_id: claim.step_id,
+      cleanup_verified: true,
+      readback_verified: true,
+      effects_mode: "read_only",
+      read_only_stage_bound: true,
+      external_executor_status: "candidate_supply_readback",
+      adapter_result: { stage: "job_candidate_supply", status: "ready", ready: true, read_only: true },
+    },
+  });
+  assert.equal(receipt.receipt.status, "complete");
+  assert.equal(receipt.receipt.exact_blocker, "portable_remote_read_only_business_completion_proof_pending");
+  assert.equal(receipt.receipt.read_only_proof_verified, false);
+  assert.equal(db.querySql<{ status: string }>(`SELECT status FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`)[0].status, "blocked");
+});
+
+test("remote Mac worker accepts the explicit local-worker receipt surface for local workflows", async () => {
+  const companyId = "portable_remote_local_surface_regression";
+  const workerId = "mac-local-surface-regression";
+  const started = await startPortableLocalWorkflowRun({
+    workflowId: "daily-backup-safety-check",
+    sourceTrigger: "automation_os_ui",
+    idempotencyKey: "portable-remote-local-surface-regression",
+    companyId,
+    readOnlyStage: "reference_readback"
+  });
+  const claim = claimPortableMacWorker({ companyId, workerId, requestedRunId: started.runId });
+  assert.ok(claim);
+
+  const result = recordPortableMacWorkerReceipt({
+    companyId,
+    workerId,
+    runId: claim.run_id,
+    receipt: {
+      status: "partial",
+      exact_blocker: "local_backup_effect_requires_explicit_approval",
+      external_action_executed: false,
+      browser_surface: "local_worker",
+      workflow_id: claim.workflow_id,
+      run_id: claim.run_id,
+      step_id: claim.step_id,
+      cleanup_verified: true,
+      readback_verified: true,
+      effects_mode: "read_only",
+      read_only_stage_bound: true,
+      same_run_receipt: false,
+      external_executor_status: "portable_local_worker_blocked",
+      adapter_result: {
+        local_workflow_receipt: true,
+        execution_surface: "mac_local_worker",
+        cleanup_verified: true,
+        readback_verified: true,
+        business_completion_verified: false
+      }
+    }
+  });
+  assert.equal(result.replayed, false);
+  assert.equal(result.receipt.browser_surface, "local_worker");
+  assert.equal(result.receipt.exact_blocker, "local_backup_effect_requires_explicit_approval");
+  assert.equal(result.receipt.external_action_executed, false);
+  const run = db.querySql<{ status: string }>(`SELECT status FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`)[0];
+  assert.equal(run.status, "blocked");
 });
 
 test("remote Mac worker claims a business effect only after target-bound AOS approval", async () => {

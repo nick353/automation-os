@@ -1,5 +1,6 @@
 import { execFile as execFileCallback, spawnSync } from "node:child_process";
 import { existsSync, lstatSync, readFileSync } from "node:fs";
+import { lstat, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 
@@ -7,6 +8,7 @@ import { registeredBrowserLanes } from "../runs/laneManager.js";
 
 const execFileAsync = promisify(execFileCallback);
 const LIVE_PROCESS_READBACK_TIMEOUT_MS = 2_000;
+const BROWSER_USE_ROOM_REGISTRY_PATH = "/Users/nichikatanaka/.browser-use-cli/home/room-registry.json";
 
 export const BROWSER_RUNTIME_PROCESS_READBACK_SCHEMA = "aos.browser_runtime_process_readback.v1" as const;
 
@@ -47,6 +49,8 @@ export type BrowserRuntimeProcessReadbackOptions = {
   psOutput?: string | null;
   envOutputByPid?: Record<string, string | null>;
   workerStatusOutput?: string | null;
+  /** Sanitized canonical Browser Use room-registry JSON for hermetic tests. */
+  roomRegistryOutput?: string | null;
   controlPlaneCompanyIds?: string[];
   /** Keep server-side unit projections hermetic; production defaults to live ps readback. */
   readLiveProcessTable?: boolean;
@@ -74,8 +78,36 @@ export async function buildBrowserRuntimeProcessReadbackAsync(options: BrowserRu
     if (Object.prototype.hasOwnProperty.call(envOutputByPid, key)) return;
     envOutputByPid[key] = await readSafeProcessEnvAsync(pid);
   }));
-  return buildBrowserRuntimeProcessReadback({ ...options, psOutput, envOutputByPid, capturedAt });
+  const hasBrowserProcess = rows.some((row) => parseBrowserUseProcess(row) !== null);
+  const roomRegistryOutput = options.roomRegistryOutput === undefined
+    ? hasBrowserProcess ? await readBrowserUseRoomRegistryAsync() : null
+    : options.roomRegistryOutput;
+  return buildBrowserRuntimeProcessReadback({ ...options, psOutput, envOutputByPid, roomRegistryOutput, capturedAt });
 }
+
+type BrowserRoomRecord = {
+  roomId: string;
+  lifecycle: "temporary" | "single-use" | "scheduled";
+  state: "active" | "starting" | "held";
+  ownerKind: string | null;
+  ownerId: string | null;
+  taskId: string | null;
+  automationId: string | null;
+  profileRef: string;
+  port: number;
+  currentActivity: string | null;
+  updatedAt: string | null;
+};
+
+type BrowserRoomReadback = {
+  status: "available" | "unavailable" | "invalid";
+  source: "canonical_browser_use_room_registry" | "unavailable" | "invalid";
+  reconciliation: "observation_only" | "not_requested" | null;
+  activeRoomCount: number;
+  matchedProcessCount: number;
+  rooms: Array<BrowserRoomRecord & { reclaimAllowed: false }>;
+  exactBlocker: "browser_use_room_registry_readback_unavailable" | "browser_use_room_registry_readback_invalid" | null;
+};
 
 type PortableRemoteWorkerTransportReadback = {
   status: "available" | "missing" | "invalid" | "unavailable";
@@ -111,6 +143,7 @@ export function buildBrowserRuntimeProcessReadback(options: BrowserRuntimeProces
       ...readSafeProcessEnv(row.pid, options.envOutputByPid?.[String(row.pid)])
     }));
   const workerTransport = readPortableRemoteWorkerTransport(options.workerStatusOutput);
+  const roomReadback = parseBrowserUseRoomRegistry(options.roomRegistryOutput);
 
   const registeredLaneReadback = registeredBrowserLanes.map((lane) => {
     const profileRef = publicProfileRef(lane.profileDir) ?? lane.profileDir.split("/").at(-1) ?? "unknown";
@@ -134,6 +167,10 @@ export function buildBrowserRuntimeProcessReadback(options: BrowserRuntimeProces
     const portLane = registeredLaneReadback.find((lane) => lane.reservedPort === process.port);
     const profileLane = registeredLaneReadback.find((lane) => lane.profileRef === process.profileRef);
     const relatedLane = exactLane ?? portLane ?? profileLane;
+    const exactRoom = roomReadback.rooms.find((room) => room.profileRef === process.profileRef && room.port === process.port);
+    const portRooms = roomReadback.rooms.filter((room) => room.port === process.port);
+    const room = exactRoom ?? (portRooms.length === 1 ? portRooms[0] : null);
+    const roomMatchStatus = exactRoom ? "exact_profile_port" : room ? "port_only_profile_mismatch" : "not_matched";
     return {
       kind: "browser_use_chrome",
       pid: process.pid,
@@ -144,8 +181,20 @@ export function buildBrowserRuntimeProcessReadback(options: BrowserRuntimeProces
       laneId: relatedLane?.laneId ?? null,
       workflowId: relatedLane?.workflowId ?? null,
       bindingStatus: exactLane ? "registered" : relatedLane ? "binding_mismatch" : "unregistered",
-      ownership: exactLane ? "workflow_owned" : "unknown",
-      readbackStatus: "process_present"
+      ownership: exactLane ? "workflow_owned" : room ? "foreign_owner_bound" : "unknown",
+      readbackStatus: "process_present",
+      roomId: room?.roomId ?? null,
+      roomState: room?.state ?? null,
+      roomLifecycle: room?.lifecycle ?? null,
+      roomOwnerKind: room?.ownerKind ?? null,
+      roomOwnerId: room?.ownerId ?? null,
+      roomTaskId: room?.taskId ?? null,
+      roomAutomationId: room?.automationId ?? null,
+      roomCurrentActivity: room?.currentActivity ?? null,
+      roomMatchStatus,
+      roomOwnership: room ? "descriptor_bound_registry" : "unknown",
+      roomReclaimAllowed: room ? false : null,
+      roomReadbackStatus: roomReadback.status
     } as const;
   });
 
@@ -179,6 +228,10 @@ export function buildBrowserRuntimeProcessReadback(options: BrowserRuntimeProces
     capturedAt,
     registeredLanes: registeredLaneReadback,
     browserProcesses: publicBrowserProcesses,
+    roomReadback: {
+      ...roomReadback,
+      matchedProcessCount: publicBrowserProcesses.filter((process) => process.roomId !== null).length
+    },
     portableRemoteWorker: {
       status: remoteWorkers.length > 0 ? "present" : "absent",
       processCount: remoteWorkers.length,
@@ -220,6 +273,7 @@ function unavailableReadback(capturedAt: string) {
     capturedAt,
     registeredLanes: [],
     browserProcesses: [],
+    roomReadback: parseBrowserUseRoomRegistry(null),
     portableRemoteWorker: {
       status: "unknown",
       processCount: 0,
@@ -241,6 +295,102 @@ function unavailableReadback(capturedAt: string) {
     nextAction: "Mac worker側でprocess identityとprofile/port lockをreadbackし、control planeへ返してください。",
     externalActionExecuted: false
   } as const;
+}
+
+function parseBrowserUseRoomRegistry(output: string | null | undefined): BrowserRoomReadback {
+  if (output === undefined || output === null) {
+    return {
+      status: "unavailable",
+      source: "unavailable",
+      reconciliation: "not_requested",
+      activeRoomCount: 0,
+      matchedProcessCount: 0,
+      rooms: [],
+      exactBlocker: "browser_use_room_registry_readback_unavailable"
+    };
+  }
+  try {
+    const value = JSON.parse(output) as Record<string, unknown>;
+    if (!value || typeof value !== "object" || value.schema !== "browser-use-room-registry.v1" || !Array.isArray(value.rooms)) {
+      return {
+        status: "invalid",
+        source: "invalid",
+        reconciliation: null,
+        activeRoomCount: 0,
+        matchedProcessCount: 0,
+        rooms: [],
+        exactBlocker: "browser_use_room_registry_readback_invalid"
+      };
+    }
+    const rooms = value.rooms
+      .map((raw): BrowserRoomRecord & { reclaimAllowed: false } | null => {
+        if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+        const item = raw as Record<string, unknown>;
+        const roomId = safeIdentifier(typeof item.room_id === "string" ? item.room_id : null);
+        const lifecycle = item.lifecycle === "temporary" || item.lifecycle === "single-use" || item.lifecycle === "scheduled" ? item.lifecycle : null;
+        const state = item.state === "active" || item.state === "starting" || item.state === "held" ? item.state : null;
+        const profileRef = typeof item.profile === "string" ? publicProfileRef(item.profile) : null;
+        const port = typeof item.port === "number" && Number.isSafeInteger(item.port) && item.port > 0 && item.port < 65536 ? item.port : null;
+        const owner = item.owner && typeof item.owner === "object" && !Array.isArray(item.owner) ? item.owner as Record<string, unknown> : {};
+        if (!roomId || !lifecycle || !state || !profileRef || port === null) return null;
+        return {
+          roomId,
+          lifecycle,
+          state,
+          ownerKind: safeIdentifier(typeof owner.kind === "string" ? owner.kind : null),
+          ownerId: safeIdentifier(typeof owner.id === "string" ? owner.id : null),
+          taskId: safeIdentifier(typeof item.task_id === "string" ? item.task_id : null),
+          automationId: safeIdentifier(typeof item.automation_id === "string" ? item.automation_id : null),
+          profileRef,
+          port,
+          currentActivity: safeActivity(typeof item.current_activity === "string" ? item.current_activity : null),
+          updatedAt: safeTimestamp(typeof item.updated_at === "string" ? item.updated_at : null),
+          reclaimAllowed: false
+        };
+      })
+      .filter((room): room is BrowserRoomRecord & { reclaimAllowed: false } => room !== null);
+    return {
+      status: "available",
+      source: "canonical_browser_use_room_registry",
+      reconciliation: value.reconciliation === "observation_only" ? "observation_only" : "not_requested",
+      activeRoomCount: rooms.length,
+      matchedProcessCount: 0,
+      rooms,
+      exactBlocker: null
+    };
+  } catch {
+    return {
+      status: "invalid",
+      source: "invalid",
+      reconciliation: null,
+      activeRoomCount: 0,
+      matchedProcessCount: 0,
+      rooms: [],
+      exactBlocker: "browser_use_room_registry_readback_invalid"
+    };
+  }
+}
+
+function readBrowserUseRoomRegistry(): string | null {
+  try {
+    const stat = lstatSync(BROWSER_USE_ROOM_REGISTRY_PATH);
+    const uid = typeof process.getuid === "function" ? process.getuid() : null;
+    if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1 || (uid !== null && stat.uid !== uid) || (stat.mode & 0o077) !== 0) return null;
+    return readFileSync(BROWSER_USE_ROOM_REGISTRY_PATH, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+async function readBrowserUseRoomRegistryAsync(): Promise<string | null> {
+  try {
+    const stat = await lstat(BROWSER_USE_ROOM_REGISTRY_PATH);
+    const uid = typeof process.getuid === "function" ? process.getuid() : null;
+    if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1 || (uid !== null && stat.uid !== uid) || (stat.mode & 0o077) !== 0) return null;
+    return await readFile(BROWSER_USE_ROOM_REGISTRY_PATH, { encoding: "utf8" });
+  } catch {
+    return null;
+  }
 }
 
 function readPortableRemoteWorkerTransport(injectedOutput?: string | null): PortableRemoteWorkerTransportReadback {
@@ -431,6 +581,14 @@ async function readSafeProcessEnvAsync(pid: number): Promise<string | null> {
 
 function safeIdentifier(value: string | null | undefined): string | null {
   return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/u.test(value) ? value : null;
+}
+
+function safeTimestamp(value: string | null | undefined): string | null {
+  return typeof value === "string" && !Number.isNaN(Date.parse(value)) ? value : null;
+}
+
+function safeActivity(value: string | null | undefined): string | null {
+  return typeof value === "string" && /^[a-z][a-z0-9_.:-]{0,79}$/u.test(value) ? value : null;
 }
 
 function safeOrigin(value: string | null | undefined): string | null {

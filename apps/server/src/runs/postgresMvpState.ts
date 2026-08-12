@@ -2,7 +2,7 @@ import pg from "pg";
 import { sanitizeDashboardRows } from "../dashboardSanitizer.js";
 import { buildBrowserUseRuntimeSnapshotAsync, publicBrowserUseLaneBinding } from "../browser/runtimeSnapshot.js";
 import { registeredBrowserLaneForWorkflow } from "./laneManager.js";
-import { classifyPortableWorkerHeartbeat } from "./portableWorkerHeartbeat.js";
+import { classifyPortableWorkerHeartbeat, resolvePortableWorkerHeartbeatAt } from "./portableWorkerHeartbeat.js";
 
 type JsonObject = Record<string, unknown>;
 
@@ -217,6 +217,18 @@ async function readPostgresMvpStateUncached(options: PostgresMvpStateOptions = {
         ?? (typeof latestCheck?.metadata_json === "string" ? parseObject(latestCheck.metadata_json).exactBlocker : null);
     const browserRuntime = await buildBrowserUseRuntimeSnapshotAsync({ controlPlaneCompanyIds: companyIds });
     const workerScope = browserRuntime.processReadback.portableRemoteWorker.scopeReadback;
+    const liveTransport = browserRuntime.processReadback.portableRemoteWorker.transportReadback;
+    const projectedPortableHeartbeatAt = resolvePortableWorkerHeartbeatAt({
+      liveLastSuccessfulHeartbeatAt: liveTransport.lastSuccessfulHeartbeatAt,
+      liveHeartbeatAt: liveTransport.heartbeatAt,
+      persistedHeartbeatAt: portableHeartbeatAt
+    });
+    const projectedPortableHeartbeatFreshness = projectedPortableHeartbeatAt
+      ? classifyPortableWorkerHeartbeat({
+        heartbeatAt: projectedPortableHeartbeatAt,
+        staleAfterSeconds: Number(process.env.AUTOMATION_OS_PORTABLE_WORKER_HEARTBEAT_STALE_SECONDS ?? 300)
+      })
+      : portableHeartbeatFreshness;
     const resolvedWorkerBlocker = workerScope.exactBlocker ?? (typeof workerBlocker === "string" ? workerBlocker : null);
     const resolvedWorkerStatus = workerScope.exactBlocker ? "blocked" : workerStatus;
     const publicWorkflows = workflows.map(publicRegisteredWorkflowRow);
@@ -268,11 +280,11 @@ async function readPostgresMvpStateUncached(options: PostgresMvpStateOptions = {
         detail: resolvedWorkerBlocker ? `Mac worker readback: ${resolvedWorkerBlocker}` : `queued ${queuedJobs.length} / leased ${leasedJobs.length}`,
         queue_depth: queuedJobs.length,
         active_leases: leasedJobs.length,
-        heartbeat_at: portableHeartbeatAt ?? latestCheck?.created_at ?? null,
-        heartbeat_age_seconds: portableHeartbeatFreshness?.heartbeatAgeSeconds,
-        heartbeat_fresh: portableHeartbeatFreshness?.heartbeatFresh,
+        heartbeat_at: projectedPortableHeartbeatAt ?? latestCheck?.created_at ?? null,
+        heartbeat_age_seconds: projectedPortableHeartbeatFreshness?.heartbeatAgeSeconds,
+        heartbeat_fresh: projectedPortableHeartbeatFreshness?.heartbeatFresh,
         last_run_id: String(publicJobs[0]?.run_id ?? sanitizedRuns[0]?.id ?? "") || null,
-        readback_status: portableHeartbeatFreshness?.readbackStatus ?? "stored",
+        readback_status: projectedPortableHeartbeatFreshness?.readbackStatus ?? "stored",
         exact_blocker: resolvedWorkerBlocker,
         next_action: workerScope.exactBlocker
           ? workerScope.nextAction

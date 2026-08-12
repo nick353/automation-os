@@ -79,7 +79,7 @@ for (let cycle = 1; !stopping && cycle <= maxCycles; cycle += 1) {
       if (coverageBlocker) throw new Error(coverageBlocker);
     }
     const summaries = durableOnly ? [] : await runWorkerOnce(runId);
-    const portableSummaries = durableOnly ? await runPortableMacWorkerOnce() : [];
+    const portableSummaries = durableOnly ? await runPortableMacWorkerOnce(runId) : [];
     // The worker-owned scheduler uses the same AOS scheduler tick as the
     // server-owned scheduler. This keeps registered Browser Use schedules on
     // the portable Mac-worker queue instead of recreating the legacy generic

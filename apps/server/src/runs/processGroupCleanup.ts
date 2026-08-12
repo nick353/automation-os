@@ -1,4 +1,5 @@
 import type { ChildProcess } from "node:child_process";
+import { setTimeout as delay } from "node:timers/promises";
 
 export type OwnedProcessGroupCleanup = {
   supported: boolean;
@@ -66,6 +67,16 @@ async function waitForChildExit(child: ChildProcess, timeoutMs: number): Promise
   });
 }
 
+async function waitForProcessGroupExit(pid: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + Math.max(1, timeoutMs);
+  while (Date.now() <= deadline) {
+    const state = processGroupExists(pid);
+    if (state === false) return true;
+    await delay(Math.min(25, Math.max(1, deadline - Date.now())));
+  }
+  return processGroupExists(pid) === false;
+}
+
 /**
  * Terminate only a detached child process-group owned by this invocation.
  * A leader-only kill is insufficient because Browser Use helpers can leave
@@ -84,23 +95,24 @@ export async function cleanupOwnedProcessGroup(child: ChildProcess, graceMs = 5_
 
   const initialGroupState = processGroupExists(pid);
   if (initialGroupState === false) {
-    return { supported, attempted: false, termSent: false, killSent: false, verified: childExited(child) || processGroupExists(pid) === false };
+    await waitForChildExit(child, Math.min(graceMs, 1_000));
+    return { supported, attempted: false, termSent: false, killSent: false, verified: childExited(child) && processGroupExists(pid) === false };
   }
 
   const termSent = signalOwnedProcessGroup(pid, "SIGTERM") || signalChild(child, "SIGTERM");
   await waitForChildExit(child, graceMs);
-  if (processGroupExists(pid) === false) {
+  if (await waitForProcessGroupExit(pid, Math.min(graceMs, 1_000))) {
     return { supported, attempted: true, termSent, killSent: false, verified: true };
   }
 
   const killSent = signalOwnedProcessGroup(pid, "SIGKILL") || (!childExited(child) && signalChild(child, "SIGKILL"));
   await waitForChildExit(child, Math.min(graceMs, 1_000));
-  const finalGroupState = processGroupExists(pid);
+  const finalGroupExited = await waitForProcessGroupExit(pid, Math.min(graceMs, 2_000));
   return {
     supported,
     attempted: true,
     termSent,
     killSent,
-    verified: childExited(child) && finalGroupState === false
+    verified: childExited(child) && finalGroupExited
   };
 }

@@ -1,11 +1,14 @@
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
-import { buildReadbackHeaders, readProductionReadToken } from "./productionReadbackAuth.mjs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { basename, join, resolve, sep } from "node:path";
+import { buildReadbackHeaders, readProductionReadToken, readProductionReadTokenStatus } from "./productionReadbackAuth.mjs";
 
 const baseUrl = (process.env.AUTOMATION_OS_PRODUCTION_URL || process.argv[2] || "https://automation-os.zeabur.app").replace(/\/+$/u, "");
 const stamp = new Date().toISOString().replace(/[^0-9A-Za-z]+/gu, "-").replace(/-$/u, "");
 const outDir = resolve(process.env.AUTOMATION_OS_QA_OUTPUT_DIR || join("/tmp", `automation-os-production-qa-${stamp}`));
+const localWebDist = resolve(process.env.AUTOMATION_OS_LOCAL_WEB_DIST || join(process.env.AUTOMATION_OS_REPO_ROOT || process.cwd(), "dist"));
 const readToken = readProductionReadToken();
+const readTokenStatus = readProductionReadTokenStatus();
 mkdirSync(outDir, { recursive: true });
 
 const result = {
@@ -13,6 +16,8 @@ const result = {
   outDir,
   generatedAt: new Date().toISOString(),
   readTokenAvailable: Boolean(readToken),
+  readTokenSource: readTokenStatus.source,
+  readTokenExactBlocker: readTokenStatus.exactBlocker,
   api: [],
   endpointAliases: {},
   compatibilityMode: false,
@@ -26,23 +31,40 @@ const result = {
 // navigation and screenshots belong exclusively to the canonical Browser Use
 // CLI session, never to a Playwright or direct browser fallback.
 
-await checkApi("/api/health", { required: true, routeType: "health", includeReadToken: false });
+result.api.push(await checkApi("/api/health", { required: true, routeType: "health", includeReadToken: false }));
 
-const dashboardReadback = await checkPreferredRoute([
-  { route: "/api/dashboard", required: false },
-  { route: "/api/mvp/state", required: false }
-]);
-await checkPreferredRoute([
-  { route: "/api/registered-workflows", required: false },
-  { route: "/api/mvp/registered-automations?project_id=project-a", required: false }
-]);
-await checkPreferredRoute([
-  { route: "/api/browser/health", required: false },
-  { route: "/api/mvp/feedback", required: false }
-]);
+if (readToken) {
+  const dashboardReadback = await checkPreferredRoute([
+    { route: "/api/dashboard", required: false },
+    { route: "/api/mvp/state", required: false }
+  ]);
+  await checkPreferredRoute([
+    { route: "/api/registered-workflows", required: false },
+    { route: "/api/mvp/registered-automations?project_id=project-a", required: false }
+  ]);
+  await checkPreferredRoute([
+    { route: "/api/browser/health", required: false },
+    { route: "/api/mvp/feedback", required: false }
+  ]);
 
-if (dashboardReadback.foundRoute !== "/api/dashboard") {
-  result.compatibilityMode = true;
+  if (dashboardReadback.foundRoute !== "/api/dashboard") {
+    result.compatibilityMode = true;
+  }
+} else {
+  result.protectedReadback = {
+    status: "blocked",
+    attempted: false,
+    exact_blocker: readTokenStatus.exactBlocker,
+    routes: [
+      "/api/dashboard",
+      "/api/mvp/state",
+      "/api/registered-workflows",
+      "/api/mvp/registered-automations?project_id=project-a",
+      "/api/browser/health",
+      "/api/mvp/feedback"
+    ]
+  };
+  result.failures.push(`protected_readback:${readTokenStatus.exactBlocker}`);
 }
 
 await checkServedAssets();
@@ -134,6 +156,14 @@ async function checkRoute(route, options = {}) {
     };
 
     if (routeType === "health" && parsed && typeof parsed === "object") {
+      result.deployment = sanitizeDeploymentReadback(parsed.deployment);
+    }
+
+    // The public health route intentionally omits deployment metadata. The
+    // protected dashboard is the authoritative production read-only source
+    // for commit/runtime-asset parity, so retain only the sanitized fields
+    // when that route is selected.
+    if (route === "/api/dashboard" && parsed && typeof parsed === "object") {
       result.deployment = sanitizeDeploymentReadback(parsed.deployment);
     }
 
@@ -269,19 +299,130 @@ async function checkServedAssets() {
     result.assets = {
       status: response.status,
       js: js ? new URL(js, `${baseUrl}/`).href : "",
-      css: css ? new URL(css, `${baseUrl}/`).href : ""
+      css: css ? new URL(css, `${baseUrl}/`).href : "",
+      publicReadback: {},
+      localParity: {
+        status: "pending",
+        checks: {}
+      }
     };
     if (!response.ok) result.failures.push(`/: http_${response.status}`);
     if (!js) result.failures.push("/: missing_js_asset");
     if (!css) result.failures.push("/: missing_css_asset");
+
+    const assetSpecs = [
+      { kind: "js", href: js },
+      { kind: "css", href: css }
+    ];
+    for (const asset of assetSpecs) {
+      if (!asset.href) continue;
+      const assetUrl = new URL(asset.href, `${baseUrl}/`);
+      const publicReadback = await readServedAsset(assetUrl, headers);
+      result.assets.publicReadback[asset.kind] = publicReadback;
+      const localParity = compareLocalAsset(assetUrl, publicReadback);
+      result.assets.localParity.checks[asset.kind] = localParity;
+      if (localParity.status === "mismatch") {
+        result.failures.push(`public_local_asset_parity_mismatch:${asset.kind}`);
+      } else if (localParity.status === "blocked") {
+        result.failures.push(`${localParity.exactBlocker}:${asset.kind}`);
+      }
+    }
+    const parityStatuses = Object.values(result.assets.localParity.checks).map((entry) => entry.status);
+    result.assets.localParity.status = parityStatuses.length === 0
+      ? "blocked"
+      : parityStatuses.every((status) => status === "match")
+        ? "verified"
+        : parityStatuses.includes("mismatch")
+          ? "mismatch"
+          : "blocked";
   } catch (error) {
     result.failures.push(`/: ${error instanceof Error ? error.message : "request_failed"}`);
   }
 }
 
+async function readServedAsset(assetUrl, headers) {
+  try {
+    const response = await fetch(assetUrl, Object.keys(headers).length ? { headers } : undefined);
+    const bytes = Buffer.from(await response.arrayBuffer());
+    return {
+      status: response.status,
+      ok: response.ok,
+      sha256: sha256(bytes),
+      bytes: bytes.byteLength
+    };
+  } catch (error) {
+    return {
+      status: 0,
+      ok: false,
+      sha256: "",
+      bytes: 0,
+      exactBlocker: error instanceof Error ? error.message : "public_asset_readback_failed"
+    };
+  }
+}
+
+function compareLocalAsset(assetUrl, publicReadback) {
+  const fileName = basename(assetUrl.pathname);
+  if (!/^index-[A-Za-z0-9._-]+\.(?:js|css)$/u.test(fileName)) {
+    return { status: "blocked", exactBlocker: "public_asset_filename_untrusted" };
+  }
+  if (!publicReadback.ok || !publicReadback.sha256) {
+    return { status: "blocked", exactBlocker: "public_asset_readback_failed" };
+  }
+  const localAssetsRoot = resolve(localWebDist, "assets");
+  const localPath = resolve(localAssetsRoot, fileName);
+  if (!localPath.startsWith(`${localAssetsRoot}${sep}`)) {
+    return { status: "blocked", exactBlocker: "local_asset_path_invalid" };
+  }
+  if (!existsSync(localPath)) {
+    const candidates = existsSync(localAssetsRoot)
+      ? readdirSync(localAssetsRoot).filter((entry) => new RegExp(`^index-[A-Za-z0-9._-]+\\.${assetExtension(fileName)}$`, "u").test(entry))
+      : [];
+    if (candidates.length === 1) {
+      const localFileName = candidates[0];
+      const localBytes = readFileSync(resolve(localAssetsRoot, localFileName));
+      const localSha256 = sha256(localBytes);
+      return {
+        status: localSha256 === publicReadback.sha256 ? "match" : "mismatch",
+        fileName,
+        localFileName,
+        publicSha256: publicReadback.sha256,
+        localSha256,
+        publicBytes: publicReadback.bytes,
+        localBytes: localBytes.byteLength
+      };
+    }
+    return {
+      status: "blocked",
+      exactBlocker: candidates.length > 1 ? "local_web_asset_name_not_unique" : "local_web_asset_missing",
+      fileName,
+      candidateFileNames: candidates
+    };
+  }
+  const localBytes = readFileSync(localPath);
+  const localSha256 = sha256(localBytes);
+  return {
+    status: localSha256 === publicReadback.sha256 ? "match" : "mismatch",
+    fileName,
+    publicSha256: publicReadback.sha256,
+    localSha256,
+    publicBytes: publicReadback.bytes,
+    localBytes: localBytes.byteLength
+  };
+}
+
+function assetExtension(fileName) {
+  return fileName.endsWith(".css") ? "css" : "js";
+}
+
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
 function sanitizeDeploymentReadback(deployment) {
   if (!deployment || typeof deployment !== "object") return null;
   const assets = deployment.assets && typeof deployment.assets === "object" ? deployment.assets : {};
+  const runtimeParity = deployment.runtimeParity && typeof deployment.runtimeParity === "object" ? deployment.runtimeParity : {};
   return {
     commit: typeof deployment.commit === "string" ? deployment.commit : "",
     commitSource: typeof deployment.commitSource === "string" ? deployment.commitSource : "",
@@ -292,6 +433,14 @@ function sanitizeDeploymentReadback(deployment) {
       indexFound: assets.indexFound === true,
       js: typeof assets.js === "string" ? assets.js : "",
       css: typeof assets.css === "string" ? assets.css : ""
+    },
+    runtimeParity: {
+      status: typeof runtimeParity.status === "string" ? runtimeParity.status : "",
+      schema: typeof runtimeParity.schema === "string" ? runtimeParity.schema : "",
+      artifactHash: typeof runtimeParity.artifactHash === "string" ? runtimeParity.artifactHash : "",
+      fileCount: typeof runtimeParity.fileCount === "number" ? runtimeParity.fileCount : 0,
+      generatedAt: typeof runtimeParity.generatedAt === "string" ? runtimeParity.generatedAt : "",
+      exactBlocker: typeof runtimeParity.exactBlocker === "string" ? runtimeParity.exactBlocker : null
     }
   };
 }

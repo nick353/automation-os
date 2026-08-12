@@ -9,6 +9,11 @@ const tempRoot = mkdtempSync(join(tmpdir(), "automation-os-maintenance-"));
 const currentProjectRoot = process.cwd();
 process.env.AUTOMATION_OS_DB = join(tempRoot, "automation-os.sqlite");
 process.env.AUTOMATION_OS_RESUME_CONTRACT_PATH = join(tempRoot, "resume-contract.json");
+// Keep the exporter tests hermetic. Calls that omit codexSessionsDir exercise
+// the configured default, but must never recursively scan the user's real
+// ~/.codex/sessions tree during a test run.
+process.env.AUTOMATION_OS_CODEX_SESSIONS_DIR = join(tempRoot, "default-codex-sessions");
+process.env.AUTOMATION_OS_CODEX_SESSION_INDEX = join(tempRoot, "default-codex-session-index.jsonl");
 
 const db = await import("../db/client.js");
 const obsidian = await import("../obsidian/exporter.js");
@@ -230,7 +235,7 @@ test("exportObsidianVault writes wiki-linked run, proof, and docs markdown", () 
       "kind: inbox",
       "status: open",
       "sourceUrl: https://user:pass@example.com/private?access_token=N9sK2LmP8qRwT5yUi3OpAzXcVbNmQ1We",
-      "sourceOfTruth: Bearer sk-testsecret1234567890",
+      "sourceOfTruth: Bearer fake-test-secret-value",
       "suggestedDestination: ../../Secrets",
       "---",
       "",
@@ -562,7 +567,7 @@ test("exportObsidianVault writes wiki-linked run, proof, and docs markdown", () 
   assert.doesNotMatch(resumeCurrentWork, /abc123secretvalue/);
   assert.doesNotMatch(resumeCurrentWork, /N9sK2LmP8qRwT5yUi3OpAzXcVbNmQ1We/);
   assert.doesNotMatch(resumeCurrentWork, /refreshsecretvalue/);
-  assert.doesNotMatch(resumeCurrentWork, /sk-testsecret1234567890/);
+  assert.doesNotMatch(resumeCurrentWork, /fake-test-secret-value/);
   assert.doesNotMatch(resumeCurrentWork, /verysecret/);
   assert.match(resumeContractNote, /# Resume Contract/);
   assert.match(resumeContractNote, /Project Handoff Index/);
@@ -658,14 +663,14 @@ test("exportObsidianVault writes wiki-linked run, proof, and docs markdown", () 
   assert.match(secondBrainIntake, /External Required Research/);
   assert.match(secondBrainIntake, /Secret Source/);
   assert.match(secondBrainIntake, /Source URL: https:\/\/\[redacted-auth\]@example\.com\/private\?access_token=\[redacted\]/);
-  assert.match(secondBrainIntake, /Source of truth: Bearer \[redacted-token\]/);
+  assert.match(secondBrainIntake, /Source of truth: Bearer \[redacted\]/);
   assert.match(secondBrainIntake, /Suggested destination: unknown/);
   assert.match(secondBrainIntake, /frontmatter suggested_destination outside allowlist; kept as unknown/);
   assert.match(secondBrainIntake, /Source pointer to preserve: https:\/\/\[redacted-auth\]@example\.com\/private\?access_token=\[redacted\]/);
   assert.doesNotMatch(secondBrainIntake, /\.\.\/\.\.\/Secrets/);
   assert.doesNotMatch(secondBrainIntake, /user:pass/);
   assert.doesNotMatch(secondBrainIntake, /N9sK2LmP8qRwT5yUi3OpAzXcVbNmQ1We/);
-  assert.doesNotMatch(secondBrainIntake, /sk-testsecret1234567890/);
+  assert.doesNotMatch(secondBrainIntake, /fake-test-secret-value/);
   assert.match(secondBrainIntake, /Loose Thought/);
   assert.match(secondBrainIntake, /Suggested destination: 09_Inbox/);
   assert.doesNotMatch(secondBrainIntake, /Research Capture/);
@@ -697,13 +702,13 @@ test("exportObsidianVault writes wiki-linked run, proof, and docs markdown", () 
   assert.match(secondBrainAutoProcessor, /External Required Research[\s\S]*approval_required: false/);
   assert.match(secondBrainAutoProcessor, /Secret Source/);
   assert.match(secondBrainAutoProcessor, /source_url: https:\/\/\[redacted-auth\]@example\.com\/private\?access_token=\[redacted\]/);
-  assert.match(secondBrainAutoProcessor, /source_of_truth: Bearer \[redacted-token\]/);
+  assert.match(secondBrainAutoProcessor, /source_of_truth: Bearer \[redacted\]/);
   assert.match(secondBrainAutoProcessor, /suggested_destination: unknown/);
   assert.match(secondBrainAutoProcessor, /external_action_required: true/);
   assert.doesNotMatch(secondBrainAutoProcessor, /\.\.\/\.\.\/Secrets/);
   assert.doesNotMatch(secondBrainAutoProcessor, /user:pass/);
   assert.doesNotMatch(secondBrainAutoProcessor, /N9sK2LmP8qRwT5yUi3OpAzXcVbNmQ1We/);
-  assert.doesNotMatch(secondBrainAutoProcessor, /sk-testsecret1234567890/);
+  assert.doesNotMatch(secondBrainAutoProcessor, /fake-test-secret-value/);
   assert.match(activeSessions, /generated_by: automation-os/);
   assert.match(activeSessions, /# Active Sessions/);
   assert.match(activeSessions, /## session_11/);
@@ -717,7 +722,7 @@ test("exportObsidianVault writes wiki-linked run, proof, and docs markdown", () 
   assert.match(activeSessions, /AWS_SECRET_ACCESS_KEY=\[redacted\]/);
   assert.match(activeSessions, /\[redacted-jwt\]/);
   assert.match(activeSessions, /sessionid=\[redacted-session\]/);
-  assert.doesNotMatch(activeSessions, /sk-testsecret1234567890/);
+  assert.doesNotMatch(activeSessions, /fake-test-secret-value/);
   assert.doesNotMatch(activeSessions, /verysecret/);
   assert.doesNotMatch(activeSessions, /supersecret/);
   assert.doesNotMatch(activeSessions, /AbCdEfGhIjKlMnOpQrStUvWxYz123456/);
@@ -768,7 +773,7 @@ test("exportObsidianVault writes wiki-linked run, proof, and docs markdown", () 
   assert.match(projectMemoryMap, /\[redacted-token\]/);
   assert.match(projectMemoryMap, /\[redacted-auth\]/);
   assert.doesNotMatch(projectMemoryMap, /supersecret/);
-  assert.doesNotMatch(projectMemoryMap, /sk-testsecret1234567890/);
+  assert.doesNotMatch(projectMemoryMap, /fake-test-secret-value/);
   assert.match(decisionLog, /generated_by: automation-os/);
   assert.match(decisionLog, /run_obsidian/);
   assert.match(decisionLog, /CodexにWeekly Reviewから改善案を作らせる/);
@@ -788,7 +793,7 @@ test("exportObsidianVault writes wiki-linked run, proof, and docs markdown", () 
   assert.match(secondBrainWeeklyDigest, /does not canonicalize notes/);
   assert.match(secondBrainWeeklyDigest, /Unclassified count: 3/);
   assert.match(secondBrainWeeklyDigest, /preserve source pointer: https:\/\/\[redacted-auth\]@example\.com\/private\?access_token=\[redacted\]/);
-  assert.match(secondBrainWeeklyDigest, /source_of_truth=Bearer \[redacted-token\]/);
+  assert.match(secondBrainWeeklyDigest, /source_of_truth=Bearer \[redacted\]/);
   assert.match(secondBrainWeeklyDigest, /09_Inbox: \[\[09_Inbox\/Research Capture\|Research Capture\]\] \| kind=research/);
   assert.match(sessionKnowledgeDigest, /coverage: all_redacted_session_index_inventory_plus_latest_50_user_owned_head_tail_detail/);
   assert.match(sessionKnowledgeDigest, /All-session redacted index entries:/);
@@ -798,7 +803,7 @@ test("exportObsidianVault writes wiki-linked run, proof, and docs markdown", () 
   assert.doesNotMatch(secondBrainWeeklyDigest, /\.\.\/\.\.\/Secrets/);
   assert.doesNotMatch(secondBrainWeeklyDigest, /user:pass/);
   assert.doesNotMatch(secondBrainWeeklyDigest, /N9sK2LmP8qRwT5yUi3OpAzXcVbNmQ1We/);
-  assert.doesNotMatch(secondBrainWeeklyDigest, /sk-testsecret1234567890/);
+  assert.doesNotMatch(secondBrainWeeklyDigest, /fake-test-secret-value/);
   assert.doesNotMatch(secondBrainWeeklyDigest, /Generated Inbox Helper/);
   assert.equal(result.orientationFiles.length, 5);
   assert.ok(result.orientationFiles.some((file) => file.endsWith(join("05_Projects", "Project Index.md"))));

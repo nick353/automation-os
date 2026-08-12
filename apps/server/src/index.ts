@@ -73,7 +73,7 @@ import {
   rollbackPreparedResearchPlanRunAtomic
 } from "./planner/researchPlanLineage.js";
 import { getRunWorkerProgressState, resolveWorkerAdapterPolicy, startCommandRun, type RunWorkerProgressState } from "./runs/workerEngine.js";
-import { portableWorkerHeartbeatId, PORTABLE_WORKER_HEARTBEAT_KIND, validatePortableWorkerHeartbeat } from "./runs/portableWorkerHeartbeat.js";
+import { portableWorkerHeartbeatId, PORTABLE_WORKER_HEARTBEAT_KIND, resolvePortableWorkerHeartbeatAt, validatePortableWorkerHeartbeat } from "./runs/portableWorkerHeartbeat.js";
 import { portableExternalRunnerConfigured } from "./runs/portableExternalRunnerConfig.js";
 import {
   cancelDurableJob,
@@ -4933,6 +4933,12 @@ export function getMvpStateReadback(companyIds: string[]) {
   const workerStatus = storedWorkerStatus ?? (leasedJobs.length > 0 ? "running" : "idle");
   const browserRuntime = buildBrowserUseRuntimeSnapshot({ controlPlaneCompanyIds: companyIds });
   const workerScope = browserRuntime.processReadback.portableRemoteWorker.scopeReadback;
+  const liveTransport = browserRuntime.processReadback.portableRemoteWorker.transportReadback;
+  const projectedHeartbeatAt = resolvePortableWorkerHeartbeatAt({
+    liveLastSuccessfulHeartbeatAt: liveTransport.lastSuccessfulHeartbeatAt,
+    liveHeartbeatAt: liveTransport.heartbeatAt,
+    persistedHeartbeatAt: storedWorkerState?.updatedAt ?? latestHeartbeat
+  });
   const workerBlocker = storedWorkerState?.exactBlocker ?? workerScope.exactBlocker ?? null;
   const resolvedWorkerStatus = workerScope.exactBlocker ? "blocked" : workerStatus;
   return {
@@ -5029,7 +5035,7 @@ export function getMvpStateReadback(companyIds: string[]) {
         : `queued ${queuedJobs.length} / leased ${leasedJobs.length}`,
       queue_depth: queuedJobs.length,
       active_leases: leasedJobs.length,
-      heartbeat_at: storedWorkerState?.updatedAt ?? latestHeartbeat,
+      heartbeat_at: projectedHeartbeatAt,
       last_run_id: durableJobs[0]?.runId ?? null,
       readback_status: "stored",
       exact_blocker: workerBlocker,

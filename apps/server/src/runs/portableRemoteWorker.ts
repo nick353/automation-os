@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { execSql, insert, makeId, nowIso, querySql, sqlValue } from "../db/client.js";
 import type { PortableBusinessEffectStage } from "./portableWorkflowEntrypoint.js";
 import { getPortableExternalBusinessPlan, validatePortableBusinessInputBundle } from "./portableExternalBusinessPlan.js";
+import { isPortableLocalWorkflowId } from "./portableLocalWorkflow.js";
 import {
   issuePortableExternalEffectAuthorityV1,
   validatePortableExternalEffectAuthorityV1,
@@ -51,7 +52,7 @@ export type PortableRemoteReceipt = {
   status: "complete" | "partial" | "blocked";
   exact_blocker: string | null;
   external_action_executed: boolean;
-  browser_surface: "browser_use_cli";
+  browser_surface: "browser_use_cli" | "local_worker";
   workflow_id: string;
   run_id: string;
   step_id: string;
@@ -62,6 +63,7 @@ export type PortableRemoteReceipt = {
   business_effect_stage?: PortableBusinessEffectStage;
   same_run_receipt: boolean;
   business_proof_verified: boolean;
+  read_only_proof_verified: boolean;
   target_digest?: string;
   external_executor_status: string;
   input_bundle_sha256?: string;
@@ -793,6 +795,7 @@ function safeReceipt(input: unknown, expected: {
   stepId: string;
   idempotencyKey: string;
   executionMode: PortableRemoteExecutionMode;
+  readOnlyStage: "candidate_supply" | "reference_readback" | null;
   businessEffectStage: PortableBusinessEffectStage | null;
   targetDigest: string | null;
   effectAuthority: PortableExternalEffectAuthorityV1 | null;
@@ -801,7 +804,13 @@ function safeReceipt(input: unknown, expected: {
   if (!isObject(input)) throw new Error("portable_remote_receipt_invalid");
   const status = input.status === "complete" || input.status === "partial" || input.status === "blocked" ? input.status : "blocked";
   const exactBlocker = input.exact_blocker === null || input.exact_blocker === undefined ? null : String(input.exact_blocker).slice(0, 240);
-  if (input.browser_surface !== "browser_use_cli") throw new Error("portable_remote_browser_surface_invalid");
+  const localWorkflow = isPortableLocalWorkflowId(expected.workflowId);
+  const browserSurface = input.browser_surface === "browser_use_cli"
+    ? "browser_use_cli"
+    : localWorkflow && input.browser_surface === "local_worker"
+      ? "local_worker"
+      : null;
+  if (!browserSurface) throw new Error("portable_remote_browser_surface_invalid");
   if (input.run_id !== expected.runId || input.step_id !== expected.stepId || input.workflow_id !== expected.workflowId) throw new Error("portable_remote_receipt_binding_mismatch");
   const adapterResult = isObject(input.adapter_result) ? sanitizeRecord(input.adapter_result, 0) : {};
   const reportedExternal = input.external_action_executed === true;
@@ -852,6 +861,52 @@ function safeReceipt(input: unknown, expected: {
   if (expected.executionMode === "read_only" && reportedExternal) throw new Error("portable_remote_external_effect_reported");
   if (expected.executionMode === "read_only" && input.read_only_stage_bound !== true) throw new Error("portable_remote_read_only_stage_unbound");
 
+  const nonEmptyPath = (value: unknown): boolean => typeof value === "string" && value.trim().length > 0;
+  const localReadOnlyProofVerified = localWorkflow
+    && status === "complete"
+    && exactBlocker === null
+    && reportedExternal === false
+    && input.read_only_stage_bound === true
+    && sameRunReceipt
+    && readbackVerified
+    && cleanupVerified
+    && adapterResult.local_workflow_receipt === true
+    && adapterResult.execution_surface === "mac_local_worker";
+  const readOnlyProofVerified = expected.executionMode === "read_only"
+    && expected.readOnlyStage !== null
+    && (localReadOnlyProofVerified || (
+      status === "complete"
+      && exactBlocker === null
+      && reportedExternal === false
+      && input.read_only_stage_bound === true
+      && sameRunReceipt
+      && readbackVerified
+      && cleanupVerified
+      && (expected.readOnlyStage === "candidate_supply"
+      ? adapterResult.stage === "job_candidate_supply"
+        && adapterResult.status === "ready"
+        && adapterResult.ready === true
+        && adapterResult.read_only === true
+        && Number.isSafeInteger(adapterResult.candidate_count)
+        && Number.isSafeInteger(adapterResult.requested_count)
+        && Number(adapterResult.candidate_count) >= 0
+        && Number(adapterResult.requested_count) >= 0
+        && Number(adapterResult.candidate_count) >= Number(adapterResult.requested_count)
+        && nonEmptyPath(adapterResult.artifact_uri)
+        && nonEmptyPath(adapterResult.browser_authority_path)
+        && nonEmptyPath(adapterResult.browser_flow_receipt_path)
+        && nonEmptyPath(adapterResult.browser_flow_manifest_path)
+        && adapterResult.cleanup_verified === true
+        && adapterResult.browser_flow_status === "finalized"
+      : adapterResult.reference_readback === true
+        && isObject(adapterResult.browser_runtime_readback)
+        && adapterResult.browser_runtime_readback.cleanup_verified === true
+        && nonEmptyPath(adapterResult.browser_runtime_readback.effective_session)
+        && nonEmptyPath(adapterResult.browser_runtime_readback.profile_root)
+        && Number(adapterResult.browser_runtime_readback.reserved_port) > 0
+        && adapterResult.browser_runtime_readback.flow_status === "finalized"
+    )));
+
   let normalizedStatus: PortableRemoteReceipt["status"] = status;
   let normalizedBlocker = exactBlocker;
   if (expected.executionMode === "business_effect") {
@@ -885,7 +940,7 @@ function safeReceipt(input: unknown, expected: {
     status: normalizedStatus,
     exact_blocker: normalizedBlocker,
     external_action_executed: reportedExternal,
-    browser_surface: "browser_use_cli",
+    browser_surface: browserSurface,
     workflow_id: expected.workflowId,
     run_id: expected.runId,
     step_id: expected.stepId,
@@ -895,6 +950,7 @@ function safeReceipt(input: unknown, expected: {
     read_only_stage_bound: expected.executionMode === "read_only" && input.read_only_stage_bound === true,
     same_run_receipt: sameRunReceipt,
     business_proof_verified: businessProofVerified,
+    read_only_proof_verified: readOnlyProofVerified,
     external_executor_status: typeof input.external_executor_status === "string" ? input.external_executor_status.slice(0, 240) : "unknown"
   };
   if (expected.businessEffectStage) result.business_effect_stage = expected.businessEffectStage;
@@ -909,7 +965,7 @@ function safeReceipt(input: unknown, expected: {
     if (runnerReceipt.same_run_source_sync === true) result.same_run_source_sync = true;
   }
   if (webOperationLifecycle?.valid) result.web_operation_lifecycle = webOperationLifecycle.lifecycle;
-  if (expected.executionMode === "read_only" && !result.exact_blocker && result.status === "complete") {
+  if (expected.executionMode === "read_only" && !readOnlyProofVerified && !result.exact_blocker && result.status === "complete") {
     result.exact_blocker = "portable_remote_read_only_business_completion_proof_pending";
   }
   return result;
@@ -998,6 +1054,7 @@ export function recordPortableMacWorkerReceipt(input: { companyId: string; worke
     stepId: step.id,
     idempotencyKey: idempotencyKey(metadata, run.id, step.id),
     executionMode,
+    readOnlyStage: readOnlyStage(metadata),
     businessEffectStage: effectStage,
     targetDigest: claimedTargetDigest,
     effectAuthority,
@@ -1025,19 +1082,31 @@ export function recordPortableMacWorkerReceipt(input: { companyId: string; worke
     remote_worker_claim: { ...claim, completed_at: timestamp },
     exact_blocker: receipt.exact_blocker,
     external_action_executed: receipt.external_action_executed,
-    worker_loop: { ...(isObject(metadata.worker_loop) ? metadata.worker_loop : {}), status: receipt.status === "complete" ? "completed_business_effect" : "completed_readback", completedAt: timestamp },
-    mac_worker: { ...(isObject(metadata.mac_worker) ? metadata.mac_worker : {}), status: receipt.status === "complete" ? "completed_business_effect" : "completed_readback", completedAt: timestamp }
+    worker_loop: { ...(isObject(metadata.worker_loop) ? metadata.worker_loop : {}), status: receipt.status === "complete" ? (executionMode === "business_effect" ? "completed_business_effect" : "completed_readback") : "blocked", completedAt: timestamp },
+    mac_worker: { ...(isObject(metadata.mac_worker) ? metadata.mac_worker : {}), status: receipt.status === "complete" ? (executionMode === "business_effect" ? "completed_business_effect" : "completed_readback") : "blocked", completedAt: timestamp }
   };
-  const completed = receipt.status === "complete" && receipt.exact_blocker === null && receipt.external_action_executed === true;
+  const completed = receipt.status === "complete"
+    && receipt.exact_blocker === null
+    && ((executionMode === "business_effect" && receipt.external_action_executed === true)
+      || (executionMode === "read_only" && receipt.external_action_executed === false && receipt.read_only_proof_verified === true));
   const stepStatus = completed ? "completed" : "blocked";
   const runStatus = completed ? "complete" : "blocked";
-  const executionLabel = executionMode === "business_effect" ? "portable_external_remote_mac_worker_business" : "portable_external_remote_mac_worker";
-  const proofSummary = completed ? "complete: submitted/readback/cleanup proof verified" : `blocked: ${receipt.exact_blocker || "portable_remote_read_only_business_completion_proof_pending"}`;
-  execSql(`UPDATE run_steps SET status=${sqlValue(stepStatus)}, completed_at=${sqlValue(timestamp)}, metadata_json=${sqlValue({ ...stepMetadata, ...(runtimeBinding ? { service_readiness_runtime_binding: runtimeBinding } : {}), exact_blocker: receipt.exact_blocker, external_action_executed: receipt.external_action_executed, execution_mode: executionLabel, portable_external_receipt: receipt, portable_external_artifact: artifactUri, proof_summary: proofSummary })} WHERE id=${sqlValue(step.id)};`);
+  const localWorkflow = isPortableLocalWorkflowId(workflowId);
+  const executionLabel = localWorkflow
+    ? "portable_local_remote_mac_worker"
+    : executionMode === "business_effect" ? "portable_external_remote_mac_worker_business" : "portable_external_remote_mac_worker";
+  const proofSummary = completed
+    ? executionMode === "business_effect"
+      ? "complete: submitted/readback/cleanup proof verified"
+      : localWorkflow
+        ? "complete: Mac local read-only artifact/readback/cleanup proof verified"
+        : "complete: read-only artifact/readback/cleanup proof verified"
+    : `blocked: ${receipt.exact_blocker || "portable_remote_read_only_business_completion_proof_pending"}`;
+  execSql(`UPDATE run_steps SET status=${sqlValue(stepStatus)}, completed_at=${sqlValue(timestamp)}, metadata_json=${sqlValue({ ...stepMetadata, ...(runtimeBinding ? { service_readiness_runtime_binding: runtimeBinding } : {}), exact_blocker: receipt.exact_blocker, external_action_executed: receipt.external_action_executed, read_only_proof_verified: receipt.read_only_proof_verified, execution_mode: executionLabel, portable_external_receipt: receipt, portable_external_artifact: artifactUri, proof_summary: proofSummary })} WHERE id=${sqlValue(step.id)};`);
   if (step.lane_id) execSql(`UPDATE lanes SET status=${sqlValue(completed ? "completed" : "blocked")}, progress=${completed ? 100 : 50}, health=${sqlValue(completed ? "healthy" : "blocked")}, updated_at=${sqlValue(timestamp)} WHERE id=${sqlValue(step.lane_id)};`);
   execSql(`UPDATE runs SET status=${sqlValue(runStatus)}, updated_at=${sqlValue(timestamp)}, metadata_json=${sqlValue(merged)} WHERE id=${sqlValue(run.id)};`);
-  insert("proofs", { id: proofId, run_id: run.id, step_id: step.id, company_id: run.company_id, proof_type: "worker_receipt", label: `${workflowId} remote Mac worker receipt`, uri: artifactUri, size_bytes: Buffer.byteLength(bytes), created_at: timestamp, metadata_json: { execution_mode: executionLabel, external_action_executed: receipt.external_action_executed, exact_blocker: receipt.exact_blocker, business_proof_verified: receipt.business_proof_verified } });
-  insert("worker_events", { id: makeId("evt"), run_id: run.id, step_id: step.id, lane_id: step.lane_id, company_id: run.company_id, event_type: completed ? "worker_completed" : "worker_blocked", message: proofSummary, created_at: timestamp, metadata_json: { worker_id: workerId(input.workerId), execution_mode: executionLabel, external_action_executed: receipt.external_action_executed, exact_blocker: receipt.exact_blocker } });
+  insert("proofs", { id: proofId, run_id: run.id, step_id: step.id, company_id: run.company_id, proof_type: "worker_receipt", label: `${workflowId} remote Mac worker receipt`, uri: artifactUri, size_bytes: Buffer.byteLength(bytes), created_at: timestamp, metadata_json: { execution_mode: executionLabel, external_action_executed: receipt.external_action_executed, exact_blocker: receipt.exact_blocker, business_proof_verified: receipt.business_proof_verified, read_only_proof_verified: receipt.read_only_proof_verified } });
+  insert("worker_events", { id: makeId("evt"), run_id: run.id, step_id: step.id, lane_id: step.lane_id, company_id: run.company_id, event_type: completed ? "worker_completed" : "worker_blocked", message: proofSummary, created_at: timestamp, metadata_json: { worker_id: workerId(input.workerId), execution_mode: executionLabel, external_action_executed: receipt.external_action_executed, exact_blocker: receipt.exact_blocker, read_only_proof_verified: receipt.read_only_proof_verified } });
   return { replayed: false, receipt, artifact_uri: artifactUri };
 }
 

@@ -21,7 +21,10 @@ test("all-page-button QA entrypoint is a tracked manifest preflight", () => {
   assert.equal(report.browser_surface, "browser_use_cli");
   assert.equal(report.runtime_qa.attempted, false);
   assert.equal(report.runtime_qa.exact_blocker, "fresh_browser_use_authority_required_for_runtime_screen_qa");
-  assert.equal(report.control_manifest.entries, 190);
+  const dispositionCount = Object.values(report.control_manifest.dispositions).reduce((sum, value) => sum + value, 0);
+  assert.ok(report.control_manifest.entries > 0);
+  assert.equal(dispositionCount, report.control_manifest.entries);
+  assert.ok(report.control_manifest.rendered_patterns >= report.control_manifest.entries);
   assert.deepEqual(report.control_manifest.unclassified_rendered, []);
   assert.deepEqual(report.control_manifest.orphan_entries, []);
   assert.ok(report.route_contract.exact_path_markers.includes("#/chat"));

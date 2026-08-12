@@ -4,9 +4,11 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   BROWSER_USE_CLI_START_DESCRIPTOR_SCHEMA,
+  BROWSER_USE_CLI_HELPER_OUTPUT_LIMIT_BYTES,
   parseBrowserUseCliStartDescriptor,
   validateBrowserUseCliLifecycleState,
   validateBrowserUseCliStageRequest,
+  validateBrowserUseCliReadOnlyBatchCommands,
   runBrowserUseCliStage,
 } from "/Users/nichikatanaka/.codex/skills/automation-kernel-run/scripts/browser-use-cli-stage-adapter.mjs";
 
@@ -81,6 +83,39 @@ test("public request validation remains no-side-effect and rejects forbidden com
   }), /browser_use_cli_command_not_allowed/);
 });
 
+test("adaptive read-only batch accepts bounded exploration and rejects effects", () => {
+  const commands = validateBrowserUseCliReadOnlyBatchCommands([
+    ["open", "https://example.com"],
+    ["eval", "location.href"],
+    ["state"],
+    ["get", "title"],
+    ["screenshot", "/private/tmp/browser-use-cli-adaptive.png"],
+  ]);
+  assert.equal(commands.length, 5);
+  assert.deepEqual(commands[1], ["eval", "location.href"]);
+  assert.throws(() => validateBrowserUseCliReadOnlyBatchCommands([["click", "Post"]]), /browser_use_cli_read_only_batch_effectful_command_rejected/);
+  assert.throws(() => validateBrowserUseCliReadOnlyBatchCommands([["eval", "document.body.innerText"]]), /browser_use_cli_read_only_batch_effectful_command_rejected/);
+  assert.throws(() => validateBrowserUseCliReadOnlyBatchCommands(Array.from({ length: 9 }, () => ["state"])), /browser_use_cli_read_only_batch_commands_invalid/);
+});
+
+test("canonical and packaged helpers share the single-process batch transport contract", () => {
+  const canonicalPath = "/Users/nichikatanaka/.local/bin/codex-browser-use";
+  const packagedPath = "/Users/nichikatanaka/Documents/New project/browser-use-cli/bin/codex-browser-use";
+  const canonical = fs.readFileSync(canonicalPath, "utf8");
+  const packaged = fs.readFileSync(packagedPath, "utf8");
+  assert.equal(canonical, packaged, "installed and package helper must remain byte-identical");
+  for (const marker of [
+    "browser_harness_batch_script",
+    "jobs_literal = repr(jobs)",
+    'transport": "single_browser_use_process"',
+    "browser_process_count",
+    "_cleanup_record_batch_transport_paths",
+    ".batch-command-capture-",
+  ]) {
+    assert.ok(canonical.includes(marker), `batch transport marker missing: ${marker}`);
+  }
+});
+
 test("dry-run does not launch helper and preserves cleanup proof", async () => {
   const artifactDir = fs.realpathSync(fs.mkdtempSync("/private/tmp/browser-use-cli-adapter-test-"));
   const result = await runBrowserUseCliStage({
@@ -101,4 +136,8 @@ test("dry-run does not launch helper and preserves cleanup proof", async () => {
   assert.equal(result.cleanup_verified, true);
   assert.equal(result.external_action_executed, false);
   assert.equal(result.helper_launched, false);
+});
+
+test("keeps the bounded helper JSON envelope parseable for large state readbacks", () => {
+  assert.ok(BROWSER_USE_CLI_HELPER_OUTPUT_LIMIT_BYTES >= 4 * 1024 * 1024);
 });

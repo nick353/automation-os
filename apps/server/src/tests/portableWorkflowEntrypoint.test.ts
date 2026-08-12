@@ -166,6 +166,80 @@ test("durable-only Mac worker picks up portable runs without a Codex App control
   assert.equal(metadata.external_action_executed, false);
 });
 
+test("Mac worker uses the async boundary for a portable local read-only receipt", async () => {
+  const previousRole = process.env.AUTOMATION_OS_WORKER_ROLE;
+  process.env.AUTOMATION_OS_WORKER_ROLE = "mac";
+  const runId = "portable-local-async-boundary-regression";
+  const stepId = `${runId}_step_1`;
+  const laneId = `${runId}_lane-1`;
+  const now = new Date().toISOString();
+  try {
+    db.insert("runs", {
+      id: runId,
+      company_id: "portable_mac_worker_scope",
+      name: "Obsidian local read-only async boundary regression",
+      status: "queued",
+      objective: "Obsidian project memory audit registered workflow read-only",
+      created_at: now,
+      updated_at: now,
+      metadata_json: {
+        worker_protocol: "mac_worker_polling_required",
+        worker_mode: "queued_for_mac_worker",
+        portable_workflow_invocation: { workflow_id: "obsidian-project-memory-audit" },
+        plan: { tasks: [{ adapter: "obsidian_audit_registered" }] }
+      }
+    });
+    db.insert("lanes", {
+      id: laneId,
+      run_id: runId,
+      role: "Local Worker",
+      cdp_port: 19983,
+      profile_dir: "portable-local-async-boundary",
+      workdir: process.cwd(),
+      status: "active",
+      current_task: "Obsidian audit",
+      progress: 10,
+      health: "good",
+      updated_at: now
+    });
+    db.insert("run_steps", {
+      id: stepId,
+      run_id: runId,
+      company_id: "portable_mac_worker_scope",
+      name: "Obsidian local read-only async boundary regression",
+      status: "queued",
+      lane_id: laneId,
+      started_at: null,
+      completed_at: null,
+      metadata_json: { adapter: "obsidian_audit_registered" }
+    });
+
+    const picked = await runPortableMacWorkerOnce(runId);
+    assert.equal(picked.length, 1);
+    assert.equal(picked[0]?.runId, runId);
+    const run = db.querySql<{ status: string; metadata_json: string }>(
+      `SELECT status, metadata_json FROM runs WHERE id=${db.sqlValue(runId)} LIMIT 1`
+    )[0];
+    const step = db.querySql<{ status: string; metadata_json: string }>(
+      `SELECT status, metadata_json FROM run_steps WHERE id=${db.sqlValue(stepId)} LIMIT 1`
+    )[0];
+    const proof = db.querySql<{ proof_type: string; metadata_json: string }>(
+      `SELECT proof_type, metadata_json FROM proofs WHERE run_id=${db.sqlValue(runId)} LIMIT 1`
+    )[0];
+    const events = db.querySql<{ event_type: string }>(
+      `SELECT event_type FROM worker_events WHERE run_id=${db.sqlValue(runId)} ORDER BY created_at ASC`
+    );
+    assert.equal(run.status, "blocked");
+    assert.equal(step.status, "blocked");
+    assert.equal(proof.proof_type, "worker_receipt");
+    assert.ok(!JSON.parse(step.metadata_json).exact_blocker?.includes("mac_worker_required"));
+    assert.ok(events.some((event) => event.event_type === "worker_blocked"));
+  } finally {
+    if (previousRole === undefined) delete process.env.AUTOMATION_OS_WORKER_ROLE;
+    else process.env.AUTOMATION_OS_WORKER_ROLE = previousRole;
+  }
+});
+
 test("portable invocation binding rejects payload drift and does not cross company scope", async () => {
   const first = await startPortableWorkflowRun({
     workflowId: "daily-ai-research-publish-run",

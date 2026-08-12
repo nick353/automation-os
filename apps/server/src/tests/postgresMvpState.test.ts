@@ -1,7 +1,18 @@
+import { mkdtempSync, rmSync } from "node:fs";
 import assert from "node:assert/strict";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 // This projection test must not classify an unrelated host worker as its fixture worker.
 process.env.AUTOMATION_OS_READ_LIVE_PROCESS_TABLE = "0";
+const previousPortableArtifactRoot = process.env.AUTOMATION_OS_PORTABLE_REMOTE_ARTIFACT_ROOT;
+const isolatedPortableArtifactRoot = mkdtempSync(join(tmpdir(), "aos-postgres-mvp-state-test-"));
+process.env.AUTOMATION_OS_PORTABLE_REMOTE_ARTIFACT_ROOT = isolatedPortableArtifactRoot;
+test.after(() => {
+  if (previousPortableArtifactRoot === undefined) delete process.env.AUTOMATION_OS_PORTABLE_REMOTE_ARTIFACT_ROOT;
+  else process.env.AUTOMATION_OS_PORTABLE_REMOTE_ARTIFACT_ROOT = previousPortableArtifactRoot;
+  rmSync(isolatedPortableArtifactRoot, { recursive: true, force: true });
+});
 import {
   readPostgresMvpState,
   type PostgresMvpStateQueryClient

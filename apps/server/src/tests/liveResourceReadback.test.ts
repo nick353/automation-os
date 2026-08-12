@@ -132,3 +132,48 @@ test("profile or port drift is reported as binding mismatch instead of being cla
   assert.equal(readback.browserProcesses[0]?.bindingStatus, "binding_mismatch");
   assert.equal(readback.registeredLanes.find((lane) => lane.reservedPort === 19882)?.processStatus, "binding_mismatch");
 });
+
+test("canonical room registry readback classifies foreign owners without claiming or reclaiming their process", () => {
+  const roomRegistry = JSON.stringify({
+    schema: "browser-use-room-registry.v1",
+    rooms: [
+      {
+        room_id: "room-foreign-20095",
+        lifecycle: "temporary",
+        state: "active",
+        owner: { kind: "task", id: "foreign-task-20095" },
+        task_id: "foreign-task-20095",
+        automation_id: null,
+        profile: "/Users/operator/.browser-use-cli/profiles/temporary/foreign-profile-20095",
+        port: 20095,
+        current_activity: "handoff-start",
+        updated_at: "2026-08-12T01:38:12Z"
+      }
+    ],
+    reconciliation: "observation_only"
+  });
+  const readback = buildBrowserRuntimeProcessReadback({
+    capturedAt: "2026-08-12T01:46:00.000Z",
+    psOutput: [
+      "67560 1 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-port=20095 --user-data-dir=/Users/operator/.browser-use-cli/profiles/temporary/foreign-profile-20095",
+      "46982 1 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-port=20092 --user-data-dir=/Users/operator/.browser-use-cli/profiles/temporary/unregistered-20092"
+    ].join("\n"),
+    roomRegistryOutput: roomRegistry
+  });
+
+  const owned = readback.browserProcesses.find((process) => process.port === 20095);
+  const unknown = readback.browserProcesses.find((process) => process.port === 20092);
+  assert.equal(readback.roomReadback.status, "available");
+  assert.equal(readback.roomReadback.source, "canonical_browser_use_room_registry");
+  assert.equal(readback.roomReadback.reconciliation, "observation_only");
+  assert.equal(owned?.ownership, "foreign_owner_bound");
+  assert.equal(owned?.roomOwnership, "descriptor_bound_registry");
+  assert.equal(owned?.roomId, "room-foreign-20095");
+  assert.equal(owned?.roomOwnerId, "foreign-task-20095");
+  assert.equal(owned?.roomMatchStatus, "exact_profile_port");
+  assert.equal(owned?.roomReclaimAllowed, false);
+  assert.equal(unknown?.ownership, "unknown");
+  assert.equal(unknown?.roomId, null);
+  assert.equal(readback.externalActionExecuted, false);
+  assert.doesNotMatch(JSON.stringify(readback), /operator|user-data-dir/u);
+});
