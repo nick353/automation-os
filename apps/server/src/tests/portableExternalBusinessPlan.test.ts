@@ -79,6 +79,33 @@ test("common web operation intent resolves only one fresh semantic target", () =
 
 test("business input bundles fail closed until workflow account, target, and payload fields are bound", () => {
   assert.deepEqual(
+    validatePortableBusinessInputBundle("job-application-manager", {
+      job_url: "https://www.linkedin.com/jobs/view/123/",
+      application_url: "https://www.linkedin.com/jobs/view/123/",
+      candidate_key: "candidate-001",
+      bucket: "japan_targeted",
+      sequence: 1,
+      attempt: 1,
+      source_snapshot_id: "snapshot-job-001",
+      supply_run_id: "supply-job-001",
+    }),
+    { ok: false, exact_blocker: "portable_business_job_application_input_account_ref_missing" },
+  );
+  assert.deepEqual(
+    validatePortableBusinessInputBundle("job-application-manager", {
+      account_ref: "linkedin_authenticated_job_manager",
+      job_url: "https://www.linkedin.com/jobs/view/123/",
+      application_url: "https://www.linkedin.com/jobs/view/123/",
+      candidate_key: "candidate-001",
+      bucket: "japan_targeted",
+      sequence: 1,
+      attempt: 1,
+      source_snapshot_id: "snapshot-job-001",
+      supply_run_id: "supply-job-001",
+    }),
+    { ok: false, exact_blocker: "portable_business_job_application_input_payload_hash_missing" },
+  );
+  assert.deepEqual(
     validatePortableBusinessInputBundle("daily-ai-research-publish-run", {
       account_ref: "daily-ai-account",
       target_key: "content-001",

@@ -91,7 +91,53 @@ function fixtureAdapter(readbackText) {
   const advance = (flow, amount = 1) => ({ ...flow, contract: { ...flow.contract, action_sequence: Number(flow.contract.action_sequence || 0) + amount } });
   return {
     async startBrowserUseCliFlow(input) {
-      return { session: input.session, profile: "/fixture/profile", port: input.port, contract: { action_sequence: 0, requested_session: input.session, effective_session: input.session } };
+      return {
+        run_id: input.runId,
+        automation_id: input.automationId,
+        lifecycle: input.lifecycle,
+        session: input.session,
+        profile: "/fixture/profile",
+        port: input.port,
+        flow_id: "fixture-flow",
+        lease_id: "fixture-lease",
+        descriptor_path: "/fixture/descriptor.json",
+        recording_dir: "/fixture/recording",
+        contract: {
+          action_sequence: 0,
+          step_id: input.stageId,
+          flow_id: "fixture-flow",
+          lease_id: "fixture-lease",
+          requested_session: input.session,
+          effective_session: input.session,
+        }
+      };
+    },
+    writeBrowserUseCliFlowLease({ flow, leasePath }) {
+      writeFileSync(leasePath, `${JSON.stringify({ schema: "browser-use-flow-lease.v2", status: "held" })}\n`, { mode: 0o600 });
+      chmodSync(leasePath, 0o600);
+      return { lease_id: flow.lease_id, lease_path: leasePath };
+    },
+    resumeBrowserUseCliFlowFromLease() {
+      return {
+        run_id: "fixture-create",
+        automation_id: "fixture-web",
+        lifecycle: "scheduled",
+        session: "fixture-session",
+        profile: "/fixture/profile",
+        port: 19885,
+        flow_id: "fixture-flow",
+        lease_id: "fixture-lease",
+        descriptor_path: "/fixture/descriptor.json",
+        recording_dir: "/fixture/recording",
+        contract: {
+          action_sequence: 0,
+          step_id: "aos-fixture-web-daily-ai-research-publish-run-goal",
+          flow_id: "fixture-flow",
+          lease_id: "fixture-lease",
+          requested_session: "fixture-session",
+          effective_session: "fixture-session",
+        },
+      };
     },
     async runBrowserUseCliFlowCommand({ flow }) { return advance(flow); },
     async runBrowserUseCliFlowTargetClick({ flow, targetText }) {
@@ -103,7 +149,7 @@ function fixtureAdapter(readbackText) {
       return { ...advance(flow), target_result: { candidate: { match_text_sha256: sha256(targetText), match_status: absent ? "not_found" : "present", backend_present: !absent }, before_state: { state_sha256: sourceStateDigest } } };
     },
     async runBrowserUseCliFlowReadOnlyBatch({ flow }) { return advance(flow, 3); },
-    async finalizeBrowserUseCliFlow({ flow }) { return { ...flow, finalized: true, receipt_path: "/fixture/receipt.json" }; },
+    async finalizeBrowserUseCliFlowLease() { return { finalized: true, cleanup_verified: true, receipt_path: "/fixture/receipt.json", manifest_path: "/fixture/manifest.json" }; },
   };
 }
 

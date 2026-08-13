@@ -41,7 +41,7 @@ export function readPortableBusinessEffectAuthority(input, environment = process
     || authority.external_action_authorized !== true
     || Date.parse(String(authority.expires_at || "")) <= Date.now()
     || !HASH.test(String(authority.target_digest || ""))
-    || (authority.payload_hash !== null && authority.payload_hash !== undefined && !HASH.test(String(authority.payload_hash)))) {
+    || !HASH.test(String(authority.payload_hash || ""))) {
     throw new Error("portable_external_effect_authority_binding_invalid");
   }
   return {
@@ -71,7 +71,7 @@ export function buildPortableBusinessWebOperationLifecycle(input) {
     && readbackVerified
     && cleanupVerified
     && Boolean(authority && HASH.test(String(authority.target_digest || "")))
-    && (authority?.payload_hash === null || authority?.payload_hash === undefined || HASH.test(String(authority.payload_hash)))
+    && HASH.test(String(authority?.payload_hash || ""))
     && sourceStateDigest !== ZERO_HASH
     && !input.exact_blocker;
   const exactBlocker = complete

@@ -7,7 +7,7 @@ import { evaluateDailyAiRegisteredSummary, findDailyAiRegisteredSummary, runDail
 
 function writeSummary(payload: Record<string, unknown>): string {
   const dir = mkdtempSync(join(tmpdir(), "automation-os-daily-ai-"));
-  const path = join(dir, "registered-playwright-cli-summary.json");
+  const path = join(dir, "registered-browser-summary.json");
   writeFileSync(path, JSON.stringify(payload, null, 2));
   return path;
 }
@@ -74,12 +74,12 @@ test("marks Daily AI summary complete only with full flow ok and cleanup proof",
 
 test("does not use legacy Playwright summaries as current Daily AI completion proof", () => {
   const dir = mkdtempSync(join(tmpdir(), "automation-os-daily-ai-current-"));
-  const legacyDir = join(dir, "playwright-cli-runs", "legacy");
-  mkdirSync(legacyDir, { recursive: true });
-  writeFileSync(join(legacyDir, "registered-playwright-cli-summary.json"), JSON.stringify(completeSummary));
+  const currentDir = join(dir, "current");
+  mkdirSync(currentDir, { recursive: true });
+  writeFileSync(join(currentDir, "registered-playwright-cli-summary.json"), JSON.stringify(completeSummary));
 
   const result = findDailyAiRegisteredSummary({
-    outputDir: join(dir, "automation-os-daily-ai-runs", "current"),
+    outputDir: currentDir,
     startedAtMs: Date.now()
   });
 
@@ -283,7 +283,7 @@ test("blocks Daily AI registered runner when process exits nonzero even with com
       "import { join } from 'node:path';",
       "const outputDir = process.env.DAILY_AI_CLI_OUTPUT_DIR;",
       "mkdirSync(outputDir, { recursive: true });",
-      `writeFileSync(join(outputDir, "registered-playwright-cli-summary.json"), JSON.stringify({ ...${JSON.stringify(completeSummary)}, automation_os_run_id: process.env.AUTOMATION_OS_RUN_ID }, null, 2));`,
+      `writeFileSync(join(outputDir, "registered-browser-summary.json"), JSON.stringify({ ...${JSON.stringify(completeSummary)}, automation_os_run_id: process.env.AUTOMATION_OS_RUN_ID }, null, 2));`,
       "process.exit(1);"
     ].join("\n")
   );
@@ -322,7 +322,7 @@ test("blocks Daily AI registered runner when summary identity does not match Aut
       "import { join } from 'node:path';",
       "const outputDir = process.env.DAILY_AI_CLI_OUTPUT_DIR;",
       "mkdirSync(outputDir, { recursive: true });",
-      `writeFileSync(join(outputDir, "registered-playwright-cli-summary.json"), JSON.stringify({ ...${JSON.stringify(completeSummary)}, automation_os_run_id: "different-run", run_id: process.env.DAILY_AI_CLI_RUN_ID }, null, 2));`
+      `writeFileSync(join(outputDir, "registered-browser-summary.json"), JSON.stringify({ ...${JSON.stringify(completeSummary)}, automation_os_run_id: "different-run", run_id: process.env.DAILY_AI_CLI_RUN_ID }, null, 2));`
     ].join("\n")
   );
   const previous = process.env.AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER;
@@ -361,7 +361,7 @@ test("Daily AI registered runner passes env run id and output dir to the Browser
       "const outputDir = process.env.DAILY_AI_CLI_OUTPUT_DIR;",
       "if (!outputDir) throw new Error('DAILY_AI_CLI_OUTPUT_DIR missing');",
       "mkdirSync(outputDir, { recursive: true });",
-      `writeFileSync(join(outputDir, "registered-playwright-cli-summary.json"), JSON.stringify({ ...${JSON.stringify(completeSummary)}, automation_os_run_id: process.env.AUTOMATION_OS_RUN_ID, run_id: process.env.DAILY_AI_CLI_RUN_ID }, null, 2));`
+      `writeFileSync(join(outputDir, "registered-browser-summary.json"), JSON.stringify({ ...${JSON.stringify(completeSummary)}, automation_os_run_id: process.env.AUTOMATION_OS_RUN_ID, run_id: process.env.DAILY_AI_CLI_RUN_ID }, null, 2));`
     ].join("\n")
   );
   const previous = process.env.AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER;
@@ -403,7 +403,7 @@ test("Daily AI registered runner passes env run id and output dir to the Browser
     assert.match(result.command.display, /DAILY_AI_CLI_SHOW_BROWSER=false/);
     assert.doesNotMatch(result.command.display, /DAILY_AI_CLI_BROWSER_VIDEO_QA_SKIP_GEMINI/);
     assert.equal(result.command.env.PATH.startsWith("/Users/nichikatanaka/.local/bin:/opt/homebrew/bin:/usr/local/bin:"), true);
-    assert.equal(result.summaryPath, join(result.command.env.DAILY_AI_CLI_OUTPUT_DIR, "registered-playwright-cli-summary.json"));
+    assert.equal(result.summaryPath, join(result.command.env.DAILY_AI_CLI_OUTPUT_DIR, "registered-browser-summary.json"));
     assert.equal(existsSync(result.summaryPath), true);
   } finally {
     if (previous === undefined) {
@@ -431,7 +431,7 @@ test("Daily AI registered runner does not pass Gemini key to child env", () => {
       "if (process.env.GEMINI_API_KEY !== undefined) throw new Error('Gemini key must not be passed');",
       "const outputDir = process.env.DAILY_AI_CLI_OUTPUT_DIR;",
       "mkdirSync(outputDir, { recursive: true });",
-      `writeFileSync(join(outputDir, "registered-playwright-cli-summary.json"), JSON.stringify({ ...${JSON.stringify(completeSummary)}, automation_os_run_id: process.env.AUTOMATION_OS_RUN_ID, run_id: process.env.DAILY_AI_CLI_RUN_ID }, null, 2));`
+      `writeFileSync(join(outputDir, "registered-browser-summary.json"), JSON.stringify({ ...${JSON.stringify(completeSummary)}, automation_os_run_id: process.env.AUTOMATION_OS_RUN_ID, run_id: process.env.DAILY_AI_CLI_RUN_ID }, null, 2));`
     ].join("\n")
   );
 
@@ -464,7 +464,7 @@ test("Daily AI registered runner leaves proof-only no-post preflight disabled by
       "if (process.env.DAILY_AI_CLI_PROOF_ONLY_NO_POST_PREFLIGHT !== undefined) throw new Error('proof-only no-post preflight should be absent by default');",
       "const outputDir = process.env.DAILY_AI_CLI_OUTPUT_DIR;",
       "mkdirSync(outputDir, { recursive: true });",
-      `writeFileSync(join(outputDir, "registered-playwright-cli-summary.json"), JSON.stringify({ ...${JSON.stringify(completeSummary)}, automation_os_run_id: process.env.AUTOMATION_OS_RUN_ID, run_id: process.env.DAILY_AI_CLI_RUN_ID }, null, 2));`
+      `writeFileSync(join(outputDir, "registered-browser-summary.json"), JSON.stringify({ ...${JSON.stringify(completeSummary)}, automation_os_run_id: process.env.AUTOMATION_OS_RUN_ID, run_id: process.env.DAILY_AI_CLI_RUN_ID }, null, 2));`
     ].join("\n")
   );
 
@@ -499,7 +499,7 @@ test("Daily AI registered runner leaves proof-only no-post preflight disabled wh
       "if (process.env.DAILY_AI_CLI_PROOF_ONLY_NO_POST_PREFLIGHT !== undefined) throw new Error('proof-only no-post preflight should be absent when opt-in is false');",
       "const outputDir = process.env.DAILY_AI_CLI_OUTPUT_DIR;",
       "mkdirSync(outputDir, { recursive: true });",
-      `writeFileSync(join(outputDir, "registered-playwright-cli-summary.json"), JSON.stringify({ ...${JSON.stringify(completeSummary)}, automation_os_run_id: process.env.AUTOMATION_OS_RUN_ID, run_id: process.env.DAILY_AI_CLI_RUN_ID }, null, 2));`
+      `writeFileSync(join(outputDir, "registered-browser-summary.json"), JSON.stringify({ ...${JSON.stringify(completeSummary)}, automation_os_run_id: process.env.AUTOMATION_OS_RUN_ID, run_id: process.env.DAILY_AI_CLI_RUN_ID }, null, 2));`
     ].join("\n")
   );
 
@@ -534,7 +534,7 @@ test("Daily AI registered runner includes proof-only no-post preflight only when
       "if (process.env.DAILY_AI_CLI_PROOF_ONLY_NO_POST_PREFLIGHT !== 'true') throw new Error('proof-only no-post preflight opt-in missing');",
       "const outputDir = process.env.DAILY_AI_CLI_OUTPUT_DIR;",
       "mkdirSync(outputDir, { recursive: true });",
-      `writeFileSync(join(outputDir, "registered-playwright-cli-summary.json"), JSON.stringify({ ...${JSON.stringify(completeSummary)}, automation_os_run_id: process.env.AUTOMATION_OS_RUN_ID, run_id: process.env.DAILY_AI_CLI_RUN_ID }, null, 2));`
+      `writeFileSync(join(outputDir, "registered-browser-summary.json"), JSON.stringify({ ...${JSON.stringify(completeSummary)}, automation_os_run_id: process.env.AUTOMATION_OS_RUN_ID, run_id: process.env.DAILY_AI_CLI_RUN_ID }, null, 2));`
     ].join("\n")
   );
 
@@ -644,7 +644,7 @@ test("blocks Daily AI registered runner when CLI run id does not match the env c
       "import { join } from 'node:path';",
       "const outputDir = process.env.DAILY_AI_CLI_OUTPUT_DIR;",
       "mkdirSync(outputDir, { recursive: true });",
-      `writeFileSync(join(outputDir, "registered-playwright-cli-summary.json"), JSON.stringify({ ...${JSON.stringify(completeSummary)}, automation_os_run_id: process.env.AUTOMATION_OS_RUN_ID, run_id: "timestamp-run" }, null, 2));`
+      `writeFileSync(join(outputDir, "registered-browser-summary.json"), JSON.stringify({ ...${JSON.stringify(completeSummary)}, automation_os_run_id: process.env.AUTOMATION_OS_RUN_ID, run_id: "timestamp-run" }, null, 2));`
     ].join("\n")
   );
   const previous = process.env.AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER;

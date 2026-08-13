@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-import { buildCodexExecArgs, buildPrompt, inspectCanonicalBrowserUseCli, selectCodexBin } from "../portable-external-runner.mjs";
+import { buildCodexExecArgs, buildPortableWorkflowSpecs, buildPrompt, inspectCanonicalBrowserUseCli, portableBrowserUsePaths, selectCodexBin } from "../portable-external-runner.mjs";
 
 test("AUTOMATION_OS_CODEX_BIN takes precedence over CODEX_CLI_PATH", () => {
   assert.equal(
@@ -22,8 +22,9 @@ test("CODEX_CLI_PATH is used when the explicit override is absent", () => {
   );
 });
 
-test("the stable fallback is used when neither path is configured", () => {
-  assert.equal(selectCodexBin({}), "/usr/local/bin/codex");
+test("the portable command fallback does not hardcode one machine's install path", () => {
+  assert.equal(selectCodexBin({}), "codex");
+  assert.equal(selectCodexBin({ AUTOMATION_OS_CODEX_DEFAULT_BIN: "/opt/custom/codex" }), "/opt/custom/codex");
 });
 
 test("portable exec skips the git trust check for authority-owned non-repository workdirs", () => {
@@ -57,6 +58,24 @@ test("portable prompt carries the approval state without requiring a Codex App t
   assert.match(prompt, /external_approval=not_granted/);
   assert.match(prompt, /Browser contract: use only .* through .*stage-adapter\.mjs/);
   assert.match(prompt, /Codex App thread/);
+});
+
+test("portable workflow and Browser Use paths follow the selected machine profile", () => {
+  const env = {
+    HOME: "/tmp/portable-runner-home",
+    AUTOMATION_OS_REPO_ROOT: "/tmp/portable-runner-repo",
+    CODEX_HOME: "/tmp/portable-runner-codex",
+    AUTOMATION_OS_AGENTS_HOME: "/tmp/portable-runner-agents",
+    AUTOMATION_OS_BROWSER_USE_PROJECT_ROOT: "/tmp/portable-runner-project",
+    AUTOMATION_OS_NISENPRINTS_PROJECT_ROOT: "/tmp/portable-runner-etsy"
+  };
+  const specs = buildPortableWorkflowSpecs(env);
+  const paths = portableBrowserUsePaths(env);
+  assert.equal(specs["job-application-manager"].cwd, "/tmp/portable-runner-project");
+  assert.equal(specs["daily-ai-research-publish-run"].authority[0], "/tmp/portable-runner-agents/skills/daily-ai-research-publish-run/SKILL.md");
+  assert.equal(specs["nisenprints-daily-product-canva-printify-etsy-pinterest"].cwd, "/tmp/portable-runner-etsy");
+  assert.equal(paths.helper, "/tmp/portable-runner-home/.local/bin/codex-browser-use");
+  assert.equal(paths.stageAdapter, "/tmp/portable-runner-codex/skills/automation-kernel-run/scripts/browser-use-cli-stage-adapter.mjs");
 });
 
 test("portable external runner requires a canonical Browser Use CLI runtime readback", () => {

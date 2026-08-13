@@ -1,71 +1,90 @@
 #!/usr/bin/env node
 
 import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { delimiter, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
-const WORKFLOW_SPECS = {
-  "job-application-manager": {
-    cwd: "/Users/nichikatanaka/Documents/New project",
+export function buildPortableWorkflowSpecs(env = process.env) {
+  const home = env.HOME?.trim() || homedir();
+  const repoRoot = resolve(env.AUTOMATION_OS_REPO_ROOT?.trim() || join(import.meta.dirname, ".."));
+  const codexHome = resolve(env.CODEX_HOME?.trim() || join(home, ".codex"));
+  const agentsHome = resolve(env.AUTOMATION_OS_AGENTS_HOME?.trim() || join(home, ".agents"));
+  const browserProjectRoot = resolve(env.AUTOMATION_OS_BROWSER_USE_PROJECT_ROOT?.trim() || join(home, "Documents", "New project"));
+  const nisenprintsProjectRoot = resolve(env.AUTOMATION_OS_NISENPRINTS_PROJECT_ROOT?.trim() || join(home, "Documents", "Etsy"));
+  return {
+    "job-application-manager": {
+      cwd: browserProjectRoot,
     authority: [
-      "/Users/nichikatanaka/.codex/skills/job-application-manager-automation/SKILL.md",
-      "/Users/nichikatanaka/.codex/skills/job-application-daily-submit-queue/SKILL.md"
+      join(codexHome, "skills", "job-application-manager-automation", "SKILL.md"),
+      join(codexHome, "skills", "job-application-daily-submit-queue", "SKILL.md")
     ],
     objective: "求人候補の確認から応募までを、現在の応募ルート契約に従って処理する"
   },
   "daily-ai-research-publish-run": {
-    cwd: "/Users/nichikatanaka/Documents/New project",
+    cwd: browserProjectRoot,
     authority: [
-      "/Users/nichikatanaka/.agents/skills/daily-ai-research-publish-run/SKILL.md",
-      "/Users/nichikatanaka/.codex/automations/daily-ai-research-publish-run/automation.toml"
+      join(agentsHome, "skills", "daily-ai-research-publish-run", "SKILL.md"),
+      join(codexHome, "automations", "daily-ai-research-publish-run", "automation.toml")
     ],
     objective: "Daily AIの調査・下書き・承認済み公開を、現在の実行契約に従って処理する"
   },
   "nisenprints-daily-product-canva-printify-etsy-pinterest": {
-    cwd: "/Users/nichikatanaka/Documents/Etsy",
+    cwd: nisenprintsProjectRoot,
     authority: [
-      "/Users/nichikatanaka/Documents/Etsy/AGENTS.md",
-      "/Users/nichikatanaka/Documents/Etsy/.Codex/skills/nisenprints-daily-product-flow/SKILL.md",
-      "/Users/nichikatanaka/.codex/automations/nisenprints-daily-product-canva-printify-etsy-pinterest/automation.toml"
+      join(nisenprintsProjectRoot, "AGENTS.md"),
+      join(nisenprintsProjectRoot, ".Codex", "skills", "nisenprints-daily-product-flow", "SKILL.md"),
+      join(codexHome, "automations", "nisenprints-daily-product-canva-printify-etsy-pinterest", "automation.toml")
     ],
     objective: "NisenPrintsの商品準備と、承認済みの外部公開処理を現在のフローに従って処理する"
   },
   "prompt-transfer-ukiyoe": {
-    cwd: "/Users/nichikatanaka/.agents/skills/prompt-transfer-ukiyoe",
+    cwd: join(agentsHome, "skills", "prompt-transfer-ukiyoe"),
     authority: [
-      "/Users/nichikatanaka/.agents/skills/prompt-transfer-ukiyoe/SKILL.md",
-      "/Users/nichikatanaka/.agents/skills/prompt-transfer/SKILL.md"
+      join(agentsHome, "skills", "prompt-transfer-ukiyoe", "SKILL.md"),
+      join(agentsHome, "skills", "prompt-transfer", "SKILL.md")
     ],
     objective: "浮世絵プロンプトをGoogle Sheetsへ転記し、同一runでreadbackする"
   },
   "sns-multi-poster-ukiyoe": {
-    cwd: "/Users/nichikatanaka/Documents/New project",
+    cwd: browserProjectRoot,
     authority: [
-      "/Users/nichikatanaka/Documents/Codex/automation-os/docs/portable-worker-contract.md"
+      join(repoRoot, "docs", "portable-worker-contract.md")
     ],
     objective: "準備済みコンテンツのSNS投稿を、現在のBrowser Use CLI・readback契約に従って処理する"
   },
   "x-authenticated-browser-lane": {
-    cwd: "/Users/nichikatanaka/Documents/New project",
+    cwd: browserProjectRoot,
     authority: [
-      "/Users/nichikatanaka/Documents/Codex/automation-os/docs/portable-worker-contract.md"
+      join(repoRoot, "docs", "portable-worker-contract.md")
     ],
     objective: "Xの認証済みBrowser Use CLI laneを、同一runのreadbackとcleanup付きで処理する"
   }
-};
+  };
+}
 
-const CANONICAL_BROWSER_USE_HELPER = "/Users/nichikatanaka/.local/bin/codex-browser-use";
-const CANONICAL_BROWSER_USE_STAGE_ADAPTER = "/Users/nichikatanaka/.codex/skills/automation-kernel-run/scripts/browser-use-cli-stage-adapter.mjs";
-const CANONICAL_BROWSER_USE_RUNTIME_CONFIG = "/Users/nichikatanaka/.browser-use-cli/browser-use-runtime.toml";
+export function portableBrowserUsePaths(env = process.env) {
+  const home = env.HOME?.trim() || homedir();
+  const codexHome = resolve(env.CODEX_HOME?.trim() || join(home, ".codex"));
+  return {
+    helper: resolve(env.AUTOMATION_OS_BROWSER_USE_CLI_HELPER?.trim() || join(home, ".local", "bin", "codex-browser-use")),
+    stageAdapter: resolve(env.AUTOMATION_OS_BROWSER_USE_CLI_STAGE_ADAPTER?.trim() || join(codexHome, "skills", "automation-kernel-run", "scripts", "browser-use-cli-stage-adapter.mjs")),
+    runtimeConfig: resolve(env.AUTOMATION_OS_BROWSER_USE_CLI_RUNTIME_CONFIG?.trim() || join(home, ".browser-use-cli", "browser-use-runtime.toml"))
+  };
+}
+
+export const WORKFLOW_SPECS = buildPortableWorkflowSpecs();
 
 let tempRoot;
 
 export function selectCodexBin(env = process.env) {
-  return env.AUTOMATION_OS_CODEX_BIN?.trim()
-    || env.CODEX_CLI_PATH?.trim()
-    || "/usr/local/bin/codex";
+  const explicit = env.AUTOMATION_OS_CODEX_BIN?.trim() || env.CODEX_CLI_PATH?.trim();
+  if (explicit) return explicit;
+  const configuredPath = env.AUTOMATION_OS_CODEX_DEFAULT_BIN?.trim();
+  if (configuredPath) return configuredPath;
+  const pathEntries = String(env.PATH || "").split(delimiter).filter(Boolean);
+  return pathEntries.map((entry) => join(entry, "codex")).find((candidate) => statIsFile(candidate)) || "codex";
 }
 
 export function buildCodexExecArgs({ cwd, lastMessagePath, prompt }) {
@@ -81,11 +100,16 @@ export function buildCodexExecArgs({ cwd, lastMessagePath, prompt }) {
 }
 
 export function inspectCanonicalBrowserUseCli({
-  helperPath = CANONICAL_BROWSER_USE_HELPER,
-  stageAdapterPath = CANONICAL_BROWSER_USE_STAGE_ADAPTER,
-  runtimeConfigPath = CANONICAL_BROWSER_USE_RUNTIME_CONFIG,
+  helperPath,
+  stageAdapterPath,
+  runtimeConfigPath,
+  env = process.env,
   runner = spawnSync
 } = {}) {
+  const paths = portableBrowserUsePaths(env);
+  helperPath ||= paths.helper;
+  stageAdapterPath ||= paths.stageAdapter;
+  runtimeConfigPath ||= paths.runtimeConfig;
   for (const [label, path] of [
     ["helper", helperPath],
     ["stage_adapter", stageAdapterPath],
@@ -147,7 +171,7 @@ export function inspectCanonicalBrowserUseCli({
 
 function main() {
   const input = parseArgs(process.argv.slice(2));
-  const spec = WORKFLOW_SPECS[input.workflow_id];
+  const spec = buildPortableWorkflowSpecs()[input.workflow_id];
   if (!spec) finish({
     status: "blocked",
     exact_blocker: "portable_external_workflow_unknown",
@@ -170,7 +194,8 @@ function main() {
     browser_use_cli: browserUseCli
   }, 1);
   const codexBin = selectCodexBin();
-  if (!statIsFile(codexBin)) finish({
+  const codexCommandAvailable = statIsFile(codexBin) || (codexBin === "codex" && spawnSync("which", ["codex"], { encoding: "utf8", stdio: ["ignore", "ignore", "ignore"] }).status === 0);
+  if (!codexCommandAvailable) finish({
     status: "blocked",
     exact_blocker: "portable_external_codex_cli_missing",
     external_action_executed: false,
@@ -195,10 +220,16 @@ function main() {
         AUTOMATION_OS_PORTABLE_IDEMPOTENCY_KEY: input.idempotency_key,
         AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS: effects ? "enabled" : "read_only",
         AUTOMATION_OS_BROWSER_SURFACE: "browser_use_cli",
-        AUTOMATION_OS_BROWSER_USE_CLI_HELPER: CANONICAL_BROWSER_USE_HELPER,
-        AUTOMATION_OS_BROWSER_USE_CLI_STAGE_ADAPTER: CANONICAL_BROWSER_USE_STAGE_ADAPTER,
-        AUTOMATION_OS_BROWSER_USE_CLI_RUNTIME_CONFIG: CANONICAL_BROWSER_USE_RUNTIME_CONFIG,
-        AUTOMATION_OS_BROWSER_NO_FALLBACK: "1"
+        AUTOMATION_OS_BROWSER_USE_CLI_HELPER: browserUseCli.helper_path,
+        AUTOMATION_OS_BROWSER_USE_CLI_STAGE_ADAPTER: browserUseCli.stage_adapter_path,
+        AUTOMATION_OS_BROWSER_USE_CLI_RUNTIME_CONFIG: browserUseCli.runtime_config_path,
+        BROWSER_USE_CLI_HELPER: browserUseCli.helper_path,
+        BROWSER_USE_RUNTIME_CONFIG: browserUseCli.runtime_config_path,
+        BROWSER_USE_HOME: process.env.BROWSER_USE_HOME || resolve(browserUseCli.runtime_config_path, ".."),
+        AUTOMATION_OS_BROWSER_NO_FALLBACK: "1",
+        AUTOMATION_OS_BROWSER_GOAL_ID: process.env.AUTOMATION_OS_BROWSER_GOAL_ID || `aos-goal-${safe(input.run_id)}`,
+        AUTOMATION_OS_BROWSER_GOAL_STATE_PATH: process.env.AUTOMATION_OS_BROWSER_GOAL_STATE_PATH || "",
+        AUTOMATION_OS_BROWSER_GOAL_TERMINAL: process.env.AUTOMATION_OS_BROWSER_GOAL_TERMINAL || "1"
       },
       encoding: "utf8",
       maxBuffer: 20 * 1024 * 1024,
@@ -254,7 +285,7 @@ function main() {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) main();
 
-export function buildPrompt({ workflow_id, run_id, step_id, source_trigger, idempotency_key, spec, effects, approvalGranted = false }) {
+export function buildPrompt({ workflow_id, run_id, step_id, source_trigger, idempotency_key, spec, effects, approvalGranted = false, browserUseCli = portableBrowserUsePaths() }) {
   const authorityText = spec.authority.map((path) => `- ${path}`).join("\n");
   return [
     "You are the portable Automation OS worker. This is not a Codex App thread and it has no controller identity or first-class-root dependency.",
@@ -274,13 +305,14 @@ export function buildPrompt({ workflow_id, run_id, step_id, source_trigger, idem
     "",
     `Objective: ${spec.objective}`,
     "",
-    `Browser contract: use only ${CANONICAL_BROWSER_USE_HELPER} through ${CANONICAL_BROWSER_USE_STAGE_ADAPTER} with runtime ${CANONICAL_BROWSER_USE_RUNTIME_CONFIG}. Do not use Codex in-app browser, Chrome/Profile 2, Playwright, direct CDP, raw browser binaries, or an implicit fallback. Use a fresh run-bound profile/port/authority and same-session state/title/url/readback plus cleanup proof.`,
+    `Browser contract: use only ${browserUseCli.helper_path || browserUseCli.helper} through ${browserUseCli.stage_adapter_path || browserUseCli.stageAdapter} with runtime ${browserUseCli.runtime_config_path || browserUseCli.runtimeConfig}. Do not use Codex in-app browser, Chrome/Profile 2, Playwright, direct CDP, raw browser binaries, or an implicit fallback. The Goal owns one lease; ensure/reuse/resume the same session/profile/port across stages and finalize only at Goal termination.`,
+    `Codex account context: ${process.env.AUTOMATION_OS_CODEX_ACCOUNT_REF?.trim() || "configured local CODEX_HOME"}. This is a capability label only; AOS company, root admission, run, receipt, and effect authority remain authoritative.`,
     "Connector contract: use the configured Codex Server/MCP gateway for Gmail, Google Sheets, Calendar, or other connectors when the workflow requires it. Never persist credentials, cookies, tokens, storage state, or authority contents.",
     effects
-      ? "External effects are enabled for this explicitly configured worker. Perform only the workflow's non-billing, in-scope action and require visible provider completion/readback. Stop on approval, authentication, CAPTCHA, OTP, identity, security, assessment, payment, or ambiguous-effect blockers."
+      ? "External effects are enabled for this explicitly configured worker. Perform only the workflow's non-billing, in-scope action and require target/account/payload/audience/authority/approval match plus provider receipt/source sync/reconciliation/cleanup. Stop and checkpoint on approval, authentication, CAPTCHA, OTP, secret input, identity, security, assessment, payment, or ambiguous-effect blockers; never replay an ambiguous effect."
       : "External effects are disabled for this worker. Perform read-only discovery/preflight and produce a plan/readback; do not submit, apply, post, publish, send, save, upload, purchase, or delete.",
     "",
-    "Return only a final JSON object with: status (complete|partial|blocked), exact_blocker (string|null), external_action_executed (boolean), proof_summary (string), and artifacts (array of safe artifact paths/URIs). Do not include secrets or raw credentials in the JSON."
+    "Return only a final JSON object with: status (complete|partial|blocked), exact_blocker (string|null), external_action_executed (boolean), proof_summary (string), artifacts (array of safe artifact paths/URIs), and goal_status (recovering|waiting|blocked|completed), current_stage, last_readback, next_action, restart_point. Do not include secrets or raw credentials in the JSON."
   ].join("\n");
 }
 

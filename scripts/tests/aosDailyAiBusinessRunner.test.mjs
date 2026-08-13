@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,6 +17,7 @@ function admission(root, runId, stepId) {
     step_id: stepId,
     source_trigger: "automation_os_scheduler",
     idempotency_key: `${runId}-idempotency`,
+    audience: "portable_external_runner",
     browser_surface: "browser_use_cli",
     approval_status: "approved",
     expires_at: new Date(Date.now() + 60_000).toISOString(),
@@ -52,7 +53,28 @@ function effectAuthority(root, runId, stepId) {
   return { file, sha256: createHash("sha256").update(bytes).digest("hex") };
 }
 
-function actionPlan(root, runId, stepId) {
+function inputBundle(root, runId) {
+  const runRoot = join(root, runId);
+  mkdirSync(runRoot, { recursive: true, mode: 0o700 });
+  const value = {
+    schema: "automation_os_portable_workflow_input_bundle.v1",
+    workflow_id: "daily-ai-research-publish-run",
+    run_id: runId,
+    input: {
+      account_ref: "daily_ai_authenticated_social",
+      target_key: "candidate_daily:x",
+      content_key: "candidate_daily",
+      payload_hash: "c".repeat(64),
+      source_snapshot_id: "snapshot-daily-ai-business-contract",
+    },
+  };
+  const bytes = `${JSON.stringify(value, null, 2)}\n`;
+  const file = join(runRoot, "portable-input-bundle.v1.json");
+  writeFileSync(file, bytes, { mode: 0o600 });
+  return { file, sha256: createHash("sha256").update(bytes).digest("hex"), input: value.input };
+}
+
+function actionPlan(root, runId, stepId, inputBundleSha256) {
   const runRoot = join(root, runId);
   mkdirSync(runRoot, { recursive: true, mode: 0o700 });
   const payload = {
@@ -70,7 +92,7 @@ function actionPlan(root, runId, stepId) {
     allowed_stages: ["research_queue_refresh", "pre_entry_readiness", "browser_preflight", "publish", "feed_study", "engagement", "postflight_sync", "cleanup"],
     required_business_proofs: ["publish_url_or_exact_blocker", "feed_study_or_exact_blocker", "engagement_or_no_candidate_proof", "queue_sync", "cleanup_receipt"],
     web_operation_contract: WEB_OPERATION_CONTRACT,
-    input_bundle_sha256: null,
+    input_bundle_sha256: inputBundleSha256,
     issued_at: new Date().toISOString(),
     expires_at: new Date(Date.now() + 60_000).toISOString(),
   };
@@ -91,9 +113,22 @@ test("Daily AI wrapper propagates summary business proofs and same-run source sy
   const runId = "run_daily_ai_business_contract";
   const stepId = "step_daily_ai_business_contract";
   const current = admission(root, runId, stepId);
+  const bundle = inputBundle(root, runId);
   const authority = effectAuthority(root, runId, stepId);
-  const plan = actionPlan(root, runId, stepId);
-  assert.doesNotThrow(() => readPortableBusinessActionPlan({ workflowId: "daily-ai-research-publish-run", runId, stepId, sourceTrigger: "automation_os_scheduler", idempotencyKey: `${runId}-idempotency`, environment: { AUTOMATION_OS_PORTABLE_BUSINESS_ACTION_PLAN_PATH: plan.file, AUTOMATION_OS_PORTABLE_BUSINESS_ACTION_PLAN_SHA256: plan.sha256 } }));
+  const authorityValue = JSON.parse(readFileSync(authority.file, "utf8"));
+  authorityValue.input_bundle_sha256 = bundle.sha256;
+  const targetKeys = [
+    "account_ref", "target_key", "payload_hash", "content_key", "product_key", "asset_manifest_id",
+    "job_url", "application_url", "candidate_key", "bucket", "sequence", "attempt",
+    "source_snapshot_id", "supply_run_id", "company", "role", "target_digest", "source_state_digest",
+  ];
+  const target = Object.fromEntries(targetKeys.filter((key) => Object.hasOwn(bundle.input, key)).map((key) => [key, bundle.input[key]]));
+  authorityValue.target_digest = createHash("sha256").update(JSON.stringify(target)).digest("hex");
+  const authorityBytes = `${JSON.stringify(authorityValue, null, 2)}\n`;
+  writeFileSync(authority.file, authorityBytes, { mode: 0o600 });
+  const boundAuthority = { file: authority.file, sha256: createHash("sha256").update(authorityBytes).digest("hex") };
+  const plan = actionPlan(root, runId, stepId, bundle.sha256);
+  assert.doesNotThrow(() => readPortableBusinessActionPlan({ workflowId: "daily-ai-research-publish-run", runId, stepId, sourceTrigger: "automation_os_scheduler", idempotencyKey: `${runId}-idempotency`, inputBundlePath: bundle.file, environment: { AUTOMATION_OS_PORTABLE_BUSINESS_ACTION_PLAN_PATH: plan.file, AUTOMATION_OS_PORTABLE_BUSINESS_ACTION_PLAN_SHA256: plan.sha256 } }));
   const runner = stubRunner(root);
   const result = spawnSync(process.execPath, [
     runnerPath.pathname,
@@ -112,8 +147,9 @@ test("Daily AI wrapper propagates summary business proofs and same-run source sy
       AUTOMATION_OS_PORTABLE_BUSINESS_ACTION_PLAN_PATH: plan.file,
       AUTOMATION_OS_PORTABLE_BUSINESS_ACTION_PLAN_SHA256: plan.sha256,
       AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER: runner,
-      AUTOMATION_OS_PORTABLE_EFFECT_AUTHORITY_PATH: authority.file,
-      AUTOMATION_OS_PORTABLE_EFFECT_AUTHORITY_SHA256: authority.sha256,
+      AUTOMATION_OS_PORTABLE_EFFECT_AUTHORITY_PATH: boundAuthority.file,
+      AUTOMATION_OS_PORTABLE_EFFECT_AUTHORITY_SHA256: boundAuthority.sha256,
+      AUTOMATION_OS_PORTABLE_BUSINESS_INPUT_BUNDLE_PATH: bundle.file,
     },
   });
   assert.equal(result.status, 0, `${result.stderr}\n${result.stdout}`);

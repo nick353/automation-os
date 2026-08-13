@@ -51,7 +51,7 @@ function readAdmission(input) {
   if (!file || !fs.existsSync(file) || !/^[a-f0-9]{64}$/u.test(expected)) throw new Error("nisenprints_business_admission_missing");
   const bytes = fs.readFileSync(file);
   const value = JSON.parse(bytes.toString("utf8"));
-  if (digest(bytes) !== expected || value.workflow_id !== input.workflow_id || value.run_id !== input.run_id || value.step_id !== input.step_id || value.approval_status !== "approved" || value.browser_surface !== "browser_use_cli") throw new Error("nisenprints_business_admission_binding_invalid");
+  if (digest(bytes) !== expected || value.workflow_id !== input.workflow_id || value.run_id !== input.run_id || value.step_id !== input.step_id || value.audience !== "portable_external_runner" || value.approval_status !== "approved" || value.browser_surface !== "browser_use_cli") throw new Error("nisenprints_business_admission_binding_invalid");
   if (Date.parse(String(value.expires_at || "")) <= Date.now()) throw new Error("nisenprints_business_admission_expired");
 }
 

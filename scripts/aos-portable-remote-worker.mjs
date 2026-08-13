@@ -14,6 +14,8 @@ const REMOTE_URL = String(process.env.AUTOMATION_OS_PORTABLE_REMOTE_URL || "http
 const COMPANY_ID = String(process.env.AUTOMATION_OS_PORTABLE_REMOTE_COMPANY_ID || "company_2560580981cedfd106b66245").trim();
 const TOKEN_SERVICE = String(process.env.AUTOMATION_OS_PORTABLE_REMOTE_TOKEN_SERVICE || "Automation OS Zeabur Trigger");
 const WORKER_ID = String(process.env.AUTOMATION_OS_PORTABLE_REMOTE_WORKER_ID || `mac-${hostname()}`).replace(/[^A-Za-z0-9._:-]/gu, "-").slice(0, 120);
+const WORKER_PROFILE_ID = String(process.env.AUTOMATION_OS_WORKER_PROFILE_ID || "default").replace(/[^A-Za-z0-9._:-]/gu, "-").slice(0, 120);
+const CODEX_ACCOUNT_REF = String(process.env.AUTOMATION_OS_CODEX_ACCOUNT_REF || "").replace(/[^A-Za-z0-9._:@+/-]/gu, "-").slice(0, 160);
 const ARTIFACT_ROOT = path.resolve(process.env.AUTOMATION_OS_PORTABLE_REMOTE_ARTIFACT_ROOT || path.join(ROOT, "data", "artifacts", "portable-remote-worker"));
 const WORKER_STATUS_PATH = path.join(ARTIFACT_ROOT, "worker-status.v1.json");
 const READ_ONLY_RUNNER = path.join(ROOT, "scripts", "aos-portable-browser-use-runner.mjs");
@@ -39,10 +41,29 @@ function emitResult(value, { force = false } = {}) {
   console.log(JSON.stringify(value));
 }
 
-function readToken() {
-  if (String(process.env.AUTOMATION_OS_PORTABLE_REMOTE_TOKEN || "").trim()) return String(process.env.AUTOMATION_OS_PORTABLE_REMOTE_TOKEN).trim();
-  const result = spawnSync("security", ["find-generic-password", "-s", TOKEN_SERVICE, "-w"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+export function readPortableRemoteToken(env = process.env, { keychainRunner = spawnSync } = {}) {
+  const inline = String(env.AUTOMATION_OS_PORTABLE_REMOTE_TOKEN || "").trim();
+  if (inline) return inline;
+
+  const tokenFile = String(env.AUTOMATION_OS_PORTABLE_REMOTE_TOKEN_FILE || "").trim();
+  if (tokenFile) {
+    try {
+      const stat = fs.lstatSync(path.resolve(tokenFile));
+      const currentUid = typeof process.getuid === "function" ? process.getuid() : null;
+      if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1 || (currentUid !== null && stat.uid !== currentUid) || (stat.mode & 0o077) !== 0) return "";
+      return String(fs.readFileSync(path.resolve(tokenFile), "utf8")).trim();
+    } catch {
+      return "";
+    }
+  }
+
+  const tokenService = String(env.AUTOMATION_OS_PORTABLE_REMOTE_TOKEN_SERVICE || TOKEN_SERVICE).trim();
+  const result = keychainRunner("security", ["find-generic-password", "-s", tokenService, "-w"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
   return result.status === 0 ? String(result.stdout || "").trim() : "";
+}
+
+function readToken() {
+  return readPortableRemoteToken();
 }
 
 export function portableRemoteErrorCode(error) {
@@ -90,6 +111,9 @@ function writeWorkerStatus(update) {
     const value = {
       schema: "aos.portable_remote_worker_status.v1",
       worker_id: WORKER_ID,
+      worker_profile_id: WORKER_PROFILE_ID,
+      codex_account_ref: CODEX_ACCOUNT_REF || null,
+      browser_use_helper: String(process.env.AUTOMATION_OS_BROWSER_USE_CLI_HELPER || "").trim() || null,
       pid: process.pid,
       remote_origin: (() => { try { return new URL(REMOTE_URL).origin; } catch { return "invalid"; } })(),
       effects: "read_only",
@@ -283,6 +307,9 @@ async function runRunner(claim, files) {
       ...process.env,
       ...resolveBusinessRunnerBindingEnvironment(),
       AUTOMATION_OS_ARTIFACT_ROOT: ARTIFACT_ROOT,
+      BROWSER_USE_CLI_HELPER: String(process.env.BROWSER_USE_CLI_HELPER || process.env.AUTOMATION_OS_BROWSER_USE_CLI_HELPER || "").trim(),
+      BROWSER_USE_RUNTIME_CONFIG: String(process.env.BROWSER_USE_RUNTIME_CONFIG || process.env.AUTOMATION_OS_BROWSER_USE_CLI_RUNTIME_CONFIG || "").trim(),
+      BROWSER_USE_HOME: String(process.env.BROWSER_USE_HOME || "").trim(),
       AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS: claim.execution_mode === "business_effect" ? "enabled" : "read_only",
       AUTOMATION_OS_PORTABLE_EXTERNAL_APPROVAL: "approved",
       AUTOMATION_OS_PORTABLE_EXTERNAL_ADMISSION_PATH: files.admission.path,

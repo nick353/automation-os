@@ -80,7 +80,7 @@ function readAdmission(input) {
   if (!file || !fs.existsSync(file) || !/^[a-f0-9]{64}$/u.test(expected)) throw new Error("portable_external_business_admission_invalid");
   const bytes = fs.readFileSync(file);
   const value = JSON.parse(bytes.toString("utf8"));
-  if (digest(bytes) !== expected || value.workflow_id !== input.workflow_id || value.run_id !== input.run_id || value.step_id !== input.step_id || value.approval_status !== "approved" || value.browser_surface !== "browser_use_cli") throw new Error("portable_external_business_admission_invalid");
+  if (digest(bytes) !== expected || value.workflow_id !== input.workflow_id || value.run_id !== input.run_id || value.step_id !== input.step_id || value.audience !== "portable_external_runner" || value.approval_status !== "approved" || value.browser_surface !== "browser_use_cli") throw new Error("portable_external_business_admission_invalid");
   if (Date.parse(String(value.expires_at || "")) <= Date.now()) throw new Error("portable_external_business_admission_expired");
   // Business effects are never admitted by the generic approval envelope
   // alone.  The AOS portable controller must issue and bind the effect
@@ -110,7 +110,7 @@ function readAdmission(input) {
       || authority.first_class_root_required !== false
       || !HASH.test(String(authority.target_digest || ""))
       || !HASH.test(String(authority.input_bundle_sha256 || ""))
-      || (authority.payload_hash !== null && authority.payload_hash !== undefined && !HASH.test(String(authority.payload_hash)))
+      || !HASH.test(String(authority.payload_hash || ""))
       || authority.timeout_controller !== "automation_os_portable_controller"
       || authority.reconciliation_required !== true
       || authority.reconciliation_owner !== "automation_os_portable_controller"

@@ -11,6 +11,7 @@ const db = await import("../db/client.js");
 const scheduler = await import("../runs/automationScheduler.js");
 const queue = await import("../runs/durableQueue.js");
 const durableScheduler = await import("../runs/durableAutomationScheduler.js");
+const { portableReadOnlyStageForScheduledWorkflow } = await import("../runs/portableScheduleDispatch.js");
 const { adoptRegisteredAutomationCatalog } = await import("../automations/registeredCatalog.js");
 const { initRegisteredWorkflows } = await import("../registeredWorkflows.js");
 
@@ -21,6 +22,18 @@ test("schedule calculations honor timezone, weekday, and cron cadence", () => {
   assert.equal(scheduler.computeNextAutomationOccurrence({ kind: "daily", expression: "09:00", timezone: "America/New_York" }, "2026-03-07T14:00:00.000Z"), "2026-03-08T13:00:00.000Z");
   assert.throws(() => scheduler.computeNextAutomationOccurrence({ kind: "cron", expression: "invalid", timezone: "UTC" }, "2026-07-15T00:00:00.000Z"), /scheduler_cron_expression_invalid/);
   assert.throws(() => scheduler.computeNextAutomationOccurrence({ kind: "daily", expression: "09:00", timezone: "Invalid\/Zone" }, "2026-07-15T00:00:00.000Z"), /scheduler_timezone_invalid/);
+});
+
+test("job no-effect dispatch uses reference readback unless a run-bound input bundle exists", () => {
+  assert.equal(portableReadOnlyStageForScheduledWorkflow("job-application-manager"), "reference_readback");
+  assert.equal(
+    portableReadOnlyStageForScheduledWorkflow("job-application-manager", { hasInputBundle: true }),
+    "candidate_supply"
+  );
+  assert.equal(
+    portableReadOnlyStageForScheduledWorkflow("daily-ai-research-publish-run"),
+    "reference_readback"
+  );
 });
 
 test("scheduler initializes next run, materializes one durable occurrence, and keeps the pinned version", () => {
@@ -117,7 +130,7 @@ test("registered browser schedules enter the portable Mac-worker queue instead o
   assert.equal(metadata.worker_protocol, "mac_worker_polling_required");
   assert.equal(metadata.worker_mode, "queued_for_mac_worker");
   assert.equal(metadata.portable_workflow_invocation?.source_trigger, "automation_os_scheduler");
-  assert.equal(metadata.portable_workflow_invocation?.read_only_stage, "candidate_supply");
+    assert.equal(metadata.portable_workflow_invocation?.read_only_stage, "reference_readback");
 });
 
 test("unknown registered schedules fail closed and never fall through to generic durable dry-run", async () => {

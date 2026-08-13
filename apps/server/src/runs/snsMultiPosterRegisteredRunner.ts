@@ -280,14 +280,14 @@ function baseCommand(
   const resolvedRunner = resolveSnsMultiPosterUkiyoeRunner({ defaultRunnerPath });
   const args = resolvedRunner.runner
     ? [resolvedRunner.runner, "--run-id", runId, "--out-root", outputRoot, "--image-path", imagePath ?? "", "--caption", caption ?? ""]
-    : ["<SNS Multi Poster Ukiyoe Playwright CLI runner missing>"];
+    : ["<SNS Multi Poster Ukiyoe Browser Use CLI runner missing>"];
   return {
     bin: process.env.AUTOMATION_OS_NODE_BIN || "node",
     args,
     cwd: projectRoot,
     display: resolvedRunner.runner
       ? `node ${JSON.stringify(resolvedRunner.runner)} --run-id ${JSON.stringify(runId)} --out-root ${JSON.stringify(outputRoot)} --image-path "<SNS_MULTI_POSTER_IMAGE_PATH>" --caption "<SNS_MULTI_POSTER_CAPTION>"`
-      : "SNS Multi Poster Ukiyoe Playwright CLI runner is not connected",
+      : "SNS Multi Poster Ukiyoe Browser Use CLI runner is not connected",
     env: {
       AUTOMATION_OS_RUN_ID: runId,
       SNS_MULTI_POSTER_APPROVED_EXTERNAL_ACTIONS: "post,publish",

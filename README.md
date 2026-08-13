@@ -11,6 +11,7 @@ The repository contains the app, server, workflow contracts, docs, and local run
 - `docs` records architecture, roadmap, Codex app parity, local worker rules, and Obsidian export design.
 - `scripts` contains local wrappers for development, the canonical Browser Use CLI boundary, and connector-only workflows.
 - `STATE.md` is the human-readable project state. Runtime truth lives in the configured database, plus workflow-owned artifacts.
+- `docs/RECOVERY_RUNBOOK.md` is the recovery entrypoint for moving AOS to another server, reconnecting the optional Codex App Server, and moving the Browser Use worker to another Mac.
 
 ## Local Setup
 
@@ -24,9 +25,63 @@ npm run dev
 
 The default server port is `8787`. The dev script starts the local server and web UI together.
 
+## 初めてのWeb操作（固定化しない共通入口）
+
+Home の「Web操作の共通入口」または Chat を開き、次のように自然文で依頼します。サイトごとのCSS selector、XPath、DOM順、スクショ名、固定クリック手順を指定する必要はありません。
+
+```text
+目的: read / create / update / publish / submit / delete のどれか
+サイトまたはURL:
+会社とアカウント:
+対象（意味で指定。例: 公開、保存、応募、削除）:
+内容（本文・画像・ファイル・応募内容など）:
+公開先・送信先・対象範囲:
+```
+
+Home/Chatの共通入口から始めると、この6項目がChat入力欄へ下書きとして自動入力されます。空欄を埋めてから送信してください。plannerは同じ入力から共通Web操作インテークを作り、不足項目・固定locator拒否・readまたはapproval待ちを明示します。テンプレートは操作を開始せず、plannerのreadbackも操作を開始しません。外部操作は承認・同一Runのprovider/source readback・reconciliation・cleanupが揃うまで完了扱いにしません。
+
+Automation OS は現在の画面を読み、意味（role、label、状態、URL、候補の一意性）で対象を解決します。画面変更、モーダル、スクロール、ページング、認証状態の変化があれば再評価します。候補が見つからない・複数ある・未知の高影響質問がある場合は停止して質問し、古い証拠から再実行しません。
+
+公開URLを初めて開いた時は、保護APIのキー入力が表示されます。閲覧・readbackだけなら `AUTOMATION_OS_READ_TOKEN`、作成・更新・実行・承認まで行うなら `AUTOMATION_OS_WRITE_TOKEN` を使います。画面上部に現在の権限範囲を表示し、read-onlyキーで外部作用を有効にすることはありません。キーはこのタブのsessionStorageだけで扱い、チャット本文・URL・ログへ入れません。
+
+読み取り以外の投稿・公開・応募・送信・更新・削除は、会社scope、account、具体的なtarget、payload、fresh authority、明示承認を同一Runへ束縛します。実行後も同一Runのprovider receipt、source-of-truth sync、cleanupが揃うまで完了扱いにしません。パスワード、cookie、token、OTP、CAPTCHAを保存・表示することはありません。
+
+Browser Use CLI が遅く見えていた主因は、論理コマンドごとにCLIプロセスを起動し、各コマンドの後にnavigation/frame/state証跡を直列で取りに行っていたことです。読み取り専用のbounded batchは同一プロセスで処理し、外部効果のある操作は安全境界を保つため個別の承認・readback・cleanup laneに分けています。これにより、read-only batchの証跡を保ったまま起動オーバーヘッドを減らします。
+
 ### Codex App Server Probe
 
 `AUTOMATION_OS_CODEX_APP_SERVER_PROBE_ENABLED` defaults to `0`. When set to `1`, `POST /api/codex/app-server/probe` performs a bounded stdio initialize-only read-only probe.
+
+The connection boundary supports two explicit modes:
+
+- No remote URL: `local_stdio` remains the safe Mac fallback.
+- `AUTOMATION_OS_CODEX_APP_SERVER_REMOTE_URL=wss://...` plus
+  `AUTOMATION_OS_CODEX_APP_SERVER_REMOTE_TOKEN`: use the authenticated remote
+  WebSocket lane. Non-loopback `ws://`, URL query credentials, missing auth,
+  and invalid remote cwd fail closed; they never silently fall back to local.
+- Zeabur AOS only may explicitly use
+  `ws://codex-app-server.zeabur.internal:8080/` with
+  `AUTOMATION_OS_CODEX_APP_SERVER_ALLOW_INTERNAL_WS=1` for the private
+  service-to-service canary. This exact internal host is rejected unless the
+  flag is present; do not use it from the Mac worker or Mac Codex App. Browser
+  Use, LinkedIn, iPhone/Simulator, Obsidian, and local files remain Mac-only.
+
+`GET /api/codex/app-server/readiness` is a protected, read-only status check.
+It reports `/readyz` for a configured remote endpoint but does not start a
+thread or turn. The dedicated Zeabur service template is in
+`ops/zeabur/`; its public route must be `wss://` with TLS termination and
+WebSocket upgrade forwarding. The official WebSocket transport is currently
+experimental and unsupported for production workloads, so deployment,
+secret injection, and fresh `initialize`/`thread/start`/read-only
+`turn/start` completion evidence remain separate promotion gates.
+
+For a remote deployment, the official guidance is to keep the App Server
+behind SSH, a VPN/mesh, or another private boundary rather than exposing the
+transport directly on a shared/public network. A Zeabur `wss://` route is
+therefore a technical canary only until that boundary and the official support
+status are approved. Zeabur cannot perform Mac-owned Browser Use CLI flows,
+iPhone or Simulator operations, Obsidian vault access, or local file work;
+those remain on the Mac worker.
 
 Tune the probe with:
 
@@ -38,9 +93,16 @@ AUTOMATION_OS_CODEX_APP_SERVER_PROBE_TTL_MS=30000
 
 A successful probe only refreshes capability inventory. It still leaves `appServer.state.connected=false`, and it is not authority, external action, or completion proof.
 
+For a fresh host, run `npm run recovery:preflight`, then
+`npm run codex:server:source-preflight`. The dedicated Codex App Server source
+can be staged with `npm run codex:server:stage -- --output <absolute-stage-dir>`;
+the stage contains no credential. Follow
+`docs/RECOVERY_RUNBOOK.md` for the secret-manager, persistent `CODEX_HOME`,
+private-route, and AOS connection settings.
+
 ## Production Safety
 
-Public deployments must be treated as private operator control surfaces. All `/api/*` routes except `/api/health` require `AUTOMATION_OS_WRITE_TOKEN` by default, even when `PORT` is absent; the same token also protects state-changing calls. Send it as `x-automation-os-token`. Only the loopback-only local launcher sets `AUTOMATION_OS_REQUIRE_API_TOKEN=0`. Do not disable either guard on a publicly reachable service.
+Public deployments must be treated as private operator control surfaces. All `/api/*` routes except `/api/health` require a valid `x-automation-os-token` by default, even when `PORT` is absent. `GET`/`HEAD` readbacks accept `AUTOMATION_OS_READ_TOKEN` (or its QA/replay read-only variants); state-changing calls require `AUTOMATION_OS_WRITE_TOKEN`. Only the loopback-only local launcher sets `AUTOMATION_OS_REQUIRE_API_TOKEN=0`. Do not disable either guard on a publicly reachable service.
 
 PostgreSQL is the preferred production database. Create a PostgreSQL service in the host, then set one of these variables on the Automation OS service:
 
@@ -71,6 +133,17 @@ AUTOMATION_OS_READ_TOKEN=<set in the host secret manager>
 `AUTOMATION_OS_REPLAY_READ_TOKEN`. If none is injected into the QA process,
 the exact blocker is `production_read_token_missing`; the tools do not guess a
 write token or bypass the protected API.
+When the read token is absent or invalid, these commands still check public
+health but do not contact protected routes; they record the exact blocker
+without repeatedly generating unauthenticated 401 requests.
+
+For a long-lived local QA/launch boundary, prefer the corresponding file
+variables (`AUTOMATION_OS_READ_TOKEN_FILE`,
+`AUTOMATION_OS_QA_READ_TOKEN_FILE`, or
+`AUTOMATION_OS_REPLAY_READ_TOKEN_FILE`). The file must be an absolute,
+owner-only (0400/0600), non-symlink, single-link regular file owned by the
+current user. The token value and file path are not written to readback
+artifacts; an invalid file remains fail-closed with an exact blocker.
 
 To copy an existing SQLite database into an empty PostgreSQL database, run this from a trusted local shell. The confirmation variable is intentional because the target PostgreSQL tables are replaced:
 

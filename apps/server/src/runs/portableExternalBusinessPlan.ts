@@ -76,7 +76,7 @@ export const portableExternalBusinessPlans: Record<PortableExternalBusinessPlanV
     hard_stops: [...commonHardStops, "unknown_required_personal_fact", "assessment_or_identity_gate", "missing_visible_submission_success"],
     account_target_payload_receipt_contract: {
       ...commonAccountTargetPayloadReceiptContract,
-      required_input_fields: ["job_url", "application_url", "candidate_key", "bucket", "sequence", "attempt", "source_snapshot_id", "supply_run_id"],
+      required_input_fields: ["account_ref", "job_url", "application_url", "candidate_key", "bucket", "sequence", "attempt", "source_snapshot_id", "supply_run_id", "payload_hash"],
     },
     required_runner_contract: commonRunnerContract,
   },

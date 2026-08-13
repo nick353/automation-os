@@ -6,10 +6,10 @@ import { buildCanonicalExecutionRoutingMetadataForCommand } from "../codex/execu
 import { resolveExactSourceRunBinding, type RunRow } from "./sourceRunBinding.js";
 import { evaluateDailyAiRegisteredSummary } from "../runs/dailyAiRegisteredRunner.js";
 
-const defaultSummaryPath =
-  "/Users/nichikatanaka/Documents/New project/artifacts/automation-os-daily-ai-runs/run_mr0bb2w6_hjorkr/registered-playwright-cli-summary.json";
 const ingestReceiptPath = readArgValue("--ingest-receipt");
-const summaryPath = resolve(readArgValue("--summary") ?? defaultSummaryPath);
+const requestedSummaryPath = readArgValue("--summary");
+if (!ingestReceiptPath && !requestedSummaryPath) throw new Error("daily_ai_reconciliation_summary_required");
+const summaryPath = requestedSummaryPath ? resolve(requestedSummaryPath) : "";
 const outDir = resolve(readArgValue("--out-dir") ?? `data/artifacts/daily-ai-research-publish-run/reconciliation-${timestamp()}`);
 const commitRequested = process.argv.includes("--commit");
 
@@ -89,7 +89,7 @@ const receipt = {
     failures
   },
   next_safe_action:
-    "Provide a current Daily AI Runway MCP gpt-image-2 result JSON through DAILY_AI_RUNWAY_MCP_RESULT or attach-runway-mcp-result-local, restore usable publish buffer to 3/3, then rerun the registered Playwright CLI entrypoint without reposting completed platforms.",
+    "Provide a current Daily AI Runway MCP gpt-image-2 result JSON through DAILY_AI_RUNWAY_MCP_RESULT or attach-runway-mcp-result-local, restore usable publish buffer to 3/3, then rerun the registered Browser Use CLI entrypoint without reposting completed platforms.",
   stop_conditions: [
     "billing_purchase_payment_checkout",
     "captcha_otp_security_code_identity_verification",

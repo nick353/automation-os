@@ -7,11 +7,16 @@ import {
   localWorkflowManifest,
   type PortableLocalWorkflowId
 } from "./portableLocalWorkflow.js";
+import {
+  createRegisteredRootAdmissionV1,
+  type RegisteredRootAdmissionV1
+} from "./registeredRootAdmission.js";
 
 export type PortableLocalWorkflowStartInput = {
   workflowId: PortableLocalWorkflowId;
   sourceTrigger: "automation_os_scheduler" | "automation_os_ui" | "codex_app_bridge" | "launchd" | "github_actions";
   idempotencyKey: string;
+  registeredAutomationId?: string;
   companyId: string;
   dueKey?: string;
   readOnlyStage?: "reference_readback";
@@ -25,6 +30,7 @@ export type PortableLocalWorkflowStartResult = {
   idempotencyKey: string;
   executionMode: "read_only";
   status: string;
+  registeredRoot?: RegisteredRootAdmissionV1;
 };
 
 export async function startPortableLocalWorkflowRun(input: PortableLocalWorkflowStartInput): Promise<PortableLocalWorkflowStartResult> {
@@ -85,7 +91,15 @@ export async function startPortableLocalWorkflowRun(input: PortableLocalWorkflow
   try {
     const manifest = localWorkflowManifest(input.workflowId);
     const source = input.sourceTrigger === "automation_os_scheduler" ? "scheduler" as const : "manual" as const;
+    const registeredRoot = createRegisteredRootAdmissionV1({
+      registeredAutomationId: input.registeredAutomationId ?? input.workflowId,
+      workflowId: input.workflowId,
+      runId: makeId("run"),
+      sourceTrigger: input.sourceTrigger,
+      definitionFingerprint: hashIdempotencyRequest(manifest)
+    });
     const started = await startCommandRun(manifest.command, {
+      runId: registeredRoot.run_id,
       deferWorker: true,
       companyId,
       executionRouting: buildPortableWorkerExecutionRoutingSnapshot({
@@ -112,12 +126,14 @@ export async function startPortableLocalWorkflowRun(input: PortableLocalWorkflow
           schema: "automation_os_portable_local_workflow_invocation_v1",
           workflow_id: input.workflowId,
           source_trigger: input.sourceTrigger,
+          registered_automation_id: registeredRoot.registered_automation_id,
           idempotency_key: idempotencyKey,
           company_id: companyId,
           read_only_stage: input.readOnlyStage ?? "reference_readback",
           app_dependency: false,
           external_action_executed: false
         },
+        registered_root_admission: registeredRoot,
         portable_worker: {
           workflow_id: input.workflowId,
           mode: "read_only",
@@ -135,13 +151,13 @@ export async function startPortableLocalWorkflowRun(input: PortableLocalWorkflow
             WHERE id=${sqlValue(reservationId)} AND request_hash=${sqlValue(requestHash)} AND status='pending'`,
       expectChanges: 1
     }]);
-    return result(input, idempotencyKey, started.runId, String(started.run.status ?? "queued"), false);
+    return result(input, idempotencyKey, started.runId, String(started.run.status ?? "queued"), false, registeredRoot);
   } catch (error) {
     runSqlTransaction([{ sql: `DELETE FROM portable_workflow_invocations WHERE id=${sqlValue(reservationId)} AND status='pending'` }]);
     throw error;
   }
 }
 
-function result(input: PortableLocalWorkflowStartInput, idempotencyKey: string, runId: string, status: string, replayed: boolean): PortableLocalWorkflowStartResult {
-  return { runId, replayed, workflowId: input.workflowId, sourceTrigger: input.sourceTrigger, idempotencyKey, executionMode: "read_only", status };
+function result(input: PortableLocalWorkflowStartInput, idempotencyKey: string, runId: string, status: string, replayed: boolean, registeredRoot?: RegisteredRootAdmissionV1): PortableLocalWorkflowStartResult {
+  return { runId, replayed, workflowId: input.workflowId, sourceTrigger: input.sourceTrigger, idempotencyKey, executionMode: "read_only", status, ...(registeredRoot ? { registeredRoot } : {}) };
 }

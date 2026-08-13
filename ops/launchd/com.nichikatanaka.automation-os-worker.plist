@@ -6,10 +6,10 @@
   <string>com.nichikatanaka.automation-os.worker</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/nichikatanaka/Library/Application Support/Automation OS/start-automation-os-worker.sh</string>
+    <string>__AUTOMATION_OS_WORKER_HELPER_SCRIPT__</string>
   </array>
   <key>WorkingDirectory</key>
-  <string>/Users/nichikatanaka/Documents/Codex/automation-os</string>
+  <string>__AUTOMATION_OS_WORKER_REPO_ROOT__</string>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
@@ -20,13 +20,15 @@
   <key>ThrottleInterval</key>
   <integer>30</integer>
   <key>StandardOutPath</key>
-  <string>/Users/nichikatanaka/Documents/Codex/automation-os/data/logs/automation-os-worker-launchd.out.log</string>
+  <string>__AUTOMATION_OS_WORKER_STDOUT__</string>
   <key>StandardErrorPath</key>
-  <string>/Users/nichikatanaka/Documents/Codex/automation-os/data/logs/automation-os-worker-launchd.err.log</string>
+  <string>__AUTOMATION_OS_WORKER_STDERR__</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>AUTOMATION_OS_REPO_ROOT</key>
-    <string>/Users/nichikatanaka/Documents/Codex/automation-os</string>
+    <string>__AUTOMATION_OS_WORKER_REPO_ROOT__</string>
+    <key>AUTOMATION_OS_WORKER_CONFIG</key>
+    <string>__AUTOMATION_OS_WORKER_PROFILE__</string>
     <key>AUTOMATION_OS_DATABASE_MODE</key>
     <string>postgres</string>
     <key>AUTOMATION_OS_DURABLE_SCHEDULER_OWNER</key>
@@ -40,31 +42,31 @@
     <key>AUTOMATION_OS_PORTABLE_WORKER_MODE</key>
     <string>external</string>
     <key>AUTOMATION_OS_PORTABLE_REMOTE_URL</key>
-    <string>https://automation-os.zeabur.app</string>
+    <string></string>
     <key>AUTOMATION_OS_PORTABLE_REMOTE_COMPANY_ID</key>
-    <string>company_2560580981cedfd106b66245</string>
+    <string></string>
     <key>AUTOMATION_OS_PORTABLE_REMOTE_POLL_MS</key>
     <string>30000</string>
     <key>AUTOMATION_OS_PORTABLE_REMOTE_ARTIFACT_ROOT</key>
-    <string>/Users/nichikatanaka/Documents/Codex/automation-os/data/artifacts/portable-remote-worker</string>
+    <string></string>
     <key>AUTOMATION_OS_WORKER_DURABLE_ONLY</key>
     <string>1</string>
     <key>AUTOMATION_OS_DURABLE_SERVICE_USER_ID</key>
-    <string>aos_service_0f4e6b6c65edf796364e</string>
+    <string></string>
     <key>AUTOMATION_OS_PORTABLE_EXTERNAL_WORKDIR</key>
-    <string>/Users/nichikatanaka/Documents/Codex/automation-os</string>
+    <string></string>
     <key>AUTOMATION_OS_PORTABLE_EXTERNAL_TIMEOUT_MS</key>
     <string>3600000</string>
     <key>AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS</key>
     <string>read_only</string>
     <key>AUTOMATION_OS_BROWSER_USE_PROJECT_ROOT</key>
-    <string>/Users/nichikatanaka/Documents/New project</string>
+    <string></string>
     <key>AUTOMATION_OS_PORTABLE_BUSINESS_RUNNER_JOB_APPLICATION</key>
-    <string>/Users/nichikatanaka/Documents/New project/scripts/browser_use/job_manager_browser_use_cli_business_runner.mjs</string>
+    <string></string>
     <key>AUTOMATION_OS_PORTABLE_BUSINESS_RUNNER_DAILY_AI</key>
-    <string>/Users/nichikatanaka/Documents/Codex/automation-os/scripts/aos-daily-ai-business-runner.mjs</string>
+    <string></string>
     <key>AUTOMATION_OS_PORTABLE_BUSINESS_RUNNER_NISENPRINTS</key>
-    <string>/Users/nichikatanaka/Documents/Codex/automation-os/scripts/aos-nisenprints-business-runner.mjs</string>
+    <string></string>
   </dict>
 </dict>
 </plist>

@@ -45,13 +45,16 @@ test("Job Browser Use CLI business runner admits only a same-run input bundle in
     workflow_id: "job-application-manager",
     run_id: runId,
     input: {
+      account_ref: "linkedin_authenticated_job_manager",
       job_url: "https://example.com/jobs/canary",
+      application_url: "https://example.com/jobs/canary",
       candidate_key: "candidate-canary",
       bucket: "japan_targeted",
       sequence: 1,
       attempt: 1,
       source_snapshot_id: "snapshot-canary",
-      supply_run_id: "supply-canary"
+      supply_run_id: "supply-canary",
+      payload_hash: "a".repeat(64)
     }
   }, null, 2)}\n`, { mode: 0o600 });
   chmodSync(bundlePath, 0o600);

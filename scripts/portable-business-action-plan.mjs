@@ -27,7 +27,7 @@ export const WEB_OPERATION_CONTRACT = Object.freeze({
     terminal_cleanup: true,
     screenshot_scope: "run_recording_dir",
     forbidden_surfaces: ["playwright", "iab", "extension", "direct_cdp", "raw_browser"],
-    fail_close_on: ["captcha", "otp", "identity_verification", "assessment", "unknown_high_impact_question", "payment", "tax", "banking", "ambiguous_external_effect"],
+    fail_close_on: ["captcha", "otp", "secret_input", "human_input_required", "identity_verification", "assessment", "unknown_high_impact_question", "payment", "tax", "banking", "foreign_owner_resource", "ambiguous_external_effect"],
     secrets_policy: "never_log_or_artifact_secrets_cookies_passwords_tokens_raw_page_body",
   }),
   adaptive_layer: Object.freeze({
@@ -68,6 +68,21 @@ export const WEB_OPERATION_CONTRACT = Object.freeze({
 // provider-neutral run/step identity and must remain accepted at the worker
 // boundary.
 const IDENTIFIER = /^[A-Za-z0-9][-_A-Za-z0-9.:]{0,179}$/u;
+// Compatibility readback for the currently deployed production artifact. The
+// local contract remains stricter and is still returned to the runner; this
+// narrow acceptance can be removed after production is redeployed with the
+// current contract.
+const LEGACY_REMOTE_FAIL_CLOSE_ON = Object.freeze([
+  "captcha",
+  "otp",
+  "identity_verification",
+  "assessment",
+  "unknown_high_impact_question",
+  "payment",
+  "tax",
+  "banking",
+  "ambiguous_external_effect",
+]);
 const PLANS = Object.freeze({
   "job-application-manager": Object.freeze({
     runner_key: "job_application",
@@ -97,6 +112,14 @@ function fail(code) {
   throw new Error(code);
 }
 
+function contractSectionMatches(section, actual) {
+  const expected = WEB_OPERATION_CONTRACT[section];
+  if (JSON.stringify(actual) === JSON.stringify(expected)) return true;
+  if (section !== "fixed_kernel") return false;
+  const legacy = { ...expected, fail_close_on: LEGACY_REMOTE_FAIL_CLOSE_ON };
+  return JSON.stringify(actual) === JSON.stringify(legacy);
+}
+
 export function validateWebOperationContract(contract) {
   if (!contract || typeof contract !== "object" || Array.isArray(contract)
     || contract.schema !== WEB_OPERATION_CONTRACT.schema
@@ -104,7 +127,7 @@ export function validateWebOperationContract(contract) {
     || contract.llm_provider_neutral !== true
     || contract.app_dependency !== false) fail("web_operation_contract_schema_invalid");
   for (const section of ["fixed_kernel", "adaptive_layer", "operation_model"]) {
-    if (JSON.stringify(contract[section]) !== JSON.stringify(WEB_OPERATION_CONTRACT[section])) {
+    if (!contractSectionMatches(section, contract[section])) {
       fail(`web_operation_contract_${section}_invalid`);
     }
   }

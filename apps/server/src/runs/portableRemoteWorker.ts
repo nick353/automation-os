@@ -18,6 +18,10 @@ import {
   validatePortableTargetBoundApprovalReceipt,
   type PortableTargetBoundApprovalReceiptV1
 } from "./portableExternalApprovalBinding.js";
+import {
+  validateRegisteredRootAdmissionV1,
+  type RegisteredRootAdmissionV1
+} from "./registeredRootAdmission.js";
 
 const WORKER_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/u;
 const ALLOWED_READ_ONLY_STAGES = new Set(["candidate_supply", "reference_readback"]);
@@ -46,6 +50,7 @@ export type PortableRemoteClaim = {
   lease_expires_at: string;
   external_action_executed: false;
   browser_surface: "browser_use_cli";
+  registered_root_admission: RegisteredRootAdmissionV1;
 };
 
 export type PortableRemoteReceipt = {
@@ -129,6 +134,19 @@ function workflowId(metadata: Record<string, unknown>): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function registeredRootAdmission(run: RunRow, metadata: Record<string, unknown>, workflow: string): RegisteredRootAdmissionV1 {
+  const value = metadata.registered_root_admission;
+  const invocation = isObject(metadata.portable_workflow_invocation) ? metadata.portable_workflow_invocation : {};
+  const registeredAutomationId = typeof invocation.registered_automation_id === "string"
+    ? invocation.registered_automation_id
+    : workflow;
+  return validateRegisteredRootAdmissionV1(value, {
+    registeredAutomationId,
+    workflowId: workflow,
+    runId: run.id
+  });
+}
+
 function inputBundle(metadata: Record<string, unknown>): Record<string, unknown> | null {
   const bundle = isObject(metadata.portable_input_bundle) ? metadata.portable_input_bundle : {};
   const input = bundle.input;
@@ -193,7 +211,8 @@ function issueEffectAuthority(input: {
   const bundle = inputBundle(input.metadata);
   const payloadHash = bundle && typeof bundle.payload_hash === "string" && /^[a-f0-9]{64}$/u.test(bundle.payload_hash)
     ? bundle.payload_hash
-    : null;
+    : "";
+  if (!payloadHash) throw new Error("portable_effect_authority_payload_hash_missing");
   return issuePortableExternalEffectAuthorityV1({
     companyId: input.run.company_id || "",
     workflowId: input.workflow,
@@ -451,7 +470,33 @@ function claimAdmission(run: RunRow, metadata: Record<string, unknown>, workflow
   };
 }
 
-function claimFromMetadata(input: { run: RunRow; step: StepRow; metadata: Record<string, unknown>; workerId: string; leaseExpiresAt: string; admission: ClaimAdmission; effectAuthority?: PortableExternalEffectAuthorityV1 | null }): PortableRemoteClaim {
+function reconcileUnboundCandidateSupply(run: RunRow, metadata: Record<string, unknown>): boolean {
+  if (readOnlyStage(metadata) !== "candidate_supply") return false;
+  let bundle: Record<string, unknown> | null;
+  try {
+    bundle = inputBundle(metadata);
+  } catch {
+    return false;
+  }
+  if (bundle && inputBundleSha256(metadata)) return false;
+  const invocation = isObject(metadata.portable_workflow_invocation) ? metadata.portable_workflow_invocation : {};
+  const worker = isObject(metadata.portable_worker) ? metadata.portable_worker : {};
+  const timestamp = nowIso();
+  const nextMetadata = {
+    ...metadata,
+    read_only_stage: "reference_readback",
+    portable_workflow_invocation: { ...invocation, read_only_stage: "reference_readback" },
+    portable_worker: { ...worker, read_only_stage: "reference_readback" },
+    portable_read_only_stage_reconciled: true,
+    portable_read_only_stage_reconciled_at: timestamp,
+    worker_loop: { ...(isObject(metadata.worker_loop) ? metadata.worker_loop : {}), status: "waiting_for_pickup", readOnlyStageReconciledAt: timestamp },
+    mac_worker: { ...(isObject(metadata.mac_worker) ? metadata.mac_worker : {}), status: "waiting_for_pickup", readOnlyStageReconciledAt: timestamp }
+  };
+  execSql(`UPDATE runs SET metadata_json=${sqlValue(nextMetadata)}, updated_at=${sqlValue(timestamp)} WHERE id=${sqlValue(run.id)} AND status IN ('queued', 'running', 'waiting_approval') AND metadata_json=${sqlValue(run.metadata_json)};`);
+  return true;
+}
+
+function claimFromMetadata(input: { run: RunRow; step: StepRow; metadata: Record<string, unknown>; workerId: string; leaseExpiresAt: string; admission: ClaimAdmission; registeredRoot: RegisteredRootAdmissionV1; effectAuthority?: PortableExternalEffectAuthorityV1 | null }): PortableRemoteClaim {
   const invocation = isObject(input.metadata.portable_workflow_invocation) ? input.metadata.portable_workflow_invocation : {};
   const sourceTrigger = typeof invocation.source_trigger === "string" ? invocation.source_trigger : "automation_os_scheduler";
   const key = typeof invocation.idempotency_key === "string" ? invocation.idempotency_key : `${input.run.id}:${input.step.id}`;
@@ -474,7 +519,8 @@ function claimFromMetadata(input: { run: RunRow; step: StepRow; metadata: Record
     worker_id: input.workerId,
     lease_expires_at: input.leaseExpiresAt,
     external_action_executed: false,
-    browser_surface: "browser_use_cli"
+    browser_surface: "browser_use_cli",
+    registered_root_admission: input.registeredRoot
   };
 }
 
@@ -639,6 +685,16 @@ export function claimPortableMacWorker(input: { companyId: string; workerId: str
     }
     const workflow = workflowId(metadata);
     if (!workflow) continue;
+    let registeredRoot: RegisteredRootAdmissionV1;
+    try {
+      registeredRoot = registeredRootAdmission(run, metadata, workflow);
+    } catch {
+      // A run without a fresh AOS-owned root is never claimable. Do not
+      // fabricate or replay a root for a historical run; a new trigger must
+      // create the next lineage.
+      continue;
+    }
+    if (reconcileUnboundCandidateSupply(run, metadata)) continue;
     const step = querySql<StepRow>(`
       SELECT id, name, status, lane_id, metadata_json
       FROM run_steps
@@ -673,6 +729,7 @@ export function claimPortableMacWorker(input: { companyId: string; workerId: str
         workerId: id,
         leaseExpiresAt: existingClaim.lease_expires_at,
         admission,
+        registeredRoot,
         effectAuthority: existingAuthority
       });
     }
@@ -697,6 +754,8 @@ export function claimPortableMacWorker(input: { companyId: string; workerId: str
         ...(admission.approvalReceipt ? { approval_receipt: admission.approvalReceipt } : {}),
         ...(admission.inputBundleSha256 ? { input_bundle_sha256: admission.inputBundleSha256 } : {}),
         ...(admission.targetDigest ? { target_digest: admission.targetDigest } : {}),
+        registered_root_id: registeredRoot.root_id,
+        registered_root_digest: registeredRoot.root_digest,
         ...(effectAuthority ? { portable_effect_authority: effectAuthority } : {})
       },
       worker_loop: { ...(isObject(metadata.worker_loop) ? metadata.worker_loop : {}), status: "claimed_by_mac_worker", claimedAt: claimedAt },
@@ -707,6 +766,12 @@ export function claimPortableMacWorker(input: { companyId: string; workerId: str
     const confirmedMetadata = parseRecord(confirmed?.metadata_json);
     const confirmedClaim = isObject(confirmedMetadata.remote_worker_claim) ? confirmedMetadata.remote_worker_claim : {};
     if (!confirmed || confirmedClaim.worker_id !== id || confirmedClaim.claimed_at !== claimedAt) continue;
+    let confirmedRoot: RegisteredRootAdmissionV1;
+    try {
+      confirmedRoot = registeredRootAdmission(confirmed, confirmedMetadata, workflow);
+    } catch {
+      continue;
+    }
     const confirmedAdmission = claimAdmission(confirmed, confirmedMetadata, workflow, step.id);
     if (!confirmedAdmission) continue;
     const confirmedAuthority = isObject(confirmedClaim.portable_effect_authority)
@@ -722,7 +787,7 @@ export function claimPortableMacWorker(input: { companyId: string; workerId: str
       })
       : null;
     if (confirmedAdmission.executionMode === "business_effect" && !confirmedAuthority) continue;
-    return claimFromMetadata({ run: confirmed, step, metadata: confirmedMetadata, workerId: id, leaseExpiresAt, admission: confirmedAdmission, effectAuthority: confirmedAuthority });
+    return claimFromMetadata({ run: confirmed, step, metadata: confirmedMetadata, workerId: id, leaseExpiresAt, admission: confirmedAdmission, registeredRoot: confirmedRoot, effectAuthority: confirmedAuthority });
   }
   return null;
 }
@@ -1027,6 +1092,10 @@ export function recordPortableMacWorkerReceipt(input: { companyId: string; worke
   const claim = isObject(metadata.remote_worker_claim) ? metadata.remote_worker_claim : {};
   if (claim.worker_id !== workerId(input.workerId)) throw new Error("portable_remote_worker_claim_mismatch");
   const workflowId = workflowIdFromMetadata(metadata);
+  const registeredRoot = registeredRootAdmission(run, metadata, workflowId);
+  if (claim.registered_root_id !== registeredRoot.root_id || claim.registered_root_digest !== registeredRoot.root_digest) {
+    throw new Error("registered_root_admission_claim_mismatch");
+  }
   const executionMode: PortableRemoteExecutionMode = claim.execution_mode === "business_effect" ? "business_effect" : "read_only";
   const effectStage = typeof claim.business_effect_stage === "string" && ALLOWED_EFFECT_STAGES.has(claim.business_effect_stage)
     ? claim.business_effect_stage as PortableBusinessEffectStage
@@ -1067,7 +1136,7 @@ export function recordPortableMacWorkerReceipt(input: { companyId: string; worke
   const artifactRoot = resolve(process.env.AUTOMATION_OS_ARTIFACT_ROOT?.trim() || resolve(process.cwd(), "data", "artifacts"));
   const artifactPath = resolve(artifactRoot, run.id, "portable-remote-worker-receipt.v1.json");
   mkdirSync(resolve(artifactRoot, run.id), { recursive: true, mode: 0o700 });
-  const artifact = { schema: "automation_os_portable_remote_worker_receipt.v1", ...receipt, worker_id: workerId(input.workerId), created_at: nowIso() };
+  const artifact = { schema: "automation_os_portable_remote_worker_receipt.v1", ...receipt, worker_id: workerId(input.workerId), registered_root_id: registeredRoot.root_id, registered_root_digest: registeredRoot.root_digest, created_at: nowIso() };
   const bytes = `${JSON.stringify(artifact, null, 2)}\n`;
   writeFileSync(artifactPath, bytes, { flag: "wx", mode: 0o600 });
   chmodSync(artifactPath, 0o600);
@@ -1105,7 +1174,7 @@ export function recordPortableMacWorkerReceipt(input: { companyId: string; worke
   execSql(`UPDATE run_steps SET status=${sqlValue(stepStatus)}, completed_at=${sqlValue(timestamp)}, metadata_json=${sqlValue({ ...stepMetadata, ...(runtimeBinding ? { service_readiness_runtime_binding: runtimeBinding } : {}), exact_blocker: receipt.exact_blocker, external_action_executed: receipt.external_action_executed, read_only_proof_verified: receipt.read_only_proof_verified, execution_mode: executionLabel, portable_external_receipt: receipt, portable_external_artifact: artifactUri, proof_summary: proofSummary })} WHERE id=${sqlValue(step.id)};`);
   if (step.lane_id) execSql(`UPDATE lanes SET status=${sqlValue(completed ? "completed" : "blocked")}, progress=${completed ? 100 : 50}, health=${sqlValue(completed ? "healthy" : "blocked")}, updated_at=${sqlValue(timestamp)} WHERE id=${sqlValue(step.lane_id)};`);
   execSql(`UPDATE runs SET status=${sqlValue(runStatus)}, updated_at=${sqlValue(timestamp)}, metadata_json=${sqlValue(merged)} WHERE id=${sqlValue(run.id)};`);
-  insert("proofs", { id: proofId, run_id: run.id, step_id: step.id, company_id: run.company_id, proof_type: "worker_receipt", label: `${workflowId} remote Mac worker receipt`, uri: artifactUri, size_bytes: Buffer.byteLength(bytes), created_at: timestamp, metadata_json: { execution_mode: executionLabel, external_action_executed: receipt.external_action_executed, exact_blocker: receipt.exact_blocker, business_proof_verified: receipt.business_proof_verified, read_only_proof_verified: receipt.read_only_proof_verified } });
+  insert("proofs", { id: proofId, run_id: run.id, step_id: step.id, company_id: run.company_id, proof_type: "worker_receipt", label: `${workflowId} remote Mac worker receipt`, uri: artifactUri, size_bytes: Buffer.byteLength(bytes), created_at: timestamp, metadata_json: { execution_mode: executionLabel, registered_root_id: registeredRoot.root_id, registered_root_digest: registeredRoot.root_digest, external_action_executed: receipt.external_action_executed, exact_blocker: receipt.exact_blocker, business_proof_verified: receipt.business_proof_verified, read_only_proof_verified: receipt.read_only_proof_verified } });
   insert("worker_events", { id: makeId("evt"), run_id: run.id, step_id: step.id, lane_id: step.lane_id, company_id: run.company_id, event_type: completed ? "worker_completed" : "worker_blocked", message: proofSummary, created_at: timestamp, metadata_json: { worker_id: workerId(input.workerId), execution_mode: executionLabel, external_action_executed: receipt.external_action_executed, exact_blocker: receipt.exact_blocker, read_only_proof_verified: receipt.read_only_proof_verified } });
   return { replayed: false, receipt, artifact_uri: artifactUri };
 }

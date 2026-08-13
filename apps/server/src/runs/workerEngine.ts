@@ -2788,7 +2788,8 @@ function localPortableExternalEffectAuthority(input: {
   }
   const payloadHash = typeof bundle.payload_hash === "string" && /^[a-f0-9]{64}$/u.test(bundle.payload_hash)
     ? bundle.payload_hash
-    : null;
+    : "";
+  if (!payloadHash) return null;
   try {
     return issuePortableExternalEffectAuthorityV1({
       companyId: input.companyId,
@@ -3060,6 +3061,12 @@ async function completePortableExternalWorkerStep(input: {
     && !Array.isArray(invocation.web_operation_intent)
     ? invocation.web_operation_intent as Record<string, unknown>
     : null;
+  const browserGoalId = typeof invocation.browser_goal_id === "string" && invocation.browser_goal_id.trim()
+    ? invocation.browser_goal_id
+    : `aos-goal-${input.step.run_id}`;
+  const browserGoalStatePath = typeof invocation.browser_goal_state_path === "string" && invocation.browser_goal_state_path.trim()
+    ? invocation.browser_goal_state_path
+    : undefined;
   const inputBundle = typeof runMetadata.portable_input_bundle === "object"
     && runMetadata.portable_input_bundle !== null
     && !Array.isArray(runMetadata.portable_input_bundle)
@@ -3096,7 +3103,10 @@ async function completePortableExternalWorkerStep(input: {
     inputBundlePath: localInputBundlePath ?? inputBundlePath,
     readOnlyStage,
     effectAuthority,
-    webOperationIntent
+    webOperationIntent,
+    browserGoalId,
+    browserGoalStatePath,
+    browserGoalTerminal: true
   });
   const businessCompletionVerified = readOnlyStage === null
     && result.response?.business_completion_verified === true;
@@ -3183,6 +3193,8 @@ async function completePortableExternalWorkerStep(input: {
       portable_workflow_id: input.workflowId,
       source_trigger: sourceTrigger,
       idempotency_key: idempotencyKey,
+      browser_goal_id: browserGoalId,
+      browser_goal_state_path: browserGoalStatePath || null,
       portable_external_artifact: artifact.uri,
       portable_external_receipt: {
         status: result.status,

@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Proof } from "./proofGate.js";
-import { BROWSER_USE_HELPER_PATH, BROWSER_USE_RUNTIME_CONFIG_PATH } from "../serviceReadiness/browserUseCanonical.js";
+import { BROWSER_USE_HELPER_PATH, BROWSER_USE_RUNTIME_CONFIG_PATH, BROWSER_USE_STAGE_ADAPTER_PATH } from "../serviceReadiness/browserUseCanonical.js";
 
 export type JobManagerBrowserUseCliRegisteredStatus = "blocked";
 
@@ -28,7 +28,7 @@ export type JobManagerBrowserUseCliRegisteredRunResult = {
 };
 
 const PROJECT_ROOT = "/Users/nichikatanaka/Documents/New project";
-const CANONICAL_STAGE_ADAPTER = "/Users/nichikatanaka/.codex/skills/automation-kernel-run/scripts/browser-use-cli-stage-adapter.mjs";
+const CANONICAL_STAGE_ADAPTER = BROWSER_USE_STAGE_ADAPTER_PATH;
 const BLOCKER = "browser_use_cli_job_manager_registered_runner_required";
 
 function artifactPathFor(runId: string, workflowId: string): string {

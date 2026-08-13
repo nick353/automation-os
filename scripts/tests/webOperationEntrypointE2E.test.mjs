@@ -119,6 +119,7 @@ function fixtureIntent({ root, operation, runId = `entrypoint-${operation}`, sou
     step_id: stepId,
     source_trigger: sourceTrigger,
     idempotency_key: idempotencyKey,
+    audience: "portable_external_runner",
     approval_status: "approved",
     effect_class: "external_non_idempotent",
     browser_surface: "browser_use_cli",

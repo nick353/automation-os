@@ -6,9 +6,9 @@ import { buildCanonicalExecutionRoutingMetadataForCommand } from "../codex/execu
 import { resolveExactSourceRunBinding } from "./sourceRunBinding.js";
 import { evaluateDailyAiRegisteredSummary } from "../runs/dailyAiRegisteredRunner.js";
 
-const defaultSummaryPath =
-  "/Users/nichikatanaka/Documents/New project/artifacts/playwright-cli-runs/2026-07-02T13-41-45-654Z/registered-playwright-cli-summary.json";
-const summaryPath = resolve(readArgValue("--summary") ?? defaultSummaryPath);
+const requestedSummaryPath = readArgValue("--summary");
+if (!requestedSummaryPath) throw new Error("daily_ai_reconciliation_summary_required");
+const summaryPath = resolve(requestedSummaryPath);
 const outDir = resolve(readArgValue("--out-dir") ?? `data/artifacts/daily-ai-research-publish-run/completion-reconciliation-${timestamp()}`);
 const commitRequested = process.argv.includes("--commit");
 const proofType = "daily_ai_completion_reconciliation_readback";

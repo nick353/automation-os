@@ -229,9 +229,9 @@ export function promptTransferArtifactSize(path: string | undefined): number {
 function missingCommand(runId: string, outputRoot: string) {
   return {
     bin: "python3",
-    args: ["<Prompt Transfer Playwright/Sheets runner missing>"],
+    args: ["<Prompt Transfer Browser Use CLI/Sheets runner missing>"],
     cwd: projectRoot,
-    display: "Prompt Transfer Playwright/Sheets runner missing; Browser Use wrapper will not be launched",
+    display: "Prompt Transfer Browser Use CLI/Sheets runner missing; canonical wrapper will not be launched",
     env: {
       AUTOMATION_OS_RUN_ID: runId,
       PROMPT_TRANSFER_OUTPUT_ROOT: outputRoot,

@@ -11,7 +11,31 @@ import {
   PORTABLE_EXTERNAL_LEGACY_RUNNER_FORBIDDEN
 } from "../runs/portableExternalWorker.js";
 import { portableExternalRunnerConfigured, resolvePortableExternalRunner } from "../runs/portableExternalRunnerConfig.js";
-import { issuePortableExternalEffectAuthorityV1 } from "../runs/portableExternalEffectAuthority.js";
+import { issuePortableExternalEffectAuthorityV1, validatePortableExternalEffectAuthorityV1 } from "../runs/portableExternalEffectAuthority.js";
+
+test("portable external effect authority requires a concrete payload hash", () => {
+  const base = {
+    companyId: "company-authority-payload",
+    workflowId: "job-application-manager",
+    runId: "run-authority-payload",
+    stepId: "step-authority-payload",
+    effectStage: "one_candidate_submit",
+    approvalId: "approval-authority-payload",
+    idempotencyKey: "authority-payload",
+    targetDigest: "a".repeat(64),
+    inputBundleSha256: "b".repeat(64),
+    leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+  };
+  assert.throws(
+    () => issuePortableExternalEffectAuthorityV1({ ...base, payloadHash: null as unknown as string }),
+    /portable_effect_authority_payload_hash_invalid/u,
+  );
+  const authority = issuePortableExternalEffectAuthorityV1({ ...base, payloadHash: "c".repeat(64) });
+  assert.throws(
+    () => validatePortableExternalEffectAuthorityV1({ ...authority, payload_hash: null }, undefined, Date.now()),
+    /portable_effect_authority_payload_hash_invalid/u,
+  );
+});
 
 test("portable external runner defaults to the AOS-owned Browser Use CLI entrypoint", () => {
   const environment = {} as NodeJS.ProcessEnv;

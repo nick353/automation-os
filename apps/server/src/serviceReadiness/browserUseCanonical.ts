@@ -8,6 +8,8 @@
 export const BROWSER_USE_STATE_ROOT = "/Users/nichikatanaka/.browser-use-cli" as const;
 export const BROWSER_USE_HELPER_PATH = "/Users/nichikatanaka/.local/bin/codex-browser-use" as const;
 export const BROWSER_USE_RUNTIME_CONFIG_PATH = `${BROWSER_USE_STATE_ROOT}/browser-use-runtime.toml` as const;
+export const BROWSER_USE_STAGE_ADAPTER_PATH = "/Users/nichikatanaka/.codex/skills/automation-kernel-run/scripts/browser-use-cli-stage-adapter.mjs" as const;
+export const BROWSER_USE_CANONICAL_SCHEMA = "browser_use_cli_canonical_runtime.v1" as const;
 export const BROWSER_USE_HOME = `${BROWSER_USE_STATE_ROOT}/home` as const;
 export const BROWSER_USE_SCHEDULED_PROFILE_ROOT = `${BROWSER_USE_STATE_ROOT}/profiles/scheduled` as const;
 export const BROWSER_USE_SINGLE_USE_PROFILE_ROOT = `${BROWSER_USE_STATE_ROOT}/profiles/single-use` as const;

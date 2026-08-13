@@ -273,6 +273,7 @@ test("remote Mac worker claims a business effect only after target-bound AOS app
       companyId,
       effectStage: "one_candidate_submit",
       inputBundle: {
+        account_ref: "linkedin_authenticated_job_manager",
         job_url: "https://www.linkedin.com/jobs/view/4405084150/",
         application_url: "https://www.linkedin.com/jobs/view/4405084150/",
         candidate_key: "opp-remote-business-regression",
@@ -283,6 +284,7 @@ test("remote Mac worker claims a business effect only after target-bound AOS app
         supply_run_id: "supply-remote-business-regression",
         company: "Example Company",
         role: "Marketing Manager",
+        payload_hash: "a".repeat(64),
       },
     });
     const workerId = "mac-remote-business-regression";
@@ -447,6 +449,7 @@ test("portable business claim fails closed when the AOS authority is absent, wit
       companyId,
       effectStage: "one_candidate_submit",
       inputBundle: {
+        account_ref: "linkedin_authenticated_job_manager",
         job_url: "https://www.linkedin.com/jobs/view/4405084151/",
         application_url: "https://www.linkedin.com/jobs/view/4405084151/",
         candidate_key: "opp-remote-authority-missing-regression",
@@ -455,6 +458,7 @@ test("portable business claim fails closed when the AOS authority is absent, wit
         attempt: 1,
         source_snapshot_id: "snapshot-remote-authority-missing-regression",
         supply_run_id: "supply-remote-authority-missing-regression",
+        payload_hash: "b".repeat(64),
       },
     });
     const { runWorkerOnce } = await import("../runs/workerEngine.js");
@@ -498,6 +502,7 @@ test("portable business claim fails closed when an approved candidate URL drifts
       companyId,
       effectStage: "one_candidate_submit",
       inputBundle: {
+        account_ref: "linkedin_authenticated_job_manager",
         job_url: "https://www.linkedin.com/jobs/view/4405084152/",
         application_url: "https://www.linkedin.com/jobs/view/4405084152/",
         candidate_key: "opp-target-drift",
@@ -505,7 +510,8 @@ test("portable business claim fails closed when an approved candidate URL drifts
         sequence: 1,
         attempt: 1,
         source_snapshot_id: "snapshot-target-drift",
-        supply_run_id: "supply-target-drift"
+        supply_run_id: "supply-target-drift",
+        payload_hash: "c".repeat(64)
       }
     });
     const { runWorkerOnce } = await import("../runs/workerEngine.js");
@@ -703,6 +709,7 @@ test("approved portable business runs recover from blocked state into the Mac wo
       companyId,
       effectStage: "one_candidate_submit",
       inputBundle: {
+        account_ref: "linkedin_authenticated_job_manager",
         job_url: "https://www.linkedin.com/jobs/view/4405084151/",
         application_url: "https://www.linkedin.com/jobs/view/4405084151/",
         candidate_key: "opp-remote-approval-recovery",
@@ -713,6 +720,7 @@ test("approved portable business runs recover from blocked state into the Mac wo
         supply_run_id: "supply-remote-approval-recovery",
         company: "Example Company",
         role: "Marketing Manager",
+        payload_hash: "d".repeat(64),
       },
     });
     const approval = db.querySql<{ id: string }>(

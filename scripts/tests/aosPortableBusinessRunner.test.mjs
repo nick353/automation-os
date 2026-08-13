@@ -41,6 +41,7 @@ function boundFiles(root, workflowId, runId, stepId, idempotencyKey) {
     step_id: stepId,
     source_trigger: "automation_os_scheduler",
     idempotency_key: idempotencyKey,
+    audience: "portable_external_runner",
     browser_surface: "browser_use_cli",
     approval_status: "approved",
     expires_at: new Date(Date.now() + 60_000).toISOString(),

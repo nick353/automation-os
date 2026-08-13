@@ -103,12 +103,15 @@ export type WebOperationContractV1 = {
     fail_close_on: readonly [
       "captcha",
       "otp",
+      "secret_input",
+      "human_input_required",
       "identity_verification",
       "assessment",
       "unknown_high_impact_question",
       "payment",
       "tax",
       "banking",
+      "foreign_owner_resource",
       "ambiguous_external_effect",
     ];
     secrets_policy: "never_log_or_artifact_secrets_cookies_passwords_tokens_raw_page_body";
@@ -166,12 +169,15 @@ const fixedKernel = {
   fail_close_on: [
     "captcha",
     "otp",
+    "secret_input",
+    "human_input_required",
     "identity_verification",
     "assessment",
     "unknown_high_impact_question",
     "payment",
     "tax",
     "banking",
+    "foreign_owner_resource",
     "ambiguous_external_effect",
   ] as const,
   secrets_policy: "never_log_or_artifact_secrets_cookies_passwords_tokens_raw_page_body" as const,

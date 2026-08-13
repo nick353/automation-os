@@ -53,6 +53,7 @@ export type PortableCanaryReceiptV1 = {
   connector_called: false;
   external_action_executed: false;
   exact_blocker: null;
+  registered_root_admission?: import("./registeredRootAdmission.js").RegisteredRootAdmissionV1;
 };
 
 const forbiddenKeys = new Set([

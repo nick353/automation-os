@@ -7,7 +7,13 @@ import Database from "better-sqlite3";
 const repoRoot = resolve(process.env.AUTOMATION_OS_REPO_ROOT || process.cwd());
 const automationRoot = resolve(process.env.CODEX_AUTOMATIONS_ROOT || `${process.env.HOME || ""}/.codex/automations`);
 const dbPath = resolve(process.env.AUTOMATION_OS_DB || join(repoRoot, "data", "automation-os.sqlite"));
-const expectedCompanyId = process.env.AOS_TRIGGER_PARITY_COMPANY_ID || "company_9588eaafb46d7cbaead81811";
+// The registered Codex App prompts and the portable remote worker both use
+// Company 1's current production scope. A local SQLite scope is diagnostic
+// only until an owner explicitly aligns it; it must never silently win here.
+const expectedCompanyId = process.env.AOS_TRIGGER_PARITY_COMPANY_ID
+  || process.env.AOS_CANONICAL_COMPANY_ID
+  || "company_2560580981cedfd106b66245";
+const LOCAL_SCOPE_BLOCKER = "aos_local_diagnostic_scope_not_authorized_for_claim";
 const triggerPath = "scripts/aos-trigger.mjs";
 const triggerWrapperPath = "/.local/bin/aos-trigger-zeabur";
 const remoteBaseUrl = String(process.env.AOS_PARITY_AOS_BASE_URL || "").replace(/\/$/u, "");
@@ -79,6 +85,7 @@ async function readRemoteSchedules() {
 
 let schedules;
 let aosSource;
+let localCompanyIds = [];
 try {
   if (scheduleFixture) {
     const parsed = JSON.parse(scheduleFixture);
@@ -91,6 +98,13 @@ try {
   } else {
     if (!existsSync(dbPath)) throw new Error("aos_sqlite_missing");
     const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+    localCompanyIds = db.prepare(`
+      SELECT company_id, COUNT(*) AS automation_count
+      FROM mvp_automations
+      WHERE trim(company_id)!=''
+      GROUP BY company_id
+      ORDER BY company_id
+    `).all().map((row) => ({ company_id: row.company_id, automation_count: Number(row.automation_count) }));
     schedules = db.prepare(`
       SELECT a.id, a.name, a.company_id, a.status AS automation_status,
              s.kind, s.expression, s.timezone, s.enabled, s.status AS schedule_status
@@ -116,12 +130,12 @@ try {
   process.exit(2);
 }
 
-const registered = readdirSync(automationRoot, { withFileTypes: true })
+const registeredAll = readdirSync(automationRoot, { withFileTypes: true })
   .filter((entry) => entry.isDirectory())
   .map((entry) => join(automationRoot, entry.name, "automation.toml"))
   .filter((path) => existsSync(path))
-  .map(parseRegisteredToml)
-  .filter((entry) => entry.company === expectedCompanyId);
+  .map(parseRegisteredToml);
+const registered = registeredAll.filter((entry) => entry.company === expectedCompanyId);
 
 const byAutomation = new Map(schedules.map((row) => [row.id, row]));
 const entries = registered.map((entry) => {
@@ -147,8 +161,32 @@ const entries = registered.map((entry) => {
 });
 
 const expectedAutomationCount = schedules.length;
-if (registered.length !== expectedAutomationCount) entries.push({ status: "mismatch", exact_blockers: ["codex_app_aos_automation_count_mismatch"], registered_count: registered.length, aos_count: expectedAutomationCount });
+if (aosSource.kind === "sqlite" && localCompanyIds.length > 0 && !localCompanyIds.some((row) => row.company_id === expectedCompanyId)) {
+  entries.unshift({
+    status: "mismatch",
+    exact_blockers: [LOCAL_SCOPE_BLOCKER],
+    historical_parity_blocker: "aos_scope_alignment_required",
+    expected_company_id: expectedCompanyId,
+    local_company_ids: localCompanyIds,
+    registered_company_ids: [...new Set(registeredAll.map((entry) => entry.company).filter(Boolean))],
+    aos_count: expectedAutomationCount
+  });
+} else if (registered.length === 0 && registeredAll.length > 0) {
+  entries.push({
+    status: "mismatch",
+    exact_blockers: [LOCAL_SCOPE_BLOCKER],
+    historical_parity_blocker: "aos_scope_alignment_required",
+    expected_company_id: expectedCompanyId,
+    registered_count: 0,
+    registered_total_count: registeredAll.length,
+    registered_company_ids: [...new Set(registeredAll.map((entry) => entry.company).filter(Boolean))],
+    aos_count: expectedAutomationCount
+  });
+} else if (registered.length !== expectedAutomationCount) {
+  entries.push({ status: "mismatch", exact_blockers: ["codex_app_aos_automation_count_mismatch"], registered_count: registered.length, aos_count: expectedAutomationCount });
+}
 const mismatches = entries.filter((entry) => entry.status === "mismatch");
+const exactBlocker = mismatches.length ? mismatches[0].exact_blockers[0] : null;
 const result = {
   schema: "aos_codex_app_trigger_parity.v1",
   generated_at: new Date().toISOString(),
@@ -157,13 +195,20 @@ const result = {
   aos_database_path: aosSource.kind === "sqlite" ? dbPath : null,
   aos_source: aosSource,
   registered_count: registered.length,
+  registered_total_count: registeredAll.length,
+  registered_company_ids: [...new Set(registeredAll.map((entry) => entry.company).filter(Boolean))],
+  local_company_ids: localCompanyIds,
   aos_count: expectedAutomationCount,
   entries,
   status: mismatches.length ? "blocked" : "matched",
-  exact_blocker: mismatches.length ? mismatches[0].exact_blockers[0] : null,
+  exact_blocker: exactBlocker,
   external_action_executed: false,
   secret_values_read: false,
-  next_action: mismatches.length ? "Repair the Codex App registration through the official PAUSED -> update -> audit -> ACTIVE lifecycle, then rerun this read-only parity check." : "Codex App may remain a thin AOS trigger; execute the AOS receipt/readback contract only."
+  next_action: exactBlocker === LOCAL_SCOPE_BLOCKER
+    ? "Obtain a fresh protected AOS schedule readback for the registered Codex App company scope, select one authoritative company/endpoint, then rerun this read-only parity check; do not rewrite either scope from this audit."
+    : mismatches.length
+      ? "Repair the Codex App registration through the official PAUSED -> update -> audit -> ACTIVE lifecycle, then rerun this read-only parity check."
+      : "Codex App may remain a thin AOS trigger; execute the AOS receipt/readback contract only."
 };
 console.log(JSON.stringify(result, null, 2));
 process.exitCode = mismatches.length ? 2 : 0;

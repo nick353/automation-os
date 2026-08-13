@@ -129,6 +129,20 @@ test("Daily AI and NisenPrints accept only their workflow-owned reference readba
     }),
     /portable_read_only_stage_unsupported/
   );
+  const jobReference = await startPortableWorkflowRun({
+    workflowId: "job-application-manager",
+    sourceTrigger: "automation_os_ui",
+    idempotencyKey: "portable-job-reference-readback-no-effect",
+    companyId: "portable_job_reference_scope",
+    readOnlyStage: "reference_readback"
+  });
+  const jobReferenceMetadata = JSON.parse(
+    db.querySql<{ metadata_json: string }>(
+      `SELECT metadata_json FROM runs WHERE id=${db.sqlValue(jobReference.runId)} LIMIT 1`
+    )[0].metadata_json
+  ) as Record<string, any>;
+  assert.equal(jobReferenceMetadata.portable_workflow_invocation?.read_only_stage, "reference_readback");
+  await runWorkerOnce(jobReference.runId);
   await assert.rejects(
     () => startPortableWorkflowRun({
       workflowId: "nisenprints-daily-product-canva-printify-etsy-pinterest",
@@ -459,6 +473,7 @@ test("business portable starts create the target-bound AOS approval before Mac c
       companyId: "portable_business_admission_scope",
       effectStage: "one_candidate_submit",
       inputBundle: {
+        account_ref: "linkedin_authenticated_job_manager",
         job_url: "https://example.com/jobs/target-bound",
         application_url: "https://example.com/jobs/target-bound",
         candidate_key: "candidate-target-bound",
@@ -469,6 +484,7 @@ test("business portable starts create the target-bound AOS approval before Mac c
         supply_run_id: "supply-target-bound",
         company: "Example Company",
         role: "Marketing Manager",
+        payload_hash: "a".repeat(64),
       },
     });
     assert.equal(started.status, "waiting_approval");

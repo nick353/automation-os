@@ -12,16 +12,35 @@ import {
   verifyPortableCanaryAdmissionV1
 } from "./portableCanaryAdmission.js";
 import type { PortableCanaryAdmissionWorkflowId } from "./portableCanaryAdmission.js";
+import { hashIdempotencyRequest } from "../automations/idempotency.js";
+import {
+  createRegisteredRootAdmissionV1,
+  validateRegisteredRootAdmissionV1
+} from "./registeredRootAdmission.js";
 
 export function runPortableWorkerCanary(input: {
   runId: string;
   workflowId: PortableWorkflowId;
   sourceTrigger: PortableTrigger;
   idempotencyKey: string;
+  registeredAutomationId?: string;
 }): PortableCanaryReceiptV1 {
   const workflow = validatePortableWorkflowManifestV1(portableWorkflowManifests[input.workflowId]);
   const run = createPortableRunManifestV1(input);
   if (workflow.workflow_id !== run.workflow_id) throw new Error("portable_worker_workflow_binding_mismatch");
+  const registeredRoot = createRegisteredRootAdmissionV1({
+    registeredAutomationId: input.registeredAutomationId ?? input.workflowId,
+    workflowId: input.workflowId,
+    runId: input.runId,
+    sourceTrigger: input.sourceTrigger,
+    definitionFingerprint: hashIdempotencyRequest(workflow)
+  });
+  validateRegisteredRootAdmissionV1(registeredRoot, {
+    registeredAutomationId: registeredRoot.registered_automation_id,
+    workflowId: input.workflowId,
+    runId: input.runId,
+    sourceTrigger: input.sourceTrigger
+  });
 
   const adapter = portableCanaryAdapterForWorkflow(input.workflowId);
   const receipt: PortableCanaryReceiptV1 = {
@@ -33,7 +52,8 @@ export function runPortableWorkerCanary(input: {
     browser_started: false,
     connector_called: false,
     external_action_executed: false,
-    exact_blocker: null
+    exact_blocker: null,
+    registered_root_admission: registeredRoot
   };
   if (adapter) {
     const admissionWorkflowId = input.workflowId as PortableCanaryAdmissionWorkflowId;

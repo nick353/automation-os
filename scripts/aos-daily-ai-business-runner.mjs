@@ -50,7 +50,7 @@ function readAdmission(input) {
   if (!file || !fs.existsSync(file) || !/^[a-f0-9]{64}$/u.test(expected)) throw new Error("daily_ai_business_admission_missing");
   const bytes = fs.readFileSync(file);
   const value = JSON.parse(bytes.toString("utf8"));
-  if (digest(bytes) !== expected || value.workflow_id !== input.workflow_id || value.run_id !== input.run_id || value.step_id !== input.step_id || value.approval_status !== "approved" || value.browser_surface !== "browser_use_cli") throw new Error("daily_ai_business_admission_binding_invalid");
+  if (digest(bytes) !== expected || value.workflow_id !== input.workflow_id || value.run_id !== input.run_id || value.step_id !== input.step_id || value.audience !== "portable_external_runner" || value.approval_status !== "approved" || value.browser_surface !== "browser_use_cli") throw new Error("daily_ai_business_admission_binding_invalid");
   if (Date.parse(String(value.expires_at || "")) <= Date.now()) throw new Error("daily_ai_business_admission_expired");
   return { path: file, sha256: expected };
 }
@@ -76,6 +76,55 @@ function readJsonRecord(file, root) {
     const parsed = JSON.parse(fs.readFileSync(candidate, "utf8"));
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
   } catch (_) { return null; }
+}
+function targetDigestForBundle(bundle) {
+  const keys = [
+    "account_ref", "target_key", "payload_hash", "content_key", "product_key", "asset_manifest_id",
+    "job_url", "application_url", "candidate_key", "bucket", "sequence", "attempt",
+    "source_snapshot_id", "supply_run_id", "company", "role", "target_digest", "source_state_digest",
+  ];
+  const value = Object.fromEntries(keys.filter((key) => Object.hasOwn(bundle, key)).map((key) => [key, bundle[key]]));
+  return digest(Buffer.from(JSON.stringify(value)));
+}
+function readTargetBoundInputBundle(input, authority) {
+  const rawPath = String(
+    process.env.AUTOMATION_OS_PORTABLE_BUSINESS_INPUT_BUNDLE_PATH
+      || process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_INPUT_BUNDLE_PATH
+      || "",
+  ).trim();
+  if (!rawPath || !path.isAbsolute(rawPath) || !fs.existsSync(rawPath)) {
+    throw new Error("daily_ai_business_input_bundle_missing");
+  }
+  const stat = fs.lstatSync(rawPath);
+  if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1 || (stat.mode & 0o777) !== 0o600) {
+    throw new Error("daily_ai_business_input_bundle_permissions_invalid");
+  }
+  let document;
+  try {
+    document = JSON.parse(fs.readFileSync(rawPath, "utf8"));
+  } catch {
+    throw new Error("daily_ai_business_input_bundle_json_invalid");
+  }
+  const bundle = document && typeof document === "object" && !Array.isArray(document)
+    ? document.input
+    : null;
+  if (document?.schema !== "automation_os_portable_workflow_input_bundle.v1"
+    || document.workflow_id !== "daily-ai-research-publish-run"
+    || document.run_id !== input.run_id
+    || !bundle || typeof bundle !== "object" || Array.isArray(bundle)) {
+    throw new Error("daily_ai_business_input_bundle_binding_invalid");
+  }
+  const contentKey = String(bundle.content_key || "").trim();
+  const targetKey = String(bundle.target_key || "").trim();
+  const targetMatch = targetKey.match(/^(.+):(x|linkedin)$/u);
+  if (!contentKey || !targetMatch || targetMatch[1] !== contentKey) {
+    throw new Error("daily_ai_business_target_binding_invalid");
+  }
+  if (targetDigestForBundle(bundle) !== authority.target_digest
+    || String(bundle.payload_hash || "") !== authority.payload_hash) {
+    throw new Error("daily_ai_business_target_binding_digest_mismatch");
+  }
+  return { path: rawPath, bundle, content_key: contentKey, target_key: targetKey, platform: targetMatch[2] };
 }
 function hasText(value) { return typeof value === "string" && value.trim().length > 0; }
 function dailyBusinessProofs(summary, runId) {
@@ -104,7 +153,7 @@ function dailySourceStateDigest(summary, receipt, outputDir) {
   if (summaryPath === root || !summaryPath.startsWith(`${root}${path.sep}`) || !fs.existsSync(summaryPath)) return null;
   try { return digest(fs.readFileSync(summaryPath)); } catch (_) { return null; }
 }
-function runRegisteredRunner(input, outputDir, runner) {
+function runRegisteredRunner(input, outputDir, runner, targetBinding) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [runner], {
       cwd: PROJECT_ROOT,
@@ -114,6 +163,10 @@ function runRegisteredRunner(input, outputDir, runner) {
         DAILY_AI_CLI_OUTPUT_DIR: outputDir,
         DAILY_AI_QUEUE_PATH: QUEUE_PATH,
         DAILY_AI_CLI_ALLOW_POSTFLIGHT_SYNC: "0",
+        DAILY_AI_CLI_PUBLISH_ONLY_IDS: JSON.stringify([targetBinding.content_key]),
+        DAILY_AI_CLI_PUBLISH_ONLY_PLATFORMS: JSON.stringify([targetBinding.platform]),
+        DAILY_AI_CLI_MAX_PUBLISH_ACTIONS: "1",
+        DAILY_AI_CLI_SKIP_ENGAGEMENT: "1",
         AUTOMATION_OS_WEB_OPERATION_CONTRACT_SCHEMA: WEB_OPERATION_CONTRACT.schema,
         AUTOMATION_OS_WEB_OPERATION_ADAPTIVE: "semantic_live_state_bounded_exploration",
       },
@@ -138,6 +191,8 @@ async function main(argv = process.argv.slice(2)) {
     }
     const runner = registeredRunnerPath();
     if (!fs.existsSync(QUEUE_PATH) || !fs.statSync(QUEUE_PATH).isFile()) return output({ exact_blocker: "daily_ai_browser_use_cli_queue_missing", run_id: input.run_id, step_id: input.step_id });
+    const authority = readPortableBusinessEffectAuthority(input);
+    const targetBinding = readTargetBoundInputBundle(input, authority);
     const actionPlan = readPortableBusinessActionPlan({
       workflowId: input.workflow_id,
       runId: input.run_id,
@@ -148,7 +203,7 @@ async function main(argv = process.argv.slice(2)) {
     const artifactRoot = path.resolve(process.env.AUTOMATION_OS_ARTIFACT_ROOT?.trim() || path.join(process.cwd(), "data", "artifacts"));
     const outputDir = path.join(artifactRoot, input.run_id, "business-run", "daily-ai");
     fs.mkdirSync(outputDir, { recursive: true, mode: 0o700 });
-    const child = await runRegisteredRunner(input, outputDir, runner);
+    const child = await runRegisteredRunner(input, outputDir, runner, targetBinding);
     const receipt = parseLastJson(child.stdout);
     const summary = readJsonRecord(receipt?.summary_path, outputDir);
     const businessProofs = dailyBusinessProofs(summary, input.run_id);
@@ -158,7 +213,6 @@ async function main(argv = process.argv.slice(2)) {
     const status = receipt?.status === "complete" || receipt?.status === "partial" || receipt?.status === "blocked" ? receipt.status : "blocked";
     const exactBlocker = receipt?.exact_blocker || (child.error ? "daily_ai_browser_use_cli_registered_runner_spawn_failed" : "daily_ai_browser_use_cli_business_proof_incomplete");
     const sameRunReceipt = Boolean(receipt?.same_run_receipt && receipt?.run_id === input.run_id);
-    const authority = readPortableBusinessEffectAuthority(input);
     const webOperationLifecycle = buildPortableBusinessWebOperationLifecycle({
       run_id: input.run_id,
       step_id: input.step_id,

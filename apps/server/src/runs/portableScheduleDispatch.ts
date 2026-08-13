@@ -79,11 +79,17 @@ export function portableScheduleDispatchForRegisteredAutomation(input: Registere
   };
 }
 
-export function portableReadOnlyStageForScheduledWorkflow(workflowId: PortableWorkflowId): "candidate_supply" | "reference_readback" {
-  // Scheduled runs remain no-effect. Job may collect candidate supply; the
-  // publish-oriented workflows stay at reference readback until a fresh,
-  // approved target bundle is supplied by a later stage.
-  return workflowId === "job-application-manager" ? "candidate_supply" : "reference_readback";
+export function portableReadOnlyStageForScheduledWorkflow(
+  workflowId: PortableWorkflowId,
+  options: { hasInputBundle?: boolean } = {}
+): "candidate_supply" | "reference_readback" {
+  // A candidate-supply run is only claimable when its run-bound input bundle
+  // is present. Codex App's provider-neutral trigger intentionally supplies no
+  // bundle, so it must enter the terminal no-effect reference readback lane;
+  // otherwise the Mac worker correctly refuses the claim forever.
+  return workflowId === "job-application-manager" && options.hasInputBundle === true
+    ? "candidate_supply"
+    : "reference_readback";
 }
 
 export function portableScheduleDueKey(scheduleId: string, scheduledFor: string): string {

@@ -740,7 +740,7 @@ import { join } from "node:path";
 const outputDir = process.env.DAILY_AI_CLI_OUTPUT_DIR;
 if (!outputDir) throw new Error("DAILY_AI_CLI_OUTPUT_DIR missing");
 mkdirSync(outputDir, { recursive: true });
-writeFileSync(join(outputDir, "registered-playwright-cli-summary.json"), JSON.stringify({
+writeFileSync(join(outputDir, "registered-browser-summary.json"), JSON.stringify({
   automation_os_run_id: process.env.AUTOMATION_OS_RUN_ID || "",
   run_id: process.env.DAILY_AI_CLI_RUN_ID || "",
   direct_publish: { ok: true },
@@ -1444,6 +1444,15 @@ test("SNS Multi Poster legacy filename is fail-closed and delegates to Browser U
   assert.match(source, /legacy_surface/);
   assert.match(source, /external_action_executed: false/);
   assert.doesNotMatch(source, /from ["']playwright|chromium\\.launch|connectOverCDP|remote-debugging-port|Input\\.dispatchMouseEvent|CdpWebSocketTransport/i);
+});
+
+test("SNS Multi Poster default runner is a canonical Browser Use CLI effect-admission adapter", () => {
+  const source = readFileSync("scripts/run_sns_multi_poster_ukiyoe_browser_use_cli.mjs", "utf8");
+  assert.match(source, /browser-use-cli\/lib\/stage-adapter\.mjs/u);
+  assert.match(source, /runBrowserUseCliFlowCommand/u);
+  assert.match(source, /sns_multi_poster_target_account_audience_authority_missing/u);
+  assert.match(source, /external_action_executed: false/u);
+  assert.doesNotMatch(source, /playwright|puppeteer|connectOverCDP|remote-debugging-port/iu);
 });
 
 test("X registered workflow records human-input evidence blocker when callable surface is missing", async () => {

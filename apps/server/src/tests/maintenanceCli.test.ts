@@ -619,6 +619,7 @@ test("exportObsidianVault writes wiki-linked run, proof, and docs markdown", () 
   assert.match(secondBrainReviewBase, /unresolved_question:/);
   assert.match(secondBrainReviewBase, /distillation_quality:/);
   assert.match(secondBrainReviewBase, /knowledge_reuse_status:/);
+  assert.match(secondBrainReviewBase, /claim_verification_status:/);
   assert.match(secondBrainReviewBase, /source_of_truth:/);
   assert.match(secondBrainReviewBase, /external_action_required:/);
   assert.match(actionQueue, /generated_by: automation-os/);

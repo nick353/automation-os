@@ -61,7 +61,6 @@ export type DailyAiRegisteredRunResult = DailyAiRegisteredEvaluation & {
 // receipt payload and command surface are Browser Use CLI-only; the filename
 // is not a transport selector.
 const summaryFileName = "registered-browser-summary.json";
-const compatibilitySummaryFileName = "registered-playwright-cli-summary.json";
 const projectRoot = "/Users/nichikatanaka/Documents/New project";
 const fixedOutputRoot = join(projectRoot, "artifacts", "automation-os-daily-ai-runs");
 const defaultBrowserUseRunner = join(projectRoot, "scripts", "run_daily_ai_browser_use_cli_registered.mjs");
@@ -253,8 +252,6 @@ function dailyAiProofOnlyNoPostPreflightEnv(): { DAILY_AI_CLI_PROOF_ONLY_NO_POST
 export function findDailyAiRegisteredSummary(input: { outputDir?: string; startedAtMs?: number } = {}): string | undefined {
   const fixedSummary = input.outputDir ? join(input.outputDir, summaryFileName) : undefined;
   if (fixedSummary && existsSync(fixedSummary)) return fixedSummary;
-  const compatibilitySummary = input.outputDir ? join(input.outputDir, compatibilitySummaryFileName) : undefined;
-  if (compatibilitySummary && existsSync(compatibilitySummary)) return compatibilitySummary;
   return undefined;
 }
 
@@ -482,7 +479,7 @@ function enforceRunnerCompletionGate(
         missing: [...new Set([...evaluation.proof_gate.missing, "daily_ai_runner_exit_0"])],
         present: evaluation.proof_gate.present
       },
-      proof_summary: `${status}: Daily AI Playwright runner did not exit cleanly`,
+      proof_summary: `${status}: Daily AI Browser Use CLI registered runner did not exit cleanly`,
       metadata: {
         ...evaluation.metadata,
         blocker: input.timedOut ? "daily_ai_runner_timeout" : "daily_ai_runner_exit_nonzero",

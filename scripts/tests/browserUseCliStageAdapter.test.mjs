@@ -9,6 +9,7 @@ import {
   validateBrowserUseCliLifecycleState,
   validateBrowserUseCliStageRequest,
   validateBrowserUseCliReadOnlyBatchCommands,
+  bindBrowserUseCliEffectiveSession,
   runBrowserUseCliStage,
 } from "/Users/nichikatanaka/.codex/skills/automation-kernel-run/scripts/browser-use-cli-stage-adapter.mjs";
 
@@ -50,6 +51,20 @@ test("rejects start descriptor mismatches and extra fields", () => {
     allowedOrigins: fixture.allowed_origins,
     expiresAt: fixture.expires_at,
   }), /browser_use_cli_start_descriptor_additional_field/);
+});
+
+test("binds the helper's canonical effective session without accepting a different requested owner", () => {
+  const contract = { requested_session: "aos-long-requested-session-20260813" };
+  const bound = bindBrowserUseCliEffectiveSession(contract, {
+    requested_session: contract.requested_session,
+    session: "aos-long-requested-ses-1234567890",
+  });
+  assert.equal(bound.requested_session, contract.requested_session);
+  assert.equal(bound.effective_session, "aos-long-requested-ses-1234567890");
+  assert.throws(() => bindBrowserUseCliEffectiveSession(contract, {
+    requested_session: "foreign-requested-session",
+    session: "aos-long-requested-ses-1234567890",
+  }), /browser_use_cli_helper_session_binding_invalid/);
 });
 
 test("enforces lifecycle ordering and rejects replay/concurrency", () => {

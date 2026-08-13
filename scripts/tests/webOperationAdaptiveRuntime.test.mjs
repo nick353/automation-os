@@ -99,6 +99,23 @@ test("effectful intents distinguish approval-pending from admitted", () => {
 
 test("portable contract mirror validates the complete operation model", () => {
   assert.doesNotThrow(() => validateWebOperationContract(WEB_OPERATION_CONTRACT));
+  assert.doesNotThrow(() => validateWebOperationContract({
+    ...WEB_OPERATION_CONTRACT,
+    fixed_kernel: {
+      ...WEB_OPERATION_CONTRACT.fixed_kernel,
+      fail_close_on: [
+        "captcha",
+        "otp",
+        "identity_verification",
+        "assessment",
+        "unknown_high_impact_question",
+        "payment",
+        "tax",
+        "banking",
+        "ambiguous_external_effect",
+      ],
+    },
+  }));
   assert.throws(() => validateWebOperationContract({ ...WEB_OPERATION_CONTRACT, operation_model: { ...WEB_OPERATION_CONTRACT.operation_model, target_resolution: "fixed_css_selector" } }), /web_operation_contract_operation_model_invalid/);
   assert.throws(() => validateWebOperationContract({ ...WEB_OPERATION_CONTRACT, fixed_kernel: { ...WEB_OPERATION_CONTRACT.fixed_kernel, unexpected_runtime_flag: true } }), /web_operation_contract_fixed_kernel_invalid/);
   assert.throws(() => validateWebOperationContract({ ...WEB_OPERATION_CONTRACT, operation_model: { ...WEB_OPERATION_CONTRACT.operation_model, exploration_limits: { ...WEB_OPERATION_CONTRACT.operation_model.exploration_limits, unexpected_limit: 1 } } }), /web_operation_contract_operation_model_invalid/);

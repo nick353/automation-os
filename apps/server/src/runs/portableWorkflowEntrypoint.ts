@@ -22,6 +22,10 @@ import {
   type PortableTrigger,
   type PortableWorkflowId
 } from "./portableWorkflowContract.js";
+import {
+  createRegisteredRootAdmissionV1,
+  type RegisteredRootAdmissionV1
+} from "./registeredRootAdmission.js";
 import { portableExternalRunnerConfigured } from "./portableExternalRunnerConfig.js";
 import { validatePortableBusinessInputBundle } from "./portableExternalBusinessPlan.js";
 import { validateWebOperationIntent } from "./webOperationContract.js";
@@ -30,6 +34,8 @@ export type PortableWorkflowStartInput = {
   workflowId: PortableWorkflowId;
   sourceTrigger: PortableTrigger;
   idempotencyKey: string;
+  /** The company-scoped registered automation that owns this run. */
+  registeredAutomationId?: string;
   dueKey?: string;
   /** A workflow-owned, strictly read-only stage admission. */
   readOnlyStage?: "candidate_supply" | "reference_readback" | null;
@@ -91,6 +97,7 @@ export type PortableWorkflowStartResult = {
   idempotencyKey: string;
   executionMode: typeof PORTABLE_WORKER_CANARY_MODE | typeof PORTABLE_WORKER_EXTERNAL_MODE;
   status?: string;
+  registeredRoot?: RegisteredRootAdmissionV1;
 };
 
 const portableTriggers = new Set<PortableTrigger>(["automation_os_scheduler", "automation_os_ui", "codex_app_bridge", "launchd", "github_actions"]);
@@ -148,7 +155,9 @@ function normalizedReadOnlyStage(input: PortableWorkflowStartInput): "candidate_
   if (input.workflowId === "job-application-manager" && stage === "candidate_supply") {
     return stage;
   }
-  if ((input.workflowId === "daily-ai-research-publish-run" || input.workflowId === "nisenprints-daily-product-canva-printify-etsy-pinterest") && stage === "reference_readback") {
+  if ((input.workflowId === "daily-ai-research-publish-run"
+    || input.workflowId === "nisenprints-daily-product-canva-printify-etsy-pinterest"
+    || input.workflowId === "job-application-manager") && stage === "reference_readback") {
     return stage;
   }
   throw new Error("portable_read_only_stage_unsupported");
@@ -292,6 +301,15 @@ function portableCompanyScope(companyId: string | null): string {
   return companyId ?? PORTABLE_GLOBAL_COMPANY_SCOPE;
 }
 
+function browserGoalIdFor(input: PortableWorkflowStartInput): string {
+  return `aos-goal-${createHash("sha256").update(`${input.workflowId}:${input.sourceTrigger}:${input.idempotencyKey}`).digest("hex").slice(0, 32)}`;
+}
+
+function browserGoalStatePathFor(runId: string): string {
+  const artifactRoot = resolve(process.env.AUTOMATION_OS_ARTIFACT_ROOT?.trim() || resolve(process.cwd(), "data", "artifacts"));
+  return resolve(artifactRoot, runId, "browser-use-goal-kernel.v1.json");
+}
+
 function portableInvocationRequestHash(input: PortableWorkflowStartInput): string {
   const payload = {
     workflow_id: input.workflowId,
@@ -370,7 +388,13 @@ function portableWorkerExecutionMode(): typeof PORTABLE_WORKER_CANARY_MODE | typ
     : PORTABLE_WORKER_EXTERNAL_MODE;
 }
 
-function resultFromRun(input: PortableWorkflowStartInput, idempotencyKey: string, run: { id: string; status: string }, replayed: boolean): PortableWorkflowStartResult {
+function resultFromRun(
+  input: PortableWorkflowStartInput,
+  idempotencyKey: string,
+  run: { id: string; status: string },
+  replayed: boolean,
+  registeredRoot?: RegisteredRootAdmissionV1
+): PortableWorkflowStartResult {
   return {
     runId: run.id,
     replayed,
@@ -378,7 +402,8 @@ function resultFromRun(input: PortableWorkflowStartInput, idempotencyKey: string
     sourceTrigger: input.sourceTrigger,
     idempotencyKey,
     executionMode: portableWorkerExecutionMode(),
-    status: run.status
+    status: run.status,
+    ...(registeredRoot ? { registeredRoot } : {})
   };
 }
 
@@ -581,6 +606,15 @@ export async function startPortableWorkflowRun(input: PortableWorkflowStartInput
   const reservation = await reservePortableInvocation(normalizedInput, requestHash);
   if (reservation.kind === "completed") return resultFromCompletedInvocation(normalizedInput, idempotencyKey, reservation.row);
   const preassignedRunId = makeId("run");
+  const registeredRoot = createRegisteredRootAdmissionV1({
+    registeredAutomationId: input.registeredAutomationId ?? workflow.id,
+    workflowId: input.workflowId,
+    runId: preassignedRunId,
+    sourceTrigger: input.sourceTrigger,
+    definitionFingerprint: hashRegisteredWorkflowDefinition(workflow)
+  });
+  const browserGoalId = browserGoalIdFor(normalizedInput);
+  const browserGoalStatePath = browserGoalStatePathFor(preassignedRunId);
   const persistedInputBundle = writePortableInputBundle(preassignedRunId, input.workflowId, inputBundle);
   let runCreated = false;
   try {
@@ -612,7 +646,10 @@ export async function startPortableWorkflowRun(input: PortableWorkflowStartInput
         schema: "automation_os_portable_workflow_invocation_v1",
         workflow_id: input.workflowId,
         source_trigger: input.sourceTrigger,
+        registered_automation_id: registeredRoot.registered_automation_id,
         idempotency_key: idempotencyKey,
+        browser_goal_id: browserGoalId,
+        browser_goal_state_path: browserGoalStatePath,
         ...(normalizedInput.readOnlyStage ? { read_only_stage: normalizedInput.readOnlyStage } : {}),
         ...(normalizedInput.effectStage ? { effect_stage: normalizedInput.effectStage } : {}),
         ...(webOperationIntent ? { web_operation_intent: webOperationIntent } : {}),
@@ -620,6 +657,7 @@ export async function startPortableWorkflowRun(input: PortableWorkflowStartInput
         app_dependency: false,
         external_action_executed: false
       },
+      registered_root_admission: registeredRoot,
       ...(persistedInputBundle
         ? {
             portable_input_bundle: {
@@ -638,6 +676,8 @@ export async function startPortableWorkflowRun(input: PortableWorkflowStartInput
         ...(normalizedInput.readOnlyStage ? { read_only_stage: normalizedInput.readOnlyStage } : {}),
         ...(normalizedInput.effectStage ? { effect_stage: normalizedInput.effectStage } : {}),
         ...(webOperationIntent ? { web_operation_intent: webOperationIntent } : {}),
+        browser_goal_id: browserGoalId,
+        browser_goal_state_path: browserGoalStatePath,
         external_adapter_configured: portableExternalRunnerConfigured(),
         external_action_executed: false
       },
@@ -675,7 +715,7 @@ export async function startPortableWorkflowRun(input: PortableWorkflowStartInput
     return resultFromRun(normalizedInput, idempotencyKey, {
       id: currentRun.id,
       status: currentRun.status
-    }, false);
+    }, false, registeredRoot);
   } catch (error) {
     if (!runCreated && persistedInputBundle) {
       try {

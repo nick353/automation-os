@@ -48,7 +48,9 @@ AUTOMATION_OS_PORTABLE_EXTERNAL_WORKDIR=/absolute/path/to/worker-workdir
 ```
 
 The repository includes the common Mac-side dispatcher at
-`/Users/nichikatanaka/Documents/Codex/automation-os/scripts/portable-external-runner.mjs`.
+`scripts/portable-external-runner.mjs`. Its workflow authorities,
+Browser Use CLI paths, project roots, and Codex home are resolved from the
+portable worker profile rather than from a specific user's home directory.
 It starts a non-App `codex exec` process with the workflow-specific authority
 packet and requires the canonical Browser Use CLI/MCP contract in its prompt.
 The default is read-only; configure the Mac worker as follows before starting
@@ -56,8 +58,8 @@ the stored-secret loop:
 
 ```sh
 export AUTOMATION_OS_PORTABLE_WORKER_MODE=external
-export AUTOMATION_OS_PORTABLE_EXTERNAL_RUNNER=/Users/nichikatanaka/Documents/Codex/automation-os/scripts/portable-external-runner.mjs
-export AUTOMATION_OS_PORTABLE_EXTERNAL_WORKDIR=/Users/nichikatanaka/Documents/Codex/automation-os
+export AUTOMATION_OS_PORTABLE_EXTERNAL_RUNNER="$PWD/scripts/portable-external-runner.mjs"
+export AUTOMATION_OS_PORTABLE_EXTERNAL_WORKDIR="$PWD"
 export AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS=read_only
 npm run worker:loop:stored
 ```
@@ -76,6 +78,53 @@ or a blocked receipt with `exact_blocker`. The runner is the place to call the
 canonical Browser Use CLI and the Codex Server/MCP plugin gateway; Codex App is
 not part of this process. If the runner is absent, the run stops with the exact
 blocker `portable_external_adapter_not_configured`.
+
+## Worker relocation and Codex account switching
+
+The AOS company, run IDs, registered-root admission, durable receipts, and
+effect authority are server-side. A worker machine is only a bounded adapter.
+The AOS worker credential is company-scoped and is not a Codex account token.
+Keep it in macOS Keychain under the configured `token_service`, or in a
+0600-or-stricter `token_file`; never put the token in the profile or commit it.
+
+Create a machine-local, non-secret profile once on each worker:
+
+```sh
+node scripts/portable-worker-profile.mjs init \
+  --output "$HOME/Library/Application Support/Automation OS/worker-profile.json" \
+  --repo-root "$PWD" \
+  --company-id '<aos-company-id>' \
+  --worker-id "mac-$(hostname -s)" \
+  --codex-home "$HOME/.codex" \
+  --codex-account-ref 'primary'
+zsh scripts/install-automation-os-worker-launch-agent.sh install
+```
+
+To switch the local Codex account, use a separate `CODEX_HOME`, authenticate
+that profile with the official Codex login flow, then update only the profile
+and restart the worker:
+
+```sh
+export CODEX_HOME="$HOME/.codex-secondary"
+codex login
+node scripts/portable-worker-profile.mjs init \
+  --output "$HOME/Library/Application Support/Automation OS/worker-profile.json" \
+  --repo-root "$PWD" \
+  --company-id '<same-aos-company-id>' \
+  --worker-id "mac-$(hostname -s)" \
+  --codex-home "$CODEX_HOME" \
+  --codex-account-ref 'secondary' \
+  --force
+zsh scripts/install-automation-os-worker-launch-agent.sh install
+```
+
+To move to another Mac, repeat the same bootstrap with that Mac's repository,
+Browser Use CLI helper/runtime, project roots, and Keychain/token-file setup.
+Run the canonical Browser Use CLI `runtime-readback` and one AOS no-effect
+canary before enabling any effectful workflow. Browser cookies, provider
+sessions, connector authorization, CAPTCHA/OTP, and Codex login are local
+capabilities and must be re-authenticated on the new machine/account; they are
+not silently migrated by AOS.
 
 The same run contract can be started by the Automation OS UI, its scheduler,
 launchd, GitHub Actions, or the legacy App bridge through the shared entrypoint:

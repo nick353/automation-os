@@ -708,6 +708,10 @@ test("AOS catalog adopts all six flows and routes browser schedules through the 
   assert.equal(trigger.json.external_action_executed, false);
   assert.equal(trigger.json.worker_protocol, "mac_worker_polling_required");
   assert.equal(trigger.json.run.company_id, "api_company_aos");
+  assert.equal(trigger.json.registered_root_admission.first_class_root, true);
+  assert.equal(trigger.json.registered_root_admission.owner, "automation_os_control_plane");
+  assert.equal(trigger.json.registered_root_admission.run_id, trigger.json.run.id);
+  assert.equal(trigger.json.registered_root_admission.external_action_executed, false);
 
   const replay = await requestJson(
     "POST",

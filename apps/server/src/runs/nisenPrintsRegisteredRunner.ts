@@ -253,7 +253,7 @@ export function evaluateNisenPrintsRegisteredSummary(
     return {
       status: "complete",
       proof_gate: { ok: true, missing: [], present: proofs.map((proof) => proof.proofType) },
-      proof_summary: "complete: NisenPrints Playwright runner completed with strict summary proofs",
+      proof_summary: "complete: NisenPrints Browser Use CLI runner completed with strict summary proofs",
       proofs,
       metadata: baseMetadata(summary, summaryPath, { full_flow_ok: true, gemini_video_qa: visualAudit.metadata, browser_use_artifact_gate: browserUseArtifactGate.metadata }),
       summaryPath
@@ -577,7 +577,7 @@ function enforceRunnerCompletionGate(
       ...evaluation,
       status: evaluation.proofs.length > 0 ? "partial" : "blocked",
       proof_gate: { ok: false, missing: [...missing], present: evaluation.proof_gate.present },
-      proof_summary: `${evaluation.proofs.length > 0 ? "partial" : "blocked"}: NisenPrints Playwright runner did not exit cleanly`,
+      proof_summary: `${evaluation.proofs.length > 0 ? "partial" : "blocked"}: NisenPrints Browser Use CLI runner did not exit cleanly`,
       metadata: {
         ...metadata,
         blocker: input.timedOut ? "nisenprints_runner_timeout" : "nisenprints_runner_exit_nonzero",

@@ -19,6 +19,7 @@ const upsertKeys = [
   "review_cycle",
   "distillation_quality",
   "knowledge_reuse_status",
+  "claim_verification_status",
   "skill_candidate",
   "skill_candidate_reason",
   "external_action_required",
@@ -35,7 +36,8 @@ const aliasCleanupKeys = new Set([
   "externalActionRequired",
   "approvalRequired",
   "sourceUrl",
-  "sourceOfTruth"
+  "sourceOfTruth",
+  "claimVerificationStatus"
 ]);
 
 export type SecondBrainProcessorOptions = {
@@ -332,6 +334,10 @@ function buildUpdates(input: { path: string; markdown: string; frontmatter: Reco
     }),
     distillation_quality: distillationQuality,
     knowledge_reuse_status: distillationQuality === "substantive" && destination !== "09_Inbox" ? "ready" : "review_needed",
+    claim_verification_status: firstPresentString(
+      input.frontmatter.claim_verification_status,
+      input.frontmatter.claimVerificationStatus
+    ) ?? "source_assertions_unverified",
     skill_candidate: skillCandidate,
     skill_candidate_reason: skillCandidate ? "repeatable judgment or procedure detected" : "none",
     external_action_required: false,

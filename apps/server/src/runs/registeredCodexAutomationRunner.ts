@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { evaluateGeminiVideoQaAudit } from "./geminiVideoQa.js";
 import { issueLedgerMetadata } from "./issueLedger.js";
 import { Proof } from "./proofGate.js";
-import { BROWSER_USE_HELPER_PATH, BROWSER_USE_RUNTIME_CONFIG_PATH } from "../serviceReadiness/browserUseCanonical.js";
+import { BROWSER_USE_HELPER_PATH, BROWSER_USE_RUNTIME_CONFIG_PATH, BROWSER_USE_STAGE_ADAPTER_PATH } from "../serviceReadiness/browserUseCanonical.js";
 import { resolveCodexBin } from "../codex/codexBin.js";
 
 export type RegisteredCodexAutomationStatus = "complete" | "blocked";
@@ -40,7 +40,7 @@ export type RegisteredCodexAutomationRunResult = {
 
 const defaultAutomationRoot = "/Users/nichikatanaka/.codex/automations";
 const defaultTimeoutMs = 90 * 60 * 1000;
-const browserUseAdapterEntryPoint = "/Users/nichikatanaka/.codex/skills/automation-kernel-run/scripts/browser-use-cli-stage-adapter.mjs";
+const browserUseAdapterEntryPoint = BROWSER_USE_STAGE_ADAPTER_PATH;
 const browserUseHelper = BROWSER_USE_HELPER_PATH;
 const browserUseRuntimeConfig = BROWSER_USE_RUNTIME_CONFIG_PATH;
 
@@ -87,6 +87,8 @@ export function runRegisteredCodexAutomation(input: { runId: string; workflowId:
 
   const artifactPath = artifactPathFor(input.runId, input.workflowId);
   const registeredSummaryPath = registeredSummaryPathFor({ artifactPath, workflowId: input.workflowId, workflowCwd: workflow.cwd, runId: input.runId });
+  const browserGoalId = `aos-goal-${input.runId}`;
+  const browserGoalStatePath = join(dirname(artifactPath), "browser-use-goal-kernel.v1.json");
   mkdirSync(dirname(artifactPath), { recursive: true });
   mkdirSync(dirname(registeredSummaryPath), { recursive: true });
   const timeoutMs = runnerTimeoutMs();
@@ -98,18 +100,20 @@ export function runRegisteredCodexAutomation(input: { runId: string; workflowId:
     `- registered_workflow_id=${input.workflowId}`,
     `- Browser/UI stages must use Browser Use CLI through the canonical shared adapter ${browserUseAdapterEntryPoint}. The runner owns the current-run stage binding; never pass a browser handle, cookie, token, credential, authority body, or stale receipt to a child worker.`,
     `- The only permitted Browser Use transport is ${browserUseHelper} with runtime ${browserUseRuntimeConfig} through that adapter. Do not start IAB, Chrome/Profile 2, Playwright CLI, direct CDP, raw Browser Use binaries, or another browser surface.`,
+    `- This run owns one Goal Browser Use lease: goal_id=${browserGoalId}; keep the same session/profile/port across stages, checkpoint each stage, and finalize only at Goal termination. Use ensure/reuse/resume; never open and close a fresh browser for each stage.`,
     "- Keep URL, DOM/body text or snapshot, screenshot, attempt JSON, exact blocker, and cleanup/no-residual-process proof as the browser artifact; never persist credentials, cookies, tokens, or authority contents.",
     "- Stop with exact blocker browser_use_cli_runtime_unavailable when the canonical Browser Use helper, adapter, current-run authority, or same-session readback is unavailable.",
     "- Current Automation OS policy authorizes non-billing external actions for this registered workflow: save, post, publish, send, submit, delete-in-scope, authenticated-session use, and application flow actions may proceed when the workflow has the needed context and an existing session/credential is available.",
     "- Default hard stops are billing, purchase, payment, and checkout only. Do not start paid checkout, purchase, paid subscription, paid usage upgrade, or payment-method changes.",
-    "- CAPTCHA, OTP/security-code, identity verification, auth callable-surface gaps, and uncertain PII are not default hard stops. Do not bypass or invent them; capture screenshot, URL, DOM/body text or snapshot, attempt JSON, exact blocker, and cleanup proof, then continue via a lawful human-input evidence path or the next safe candidate/stage.",
+    "- CAPTCHA, OTP/security-code, identity verification, secret/password input, and uncertain PII are mandatory human-input hard stops. Do not bypass, guess, or continue the external effect; checkpoint the Goal as blocked with the exact blocker and restart point.",
     "- For job_submit_registered, official public-form submit is authorized with --submit-authorized when payment/billing is not involved and visible completion proof plus source-of-truth sync/readback can be captured. Authenticated job-platform work may use the trusted existing browser/session lane when available; otherwise capture human-input evidence instead of treating it as a broad approval blocker.",
     "- Write durable artifacts and source-of-truth proof exactly as the automation prompt requires.",
     "- Before exiting, always write JSON to AUTOMATION_OS_REGISTERED_SUMMARY_PATH. This summary sidecar is mandatory even for blocked/no-action runs.",
     "- The registered summary JSON must include at minimum: status, workflow_id, run_id, completion_claimed, exact_blocker, source_of_truth_proofs, cleanup_proof.",
     "- Use completion_claimed=false and a precise exact_blocker when blocked, no-action, stopped before external work, or unable to prove completion.",
+    "- The registered summary must expose Goal status (recovering|waiting|blocked|completed), current_stage, last_readback, next_action, and restart_point; a child exit or cleanup event alone is never business completion.",
     "- Gemini video QA fields are auxiliary only. Matching visual audits may be included when already produced, but they must not replace workflow-owned completion proof.",
-    "- Do not bypass CAPTCHA, OTP/security-code, identity verification, assessments/tests, or missing completion proof; capture exact evidence and continue with the next safe candidate/stage when possible.",
+    "- Do not bypass CAPTCHA, OTP/security-code, identity verification, secret input, assessments/tests, or missing completion proof. Missing human input or ambiguous post-effect readback must remain blocked and must never replay.",
     "- If strict completion proof is unavailable and no safe next candidate/stage exists, finish as blocked with exact blocker and artifact paths instead of turning non-billing work into an approval stop."
   ].join("\n");
   const codexBin = resolveCodexBin();
@@ -127,7 +131,10 @@ export function runRegisteredCodexAutomation(input: { runId: string; workflowId:
       AUTOMATION_OS_BROWSER_ADAPTER: browserUseAdapterEntryPoint,
       AUTOMATION_OS_BROWSER_HELPER: browserUseHelper,
       AUTOMATION_OS_BROWSER_RUNTIME_CONFIG: browserUseRuntimeConfig,
-      AUTOMATION_OS_BROWSER_NO_FALLBACK: "1"
+      AUTOMATION_OS_BROWSER_NO_FALLBACK: "1",
+      AUTOMATION_OS_BROWSER_GOAL_ID: browserGoalId,
+      AUTOMATION_OS_BROWSER_GOAL_STATE_PATH: browserGoalStatePath,
+      AUTOMATION_OS_BROWSER_GOAL_TERMINAL: "1"
     }
   };
 
@@ -188,6 +195,8 @@ export function runRegisteredCodexAutomation(input: { runId: string; workflowId:
     browser_helper: browserUseHelper,
     browser_runtime_config: browserUseRuntimeConfig,
     browser_no_fallback: true,
+    browser_goal_id: browserGoalId,
+    browser_goal_state_path: browserGoalStatePath,
     registered_summary_present: Boolean(registeredSummary.summary),
     registered_summary_parse_error: registeredSummary.parseError,
     registered_summary_fallback_written: fallback.written,

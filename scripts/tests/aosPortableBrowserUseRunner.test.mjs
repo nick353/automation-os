@@ -21,6 +21,15 @@ test("read-only authority uses the canonical Browser Use approval token", () => 
   assert.doesNotMatch(source, /approval: "approved_read_only"/u);
 });
 
+test("read-only authority uses the Goal session binding instead of a separate preflight session", () => {
+  const source = readFileSync(fileURLToPath(new URL("../aos-portable-browser-use-runner.mjs", import.meta.url)), "utf8");
+  assert.match(source, /session: goalSessionFor\(input, route\)/u);
+  assert.equal(
+    source.includes("session: `aos-${sha256Bytes(`${input.run_id}:${route.stage_id}`).slice(0, 20)}-preflight`"),
+    false,
+  );
+});
+
 test("screenshotPath is declared and bound to the run-owned recording directory before use", () => {
   const source = readFileSync(fileURLToPath(new URL("../aos-portable-browser-use-runner.mjs", import.meta.url)), "utf8");
   const declaration = source.indexOf('let screenshotPath = "";');
@@ -121,7 +130,7 @@ test("candidate-supply read-only shortfall remains partial and cannot become bus
 test("reference readback completes only after readback and cleanup, without business proof", () => {
   const source = readFileSync(fileURLToPath(new URL("../aos-portable-browser-use-runner.mjs", import.meta.url)), "utf8");
   assert.match(source, /const referenceReadback = environment\.AUTOMATION_OS_PORTABLE_EXTERNAL_READ_ONLY_STAGE === REFERENCE_READBACK_STAGE/u);
-  assert.match(source, /finalized\?\.finalized !== true[\s\S]{0,220}referenceReadback[\s\S]{0,100}\? null/u);
+  assert.match(source, /finalizedResult\?\.finalized !== true[\s\S]{0,260}referenceReadback[\s\S]{0,120}\? null/u);
   assert.match(source, /status: exactBlocker === null \? "complete"/u);
   assert.match(source, /external_executor_status: referenceReadback \? "reference_readback_completed"/u);
   assert.match(source, /reference_readback: referenceReadback/u);
@@ -138,8 +147,10 @@ test("Job candidate supply is an AOS-owned Browser Use CLI read-only stage", () 
   assert.match(source, /read_only_stage_bound:\s*true/u);
   assert.match(source, /same_run_receipt:\s*ready/u);
   assert.match(source, /job_manager_browser_use_cli_candidate_supply_adapter\.mjs/u);
-  assert.match(source, /JOB_CANDIDATE_SUPPLY_PACKAGE_HELPER\s*=\s*["']\/Users\/nichikatanaka\/Documents\/New project\/browser-use-cli\/bin\/codex-browser-use["']/u);
-  assert.match(source, /process\.env\.BROWSER_USE_CLI_HELPER\s*=\s*JOB_CANDIDATE_SUPPLY_PACKAGE_HELPER/u);
+  assert.match(source, /portable_external_browser_use_cli_noncanonical_helper/u);
+  assert.match(source, /portableBrowserUsePaths\(environment\)/u);
+  assert.match(source, /const helper = paths\.helper/u);
+  assert.doesNotMatch(source, /JOB_CANDIDATE_SUPPLY_PACKAGE_HELPER/u);
   assert.match(source, /browserFlowFinalize: true/u);
   assert.match(source, /external_action_executed: false/u);
   assert.doesNotMatch(source, /runJobManagerBrowserUseCliSubmit/u);
@@ -162,9 +173,9 @@ test("read-only navigation allows the canonical helper to reconcile same-origin 
 test("read-only Browser Use runtime readback is returned to the AOS binding boundary", () => {
   const source = readFileSync(fileURLToPath(new URL("../aos-portable-browser-use-runner.mjs", import.meta.url)), "utf8");
   const runtimeReadback = source.indexOf("const browserRuntimeReadback = {");
-  const adapterResult = source.indexOf("adapter_result: { browser_runtime_readback: browserRuntimeReadback");
+  const adapterResult = source.indexOf("browser_runtime_readback: browserRuntimeReadback");
   const effectiveSession = source.indexOf("effective_session: String(flow.contract?.effective_session || flow.session || \"\")");
-  const cleanup = source.indexOf("cleanup_verified: finalized?.finalized === true");
+  const cleanup = source.indexOf("cleanup_verified: finalizedResult?.finalized === true");
   assert.ok(runtimeReadback >= 0, "read-only runner must construct runtime readback");
   assert.ok(effectiveSession > runtimeReadback, "effective session must come from the live flow contract");
   assert.ok(cleanup > runtimeReadback, "runtime readback must bind cleanup proof");

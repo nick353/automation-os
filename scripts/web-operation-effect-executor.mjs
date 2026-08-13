@@ -3,6 +3,12 @@ import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { validateWebOperationIntent } from "./portable-business-action-plan.mjs";
+import {
+  createBrowserUseGoalKernel,
+  ensureBrowserUseGoalFlow,
+  finalizeBrowserUseGoalFlow,
+} from "./browser-use-goal-kernel.mjs";
+import { portableBrowserUsePaths } from "./portable-worker-profile.mjs";
 
 const HASH = /^[a-f0-9]{64}$/u;
 const EFFECT_CLAIM_SCHEMA = "automation_os_web_operation_effect_claim.v1";
@@ -205,12 +211,55 @@ function readEffectAuthority(input, intent, environment = process.env) {
     || authority.no_auto_retry !== true
     || !HASH.test(String(authority.target_digest || ""))
     || !HASH.test(String(authority.input_bundle_sha256 || ""))
-    || (authority.payload_hash !== null && authority.payload_hash !== undefined && !HASH.test(String(authority.payload_hash || "")))
+    || !HASH.test(String(authority.payload_hash || ""))
     || Date.parse(String(authority.expires_at || "")) <= Date.now()) throw new Error("portable_external_effect_authority_binding_invalid");
   if (intent.authority_sha256 && intent.authority_sha256 !== expectedSha) throw new Error("portable_external_effect_authority_intent_digest_mismatch");
   if (authority.payload_hash !== intent.payload_hash) throw new Error("portable_external_effect_authority_payload_mismatch");
   if (authority.effect_stage !== "web_operation_effect") throw new Error("portable_external_effect_authority_stage_invalid");
   return { authority, path: configuredPath, sha256: expectedSha };
+}
+
+function materializeBrowserGoalAuthority(input, route, intent, effectAuthority, environment = process.env) {
+  const runRoot = safeRunRoot(input.run_id, environment);
+  const stageId = `aos-${route.automation_id}-${input.workflow_id}-goal`;
+  const session = `aos-${sha256(`${input.run_id}:${route.automation_id}:${input.workflow_id}:goal`).slice(0, 20)}-goal`;
+  const authorityPath = path.join(runRoot, "browser-use-goal-authority.v1.json");
+  const now = Date.now();
+  const body = {
+    schema: "authority.v1",
+    version: "1",
+    automation_id: route.automation_id,
+    stage_id: stageId,
+    mode: "authorized",
+    browser_surface: "browser_use_cli",
+    run_id: input.run_id,
+    session,
+    not_before: new Date(now - 1000).toISOString(),
+    expires_at: String(effectAuthority.authority.expires_at),
+    allowed_origins: [...route.allowed_origins],
+    account_identity: intent.account_ref,
+    data_exposure: "target_bound_external_effect",
+    side_effect_scope: "web_operation_effect",
+    approval: {
+      approved: true,
+      subject: effectAuthority.authority.authority_id,
+      source: "automation_os_portable_controller",
+      scope: "web_operation_effect",
+      approved_at: String(effectAuthority.authority.issued_at),
+    },
+    readback_required: true,
+    no_fallback: true,
+    helper_path: portableBrowserUsePaths(environment).helper,
+    runtime_config_path: portableBrowserUsePaths(environment).runtimeConfig,
+  };
+  const bytes = `${JSON.stringify(body, null, 2)}\n`;
+  if (fs.existsSync(authorityPath)) {
+    privateJsonStat(authorityPath, "portable_external_browser_goal_authority_invalid");
+    if (fs.readFileSync(authorityPath, "utf8") !== bytes) throw new Error("portable_external_browser_goal_authority_immutable_collision");
+  } else {
+    writePrivateJsonCreate(authorityPath, body);
+  }
+  return { path: authorityPath, sha256: sha256(bytes), stageId, session };
 }
 
 function targetResult(flow) {
@@ -346,8 +395,30 @@ export async function runAdaptiveWebOperationEffect(input, route, rawIntent, env
   const adapter = adapterOverride
     || (environment.CODEX_BROWSER_USE_TEST_SEAM === "1" && testAdapterPath && path.isAbsolute(testAdapterPath)
       ? await import(pathToFileURL(testAdapterPath).href)
-      : await import("/Users/nichikatanaka/.codex/skills/automation-kernel-run/scripts/browser-use-cli-stage-adapter.mjs"));
+      : await import(pathToFileURL(portableBrowserUsePaths(environment).stageAdapter).href));
   safeRunRoot(input.run_id, environment);
+  const browserAuthority = materializeBrowserGoalAuthority(input, route, intent, authority, environment);
+  const goalKernel = createBrowserUseGoalKernel({
+    input: { ...input, source_trigger: input.source_trigger || "codex_app_bridge" },
+    environment,
+    adapter,
+  });
+  const goalSpec = {
+    automationId: route.automation_id,
+    stageId: browserAuthority.stageId,
+    session: browserAuthority.session,
+    mode: "authorized",
+    lifecycle: "scheduled",
+    authorityPath: browserAuthority.path,
+    authoritySha256: browserAuthority.sha256,
+    allowedOrigins: [...route.allowed_origins],
+    port: route.port,
+    approval: "approved",
+    effectful: true,
+    currentStage: input.step_id,
+    externalActionExecuted: false,
+    effectUnknown: false,
+  };
   let flow = null;
   let finalized = null;
   let externalActionExecuted = false;
@@ -357,32 +428,13 @@ export async function runAdaptiveWebOperationEffect(input, route, rawIntent, env
   let resolvedTargetDigest = "";
   let resolvedSourceStateDigest = "";
   try {
-    flow = await adapter.startBrowserUseCliFlow({
-      automationId: route.automation_id,
-      runId: input.run_id,
-      stageId: route.stage_id,
-      session: `aos-${sha256(`${input.run_id}:${route.stage_id}`).slice(0, 20)}-effect`,
-      mode: "authorized",
-      lifecycle: "scheduled",
-      authorityPath: authority.path,
-      allowedOrigins: route.allowed_origins,
-      port: route.port,
-      contract: {
-        workflowId: input.workflow_id,
-        workflowVersion: "1",
-        attemptId: `effect-${sha256(input.idempotency_key).slice(0, 20)}`,
-        flowId: `effect-${sha256(`${input.run_id}:${input.step_id}`).slice(0, 24)}`,
-        leaseId: `effect-lease-${sha256(input.run_id).slice(0, 20)}`,
-        authoritySha256: authority.sha256,
-        notBefore: new Date(Date.now() - 1000).toISOString(),
-        expiresAt: new Date(Date.now() + Math.min(10 * 60_000, Number(authority.authority.timeout_ms || 10 * 60_000))).toISOString(),
-      },
-    });
+    const ensured = await ensureBrowserUseGoalFlow({ kernel: goalKernel, spec: goalSpec });
+    flow = ensured.flow;
 
     const nonce = nextActionNonce(input, flow, "open");
-    flow = await adapter.runBrowserUseCliFlowCommand({ flow, authorityPath: authority.path, command: ["open", intent.entry_url], actionSequence: nonce.sequence - 1, actionNonce: nonce.nonce, captureReadback: true });
+    flow = await adapter.runBrowserUseCliFlowCommand({ flow, authorityPath: browserAuthority.path, command: ["open", intent.entry_url], actionSequence: nonce.sequence - 1, actionNonce: nonce.nonce, captureReadback: true });
     const initialNonce = nextActionNonce(input, flow, "target");
-    flow = await adapter.runBrowserUseCliFlowTargetInspect({ flow, authorityPath: authority.path, targetText: intent.target.semantic_query, actionSequence: initialNonce.sequence - 1, actionNonce: initialNonce.nonce });
+    flow = await adapter.runBrowserUseCliFlowTargetInspect({ flow, authorityPath: browserAuthority.path, targetText: intent.target.semantic_query, actionSequence: initialNonce.sequence - 1, actionNonce: initialNonce.nonce });
     resolvedTargetDigest = targetDigest(flow);
     resolvedSourceStateDigest = sourceStateDigest(flow);
     if (!targetPresent(flow)) throw new Error("web_operation_target_not_found");
@@ -395,13 +447,13 @@ export async function runAdaptiveWebOperationEffect(input, route, rawIntent, env
         dispatchState = "executed";
         externalActionExecuted = true;
       }
-      flow = await adapter.runBrowserUseCliFlowCommand({ flow, authorityPath: authority.path, command, actionSequence: action.sequence - 1, actionNonce: action.nonce, captureReadback: false });
+      flow = await adapter.runBrowserUseCliFlowCommand({ flow, authorityPath: browserAuthority.path, command, actionSequence: action.sequence - 1, actionNonce: action.nonce, captureReadback: false });
     };
     const runTargetClick = async (targetText, label) => {
       const action = nextActionNonce(input, flow, label);
       dispatchState = "executed";
       externalActionExecuted = true;
-      flow = await adapter.runBrowserUseCliFlowTargetClick({ flow, authorityPath: authority.path, targetText, actionSequence: action.sequence - 1, actionNonce: action.nonce });
+      flow = await adapter.runBrowserUseCliFlowTargetClick({ flow, authorityPath: browserAuthority.path, targetText, actionSequence: action.sequence - 1, actionNonce: action.nonce });
     };
 
     for (const [index, step] of intent.action_plan.steps.entries()) {
@@ -419,7 +471,7 @@ export async function runAdaptiveWebOperationEffect(input, route, rawIntent, env
     const readbackAction = nextActionNonce(input, flow, "readback-target");
     flow = await adapter.runBrowserUseCliFlowTargetInspect({
       flow,
-      authorityPath: authority.path,
+      authorityPath: browserAuthority.path,
       targetText: intent.action_plan.readback.semantic_query,
       actionSequence: readbackAction.sequence - 1,
       actionNonce: readbackAction.nonce,
@@ -436,7 +488,7 @@ export async function runAdaptiveWebOperationEffect(input, route, rawIntent, env
     const stateAction = nextActionNonce(input, flow, "readback-state");
     flow = await adapter.runBrowserUseCliFlowReadOnlyBatch({
       flow,
-      authorityPath: authority.path,
+      authorityPath: browserAuthority.path,
       commands: [["get", "url"], ["get", "title"], ["state"]],
       actionSequence: stateAction.sequence - 1,
       actionNonces: [stateAction.nonce, `${stateAction.nonce}-2`, `${stateAction.nonce}-3`],
@@ -448,7 +500,19 @@ export async function runAdaptiveWebOperationEffect(input, route, rawIntent, env
     if (externalActionExecuted) dispatchState = "unknown";
   } finally {
     if (flow) {
-      try { finalized = await adapter.finalizeBrowserUseCliFlow({ flow, authorityPath: authority.path }); }
+      try {
+        const goalState = await finalizeBrowserUseGoalFlow({
+          kernel: goalKernel,
+          authorityPath: browserAuthority.path,
+          externalActionExecuted,
+          effectUnknown: dispatchState === "unknown",
+        });
+        finalized = {
+          ...goalState,
+          finalized: goalState?.finalized === true || goalState?.status === "completed",
+          cleanup_verified: goalState?.cleanup_verified === true || goalState?.status === "completed",
+        };
+      }
       catch (error) { if (!exactBlocker) exactBlocker = errorCode(error); }
     }
   }

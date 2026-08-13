@@ -254,6 +254,9 @@ export async function runPortableExternalWorker(input: {
   readOnlyStage?: "candidate_supply" | "reference_readback" | "web_operation_read" | null;
   effectAuthority?: PortableExternalEffectAuthorityV1 | null;
   webOperationIntent?: Record<string, unknown> | null;
+  browserGoalId?: string | null;
+  browserGoalStatePath?: string | null;
+  browserGoalTerminal?: boolean;
 }): Promise<PortableExternalWorkerResult> {
   if (!input.approvalGranted) {
     return {
@@ -421,6 +424,9 @@ export async function runPortableExternalWorker(input: {
         AUTOMATION_OS_PORTABLE_BUSINESS_ACTION_PLAN_PATH: actionPlan.path,
         AUTOMATION_OS_PORTABLE_BUSINESS_ACTION_PLAN_SHA256: actionPlan.sha256,
         AUTOMATION_OS_PORTABLE_EXTERNAL_APPROVAL: "approved",
+        ...(input.browserGoalId ? { AUTOMATION_OS_BROWSER_GOAL_ID: input.browserGoalId } : {}),
+        ...(input.browserGoalStatePath ? { AUTOMATION_OS_BROWSER_GOAL_STATE_PATH: input.browserGoalStatePath } : {}),
+        ...(input.browserGoalTerminal === false ? { AUTOMATION_OS_BROWSER_GOAL_TERMINAL: "0" } : { AUTOMATION_OS_BROWSER_GOAL_TERMINAL: "1" }),
         ...(effectAuthorityFile ? {
           AUTOMATION_OS_PORTABLE_EFFECT_AUTHORITY_REQUIRED: "1",
           AUTOMATION_OS_PORTABLE_EFFECT_AUTHORITY_PATH: effectAuthorityFile.path,

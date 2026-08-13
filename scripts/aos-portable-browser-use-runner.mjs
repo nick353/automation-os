@@ -5,16 +5,22 @@ import net from "node:net";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
+import { portableBrowserUsePaths } from "./portable-worker-profile.mjs";
 import { validateWebOperationIntent } from "./portable-business-action-plan.mjs";
 import { runAdaptiveWebOperationEffect } from "./web-operation-effect-executor.mjs";
+import {
+  checkpointBrowserUseGoal,
+  createBrowserUseGoalKernel,
+  ensureBrowserUseGoalFlow,
+  finalizeBrowserUseGoalFlow,
+  recoverBrowserUseGoalFlow,
+  readBrowserUseGoalState,
+} from "./browser-use-goal-kernel.mjs";
 
 const IDENTIFIER = /^[A-Za-z0-9][-_A-Za-z0-9.:]{0,179}$/u;
-const CANONICAL_STAGE_ADAPTER = "/Users/nichikatanaka/.codex/skills/automation-kernel-run/scripts/browser-use-cli-stage-adapter.mjs";
 const JOB_CANDIDATE_SUPPLY_STEP = "job_candidate_supply";
 const JOB_CANDIDATE_SUPPLY_STAGE = "candidate_supply";
 const REFERENCE_READBACK_STAGE = "reference_readback";
-const JOB_CANDIDATE_SUPPLY_ADAPTER = "/Users/nichikatanaka/Documents/New project/scripts/browser_use/job_manager_browser_use_cli_candidate_supply_adapter.mjs";
-const JOB_CANDIDATE_SUPPLY_PACKAGE_HELPER = "/Users/nichikatanaka/Documents/New project/browser-use-cli/bin/codex-browser-use";
 const PORTABLE_INPUT_BUNDLE_SCHEMA = "automation_os_portable_workflow_input_bundle.v1";
 const WEB_OPERATION_INTENT_SCHEMA = "automation_os_web_operation_intent.v1";
 const ADAPTIVE_WEB_READBACK_STAGE = "adaptive_web_readback";
@@ -23,6 +29,15 @@ const ADAPTIVE_PUBLIC_PORT_START = 19981;
 const ADAPTIVE_PUBLIC_PORT_END = 19999;
 const WEB_OPERATION_ROUTE_REGISTRY_SCHEMA = "automation_os_web_operation_route_registry.v1";
 const WEB_OPERATION_ROUTE_REGISTRY_ID = /^[A-Za-z0-9][-_A-Za-z0-9.:]{0,127}$/u;
+
+function browserUsePaths(environment = process.env) {
+  const configured = portableBrowserUsePaths(environment);
+  return {
+    stageAdapter: configured.stageAdapter,
+    helper: path.resolve(String(environment.BROWSER_USE_CLI_HELPER || environment.AUTOMATION_OS_BROWSER_USE_CLI_HELPER || configured.helper)),
+    candidateSupplyAdapter: path.resolve(String(environment.AUTOMATION_OS_PORTABLE_CANDIDATE_SUPPLY_ADAPTER || path.join(environment.AUTOMATION_OS_BROWSER_USE_PROJECT_ROOT || path.join(process.env.HOME || "", "Documents", "New project"), "scripts", "browser_use", "job_manager_browser_use_cli_candidate_supply_adapter.mjs"))),
+  };
+}
 
 // These are read-only provider adapters.  They deliberately do not accept a
 // business action, candidate id, or arbitrary URL from the child process.
@@ -191,7 +206,10 @@ function issueReadOnlyAuthority({ route, input, runRoot }) {
     mode: "authorized",
     browser_surface: "browser_use_cli",
     run_id: input.run_id,
-    session: `aos-${sha256Bytes(`${input.run_id}:${route.stage_id}`).slice(0, 20)}-preflight`,
+    // The authority and Goal kernel must carry the exact same session. A
+    // preflight-only suffix creates a fresh-session mismatch before Browser
+    // Use starts, defeating the Goal-level reuse contract.
+    session: goalSessionFor(input, route),
     not_before: new Date(now - 1000).toISOString(),
     expires_at: new Date(now + 20 * 60 * 1000).toISOString(),
     allowed_origins: [...route.allowed_origins],
@@ -327,20 +345,24 @@ function readCandidateSupplyInput(input, runRoot, environment = process.env) {
 }
 
 async function runJobCandidateSupply(input, environment = process.env) {
+  const paths = browserUsePaths(environment);
   const { runRoot } = safeRunRoot(input.run_id, environment);
   const bundle = readCandidateSupplyInput(input, runRoot, environment);
-  if (!fs.existsSync(JOB_CANDIDATE_SUPPLY_ADAPTER)) {
+  if (!fs.existsSync(paths.candidateSupplyAdapter)) {
     throw new Error("portable_external_candidate_supply_adapter_missing");
   }
-  // The New project adapter deliberately enforces helper/source parity. Keep
-  // this child on its own packaged helper so that its source boundary and
-  // executable cannot silently drift from one another. This is scoped to the
-  // candidate-supply child; the canonical AOS preflight lane keeps using the
-  // installed helper and its own lifecycle/readback contract.
-  if (!environment.BROWSER_USE_CLI_HELPER && fs.existsSync(JOB_CANDIDATE_SUPPLY_PACKAGE_HELPER)) {
-    process.env.BROWSER_USE_CLI_HELPER = JOB_CANDIDATE_SUPPLY_PACKAGE_HELPER;
+  // The candidate-supply adapter is allowed to provide provider semantics,
+  // but it must inherit the already-admitted canonical helper/runtime lane.
+  // The AOS owner-bound worker may intentionally bind the immutable package
+  // helper while the installed entrypoint is in a different live generation;
+  // that source helper is canonical too, not an arbitrary fallback.  Keep the
+  // allowlist explicit so an untrusted child environment cannot select a
+  // different executable.
+  const helper = paths.helper;
+  if (!fs.existsSync(helper) || !fs.statSync(helper).isFile()) {
+    throw new Error("portable_external_browser_use_cli_noncanonical_helper");
   }
-  const candidateSupplyModule = await import(pathToFileURL(JOB_CANDIDATE_SUPPLY_ADAPTER).href);
+  const candidateSupplyModule = await import(pathToFileURL(paths.candidateSupplyAdapter).href);
   if (typeof candidateSupplyModule.runJobManagerBrowserUseCliCandidateSupply !== "function") {
     throw new Error("portable_external_candidate_supply_adapter_invalid");
   }
@@ -548,14 +570,63 @@ function adaptiveRouteForIntent(baseRoute, intent, input, environment = process.
   };
 }
 
+function goalStageIdFor(input, route, environment = process.env) {
+  const configured = String(environment.AUTOMATION_OS_BROWSER_GOAL_STAGE_ID || "").trim();
+  return configured || `aos-${route.automation_id}-${input.workflow_id}-goal`;
+}
+
+function goalSessionFor(input, route) {
+  return `aos-${sha256Bytes(`${input.run_id}:${route.automation_id}:${input.workflow_id}:goal`).slice(0, 20)}-goal`;
+}
+
+function goalTerminal(environment = process.env) {
+  return !/^(?:0|false|no|off|hold|waiting)$/iu.test(String(environment.AUTOMATION_OS_BROWSER_GOAL_TERMINAL || "1"));
+}
+
+function goalKernelFor(input, environment = process.env) {
+  return createBrowserUseGoalKernel({
+    input: {
+      workflow_id: input.workflow_id,
+      run_id: input.run_id,
+      step_id: input.step_id,
+      source_trigger: input.source_trigger,
+      idempotency_key: input.idempotency_key,
+    },
+    environment,
+  });
+}
+
+function goalSpecFor(input, route, authority, environment = process.env) {
+  return {
+    automationId: route.automation_id,
+    stageId: route.stage_id,
+    session: goalSessionFor(input, route),
+    mode: route.mode || "authorized",
+    lifecycle: route.lifecycle || "scheduled",
+    authorityPath: authority?.path || "",
+    authoritySha256: authority?.sha256 || "",
+    allowedOrigins: [...route.allowed_origins],
+    port: route.port,
+    approval: "approved",
+    effectful: false,
+    currentStage: input.step_id,
+    externalActionExecuted: false,
+    effectUnknown: false,
+  };
+}
+
 async function runAdaptiveWebOperationReadback(input, baseRoute, intent, environment = process.env) {
-  const route = adaptiveRouteForIntent(baseRoute, intent, input, environment);
+  let route = adaptiveRouteForIntent(baseRoute, intent, input, environment);
+  route = { ...route, stage_id: goalStageIdFor(input, route, environment) };
   if (route.public_lane) route.port = await adaptivePublicPort(input);
   const { runRoot } = safeRunRoot(input.run_id, environment);
   const authority = route.public_lane ? null : issueReadOnlyAuthority({ route, input, runRoot });
+  const goalKernel = goalKernelFor(input, environment);
+  const goalSpec = goalSpecFor(input, route, authority, environment);
   let adaptiveScreenshotPath = "";
   let flow = null;
   let adapter = null;
+  let goalState = null;
   let primaryError = null;
   let finalized = null;
   let observedUrl = "";
@@ -567,31 +638,11 @@ async function runAdaptiveWebOperationReadback(input, baseRoute, intent, environ
   let targetSourceStateDigest = "";
 
   try {
-    if (!fs.existsSync(CANONICAL_STAGE_ADAPTER)) throw new Error("portable_external_browser_use_cli_stage_adapter_missing");
-    adapter = await import(pathToFileURL(CANONICAL_STAGE_ADAPTER).href);
-    const session = `aos-${sha256Bytes(`${input.run_id}:${route.stage_id}`).slice(0, 20)}-adaptive`;
-    const contractToken = sha256Bytes(`${input.run_id}:${input.step_id}:${route.stage_id}`).slice(0, 24);
-    flow = await adapter.startBrowserUseCliFlow({
-      automationId: route.automation_id,
-      runId: input.run_id,
-      stageId: route.stage_id,
-      session,
-      mode: route.mode,
-      lifecycle: route.lifecycle,
-      authorityPath: authority?.path || "",
-      allowedOrigins: route.allowed_origins,
-      port: route.port,
-      contract: {
-        workflowId: input.workflow_id,
-        workflowVersion: "1",
-        attemptId: `aos-${contractToken}-attempt-1`,
-        flowId: `aos-${contractToken}-flow`,
-        leaseId: `aos-${contractToken}-lease`,
-        ...(authority ? { authoritySha256: authority.sha256 } : {}),
-        notBefore: new Date(Date.now() - 1000).toISOString(),
-        expiresAt: new Date(Date.now() + 20 * 60 * 1000).toISOString(),
-      },
-    });
+    if (!fs.existsSync(browserUsePaths(environment).stageAdapter)) throw new Error("portable_external_browser_use_cli_stage_adapter_missing");
+    const ensured = await ensureBrowserUseGoalFlow({ kernel: goalKernel, spec: goalSpec });
+    adapter = ensured.adapter;
+    flow = ensured.flow;
+    goalState = ensured.state;
     adaptiveScreenshotPath = path.join(flow.recording_dir, "aos-adaptive-readback.png");
     const baseSequence = Number(flow.contract?.action_sequence || 0);
     const readbackBatch = await adapter.runBrowserUseCliFlowReadOnlyBatch({
@@ -634,19 +685,49 @@ async function runAdaptiveWebOperationReadback(input, baseRoute, intent, environ
     targetSourceStateDigest = safeTargetResult.before_state && typeof safeTargetResult.before_state === "object"
       ? String(safeTargetResult.before_state.state_sha256 || "")
       : "";
+    checkpointBrowserUseGoal({
+      kernel: goalKernel,
+      status: "running",
+      currentStage: input.step_id,
+      lastReadback: {
+        stage: input.step_id,
+        origin: exactOrigin(observedUrl),
+        observed_origin: exactOrigin(observedUrl),
+        title_length: textLength(title),
+        state_length: textLength(state),
+        target_digest: targetCandidate?.match_text_sha256 || sha256Bytes(intent.target.semantic_query),
+        source_state_digest: targetSourceStateDigest,
+      },
+      nextAction: goalTerminal(environment) ? "finalize_goal_flow_after_readback" : "reuse_goal_flow_for_next_stage",
+      exactBlocker: null,
+      restartPoint: "goal_flow_readback",
+    });
   } catch (error) {
     primaryError = error;
+    const recovery = await recoverBrowserUseGoalFlow({ kernel: goalKernel, spec: goalSpec, error });
+    goalState = recovery.state || readBrowserUseGoalState({ kernel: goalKernel });
   }
 
-  if (flow && adapter) {
+  const loginRequired = /\b(sign in|log in|checkpoint|verify)\b|ログイン|サインイン|本人確認/iu.test(`${observedUrl} ${JSON.stringify(state)}`);
+  if (flow && adapter && !primaryError && !loginRequired && goalTerminal(environment)) {
     try {
-      finalized = await adapter.finalizeBrowserUseCliFlow({ flow, authorityPath: authority?.path || "" });
+      goalState = await finalizeBrowserUseGoalFlow({ kernel: goalKernel, authorityPath: authority?.path || "" });
+      finalized = {
+        finalized: goalState?.status === "completed",
+        cleanup_verified: goalState?.status === "completed",
+        receipt_path: String(goalState?.receipt_path || ""),
+        manifest_path: String(goalState?.manifest_path || ""),
+      };
     } catch (error) {
       if (!primaryError) primaryError = error;
+      const recovery = await recoverBrowserUseGoalFlow({ kernel: goalKernel, spec: goalSpec, error });
+      goalState = recovery.state || readBrowserUseGoalState({ kernel: goalKernel });
     }
+  } else if (flow && adapter && !primaryError && !goalTerminal(environment)) {
+    finalized = { finalized: false, cleanup_verified: false };
+    goalState = readBrowserUseGoalState({ kernel: goalKernel });
   }
   const cleanupVerified = finalized?.finalized === true;
-  const loginRequired = /\b(sign in|log in|checkpoint|verify)\b|ログイン|サインイン|本人確認/iu.test(`${observedUrl} ${JSON.stringify(state)}`);
   const exactBlocker = loginRequired
     ? `auth_blocked:${input.workflow_id}_login_required`
     : primaryError
@@ -655,6 +736,8 @@ async function runAdaptiveWebOperationReadback(input, baseRoute, intent, environ
         ? "portable_external_browser_use_cli_readback_invalid"
         : !targetReadbackVerified
           ? "portable_external_web_operation_target_readback_invalid"
+          : !cleanupVerified && !goalTerminal(environment)
+            ? "browser_use_goal_waiting_for_next_stage"
           : !cleanupVerified
             ? "portable_external_browser_use_cli_cleanup_unverified"
             : null;
@@ -696,8 +779,20 @@ async function runAdaptiveWebOperationReadback(input, baseRoute, intent, environ
         effective_session: String(flow?.contract?.effective_session || flow?.session || ""),
         profile_root: String(flow?.profile || ""),
         reserved_port: Number(flow?.port || route.port || 0),
-        flow_status: cleanupVerified ? "finalized" : "blocked",
+        flow_status: cleanupVerified ? "finalized" : goalState?.status || "held",
         cleanup_verified: cleanupVerified,
+      },
+      goal_kernel: {
+        schema: "automation_os_browser_use_goal_kernel.v1",
+        goal_id: goalKernel.goalId,
+        status: goalState?.status || "blocked",
+        state_path: goalKernel.paths.statePath,
+        lease_path: goalKernel.paths.leasePath,
+        current_stage: goalState?.current_stage || input.step_id,
+        next_action: goalState?.next_action || "retry_goal_flow_from_durable_checkpoint",
+        exact_blocker: goalState?.exact_blocker || null,
+        restart_point: goalState?.restart_point || "goal_flow_ensure",
+        runtime: goalKernel.runtime,
       },
       target_readback: {
         verified: targetReadbackVerified,
@@ -726,37 +821,21 @@ export async function runReadOnlyWorkflow(input, environment = process.env) {
       || environment.AUTOMATION_OS_PORTABLE_EXTERNAL_READ_ONLY_STAGE === JOB_CANDIDATE_SUPPLY_STAGE)) {
     return runJobCandidateSupply(input, environment);
   }
+  const goalRoute = { ...route, stage_id: goalStageIdFor(input, route, environment) };
   const { runRoot } = safeRunRoot(input.run_id, environment);
-  const authority = issueReadOnlyAuthority({ route, input, runRoot });
+  const authority = issueReadOnlyAuthority({ route: goalRoute, input, runRoot });
+  const goalKernel = goalKernelFor(input, environment);
+  const goalSpec = goalSpecFor(input, { ...goalRoute, mode: "authorized", lifecycle: "scheduled" }, authority, environment);
   let screenshotPath = "";
   let flow = null;
   let adapter;
+  let goalState = null;
   try {
-    if (!fs.existsSync(CANONICAL_STAGE_ADAPTER)) throw new Error("portable_external_browser_use_cli_stage_adapter_missing");
-    adapter = await import(pathToFileURL(CANONICAL_STAGE_ADAPTER).href);
-    const session = `aos-${sha256Bytes(`${input.run_id}:${route.stage_id}`).slice(0, 20)}-preflight`;
-    const contractToken = sha256Bytes(`${input.run_id}:${input.step_id}:${route.stage_id}`).slice(0, 24);
-    flow = await adapter.startBrowserUseCliFlow({
-      automationId: route.automation_id,
-      runId: input.run_id,
-      stageId: route.stage_id,
-      session,
-      mode: "authorized",
-      lifecycle: "scheduled",
-      authorityPath: authority.path,
-      allowedOrigins: route.allowed_origins,
-      port: route.port,
-      contract: {
-        workflowId: input.workflow_id,
-        workflowVersion: "1",
-        attemptId: `aos-${contractToken}-attempt-1`,
-        flowId: `aos-${contractToken}-flow`,
-        leaseId: `aos-${contractToken}-lease`,
-        authoritySha256: authority.sha256,
-        notBefore: new Date(Date.now() - 1000).toISOString(),
-        expiresAt: new Date(Date.now() + 20 * 60 * 1000).toISOString(),
-      },
-    });
+    if (!fs.existsSync(browserUsePaths(environment).stageAdapter)) throw new Error("portable_external_browser_use_cli_stage_adapter_missing");
+    const ensured = await ensureBrowserUseGoalFlow({ kernel: goalKernel, spec: goalSpec });
+    adapter = ensured.adapter;
+    flow = ensured.flow;
+    goalState = ensured.state;
     screenshotPath = path.join(flow.recording_dir, "aos-readback.png");
     let actionSequence = 0;
     const batch = async (commands, captureReadback = true) => {
@@ -793,7 +872,40 @@ export async function runReadOnlyWorkflow(input, environment = process.env) {
     const state = batchValue(3);
     const loginRequired = /\b(sign in|log in|checkpoint|verify)\b|ログイン|サインイン|本人確認/iu.test(`${observedUrl} ${JSON.stringify(state)}`);
     const readbackVerified = exactOrigin(observedUrl) === exactOrigin(route.target_url) && textLength(state) > 0 && textLength(title) > 0;
-    const finalized = await adapter.finalizeBrowserUseCliFlow({ flow, authorityPath: authority.path });
+    checkpointBrowserUseGoal({
+      kernel: goalKernel,
+      status: loginRequired ? "blocked" : "running",
+      currentStage: input.step_id,
+      lastReadback: {
+        stage: input.step_id,
+        origin: exactOrigin(observedUrl),
+        observed_origin: exactOrigin(observedUrl),
+        title_length: textLength(title),
+        state_length: textLength(state),
+      },
+      nextAction: loginRequired
+        ? "await_human_authentication_without_entering_credentials"
+        : goalTerminal(environment) ? "finalize_goal_flow_after_readback" : "reuse_goal_flow_for_next_stage",
+      exactBlocker: loginRequired ? `auth_blocked:${input.workflow_id}_login_required` : null,
+      restartPoint: "goal_flow_readback",
+    });
+    const finalized = loginRequired || !goalTerminal(environment)
+      ? { finalized: false, cleanup_verified: false }
+      : (() => {
+        // Finalization is a Goal boundary operation. A stage that is held for
+        // a later step retains the same lease/profile/port and does not close
+        // the Browser Use session here.
+        return null;
+      })();
+    if (!finalized && !loginRequired && goalTerminal(environment)) {
+      goalState = await finalizeBrowserUseGoalFlow({ kernel: goalKernel, authorityPath: authority.path });
+    }
+    const finalizedResult = finalized || {
+      finalized: goalState?.status === "completed",
+      cleanup_verified: goalState?.status === "completed",
+      receipt_path: String(goalState?.receipt_path || ""),
+      manifest_path: String(goalState?.manifest_path || ""),
+    };
     // The AOS worker creates an initial runtime binding before this child is
     // launched.  Return the effective session and owned runtime identity from
     // the same finalized flow so the worker can atomically upgrade that
@@ -805,8 +917,8 @@ export async function runReadOnlyWorkflow(input, environment = process.env) {
       effective_session: String(flow.contract?.effective_session || flow.session || ""),
       profile_root: String(flow.profile || ""),
       reserved_port: Number(flow.port || route.port || 0),
-      flow_status: finalized?.finalized === true ? "finalized" : "blocked",
-      cleanup_verified: finalized?.finalized === true,
+      flow_status: finalizedResult?.finalized === true ? "finalized" : goalState?.status || "held",
+      cleanup_verified: finalizedResult?.finalized === true,
     };
     flow = null;
     const referenceReadback = environment.AUTOMATION_OS_PORTABLE_EXTERNAL_READ_ONLY_STAGE === REFERENCE_READBACK_STAGE;
@@ -814,8 +926,10 @@ export async function runReadOnlyWorkflow(input, environment = process.env) {
       ? `auth_blocked:${input.workflow_id}_login_required`
       : !readbackVerified
         ? "portable_external_browser_use_cli_readback_invalid"
-        : finalized?.finalized !== true
+      : finalizedResult?.finalized !== true && goalTerminal(environment)
           ? "portable_external_browser_use_cli_cleanup_unverified"
+          : !goalTerminal(environment)
+            ? "browser_use_goal_waiting_for_next_stage"
           : referenceReadback
             ? null
             : PORTABLE_EXTERNAL_READ_ONLY_BUSINESS_PROOF_PENDING;
@@ -838,21 +952,35 @@ export async function runReadOnlyWorkflow(input, environment = process.env) {
       state_length: textLength(state),
       title_length: textLength(title),
       screenshot_path: fs.existsSync(screenshotPath) ? screenshotPath : "",
-      receipt_path: String(finalized?.receipt_path || ""),
-      manifest_path: String(finalized?.manifest_path || ""),
-      cleanup_verified: finalized?.finalized === true,
+      receipt_path: String(finalizedResult?.receipt_path || ""),
+      manifest_path: String(finalizedResult?.manifest_path || ""),
+      cleanup_verified: finalizedResult?.finalized === true,
       readback_verified: readbackVerified,
       effects_mode: "read_only",
       read_only_stage_bound: [JOB_CANDIDATE_SUPPLY_STAGE, REFERENCE_READBACK_STAGE].includes(environment.AUTOMATION_OS_PORTABLE_EXTERNAL_READ_ONLY_STAGE),
       same_run_receipt: exactBlocker === null,
       external_executor_status: referenceReadback ? "reference_readback_completed" : "authorized_business_runner_pending",
       business_runner_entrypoint: PORTABLE_EXTERNAL_AUTHORIZED_BUSINESS_RUNNER,
-      adapter_result: { browser_runtime_readback: browserRuntimeReadback, reference_readback: referenceReadback },
+      adapter_result: {
+        browser_runtime_readback: browserRuntimeReadback,
+        reference_readback: referenceReadback,
+        goal_kernel: {
+          schema: "automation_os_browser_use_goal_kernel.v1",
+          goal_id: goalKernel.goalId,
+          status: goalState?.status || "blocked",
+          state_path: goalKernel.paths.statePath,
+          lease_path: goalKernel.paths.leasePath,
+          current_stage: goalState?.current_stage || input.step_id,
+          next_action: goalState?.next_action || "retry_goal_flow_from_durable_checkpoint",
+          exact_blocker: goalState?.exact_blocker || null,
+          restart_point: goalState?.restart_point || "goal_flow_ensure",
+          runtime: goalKernel.runtime,
+        },
+      },
     };
   } catch (error) {
-    if (flow) {
-      try { await adapter.finalizeBrowserUseCliFlow({ flow, authorityPath: authority.path }); } catch (_) { /* preserve primary blocker */ }
-    }
+    const recovery = await recoverBrowserUseGoalFlow({ kernel: goalKernel, spec: goalSpec, error });
+    goalState = recovery.state || readBrowserUseGoalState({ kernel: goalKernel });
     return {
       status: "blocked",
       exact_blocker: normalizedBlocker(error),
@@ -868,6 +996,20 @@ export async function runReadOnlyWorkflow(input, environment = process.env) {
       effects_mode: "read_only",
       external_executor_status: "authorized_business_runner_pending",
       business_runner_entrypoint: PORTABLE_EXTERNAL_AUTHORIZED_BUSINESS_RUNNER,
+      adapter_result: {
+        goal_kernel: {
+          schema: "automation_os_browser_use_goal_kernel.v1",
+          goal_id: goalKernel.goalId,
+          status: goalState?.status || "waiting",
+          state_path: goalKernel.paths.statePath,
+          lease_path: goalKernel.paths.leasePath,
+          current_stage: goalState?.current_stage || input.step_id,
+          next_action: goalState?.next_action || "retry_goal_flow_from_durable_checkpoint",
+          exact_blocker: goalState?.exact_blocker || normalizedBlocker(error),
+          restart_point: goalState?.restart_point || "goal_flow_resume",
+          runtime: goalKernel.runtime,
+        },
+      },
     };
   }
 }

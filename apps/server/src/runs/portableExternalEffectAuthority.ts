@@ -22,7 +22,7 @@ export type PortableExternalEffectAuthorityV1 = {
   idempotency_key: string;
   target_digest: string;
   input_bundle_sha256: string;
-  payload_hash: string | null;
+  payload_hash: string;
   issued_at: string;
   expires_at: string;
   timeout_ms: number;
@@ -45,7 +45,7 @@ export type IssuePortableExternalEffectAuthorityInputV1 = {
   idempotencyKey: string;
   targetDigest: string;
   inputBundleSha256: string;
-  payloadHash?: string | null;
+  payloadHash: string;
   leaseExpiresAt: string;
   nowMs?: number;
 };
@@ -89,7 +89,7 @@ export function issuePortableExternalEffectAuthorityV1(
   const idempotencyKey = requiredIdentifier(input.idempotencyKey, "idempotency_key");
   const targetDigest = requiredHash(input.targetDigest, "target_digest");
   const inputBundleSha256 = requiredHash(input.inputBundleSha256, "input_bundle_sha256");
-  const payloadHash = input.payloadHash == null ? null : requiredHash(input.payloadHash, "payload_hash");
+  const payloadHash = requiredHash(input.payloadHash, "payload_hash");
   const nowMs = input.nowMs ?? Date.now();
   if (!Number.isSafeInteger(nowMs) || nowMs <= 0) throw new Error("portable_effect_authority_clock_invalid");
   const issuedAt = new Date(nowMs).toISOString();
@@ -162,7 +162,7 @@ export function validatePortableExternalEffectAuthorityV1(
   for (const [field, raw] of [["target_digest", body.target_digest], ["input_bundle_sha256", body.input_bundle_sha256]] as const) {
     requiredHash(String(raw || ""), field);
   }
-  if (body.payload_hash !== null && body.payload_hash !== undefined) requiredHash(String(body.payload_hash), "payload_hash");
+  requiredHash(String(body.payload_hash || ""), "payload_hash");
   const issuedAt = parseTime(String(body.issued_at || ""), "issued_at");
   const expiresAt = parseTime(String(body.expires_at || ""), "expires_at");
   if (!Number.isSafeInteger(nowMs) || issuedAt > nowMs || expiresAt <= nowMs || expiresAt <= issuedAt) {

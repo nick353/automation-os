@@ -636,8 +636,11 @@ app.post("/api/v1/companies/:companyId/automations/:automationId/trigger", async
             workflowId: portableWorkflowId,
             sourceTrigger: "automation_os_ui",
             idempotencyKey,
+            registeredAutomationId: automation.id,
             companyId,
-            readOnlyStage: portableReadOnlyStageForScheduledWorkflow(portableWorkflowId),
+            readOnlyStage: portableReadOnlyStageForScheduledWorkflow(portableWorkflowId, {
+              hasInputBundle: req.body?.input_bundle !== undefined && req.body?.input_bundle !== null
+            }),
             ...(req.body?.input_bundle !== undefined ? { inputBundle: req.body.input_bundle } : {}),
             ...(req.body?.web_operation_intent !== undefined ? { webOperationIntent: req.body.web_operation_intent } : {})
           })
@@ -645,6 +648,7 @@ app.post("/api/v1/companies/:companyId/automations/:automationId/trigger", async
             workflowId: localWorkflowId!,
             sourceTrigger: "automation_os_ui",
             idempotencyKey,
+            registeredAutomationId: automation.id,
             companyId,
             readOnlyStage: portableLocalReadOnlyStageForScheduledWorkflow(localWorkflowId!)
           });
@@ -657,6 +661,7 @@ app.post("/api/v1/companies/:companyId/automations/:automationId/trigger", async
         portable: true,
         workflow_id: portableWorkflowId ?? localWorkflowId,
         run: { id: started.runId, status: started.status ?? "queued", company_id: companyId, automation_id: automation.id, automation_version_id: automation.currentVersionId },
+        registered_root_admission: started.registeredRoot ?? null,
         source_trigger: "aos_trigger_api",
         execution_authority: "automation_os_control_plane",
         worker_protocol: "mac_worker_polling_required",
