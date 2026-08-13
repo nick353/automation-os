@@ -1,0 +1,286 @@
+{
+  "schema": "automation_os_task_os_representative_canary.v1",
+  "run_id": "representative-canary-1786610618559",
+  "fresh": true,
+  "external_action_executed": false,
+  "tasks": [
+    {
+      "task_id": "representative-canary-1786610618559-job_application",
+      "task_kind": "job_application",
+      "task_class": "external_effect",
+      "plan": {
+        "nodes": [
+          "capability_check",
+          "observe",
+          "locate",
+          "account",
+          "payload",
+          "cleanup",
+          "scroll",
+          "preview",
+          "approval",
+          "action",
+          "provider_receipt",
+          "source_sync",
+          "reconciliation"
+        ],
+        "omitted": [
+          "gmail_stage",
+          "G0",
+          "G1",
+          "release_stage"
+        ],
+        "next_stage": "capability_check",
+        "restart_point": "fresh capability manifest and same-run observe"
+      },
+      "surface_route": {
+        "selected": "browser_use_cli",
+        "exact_blocker": null
+      },
+      "outcome_contract": "automation_os_outcome_contract.v1",
+      "proof": {
+        "mode": "shadow_no_effect",
+        "provider_receipt": "no_effect_fixture_receipt",
+        "source_sync": true,
+        "reconciliation": true,
+        "cleanup": true,
+        "external_action_executed": false,
+        "visible_confirmation": "required_for_effectful_promotion"
+      },
+      "exact_blocker": "effectful_canary_requires_fresh_target_authority_approval",
+      "restart_point": "effect admission preview"
+    },
+    {
+      "task_id": "representative-canary-1786610618559-email_draft",
+      "task_kind": "email_draft",
+      "task_class": "reversible_update",
+      "plan": {
+        "nodes": [
+          "capability_check",
+          "observe",
+          "locate",
+          "account",
+          "payload",
+          "cleanup",
+          "scroll",
+          "action",
+          "provider_receipt",
+          "source_sync",
+          "reconciliation"
+        ],
+        "omitted": [
+          "gmail_stage",
+          "G0",
+          "G1",
+          "release_stage"
+        ],
+        "next_stage": "capability_check",
+        "restart_point": "fresh capability manifest and same-run observe"
+      },
+      "surface_route": {
+        "selected": "connector",
+        "exact_blocker": null
+      },
+      "outcome_contract": "automation_os_outcome_contract.v1",
+      "proof": {
+        "mode": "fixture",
+        "provider_receipt": "fixture_receipt",
+        "source_sync": true,
+        "reconciliation": true,
+        "cleanup": true,
+        "external_action_executed": false,
+        "visible_confirmation": "not_required"
+      },
+      "exact_blocker": null,
+      "restart_point": "same-run source sync"
+    },
+    {
+      "task_id": "representative-canary-1786610618559-sns_post",
+      "task_kind": "sns_post",
+      "task_class": "external_effect",
+      "plan": {
+        "nodes": [
+          "capability_check",
+          "observe",
+          "locate",
+          "account",
+          "payload",
+          "cleanup",
+          "scroll",
+          "preview",
+          "approval",
+          "action",
+          "provider_receipt",
+          "source_sync",
+          "reconciliation"
+        ],
+        "omitted": [
+          "gmail_stage",
+          "G0",
+          "G1",
+          "release_stage"
+        ],
+        "next_stage": "capability_check",
+        "restart_point": "fresh capability manifest and same-run observe"
+      },
+      "surface_route": {
+        "selected": "browser_use_cli",
+        "exact_blocker": null
+      },
+      "outcome_contract": "automation_os_outcome_contract.v1",
+      "proof": {
+        "mode": "shadow_no_effect",
+        "provider_receipt": "no_effect_fixture_receipt",
+        "source_sync": true,
+        "reconciliation": true,
+        "cleanup": true,
+        "external_action_executed": false,
+        "visible_confirmation": "required_for_effectful_promotion"
+      },
+      "exact_blocker": "effectful_canary_requires_fresh_target_authority_approval",
+      "restart_point": "effect admission preview"
+    },
+    {
+      "task_id": "representative-canary-1786610618559-admin_update",
+      "task_kind": "admin_update",
+      "task_class": "reversible_update",
+      "plan": {
+        "nodes": [
+          "capability_check",
+          "observe",
+          "locate",
+          "account",
+          "payload",
+          "cleanup",
+          "scroll",
+          "action",
+          "provider_receipt",
+          "source_sync",
+          "reconciliation"
+        ],
+        "omitted": [
+          "gmail_stage",
+          "G0",
+          "G1",
+          "release_stage"
+        ],
+        "next_stage": "capability_check",
+        "restart_point": "fresh capability manifest and same-run observe"
+      },
+      "surface_route": {
+        "selected": "api",
+        "exact_blocker": null
+      },
+      "outcome_contract": "automation_os_outcome_contract.v1",
+      "proof": {
+        "mode": "fixture",
+        "provider_receipt": "fixture_receipt",
+        "source_sync": true,
+        "reconciliation": true,
+        "cleanup": true,
+        "external_action_executed": false,
+        "visible_confirmation": "not_required"
+      },
+      "exact_blocker": null,
+      "restart_point": "same-run source sync"
+    },
+    {
+      "task_id": "representative-canary-1786610618559-data_sync",
+      "task_kind": "data_sync",
+      "task_class": "reversible_update",
+      "plan": {
+        "nodes": [
+          "capability_check",
+          "observe",
+          "locate",
+          "account",
+          "payload",
+          "cleanup",
+          "scroll",
+          "action",
+          "provider_receipt",
+          "source_sync",
+          "reconciliation"
+        ],
+        "omitted": [
+          "gmail_stage",
+          "G0",
+          "G1",
+          "release_stage"
+        ],
+        "next_stage": "capability_check",
+        "restart_point": "fresh capability manifest and same-run observe"
+      },
+      "surface_route": {
+        "selected": "api",
+        "exact_blocker": null
+      },
+      "outcome_contract": "automation_os_outcome_contract.v1",
+      "proof": {
+        "mode": "fixture",
+        "provider_receipt": "fixture_receipt",
+        "source_sync": true,
+        "reconciliation": true,
+        "cleanup": true,
+        "external_action_executed": false,
+        "visible_confirmation": "not_required"
+      },
+      "exact_blocker": null,
+      "restart_point": "same-run source sync"
+    },
+    {
+      "task_id": "representative-canary-1786610618559-read_only",
+      "task_kind": "read_only",
+      "task_class": "read_only",
+      "plan": {
+        "nodes": [
+          "capability_check",
+          "observe",
+          "locate",
+          "account",
+          "payload",
+          "cleanup",
+          "action",
+          "provider_receipt",
+          "source_sync",
+          "reconciliation"
+        ],
+        "omitted": [
+          "gmail_stage",
+          "G0",
+          "G1",
+          "approval_stage",
+          "effect_preview",
+          "release_stage"
+        ],
+        "next_stage": "capability_check",
+        "restart_point": "fresh capability manifest and same-run observe"
+      },
+      "surface_route": {
+        "selected": "api",
+        "exact_blocker": null
+      },
+      "outcome_contract": "automation_os_outcome_contract.v1",
+      "proof": {
+        "mode": "fixture",
+        "provider_receipt": "fixture_receipt",
+        "source_sync": true,
+        "reconciliation": true,
+        "cleanup": true,
+        "external_action_executed": false,
+        "visible_confirmation": "not_required"
+      },
+      "exact_blocker": null,
+      "restart_point": "same-run source sync"
+    }
+  ],
+  "invariant": {
+    "wrong_target_count": 0,
+    "ambiguous_submit_replays": 0,
+    "cleanup_residual_count": 0
+  },
+  "source_of_truth": "contract_fixture_not_production",
+  "exact_blocker": "production_protected_readback_and_business_target_missing",
+  "next_action": "complete protected production readback, then promote only the target-bound one-effect lane",
+  "restart_point": "target-bound admission"
+}

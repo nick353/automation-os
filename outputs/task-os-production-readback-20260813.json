@@ -1,0 +1,50 @@
+{
+  "schema": "automation_os_task_os_production_readback.v1",
+  "generated_at": "2026-08-13T08:41:30.000Z",
+  "production_url": "https://automation-os.zeabur.app",
+  "service": {
+    "service_id": "6a47122e24bec8372d3e1a31",
+    "health": { "status": 200, "ok": true },
+    "public_asset_parity": {
+      "status": "verified",
+      "js": {
+        "path": "/assets/index-BZ_od-j1.js",
+        "local_sha256": "db3566d11c757cd84c2fff37242f9dc2733f876229480bb7349331dc828978ea",
+        "public_sha256": "db3566d11c757cd84c2fff37242f9dc2733f876229480bb7349331dc828978ea"
+      },
+      "css": {
+        "path": "/assets/index-2faJdFEc.css",
+        "local_sha256": "337d78a65001ef4414aa09ea43f2fc1f00ff7fd4c8395cc5fbb5ed58c3611520",
+        "public_sha256": "337d78a65001ef4414aa09ea43f2fc1f00ff7fd4c8395cc5fbb5ed58c3611520"
+      }
+    }
+  },
+  "protected_readback": {
+    "status": "blocked",
+    "attempted": false,
+    "exact_blocker": "production_read_token_missing",
+    "routes_not_read": [
+      "/api/dashboard",
+      "/api/mvp/state",
+      "/api/registered-workflows",
+      "/api/mvp/registered-automations?project_id=project-a",
+      "/api/browser/health",
+      "/api/mvp/feedback"
+    ],
+    "secret_values_read": false
+  },
+  "business_readback": {
+    "status": "blocked",
+    "candidate_count": null,
+    "approval_count": null,
+    "exact_blocker": "production_protected_readback_and_business_target_missing"
+  },
+  "deployment_receipt": {
+    "status": "not_returned",
+    "exact_blocker": "zeabur_deploy_cli_no_deployment_receipt",
+    "public_asset_parity_is_not_a_deployment_receipt": true
+  },
+  "external_action_executed": false,
+  "next_action": "Secret StoreまたはKeychainへ専用read tokenを登録し、fresh protected readback後にtarget-bound admissionへ進む",
+  "restart_point": "production protected readback"
+}

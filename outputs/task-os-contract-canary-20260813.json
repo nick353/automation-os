@@ -1,12 +1,12 @@
 {
   "schema": "automation_os_task_os_contract_canary.v1",
-  "run_id": "fresh-canary-1786609513937",
+  "run_id": "fresh-canary-1786610618383",
   "fresh": true,
   "browser_kernel": "automation_os_browser_kernel.v1",
   "browser_surface": "browser_use_cli",
   "session_binding": {
-    "run_id": "fresh-canary-1786609513937",
-    "session_id": "fresh-canary-1786609513937-session"
+    "run_id": "fresh-canary-1786610618383",
+    "session_id": "fresh-canary-1786610618383-session"
   },
   "capability_manifest": {
     "upload": false,
@@ -98,7 +98,7 @@
   },
   "risk_budget": {
     "schema": "automation_os_risk_budget.v1",
-    "task_id": "fresh-canary-1786609513937",
+    "task_id": "fresh-canary-1786610618383",
     "max_effects": 1,
     "max_minutes": 1,
     "max_amount_cents": 0,

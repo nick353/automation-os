@@ -139,6 +139,7 @@ import {
   type RegisteredWorkflowRow
 } from "./registeredWorkflows.js";
 import { getResumeContract } from "./resumeContract.js";
+import { declareSourceOfTruth } from "./runs/sourceOfTruth.js";
 import { operationKey } from "./taskContracts/taskOsAdvanced.js";
 import { admitAndStartDurableTaskEffect, getDurableTaskEffect, reserveDurableTaskEffect, syncDurableTaskEffectFromWorker } from "./taskContracts/taskEffectLedger.js";
 import {
@@ -233,6 +234,19 @@ app.set("case sensitive routing", true);
 const port = Number(process.env.AUTOMATION_OS_PORT ?? process.env.PORT ?? 8787);
 const host = process.env.HOST ?? (!process.env.PORT ? process.env.AUTOMATION_OS_HOST : undefined) ?? (process.env.PORT ? "0.0.0.0" : "127.0.0.1");
 const webDistDir = resolvePath(process.env.AUTOMATION_OS_WEB_DIST_DIR ?? join(process.cwd(), "dist"));
+
+function targetAdmissionSourceReadback(companyId: string, runId: string) {
+  const source = declareSourceOfTruth({
+    kind: dbBackend === "postgres" ? "production_aos" : "local_aos",
+    companyId,
+    runId
+  });
+  return {
+    source_of_truth: source.kind === "production_aos" ? "production_aos_database" : "local_aos_database",
+    source_of_truth_backend: source.backend,
+    source_of_truth_exact_blocker: source.exact_blocker
+  };
+}
 const webIndexPath = join(webDistDir, "index.html");
 let youtubeTranscriptCaptureRunner = runYouTubeTranscriptCapture;
 let researchPlanDemoRunner = runBrowserUseLocalCheckAsync;
@@ -784,12 +798,13 @@ app.get("/api/v1/companies/:companyId/job-application-target-admissions", (req, 
     requireCompanyAccess(companyId, ["owner", "admin", "operator", "approver", "viewer"]);
     const admissions = listTargetAdmissions(companyId);
     const active = admissions.filter((item) => ["registered", "approval_pending", "approved", "running", "submitted", "reconciled"].includes(item.status));
+    const sourceReadback = targetAdmissionSourceReadback(companyId, "target-admission-list-readback");
     res.setHeader("cache-control", "private, no-store");
     res.json({
       ok: true,
       schema: "aos.job_application_target_admission_readback.v1",
       workflow_id: "job-application-manager",
-      source_of_truth: "production_aos_database",
+      ...sourceReadback,
       candidate_count: active.length,
       approval_count: admissions.filter((item) => Boolean(item.approval_id)).length,
       admissions,
@@ -809,11 +824,12 @@ app.post("/api/v1/companies/:companyId/job-application-target-admissions", (req,
     const idempotencyKey = requireIdempotencyKey(req.header("idempotency-key"));
     const parsed = parseTargetAdmissionInput(req.body, nowIso());
     const result = createTargetAdmission({ companyId, admission: parsed, idempotencyKey });
+    const sourceReadback = targetAdmissionSourceReadback(companyId, result.admission.id);
     res.status(result.replayed ? 200 : 201).json({
       ok: true,
       schema: "aos.job_application_target_admission.v1",
       replayed: result.replayed,
-      source_of_truth: "production_aos_database",
+      ...sourceReadback,
       candidate_count: 1,
       approval_count: 0,
       approval: {
@@ -846,7 +862,7 @@ app.post("/api/v1/companies/:companyId/job-application-target-admissions/:admiss
       const approval = admission.approval_id
         ? querySql<{ id: string; status: string; action_kind: string | null; policy_version: string | null; expires_at: string | null; decision_revision: number }>(`SELECT id, status, action_kind, policy_version, expires_at, decision_revision FROM approvals WHERE id=${sqlValue(admission.approval_id)} AND company_id=${sqlValue(companyId)} LIMIT 1`)[0] ?? null
         : null;
-      res.status(200).json({ ok: true, replayed: true, schema: "aos.job_application_target_trigger.v1", target_admission: admission, run: existingRun, approval, same_run_bound: true, external_action_executed: false, company_scope: { enforced: true, company_id: companyId } });
+      res.status(200).json({ ok: true, replayed: true, schema: "aos.job_application_target_trigger.v1", target_admission: admission, run: existingRun, approval, same_run_bound: true, ...targetAdmissionSourceReadback(companyId, admission.run_id), external_action_executed: false, company_scope: { enforced: true, company_id: companyId } });
       return;
     }
     if (Date.parse(admission.source_snapshot_expires_at) <= Date.now()) throw new TargetAdmissionError("target_admission_source_snapshot_expired");
@@ -901,12 +917,14 @@ app.post("/api/v1/companies/:companyId/job-application-target-admissions/:admiss
       idempotencyKey
     });
     const refreshedApproval = approval ? querySql<{ id: string; status: string; action_kind: string | null; policy_version: string | null; expires_at: string | null; decision_revision: number }>(`SELECT id, status, action_kind, policy_version, expires_at, decision_revision FROM approvals WHERE id=${sqlValue(approval.id)} LIMIT 1`)[0] ?? approval : null;
+    const sourceReadback = targetAdmissionSourceReadback(companyId, started.runId);
     res.status(202).json({
       ok: Boolean(approval),
       schema: "aos.job_application_target_trigger.v1",
       accepted: Boolean(approval),
       same_run_bound: Boolean(approval),
       target_admission: bound,
+      ...sourceReadback,
       run: { id: started.runId, status: started.status ?? "waiting_approval", company_id: companyId, automation_id: automation.id, workflow_id: "job-application-manager" },
       approval: refreshedApproval,
       effect_ledger: { operation_key: effectOperation, state: effectLedger.effect.state, replayed: effectLedger.replay, external_action_executed: effectLedger.effect.external_action_executed },
