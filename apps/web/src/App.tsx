@@ -1690,7 +1690,14 @@ function IconButton({ children, onClick, label, controlId, disabled = false }: {
 
 function App() {
   const route = useRoute();
-  const [receipt, setReceipt] = useState("Local Agent は待機中です。");
+  const [receipt, setReceiptValue] = useState("Local Agent は待機中です。");
+  const [receiptAt, setReceiptAt] = useState(() => Date.now());
+  const [receiptRoute, setReceiptRoute] = useState(() => location.hash || "#/");
+  const setReceipt = (value: string) => {
+    setReceiptValue(value);
+    setReceiptAt(Date.now());
+    setReceiptRoute(route);
+  };
   const [automationRows, setAutomationRows] = useState<AutomationRow[]>([]);
   const [createdTemplates, setCreatedTemplates] = useState<string[]>([]);
   const [mvpState, setMvpState] = useState<MvpState>({});
@@ -1816,7 +1823,7 @@ function App() {
     <div className="app">
       <Sidebar route={route} isOwner={hasOwnerAdminAccess(mvpState)} />
       <main className="main">
-        <TopHeader receipt={receipt} setReceipt={setReceipt} onSync={syncState} isOwner={hasOwnerAdminAccess(mvpState)} mvpState={mvpState} mvpLoadStatus={mvpLoadStatus} apiTokenScope={apiTokenScope} />
+      <TopHeader receipt={receipt} receiptAt={receiptAt} receiptRoute={receiptRoute} currentRoute={route} setReceipt={setReceipt} onSync={syncState} isOwner={hasOwnerAdminAccess(mvpState)} mvpState={mvpState} mvpLoadStatus={mvpLoadStatus} apiTokenScope={apiTokenScope} />
         {page}
       </main>
       <FeedbackWidget route={route} setReceipt={setReceipt} setMvpState={setMvpState} />
@@ -1871,10 +1878,12 @@ function Sidebar({ route, isOwner }: { route: string; isOwner: boolean }) {
   );
 }
 
-function TopHeader({ receipt, setReceipt, onSync, isOwner, mvpState, mvpLoadStatus, apiTokenScope }: { receipt: string; setReceipt: (value: string) => void; onSync: () => Promise<void>; isOwner: boolean; mvpState: MvpState; mvpLoadStatus: MvpLoadStatus; apiTokenScope: ApiTokenScope }) {
+function TopHeader({ receipt, receiptAt, receiptRoute, currentRoute, setReceipt, onSync, isOwner, mvpState, mvpLoadStatus, apiTokenScope }: { receipt: string; receiptAt: number; receiptRoute: string; currentRoute: string; setReceipt: (value: string) => void; onSync: () => Promise<void>; isOwner: boolean; mvpState: MvpState; mvpLoadStatus: MvpLoadStatus; apiTokenScope: ApiTokenScope }) {
   const [query, setQuery] = useState("");
   const companyCount = projectOptionsFromState(mvpState).length;
   const canStartAutomation = mvpLoadStatus === "ready" && companyCount > 0;
+  const receiptIsCurrent = routePath(receiptRoute) === routePath(currentRoute);
+  const receiptAge = relativeAgeLabel(new Date(receiptAt).toISOString());
   const actions = [
     { label: "ホーム", route: "#/", keywords: "home ホーム dashboard ダッシュボード" },
     { label: "チャット", route: "#/chat", keywords: "chat チャット 作成 自動化 llm" },
@@ -1927,7 +1936,10 @@ function TopHeader({ receipt, setReceipt, onSync, isOwner, mvpState, mvpLoadStat
           />
           <button data-control-id="shell.top-header.search-submit" type="submit">移動</button>
         </form>
-        <div className="top-receipt" role="status" title={receipt}>{receipt}</div>
+        <div className={`top-receipt ${receiptIsCurrent ? "current" : "stale"}`} role="status" title={receipt}>
+          <span>{receipt}</span>
+          <small>{receiptIsCurrent ? "この画面" : "前の画面"} / {receiptAge}</small>
+        </div>
         <div className="muted" data-control-id="shell.auth.scope" aria-label="管理セッションの権限範囲">
           {apiTokenScope === "read" ? "認証: 読み取り専用" : apiTokenScope === "write" ? "認証: 書き込み許可" : apiTokenScope === "unrestricted" ? "認証: ローカル保護なし" : "認証: 権限範囲未確認"}
         </div>
@@ -1972,10 +1984,19 @@ function PageTitle({ title, desc, children }: { title: string; desc?: string; ch
   );
 }
 
+function ReadbackState({ title, detail, tone = "neutral", nextAction, onAction }: { title: string; detail: string; tone?: PublicStateTone; nextAction?: string; onAction?: () => void }) {
+  return <div className={`readback-state ${tone}`} role="status">
+    <div className="readback-state-head"><strong>{title}</strong><PublicStateChip tone={tone} label={tone === "attention" ? "要確認" : tone === "info" ? "確認中" : tone === "success" ? "確認済み" : "未確認"} /></div>
+    <p>{detail}</p>
+    {nextAction && <div className="readback-state-next"><span>次の操作: {nextAction}</span>{onAction && <Button onClick={onAction}>確認する</Button>}</div>}
+  </div>;
+}
+
 function ProjectScopeNotice({ projectId, mvpState }: { projectId: string; mvpState: MvpState }) {
   return (
-    <div className="notice-row">
-      {projectLabelFromState(mvpState, projectId)} は認証済みmembershipから取得した会社範囲です。外部投稿・送信・削除・認証操作は別の明示gateを維持します。
+    <div className="project-scope-bar" role="status">
+      <div><strong>会社scope: {projectLabelFromState(mvpState, projectId)}</strong><span>membership readbackから取得</span></div>
+      <span>外部投稿・送信・削除・認証操作は別の明示gate</span>
     </div>
   );
 }
@@ -2344,7 +2365,7 @@ function TruthfulMemoryPage({ model }: { model: AppModel }) {
       <PageTitle title={companyName} desc="保存情報 / Project Memory" />
       <ProjectScopeNotice projectId={companyId} mvpState={model.mvpState} />
       <Panel title="保存済み情報" controlId="truthful.memory.info.panel">
-        {memory.length ? <DataTable controlId="truthful.memory.info.table" headers={["項目", "内容"]} rows={memory.map((item) => [item.title ?? item.key, item.body ?? "-"])} /> : <p className="muted">会社別永続化APIのreadbackに保存済み情報はありません。プレースホルダーやローカルだけの編集結果は表示しません。</p>}
+        {memory.length ? <DataTable controlId="truthful.memory.info.table" headers={["項目", "内容"]} rows={memory.map((item) => [item.title ?? item.key, item.body ?? "-"])} /> : <ReadbackState title="保存済み情報はありません" detail="会社別永続化APIのreadbackにデータがありません。ローカルだけの編集結果やプレースホルダーは表示していません。" nextAction="この会社の自動化やChatから、保存対象を明示して作成する" />}
       </Panel>
     </section>
   );
@@ -2405,7 +2426,7 @@ function TruthfulIntegrationsPage({ model }: { model: AppModel }) {
       <PageTitle title={companyName} desc={isSecurity ? "Security / 接続境界" : "会社別Integrations inventory"} />
       <ProjectScopeNotice projectId={companyId} mvpState={model.mvpState} />
       <Panel title={isSecurity ? "Security / 会社別接続境界" : "会社別接続inventory"} controlId={isSecurity ? "truthful.security.refs.panel" : "truthful.integrations.refs.panel"}>
-        {canManage && inventoryStatus === "loading" ? <p className="muted">接続inventoryを会社別APIから確認しています。</p> : canManage && inventoryStatus === "error" ? <p className="muted">接続inventoryを確認できませんでした。未確認状態を接続済みとして表示しません。</p> : canManage && accountRefs.length ? <DataTable controlId="truthful.integrations.refs.table" headers={["サービス", "アカウント参照", "OAuth", "Scope", "期限", "最終検証", "状態", "操作"]} rows={accountRefs.map((item) => [
+        {canManage && inventoryStatus === "loading" ? <ReadbackState title="接続inventoryを確認中" detail="会社別APIから最新の接続参照を読み込んでいます。" tone="info" /> : canManage && inventoryStatus === "error" ? <ReadbackState title="接続inventoryを確認できません" detail="未確認状態を接続済みとは表示していません。右上の同期で、最新の会社scopeを再取得してください。" tone="attention" /> : canManage && accountRefs.length ? <DataTable controlId="truthful.integrations.refs.table" headers={["サービス", "アカウント参照", "OAuth", "Scope", "期限", "最終検証", "状態", "操作"]} rows={accountRefs.map((item) => [
           item.platform,
           item.account_ref ?? item.accountRef,
           item.oauth_state ?? item.oauthState ?? "not_configured",
@@ -2417,7 +2438,7 @@ function TruthfulIntegrationsPage({ model }: { model: AppModel }) {
             <Button controlId={`integrations.reconnect.${item.id}`} onClick={() => { void mutateConnection(item, "reconnect"); }} disabled={busyId !== null}>再認証を要求</Button>
             {item.status !== "revoked" && <Button controlId={`integrations.revoke.${item.id}`} variant="danger" onClick={() => { void mutateConnection(item, "revoke"); }} disabled={busyId !== null}>接続参照を無効化</Button>}
           </div>
-        ])} /> : canManage ? <p className="muted">この会社に保存された接続参照はありません。未確認サービスや架空の接続状態は表示しません。</p> : <p className="muted">Integrations inventoryはOwner/Adminだけが閲覧できます。</p>}
+        ])} /> : canManage ? <ReadbackState title="接続はまだ設定されていません" detail="この会社に保存された接続参照はありません。未確認サービスや架空の接続状態は表示しません。" nextAction="必要なサービスを明示してから、再認証要求を保存する" /> : <ReadbackState title="接続inventoryは閲覧権限が必要です" detail="Owner/Adminの会社membershipが確認できるまで、接続状態を推測して表示しません。" tone="attention" />}
       </Panel>
       <Panel title={isSecurity ? "Security guard" : "適用中の境界"} controlId={isSecurity ? "truthful.security.boundary.panel" : "truthful.integrations.boundary.panel"}>
         <CheckList items={["password・access token・refresh tokenはinventory APIへ保存しない", "再接続は再認証要求の永続化まで。OAuth認証は人間gate", "無効化はローカル接続参照のみ。外部provider失効を実行済みとは表示しない", "会社membershipとRBACをserver側で検証"]} />
@@ -2733,7 +2754,10 @@ function TruthfulPerformancePage({ model }: { model: AppModel }) {
           <Button controlId="truthful.performance.refresh.button" onClick={() => setRefreshGeneration((value) => value + 1)}>再読込</Button>
         </div>
       </Panel>
-      {analyticsStatus === "loading" ? <Panel title="集計中" controlId="truthful.performance.loading.panel"><p className="muted">会社別の永続Jobと承認記録を集計しています。</p></Panel> : analyticsStatus === "error" ? <Panel title="集計できませんでした" controlId="truthful.performance.error.panel"><p className="muted">前回値を最新値として残していません。条件を確認して再読込してください。</p></Panel> : analytics?.data_state === "empty" || analytics?.metrics?.outcome?.availability !== "available" ? <Panel title="計測データなし" controlId="truthful.performance.empty.panel"><p className="muted">この期間に計測可能なdurable Jobがありません。KPIやグラフは表示しません。承認記録など別の証跡だけが存在する場合も、Job実績としては集計しません。</p></Panel> : <>
+      {analyticsStatus === "loading" ? <Panel title="集計中" controlId="truthful.performance.loading.panel"><ReadbackState title="パフォーマンスを集計中" detail="会社別の永続Jobと承認記録を読み込んでいます。長く続く場合はAPI readbackの状態を確認してください。" tone="info" />
+      </Panel> : analyticsStatus === "error" ? <Panel title="集計できませんでした" controlId="truthful.performance.error.panel"><ReadbackState title="最新の集計を取得できません" detail="前回値を最新値として残していません。条件を確認し、再読込してください。" tone="attention" nextAction="再読込ボタンで同じ条件を再確認する" />
+      </Panel> : analytics?.data_state === "empty" || analytics?.metrics?.outcome?.availability !== "available" ? <Panel title="計測データなし" controlId="truthful.performance.empty.panel"><ReadbackState title="この期間に計測可能なJobがありません" detail="KPIやグラフは表示していません。承認記録など別の証跡があっても、Job実績としては集計しません。" nextAction="期間またはAutomationを変更する" />
+      </Panel> : <>
         <div className="cards four">
           <MetricCard controlId="truthful.performance.metric.jobs" title="Job" value={String(outcome?.denominator ?? 0)} sub="durable_jobsのみ" status="enabled" />
           <MetricCard controlId="truthful.performance.metric.completion" title="完了率" value={formatRatio(outcome?.completion_rate)} sub={`${outcome?.numerator ?? 0}/${outcome?.denominator ?? 0}`} status={(outcome?.statuses?.failed ?? 0) > 0 ? "blocked" : "enabled"} />
@@ -2794,7 +2818,7 @@ function TruthfulArtifactsPage({ model }: { model: AppModel }) {
       <ProjectScopeNotice projectId={companyId} mvpState={model.mvpState} />
       <ProjectPresentationProfileSummary model={model} companyId={companyId} context="artifacts" />
       <Panel title="Proof一覧" controlId="truthful.artifacts.proofs.panel">
-        {proofs.length ? <DataTable controlId="truthful.artifacts.proofs.table" headers={["ID", "Run", "種類", "状態", "作成日時"]} rows={proofs.map((proof) => [proof.id, proof.run_id ?? "-", proof.proof_type ?? proof.kind ?? "-", proof.status ?? "stored", proof.created_at ?? "-"])} /> : <p className="muted">この会社に保存済みproofはありません。固定サンプル、架空KPI、未保存のダウンロードや承認操作は表示しません。</p>}
+        {proofs.length ? <DataTable controlId="truthful.artifacts.proofs.table" headers={["ID", "Run", "種類", "状態", "作成日時"]} rows={proofs.map((proof) => [proof.id, proof.run_id ?? "-", proof.proof_type ?? proof.kind ?? "-", proof.status ?? "stored", proof.created_at ?? "-"])} /> : <ReadbackState title="保存済みProofはありません" detail="この会社に現在確認できる証跡がありません。固定サンプルや架空KPIは表示していません。" nextAction="Runを実行した後、同一Runのreceiptとsource syncを確認する" />}
       </Panel>
     </section>
   );
@@ -3330,6 +3354,157 @@ function FeedbackWidget({ route, setReceipt, setMvpState }: { route: string; set
   );
 }
 
+type PublicStateTone = "success" | "info" | "attention" | "neutral";
+
+function PublicStateChip({ tone, label }: { tone: PublicStateTone; label: string }) {
+  return <span className={`state-chip ${tone}`}>{label}</span>;
+}
+
+function runDisplayState(run: any): { label: string; tone: PublicStateTone; detail: string } {
+  const status = String(run?.status ?? "").toLowerCase();
+  if (["completed", "complete", "success", "succeeded"].includes(status)) {
+    return { label: "完了", tone: "success", detail: "Runの完了状態をreadbackしました。業務完了proofは別途確認します。" };
+  }
+  if (["blocked", "failed"].includes(status)) {
+    return { label: "要確認", tone: "attention", detail: publicBlockerSummary(run?.exact_blocker ?? run?.last_error) };
+  }
+  if (["running", "leased"].includes(status)) {
+    return { label: "実行中", tone: "info", detail: "Workerと同一Runの進行を確認しています。" };
+  }
+  if (["queued", "pending", "waiting_approval", "approval_required"].includes(status)) {
+    return { label: status.includes("approval") ? "承認待ち" : "実行待ち", tone: "info", detail: status.includes("approval") ? "外部操作前に承認で停止しています。" : "QueueからWorkerの取得を待っています。" };
+  }
+  return { label: "未確認", tone: "neutral", detail: "最新のRun readbackが必要です。" };
+}
+
+function RunTimeline({ run, compact = false }: { run: any; compact?: boolean }) {
+  const state = runDisplayState(run);
+  const raw = String(run?.status ?? "").toLowerCase();
+  const currentIndex = ["completed", "complete", "success", "succeeded"].includes(raw)
+    ? 4
+    : ["running", "leased"].includes(raw)
+      ? 2
+      : ["queued", "pending", "waiting_approval", "approval_required"].includes(raw)
+        ? 1
+        : run?.proof_ids?.length
+          ? 3
+          : run?.started_at
+            ? 2
+            : 0;
+  const stages = ["仕様", "Queue", "Worker", "Proof", "業務完了"];
+  return (
+    <div className={`run-timeline ${compact ? "compact" : ""}`} data-control-id="run.timeline" aria-label={`Run進行: ${state.label}`}>
+      <div className="run-timeline-head"><strong>Run進行</strong><PublicStateChip tone={state.tone} label={state.label} /></div>
+      <div className="run-timeline-steps">
+        {stages.map((stage, index) => (
+          <div className={`run-timeline-step ${index < currentIndex ? "done" : index === currentIndex ? "current" : "pending"}`} key={stage}>
+            <span className="run-timeline-dot" />
+            <span>{stage}</span>
+          </div>
+        ))}
+      </div>
+      {!compact && <p className="muted">{state.detail}</p>}
+    </div>
+  );
+}
+
+function SetupProgress({ companyCount, automationCount, workerReady, proofReady }: { companyCount: number; automationCount: number; workerReady: boolean; proofReady: boolean }) {
+  const steps = [
+    { label: "会社", complete: companyCount > 0, detail: companyCount > 0 ? `${companyCount}社` : "登録が必要" },
+    { label: "自動化", complete: automationCount > 0, detail: automationCount > 0 ? `${automationCount}件` : "最初の1件を作成" },
+    { label: "Worker", complete: workerReady, detail: workerReady ? "readback確認済み" : "確認待ち" },
+    { label: "Proof", complete: proofReady, detail: proofReady ? "記録あり" : "Run後に確認" }
+  ];
+  return (
+    <div className="setup-progress" data-control-id="home.setup-progress" aria-label="AOSセットアップ進捗">
+      {steps.map((step, index) => <div className={`setup-step ${step.complete ? "complete" : "pending"}`} key={step.label}>
+        <span className="setup-step-number">{step.complete ? "✓" : index + 1}</span>
+        <div><strong>{step.label}</strong><small>{step.detail}</small></div>
+      </div>)}
+    </div>
+  );
+}
+
+function HomePriorityPanel({ model, waitingApprovals, blockedRuns, queuedRuns }: { model: AppModel; waitingApprovals: any[]; blockedRuns: any[]; queuedRuns: any[] }) {
+  const runtime = model.mvpState.browser_use_runtime;
+  const workerWaiting = runtime?.status === "readback_pending" || model.mvpState.worker?.heartbeat_fresh === false;
+  const workerBlocked = runtime?.status === "blocked" || Boolean(runtime?.exactBlocker);
+  const priority = waitingApprovals.length
+    ? { tone: "attention" as PublicStateTone, label: "承認待ち", title: `${waitingApprovals.length}件の外部操作が承認待ちです`, detail: "承認されるまで投稿・送信・応募などの外部操作は安全に停止しています。", action: "承認キューを確認", route: "#/approvals" }
+    : blockedRuns.length
+      ? { tone: "attention" as PublicStateTone, label: "要確認", title: `${blockedRuns.length}件のRunに確認が必要です`, detail: "同じ原因のRunをまとめて確認し、外部効果が不明なものは再実行しません。", action: "要確認のRunを見る", route: "#/runs" }
+      : queuedRuns.length
+        ? { tone: "info" as PublicStateTone, label: "実行待ち", title: `${queuedRuns.length}件がWorkerの取得を待っています`, detail: "Queue投入だけでは業務完了と扱いません。Worker claimと同一Run readbackが必要です。", action: "実行履歴を見る", route: "#/runs" }
+        : workerBlocked
+          ? { tone: "attention" as PublicStateTone, label: "Worker要確認", title: "Workerの実行経路に確認が必要です", detail: runtime?.exactBlocker ?? "Mac workerのexact blockerを確認してください。", action: "PC状態を見る", route: "#/system/pc-status" }
+          : workerWaiting
+            ? { tone: "info" as PublicStateTone, label: "Worker確認待ち", title: "Mac workerの同一Run readbackを待っています", detail: "現在はcontrol-planeの状態です。Workerのheartbeat、claim、receipt、source syncを別々に確認します。", action: "PC状態を見る", route: "#/system/pc-status" }
+            : { tone: "success" as PublicStateTone, label: "監視中", title: "AOSは安全な状態監視を継続しています", detail: "外部効果は明示承認と同一Runのreceiptが揃うまで実行・完了扱いにしません。", action: "自動化を確認", route: "#/projects" };
+  return (
+    <div className={`home-priority-panel ${priority.tone}`} data-control-id="home.priority.panel">
+      <div className="home-priority-copy">
+        <div className="home-priority-label"><span>いま最初に見ること</span><PublicStateChip tone={priority.tone} label={priority.label} /></div>
+        <h2>{priority.title}</h2>
+        <p>{priority.detail}</p>
+      </div>
+      <Button controlId="home.priority.action" variant={priority.tone === "attention" ? "primary" : "secondary"} onClick={() => go(priority.route)}>{priority.action}<ChevronRight size={15} /></Button>
+    </div>
+  );
+}
+
+function blockerGroupLabel(run: any) {
+  const exact = String(run?.exact_blocker ?? run?.last_error ?? "").toLowerCase();
+  if (exact.includes("worker") || exact.includes("heartbeat") || exact.includes("scope")) return "Mac Worker / scope";
+  if (exact.includes("auth") || exact.includes("login") || exact.includes("credential")) return "認証・接続";
+  if (exact.includes("browser") || exact.includes("chrome") || exact.includes("profile") || exact.includes("port")) return "Browser Use";
+  if (exact.includes("approval")) return "承認";
+  return "その他の確認";
+}
+
+function BlockerTriage({ runs }: { runs: any[] }) {
+  const groups = new Map<string, any[]>();
+  runs.forEach((run) => {
+    const key = blockerGroupLabel(run);
+    groups.set(key, [...(groups.get(key) ?? []), run]);
+  });
+  return (
+    <Panel title="要確認の原因" controlId="home.blocker-triage.panel">
+      {groups.size ? <div className="blocker-triage">
+        {[...groups.entries()].map(([label, items]) => <div className="blocker-triage-item" key={label}>
+          <div><strong>{label}</strong><span>{items.length}件</span></div>
+          <p>{publicBlockerSummary(items[0]?.exact_blocker ?? items[0]?.last_error)}</p>
+          <Button controlId={`home.blocker-triage.${label}`} onClick={() => go("#/runs")}>Run履歴で確認</Button>
+        </div>)}
+      </div> : <div className="empty-state success"><strong>現在、要確認のRunはありません</strong><span>外部効果のreceiptと業務完了proofは、Runごとに確認します。</span></div>}
+    </Panel>
+  );
+}
+
+function HomeBrowserDetails({ model, projectId }: { model: AppModel; projectId?: string }) {
+  return <details className="home-browser-details" data-control-id="home.browser-details">
+    <summary>Browser Use / Workerの詳細を開く</summary>
+    <WebOperationAdmissionPanel model={model} projectId={projectId} />
+  </details>;
+}
+
+function ControlPlaneRolesPanel() {
+  const roles = [
+    ["AOS Control Plane", "仕様・Queue・承認・状態を保持", "ここが正本。queuedだけでは完了扱いしません。", "info" as PublicStateTone],
+    ["Codex App", "登録・会話・triggerの入口", "登録されたことと実行されたことを分けます。", "neutral" as PublicStateTone],
+    ["Mac Worker", "同一Runのclaim・Browser実行", "heartbeat、scope、receiptをfresh readbackします。", "attention" as PublicStateTone],
+    ["Proof / Source", "外部効果・業務完了の証明", "provider receiptとsource syncが揃うまで未claimです。", "success" as PublicStateTone]
+  ];
+  return <Panel title="AOSの役割と完了条件" controlId="home.roles.panel">
+    <div className="role-map">
+      {roles.map(([title, summary, detail, tone]) => <div className="role-card" key={title}>
+        <div className="role-card-head"><strong>{title}</strong><PublicStateChip tone={tone} label={title === "Proof / Source" ? "証明" : "役割"} /></div>
+        <span>{summary}</span>
+        <small>{detail}</small>
+      </div>)}
+    </div>
+  </Panel>;
+}
+
 function HomePage({ model }: { model: AppModel }) {
   const { setReceipt, automationRows, mvpState, feedbackReadback } = model;
   if (model.mvpLoadStatus !== "ready") {
@@ -3351,6 +3526,9 @@ function HomePage({ model }: { model: AppModel }) {
   const triagedFeedbackCount = feedbackRows.filter((item) => item.status === "triaged").length;
   const queuedJobs = (mvpState.jobs ?? []).filter((job) => job.status === "queued");
   const activeJobs = (mvpState.jobs ?? []).filter((job) => job.status === "leased");
+  const workerReady = mvpState.browser_use_runtime?.status === "verified" || mvpState.worker?.heartbeat_fresh === true;
+  const proofReady = (mvpState.runs ?? []).some((run) => Array.isArray(run.proof_ids) && run.proof_ids.length > 0);
+  const latestRun = [...(mvpState.runs ?? [])].sort((a, b) => (Date.parse(String(b.updated_at ?? b.created_at ?? b.queued_at ?? "")) || 0) - (Date.parse(String(a.updated_at ?? a.created_at ?? a.queued_at ?? "")) || 0))[0] ?? null;
   const openFirstAutomation = () => openAutomationCreator(mvpState, setReceipt);
   const openTemplates = () => {
     const projectId = resolveProjectSelection(mvpState);
@@ -3370,7 +3548,7 @@ function HomePage({ model }: { model: AppModel }) {
             <Button controlId="home.first-use.open-projects" variant="primary" onClick={() => go("#/projects")}>会社名を登録する</Button>
           </div>
         </Panel>
-        <WebOperationAdmissionPanel model={model} />
+        <HomeBrowserDetails model={model} />
       </section>
     );
   }
@@ -3394,7 +3572,7 @@ function HomePage({ model }: { model: AppModel }) {
             </div>
           </div>
         </Panel>
-        <WebOperationAdmissionPanel model={model} projectId={companyOptions[0].id} />
+        <HomeBrowserDetails model={model} projectId={companyOptions[0].id} />
       </section>
     );
   }
@@ -3410,7 +3588,7 @@ function HomePage({ model }: { model: AppModel }) {
             </div>
           </div>
         </Panel>
-        <WebOperationAdmissionPanel model={model} />
+        <HomeBrowserDetails model={model} />
       </section>
     );
   }
@@ -3475,21 +3653,31 @@ function HomePage({ model }: { model: AppModel }) {
       <PageTitle title="ホーム" desc="すべての会社と自動化の状態を確認できます。">
         <Button controlId="home.next.open" variant="primary" icon={nextAction.icon} onClick={() => go(nextAction.route)}>{nextAction.label}</Button>
       </PageTitle>
-      <WebOperationAdmissionPanel model={model} />
+      <HomePriorityPanel model={model} waitingApprovals={waitingApprovals} blockedRuns={blockedRuns} queuedRuns={queuedRuns} />
+      <SetupProgress companyCount={companyOptions.length} automationCount={automationRows.length} workerReady={workerReady} proofReady={proofReady} />
+      <ControlPlaneRolesPanel />
       <div className="cards four">
         {projectCards.map((card) => <MetricCard controlId={`home.metric.${card.title === "会社" ? "company" : card.title === "承認" ? "approvals" : card.title === "実行履歴" ? "runs" : "jobs"}`} key={card.title} title={card.title} value={card.value} sub={card.sub} status={card.status as Status} />)}
       </div>
       <div className="section-grid">
-        <Panel title="ライブ実行" className="span-2" controlId="home.live-execution.panel">
-          <DataTable controlId="home.live-execution.table" headers={["Lane", "プロジェクト", "タスク", "状態", "操作"]} rows={liveRows} />
+        <Panel title="最新Runの進行" controlId="home.latest-run.panel">
+          {latestRun ? <>
+            <div className="latest-run-meta"><strong>{latestRun.automation_name ?? latestRun.automation_id ?? latestRun.id}</strong><span>{latestRun.id}</span></div>
+            <RunTimeline run={latestRun} />
+          </> : <div className="empty-state"><strong>まだRunはありません</strong><span>自動化を作ると、Queue・Worker・Proofの進行をここで確認できます。</span></div>}
         </Panel>
         <Panel title="承認待ち" controlId="home.pending-approvals.panel">
           <div className="approval-widget">
             <strong>承認待ち {waitingApprovals.length}件</strong>
-            <span>外部操作は承認前に停止</span>
+            <span>承認されるまで外部操作は安全に停止</span>
             <span>queued {queuedRuns.length}件</span>
             <Button controlId="home.approvals.open" variant="primary" onClick={() => go("#/approvals")}>承認キューを開く</Button>
           </div>
+        </Panel>
+      </div>
+      <div className="section-grid">
+        <Panel title="ライブ実行" className="span-2" controlId="home.live-execution.panel">
+          <DataTable controlId="home.live-execution.table" headers={["Lane", "プロジェクト", "タスク", "状態", "操作"]} rows={liveRows} />
         </Panel>
       </div>
       <Panel title="進捗一覧" controlId="home.progress.panel">
@@ -3502,6 +3690,8 @@ function HomePage({ model }: { model: AppModel }) {
           "API / artifact readback"
         ])} />
       </Panel>
+      <BlockerTriage runs={blockedRuns} />
+      <HomeBrowserDetails model={model} />
       <Panel title="Feedbackサマリ" controlId="home.feedback-summary.panel">
         <div className="feedback-summary compact">
           <strong>open {openFeedbackCount}件</strong>
@@ -3810,6 +4000,11 @@ function ChatPage({ model }: { model: AppModel }) {
     setChatNote(`投稿先を${allPlatformsSelected ? "全解除" : "一括選択"}: ${next.length ? next.join(" / ") : "未選択"} / ${actionStamp()}`);
   };
   const startPlan = async () => {
+    if (!targetProjectIsVerified) {
+      setReceipt("先に、保存先の会社を選択してからプランを作成してください。");
+      setChatNote(`プラン作成待ち: 会社scope未選択 / ${actionStamp()}`);
+      return;
+    }
     if (!activePrompt) {
       promptRef.current?.focus();
       setReceipt("自動化リクエストを入力してからプランを作成してください。");
@@ -3879,6 +4074,11 @@ function ChatPage({ model }: { model: AppModel }) {
     }
   };
   const sendMessage = async () => {
+    if (!targetProjectIsVerified) {
+      setReceipt("先に、保存先の会社を選択してから送信してください。");
+      setChatNote(`送信待ち: 会社scope未選択 / ${actionStamp()}`);
+      return;
+    }
     if (!draftPrompt) {
       promptRef.current?.focus();
       setReceipt("まず作りたい自動化を入力してください。");
@@ -4229,6 +4429,10 @@ function ChatPage({ model }: { model: AppModel }) {
       {mvpState.browser_use_runtime && <div className="notice-row" role="note">
         Browser Use: {publicBrowserUseRuntimeStatus(mvpState.browser_use_runtime)} / {mvpState.browser_use_runtime.summary ?? "runtime readback待ち"} / {mvpState.browser_use_runtime.fallbackPolicy ?? "readback待ち"} / registered lanes {mvpState.browser_use_runtime.lanes?.length ?? 0}
       </div>}
+      <div className={`scope-gate ${targetProjectIsVerified ? "ready" : "attention"}`} data-control-id="chat.scope-gate" role="status">
+        <div><strong>{targetProjectIsVerified ? `作成対象: ${chatScopeLabel}` : "作成対象の会社を選んでください"}</strong><span>{targetProjectIsVerified ? "この会社scopeに保存・readbackします。外部効果は別承認です。" : "会社未選択のままではplanner・保存・実行に進みません。"}</span></div>
+        {!targetProjectIsVerified && <Button controlId="chat.scope-gate.open-projects" onClick={() => go("#/projects")}>会社一覧を開く</Button>}
+      </div>
       <WebOperationAdmissionPanel model={model} projectId={targetProject} />
       <div className="choice-row" aria-label="司令室ショートカット">
         {["システム全体を確認", "定期実行を作成", "既存定期実行を調整", "失敗を確認"].map((shortcut) => (
@@ -4264,10 +4468,10 @@ function ChatPage({ model }: { model: AppModel }) {
           <ChatProgressPanel progress={plannerProgress} planning={planning} />
           <div className="choice-row" aria-label={`投稿先サービス（${selectedPlatforms.length}件選択）`}>
             {platformOptions.map((platform) => (
-              <button type="button" data-control-id={`chat.platform.toggle.${platform}`} aria-pressed={selectedPlatforms.includes(platform)} disabled={planning || creating} className={selectedPlatforms.includes(platform) ? "selected" : ""} onClick={() => togglePlatform(platform)} key={platform}>{platform}</button>
+              <button type="button" data-control-id={`chat.platform.toggle.${platform}`} aria-pressed={selectedPlatforms.includes(platform)} disabled={!targetProjectIsVerified || planning || creating} className={selectedPlatforms.includes(platform) ? "selected" : ""} onClick={() => togglePlatform(platform)} key={platform}>{platform}</button>
             ))}
-            <button type="button" data-control-id="chat.platform.select-all" aria-pressed={allPlatformsSelected} disabled={planning || creating} className={allPlatformsSelected ? "selected" : ""} onClick={selectAllPlatforms}>{allPlatformsSelected ? "全て解除" : "全て選択"}</button>
-            <button type="button" data-control-id="chat.details.focus" disabled={planning || creating} onClick={() => { setChatNote(`詳細入力へフォーカスしました / ${actionStamp()}`); promptRef.current?.focus(); }}>詳細を書く</button>
+            <button type="button" data-control-id="chat.platform.select-all" aria-pressed={allPlatformsSelected} disabled={!targetProjectIsVerified || planning || creating} className={allPlatformsSelected ? "selected" : ""} onClick={selectAllPlatforms}>{allPlatformsSelected ? "全て解除" : "全て選択"}</button>
+            <button type="button" data-control-id="chat.details.focus" disabled={!targetProjectIsVerified || planning || creating} onClick={() => { setChatNote(`詳細入力へフォーカスしました / ${actionStamp()}`); promptRef.current?.focus(); }}>詳細を書く</button>
           </div>
           <div className="chat-composer">
           <label className="chat-input">
@@ -4306,8 +4510,8 @@ function ChatPage({ model }: { model: AppModel }) {
           </label>
           <div className="button-row">
             <Button controlId="chat.cancel" onClick={() => { void cancelPlanning(); }} disabled={!planning}>停止</Button>
-            <Button controlId="chat.send" variant="primary" icon={<MessageSquare size={14} />} onClick={sendMessage} disabled={!draftPrompt || planning || creating}>{planning ? "確認中" : "送信して考える"}</Button>
-            <Button controlId="chat.recreate" onClick={startPlan} disabled={!activePrompt || planning || creating}>プランを再作成</Button>
+            <Button controlId="chat.send" variant="primary" icon={<MessageSquare size={14} />} onClick={sendMessage} disabled={!targetProjectIsVerified || !draftPrompt || planning || creating}>{planning ? "確認中" : "送信して考える"}</Button>
+            <Button controlId="chat.recreate" onClick={startPlan} disabled={!targetProjectIsVerified || !activePrompt || planning || creating}>プランを再作成</Button>
             <Button controlId="chat.reset-input" onClick={resetChat} disabled={planning || creating}>入力をリセット</Button>
           </div>
           </div>
@@ -5436,6 +5640,7 @@ function RunsPage({ model }: { model: AppModel }) {
           ["安全境界", "外部操作なし", "投稿・送信・削除・認証・課金は承認なしに実行しません"]
         ]} />
       </Panel>
+      <BlockerTriage runs={blockedRuns} />
       <div className="split">
         <Panel title="履歴" className="list-panel" controlId="runs.history.panel">
           <DataTable controlId="runs.history.table" headers={["記録", "自動化", "状態", "開始待ち", "確認事項", "記録数"]} rows={filteredRuns.slice(0, 20).map((run) => [
@@ -5451,6 +5656,7 @@ function RunsPage({ model }: { model: AppModel }) {
           <h3>確認記録</h3>
           {selectedRun ? <p className="muted">{selectedRun.id} / {publicRunStatus(selectedRun.status)}{detailLoading ? " / 読込中" : ""}</p> : <p className="muted">履歴はまだありません。</p>}
           {selectedRun && <p className="muted">手順 {selectedSteps.length}件 / 更新 {selectedWorkerEvents.length}件</p>}
+          {selectedRun && <RunTimeline run={selectedRun} compact />}
           {selectedProofs.length ? selectedProofs.map((proof) => (
             <div className="preview-box" key={proof.id}>
               <strong>{redactDisplayPaths(proof.label ?? proof.proof_type ?? proof.kind ?? "確認記録")}</strong>

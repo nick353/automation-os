@@ -9,7 +9,7 @@ import { startCommandRun } from "../runs/workerEngine.js";
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 const outDir = resolve(readArgValue("--out-dir") ?? `/tmp/automation-os-production-worker-pickup-proof-${new Date().toISOString().replaceAll(":", "-")}`);
 const command = readArgValue("--command") ?? "本番Mac worker pickup proof 記録だけ";
-const databaseConfigured = Boolean(process.env.AUTOMATION_OS_DATABASE_URL || process.env.DATABASE_URL);
+const databaseConfigured = Boolean(process.env.AUTOMATION_OS_DATABASE_URL || process.env.DATABASE_URL || process.env.POSTGRES_URI);
 const workerTimeoutMs = boundedNumber(
   readArgValue("--worker-timeout-ms") ?? process.env.AUTOMATION_OS_WORKER_PICKUP_PROOF_TIMEOUT_MS,
   120_000,
@@ -22,7 +22,7 @@ if (!databaseConfigured) {
   finish({
     ok: false,
     blocker: "production_database_url_missing",
-    nextAction: "ローカルshellに本番PostgreSQLのDATABASE_URLまたはAUTOMATION_OS_DATABASE_URLを設定してから再実行してください。",
+    nextAction: "ローカルshellに本番PostgreSQLのDATABASE_URL、AUTOMATION_OS_DATABASE_URL、またはlinked serviceのPOSTGRES_URIを設定してから再実行してください。",
     database: { backend: dbBackend, configured: false }
   }, 2);
 }
@@ -49,7 +49,7 @@ const created = await startCommandRun(command, {
 });
 
 const workerLoopPath = join(moduleDir, "workerLoop.js");
-const childDatabaseUrl = process.env.AUTOMATION_OS_DATABASE_URL ?? process.env.DATABASE_URL;
+const childDatabaseUrl = process.env.AUTOMATION_OS_DATABASE_URL ?? process.env.DATABASE_URL ?? process.env.POSTGRES_URI;
 const worker = spawnSync(process.execPath, [workerLoopPath, `--run-id=${created.runId}`, "--max-cycles=1", "--interval-ms=1000"], {
   cwd: process.cwd(),
   env: safeWorkerEnvironment(process.env, {
