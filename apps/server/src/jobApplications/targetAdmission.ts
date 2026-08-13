@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
-import { makeId, nowIso, querySql, runSqlTransaction, sqlValue } from "../db/client.js";
+import { insert, makeId, nowIso, querySql, runSqlTransaction, sqlValue } from "../db/client.js";
 import { runIdempotentSqlMutation } from "../automations/idempotency.js";
 import { portableBusinessTargetDigest } from "../runs/portableExternalApprovalBinding.js";
 import { buildTaskContractPreview, type TaskContractV1 } from "../taskContracts/taskContract.js";
 import { operationKey } from "../taskContracts/taskOsAdvanced.js";
+import { getDurableTaskEffect } from "../taskContracts/taskEffectLedger.js";
 
 export const JOB_APPLICATION_WORKFLOW_ID = "job-application-manager" as const;
 export const JOB_APPLICATION_APPROVAL_ACTION = "one_candidate_submit" as const;
@@ -386,6 +387,97 @@ export function attachTargetAdmissionToRun(input: {
   return updated;
 }
 
+/**
+ * Reset a blocked target admission only when the previous run has a durable
+ * no-effect receipt and its Effect Ledger record is neither ambiguous nor
+ * retry-forbidden.  This creates a bounded retry point without replaying the
+ * old run or mutating an already-effectful admission.
+ */
+export function prepareTargetAdmissionRetry(input: {
+  companyId: string;
+  admissionId: string;
+  idempotencyKey: string;
+}): { admission: TargetAdmissionRecord; previousRunId: string } {
+  const companyId = requiredSafeRef(input.companyId, "company_id_required");
+  const admissionId = requiredSafeRef(input.admissionId, "target_admission_id_required");
+  const idempotencyKey = requiredSafeRef(input.idempotencyKey, "target_admission_retry_idempotency_key_required");
+  const current = getTargetAdmission(companyId, admissionId);
+  if (!current) throw new TargetAdmissionError("target_admission_not_found");
+  if (current.status !== "blocked" || !current.run_id) {
+    throw new TargetAdmissionError("target_admission_retry_requires_blocked_run");
+  }
+  if (Date.parse(current.source_snapshot_expires_at) <= Date.now()) {
+    throw new TargetAdmissionError("target_admission_source_snapshot_expired");
+  }
+  const currentIdempotencyKey = querySql<{ idempotency_key: string }>(`
+    SELECT idempotency_key FROM job_application_target_admissions
+    WHERE id=${sqlValue(admissionId)} AND company_id=${sqlValue(companyId)} LIMIT 1
+  `)[0]?.idempotency_key;
+  if (currentIdempotencyKey === idempotencyKey) {
+    throw new TargetAdmissionError("target_admission_retry_idempotency_reused");
+  }
+
+  const previousRunId = current.run_id;
+  const run = querySql<{ status: string; metadata_json: string }>(`
+    SELECT status, metadata_json FROM runs
+    WHERE id=${sqlValue(previousRunId)} AND company_id=${sqlValue(companyId)} LIMIT 1
+  `)[0];
+  if (!run || run.status !== "blocked") throw new TargetAdmissionError("target_admission_retry_previous_run_not_blocked");
+  const runMetadata = parseJsonRecord(run.metadata_json);
+  if (runMetadata.external_action_executed === true) {
+    throw new TargetAdmissionError("target_admission_retry_external_effect_already_executed");
+  }
+
+  const proof = querySql<{ metadata_json: string }>(`
+    SELECT metadata_json FROM proofs
+    WHERE run_id=${sqlValue(previousRunId)} AND proof_type=${sqlValue("worker_receipt")}
+    ORDER BY created_at DESC LIMIT 1
+  `)[0];
+  const proofMetadata = proof ? parseJsonRecord(proof.metadata_json) : null;
+  if (!proofMetadata || proofMetadata.external_action_executed !== false) {
+    throw new TargetAdmissionError("target_admission_retry_no_effect_proof_missing");
+  }
+
+  const previousEffectKey = targetAdmissionEffectKey({ companyId, admissionId });
+  const previousEffect = previousEffectKey ? getDurableTaskEffect(companyId, previousEffectKey) : null;
+  if (!previousEffect) throw new TargetAdmissionError("target_admission_retry_effect_ledger_missing");
+  if (previousEffect.external_action_executed || previousEffect.ambiguous || previousEffect.retry_forbidden) {
+    throw new TargetAdmissionError("target_admission_retry_effect_not_replayable");
+  }
+
+  const now = nowIso();
+  runSqlTransaction([{
+    sql: `UPDATE job_application_target_admissions
+      SET approval_id=NULL, approval_status='not_started', idempotency_key=${sqlValue(idempotencyKey)},
+          source_snapshot_id=${sqlValue(current.source_snapshot_id)}, run_id=NULL, trigger_idempotency_key=NULL,
+          attempt=${current.attempt + 1}, status='registered', updated_at=${sqlValue(now)}
+      WHERE id=${sqlValue(admissionId)} AND company_id=${sqlValue(companyId)}
+        AND status='blocked' AND run_id=${sqlValue(previousRunId)} AND idempotency_key<>${sqlValue(idempotencyKey)}`,
+    expectChanges: 1
+  }]);
+  insert("worker_events", {
+    id: makeId("evt"),
+    company_id: companyId,
+    run_id: previousRunId,
+    step_id: null,
+    lane_id: null,
+    event_type: "target_admission_retry_prepared",
+    message: "Blocked target admission reset after durable no-effect proof; previous run will not be replayed",
+    created_at: now,
+    metadata_json: {
+      schema: "aos.target_admission_retry.v1",
+      admission_id: admissionId,
+      previous_run_id: previousRunId,
+      previous_effect_operation_key: previousEffectKey,
+      external_action_executed: false,
+      restart_point: "fresh_target_bound_trigger",
+    }
+  });
+  const updated = getTargetAdmission(companyId, admissionId);
+  if (!updated) throw new TargetAdmissionError("target_admission_retry_readback_missing");
+  return { admission: updated, previousRunId };
+}
+
 export function updateTargetAdmissionStatus(input: { companyId: string; admissionId: string; status: string; approvalStatus?: string; approvalId?: string | null }): TargetAdmissionRecord {
   const companyId = requiredSafeRef(input.companyId, "company_id_required");
   const current = getTargetAdmission(companyId, input.admissionId);
@@ -526,6 +618,16 @@ function withTaskContract(record: Omit<TargetAdmissionRecord, "task_contract">):
     idempotency_key: `admission_${record.idempotency_key_fingerprint}`
   });
   return { ...record, task_contract: contract };
+}
+
+function parseJsonRecord(value: unknown): Record<string, unknown> {
+  if (typeof value !== "string") return {};
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
 }
 
 function objectValue(value: unknown, code: string): Record<string, unknown> {

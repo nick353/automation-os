@@ -223,6 +223,7 @@ import {
   getTargetAdmission,
   listTargetAdmissions,
   parseTargetAdmissionInput,
+  prepareTargetAdmissionRetry,
   syncTargetAdmissionApproval,
   syncTargetAdmissionFromReceipt,
   targetAdmissionEffectKey,
@@ -935,6 +936,33 @@ app.post("/api/v1/companies/:companyId/job-application-target-admissions/:admiss
     });
   } catch (error) {
     sendTargetAdmissionError(res, error, "target_admission_trigger_failed");
+  }
+});
+
+app.post("/api/v1/companies/:companyId/job-application-target-admissions/:admissionId/retry", (req, res) => {
+  try {
+    initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    requireCompanyAccess(companyId, ["owner", "admin", "operator"]);
+    const idempotencyKey = requireIdempotencyKey(req.header("idempotency-key"));
+    const retry = prepareTargetAdmissionRetry({
+      companyId,
+      admissionId: String(req.params.admissionId ?? "").trim(),
+      idempotencyKey
+    });
+    res.status(200).json({
+      ok: true,
+      schema: "aos.job_application_target_admission_retry.v1",
+      target_admission: retry.admission,
+      previous_run_id: retry.previousRunId,
+      ...targetAdmissionSourceReadback(companyId, retry.admission.id),
+      exact_blocker: "target_admission_run_not_started",
+      next_action: "fresh idempotency-keyで同じtarget admissionのtriggerを実行し、approval previewをreadbackする",
+      external_action_executed: false,
+      company_scope: { enforced: true, company_id: companyId }
+    });
+  } catch (error) {
+    sendTargetAdmissionError(res, error, "target_admission_retry_failed");
   }
 });
 

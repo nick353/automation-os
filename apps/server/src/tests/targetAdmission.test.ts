@@ -11,6 +11,7 @@ process.env.NODE_TEST_CONTEXT = "1";
 
 const db = await import("../db/client.js");
 const admission = await import("../jobApplications/targetAdmission.js");
+const effectLedger = await import("../taskContracts/taskEffectLedger.js");
 
 const companyId = "target_admission_test_company";
 const base = {
@@ -72,4 +73,68 @@ test("target admission rejects secret-like references and stale source snapshots
     () => admission.parseTargetAdmissionInput({ ...base, source_snapshot_expires_at: "2020-01-01T00:00:00.000Z" }, "2026-08-13T00:00:00.000Z"),
     /target_admission_source_snapshot_expiry_invalid/
   );
+});
+
+test("blocked target admission retry requires durable no-effect proof and advances the attempt", () => {
+  const retryCompanyId = "target_admission_retry_company";
+  db.initDb();
+  db.insert("companies", { id: retryCompanyId, slug: retryCompanyId, name: "Retry Test", status: "active", created_at: db.nowIso(), updated_at: db.nowIso() });
+  const parsed = admission.parseTargetAdmissionInput({ ...base, company_name: "Retry Test", audience: { company: "Retry Test", job: "Marketing Manager" } }, "2026-08-13T00:00:00.000Z");
+  const created = admission.createTargetAdmission({ companyId: retryCompanyId, admission: parsed, idempotencyKey: "target-admission-retry-original" });
+  const previousRunId = "run_target_admission_retry_previous";
+  db.insert("runs", {
+    id: previousRunId,
+    company_id: retryCompanyId,
+    name: "retry previous run",
+    objective: "retry previous run",
+    status: "blocked",
+    metadata_json: { external_action_executed: false },
+    created_at: db.nowIso(),
+    updated_at: db.nowIso(),
+    execution_source: "automation-os"
+  });
+  db.insert("proofs", {
+    id: "proof_target_admission_retry_previous",
+    company_id: retryCompanyId,
+    run_id: previousRunId,
+    proof_type: "worker_receipt",
+    label: "no-effect worker receipt",
+    uri: "aos://proof/no-effect",
+    size_bytes: 1,
+    metadata_json: { external_action_executed: false },
+    created_at: db.nowIso()
+  });
+  admission.attachTargetAdmissionToRun({
+    companyId: retryCompanyId,
+    admissionId: created.admission.id,
+    runId: previousRunId,
+    approvalId: null,
+    triggerIdempotencyKey: "target-admission-retry-trigger-original",
+    status: "blocked"
+  });
+  const bound = admission.getTargetAdmission(retryCompanyId, created.admission.id);
+  assert.ok(bound);
+  const effect = effectLedger.reserveDurableTaskEffect({
+    companyId: retryCompanyId,
+    traceId: previousRunId,
+    taskId: bound.task_contract.task_id,
+    workflowId: bound.workflow_id,
+    targetHash: bound.task_contract.target.digest,
+    payloadHash: bound.task_contract.payload.digest!,
+    audienceHash: bound.task_contract.target.audience_digest,
+    idempotencyKey: "target-admission-retry-trigger-original"
+  });
+  assert.equal(effect.replay, false);
+
+  const retried = admission.prepareTargetAdmissionRetry({
+    companyId: retryCompanyId,
+    admissionId: created.admission.id,
+    idempotencyKey: "target-admission-retry-fresh"
+  });
+  assert.equal(retried.previousRunId, previousRunId);
+  assert.equal(retried.admission.status, "registered");
+  assert.equal(retried.admission.run_id, null);
+  assert.equal(retried.admission.approval_id, null);
+  assert.equal(retried.admission.attempt, 2);
+  assert.equal(db.querySql<{ count: number }>(`SELECT count(*) AS count FROM worker_events WHERE run_id=${db.sqlValue(previousRunId)} AND event_type='target_admission_retry_prepared'`)[0].count, 1);
 });
