@@ -8,6 +8,7 @@ function env(overrides: Record<string, string | undefined> = {}) {
     AUTOMATION_OS_ENV_ROLE: undefined,
     AUTOMATION_OS_DATABASE_URL: undefined,
     DATABASE_URL: undefined,
+    POSTGRES_URI: undefined,
     ...overrides
   };
   for (const [key, value] of Object.entries(result)) {
@@ -65,6 +66,19 @@ test("production uses the canonical Automation OS URL before DATABASE_URL", () =
     role: "production",
     databaseAuthority: "postgres_required",
     databaseSource: "AUTOMATION_OS_DATABASE_URL"
+  });
+});
+
+test("production accepts the linked Zeabur PostgreSQL source alias", () => {
+  const result = evaluateServerStartupPolicy(env({
+    AUTOMATION_OS_ENV_ROLE: "production",
+    POSTGRES_URI: "postgresql://linked:password@db.example.invalid:5432/automation_os"
+  }));
+  assert.deepEqual(result, {
+    ok: true,
+    role: "production",
+    databaseAuthority: "postgres_required",
+    databaseSource: "POSTGRES_URI"
   });
 });
 

@@ -15,7 +15,7 @@ if (!startupPolicy.ok) {
   throw new Error(startupPolicy.exactBlocker);
 }
 const defaultDbPath = resolve(process.cwd(), "data", "automation-os.sqlite");
-const postgresUrl = process.env.AUTOMATION_OS_DATABASE_URL ?? process.env.DATABASE_URL;
+const postgresUrl = process.env.AUTOMATION_OS_DATABASE_URL ?? process.env.DATABASE_URL ?? process.env.POSTGRES_URI;
 const postgresWorkerTimeoutMs = Number(process.env.AUTOMATION_OS_POSTGRES_WORKER_TIMEOUT_MS ?? 12000);
 // Read-only child processes are spawned by an already-started server. The
 // parent has already passed the database startup/bootstrap boundary, so

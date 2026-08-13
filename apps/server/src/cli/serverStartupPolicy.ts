@@ -7,7 +7,7 @@ export type ServerStartupPolicyResult =
       ok: true;
       role: ServerEnvironmentRole;
       databaseAuthority: "postgres_required" | "legacy";
-      databaseSource: "AUTOMATION_OS_DATABASE_URL" | "DATABASE_URL" | null;
+      databaseSource: "AUTOMATION_OS_DATABASE_URL" | "DATABASE_URL" | "POSTGRES_URI" | null;
     }
   | {
       ok: false;
@@ -41,9 +41,14 @@ export function evaluateServerStartupPolicy(env: NodeJS.ProcessEnv = process.env
     };
   }
 
-  const candidates: Array<["AUTOMATION_OS_DATABASE_URL" | "DATABASE_URL", string | undefined]> = [
+  const candidates: Array<["AUTOMATION_OS_DATABASE_URL" | "DATABASE_URL" | "POSTGRES_URI", string | undefined]> = [
     ["AUTOMATION_OS_DATABASE_URL", env.AUTOMATION_OS_DATABASE_URL],
-    ["DATABASE_URL", env.DATABASE_URL]
+    ["DATABASE_URL", env.DATABASE_URL],
+    // Zeabur's linked PostgreSQL service exposes the canonical connection
+    // secret as POSTGRES_URI. Treat it as a source alias, never as a public
+    // readback value, so the hosted control plane cannot silently fall back
+    // to local SQLite.
+    ["POSTGRES_URI", env.POSTGRES_URI]
   ];
   const configured = candidates.find(([, value]) => Boolean(value?.trim()));
   if (!configured) {
