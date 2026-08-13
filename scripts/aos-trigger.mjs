@@ -79,7 +79,10 @@ function requestTimeoutMs() {
 }
 
 function resolveToken(tokenFile) {
-  const configured = process.env.AOS_TRIGGER_TOKEN?.trim() || process.env.AUTOMATION_OS_WRITE_TOKEN?.trim() || "";
+  // Registered automation triggers use a dedicated service identity.  The
+  // legacy AOS_TRIGGER_TOKEN name remains a compatibility input for older
+  // local wrappers, but an operator/write token is never an implicit fallback.
+  const configured = process.env.AOS_TRIGGER_SERVICE_IDENTITY?.trim() || process.env.AOS_TRIGGER_TOKEN?.trim() || "";
   if (configured) return configured;
   if (!tokenFile) return "";
   try {

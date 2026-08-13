@@ -95,7 +95,16 @@ import {
 import { registeredBrowserLaneForWorkflow, visibleBrowserLaneForRecordReplay } from "./runs/laneManager.js";
 import { selectActionQueueRuns, selectResumeCandidateRun } from "./runs/selectors.js";
 import { isSecretStorageOnlyText, listStoredSecrets, saveSecretsFromMessage } from "./secrets/secretStore.js";
-import { secureTokenEqual } from "./security/tokenComparison.js";
+import {
+  canBootstrapSession,
+  clearSessionCookie,
+  issueSessionCookie,
+  readRequestAuth,
+  readServerAuthStatus,
+  readServerSecret,
+  readSessionScope,
+  readWebSessionScope
+} from "./security/serverAuth.js";
 import {
   getObsidianExportStatus,
   runObsidianAutoExportBestEffort,
@@ -130,6 +139,8 @@ import {
   type RegisteredWorkflowRow
 } from "./registeredWorkflows.js";
 import { getResumeContract } from "./resumeContract.js";
+import { operationKey } from "./taskContracts/taskOsAdvanced.js";
+import { admitAndStartDurableTaskEffect, getDurableTaskEffect, reserveDurableTaskEffect, syncDurableTaskEffectFromWorker } from "./taskContracts/taskEffectLedger.js";
 import {
   createCompanyForActor,
   currentActorUserId,
@@ -204,6 +215,18 @@ import {
   recordPortableMacWorkerReceipt,
   requeuePortableMacWorkerAfterApproval
 } from "./runs/portableRemoteWorker.js";
+import {
+  attachTargetAdmissionToRun,
+  buildTargetAdmissionInputBundleFromRecord,
+  createTargetAdmission,
+  getTargetAdmission,
+  listTargetAdmissions,
+  parseTargetAdmissionInput,
+  syncTargetAdmissionApproval,
+  syncTargetAdmissionFromReceipt,
+  targetAdmissionEffectKey,
+  TargetAdmissionError
+} from "./jobApplications/targetAdmission.js";
 
 export const app = express();
 app.set("case sensitive routing", true);
@@ -254,22 +277,62 @@ app.get("/readyz", (_req, res) => {
   });
 });
 
+app.get("/api/auth/session", (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  const existingScope = readSessionScope(req.headers);
+  if (existingScope) {
+    res.json({
+      ok: true,
+      authenticated: true,
+      scope: existingScope,
+      session_transport: "http_only_secure_cookie",
+      token_value_exposed: false
+    });
+    return;
+  }
+  const guard = getProductionApiAccessGuardStatus();
+  if (!guard.required) {
+    res.json({ ok: true, authenticated: true, scope: "unrestricted", session_transport: "none", token_value_exposed: false });
+    return;
+  }
+  if (!canBootstrapSession({ headers: req.headers, socket: req.socket })) {
+    const exactBlocker = "private_ingress_or_sso_required";
+    res.status(401).json({ ok: false, status: "blocked", error: exactBlocker, exactBlocker, token_value_exposed: false });
+    return;
+  }
+  const scope = readWebSessionScope();
+  const cookie = scope ? issueSessionCookie(scope) : null;
+  if (!scope || !cookie) {
+    const exactBlocker = "server_auth_session_secret_missing";
+    res.status(503).json({ ok: false, status: "blocked", error: exactBlocker, exactBlocker, token_value_exposed: false });
+    return;
+  }
+  res.setHeader("Set-Cookie", cookie);
+  res.json({
+    ok: true,
+    authenticated: true,
+    scope,
+    session_transport: "http_only_secure_cookie",
+    token_value_exposed: false
+  });
+});
+
+app.post("/api/auth/session/logout", (_req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Set-Cookie", clearSessionCookie());
+  res.json({ ok: true, authenticated: false, token_value_exposed: false });
+});
+
 app.get("/api/auth/capability", (req, res) => {
   const guard = getProductionApiAccessGuardStatus();
-  const providedToken = readRequestWriteToken(req);
-  const writeToken = readProductionWriteToken();
-  const readToken = readProductionReadToken();
-  const scope = !guard.required
-    ? "unrestricted"
-    : secureTokenEqual(providedToken, writeToken)
-      ? "write"
-      : Boolean(readToken) && secureTokenEqual(providedToken, readToken)
-        ? "read"
-        : "unknown";
+  const auth = readRequestAuth({ method: req.method, path: req.path, headers: req.headers });
+  const scope = !guard.required ? "unrestricted" : auth.scope;
   res.json({
     ok: true,
     scope,
     read_only: scope === "read",
+    auth_method: !guard.required ? "unrestricted" : auth.method,
+    session_transport: auth.method === "session_cookie" ? "http_only_secure_cookie" : null,
     allowed_methods: scope === "read" ? ["GET", "HEAD"] : ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]
   });
 });
@@ -709,6 +772,154 @@ app.post("/api/v1/companies/:companyId/automations/:automationId/trigger", async
   }
 });
 
+/**
+ * Durable, target-bound admission for the one-candidate job application lane.
+ * The candidate row is the production AOS source of truth; run artifacts are
+ * only execution evidence and are never used as the registration store.
+ */
+app.get("/api/v1/companies/:companyId/job-application-target-admissions", (req, res) => {
+  try {
+    initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    requireCompanyAccess(companyId, ["owner", "admin", "operator", "approver", "viewer"]);
+    const admissions = listTargetAdmissions(companyId);
+    const active = admissions.filter((item) => ["registered", "approval_pending", "approved", "running", "submitted", "reconciled"].includes(item.status));
+    res.setHeader("cache-control", "private, no-store");
+    res.json({
+      ok: true,
+      schema: "aos.job_application_target_admission_readback.v1",
+      workflow_id: "job-application-manager",
+      source_of_truth: "production_aos_database",
+      candidate_count: active.length,
+      approval_count: admissions.filter((item) => Boolean(item.approval_id)).length,
+      admissions,
+      external_action_executed: false,
+      company_scope: { enforced: true, company_id: companyId }
+    });
+  } catch (error) {
+    sendTargetAdmissionError(res, error, "target_admission_list_failed");
+  }
+});
+
+app.post("/api/v1/companies/:companyId/job-application-target-admissions", (req, res) => {
+  try {
+    initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    requireCompanyAccess(companyId, ["owner", "admin", "operator"]);
+    const idempotencyKey = requireIdempotencyKey(req.header("idempotency-key"));
+    const parsed = parseTargetAdmissionInput(req.body, nowIso());
+    const result = createTargetAdmission({ companyId, admission: parsed, idempotencyKey });
+    res.status(result.replayed ? 200 : 201).json({
+      ok: true,
+      schema: "aos.job_application_target_admission.v1",
+      replayed: result.replayed,
+      source_of_truth: "production_aos_database",
+      candidate_count: 1,
+      approval_count: 0,
+      approval: {
+        status: "not_started",
+        effect_specific: true,
+        action_kind: "one_candidate_submit",
+        policy_version: "automation_os_portable_external_approval_binding.v1",
+        external_action_executed: false
+      },
+      admission: result.admission,
+      exact_blocker: "target_admission_run_not_started",
+      next_action: "POST /api/v1/companies/:companyId/job-application-target-admissions/:admissionId/trigger でautomation-3の同一Runへ束縛し、pending approvalを作成する",
+      external_action_executed: false,
+      company_scope: { enforced: true, company_id: companyId }
+    });
+  } catch (error) {
+    sendTargetAdmissionError(res, error, "target_admission_create_failed");
+  }
+});
+
+app.post("/api/v1/companies/:companyId/job-application-target-admissions/:admissionId/trigger", async (req, res) => {
+  try {
+    initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    requireCompanyAccess(companyId, ["owner", "admin", "operator"]);
+    const admission = getTargetAdmission(companyId, String(req.params.admissionId ?? "").trim());
+    if (!admission) throw new TargetAdmissionError("target_admission_not_found");
+    if (admission.run_id) {
+      const existingRun = querySql<{ id: string; status: string }>(`SELECT id, status FROM runs WHERE id=${sqlValue(admission.run_id)} AND company_id=${sqlValue(companyId)} LIMIT 1`)[0] ?? { id: admission.run_id, status: "unknown" };
+      const approval = admission.approval_id
+        ? querySql<{ id: string; status: string; action_kind: string | null; policy_version: string | null; expires_at: string | null; decision_revision: number }>(`SELECT id, status, action_kind, policy_version, expires_at, decision_revision FROM approvals WHERE id=${sqlValue(admission.approval_id)} AND company_id=${sqlValue(companyId)} LIMIT 1`)[0] ?? null
+        : null;
+      res.status(200).json({ ok: true, replayed: true, schema: "aos.job_application_target_trigger.v1", target_admission: admission, run: existingRun, approval, same_run_bound: true, external_action_executed: false, company_scope: { enforced: true, company_id: companyId } });
+      return;
+    }
+    if (Date.parse(admission.source_snapshot_expires_at) <= Date.now()) throw new TargetAdmissionError("target_admission_source_snapshot_expired");
+    const idempotencyKey = requireIdempotencyKey(req.header("idempotency-key"));
+    const automationId = typeof req.body?.automation_id === "string" && req.body.automation_id.trim()
+      ? req.body.automation_id.trim()
+      : admission.registered_automation_id ?? "";
+    if (!automationId) throw new TargetAdmissionError("target_admission_registered_automation_id_required");
+    const automation = getAutomationRecord(companyId, automationId, false);
+    if (!automation) throw new TargetAdmissionError("target_admission_registered_automation_not_found");
+    if (portableWorkflowIdForRegisteredAutomation(automation) !== "job-application-manager") {
+      throw new TargetAdmissionError("target_admission_registered_automation_workflow_mismatch");
+    }
+    const inputBundle = buildTargetAdmissionInputBundleFromRecord(admission);
+    const started = await startPortableWorkflowRun({
+      workflowId: "job-application-manager",
+      sourceTrigger: "automation_os_ui",
+      idempotencyKey,
+      registeredAutomationId: automation.id,
+      companyId,
+      effectStage: "one_candidate_submit",
+      inputBundle
+    });
+    const approval = querySql<{ id: string; status: string; action_kind: string | null; policy_version: string | null; expires_at: string | null; decision_revision: number }>(`
+      SELECT id, status, action_kind, policy_version, expires_at, decision_revision FROM approvals
+      WHERE run_id=${sqlValue(started.runId)} AND action_kind=${sqlValue("one_candidate_submit")}
+      ORDER BY created_at ASC LIMIT 1
+    `)[0] ?? null;
+    const bound = attachTargetAdmissionToRun({
+      companyId,
+      admissionId: admission.id,
+      runId: started.runId,
+      approvalId: approval?.id ?? null,
+      triggerIdempotencyKey: idempotencyKey,
+      status: approval ? "approval_pending" : "blocked"
+    });
+    const effectOperation = operationKey({
+      taskId: bound.task_contract.task_id,
+      targetHash: bound.task_contract.target.digest,
+      payloadHash: bound.task_contract.payload.digest!,
+      audienceHash: bound.task_contract.target.audience_digest,
+      idempotencyKey
+    });
+    const effectLedger = reserveDurableTaskEffect({
+      companyId,
+      traceId: started.runId,
+      taskId: bound.task_contract.task_id,
+      workflowId: bound.task_contract.workflow_id,
+      targetHash: bound.task_contract.target.digest,
+      payloadHash: bound.task_contract.payload.digest!,
+      audienceHash: bound.task_contract.target.audience_digest,
+      idempotencyKey
+    });
+    const refreshedApproval = approval ? querySql<{ id: string; status: string; action_kind: string | null; policy_version: string | null; expires_at: string | null; decision_revision: number }>(`SELECT id, status, action_kind, policy_version, expires_at, decision_revision FROM approvals WHERE id=${sqlValue(approval.id)} LIMIT 1`)[0] ?? approval : null;
+    res.status(202).json({
+      ok: Boolean(approval),
+      schema: "aos.job_application_target_trigger.v1",
+      accepted: Boolean(approval),
+      same_run_bound: Boolean(approval),
+      target_admission: bound,
+      run: { id: started.runId, status: started.status ?? "waiting_approval", company_id: companyId, automation_id: automation.id, workflow_id: "job-application-manager" },
+      approval: refreshedApproval,
+      effect_ledger: { operation_key: effectOperation, state: effectLedger.effect.state, replayed: effectLedger.replay, external_action_executed: effectLedger.effect.external_action_executed },
+      exact_blocker: approval ? "portable_external_approval_required" : "target_admission_approval_not_created",
+      next_action: approval ? "target-bound approvalを承認後、Mac workerのsame-run claim/receipt/readback/reconciliation/cleanupを待つ" : "production AOSのportable approval admissionをreadbackしてから再開",
+      external_action_executed: false,
+      company_scope: { enforced: true, company_id: companyId }
+    });
+  } catch (error) {
+    sendTargetAdmissionError(res, error, "target_admission_trigger_failed");
+  }
+});
+
 app.post("/api/v1/companies/:companyId/scheduler/run-once", async (req, res) => {
   try {
     initDb();
@@ -943,7 +1154,12 @@ app.patch("/api/v1/companies/:companyId/approvals/:approvalId", (req, res) => {
     const expectedRevision = Number(req.header("if-match") ?? req.body?.expected_revision);
     if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) throw new BoundApprovalError("approval_expected_revision_required");
     const approval = decideBoundApproval({ companyId, approvalId: String(req.params.approvalId ?? "").trim(), actorUserId: currentActorUserId(), decision, expectedRevision, note: typeof req.body?.note === "string" ? req.body.note : null });
-    res.json({ ok: true, approval: boundApprovalApiView(approval), company_scope: { enforced: true, company_id: companyId } });
+    const targetAdmission = syncTargetAdmissionApproval({ companyId, approvalId: approval.id, approvalStatus: approval.status });
+    const effectKey = targetAdmission ? targetAdmissionEffectKey({ companyId, admissionId: targetAdmission.id }) : null;
+    const effectLedger = approval.status === "approved" && effectKey && getDurableTaskEffect(companyId, effectKey)
+      ? admitAndStartDurableTaskEffect(companyId, effectKey)
+      : null;
+    res.json({ ok: true, approval: boundApprovalApiView(approval), target_admission: targetAdmission, effect_ledger: effectLedger ? { operation_key: effectKey, state: effectLedger.state, external_action_executed: effectLedger.external_action_executed, retry_forbidden: effectLedger.retry_forbidden } : null, company_scope: { enforced: true, company_id: companyId } });
   } catch (error) {
     sendBoundApprovalError(res, error, "approval_decision_failed");
   }
@@ -1855,7 +2071,31 @@ app.post("/api/portable-worker/:runId/receipt", (req, res, next) => {
       runId: req.params.runId,
       receipt: req.body?.receipt
     });
-    res.json({ ok: true, ...result, external_action_executed: result.receipt.external_action_executed });
+    const targetAdmission = syncTargetAdmissionFromReceipt({
+      companyId,
+      runId: req.params.runId,
+      status: result.receipt.status,
+      externalActionExecuted: result.receipt.external_action_executed,
+      sameRunSourceSync: result.receipt.same_run_source_sync === true,
+      readbackVerified: result.receipt.readback_verified,
+      cleanupVerified: result.receipt.cleanup_verified
+    });
+    const effectKey = targetAdmission ? targetAdmissionEffectKey({ companyId, admissionId: targetAdmission.id }) : null;
+    const receiptRecord = result.receipt as unknown as Record<string, unknown>;
+    const effectLedger = effectKey ? syncDurableTaskEffectFromWorker({
+      companyId,
+      operationKey: effectKey,
+      status: result.receipt.status,
+      externalActionExecuted: result.receipt.external_action_executed,
+      sameRunSourceSync: result.receipt.same_run_source_sync === true,
+      readbackVerified: result.receipt.readback_verified,
+      cleanupVerified: result.receipt.cleanup_verified,
+      providerReceiptHash: typeof receiptRecord.provider_receipt_hash === "string" ? receiptRecord.provider_receipt_hash : null,
+      sourceSyncHash: typeof receiptRecord.source_sync_digest === "string" ? receiptRecord.source_sync_digest : null,
+      reconciliationHash: typeof receiptRecord.reconciliation_digest === "string" ? receiptRecord.reconciliation_digest : null,
+      cleanupHash: typeof receiptRecord.cleanup_digest === "string" ? receiptRecord.cleanup_digest : null
+    }) : null;
+    res.json({ ok: true, ...result, target_admission: targetAdmission, effect_ledger: effectLedger ? { operation_key: effectKey, state: effectLedger.state, external_action_executed: effectLedger.external_action_executed, retry_forbidden: effectLedger.retry_forbidden, exact_blocker: effectLedger.exact_blocker } : null, external_action_executed: result.receipt.external_action_executed });
   } catch (error) {
     next(error);
   }
@@ -3718,7 +3958,7 @@ function productionWriteGuard(req: Parameters<RequestHandler>[0], res: Parameter
     next();
     return;
   }
-  if (isReadOnlyPlanningEndpoint(req) || isCreateSessionEndpoint(req) || isCreatePlannerWorkflowEndpoint(req)) {
+  if (isReadOnlyPlanningEndpoint(req) || isCreateSessionEndpoint(req) || isCreatePlannerWorkflowEndpoint(req) || isAuthSessionEndpoint(req)) {
     next();
     return;
   }
@@ -3727,8 +3967,8 @@ function productionWriteGuard(req: Parameters<RequestHandler>[0], res: Parameter
     next();
     return;
   }
-  const providedToken = readRequestWriteToken(req);
-  if (guard.tokenConfigured && secureTokenEqual(providedToken, readProductionWriteToken())) {
+  const auth = readRequestAuth({ method: req.method, path: req.path, headers: req.headers });
+  if (guard.tokenConfigured && auth.scope === "write") {
     next();
     return;
   }
@@ -3744,7 +3984,7 @@ function productionWriteGuard(req: Parameters<RequestHandler>[0], res: Parameter
 function productionApiAccessGuard(req: Parameters<RequestHandler>[0], res: Parameters<RequestHandler>[1], next: Parameters<RequestHandler>[2]) {
   const normalizedPath = normalizedRequestPath(req.path);
   const apiPath = normalizedPath === "/api" || normalizedPath.startsWith("/api/");
-  if (!apiPath || normalizedPath === "/api/health") {
+  if (!apiPath || normalizedPath === "/api/health" || isAuthSessionEndpoint(req)) {
     next();
     return;
   }
@@ -3753,13 +3993,9 @@ function productionApiAccessGuard(req: Parameters<RequestHandler>[0], res: Param
     next();
     return;
   }
-  const providedToken = readRequestWriteToken(req);
   const readOnlyRequest = ["GET", "HEAD"].includes(req.method);
-  const readToken = readOnlyRequest ? readProductionReadToken() : "";
-  if (guard.tokenConfigured && (
-    secureTokenEqual(providedToken, readProductionWriteToken())
-    || (Boolean(readToken) && secureTokenEqual(providedToken, readToken))
-  )) {
+  const auth = readRequestAuth({ method: req.method, path: req.path, headers: req.headers });
+  if (guard.tokenConfigured && (auth.scope === "write" || (readOnlyRequest && auth.scope === "read"))) {
     next();
     return;
   }
@@ -4192,6 +4428,24 @@ function sendBoundApprovalError(res: Parameters<RequestHandler>[1], error: unkno
   res.status(status).json({ ok: false, error: code, exactBlocker: code });
 }
 
+function sendTargetAdmissionError(res: Parameters<RequestHandler>[1], error: unknown, fallback: string): void {
+  const code = error instanceof TargetAdmissionError
+    ? error.code
+    : error instanceof IdempotencyError
+      ? error.code
+      : error instanceof Error
+        ? error.message
+        : fallback;
+  const status = code === "target_admission_not_found" || code === "target_admission_registered_automation_not_found"
+    ? 404
+    : code.includes("already") || code.includes("one_active") || code.includes("unique")
+      ? 409
+      : code.includes("approval") || code.includes("source_snapshot") || code.includes("company_scope")
+        ? 422
+        : 400;
+  res.status(status).json({ ok: false, error: code || fallback, exactBlocker: code || fallback, external_action_executed: false });
+}
+
 function resolveCompanyScope(req: Parameters<RequestHandler>[0], requireSelected: boolean): { companyIds: string[]; roles: Record<string, CompanyRole> } {
   const companies = listActorCompanies();
   const requested = requestedCompanyId(req, requireSelected);
@@ -4276,6 +4530,10 @@ function isCreateSessionEndpoint(req: Parameters<RequestHandler>[0]) {
   return req.path === "/api/create/session" && (req.method === "PATCH" || req.method === "POST");
 }
 
+function isAuthSessionEndpoint(req: Parameters<RequestHandler>[0]) {
+  return req.path === "/api/auth/session" || req.path === "/api/auth/session/logout";
+}
+
 function isCreatePlannerWorkflowEndpoint(req: Parameters<RequestHandler>[0]) {
   if (req.method !== "POST") return false;
   return req.path === "/api/create/plan/jobs"
@@ -4284,44 +4542,32 @@ function isCreatePlannerWorkflowEndpoint(req: Parameters<RequestHandler>[0]) {
     || /^\/api\/planner\/[^/]+\/(?:demo|start|regularize)$/u.test(req.path);
 }
 
-function readRequestWriteToken(req: Parameters<RequestHandler>[0]) {
-  const header = req.header("x-automation-os-token") || req.header("authorization");
-  if (!header) return "";
-  return header.replace(/^Bearer\s+/i, "").trim();
-}
-
-function readProductionWriteToken(env = process.env) {
-  return typeof env.AUTOMATION_OS_WRITE_TOKEN === "string" ? env.AUTOMATION_OS_WRITE_TOKEN.trim() : "";
-}
-
-function readProductionReadToken(env = process.env) {
-  for (const name of ["AUTOMATION_OS_READ_TOKEN", "AUTOMATION_OS_QA_READ_TOKEN", "AUTOMATION_OS_REPLAY_READ_TOKEN"]) {
-    const token = env[name];
-    if (typeof token === "string" && token.trim()) return token.trim();
-  }
-  return "";
-}
-
 function getProductionWriteGuardStatus() {
   const explicit = process.env.AUTOMATION_OS_REQUIRE_WRITE_TOKEN;
   const required = explicit === "1" || (explicit !== "0" && Boolean(process.env.PORT) && !process.env.NODE_TEST_CONTEXT);
+  const auth = readServerAuthStatus();
   return {
     required,
-    tokenConfigured: Boolean(readProductionWriteToken()),
-    mode: required ? (readProductionWriteToken() ? "token_required" : "locked") : "off"
+    tokenConfigured: auth.tokenConfigured,
+    sessionConfigured: auth.sessionConfigured,
+    serviceIdentityConfigured: auth.serviceIdentityConfigured,
+    mode: required ? (auth.tokenConfigured ? "server_auth_or_token_required" : "locked") : "off"
   };
 }
 
 function getProductionApiAccessGuardStatus() {
   const explicit = process.env.AUTOMATION_OS_REQUIRE_API_TOKEN;
   const required = explicit === "1" || (explicit !== "0" && !process.env.NODE_TEST_CONTEXT);
-  const writeTokenConfigured = Boolean(readProductionWriteToken());
-  const readTokenConfigured = Boolean(readProductionReadToken());
+  const auth = readServerAuthStatus();
   return {
     required,
-    tokenConfigured: writeTokenConfigured || readTokenConfigured,
-    readTokenConfigured,
-    mode: required ? (writeTokenConfigured || readTokenConfigured ? "read_or_write_token_required" : "locked") : "off"
+    tokenConfigured: auth.tokenConfigured,
+    readTokenConfigured: auth.readTokenConfigured,
+    writeTokenConfigured: auth.writeTokenConfigured,
+    sessionConfigured: auth.sessionConfigured,
+    privateIngressConfigured: auth.privateIngressConfigured,
+    serviceIdentityConfigured: auth.serviceIdentityConfigured,
+    mode: required ? (auth.tokenConfigured ? "server_auth_or_token_required" : "locked") : "off"
   };
 }
 
@@ -8638,6 +8884,9 @@ async function decideStoredApproval(id: string, status: "approved" | "rejected" 
     )} WHERE id=${sqlValue(id)} AND company_id=${sqlValue(String(existing.company_id ?? ""))};`
   );
   const approval = querySql(`SELECT * FROM approvals WHERE id=${sqlValue(id)} AND company_id=${sqlValue(String(existing.company_id ?? ""))} LIMIT 1`)[0];
+  const targetAdmission = existing.company_id
+    ? syncTargetAdmissionApproval({ companyId: String(existing.company_id), approvalId: id, approvalStatus: status })
+    : null;
   if (status === "approved" && existing.run_id) {
     startWorkerOnceAfterApproval(existing.run_id);
   }
@@ -8648,7 +8897,7 @@ async function decideStoredApproval(id: string, status: "approved" | "rejected" 
     cancelRunAfterApprovalCancel(existing.run_id);
   }
   maybeAutoExportObsidian(`approval-${status}`);
-  return { statusCode: 200, body: approval };
+  return { statusCode: 200, body: { ...(approval as Record<string, unknown>), target_admission: targetAdmission } };
 }
 
 function startWorkerOnceAfterApproval(runId: string): void {

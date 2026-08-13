@@ -1,6 +1,6 @@
 # Automation OS Project Design
 
-Updated: 2026-07-15
+Updated: 2026-08-08
 
 ## Desired future state
 
@@ -8,7 +8,7 @@ Automation OS is an owner-operated SaaS for managing automation work for multipl
 
 Within a company, the owner can define automations, schedules, tasks, runs, approvals, artifacts, integrations, memory, and performance. All records are company-scoped. Read views show persisted data with provenance and freshness. Write controls cause a durable state transition, return a stable receipt, and survive reload. Controls with no production outcome are removed. Actions that can post, send, apply, publish, delete external data, spend money, or cross an authentication boundary remain explicit human gates.
 
-The hosted API and PostgreSQL form the control plane and source of truth. A Mac worker performs bounded execution using leased jobs and writes results and proof back to the control plane. Codex App Server or Codex CLI may assist the worker with planning and code analysis, but never becomes the authority for company identity, approval, job ownership, or completion.
+The hosted API and PostgreSQL form the control plane and source of truth. AOS itself owns manual triggers, recurring schedules, run IDs, durable queue materialization, leases, receipts, and readback. A Mac worker performs bounded execution using leased jobs and writes results and proof back to the control plane. Codex App Server or Codex CLI may be plugged in as one provider adapter, but the Codex App is only a thin trigger/readback client and never becomes the authority for company identity, approval, job ownership, scheduling, or completion.
 
 ## Success targets
 
@@ -22,10 +22,64 @@ The hosted API and PostgreSQL form the control plane and source of truth. A Mac 
 8. Daily AI, Job Application Manager, and NisenPrints each complete a reference path from definition to schedule/run, approval boundary, worker result, and proof without weakening workflow-owned safety rules.
 9. Automated contract, API, tenancy-isolation, and UI outcome tests report zero unexplained failures or skips for surviving controls.
 10. Production promotion requires clean-SHA build/test evidence plus authenticated Browser Use CLI authority/profile/port/readback; deployment and external actions remain separately approved stages.
+11. Manual and scheduled AOS triggers use the same idempotent durable-run entrypoint and return a persisted run/job receipt; a Codex App trigger cannot bypass that path.
+12. LLM execution is behind a provider-neutral adapter contract. Codex, Claude, another hosted model, or a deterministic no-LLM worker may be selected without moving company scope, approvals, leases, or completion authority into the provider.
+13. AOS control-plane/no-effect runs remain schedulable and verifiable when every LLM provider is unavailable. Provider capability is read back as a dependency status, not treated as execution success.
+
+## Operational trigger contract (2026-08-08)
+
+The first usable recurring lane is AOS-owned: the server owns schedules and
+durable queue materialization, the worker owns leased pickup, and the caller is
+only a trigger/readback client. Codex App is therefore a replaceable caller,
+not a required execution host. The canonical manual and external caller is:
+
+```text
+POST /api/v1/companies/{companyId}/automations/{automationId}/trigger
+Authorization: Bearer <one AOS write token, when API auth is enabled>
+Idempotency-Key: <caller-generated stable key>
+```
+
+The request is admitted as `preflight_no_effect` with
+`external_action_allowed=false`. AOS validates company membership and the
+automation identity before creating the durable job. A later workflow adapter
+may choose Codex, Claude, another LLM, or no LLM, but it cannot bypass AOS
+scope, approval, lease, receipt, cleanup, or external-effect gates.
+
+Do not attach a different secret to every recurring automation. Use one ingress
+write token stored outside source/prompts/artifacts (for example a 0600 token
+file referenced by `--token-file`), then bind each invocation with the company
+ID, AOS automation ID, and idempotency key. This keeps provider migration and
+Codex App replacement local to the caller while preserving a single audit and
+revocation boundary.
+
+## Browser runtime lifecycle and parallelism (2026-08-08)
+
+Browser work is isolated by lifecycle, profile, port, room, and run owner. A
+one-shot public/read-only flow uses the `single-use` profile and port range;
+an authenticated recurring workflow uses its own `scheduled` profile and
+reserved port; an explicitly authorized short-lived handoff uses `temporary`
+only when its owner/task lease permits it. These ranges are non-overlapping.
+
+The AOS lane allocator owns this split automatically. Registered recurring
+workflows use reserved slots (Job Application Manager `19881`, Daily AI
+`19882`, NisenPrints `19884`); one-shot and temporary runs derive a fresh
+profile, session, port, and lock from the current run owner. A persisted lane
+snapshot is readback only and never overrides a fresh binding. Every browser
+lane is `browser_use_cli`; the allocator rejects a profile, port, lock, or
+surface outside its lifecycle range before a worker starts.
+
+An active room owned by another task is never killed, reclaimed, inspected, or
+reused. Parallel work starts a fresh room with the correct lifecycle, profile,
+port, authority, and recording directory, then binds every command and
+readback to that run. Finalizing a recording does not imply closing an
+intentionally user-held login handoff; that room remains owner-bound until the
+same owner requests or performs terminal cleanup.
 
 ## Strategic thesis
 
 Keep the current route-page design and make it truthful from the inside out. First remove misleading controls and static data, then establish the company boundary, then complete one durable automation-to-proof vertical slice, and only then expand integrations, analytics, and multi-user access.
+
+The first vertical slice is scheduler-first: AOS materializes due occurrences and manual requests into the same durable queue, while provider adapters are replaceable execution ports below that boundary. This keeps the product useful for deterministic/control-plane work even when Codex is unavailable and prevents a provider-specific desktop client from becoming a hidden control plane.
 
 This avoids rebuilding the interface before its operating contracts are sound. It also preserves the current owner workflow while making later client logins and role-based access possible without another data migration.
 
@@ -65,6 +119,9 @@ The facts and gaps below describe the starting baseline used to plan Waves 1–6
 6. External post/send/apply/publish/delete, payment, CAPTCHA/OTP, identity, permission, and deployment remain human-controlled boundaries.
 7. Analytics is derived from typed run/proof events. Static demonstration charts are not allowed in the operational UI.
 8. Admin diagnostics such as raw worker events, local paths, ports, browser profiles, bridge internals, and exact internal blockers do not appear on normal company pages.
+9. AOS scheduler is the source of truth for due work. The Codex App may request a trigger or read status, but it cannot own a schedule, lease, run completion, or business receipt.
+10. Provider adapters expose capability and bounded execution/readback only. They do not define company scope, approval state, queue ownership, or terminal success.
+11. External actions remain behind workflow-specific approval, target/payload binding, provider receipt, cleanup, and reconciliation gates even after the provider adapter boundary is introduced.
 
 ## Deferred decisions
 

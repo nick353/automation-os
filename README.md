@@ -42,7 +42,7 @@ Home/Chatの共通入口から始めると、この6項目がChat入力欄へ下
 
 Automation OS は現在の画面を読み、意味（role、label、状態、URL、候補の一意性）で対象を解決します。画面変更、モーダル、スクロール、ページング、認証状態の変化があれば再評価します。候補が見つからない・複数ある・未知の高影響質問がある場合は停止して質問し、古い証拠から再実行しません。
 
-公開URLを初めて開いた時は、保護APIのキー入力が表示されます。閲覧・readbackだけなら `AUTOMATION_OS_READ_TOKEN`、作成・更新・実行・承認まで行うなら `AUTOMATION_OS_WRITE_TOKEN` を使います。画面上部に現在の権限範囲を表示し、read-onlyキーで外部作用を有効にすることはありません。キーはこのタブのsessionStorageだけで扱い、チャット本文・URL・ログへ入れません。
+公開URLを開いた時、管理画面はprivate ingressまたはSSOの確認後にサーバーが発行するHttpOnly・Secure・SameSite cookieで保護されます。管理者用APIキーの手入力は不要です。read/write tokenとautomation-3専用service identityはSecret StoreまたはKeychainからサーバー/worker側だけが取得し、ブラウザ、チャット本文、URL、localStorage、sessionStorage、録画、artifactへ渡しません。private ingress/SSOが未設定なら `private_ingress_or_sso_required` でfail-closedします。
 
 読み取り以外の投稿・公開・応募・送信・更新・削除は、会社scope、account、具体的なtarget、payload、fresh authority、明示承認を同一Runへ束縛します。実行後も同一Runのprovider receipt、source-of-truth sync、cleanupが揃うまで完了扱いにしません。パスワード、cookie、token、OTP、CAPTCHAを保存・表示することはありません。
 
@@ -102,7 +102,7 @@ private-route, and AOS connection settings.
 
 ## Production Safety
 
-Public deployments must be treated as private operator control surfaces. All `/api/*` routes except `/api/health` require a valid `x-automation-os-token` by default, even when `PORT` is absent. `GET`/`HEAD` readbacks accept `AUTOMATION_OS_READ_TOKEN` (or its QA/replay read-only variants); state-changing calls require `AUTOMATION_OS_WRITE_TOKEN`. Only the loopback-only local launcher sets `AUTOMATION_OS_REQUIRE_API_TOKEN=0`. Do not disable either guard on a publicly reachable service.
+Public deployments must be treated as private operator control surfaces. All `/api/*` routes except health and the session bootstrap route remain protected by default. The UI session is issued only after a trusted private ingress proof or SSO boundary; state-changing calls still require a write-scoped session. `AUTOMATION_OS_READ_TOKEN`, `AUTOMATION_OS_WRITE_TOKEN`, and the dedicated automation-3 service identity are resolved server-side from Secret Store, owner-only files, or Keychain. Do not disable either guard on a publicly reachable service.
 
 PostgreSQL is the preferred production database. Create a PostgreSQL service in the host, then set one of these variables on the Automation OS service:
 

@@ -1,4 +1,2662 @@
+## 2026-08-13 current checkpoint 516: 旧extension-first validatorの誤failをBrowser Use CLI正本へ収束
+
+現行automation-3の実行経路は `.codex/automation-kernel/manifests/job-application-manager.json` と `scripts/job_applications/validate_job_manager_browser_use_cli.py` がBrowser Use CLI/AOS契約を正本としている。一方、互換名 `validate_job_manager_extension_first.py` を直接呼ぶと、廃止済みChrome Extension/Gmail/IAB条件で31項目を誤failしていた。互換validatorは現行automation-3のAOS/Browser Use CLI markersを検出した場合、専用CLI validatorへ委譲するよう局所修正し、旧契約の誤停止を再発防止した。
+
+検証: current CLI validator `35/35` pass、互換validator経由も同じ `35/35` pass、回帰 `tests/test_iab_goal_first_migration.py` は `3/3` pass、Python syntax/diff check pass。registered automation-3はACTIVE、launch packetはcurrent project prompt hashを再生成済み。これはadmission/readinessの修正であり、Browser Use起動・応募・外部効果は0件。
+
+**Exact blocker / next action / restart point:** `business_target_account_payload_audience_authority_approval_missing`、production business candidate `0`、bound approval `0`、`company_release_required_fields_missing`、`production_read_token_missing`は継続。fresh target/account/payload/audience/authority/approval/idempotency bindingがproduction sourceでreadbackされるまで新規business rootを起動しない。揃った後、fresh official root → locale-matched Resume upload → filename readback → 最大1件submit → provider receipt/source sync → reconciliation → cleanupへ進む。
+
+Evidence: `outputs/browser-use-generalization-release-20260813.v3.json`、`/Users/nichikatanaka/Documents/New project/scripts/job_applications/validate_job_manager_browser_use_cli.py`、`/Users/nichikatanaka/Documents/New project/scripts/job_applications/validate_job_manager_extension_first.py`、`/Users/nichikatanaka/.codex/automations/automation-3/run-now-launch-packet.json`。
+
+## 2026-08-13 current checkpoint 515: root controllerの30秒Node REPL timeoutを再発防止境界へ固定
+
+前回のowner-bound cleanup後に、公式rootの `root_controller_bootstrap_timeout` の原因を呼び出し側まで分離した。`mcp__node_repl__js` は `timeout_ms` 省略時に30秒で打ち切られる一方、Job Manager preflightは明示的な90秒境界を持つため、controller handoffをawait中にApp側だけが先に終了し得る。共有Job Manager skillとproject automation promptへ、controller handoffには `timeout_ms:120000` 以上の明示値を必須化した。timeout後の再発射・run identity再利用は禁止した。
+
+これは運用境界の修正であり、応募の再実行や外部効果を発射していない。前回run `20260813-062221-905272-5c10ed4e` はroom released、profile lock/port/listener/process/daemon/active markerなし、recording-statusは `current_runtime_status=completed / active_runtime_count=0 / room_resource_pending_count=0 / process_live_count=0 / current_unresolved_count=0` のまま。adapter timeout回帰を含むfocused testは52/52 pass。shared CLIのGitHub draft PRは既存の `a075b8d7dfb50ee77f6514c099721098e560b49e`、今回のJob Manager adapter/prompt変更はlocal worktreeのみ。
+
+**Exact blocker / next action / restart point:** `company_release_required_fields_missing`、`business_target_account_payload_audience_authority_approval_missing`、`production_read_token_missing`は継続。fresh target/account/payload/audience/authority/approvalが揃うまで新規rootは起動しない。揃った後、現行rootから明示的 `timeout_ms>=120000` でfresh official rootを1回だけ起動し、新規locale-matched Resume upload → filename readback → 最大1件submit → submitted confirmation → same-run source sync/readback → reconciliation → cleanupへ進む。
+
+Evidence: `outputs/browser-use-generalization-release-20260813.v3.json`、`/Users/nichikatanaka/Documents/New project/artifacts/run-summaries/codex-app-automation-3-20260813-062221-905272-5c10ed4e/automation-kernel-cleanup-proof.v1.json`、shared Job Manager skill、project automation prompt。
+
+## 2026-08-13 current checkpoint 514: automation-3 room/lock/daemonをowner-bound解放、応募は未実行
+
+ユーザーが「画面ではウェブ操作していない」と明示したため、対象run `20260813-062221-905272-5c10ed4e` の descriptor/roomだけを公式Browser Use CLI経路で解放した。fresh readbackで対象Chrome pid/listenerなし、session-bound Browser Harness daemonの一時残留も消失し、owner `automation-3` の `room-75a02f4cdc4b2c7c5cff1a75cf1c39d3` は `state=released`、対象 profile lock `profile-f03e7db7d03019bb23f66f28.lock` はremoved、port `19881` listener/processなし。recording descriptorは `stale`、statusは `recorder_active=false / state=abandoned`。recording-statusは `current_runtime_status=completed / active_runtime_count=0 / room_resource_pending_count=0 / process_live_count=0 / current_unresolved_count=0` を返し、外部効果は0件。対象runが残した117-byte active markerも対象パスを確認して削除済み。
+
+応募の公式runは候補供給・Resume upload・submit前の `root_controller_bootstrap_timeout` で停止しており、submitted confirmedは0。fresh rootの再起動や応募の再実行はまだしていない。共有CLI側はscroll/session binding修正と、Job Manager preflightの1-batch/readback修正を検証済み。さらにJob Manager adapterへpreflight timeoutの明示境界（既定90秒）を追加し、stage boundaryへ転送するfocused regressionを追加した（このadapter層の変更はlocal worktreeのみで、GitHub commitにはまだ含めていない）。
+
+**Exact blocker / next action / restart point:** `company_release_required_fields_missing`、`business_target_account_payload_audience_authority_approval_missing`、`production_read_token_missing`は継続。target/account/payload/audience/authority/approvalが揃うまでは新規Browser Use rootを起動しない。揃った後、fresh official root → locale-matched Resume新規upload → exact filename readback → 最大1件submit → submitted confirmation → same-run source sync/readback → reconciliation → cleanupの順で再開する。前回blocked runのreplay、queued/preflightからの応募完了推定、foreign owner資源の操作はしない。
+
+Evidence: `outputs/browser-use-generalization-release-20260813.v3.json`、`/Users/nichikatanaka/Documents/New project/artifacts/run-summaries/codex-app-automation-3-20260813-062221-905272-5c10ed4e/automation-kernel-cleanup-proof.v1.json`、fresh `recording-status` readback、`https://github.com/nick353/heavy-chain/pull/1`。
+
+## 2026-08-13 current checkpoint 513: Browser Use generalization verified;応募runはowner-bound cleanup待ち
+
+共有Browser Use CLIの根本修正（fresh DOM/AX targetをscrollしてからgeometryを計算、requested/effective sessionを同一flowへ束縛）をGitHub draft PRへ反映済み。追加のJob Manager preflightは、open・URL・state・screenshotを4個の独立commandで直列実行せず、1回のbounded read-only batchへ統合した。現行LinkedIn SPAの`/jobs/search-results/` readbackもorigin/path boundedで受理するように修正した。Browser Use CLI `92/92`、Job Manager adapter/candidate-supply/submit/site-playbook `33/33` と `18/18`、AOS adapter/portable `23/23`、E2E contract `40/40`、publication scan、no-effect canaryを確認し、外部効果は0件。
+
+応募の公式 automation-3 run `20260813-062221-905272-5c10ed4e` は、候補供給・Resume upload・submitの前に `root_controller_bootstrap_timeout` で停止し、submitted confirmed `0`。owner-bound cleanup/readback後も、指定descriptorが現行roomに束縛されず `browser_use_recording_descriptor_scope_mismatch;owner_manifest_missing;foreign_or_ownership_unverified`、`cleanup_complete=false`、`reclaim_allowed=false`、listener/process/daemonなしとなった。room/profile/portのrelease・reuse・killはしていない。
+
+**Exact blocker / next action / restart point:** matching continued descriptorとowner-bound cleanup proofが得られるまで新規Job rootや応募操作を発射しない。証跡が変わったら、fresh official `root_controller_bootstrap` → 新規locale-matched Resume upload → filename readback → 最大1件submit → submitted confirmation → same-run source sync/readback → reconciliation → cleanupの順で再開する。`company_release_required_fields_missing`（G0 approver、hunk allowlist owner、clean signed manifest、rollback owner、workflow receipt contract）、`business_target_account_payload_audience_authority_approval_missing`（production bound approval 0 / business candidate 0）、`production_read_token_missing`は継続。
+
+Evidence: `outputs/browser-use-generalization-release-20260813.v3.json`、`/Users/nichikatanaka/Documents/New project/artifacts/run-summaries/codex-app-automation-3-20260813-062221-905272-5c10ed4e/automation-kernel-cleanup-proof.v1.json`、`https://github.com/nick353/heavy-chain/pull/1`。
+
+## 2026-08-12 current checkpoint 512: Obsidian queued runのworker pickup復旧条件を分離
+
+Obsidian run `run_mspx5jpo_dc0kvd` の公式AOS worker pickupを確認した。初回は `worker_service_identity_missing` でfail-closed。canonical LaunchAgent/最新設定にある tenant service identity `aos_service_0f4e6b6c65edf796364e` を明示して、同じrun・1 cycleだけを `worker:loop:stored` で再開したところ、workerLoopとPostgres workerは起動したが、Postgres同期worker境界で約2分進まず、runは `queued` のまま、step/proof/eventの完了readbackは0件だった。これはbrowser/foreign ownerのreadbackとは別のworker transport/state blockerである。
+
+自分が起動した親・子・Postgres worker process groupだけをbounded cleanupし、残留0を確認した。resident remote Browser Use worker（PID `80311`）は変更せず、foreign port/roomも未操作。secret値は表示・保存していない。Obsidian runの再発射は停止する。
+
+**Exact blocker / next action / restart point:** `worker_postgres_sync_boundary_hung_after_identity_admission`（過去の同一層の観測エラーは `spawnSync ... ETIMEDOUT`）。まず同じqueued runを再発射せず、Postgres workerの同期child-process依存をasync/ boundedな共通DB境界へ修正し、対象run専用の回帰を追加する。その後、fresh worker pickup → `automation_kernel_result.v2` → workflow readback → cleanup proofを一度だけ確認する。別系統の `portable_worker_company_scope_mismatch`、`browser_use_worker_readback_pending`、operator/owner/G0/G1 gateは継続する。
+
+Evidence: `/Users/nichikatanaka/Documents/Codex/automation-os/data/state/automation-os-worker.json`、AOS `GET /api/runs/run_mspx5jpo_dc0kvd`、`work/service-readiness/current-continuation-readback-20260812.v11.json`。
+
+## 2026-08-12 current checkpoint 511: 共有Hook復旧後のAOS/Kernel/Obsidian再確認
+
+共有Hookのhandoff/Stop経路を修復し、PostToolUse/SessionEnd/UserPromptSubmitの有効状態、SessionEnd timeout、dispatcherのmanifest lifecycle検証を同期した。Hook focused suiteは `78/78 pass`、valid PreToolUse dispatcher readbackは `{}`、外部効果は0件。Goal RunContextは古い `browser_use_unregistered_live_process` を現行の `browser_use_worker_readback_pending` に更新し、foreign port `20095` は `observe-only / reclaim_allowed=false` のまま保持した。
+
+公式Kernel経路で Obsidian を fresh確認した。`dry-run` は `ok=true`、`preflight` は `ok=true / command_ready=true`、`execute` は AOS portable workerへ `queued`（run `run_mspx5jpo_dc0kvd`、`worker_loop waiting_for_pickup`）を返した。これは no-effect trigger receipt であり、`automation_kernel_result.v2`・workflow readback・cleanup proofが揃っていないため、Obsidian監査完了や業務完了には昇格させない。scopeは local `project-a` と remote worker company `company_2560580981cedfd106b66245` の不一致を継続している。
+
+fresh runtime boundaryは source/installed/launchd/live processとも dynamic/read-only、local healthとregistered inventoryは正常、登録7 laneは全て `process absent / live_readback=not_claimed`。Codex App Server source preflightは全項目passだが、deploy/secret readは未実施。release packet v9は `blocked_no_effect` のまま。
+
+**Exact blocker / next action / restart point:** `portable_worker_company_scope_mismatch`、`browser_use_worker_readback_pending`、`aos_operator_key_human_input_pending`、foreign owner `20095`、Codex App Server authenticated transport、effectful receipt/source-sync、G0/G1、dirty source vs deployed candidate。scopeを人が正本選択して一致させ、owner-authorized worker readbackとoperator key/G0/G1を得た後に、fresh target-bound admission → receipt → source sync → reconciliation → cleanupへ進む。foreign resource、secret、実応募/投稿/送信/公開は触らない。
+
+Evidence: `work/service-readiness/current-continuation-readback-20260812.v11.json`、`work/service-readiness/company-release-packet-preparation-20260812.v9.json`、`work/goal-run-automation-os-continuation-20260812.json`、`work/service-readiness/unresolved-only-exit-audit-20260812.v9.json`。
+
+## 2026-08-12 current checkpoint 510: Browser Use room registryのforeign owner境界をcross-surface fresh確認
+
+`/Users/nichikatanaka/.local/bin/codex-browser-use rooms --json` と r9の `recording-status` をread-onlyでfresh確認した。r9は `recorded/finalized/released`、active runtime `0`、cleanup pending `0`、current unresolved `0`。AOS same-host process readbackではPID `46982`/port `20092`とPID `76428`/port `20094`はいずれもAOS未登録。Browser Use room registryでは20094について、別task `019fed0e-d293-7f63-881e-eafe5286227c-testflight-readback-r7`のdescriptor-bound held room、`reclaim_allowed=false`を観測した。20092にはactive room observationがない。どちらもkill・release・reuse・cleanup・mutationしていない。
+
+これはAOSの未登録判定とBrowser Useのforeign owner-bound readbackを混同しないための精密化であり、AOS laneへの所有権移管や安全解除を意味しない。20092/20094はowner authorityまたは同一generationのreadbackが変わるまでobserve-onlyのままにする。
+
+証跡: `work/service-readiness/current-continuation-readback-20260812.v1.json`、`work/service-readiness/current-continuation-review-packet-20260812.v1.json`、`work/service-readiness/unresolved-only-exit-audit-20260812.v1.json`。Goal checkpoint 100。
+
+## 2026-08-12 current checkpoint 509: Zeabur read-only target/public parity、明示screenshot、未解決Exit監査をcurrent正本へ反映
+
+Zeabur公式CLIでpersonal workspaceのproject `automation-wiled`、service `automation-os`、current environment、domain `automation-os.zeabur.app`をfresh readbackした。latest deploymentはRUNNINGだがcommit SHA/source provenanceはCLIで観測できず、current HEAD `dac3751`を示すdeploymentはREMOVEDのhistorical readbackのみだった。public healthはHTTP 200、`/readyz`はHTTP 200、JS `index-B_96I47-.js` とCSS `index-2faJdFEc.css`のSHAはlocal distと一致した。protected readbackは `production_read_token_missing`、Codex App Server authenticated WSSは `/run/secrets/codex-app-server-token` 不在でconnect前にfail-closedとなり、token値は読んでいない。deploy/restart/config/secret変更は0件。
+
+canonical Browser Use CLIのfresh public single-use run `aos-runtime-ui-qa-20260812-r9`（session `session-aos-runtime-ui-qa-20260812-r9`、reserved port `19998`）で、公開rootの管理者API-key境界をreadbackし、明示パス `work/service-readiness/recordings/aos-public-ui-current-20260812-r9/public-root.png` のscreenshotを取得した。recording、receipt、finalize、cleanupは同一Runでcompleted、`external_effects=none`。キーは入力していないため、authenticated UIやprotected routeの成功には昇格させていない。
+
+証跡: `work/service-readiness/zeabur-readonly-readback-20260812.v1.json`、`work/service-readiness/current-continuation-readback-20260812.v1.json`、`work/service-readiness/current-continuation-review-packet-20260812.v1.json`、`work/service-readiness/unresolved-only-exit-audit-20260812.v1.json`。
+
+Goal checkpoint 99。local root-cause regressionは完了、public visual canaryも明示screenshotまで完了。未解決は `portable_worker_company_scope_mismatch`、business receipt/source sync未達、`production_read_token_missing`、Zeabur source provenance未観測、Codex App Server token-file、foreign owner境界（AOS上は20092/20094ともunregistered、Browser Use room readbackでは20094に別taskのheld descriptor-bound room、20092はactive room observationなし）、G0/G1 evidence不足。scope選択・認証・target/payload/account/audience・approval・provider receipt・source sync・release approvalが変わるまでclaim、投稿、応募、送信、公開、secret変更、foreign cleanup、broad dirty deployは行わない。
+
+## 2026-08-12 current checkpoint 506: 公開UIカナリアを同一Runで最終化し、管理者キー境界をfresh確認
+
+canonical `/Users/nichikatanaka/.local/bin/codex-browser-use` の新規public single-use run `aos-runtime-ui-qa-20260812-r6`を同一sessionで実行した。`https://automation-os.zeabur.app`の公開rootへ到達し、管理者APIキー入力欄と「確認して開く」境界を確認した。キーは入力していないため、認証済み画面や保護routeの成功には昇格させていない。`record-finalize`、Browser Use receipt、H.264録画、terminal cleanupはすべてcompleted、`external_effects=none`、owned resource残留なし。スクリーンショット指定なしの要求は `browser_use_screenshot_path_required` でfail-closedとなり、同じ要求は再試行していない。これはvisual exportの制約であり、UI到達・録画・cleanup・外部効果の証跡を無効化しない。
+
+証跡: `work/service-readiness/recordings/aos-public-ui-current-20260812-r6/browser-use-recording-manifest.json`、`/Users/nichikatanaka/.browser-use-cli/receipts/aos-runtime-ui-qa-20260812-r6/session-aos-runtime-ui-qa-20260812-r6-b467bcf63ba445bfaae4d5f27bb08e44.json`、`work/service-readiness/recordings/aos-public-ui-current-20260812-r6/browser-recording.mp4`。
+
+Goalは `running/audit` のまま。`portable_worker_company_scope_mismatch`、実target/payload/account/audienceとfresh authority不足、Job/Daily AI/NisenPrintsのbusiness receipt/source sync不足、`production_read_token_missing`、G0/G1不足は変わらない。次の再開点は、正本company/endpointの明示とfresh claim/readback、または人間によるoperator key / production read tokenの安全な画面入力後。unknown ownerの20092/20094はowner-bound authorityが変わるまで触らない。実応募・投稿・送信・公開・更新・削除・支払い・secret readは0件。
+
+## 2026-08-12 current checkpoint 508: 現行treeへ回帰結果・skip内訳・fingerprintを束ねて再監査
+
+現行treeで `npm test`、fixture E2E、contract E2E、Web typecheck/build、process scan、automation healthを取り直した。結果は server `1134 total / 1117 pass / 0 fail / 17 skip`、fixture `6/6`、contract `38/38`、Web typecheck/build pass、process scan `matched=0 / terminated=0 / remaining=0`、automation health `7 active / 7 ok / 0 blocker`、local health HTTP 200。skip内訳は browserBridgeの明示skip 11件、`AUTOMATION_OS_TEST_POSTGRES_URL`未設定によるreal PostgreSQL fixture 5件、`AOS_LIVE_ADAPTIVE_E2E`未設定によるlive adaptive Browser Use E2E 1件。async DB境界と `postgres_async_schema_not_ready` はskipではなく2/2で通過した。
+
+結果はHEAD `dac375121d4578990387e2ece8b4e5ea119b8921`、dirty status SHA-256 `e80d3b3159d3b2ca3f380ab5ce6eb4fa96df64a7bf4536a20a2124311c12da14`、binary diff SHA-256 `ea5a7efe74c6d687219741d36dd3a7f797c72433da520b21d0611e613adffc95`へ束ねた。worktreeはtracked/modified 86件、untracked 89件のためclean release candidateではない。fresh runtimeはBrowser Use runtime driftなし/no launch、worker heartbeat ok/claim idle/read_only、scope mismatch継続、登録7 lane absent/not_claimed、foreign 20092/20094 untouched。
+
+証跡: `work/service-readiness/current-tree-regression-readback-20260812.v1.json`。Goalは `running/audit` のまま。security reviewer `019ff28e-c082-7cf1-ab8e-cdc4ea47a451` もfail-closed判定で、company scope、protected readback、business receipt/source-sync、G0/G1未達を確認した。
+
+## 2026-08-12 current checkpoint 507: カナリア後のAOS状態をfresh再取得
+
+同一Runのカナリア終了後に `GET /api/health` と `GET /api/mvp/state?project_id=project-a` を再取得した。local healthはHTTP 200 / `ok=true`、remote worker PID 47153はheartbeat `ok` / claim `idle` / effects `read_only`。control-plane `project-a`とremote `company_2560580981cedfd106b66245`のscope mismatchは継続し、alignmentDecisionRequired=true。登録7 laneは全てprocess absent / live readback not_claimed。PID 46982/port 20092とPID 76428/port 20094はunregistered/ownership unknownのまま観測のみで、kill/release/finalize/reuseしていない。external_action_executed=false、secret readなし。
+
+証跡は `work/service-readiness/current-continuation-readback-20260812.v1.json` と `work/goal-run-automation-os-continuation-20260810.json` checkpoint 97。Goalは `running/audit` のままで、scope選択、認証、business receipt/source sync、protected production readback、G0/G1が変わらない限り同じclaim/effectを再発射しない。
+
+## 2026-08-12 current checkpoint 505: PostgreSQL同期フォールバックを除去し、最終E2E・fresh readbackを完了
+
+前回checkpoint 504で確定した「Browser Use CLIが滑らかでない」根本原因（AOSのPostgreSQL-backed HTTP一覧routeがNode event loop上でlegacy同期SQL child processを起動し、無関係なhealth/UI readまで待たせる）に対して、残っていた同期フォールバックを共通DB境界まで修正した。`GET /api/mvp/registered-automations` のPostgreSQL request pathから同期`initDb()`を外し、`querySqlAsync`、`execSqlAsync`、async transaction/script helperはstartup未完了時に`postgres_async_schema_not_ready`で即時fail-closedする。registered workflow seedはserver startupでwarmし、ledger queryは並列化した。local Codex CLIが滑らかに見えた理由は、AOS HTTPのこの同期Postgres経路を通らないためである。
+
+変更対象は `apps/server/src/db/client.ts`、`apps/server/src/index.ts`、`apps/server/src/registeredWorkflows.ts`、`apps/server/src/tests/asyncDatabaseBoundary.test.ts`。新規回帰はroute source boundaryと、PostgreSQL未準備時に同期接続probeを行わず即時blockすることを確認する。最終`npm test`は **1134 total / 1117 pass / 0 fail / 17 skip**、final-patch focusedは **26/26**、Web typecheck、`git diff --check`、process scan **0/0/0**を通過。fixture E2Eは6/6、contract E2Eは38/38を維持した。
+
+launchd再起動後のfresh readbackはhealth HTTP 200、3一覧route HTTP 200。warm計測はhealth 0.0069-0.0072秒、v1 0.6643-0.7456秒、MVP 0.0063秒、registered 1.308-2.3112秒。registered route固有のDB/transport latencyは残るが、healthは応答し続け、event loop全体の停止は再現しない。canonical Browser Use runtime-readbackはhelper/browser-use/Chrome/Python全てexpected SHA/version一致、`runtime_drift=false`、launchなし。runtime boundaryはsource/installed/launchd/live serverともread-only/dynamicで、AOS server PID `5723`、port `8787`、remote worker PID `47153`。
+
+AOSのfresh stateは、control-plane company `project-a` とremote worker company `company_2560580981cedfd106b66245` / `https://automation-os.zeabur.app` の `portable_worker_company_scope_mismatch` を継続表示。登録7 laneは全て予約値とprocessを分離して `registered / process absent / live_readback=not_claimed`。対応表は Job `automation-3`/`19881`、Daily AI `daily-ai`/`19882`、NisenPrints `nisenprints`/`19884`、X `x-authenticated-browser-lane`/`19885`、YouTube `youtube-visible-transcript`/`20080`、Prompt Transfer `prompt-transfer-ukiyoe`/`19981`、SNS `sns-multi-poster-ukiyoe`/`20081`。PID `46982`/port `20092` とPID `76428`/port `20094`はunregistered/ownership unknownのためobserve-onlyで未操作。`automation:health`は7 active / 7 ok / 0 blocker。前回Job threadの正本はremote company `company_2560580981cedfd106b66245`で、旧provider-neutral queued receiptは再利用せず、Resumeは同一run新規upload→filename readback→submitの順を維持する。外部effect、claim、submit、publish、send、delete、payment、secret readは0件。
+
+**Exact blocker / next action / restart point:** 最優先は `portable_worker_company_scope_mismatch`。AOS画面のcontrol-plane queueとportable remote workerの候補から正本company/endpointを明示し、scope一致後にfresh claim → same-run receipt → source sync → reconciliation → cleanupへ進む。Jobはfresh target-bound approval → new locale-matched Resume upload → exact filename readback → その後だけsubmit。Daily AI/NisenPrintsはtarget/payload/account/audience → approval → provider receipt → same-run source sync → cleanup。productionのread-only QA（2026-08-12 05:22 JST）は公開health HTTP 200とJS/CSS parity verified、protected readback/desktop/mobile screenshotは `production_read_token_missing` で未試行。releaseは `company_release_g0_g1_required_evidence_missing`。未認証UI、実外部効果、production promotion、foreign resource cleanupは、必要な人の入力・owner authority・G0/G1 evidenceが変わるまで成功扱いにしない。正本artifactは `work/service-readiness/current-continuation-readback-20260812.v1.json`、`work/service-readiness/current-continuation-review-packet-20260812.v1.json`、`work/goal-run-automation-os-continuation-20260810.json`。
+
+## 2026-08-12 current checkpoint 504: Browser Use/AOS高頻度一覧の同期DB根本原因を共通層で除去
+
+Browser Use CLIが滑らかに見えなかった根本原因を、PostgreSQL-backed HTTP一覧routeがlegacy同期SQL helper（最大12秒のchild process）をNode event loop上で呼んでいたことと確定した。遅いDB readが、同時に来た無関係なAOS/Browser Use requestまで止めていた。local Codex CLIはこのAOS同期DB経路を通らないため、相対的に滑らかに見えていた。
+
+共通の非同期DB境界を、`GET /api/v1/companies/:companyId/automations`、`GET /api/mvp/automations`、`GET /api/mvp/registered-automations`へ適用した。登録Workflowの初期化・company scope・一覧・migration ledgerもPostgreSQL async poolへ切り替え、SQLite互換とtenant check・read-only境界は維持した。変更は `apps/server/src/automations/repository.ts`、`apps/server/src/registeredWorkflows.ts`、`apps/server/src/index.ts` に限定した。
+
+検証は server build、Web typecheck、全server suite **1132 total / 1115 pass / 0 fail / 17 skip**、contract E2E **38/38**、fixture E2E **6/6**、`git diff --check`をpass。再起動後の同時readbackでも3一覧はHTTP 200/ok=trueで、同時healthもHTTP 200を維持した。warm同時計測は v1 `0.672s`、MVP `1.963s`、registered `2.394s`、health `0.017s`。従ってDB待ち時間は呼出しrouteには残るが、event loop全体を塞ぐ症状は解消した。registered routeのDB待ちがまだ約2秒あるため、これは次のDB query/index/transport latency課題として未完了のまま記録し、広いcache化や全route一括改修は行っていない。
+
+登録Browser Use laneのcurrent bindingは Job `automation-3`/`19881`、Daily AI `daily-ai`/`19882`、NisenPrints `nisenprints`/`19884`、X `x-authenticated-browser-lane`/`19885`、YouTube `youtube-visible-transcript`/`20080`、Prompt Transfer `prompt-transfer-ukiyoe`/`19981`、SNS `sns-multi-poster-ukiyoe`/`20081`。全てregistered/process absent。PID `46982`/port `20092` とPID `76428`/port `20094`はunregistered/ownership unknownとして未操作。
+
+**Exact blocker / next action / restart point:** `portable_worker_company_scope_mismatch`（local control-plane `project-a`対remote worker `company_2560580981cedfd106b66245`）を先にownerが正本選択して整合させる。Jobは新規Resume upload→filename readback→fresh target-bound approval→submit/readback、Daily AI/NisenPrintsはtarget/payload/account/audience→approval→provider receipt→same-run source sync→cleanup。production protected readbackは`production_read_token_missing`、releaseはG0/G1 evidence不足。未知portはowner-bound authorityが変わるまで触らない。Goalは未完了のまま維持する。
+
+## 2026-08-12 current checkpoint 502: ローカルAOS利用入口を確定
+
+対象をローカルAOSの即時利用に絞った。`http://127.0.0.1:8787` はhealth `HTTP 200 / ok=true`、配布HTMLは最新bundle `index-B_96I47-.js` / `index-2faJdFEc.css`を返し、bundle内に `Queue / Workerのscope候補` と `自動切替なし` の表示を確認した。server build、Web typecheck/build、focused readback/UI `13/13`、static preflight `209/258/0/0`、diff checkは完了済み。
+
+ローカルで使う入口は `http://127.0.0.1:8787`。operator API-keyが必要な画面では、キーをチャット・ログ・artifactへ貼らず画面へ手入力する。AOS画面のprofile/port表は予約値、process表は実測値、scope表はqueueとremote workerの候補を分けて表示する。scope mismatch中はclaimしない。
+
+**保留:** Zeabur配布、実投稿/応募/送信/公開、secret変更、foreign port 20092は今回の絞った作業対象外。必要になった時だけ別stageで再開する。
+
+## 2026-08-12 current checkpoint 501: scope整合プランとZeabur配布parityをfresh readback
+
+fresh same-host readback `2026-08-11T17:10:52.996Z`で、登録7 laneは全て同じ予約profile/port（Job `scheduled/automation-3`=`19881`、Daily AI `scheduled/daily-ai`=`19882`、NisenPrints `scheduled/nisenprints`=`19884`、X `scheduled/x-authenticated-browser-lane`=`19885`、YouTube `temporary/youtube-visible-transcript`=`20080`、Prompt Transfer `single-use/prompt-transfer-ukiyoe`=`19981`、SNS `temporary/sns-multi-poster-ukiyoe`=`20081`）、process absent / live readback not_claimed。current foreign processはPID `46982` / port `20092` / `temporary/fb912d6ad4318289b281eccacc20c47aa3f5514ee5104ea79bd6e62b0ef316f8`のみで、`unregistered / ownership unknown / process_present`のobserve-onlyを維持した。前回readbackで見えたPID `38305` / port `20094`は後続readbackでabsentだが、AOSによるcleanup証拠ではないため履歴扱いにした。
+
+AOS共通Web入口へ、control-plane queue正本とportable remote worker正本の2候補、各候補で必要なendpoint/company/database backendの整合、選択前はclaim不可、選択後の `config readback → heartbeat → queue readback → claim → receipt → source sync → cleanup` を表示するscope-alignment planを追加した。local queueは SQLite company `company_9588eaafb46d7cbaead81811`、resident Worker PID `47153`は Zeabur origin `https://automation-os.zeabur.app` / company `company_2560580981cedfd106b66245`、heartbeat `ok` / claim `idle` / effects `read_only` / durable-onlyで、`portable_worker_company_scope_mismatch`は解消していない。自動endpoint/company/database切替、claim、local queued 6件のretryは行っていない。
+
+server build、Web typecheck/build、focused readback/UI `13/13`、static page preflight `209 manifest entries / 258 rendered patterns / 0 unclassified / 0 orphan`、`git diff --check`、local health `HTTP 200 / ok=true`を確認した。Zeabur fresh targetは project `automation-wiled` / service `automation-os` / current environmentを確定し、public healthはHTTP 200。ただし配布済みJS/CSS SHAはlocal buildと不一致で、scope-alignment UIは未配布。証跡は `work/service-readiness/browser-use-profile-port-aos-readback-20260812.v13.json`、`work/service-readiness/requirement-audit-20260812.v17.json`、`work/service-readiness/zeabur-target-readback-20260812.v1.json`。
+
+**Exact blocker / next action / restart point:** `portable_worker_company_scope_mismatch`、`zeabur_local_source_promotion_not_observed_for_git_triggered_service`、`zeabur_variable_readback_returns_secret_values`、foreign 20092 owner boundary。まずAOS画面の2候補から正本を明示し、広いdirty worktreeではなくAOS-onlyのclean/verified source promotionを用意する。認証値は再利用・保存・変更せず、rotationは明示的なsecurity decision後にだけ行う。scope一致後にfresh claim → receipt → source sync → reconciliation → cleanupへ進む。20092はowner-bound authorityまたはsame-generation readbackが変わるまで触らない。
+
+## 2026-08-12 current checkpoint 500: post-test fresh readbackでforeign port 20094も検出
+
+前回スレッドの実readbackでは、Job canaryが過去に `scheduled/automation-3` / port `19881`、foreign roomがport `20091`として記録されていたが、これはhistorical contextでありcurrent process proofではない。AOSは過去portを現在使用中とclaimせず、現在の同一host readbackを正本にする。
+
+関連server投影スイート完了後のfresh same-host readback `2026-08-11T16:52:15.137Z`で、登録7 laneは全て従来どおりprocess absent。foreign processはPID `46982` / port `20092` / `temporary/fb912d6ad4318289b281eccacc20c47aa3f5514ee5104ea79bd6e62b0ef316f8`（tree 4）に加え、PID `38305` / port `20094` / `temporary/db7d27ae9e482df2298901dacc9d623eee9f1420ebd1f447c0659dda57e870a9`（tree 3）も `unregistered / ownership unknown / process_present` として現在見えた。両方ともAOSはobserve-onlyで、kill・release・finalize・reuseしていない。
+
+Mac worker PID `47153`、remote origin/company、heartbeat `ok`、claim `idle`、local SQLite queue company、queued `6` / leased `0`、scope mismatch、AOSのalignment候補表示は不変。追加portの検出は、AOSが「登録予約profile/port」と「同一hostのunknown process」を分離表示していることを確認するcurrent readbackであり、Browser Use laneの予約値・worker scopeを変更する根拠ではない。最新証跡は `work/service-readiness/browser-use-profile-port-aos-readback-20260812.v12.json` と `work/service-readiness/requirement-audit-20260812.v16.json`。
+
+**Exact blocker / next action / restart point:** `portable_worker_company_scope_mismatch` と2件のforeign owner boundary。20092/20094はowner-bound authorityまたはsame-generation readbackが変わるまで触らない。AOS画面で正本scopeを明示し、同一company/endpointへ揃えた後にfresh claim → receipt → source sync → reconciliation → cleanupへ進む。具体的target/payload/account/audience、operator API-key、production read token、release promotionは未提供のため、外部effectとauthenticated/release auditはpendingのまま保持する。
+
+## 2026-08-12 current checkpoint 499: AOSへscope候補を追加しprofile/portとendpoint/companyの判断境界を確定
+
+前回スレッド `019fdcfe-7db9-7843-98ee-054ddf03dab4` のcurrent readbackを再取得し、AOSの共通Web入口へ `control_plane_queue` と `portable_remote_worker` のscope候補を別行で追加した。各候補にcompany、endpoint、worker id、readback状態を表示し、`portable_worker_company_scope_mismatch` の場合は「正本の判断が必要。揃うまでclaimしない」と明示する。これはendpoint/companyを自動切替する機能ではなく、local queueとremote workerを同じものと誤認しないためのread-only表示である。
+
+fresh readback `2026-08-11T16:46:43.101Z` は、登録7 laneを引き続き `workflow_owned / registered / process absent / live_readback=not_claimed` と確認した。対応表は Job `scheduled/automation-3`=`19881`、Daily AI `scheduled/daily-ai`=`19882`、NisenPrints `scheduled/nisenprints`=`19884`、X `scheduled/x-authenticated-browser-lane`=`19885`、YouTube `temporary/youtube-visible-transcript`=`20080`、Prompt Transfer `single-use/prompt-transfer-ukiyoe`=`19981`、SNS `temporary/sns-multi-poster-ukiyoe`=`20081`。実測processは登録laneではなく、foreign PID `46982` / port `20092` / `temporary/fb912d6ad4318289b281eccacc20c47aa3f5514ee5104ea79bd6e62b0ef316f8` の1件だけで、`unregistered / ownership unknown / process_present` のobserve-onlyを維持した。
+
+Mac worker PID `47153` は `external / read_only / durable_only / heartbeat=ok / claim=idle`、worker `mac-Nichikas-MacBook-Pro.local`、origin `https://automation-os.zeabur.app`、remote company `company_2560580981cedfd106b66245`。local AOSは SQLite company `company_9588eaafb46d7cbaead81811`、queued `6`、leased `0`。AOSは両方を `alignment_candidates` として表示し、scope mismatchを解消するまでclaim/retry/runをしない。証跡は `work/service-readiness/browser-use-profile-port-aos-readback-20260812.v11.json` と `work/service-readiness/requirement-audit-20260812.v15.json`。
+
+focused scope/UI regression `13/13`、server build、Web typecheck/build、static page preflight `207 manifest entries / 256 rendered patterns / 0 unclassified / 0 orphan`、`git diff --check`、再起動後local health `HTTP 200 / ok=true`を確認した。prior full suiteは `1130 total / 1113 pass / 0 fail / 17 skip`、no-effect E2E `37/37`、fixture `6/6`。外部effect、secret read/log、foreign process変更、local queued 6件のclaim/retryは0件。
+
+**Exact blocker / next action / restart point:** `portable_worker_company_scope_mismatch`。AOS画面の2候補から正本company/endpointを明示して同じscopeへ揃えた後に、fresh claim → same-run receipt → source sync → reconciliation → cleanupへ進む。operator API-key入力、具体的target/payload/account/audience、production read token、foreign owner authority、dirty worktreeのscoped promotionが未提供のため、認証UI・実外部effect・release auditはpendingのままにする。20092はowner-bound authorityまたはsame-generation readbackが変わるまでkill/release/finalize/reuseしない。
+
+## 2026-08-12 current checkpoint 498: scope可視化修正後の全suite再検証完了
+
+前回スレッド `019fdcfe-7db9-7843-98ee-054ddf03dab4` のprofile/portをAOSへ表示する変更後、patched buildで全server suiteを再実行した。`npm test` は **1130 total / 1113 pass / 0 fail / 17 skip**、無副作用の共通Web操作E2Eは **37/37**、fixtureの作成・更新・公開・応募・削除とcleanupは **6/6**、全画面button static preflightは **205 manifest entries / 254 rendered patterns / 0 unclassified / 0 orphan**、server build、Web typecheck/build、`git diff --check`、local `/api/health` `HTTP 200 / ok=true` が通過した。実PostgreSQL fixtureとlive Browser Use runtime screen QAの17 skipは、外部fixture/ fresh authority未提供の明示的境界であり、成功扱いにはしていない。
+
+同一hostのfresh readback（`2026-08-11T16:31:56.478Z`）では、登録7 laneは引き続き全て `workflow_owned / registered / process absent / live_readback=not_claimed`。対応表は Job `scheduled/automation-3`=`19881`、Daily AI `scheduled/daily-ai`=`19882`、NisenPrints `scheduled/nisenprints`=`19884`、X `scheduled/x-authenticated-browser-lane`=`19885`、YouTube `temporary/youtube-visible-transcript`=`20080`、Prompt Transfer `single-use/prompt-transfer-ukiyoe`=`19981`、SNS `temporary/sns-multi-poster-ukiyoe`=`20081`。実プロセス表には foreign PID `46982` / port `20092` / `temporary/fb912d6ad4318289b281eccacc20c47aa3f5514ee5104ea79bd6e62b0ef316f8` が `unregistered / ownership unknown / process_present` として分離表示され、AOSは触れていない。
+
+Mac worker PID `47153` は `external / read_only / durable_only / heartbeat=ok / claim=idle`、worker `mac-Nichikas-MacBook-Pro.local`、origin `https://automation-os.zeabur.app`、remote company `company_2560580981cedfd106b66245`。local AOS control planeは SQLite company `company_9588eaafb46d7cbaead81811`、queued `6`、leased `0` のため、根本原因はworker停止ではなくendpoint/company scope driftである。AOSは `queue_source`、control-plane company、remote worker company/origin/worker、scope statusを共通readback/UIへ出し、不一致を `portable_worker_company_scope_mismatch` としてblockedにする。テスト時のhost process混入は明示的なhermetic overrideで隔離し、productionのlive process readbackは維持した。証跡は `work/service-readiness/browser-use-profile-port-aos-readback-20260812.v10.json`。
+
+**Exact blocker / next action / restart point:** `portable_worker_company_scope_mismatch`。同じAOS company/endpointへqueueとworkerを揃えるまでclaim/retry/runをしない。20092はowner-bound authorityまたはsame-generation readbackが変わるまでkill/release/finalize/reuseしない。次はscope alignment後のfresh claim → same-run receipt → source sync → reconciliation、operator API-key手入力後のauthenticated desktop/mobile UI readback、対象別business admission、production asset parity/protected readback、release auditを順に進める。外部effect、secret read/log、foreign resource変更は0件。
+
+## 2026-08-12 current checkpoint 497: AOS queueとMac workerのcompany scope不一致を可視化してfail-closed化
+
+fresh source/build後の同一host readbackで、Mac worker PID `47153` は `external / read_only / durable_only / heartbeat=ok / claim=idle` のまま稼働しているが、remote origin `https://automation-os.zeabur.app`・remote company `company_2560580981cedfd106b66245` を使用していることを確認した。一方、local AOS `/api/mvp/state` のcontrol planeは SQLite company `company_9588eaafb46d7cbaead81811`、queued `6`、leased `0` である。したがって「worker停止」ではなく、workerがlocal queueと別company/endpoint scopeを見ていることがclaim idleの根本原因である。
+
+`apps/server/src/browser/liveResourceReadback.ts`、`runtimeSnapshot.ts`、`postgresMvpState.ts`、`index.ts`、`apps/web/src/App.tsx`を更新し、AOSがqueue source、control-plane company、remote worker company/origin/worker、scope statusを表示するようにした。不一致は `portable_worker_company_scope_mismatch` として workerをblocked表示し、claim/queued completionへ昇格しない。Browser Useの登録7 lane（Job `scheduled/automation-3`/`19881`、Daily AI `scheduled/daily-ai`/`19882`、NisenPrints `scheduled/nisenprints`/`19884`、X `scheduled/x-authenticated-browser-lane`/`19885`、YouTube `temporary/youtube-visible-transcript`/`20080`、Prompt Transfer `single-use/prompt-transfer-ukiyoe`/`19981`、SNS `temporary/sns-multi-poster-ukiyoe`/`20081`）は全て `workflow_owned / registered / process absent / live_readback not_claimed` のまま。foreign PID `46982` / port `20092` / opaque temporary profileは引き続きobserve-onlyで、変更していない。
+
+証跡は `work/service-readiness/browser-use-profile-port-aos-readback-20260812.v9.json`。scope一致・不一致・credential非露出を含むfocused tests `16/16`、server build、Web typecheck、local health `HTTP 200 / ok=true`を確認した。external effect、claim/retry/run、secret read/log、foreign kill/release/finalize/reuseは0件。
+
+**Exact blocker / next action / restart point:** `portable_worker_company_scope_mismatch`。local AOS queueを処理するには、同一AOS company/endpointへworkerとcontrol planeを揃える必要がある。production company `2560…`を対象にする場合は、そのcompanyのprotected AOS readbackを正本にしてqueue/worker/receiptを再照合し、local SQLite `9588…`の古いqueued 6件を成功扱い・無断retryしない。profile/port表はAOS共通入口とPC statusで確認できる。20092はowner-bound authorityまたはsame-generation readbackが変わるまで触らない。
+
+## 2026-08-12 current checkpoint 496: 公開parityとrelease境界のfresh readback
+
+公開 `https://automation-os.zeabur.app` はroot HTTP 200で管理者API-keyゲートを表示したが、current local build (`index-Dm7yPz20.js` / `index-2faJdFEc.css`) と公開asset (`index-CvTK14Ky.js` / `index-Cq3XiCoJ.css`) のSHAはJS/CSSとも一致しなかった。protected endpointはproduction read token未提供のため試行していない。local worktreeはtracked modified 84件・untracked 88件の広範囲dirty状態なので、無関係な変更を混ぜたdeploy/pushは行わず、`zeabur_local_source_promotion_not_observed_for_git_triggered_service` をcurrent blockerとして保存した。証跡は `work/service-readiness/production-qa-readback-20260812.v1.json`。
+
+local AOSはautomation health `7 active / 7 ok / 0 blocker / 0 missing entrypoint`、fresh stateは登録7 laneのprofile/portを返し、foreign PID 46982 / port 20092はobserve-onlyのまま。release parity不一致はBrowser Use runtimeの成功やAOS local readbackを取り消さないが、production最新反映・protected UI・release完了へは昇格させない。
+
+**Exact blocker / next action / restart point:** `zeabur_local_source_promotion_not_observed_for_git_triggered_service`、`production_read_token_missing`。無関係なdirty変更をpush/deployせず、対象ファイルを限定したAOS-only promotionとfresh service deploymentが承認・用意された後に、public asset hash → health → protected inventory → Browser Use UI readbackの順で再開する。20092、外部effect、secret入力は引き続き触らない。
+
+## 2026-08-12 current checkpoint 495: Browser Use public UI E2Eとprofile/port可視化の再検証
+
+前回スレッド `019fdcfe-7db9-7843-98ee-054ddf03dab4` のprofile/port履歴をcurrent AOSのAPI・source・process readbackと再照合した。登録7 laneは Job `scheduled/automation-3`=`19881`、Daily AI `scheduled/daily-ai`=`19882`、NisenPrints `scheduled/nisenprints`=`19884`、X `scheduled/x-authenticated-browser-lane`=`19885`、YouTube `temporary/youtube-visible-transcript`=`20080`、Prompt Transfer `single-use/prompt-transfer-ukiyoe`=`19981`、SNS `temporary/sns-multi-poster-ukiyoe`=`20081`。全て `workflow_owned / registered / process absent / live readback not_claimed` で、UI/APIの登録表とforeign process表は分離されている。
+
+canonical Browser Use CLIで、公開・読み取り専用のfresh single-use run `aos-runtime-ui-qa-20260812-r5` を同一sessionで実行した。run-owned single-use profile、port `19982`、`record-start → record-batch(open, wait, state, title, url, screenshot) → record-finalize`、single Browser Use process、6/6 command、URL/readyState/title/DOM readback、管理者API-key入力ゲートの画面証跡を確認し、外部効果は0件。finalize後はroom released、active runtime 0、listener/process残留0、録画finalizedである。証跡は `work/service-readiness/browser-use-profile-port-aos-readback-20260812.v7.json`。
+
+local `http://127.0.0.1:8787` のfresh browser runは、recording dir境界・空ディレクトリ境界・canonical URL preflightの順にfail-closedした。authorized modeでもprivate/loopback URLを迂回しなかったため、これはBrowser Useの速度問題ではなく、private targetをpublic/authorized browser surfaceから遮断する安全ポリシーである。AOSのlocal API・source/static UI・focused testsでprofile/port表示を検証し、秘密情報は入力・取得・保存していない。
+
+focused profile/port tests `38/38`、contract E2E `38/38`、fixture E2E `6/6`、static page preflight `205 manifest entries / 254 rendered patterns / 0 unclassified / 0 orphan`、Web/server build、managed process hygiene `0/0/0` をpassした。AOSのfresh stateではforeign PID `46982` / port `20092` / `temporary/fb912d6ad4318289b281eccacc20c47aa3f5514ee5104ea79bd6e62b0ef316f8` だけが `unregistered / ownership unknown / process_present` のまま不変で、AOSはkill・release・finalize・reuseしていない。
+
+**Exact blocker / next action / restart point:** `browser_use_unregistered_live_process` / `browser_use_external_effect_reconciliation_required` / `browser_use_authority_required_for_same_run_recovery`、operator API-keyが必要なauthenticated desktop/mobile UI、real target/payload/account/audience authority・approval・provider receipt・same-run source sync・release audit。20092はowner-bound authorityまたはsame-generation readbackが変わるまで触らない。次は独立して進められる要件監査を継続し、provider transportが復旧した場合のみGraph verify stageを同一packetで一度だけ再開する。認証済みUIは人間が管理者キーを入力した後に、同一runのprofile/port表とforeign表の表示を再readbackする。
+
+## 2026-08-12 current checkpoint 494: テスト後の最終AOS profile/port readback
+
+テスト後の `/api/mvp/state`（`2026-08-11T15:04:19.613Z`）でも、登録7 laneのprofile・予約port・ownership/binding・process状態は不変だった。登録processは全て `absent`、runtimeは `readback_pending`、同一hostのforeign processは1件のみである。PID `46982` / port `20092` / `temporary/fb912d6ad4318289b281eccacc20c47aa3f5514ee5104ea79bd6e62b0ef316f8` は `unregistered / ownership unknown / process_present` と表示され、AOSは触れていない。
+
+`authentication=unknown / external_effect=not_verified / business_completion=not_claimed` も維持されている。health、inventory、process hygiene、回帰テストの成功は、認証・外部効果・業務完了へ昇格させない。Goalは `running/audit`、外部effectは0件。
+
+**Exact blocker / next action / restart point:** 20092のowner-bound reconciliation、provider auth/transport、runtime screen QA authority、authenticated UI、target-bound business proof、receipt/source sync、release audit。20092を停止・release・finalize・再利用せず、authority/readback変化後にだけ指定順で再開する。
+
+## 2026-08-12 current checkpoint 493: profile/port表示を含むcurrent sourceの回帰と終了前衛生確認
+
+current sourceで server regression `1128 total / 1111 pass / 0 fail / 17 skip`、Web typecheck/build、契約E2E `38/38`、fixture E2E `6/6`、全画面control static preflight `205 entries / 254 rendered / 0 issues / 0 orphan` を確認した。healthは `ok=true`、inventoryは `aos.registered_workflow_inventory.v1 / status=ok / 7 lane / external_action_executed=false`、managed process hygieneは `matched=0 / terminated=0 / remaining=0`。
+
+profile/portのcurrent正本は `work/service-readiness/browser-use-profile-port-aos-readback-20260811.v6.json`。runtime screen QAは `fresh_browser_use_authority_required_for_runtime_screen_qa` のため未確認のまま保持し、認証・実業務効果・provider receipt/source sync・foreign resource cleanupも完了扱いにしていない。外部effect、secret入力、foreign resource変更は0件。
+
+**Exact blocker / next action / restart point:** 20092/PID 46982のowner-bound reconciliation、provider verifierの `opencode_go_auth_or_transport_blocked`、operator API-key手入力を伴うauthenticated desktop/mobile UI、fresh target/payload/account/audience authority・approval・receipt/source sync、connector/release G0/G1。20092には触れず、owner-bound authority/same-generation readbackが変わった後にだけreconcileし、provider transport復旧後はGraph verify stageのみ同一packetで再開する。Goalは `running/audit`。
+
+## 2026-08-11 current checkpoint 492: 前回スレッドのprofile/portをAOS current readbackへ固定
+
+前回スレッド `019fdcfe-7db9-7843-98ee-054ddf03dab4` の履歴と、current AOSのinventory/stateを再照合した。AOSの登録Browser Use laneは、Job `scheduled/automation-3`=`19881`、Daily AI `scheduled/daily-ai`=`19882`、NisenPrints `scheduled/nisenprints`=`19884`、X `scheduled/x-authenticated-browser-lane`=`19885`、YouTube `temporary/youtube-visible-transcript`=`20080`、Prompt Transfer `single-use/prompt-transfer-ukiyoe`=`19981`、SNS `temporary/sns-multi-poster-ukiyoe`=`20081`。全て `workflow_owned / registered / process absent / live readback not_claimed` である。
+
+AOSの `Web操作の共通入口` と `Truthful Lanes` は、workflow・論理profile・予約port・process readback・ownership/binding・same-run readback・次の確認を列分けして表示する。実プロセスの絶対profile path・lock・CDP URL・cookie/token・authorityは表示しない。最新証跡は `work/service-readiness/browser-use-profile-port-aos-readback-20260811.v6.json`。
+
+同一hostで検出されたPID `46982` / port `20092` / `temporary/fb912d6ad4318289b281eccacc20c47aa3f5514ee5104ea79bd6e62b0ef316f8` は、登録laneと一致しない `unregistered / ownership unknown / process_present` のforeign resourceとして別表に出る。前回スレッド由来のhistorical port `20094`（`temporary/db7d…`、room released）もcurrent proofへ昇格せず、どちらもkill・release・finalize・reuseしていない。
+
+**Exact blocker / next action / restart point:** `browser_use_unregistered_live_process` と `browser_use_external_effect_reconciliation_required`、およびprovider verifierの `opencode_go_auth_or_transport_blocked`。20092/recording debtはowner-bound authorityまたはsame-generation readbackが変わるまで触らない。provider transport復旧後はGraph verifyのみ同じevidence packetで再開し、続いて認証UI、target/payload/account/audience authority、approval、provider receipt、same-run source sync、reconciliation、cleanup、release auditを順に行う。Goalは `running/audit` のまま、外部effectは0件。
+
+## 2026-08-11 current checkpoint 491: AOS managed cleanupとforeign recording debtを分離して再監査
+
+fresh AOS readback（health 200、`/api/mvp/state` captured `2026-08-11T14:43:52.471Z`）では、登録7 laneは全てprocess absent / `workflow_owned` / registered / same-run未claim。現在の同一host foreign processはPID `46982` / port `20092` / opaque temporary profileの1件だけで、unregistered・ownership unknown・process tree 4として観測されている。
+
+canonical `recording-status` は `current_pending_unique_count=1`、`current_unresolved_by_blocker=browser_use_external_effect_reconciliation_required`、`current_terminal=false`、operator action=`owner-bound current cleanup or same-generation readback`。current 20092は `mypro-testflight-readback-20260811-r2`、recorder active、room released、cleanup_resource_free=false。別ownerの20094などhistorical recording debtも台帳に残るため、AOSのmanaged process scan `0/0/0`とforeign process readback `1件`は異なる集合として扱う。
+
+provider verifierはfresh preflightを一度だけ実行し、`opencode_go_auth_or_transport_blocked`でblocked。代替verifierへ切り替えていない。current artifactは `work/service-readiness/browser-use-profile-port-aos-readback-20260811.v5.json`。外部effect、秘密入力、foreign resource変更は0件。
+
+Goalは `running/audit`。**Exact blocker / next action / restart point:** 20092とrecording debtはowner-bound authorityまたはsame-generation readbackが変わるまで触らない。provider復旧後はGraph verifyだけ再開し、別routeへ置換しない。ローカル側は認証UI・具体的target/payload/account/audience authority・provider receipt/source sync・release auditの未達を保持する。
+
+## 2026-08-11 current checkpoint 490: AOSのprofile/port対応とforeign process blockerを初見表示へ統一
+
+前回スレッド `019fdcfe-7db9-7843-98ee-054ddf03dab4` と現行AOSを再照合し、fresh `/api/mvp/state`（2026-08-11T14:36:56.931Z）を正本として保存した。登録laneは Job `scheduled/automation-3`/19881、Daily AI `scheduled/daily-ai`/19882、NisenPrints `scheduled/nisenprints`/19884、X `scheduled/x-authenticated-browser-lane`/19885、YouTube `temporary/youtube-visible-transcript`/20080、Prompt Transfer `single-use/prompt-transfer-ukiyoe`/19981、SNS `temporary/sns-multi-poster-ukiyoe`/20081。全て `workflow_owned / registered / reserved / process absent / same-run未claim` である。
+
+同一hostでは別のPID 46982 / port 20092 / opaque temporary profileを1件だけ検出し、`unregistered / ownership unknown / browser_use_unregistered_live_process` と分類した。AOSはこのforeign resourceをkill、release、finalize、reuseしていない。UIの`Web操作の共通入口`は、runtimeの一般的なMac worker待ちより先に、このprocess blockerを「未登録Browserあり（照合待ち）」として表示し、次の確認にowner-bound room・authority・recording照合を出す。登録表とforeign process表は別表のまま維持する。
+
+検証はfocused server lifecycle/authority/process/cleanup `75 pass / 0 fail / 1 expected live-readback skip`、UI truthfulness `36/36`、all-page-button static preflight `passed`（runtime screen QAはfresh authority待ちで未確認）、Web typecheck/build、server build、`git diff --check`、automation health `7/7 ok`、process hygiene `0/0/0`。current artifactは `work/service-readiness/browser-use-profile-port-aos-readback-20260811.v4.json`。外部effect、認証入力、投稿・応募・送信・公開・更新・削除・支払い、secret変更は0件。
+
+Goalは `running/audit`。**Exact blocker / next action / restart point:** PID 46982/port 20092はowner-bound authorityまたはsame-generation readbackが変わるまで触らない。変化後にのみ、認証済みUI → target/payload/account/audience authority → approval → provider receipt → same-run source sync → reconciliation → terminal cleanupの順で再開する。Business admissionとrelease auditは未達のまま保持する。
+
+## 2026-08-11 current checkpoint 489: AOS profile/port表とcanonical同一runの現在境界を照合
+
+前回スレッドの正本とAOS `/api/mvp/state`、canonical `recording-status` をfresh readbackした。AOSの登録7 laneは Job `scheduled/automation-3`=`19881`、Daily AI `scheduled/daily-ai`=`19882`、NisenPrints `scheduled/nisenprints`=`19884`、X `scheduled/x-authenticated-browser-lane`=`19885`、YouTube `temporary/youtube-visible-transcript`=`20080`、Prompt Transfer `single-use/prompt-transfer-ukiyoe`=`19981`、SNS `temporary/sns-multi-poster-ukiyoe`=`20081`。全て `workflow_owned / registered / reserved / live_readback=not_claimed`、実process absentで、AOS UI/APIはprofile・port・ownership・binding・live readback・next checkを表示する。
+
+同一hostのport `20092` / PID `46982` は、canonical側の `mypro-testflight-readback-20260811-r2`（temporary、task bindingあり）と同一runであることを確認した。ただし `recorder_active=true`、`recorder_finalized=false`、`room_state=released`、`cleanup_resource_free=false`、`browser_use_external_effect_reconciliation_required` のため、AOSの登録Laneとは別の未登録temporary resourceとして表示する。正しいtask bindingでのbounded recoveryは `browser_use_authority_required` にfail-closedし、kill/release/finalize/reuse/外部effectは実行していない。canonicalとAOSの「bound」と「registered」は別の意味として記録した。
+
+Workerはlaunchd PID `47153`、`external / read_only / durable_only / heartbeat=ok / claim=idle / source=worker_status_file`。heartbeatはfreshだが、workflow claim・business receipt・source sync・effect完了には昇格しない。新証跡: `work/service-readiness/browser-use-current-readback-20260811.v1.json`。Goal RunContextはcheckpoint 72、`running/audit`、実外部effect 0件。
+
+**Exact blocker / next action / restart point:** `browser_use_external_effect_reconciliation_required` / owner-bound authorityまたはsame-generation readbackが得られるまで20092を触らない → operator API-key手入力によるauthenticated UI → concrete target-bound business admission → provider receipt/source sync/reconciliation → cleanup → connector/release G0/G1。業務laneはtarget/payload/account/audience/fresh authorityが揃うまで再実行しない。
+
+## 2026-08-11 current checkpoint 488: heartbeat周期後のclaim状態保持を修正し、current readbackを再確定
+
+最終AOS readbackで、heartbeat周期更新時に `claim_status` が一時的に消える共通層ギャップを発見した。`scripts/aos-portable-remote-worker.mjs` のstatus mergeが `claim_status` / `last_claim_at` を保持するよう修正し、回帰 `heartbeat status updates preserve the latest claim state` を追加した。
+
+修正後のWorker 8/8、scripts全体109/109、server全体1127/1110/0/17、server build、web typecheck/build、focused runtime/UI 14/14、static QA 204/253（unclassified/orphan 0/0）、process hygiene 0/0/0を確認。launchd current PIDは `47153`。heartbeat周期後もstatus fileとAOS `/api/mvp/state` が `present / external / read_only / durable_only / heartbeat=ok / claim=idle / source=worker_status_file` を維持する。
+
+最新証跡: `work/service-readiness/portable-remote-worker-status-readback-20260811.v2.json`、`work/service-readiness/browser-use-profile-port-visibility-20260811.v9.json`、`work/service-readiness/full-regression-readback-20260811.v21.json`、`work/service-readiness/requirement-audit-20260811.v13.json`、`work/service-readiness/e2e-readiness-acceptance-20260811.v8.json`。Goal RunContextはcheckpoint 71、`running/audit`。実外部effectは0件。
+
+**Exact blocker / next action / restart point:** Workerのheartbeat/claim表示は解消。残りは foreign port `20092` のowner reconciliation → operator API-key手入力のauthenticated UI → concrete target-bound business admission → provider receipt/source sync/reconciliation → cleanup → connector/release G0/G1。20092は観測のみ、履歴のBrowser Use効果を再実行しない。
+
+## 2026-08-11 current checkpoint 487: Worker heartbeat transport is visible in AOS and full regression is green
+
+Worker status persistenceとserver共通readbackを追加し、launchd Workerを新しい実装で再起動した。current PIDは `45017`、`external / read_only / durable_only`。Worker status fileは `heartbeat_status=ok`、`claim_status=idle`、`exact_blocker=null`。AOS `/api/mvp/state` でも `portableRemoteWorker.status=present`、PID一致、`transportReadback.status=available`、`heartbeatStatus=ok`、`claimStatus=idle`、`source=worker_status_file` を確認した。heartbeat HTTP受理は証明できたが、claim・receipt・source sync・business完了とは分離している。
+
+profile/port正本は Job `scheduled/automation-3`=`19881`、Daily AI `scheduled/daily-ai`=`19882`、NisenPrints `scheduled/nisenprints`=`19884`、X `scheduled/x-authenticated-browser-lane`=`19885`、YouTube `temporary/youtube-visible-transcript`=`20080`、Prompt Transfer `single-use/prompt-transfer-ukiyoe`=`19981`、SNS `temporary/sns-multi-poster-ukiyoe`=`20081`。登録laneは全て `not_claimed` / 実process absent。foreign port `20092` は未登録・所有者不明のまま観測のみで、kill/release/finalize/reuseはしていない。
+
+回帰は server `1127 total / 1110 pass / 0 fail / 17 skip`、scripts `108/108`、focused Worker `7/7`、focused runtime/UI `14/14`、web typecheck/build、static page QA `204 entries / 253 rendered / 0 unclassified / 0 orphan`。実投稿・応募・送信・公開・更新・削除・支払い・secret変更は0件。
+
+最新証跡: `work/service-readiness/portable-remote-worker-status-readback-20260811.v1.json`、`work/service-readiness/browser-use-profile-port-visibility-20260811.v8.json`、`work/service-readiness/full-regression-readback-20260811.v20.json`、`work/service-readiness/requirement-audit-20260811.v12.json`、`work/service-readiness/e2e-readiness-acceptance-20260811.v7.json`。Goal RunContextはcheckpoint 70、`running/audit`。
+
+**Exact blocker / next action / restart point:** `browser_use_unregistered_live_process` のforeign owner reconciliation → operator API-key手入力のauthenticated UI → concrete target-bound business admission → provider receipt/source sync/reconciliation → cleanup → connector/release G0/G1。Worker heartbeatはfresh transport readback済みだが、claim/receipt/source syncは未claim。20092には触れず、履歴のBrowser Use効果を再実行しない。
+
+## 2026-08-11 current checkpoint 486: remote Worker hang root fixed, current profile/port map revalidated, and full E2E green
+
+前回スレッド `019fdcfe-7db9-7843-98ee-054ddf03dab4` を再読し、現行AOSの7 Browser Use laneをfresh readbackした。Job `scheduled/automation-3`=`19881`、Daily AI `scheduled/daily-ai`=`19882`、NisenPrints `scheduled/nisenprints`=`19884`、X `scheduled/x-authenticated-browser-lane`=`19885`、YouTube `temporary/youtube-visible-transcript`=`20080`、Prompt Transfer `single-use/prompt-transfer-ukiyoe`=`19981`、SNS `temporary/sns-multi-poster-ukiyoe`=`20081`。AOSはprofile/portの予約bindingと実process/live readbackを別表示し、`not_claimed` をlisten・login・business完了として扱わない。
+
+Browser Use CLIの共有層根本原因として、resident portable remote workerの無期限HTTP fetchとheartbeat重複を修正した。AbortController付き15秒既定timeout（1–120秒bounded）、exact blocker `portable_remote_http_timeout`、heartbeat single-flightを実装。focused 6/6、script E2E 107/107、server build、web typecheck/build、全体 `npm test` 1127/1110/0/17をpass。post-test health 200、process hygiene 0/0/0。PID 58203はlaunchd/external/read_only/durable_onlyで生存しているが、fresh persisted heartbeat/queue claim/receiptは未証明のまま。旧404ログは履歴であり現行proofに昇格させない。
+
+最新証跡: `work/service-readiness/browser-use-profile-port-visibility-20260811.v7.json`、`work/service-readiness/portable-remote-worker-timeout-readback-20260811.v1.json`、`work/service-readiness/full-regression-readback-20260811.v19.json`、`work/service-readiness/requirement-audit-20260811.v11.json`、`work/service-readiness/e2e-readiness-acceptance-20260811.v6.json`。foreign port `20092`はowner-controlledのため未操作、実外部effectは0件。
+
+**Exact blocker / next action / restart point:** foreign owner reconciliation → operator API-key手入力のauthenticated UI → target-bound business admission → provider receipt/source sync/reconciliation → cleanup → worker/connector/release G0/G1。Goalは `running/audit`。
+
+## 2026-08-11 current checkpoint 485: stale heartbeat truthfulness fixed and post-fix E2E refreshed
+
+前回スレッド `019fdcfe-7db9-7843-98ee-054ddf03dab4` のprofile/port履歴と現行AOSを突合した。6 registered workflowと7 Browser Use laneの対応は、Job `scheduled/automation-3`=`19881`、Daily AI `scheduled/daily-ai`=`19882`、NisenPrints `scheduled/nisenprints`=`19884`、X `scheduled/x-authenticated-browser-lane`=`19885`、YouTube `temporary/youtube-visible-transcript`=`20080`、Prompt Transfer `single-use/prompt-transfer-ukiyoe`=`19981`、SNS `temporary/sns-multi-poster-ukiyoe`=`20081`。予約値は実プロセス・ログイン・business完了の証明ではない。
+
+共有readbackの根本修正で、persisted `portable_mac_worker` heartbeatを保存時刻だけでfresh扱いしないようにした。既定300秒のfreshness分類、stale/invalid/futureのfail-closed、`heartbeat_fresh`とexact blockerの公開を実装し、focused 6/6、server build、修正後 `npm test` 1127/1110/0/17、health 200、process hygiene 0/0/0を確認した。実workerのfresh heartbeat/queue claim/receiptはまだ未証明。
+
+証跡は `work/service-readiness/portable-worker-heartbeat-freshness-readback-20260811.v1.json`、`work/service-readiness/full-regression-readback-20260811.v18.json`、`work/service-readiness/requirement-audit-20260811.v10.json`、Goal RunContext checkpoint 68。foreign port `20092`はactive recording/processとreleased room registryが不一致のowner-controlled resourceであり、AOSはkill/release/finalize/reuseをしていない。実外部effectは0件。
+
+**Exact blocker / next action / restart point:** foreign owner-controlled reconciliation → operator API-key手入力によるauthenticated UI → target-bound business admission → provider receipt/source sync/reconciliation → cleanup → worker/connector/release G0/G1。Goalは `running/audit`。
+
+## 2026-08-11 current checkpoint 484: public first-use screen QA and current unresolved audit refreshed
+
+fresh public single-use Browser Use run `aos-current-public-ui-readonly-20260811-r2`（port `19999`）で、同一sessionの5操作、管理者API-key gate、H.264 7-frame recording、room/process/port cleanupを確認した。keyは扱っていない。`e2e-web-admission-readscope-20260811.v7.json` に保存。初回r1はrecording directory boundaryでbrowser起動前に停止し、cleanup済み・current proof不採用。
+
+production parityは `production-qa-readback-20260811.v2.json` をcurrent readbackとして参照し、foreign port `20092` はactive recording/reconciliation requiredとroom releasedの不一致が継続しているため、所有者以外のcleanup/release/finalize/reuseはしていない。current監査は `requirement-audit-20260811.v9.json`、acceptanceは `e2e-readiness-acceptance-20260811.v4.json`。Goalは `running/audit`、実外部effectは0件。
+
+**Exact blocker / next action / restart point:** foreign owner reconciliation → operator API-key手入力によるauthenticated desktop/mobile readback → concrete target-bound business receipt/source sync → worker/connector/release G0/G1 audit。
+
+## 2026-08-11 current checkpoint 483: same-host process readback and final E2E are green
+
+current AOSは、登録7 laneの予約binding（論理profile/予約port）と、同一ホストの実Browser Use process readbackを分離して表示する。登録laneは Job `scheduled/automation-3`=`19881`、Daily AI `scheduled/daily-ai`=`19882`、NisenPrints `scheduled/nisenprints`=`19884`、X `scheduled/x-authenticated-browser-lane`=`19885`、YouTube `temporary/youtube-visible-transcript`=`20080`、Prompt Transfer `single-use/prompt-transfer-ukiyoe`=`19981`、SNS `temporary/sns-multi-poster-ukiyoe`=`20081`。fresh readbackでは登録laneは全てプロセス `absent`、別の所有者不明一時profileは port `20092` / tree `4` / `unregistered` と明示され、終了・release・finalizeはしていない。
+
+PC statusは、persistent heartbeat/queue/receipt/source sync、portable remote worker process（`present / external / read_only / durable_only`）、Browser Use process（登録状態/所有状態）を別々に表示する。最終 `npm test` は `1125 / 1108 / 0 / 17`、contract E2E `38/38`、fixture `6/6`、static QA `204/253`、unclassified/orphan `0/0`、health/runtime boundary/diff/process hygieneはpass。runtime screen QAはfresh authority不足のため未確認。証跡: `work/service-readiness/full-regression-readback-20260811.v17.json`、`work/service-readiness/browser-use-profile-port-visibility-20260811.v5.json`、`work/service-readiness/foreign-browser-resource-readback-20260811.v1.json`。
+
+Browser Use CLIはread-only batchを同一プロセス化し、`10.8s → 3.15s`（`3.43x`、`70.83%減`）へ改善した。effectful操作は個別実行とapproval境界を維持する。Goalは `running/audit`、実外部effectは0件。
+
+**Exact blocker / next action / restart point:** foreign resourceの所有者reconciliation、persistent worker heartbeat、authenticated UIのoperator key、production Browser Use callable surface、target-bound business receipt/source sync、Gmail/backup/Obsidian、remote TLS-WSS、G0/G1。再開はforeign owner-controlled readback → human-controlled API-key entry → target-bound admission → provider receipt/source sync/reconciliation → cleanup。
+
+## 2026-08-11 current checkpoint 482: full regression and post-test exit checks are green
+
+current sourceで `npm test` は `1121 total / 1104 pass / 0 fail / 17 skip`、exit 0。Web typecheck、server build、web bundle build、profile/port UI/runtime focused `10/10`、contract E2E `38/38`、readiness fixture `6/6`、page-button static QA（manifest 202 / rendered 251 / unclassified 0 / orphan 0）もpassした。runtime screen QAはfresh Browser Use authority不足のため未確認のまま維持する。
+
+post-test `processHygiene --scan` は `matched=0 / terminated=0 / remaining=0`、local `/api/health` は `ok=true`、inventoryは `aos.registered_workflow_inventory.v1 / status=ok / 7 lanes / external_action_executed=false`。最新証跡は `work/service-readiness/full-regression-readback-20260811.v16.json` と `work/service-readiness/browser-use-profile-port-visibility-20260811.v4.json`。Goalは `running/audit` を継続し、実外部effectは0件。
+
+**Exact blocker / next action / restart point:** authenticated UIのoperator key、production container Browser Use callable surface、real business target-bound authority/receipt/source sync、Gmail/backup/Obsidian、remote TLS-WSS、G0/G1。human-controlled API-key entryからUIを再開し、業務はtarget-bound admissionから再開する。
+
+## 2026-08-11 current checkpoint 481: profile/port visibility is explicit and fresh-readback verified
+
+前回スレッド `019fdcfe-7db9-7843-98ee-054ddf03dab4` をfresh確認し、現行AOSのprofile/port正本を再取得した。Job `scheduled/automation-3`=`19881`、Daily AI `scheduled/daily-ai`=`19882`、NisenPrints `scheduled/nisenprints`=`19884`、X `scheduled/x-authenticated-browser-lane`=`19885`、YouTube `temporary/youtube-visible-transcript`=`20080`、Prompt Transfer `single-use/prompt-transfer-ukiyoe`=`19981`、SNS `temporary/sns-multi-poster-ukiyoe`=`20081`。全laneは予約・workflow-owned・registered・live未claimであり、実プロセスやログイン状態の証明ではない。
+
+共通Web入口と登録Lane画面は、Workflow、論理profile、予約port、所有/binding、Live readback、次の確認を表示し、control plane / Mac workerの境界とexact blockerを明示する。`same-run実測済み` になるまでは `未claim（予約のみ）` と表示し、absolute pathやsecretは露出しない。新証跡: `work/service-readiness/browser-use-profile-port-visibility-20260811.v4.json`。
+
+Web typecheck、server build、UI/runtime focused `10/10`、health、inventory、process hygieneをfresh確認した。Adaptive設計handoffはGo endpoint HTTP 500でblockedだが、実装・証跡・外部効果への影響はなく、Goalは `running/audit` を継続する。
+
+**Exact blocker / next action / restart point:** authenticated UIのoperator key、production container Browser Use callable surface、real business target-bound authority/receipt/source sync、Gmail/backup/Obsidian、remote TLS-WSS、G0/G1。human-controlled API-key entryからUIを再開し、業務はtarget-bound admissionから再開する。
+
+## 2026-08-11 current checkpoint 480: full regression after reviewer correction is green
+
+current sourceで `npm test` を再実行し、`1121 total / 1104 pass / 0 fail / 17 skip`、exit 0。server buildもpassした。skipは未提供PostgreSQL/live browser surface等の明示されたcapability境界であり、失敗やbusiness完了ではない。テスト後の `processHygiene --scan` は `matched=[] / terminated=[] / remaining=[]`、local `/api/health` は `ok=true`、`/api/registered-workflow-inventory` は `aos.registered_workflow_inventory.v1`、7 lane、`external_action_executed=false` を返した。
+
+証跡は `work/service-readiness/full-regression-readback-20260811.v15.json`。C7の未知キーfail-close、Daily AI／NisenPrintsの共通generic dispatch fixture、既存profile/port inventoryも全て現行sourceで再確認した。Goalは `running/audit` を維持し、実外部effectは0件。
+
+**Exact blocker / next action / restart point:** authenticated desktop/mobile UIのoperator API-key入力、production containerの `browser_use_callable_surface_missing`、real target/payload/account/audience/fresh authority・provider receipt・same-run source sync、Gmail/backup/Obsidian、remote TLS-WSS、G0/G1。現deploymentは再発射しない。UIはhuman-controlled API-key entryから、業務laneはtarget-bound admission → semantic operation → provider receipt → source sync/reconciliation → terminal cleanupから再開する。
+
+## 2026-08-11 current checkpoint 479: reviewer correction and generic dispatch adoption are current
+
+前回レビューの current-source gap を補正した。`apps/server/src/runs/webOperationContract.ts` は `fixed_kernel`、`adaptive_layer`、`operation_model`、nested `exploration_limits` の未知キーを fail-close し、server build、TypeScript lifecycle 6/6、JS mirror 8/8、`git diff --check` をpassした。Daily AI／NisenPrintsは、generic Web operation intentがworkflow固有effect runnerを迂回するのではなく、共通AOS Browser Use runnerへboundされることを外部効果なしのfake runnerで両workflowとも確認した。共通read-only経路は `runBrowserUseCliFlowReadOnlyBatch` のbounded batchを使う。
+
+監査補正は `work/service-readiness/reviewer-correction-20260811.v1.json` に保存。C7はcurrent sourceで解消、C4は共通dispatch/batch adoptionまで確認済みだが、実アカウントのprovider receipt・same-run source sync・業務効果完了は未証明のため `partially_true` を維持する。実投稿・応募・送信・公開・削除・支払い・秘密変更は0件、process cleanupも確認済み。Goalは `running/audit` を継続する。
+
+**Exact blocker / next action / restart point:** authenticated desktop/mobile UIはoperatorのAPI-key入力待ち、production containerは `browser_use_callable_surface_missing`、実業務はtarget/payload/account/audience/fresh authority・provider receipt・source sync不足。現deploymentは再発射しない。UIはhuman-controlled API-key entryから、業務laneはtarget-bound admission → semantic operation → provider receipt → source sync/reconciliation → terminal cleanupから再開する。
+
+Evidence: `work/service-readiness/reviewer-correction-20260811.v1.json`、`apps/server/src/tests/webOperationLifecycle.test.ts`、`scripts/tests/webOperationAdaptiveRuntime.test.mjs`、`scripts/tests/aosPortableBusinessRunner.test.mjs`。
+
+## 2026-08-11 current checkpoint 478: final audit after full regression and cleanup
+
+fresh `npm test` は `1121 total / 1104 pass / 0 fail / 17 skip`。skipは未提供PostgreSQL fixtureとlive browser surface等で、失敗ではない。テスト後の `processHygiene --scan` は `matched=[] / terminated=[] / remaining=[]`、local `/api/health` は `ok=true`、`/api/registered-workflow-inventory` は7 laneのprofile/port bindingを再度返し、`external_action_executed=false`。現行対応は Job `scheduled/automation-3`=`19881`、Daily AI `scheduled/daily-ai`=`19882`、NisenPrints `scheduled/nisenprints`=`19884`、X `scheduled/x-authenticated-browser-lane`=`19885`、YouTube `temporary/youtube-visible-transcript`=`20080`、Prompt Transfer `single-use/prompt-transfer-ukiyoe`=`19981`、SNS `temporary/sns-multi-poster-ukiyoe`=`20081`。
+
+Zeabur deployment `6a7acd46408580a2d37e74fb` は `RUNNING`、protected readbackとlocal/public JS/CSS parityはverified。business外部effectは0件。Goalは `running/audit` を維持する。
+
+**Exact blocker / next action / restart point:** `authenticated_common_entry_requires_operator_api_key_entry_for_browser_UI`、mobile authenticated UI、production containerのBrowser Use CLI不在、実target/payload/account/audience/fresh authority不足、Job/Daily AI/NisenPrintsのprovider receipt/source sync、Gmail/backup/Obsidian、remote TLS-WSS、G0/G1。現deploymentは再発射しない。authenticated UIはhuman-controlled API-key entryから、業務laneはtarget-bound admission → approval → provider receipt → same-run source sync/reconciliation → cleanupから再開する。
+
+## 2026-08-11 current checkpoint 477: public parity restored and protected readback verified
+
+公式Zeabur CLIで、秘密・`work/`・録画・生成物を除外したtask-owned stagingを対象service `automation-os`へ一度だけ昇格した。新deployment `6a7acd46408580a2d37e74fb` は `RUNNING`、Node.js planで、公開JS/CSSのSHAとcurrent local `dist/assets`が一致した。`/api/health`、protected `/api/dashboard`、`/api/registered-workflows`、`/api/browser/health` はfresh read tokenをメモリ内だけで使って200を確認し、token値は保存・表示していない。current artifactは `work/service-readiness/production-qa-readback-20260811.v2.json`、要件監査は `work/service-readiness/requirement-audit-20260811.v8.json`。
+
+canonical Browser Use CLIのpublic single-use read-only flow `aos-production-ui-readonly-20260811-r1` で公開rootを開き、管理者APIキー入力画面を同一runでreadback・screenshot・record-finalizeした。H.264 4 frames、manifest/receipt、process/listener/profile/lock cleanup、foreign resource unchangedを確認した。画面上のprofile/port表はAPIキー入力後のauthenticated UIに属するため、operatorが画面上でread tokenを入力するauthenticated desktop/mobile readbackは未達。production container自身のBrowser Use CLIも `browser_use_callable_surface_missing` だが、canonical execution surfaceはMac workerであり、ローカルCLIのvisual proofは完了している。
+
+**Exact blocker / next action / restart point:** distribution parityとprotected API readbackは解消済み。残りは `authenticated_common_entry_requires_operator_api_key_entry_for_browser_UI`、`mobile_authenticated_ui_readback_pending`、production containerのBrowser Use CLI不在、Job/Daily AI/NisenPrintsのfresh business receipt/source sync、具体的target/payload/account/audience/fresh authority、Gmail/backup/Obsidian、remote TLS-WSS、G0/G1。現deploymentは再発射せず、authenticated Browser Use readbackはhuman-controlled API-key entryから、business laneはtarget-bound admissionから再開する。business外部effectは0件。
+
+## 2026-08-11 current checkpoint 476: AOS inventory readback extended and public parity guard verified
+
+前回スレッド `019fdcfe-7db9-7843-98ee-054ddf03dab4` のhistorical profile/port値と現行AOS bindingを分離した。常駐AOSを再起動後、`/api/health` は200、`/api/registered-workflow-inventory` は `aos.registered_workflow_inventory.v1` を返し、7 laneすべてに `profile_ref / profile_name / reserved_port / lifecycle / ownership / binding_status / live_readback_status` が現れる。登録6 workflowのWeb admission/Automations画面も同じ対応を表示し、絶対profile path・lock/CDP・cookie/token・authorityは露出しない。
+
+現行bindingは Job `scheduled/automation-3`=`19881`、Daily AI `scheduled/daily-ai`=`19882`、NisenPrints `scheduled/nisenprints`=`19884`、X `scheduled/x-authenticated-browser-lane`=`19885`、YouTube `temporary/youtube-visible-transcript`=`20080`、Prompt Transfer `single-use/prompt-transfer-ukiyoe`=`19981`、SNS `temporary/sns-multi-poster-ukiyoe`=`20081`。全て予約・workflow-ownedで、`live_readback_status=not_claimed`。これはlisten中・ログイン済み・business完了の証明ではない。fresh対応表は `work/service-readiness/browser-use-profile-port-aos-readback-20260811.v3.json`。
+
+`scripts/productionQa.mjs` にpublic JS/CSSとcurrent local `dist/assets`のSHA比較を追加し、stale artifactや未配布sourceをsuccess扱いできないようにした。回帰はproduction QA 3/3、inventory/runtime/UI 11/11、fixture 6/6、web-operation 7/7、contract 38/38、full `npm test` 1121/1104/0/17。fresh public readbackはhealth/root 200、CSS一致、JS public `23a31a...ca31bc32` / local `f39e7f...dae6bf` 不一致、protected route/UIは `production_read_token_missing` で未試行。証跡は `work/service-readiness/production-qa-readback-20260811.v1.json` と `work/service-readiness/full-regression-readback-20260811.v14.json`。
+
+**Exact blocker / next action / restart point:** `public_local_asset_parity_mismatch:js` と `zeabur_local_source_promotion_not_observed_for_git_triggered_service`。承認済みAOS-only source promotionの新deploymentが観測されるまで同じdeployを再発射しない。promotion後に同一serviceのdeployment・asset SHA・health・protected inventory・fresh Browser Use UI readbackを順に確認する。admin key、production read token、具体的target/payload/account/audience/fresh authority、provider receipt/source sync、Gmail/backup/Obsidian、remote TLS-WSS、G0/G1も未達。外部effect、secret read/change、foreign resource mutationは0件。Goalは`running/audit`。
+
+## 2026-08-11 current checkpoint 464: Browser Use profile/port binding is visible in AOS
+
+前回スレッド `019fdcfe-7db9-7843-98ee-054ddf03dab4` をfresh確認した。前回の認証handoffに現れた `19882/19884` は当時のroom/listenerがrelease済みの履歴であり、現在のlive processではない。現行registered laneの正本は次の通り: Job `scheduled/automation-3`=`19881`、Daily AI `scheduled/daily-ai`=`19882`、NisenPrints `scheduled/nisenprints`=`19884`、X `scheduled/x-authenticated-browser-lane`=`19885`、YouTube `temporary/youtube-visible-transcript`=`20080`、Prompt Transfer `single-use/prompt-transfer-ukiyoe`=`19981`、SNS `temporary/sns-multi-poster-ukiyoe`=`20081`。
+
+AOSのruntime snapshot、registered workflow/automation API、Web operation admission、Truthful Lanes、Automations画面へ `profileRef/profileName/reservedPort/lifecycle/liveReadbackStatus` をsafe projectionした。絶対path、lock/CDP、cookie/token、authorityは露出しない。current Goal-owned roomの非released数は0、19888/19889と公開read-only E2Eの19999はrelease済み。証跡: `work/service-readiness/browser-use-profile-port-aos-readback-20260811.v1.json`。実効果やログイン状態の証明ではなく、live readbackは同一runで別途取得する。
+
+**Exact blocker:** business admissionに必要な具体的target/payload/account/audience/fresh authority、provider receipt/source sync、production read token、Gmail/backup/Obsidian/Codex remote TLS-WSS/G0-G1 evidence。**再開点:** target-bound admission → effectful operation → provider receipt/readback → source sync/reconciliation → terminal cleanup。Goalは`running/audit`。
+
+## 2026-08-11 current checkpoint 463: requirement-by-requirement audit persisted
+
+要求ごとに、AOS control plane、6 workflow、Browser Use root fix、adaptive semantic target、lifecycle、negative/recovery/concurrency、UX、distribution parity、fixture、terminal cleanup、business effect、production releaseを `verified` / `verified_for_contract_and_fixture` / `pending_external_inputs` / `pending_external_capability` に分類した。証跡は `work/service-readiness/requirement-audit-20260811.v1.json`。
+
+完了扱いにできない項目は外部対象・権限・provider receipt・remote TLS-WSS・G0/G1だけで、実装・read-only検証・cleanupの不足ではない。Goalは`running/audit`を維持する。
+
+## 2026-08-11 current checkpoint 462: local first-use HTTP surface readback is green
+
+ユーザーが最初に触るlocal HTTP面もread-onlyで確認した。`/api/health`、`/`（built UI root）、`/api/dashboard` は全てHTTP 200、`/api/registered-workflows` は6件を返し、外部効果なし・secretなし。証跡は `work/service-readiness/local-ui-http-readback-20260811.v1.json`。
+
+**Exact blocker:** business admissionと未提供の外部 capability（target/payload/account/audience/fresh authority、business receipt/source sync、Gmail、backup/Obsidian approval、Codex remote TLS-WSS、G0/G1）。**再開点:** target-bound admission → effectful operation → receipt/readback → sync/reconciliation → cleanup。Goalは`running/audit`。
+
+## 2026-08-11 current checkpoint 461: final runtime readback is green; only business admission remains pending
+
+PostgreSQL fixture回帰後の最終runtime readbackをfresh取得した。`npm run build`（server/web + parity 347 files）、automation health `7 active / 7 ok / 0 blockers / 0 missing entrypoint`、runtime boundary `ready_for_authorized_read_only_admission`、Browser Use validate/runtime-readback `runtime_drift=false`、canonical/package helper parity、rooms `278 total / 0 active / 0 held / 278 released`、process scan `matched=0 / remaining=0`、`git diff --check`を確認。外部効果・secret read・foreign resource mutationは0。
+
+Evidence: `work/service-readiness/runtime-final-readback-20260811.v1.json`、`work/service-readiness/e2e-readiness-acceptance-20260811.v2.json`、`work/service-readiness/final-release-audit-20260811.v1.json`。
+
+**Exact blocker:** business admission（具体的なtarget/payload/account/audience/fresh authority、provider business receipt、same-run source sync/reconciliation、Gmail connector、backup/Obsidian approval、Codex remote private TLS-WSS、G0/G1 evidence）。**再開点:** target-bound admission → effectful semantic operation → receipt → source sync/reconciliation → terminal cleanup。Goalは`running/audit`を継続する。
+
+## 2026-08-11 current checkpoint 460: PostgreSQL fixture regression closed and business boundary remains explicit
+
+fresh `npm run test:postgres` を実行し、loopbackの一時 PostgreSQL 16 fixture 上で server 全1100件を再検証した。`1089 pass / 0 fail / 0 PostgreSQL fixture skips / 11 expected optional browser-bridge skips`、exit 0、fixture停止・一時root削除・external effect=0を確認した。従来の16件のDBスキップは解消済み。残る11件は別途条件付きの旧browser bridge harnessであり、canonical Browser Useのlive7/live9 read-only E2Eとは区別して受入台帳へ記録した。
+
+Evidence: `work/service-readiness/full-regression-postgres-readback-20260811.v1.json`、`work/service-readiness/e2e-readiness-acceptance-20260811.v2.json`、`work/service-readiness/final-release-audit-20260811.v1.json`。
+
+**Exact blocker:** 実外部対象・payload・account・audience・fresh authority、各business receipt/source sync、Gmail connector、backup/Obsidian approval、Codex remote private TLS-WSS、G0/G1 evidenceは未提供・未達。**再開点:** 具体的な1件のtarget-bound admission → effectful semantic operation → provider receipt → same-run source sync/reconciliation → terminal cleanup。Goalは`running/audit`を継続する。
+
+## 2026-08-11 current checkpoint 459: common Web lifecycle, fresh semantic inspect, and full release audit
+
+共通Web操作の最後の片経路欠落を修正した。`apps/server/src/runs/webOperationLifecycle.ts` と `scripts/web-operation-lifecycle.mjs` を基準に、local portable workerとremote Mac workerの両方で、target binding・approval/admission・dispatch・same-run source readback・source sync・cleanup・`no_replay`をbusiness completion条件へ統一した。remote workerはgeneric receiptだけでは完了せず、`web_operation_lifecycle`のrun/step/idempotency/operation/target/payload/status/readback/cleanup/no-replayを検証し、不一致は`portable_remote_web_operation_lifecycle_invalid`またはreconciliationへfail-closeする。
+
+fresh canonical Browser Use E2Eは、live7のread-only batch 5/5・Browser Use process=1・screenshot・7 video frames・finalize/cleanup verified、live9の`record-start → open → navigation_readback → record-target-inspect("More information...") → record-finalize`・external effect=false・cleanup verifiedまで成功した。live6/live8で発生したfixture入力契約違反（capture path、flow id、open capture option）は同一run finalizeでcleanupし、foreign roomは操作していない。根本原因と速度比較は`work/service-readiness/browser-use-cli-root-cause-readback-20260811.v4.json`へ更新した。
+
+Release検証は、server `1100 total / 1084 pass / 0 fail / 16 PostgreSQL fixture skips`、Browser Use package `84/84`、script contract `26/26`、fixture `2/2`、web typecheck、server/web build、runtime parity manifest、automation health `7/7 ok`、runtime boundary、process scan `matched=0/remaining=0`、`git diff --check`がgreen。canonical helper/package helperはbyte-identical。current受入は`ready_with_explicit_pending`で、実際の投稿・応募・送信・公開・削除・支払いは0件、`run_msn91imj_5kgsc3`はwaiting approvalのまま。
+
+Evidence: `work/service-readiness/e2e-readiness-acceptance-20260811.v2.json`、`work/service-readiness/browser-use-cli-root-cause-readback-20260811.v4.json`、`work/service-readiness/e2e-browser-batch-live7-202608102127/browser-use-batch-live7-report.v1.json`、`work/service-readiness/e2e-browser-semantic-inspect-live9-202608102129/browser-semantic-inspect-live9-report.v1.json`、`work/service-readiness/final-release-audit-20260811.v1.json`、`work/goal-run-automation-os-continuation-20260810.json`。
+
+**Exact blocker:** `real_external_target_payload_account_audience_not_provided` と、fresh business receipt/source sync、Gmail connector、backup/Obsidian approval、Codex remote private TLS-WSS、G0/G1 evidence。**再開点:** 具体的な1件のtarget-bound authority → effectful semantic target operation → provider receipt → same-run source sync/reconciliation → terminal cleanup。Goalは`running/audit`を継続する。
+
+## 2026-08-11 current checkpoint 458: Browser Use single-process batch root fix measured and revalidated
+
+Browser Use CLIの根本原因を、論理コマンドごとのcanonical CLIプロセス起動と、各コマンド後のstate/navigation/frame証跡の直列fan-outと確定した。read-only batchを1つのBrowser Useプロセス内で実行するbounded transportへ修正し、canonical helperとpackage helperのbyte parity、Python compile、validate、runtime-readbackを確認した。effectful commandは従来どおりbatch投入前に拒否し、semantic target解決・authority・nonce・same-run readback・reconciliation・terminal cleanupは維持している。
+
+fresh live5 E2Eは `open → eval → state → get title → screenshot` の5/5を `single_browser_use_process`、Browser Use process=1、transport jobs=16、3.15秒で完了し、同一command setの個別baseline 10.80秒に対して3.43倍、70.83%短縮。両方ともvideo 7 frames、proof parity、cleanup parity、`external_action_executed=false`。batch専用hidden PNGは、異常終了時も当該run-owned recording dir内のprefix限定で掃除する回帰修正を追加した。focused transport/adapter suiteは20/20 pass。全server回帰は `1096 total / 1080 pass / 0 fail / 16 PostgreSQL fixture skips`、build/typecheck/parity/process scan/diff checkもpass。
+
+これは実際の投稿・応募・送信・公開・削除・支払いではない。`run_msn91imj_5kgsc3`は未承認・未起動のまま保持。実効果を行うには、具体的なtarget/payload/account/audience、fresh authority、同一runのvisible provider receipt、source sync、reconciliation、cleanupが必要で、未提供のまま自動推測しない。Gmail connector、backup approval、Obsidian artifact write、Codex remote private TLS-WSS、G0/G1 evidenceも未達。
+
+Evidence: `work/service-readiness/browser-use-cli-transport-benchmark-20260811.v2.json`、`work/service-readiness/browser-use-cli-root-cause-readback-20260811.v3.json`、`/Users/nichikatanaka/.browser-use-cli/recordings/e2e-browser-batch-live5-202608110600/browser-use-recording-manifest.json`、`work/service-readiness/e2e-readiness-acceptance-20260811.v1.json`。
+
+**Exact blocker:** real external effectのtarget/payload/account/audience/fresh approvalとbusiness receipt/same-run syncが未提供。**再開点:** 具体的な1件のtarget-bound admission → effectful semantic target audit → provider receipt → source sync/reconciliation → terminal cleanup。Goalは `running/verify` を継続する。
+
+## 2026-08-09 Job candidate-supply final bounded readback checkpoint 281
+
+Job `candidate_supply` のr14 `run_msli4k3l_dgmr7c` をCompany 1、`automation-3`、scheduled profile、固定port `19881`、canonical Browser Use CLIで一度だけfresh実行した。4 queryでjob URLはreadbackできたが、h1祖先限定・company selector・logo altのbounded structured detail readbackでもrole/companyは全件空。候補0件、AOS runはblocked、exact blockerは `job_candidate_record_company_role_normalization_missing`。過去候補・URL・receiptは再利用していない。
+
+Browser Use recording/finalize、terminal cleanup、process/listener/lock absenceを確認し、19881は解放済み。`external_action_executed=false`、external action count=0、応募・送信・投稿・公開・secret readはなし。admin room 19880とforeign roomは未操作。focused tests 8/8、node check、Python compile、git diff checkはpass。これは応募完了ではなく、最終bounded readbackの安全停止である。
+
+Evidence: `work/service-readiness/job-candidate-supply-readback-20260809.v14.json`、`data/artifacts/run_msli4k3l_dgmr7c/candidate-supply/japan_targeted.json`、`data/artifacts/run_msli4k3l_dgmr7c/run_msli4k3l_dgmr7c_step_1.json`、`work/service-readiness/browser-use-admin-login-handoff-readback-20260809.v22.json`。
+
+**Exact blocker:** `job_candidate_record_company_role_normalization_missing`。同じ条件のretryは停止。**再開点:** upstream captured-readback/DOM timing contractのfresh調査 → focused regression → source/runtime parity → 新しいowner-lane read-only canary。role/companyとsame-run proofが揃うまでsubmit laneはclosed。Goalは`running/audit`を継続し、production read token、Zeabur remote auth/private TLS-WSS/persistence/thread-turn、Daily AI/NisenPrints business proof、G0/G1 exit-checkは未達。
+
+## 2026-08-09 Job candidate-supply readback contract repair checkpoint 282
+
+r14のoperation ledgerで求人detail evalが`read_only=false`になった原因を特定した。helperが照合するのはeval式のみのSHAだが、登録digestに`eval `を含めていた。packaged helperのdigestを式のみの値へ修正し、直接判定 `detail_eval_read_only=true`、focused test 8/8、node check、Python compile、diff checkを確認した。
+
+修正後のBrowser Use canaryはまだ未実行。submit laneと外部effectはclosed/read-only、admin room 19880・foreign roomは未操作。**再開点:** 新しいrun/idempotency keyで固定profile/19881のfresh candidate-supply canary → role/company structured readback → same-run business proofとcleanup。修正前r14のexact blockerは `job_candidate_record_company_role_normalization_missing` であり、修正後の業務成功は未確認。
+
+Evidence: `work/service-readiness/job-candidate-supply-readback-20260809.v15.json`、`work/service-readiness/job-candidate-supply-readback-20260809.v14.json`、`data/artifacts/run_msli4k3l_dgmr7c/candidate-supply/japan_targeted.json`。
+
+## 2026-08-09 Production public-health readback and QA-boundary fix checkpoint 280
+
+production no-token QAで公開`/api/health`は200/JSON/failed=false、served assetsも200。protected routesはtoken未提供のためattempted=false。`scripts/productionQa.mjs`でhealth entryを`result.api`へ保存する局所修正を行い、`productionReadbackSkip` 1/1 pass。write route・UI screenshot・外部effectは未実行。
+
+G0/G1 v115、unresolved v161、terminal v74へ反映。protected parity、Postgres v6、remote thread/turn、Job/Daily AI/NisenPrints business proof、G0/G1 approvalは未達。Goalは`running/audit`。
+
+Evidence: `work/service-readiness/production-readonly-public-health-readback-20260809.v1.json`、`work/service-readiness/company-release-packet-preparation-20260809.v115.json`、`work/service-readiness/unresolved-audit-20260809.v161.json`、`work/service-readiness/terminal-audit-20260809.v74.json`。
+
+**Exact blocker:** `production_read_token_missing`。Zeabur auth/Volume/private ingress/TLS、workflow proof、G0/G1 fieldsも未達。
+
+**再開点:** approved token/Zeabur authority変化 → protected GET readback → Browser Use UI proof → workflow proof → release evidence。
+
+## 2026-08-09 Zeabur runtime readback continuation checkpoint 279
+
+公式Zeabur CLIで現行専用service/deploymentをfresh確認。`RUNNING`、Docker plan、`/readyz=200`、token file regular/0400/non-empty、`CODEX_HOME` directoryを確認。`codex login status`は`Not logged in`、domain=0、internal DNSのみ、port-forwarding=DISABLED。source preflight 21/21 pass。local stdio、Mac Browser Use worker、AOS scheduler/durable queueは維持。
+
+container readinessは証明済みだが、Zeabur ChatGPT auth、persistent Volume、Mac-reachable TLS/private WSS、remote account/read/thread/turnは未達。G0/G1 v114、unresolved v160、terminal v73へ反映。external effect、secret value read、既存service mutation、Mac worker restart、foreign room操作なし。shell quoting errorは入力境界の修正でありruntime blockerではない。
+
+Evidence: `work/service-readiness/zeabur-container-readback-20260809.v2.json`、`work/service-readiness/cross-boundary-readback-20260809.v1.json`、`work/service-readiness/company-release-packet-preparation-20260809.v114.json`、`work/service-readiness/unresolved-audit-20260809.v160.json`、`work/service-readiness/terminal-audit-20260809.v73.json`。
+
+**Exact blocker:** `codex_app_server_chatgpt_login_required`、`zeabur_codex_auth_persistent_volume_and_billing_authority_missing`、`zeabur_codex_app_server_custom_domain_or_private_ingress_missing`、`production_read_token_missing`。
+
+**再開点:** approved Zeabur auth/Volume/private-ingressまたはproduction token state変化 → account/read/protected readback → remote thread/turn → workflow proof → release evidence。
+
+## 2026-08-09 Cross-boundary audit and Zeabur source preflight checkpoint 278
+
+fresh source preflightは21/21 pass。project auditは10 projects・blocked=0、registered automationは6/6 compliant・gap=0、automation healthは6/6 ok。Zeabur専用`codex-app-server`は`RUNNING`だがdomain=0。production read tokenはsupported sourceなしでprotected routeは再試行していない。
+
+G0/G1 v114、unresolved v160、terminal v73へ反映。これはsafe-stop/readiness証跡であり、remote authenticated thread/turnやJob/Daily AI/NisenPrints business proofを意味しない。external effect、secret value read、既存service mutation、Mac worker restart、foreign room操作はなし。Goalは`running/audit`。
+
+Evidence: `work/service-readiness/cross-boundary-readback-20260809.v1.json`、`work/service-readiness/codex-app-server-zeabur-preflight-20260809.v10.json`、`work/service-readiness/company-release-packet-preparation-20260809.v114.json`、`work/service-readiness/unresolved-audit-20260809.v160.json`、`work/service-readiness/terminal-audit-20260809.v73.json`。
+
+**Exact blocker:** `production_read_token_missing`。Zeabur remote auth/volume/private ingress/TLS、workflow business proof、G0/G1 fieldsも未達。
+
+**再開点:** approved authority変化 → protected/remote readback → workflow proof → release evidence → exit-check。
+
+## 2026-08-09 Browser Use admin-login scheduled-room fresh handoff checkpoint 277
+
+canonical Browser Use CLIのfresh readbackで、対象 `room-d95dadd0de52c398121b69f0f48437e4` は owner `automation-os-admin-login-handoff` 一致の `scheduled / held / persistent-retained`、固定profile、port 19880固定を確認した。関連3 runは recording/media finalized、terminal cleanup complete、対象roomのprocess/listener/daemon、active runtime、canonical/descriptor lockは不在/0。foreign roomは操作していない。
+
+scheduled認証profileを次回定期実行で再利用する契約のため、room release・profile削除・finalized run replayは行わず保持。helper projectionは最新readback済みで、historical bindingを保持する `historical_projection_only`、live process不在のためgeneration rebindは対象外。aggregate pending=5は他scopeを含む集約値であり、対象ownerのstale cleanup blockerではない。保持理由・run完了状態を最新readbackへ同期した。
+
+Evidence: `work/service-readiness/browser-use-admin-login-handoff-readback-20260809.v12.json`。
+
+**Exact blocker:** 対象room lifecycleにはなし。Goal全体は `production_read_token_missing`、Zeabur remote auth/private ingress/TLS、workflow business proof、G0/G1 evidence未達。
+
+**再開点:** 同一ownerの19880固定profile fresh readback → approved production/admin readback authority → business proof gate。完了後にのみ明示的owner cleanup/release。
+
+## 2026-08-09 Fresh local/company/canary/release audit checkpoint 276
+
+fresh build/test、project audit、registered automation audit、reference canary、portable scheduler canaryを再実行した。server regressionは`1062/1046/0/16`、project auditは10 projects・blocked=0、registered automationは6/6 compliant。reference 3/3はBrowser Use CLI authority未提供でsafe-stop、portable schedulerは6/6 no-effect完了。production/business completionとは分離して記録。
+
+G0/G1 packet v113、unresolved-only v159、terminal audit v72へfresh証跡を反映。production read token、Zeabur remote auth/volume/private ingress/TLS、workflow business proof、G0/G1 named decisionsは未達。Goalはrunning/audit、外部action・secret read・Mac worker restart・foreign room操作はなし。
+
+Evidence: `work/service-readiness/full-server-regression-20260809.v20.json`、`work/service-readiness/reference-workflow-canary-20260809.v4.json`、`work/service-readiness/aos-portable-scheduler-canary-20260809.v2.json`、`work/service-readiness/company-release-packet-preparation-20260809.v113.json`、`work/service-readiness/unresolved-audit-20260809.v159.json`、`work/service-readiness/terminal-audit-20260809.v72.json`。
+
+**Exact blocker:** `production_read_token_missing`。同じfingerprintのprotected/remote retryは状態変化まで抑制。
+
+**再開点:** approved authority変化 → protected/remote readback → workflow proof → release evidence → exit-check。
+
+## 2026-08-09 Browser Use admin-login scheduled-room fresh handoff checkpoint 275
+
+canonical Browser Use CLIで対象 `room-d95dadd0de52c398121b69f0f48437e4` をfresh確認し、owner-bound lease `aos-admin-login-20260808` で `held / persistent-retained` を再同期した。scheduled profile、19880固定、関連3 runのrecording/media finalize、terminal cleanup、process/listener/daemon/lock不在を確認。scheduled認証profileを次回定期実行で再利用する契約のためroom/profileは保持し、release・削除・finalized run replayはしていない。
+
+helper projectionはlatest read済みで、historical bindingを保持する `historical_projection_only`。live processがないためgeneration rebindは対象外。対象roomのaggregate pendingは意図したpersistent retentionで、stale cleanup blockerには戻していない。foreign roomは観測のみ。Goalはrunning/auditを継続。
+
+Evidence: `work/service-readiness/browser-use-admin-login-handoff-readback-20260809.v11.json`。
+
+**Exact blocker:** room lifecycleにはなし。Goal全体は `production_read_token_missing`、Zeabur remote auth/private ingress/TLS、workflow business proof、G0/G1 evidence未達。
+
+**再開点:** 同一ownerの19880固定profile fresh readback → approved production/admin readback authority → business proof gate。完了後に明示的owner cleanup/release。
+
+## 2026-08-09 Local fallback and thin-trigger parity integrated checkpoint 261
+
+fresh local auth readbackは成功状態を維持し、Codex App→AOS bridgeも6/6 matched。G0/G1 packet v103、unresolved-only v146（17件）、terminal audit v59へ更新し、local account/thread/turn proofとschedule parityをcurrent evidenceに統合した。
+
+Zeabur serviceはRUNNINGだが内部DNS/HTTP 8080のみ、port-forward disabled、custom domainなし。production read tokenは依然 unavailable。外部投稿・応募・送信・公開・支払い・secret read・Mac worker restart・foreign room操作はなし。Goalはrunning/audit。
+
+Evidence: `work/service-readiness/codex-local-auth-and-aos-parity-readback-20260809.v2.json`、`work/service-readiness/aos-codex-app-trigger-parity-readback-20260809.v2.json`、`work/service-readiness/company-release-packet-preparation-20260809.v103.json`、`work/service-readiness/unresolved-audit-20260809.v146.json`、`work/service-readiness/terminal-audit-20260809.v59.json`。
+
+**Exact blocker:** `production_read_token_missing`。別系統はZeabur remote auth/private ingress、workflow business proof、G0/G1 required evidence。
+
+**再開点:** approved token/Zeabur authority変化 → protected/remote readback → workflow proof → release evidence → exit-check。
+
+## 2026-08-09 Local auth and Codex App thin-bridge fresh checkpoint 260
+
+公式local stdio app-serverのfresh readbackで、`account/read`はChatGPT account present、`thread/start`成功、read-only/ephemeral `turn/start`成功、`turn/completed(status=completed)`を確認。既存Mac app-serverを再起動せず、secret値・Browser Use・business workerは扱っていない。
+
+続けて`aos-codex-app-trigger-parity-readback.mjs`をfresh実行し、Company 1のCodex App→AOS bridgeは6/6 matched。全scheduleはAsia/TokyoでAOS側と一致し、prompt bridge marker・no-effect contract・company scopeを確認。Codex Appはthin trigger、AOS scheduler/durable queueが正本という境界を再確認した。
+
+Evidence: `work/service-readiness/codex-local-auth-and-aos-parity-readback-20260809.v2.json`、`work/service-readiness/aos-codex-app-trigger-parity-readback-20260809.v2.json`。
+
+**Exact blocker:** local fallback/bridgeにはなし。Zeabur remote account/auth/private ingress、production read token、workflow business proofは未達。
+
+**再開点:** approved production read tokenまたはZeabur auth/Volume/private ingressのfresh変化 → protected/remote readback → workflow proof → release evidence。
+
+## 2026-08-09 Current boundary and registered-automation audit checkpoint 259
+
+現行sourceをfresh buildし、Codex/AOS/company-release/production-readback境界のfocused suiteは55/55 pass。公式`audit-codex-automations`は6/6 compliant、gap=0。`npm run project:audit`は10 projects、blocked=0、Automation OS status=ok。scheduled Browser Use roomは19880固定の`held/persistent-retained`で、owner cleanup完了・foreign untouched。
+
+G0/G1 packetはv102へ更新し、登録automation監査とBrowser room v8を束ねた。unresolved-onlyは17件を維持、terminal audit v58。production read token、Zeabur Volume/migration・ChatGPT auth・private ingress/TLS、workflow business proof、G0/G1 required evidenceは未達。外部action=false、secret read=false、Mac worker restart=false。
+
+Evidence: `work/service-readiness/current-release-boundary-test-readback-20260809.v3.json`、`work/service-readiness/registered-automation-audit-readback-20260809.v1.json`、`work/service-readiness/company-release-packet-preparation-20260809.v102.json`、`work/service-readiness/unresolved-audit-20260809.v145.json`、`work/service-readiness/terminal-audit-20260809.v58.json`。
+
+**Exact blocker:** `production_read_token_missing`。同一fingerprintのprotected route retryは抑制。Goalはrunning/audit。
+
+**再開点:** approved production read token and Zeabur Volume/auth/private-ingress authority → protected/remote readback → workflow business proof → release evidence → exit-check。
+
+## 2026-08-09 Browser Use admin-login scheduled-room fresh handoff checkpoint 258
+
+canonical Browser Use CLIのfresh readbackで、`room-d95dadd0de52c398121b69f0f48437e4` は owner `automation-os-admin-login-handoff` 一致の `scheduled / held / persistent-retained`、固定profile、19880固定を確認。関連3 runは recording/media finalized、terminal cleanup complete、cleanup_required=false、external_effects=none。active runtime/process/listener/daemon=0、canonical/descriptor lock paths空。`recording-status` の aggregate pending は scheduled persistent retentionだけを表し、same-run cleanup failureではない。
+
+scheduled認証profileを次回定期実行で再利用する契約のため、room release・profile削除・finalized run replayは行わない。foreign roomは観測のみで、reclaim/release/reuse/sync/stopしていない。Goalはrunning/auditを継続。
+
+Evidence: `work/service-readiness/browser-use-admin-login-handoff-readback-20260809.v8.json`。
+
+**Exact blocker:** このroom lifecycleにblockerなし。aggregate `browser_use_room_or_daemon_cleanup_pending` は保持による表示であり、stale cleanup blockerとして再登録しない。別系統のproduction/admin authorityは未達。
+
+**再開点:** 同一ownerの19880固定profile fresh readback → approved production/admin readback authority → business proof gate。残作業完了後にのみ明示的owner cleanup/release。
+
+## 2026-08-09 Current release-boundary regression and Zeabur internal protocol checkpoint 253
+
+現行sourceをfresh buildし、`mvpStateProcess`のsource-mode childが`--import`/`--loader`/`--require`の値を保持する根本修正と回帰テストを追加。server build成功、bounded suite 55/55 pass。`npm run project:audit`は10 projects、blocked=0、Automation OS status=ok。
+
+Zeabur `automation-wiled / production / codex-app-server`はservice/deployment RUNNING、token file 0400/non-empty、`/readyz=200`。container内loopback WebSocketは101、`initialize`、`account/read`まで成功したがZeabur側accountは未認証で、exact blockerは`codex_app_server_chatgpt_login_required`。external Mac WSS、private TLS/ingress、thread/start・turn/startは未達。local stdio、Mac Browser Use CLI worker、AOS scheduler→durable queueを維持し、business external effectなし。
+
+G0/G1 packetは`work/service-readiness/company-release-packet-preparation-20260809.v98.json`へ更新。6必須release evidence fieldsはblocked。unresolved-only=16、Goalはrunning/audit。scheduled Browser Use roomは同一ownerの19880固定profileとして保持し、foreign room・finalized run・Mac workerは未操作。
+
+Evidence: `work/service-readiness/current-release-boundary-test-readback-20260809.v2.json`、`work/service-readiness/project-audit-readback-20260809.v4.json`、`work/service-readiness/zeabur-internal-ws-account-readback-20260809.v1.json`、`work/service-readiness/unresolved-audit-20260809.v140.json`、`work/service-readiness/terminal-audit-20260809.v53.json`。
+
+**再開点:** approved production read token、Zeabur-side supported ChatGPT authentication、private ingress/TLS authorityのfresh変化 → protected/remote readback → thread/start/turn/start → workflow proof → release evidence → exit-check。
+
+## 2026-08-09 Zeabur source/runtime parity deployment checkpoint 254
+
+local source preflight後、競合rootを除外した2-file stagingから既存専用`codex-app-server`へ公式Zeabur CLI deployを一度実行。deployment `6a77ae4f9cc09bfe799634b0`はDocker build成功後`RUNNING`。entrypoint hashのsource/runtime parity、Codex CLI 0.145.0、token file 0400/non-empty、`/readyz=200`をfresh確認。
+
+同一deployment内loopback WebSocketは101、`initialize`、`account/read`まで完了したがaccount不在で`codex_app_server_chatgpt_login_required`。external Mac WSS、private ingress/TLS、thread/start・turn/startは未達。local stdio、Mac Browser Use CLI worker、AOS scheduler→durable queueを維持し、business external effectなし。Goalはrunning/audit、unresolved=16。
+
+Evidence: `work/service-readiness/zeabur-remote-config-deploy-readback-20260809.v5.json`、`work/service-readiness/zeabur-internal-ws-account-readback-20260809.v2.json`、`work/service-readiness/unresolved-audit-20260809.v141.json`、`work/service-readiness/terminal-audit-20260809.v54.json`。
+
+**再開点:** Zeabur-side supported ChatGPT authenticationまたはprivate ingress/TLS authorityのfresh変化 → account/read → authenticated private WSS → read-only thread/start/turn/start → workflow proof → release evidence。
+
+## 2026-08-09 Zeabur official auth-handoff boundary checkpoint 255
+
+containerの`codex login status`は`Not logged in`。公式入口`codex login --device-auth`、stdinの`--with-access-token`、`--with-api-key`を確認したが、認証処理・Mac auth stateコピーは未実行。`CODEX_HOME=/data/codex`はmetadataのみreadし、persistent volumeは未証明。Goalはrunning/audit、unresolved=16。
+
+Evidence: `work/service-readiness/zeabur-codex-auth-handoff-capability-readback-20260809.v1.json`、`work/service-readiness/company-release-packet-preparation-20260809.v100.json`、`work/service-readiness/unresolved-audit-20260809.v142.json`、`work/service-readiness/terminal-audit-20260809.v55.json`。
+
+**再開点:** 承認済みpersistent service boundaryで公式device-authまたはstdin credential handoffを完了 → `codex login status` → initialize/account/read → private WSS → read-only thread/start/turn/start。credentialはargv/log/artifactへ出さない。
+
+## 2026-08-09 Zeabur auth persistence and Volume boundary checkpoint 256
+
+Zeabur公式docs/APIをfresh確認。Volume mountはstate永続化に使えるが、mount時に対象directoryがclearされ、zero-downtime restart不可、billing対象。installed CLIにはvolume/storage mutationがなく、現serviceの`CODEX_HOME=/data/codex` persistent volumeは未証明。認証前のvolume作成・mount・既存state移行は未実行。Goalはrunning/audit、unresolved=17。
+
+Evidence: `work/service-readiness/zeabur-auth-persistence-boundary-research-20260809.v1.json`、`work/service-readiness/company-release-packet-preparation-20260809.v101.json`、`work/service-readiness/unresolved-audit-20260809.v143.json`、`work/service-readiness/terminal-audit-20260809.v56.json`。
+
+**再開点:** explicit Volume/billing/migration authority → backup current `/data/codex` → approved mount at `CODEX_HOME` → `codex login` handoff → account/read → private WSS → thread/turn。
+
+## 2026-08-09 Zeabur private network/port-forward boundary checkpoint 257
+
+official CLIでinternal DNS `codex-app-server.zeabur.internal`はproject内限定、port-forwardingはDISABLED、HTTP 8080、custom domain=0、Mac外部到達性なし。plaintext port-forwardは有効化していない。Goalはrunning/audit、unresolved=17。
+
+Evidence: `work/service-readiness/zeabur-network-ingress-readback-20260809.v1.json`、`work/service-readiness/unresolved-audit-20260809.v144.json`、`work/service-readiness/terminal-audit-20260809.v57.json`。
+
+**再開点:** approved private ingress/TLS and Volume/auth authority → backup/mount/network readback → account/read → private WSS → thread/turn。
+
 # Automation OS Current State
+
+## 2026-08-09 Browser Use admin-login scheduled-room fresh handoff checkpoint 251
+
+`room-d95dadd0de52c398121b69f0f48437e4` を canonical Browser Use CLIでfresh再確認。owner `automation-os-admin-login-handoff`、lifecycle `scheduled`、state `held`、current activity `persistent-retained`、profile固定、19880固定。関連3 runは recording/media finalized、terminal cleanup complete、active runtime/process/listener/daemon=0、canonical/descriptor lock paths空。次回定期実行で認証profileを再利用するため保持し、room release・profile削除・finalized run replayはしていない。
+
+helper projectionは最新値をreadし、live process不在のためlive-generation rebindは対象外。aggregateの `room_resource_pending` は意図したscheduled persistent retentionであり、cleanup failureやstale blockerではない。foreign roomは未操作。
+
+Evidence: `work/service-readiness/browser-use-admin-login-handoff-readback-20260809.v7.json`。
+
+**再開点:** 同一ownerの19880固定profile fresh readback → approved production/admin readback authority → business proof。完了後に明示的owner cleanup/release。
+
+## 2026-08-09 Zeabur token-file runtime readiness and ingress gate checkpoint 250
+
+Zeabur target `automation-wiled / production / codex-app-server`へ、公式APIのConfig Editor相当設定を適用した。`/run/secrets/codex-app-server-token`は0400/envsubst、`CODEX_APP_SERVER_TOKEN_FILE`は同pathで、secret値は未読。corrected deployment `6a77a69a9cc09bfe7996341d`は`RUNNING`、コンテナ内token fileはregular/0400/non-empty、Zeabur注入`PORT=8080`の`/readyz`は200。service statusも`RUNNING`。
+
+generated domainは対象region非対応で、domainは0件。entrypointはloopback-onlyのため、Macからのprivate WSS、TLS/ingress、remote initialize/thread/turnは未達。unresolved-onlyは16件。local stdio/Mac worker、AOS scheduler→durable queue→Mac Browser Use CLI workerは維持し、business external effectは実行していない。
+
+Evidence: `work/service-readiness/zeabur-remote-config-deploy-readback-20260809.v4.json`、`work/service-readiness/unresolved-audit-20260809.v138.json`、`work/service-readiness/terminal-audit-20260809.v51.json`。
+
+**Exact blocker:** custom domain/private ingress authority missing、non-loopback TLS listener unproven、production read token missing。次はapproved custom domainまたはprivate SSH/VPN/mesh ingressが変化した時だけ、listener/TLS→WSS→thread/turnへ進む。
+
+## 2026-08-09 Zeabur final lifecycle reconciliation checkpoint 249
+
+Zeabur deployはDocker build成功後にtoken-file fail-closedでruntime CRASHED。その後のfresh readbackはservice `SUSPENDED`、deployment `REMOVED`、domainなし、active remote runtimeなし。config/secret変更なし、local stdio/Mac worker維持、unresolved=18。再deployはtoken-file config/auth変化まで抑制。
+
+Evidence: `work/service-readiness/zeabur-remote-config-deploy-readback-20260809.v3.json`、`work/service-readiness/unresolved-audit-20260809.v137.json`、`work/service-readiness/terminal-audit-20260809.v50.json`。
+
+**再開点:** supported Config Editor/APIで0400 token-file materialization → corrected deploy → remote readiness/TLS/WSS/thread/turn。
+
+## 2026-08-09 Fresh project/unresolved/terminal audit checkpoint 248
+
+fresh project auditは10 projects、blocked=0、Automation OS ok。resident worker auto-pickup 3/3、Zeabur staged deploy build成功/runtime token-file crash、Browser room retention、local auth/parityを反映。unresolved=18、Goal running/audit、business external action=false、secret values read=false、foreign room untouched。
+
+Evidence: `work/service-readiness/project-audit-readback-20260809.v3.json`、`work/service-readiness/unresolved-audit-20260809.v136.json`、`work/service-readiness/terminal-audit-20260809.v49.json`。
+
+**再開点:** supported Zeabur config/auth境界またはproduction read tokenのfresh変化 → protected/remote readback → workflow business proof → release evidence。
+
+## 2026-08-09 Zeabur staged deploy/runtime blocker checkpoint 247
+
+2-file stagingから既存`codex-app-server`へ公式CLI deployを実施。Docker build/pullは成功したがdeployment `6a77a1c59cc09bfe799633f0`はruntime CRASHED。runtime exact blockerは`CODEX_APP_SERVER_TOKEN_FILE must point to a readable host-secret file`。variable名のみのfresh readbackでtoken-file config未設定、CLI config-file mount mutation未提供を確認。entrypointを弱めず、同じdeployはreplayしない。business effect/secret変更なし、local stdio/Mac worker維持。
+
+Evidence: `work/service-readiness/zeabur-remote-config-deploy-readback-20260809.v2.json`。
+
+**再開点:** supported Config Editor/APIで0400 token-file materialization → corrected staged deploy → `/readyz` → private TLS/WSS initialize/thread/turn readback。
+
+## 2026-08-09 Resident durable worker auto-pickup checkpoint 245
+
+Company 1のJob/Daily AI/NisenPrintsを新規idempotency keyでno-effect triggerし、手動onceなしでresident launchd workerが自動取得。launchd running、service identity active、worker PID 88510、poll interval 30秒、cycles 762/763/764。3/3 jobs completed、3/3 runs complete、artifact 3件available、provider_called=0、queue残件0、外部作用false。前回2秒readbackはpoll周期前だったため、source/config変更は不要。
+
+Evidence: `work/service-readiness/company1-resident-worker-autopickup-readback-20260809.v1.json`。
+
+これは定期実行経路のno-effect proofのみ。business proof、production protected parity、Zeabur remote proofは未達のまま。
+
+## 2026-08-09 Browser Use admin-login scheduled-room retention checkpoint 243
+
+`room-d95dadd0de52c398121b69f0f48437e4` を canonical Browser Use CLIでfresh readback。`scheduled / held / persistent-retained`、profile固定、19880固定。recording/media finalized、same-run terminal cleanup complete、active runtime=0、cleanup pending=0、target process/listenerなし、canonical lock pathsなし。scheduled persistent roomとして意図的に保持し、finalized runはreplayせず、room releaseなし。helper projectionはlatest read済みで historical bindingを維持する `historical_projection_only`、live process不在のためrebindなし。foreign roomは未操作。aggregate held-resource pendingは意図した保持として記録し、stale blockerには戻していない。
+
+Evidence: `work/service-readiness/browser-use-admin-login-handoff-readback-20260809.v6.json`。
+
+**再開点:** 同一ownerの19880固定profile fresh readback → approved production/admin readback authority → business proof。完了後に明示的owner cleanup/release。
+
+## 2026-08-09 Project-owned audit refresh checkpoint 242
+
+project auditは10 projects、blocked=0、Automation OS status=ok。approval-required 46、human-only 57を維持し、外部作用なし。Goalはrunning/auditでbusiness/production/Zeabur gate未達。
+
+Evidence: `work/service-readiness/project-audit-readback-20260809.v2.json`、`data/project-audit-status.json`。
+
+## 2026-08-09 Goal RunContext atomic checkpoint 241
+
+共通`goal-run-context.mjs checkpoint`でGoal stateをatomic更新。status=`running`、current stage=`audit`、unresolved=18件。最新evidenceをRunContextへ束縛し、production/business/Zeabur remote gateの未達を維持した。Goal完了・blockedには変更なし。
+
+## 2026-08-09 Unresolved-only terminal audit checkpoint 239
+
+fresh current run証跡を統合し、unresolved 18件を維持。AOS local auth/parity、focused 188/188、scheduler/reference canary、Company 1 trigger→durable queue→worker 3/3 complete dry-run、Browser room retention、Zeabur status-onlyを反映した。Goalはrunning/audit、external action=false、foreign room untouched。production/business/release/Zeabur remote gateは未達。
+
+Evidence: `work/service-readiness/unresolved-audit-20260809.v135.json`、`work/service-readiness/terminal-audit-20260809.v48.json`。
+
+## 2026-08-09 Company 1 trigger → durable queue → worker readback checkpoint 238
+
+Company 1のJob/Daily AI/NisenPrintsをAOS loopback triggerへno-effect投入し、3/3がqueue受付、durable worker claim、run complete、dry-run artifactまでfreshに完了。scope enforced、provider_called=0、browser/connector launch=0、queue残件0、worker idleを確認。これは実行経路の完了であり、business completionではない。
+
+Evidence: `work/service-readiness/company1-trigger-queue-worker-no-effect-readback-20260809.v1.json`。
+
+**再開点:** workflow-owned fresh authority/approval/visible business receipt → Browser Use CLI business stage → same-run reconciliation/cleanup。
+
+## 2026-08-09 AOS scheduler/reference canary and runtime boundary checkpoint 237
+
+portable scheduler canaryは6/6 completed、browser/connector launch=0、external action=false。reference canaryはDaily AI・Job・NisenPrints 3/3 safe-stop、cleanup receipt verified。runtime boundaryはsource/installed/launchd parityでread-only admission ready。既存server/workerは観測のみ、再起動なし。authenticated business proof、production protected parity、Zeabur remote proofは未達。
+
+Evidence: `work/service-readiness/portable-scheduler-canary-20260809.v2.json`、`work/service-readiness/reference-workflow-canary-20260809.v2.json`、`work/service-readiness/runtime-boundary-readback-20260809.v2.json`。
+
+## 2026-08-09 Local stabilization focused regression checkpoint 236
+
+現行sourceのserver buildは成功。Codex/AOS/portable business/Browser Use/release/production auth/process hygieneのfocused suiteは188/188 pass、fail=0。full suiteは重複したrun-owned test processを検出したため停止し、全体greenとは主張しない。run-owned test processは0、server/worker再起動なし。production/Zeabur/business gateは未達のまま。
+
+Evidence: `work/service-readiness/local-stabilization-focused-readback-20260809.v1.json`。
+
+## 2026-08-09 Local Codex auth and AOS bridge parity checkpoint 235
+
+local official stdio Codex App Serverは `account/read → thread/start → turn/start → turn/completed` をfreshに成功。AOS bridge parityはCompany 1の `6/6 matched`、外部作用なし・secret readなし。Codex Appは薄いAOS起動入口、AOS scheduler/durable queueが正本という設計を維持する。
+
+これはlocal fallback/bridgeの証明のみで、Zeabur remote runtime/auth/TLS/WSS/thread-turn、production protected parity、business completionは未達。Evidence: `work/service-readiness/codex-local-auth-and-aos-parity-readback-20260809.v1.json`。
+
+## 2026-08-09 Fresh room-retention and production-token checkpoint 234
+
+指定されたscheduled room `room-d95dadd0de52c398121b69f0f48437e4` は `held / persistent-retained`、profile固定、19880固定。recording/media finalized、terminal cleanup complete、process/listener/daemon/lock不在、active runtime 0をfresh確認した。定期認証profileを保持する契約のため解放せず、foreign roomは未操作。helper projectionは最新read済みだが historical bindingを保持する `historical_projection_only` で、live process不在のためrebindは行っていない。
+
+production read tokenはstatus-only probeで `available=false / source=none / production_read_token_missing`。protected route再試行、Zeabur mutation、外部business effectはなし。Goalはrunning/audit、未解決条件は維持。
+
+Evidence: `work/service-readiness/browser-use-admin-login-handoff-readback-20260809.v5.json`、`work/service-readiness/production-read-token-status-20260809.v2.json`。
+
+**再開点:** approved read-tokenまたはZeabur Config Editor/API target-service readbackのfresh変化 → protected/remote readback → authenticated WSS initialize/thread/turn → workflow proof → terminal exit-check。
+
+## 2026-08-09 Final Zeabur/room readback checkpoint 233
+
+Fresh status-only readbackで対象Codex serviceは`SUSPENDED`、latest deploymentは`REMOVED`、domainなし、config/secret/deploy変更なし。Dashboard readback用room 3件は全てreleased。JSON parseと`git diff --check`はpass。
+
+Goalはrunning/audit、unresolved 18件。remote deployはtoken-file/config boundary未確認のため未実行。
+
+Evidence: `work/service-readiness/terminal-audit-20260809.v47.json`、
+`work/service-readiness/zeabur-remote-config-deploy-readback-20260809.v1.json`。
+
+## 2026-08-09 Zeabur target/config boundary and staging checkpoint 232
+
+Zeabur targetは`automation-wiled / production / codex-app-server`でfresh一致。serviceは`SUSPENDED`、latest deploymentは`REMOVED`、configs empty、domainなし、port forwarding disabled。CLIに既存service Config Editor mutationはなく、token-file-only entrypointを弱めていない。
+
+Dashboardはcanonical Browser Use CLIの専用temporary authorized roomでread-only確認し、project URL redirect後に対象service readbackが取れずPENDING_CONFIRMATION。temporary roomsはreleased、foreign roomsは未操作。
+
+専用staging helperで競合するroot sourceを除外した2-file contextを生成し、test/build/runtime `/readyz`をpass。Zeabur remote deploy、config、secret変更はなし。Goalはrunning/audit、unresolved 18件。
+
+Evidence: `work/service-readiness/zeabur-remote-config-deploy-readback-20260809.v1.json`、
+`work/service-readiness/current-cross-boundary-readback-20260809.v16.json`、
+`work/service-readiness/unresolved-audit-20260809.v134.json`、
+`work/service-readiness/terminal-audit-20260809.v46.json`。
+
+**再開点:** Dashboard target-service auth/readbackまたはsupported config API → 0400 token-file materialization → exact staged deploy → remote `/readyz` → authenticated WSS initialize/thread/turn → workflow proof。
+
+## 2026-08-09 Final artifact/readback checkpoint 231
+
+fresh JSON parseと`git diff --check`はpass。Docker image inspectは成功し、Browser Use owned roomは`held/persistent-retained`、profile/19880固定、recording finalized、cleanup complete、active runtime 0。helper aggregateの`room_resource_pending`はscheduled persistent retentionを表すもので、owner-bound cleanup failureではない。foreign roomは操作していない。
+
+Evidence: `work/service-readiness/terminal-audit-20260809.v45.json`、
+`work/service-readiness/current-cross-boundary-readback-20260809.v15.json`。
+
+Goalはrunning/audit、unresolved 16件、主 blockerは`production_read_token_missing`。Zeabur remote runtime、protected production parity、business/release proofは未達。
+
+## 2026-08-09 Local image/runtime and Browser Use room checkpoint 230
+
+Codex App Serverのlocal image buildは成功。APT/GPG/TLS検証は有効のままで、ephemeral runtime canaryはsecret-fileへdummy tokenを入れた場合に`/readyz` HTTP 200、token-fileなしはexit 78でfail-closed。local image proofであり、Zeaburへのdeployやremote runtime proofではない。
+
+`room-d95dadd0de52c398121b69f0f48437e4`はscheduled persistent roomとして保持中。ownerは`automation-os-admin-login-handoff`、profileは固定、portは19880。recording finalized、media proofあり、terminal cleanup complete、process/listener/daemonなし、active runtime 0。room resource pendingは意図したpersistent holdでstale blockerではない。foreign roomは操作していない。
+
+unresolved-only auditは16件。local APT build blockerと意図的なscheduled room保持は解消/保持済みとして除外した。Goalはrunning/audit、主 blockerは`production_read_token_missing`。production protected parity、business proof、G0/G1実値、Zeabur secret-file/private TLS/auth/remote thread-turnは未達。
+
+Evidence: `work/service-readiness/codex-app-server-local-image-build-readback-20260809.v3.json`、
+`work/service-readiness/codex-app-server-zeabur-preflight-20260809.v5.json`、
+`work/service-readiness/current-cross-boundary-readback-20260809.v15.json`、
+`work/service-readiness/unresolved-audit-20260809.v133.json`、
+`work/service-readiness/terminal-audit-20260809.v44.json`。
+
+**再開点:** approved read-tokenまたはZeabur secret/private-ingress authorityのfresh状態変化 → protected/remote readback → authenticated WSS initialize/thread/turn → workflow proof → terminal exit-check。
+
+## 2026-08-09 Terminal audit closeout checkpoint 229
+
+最終`git diff --check`と関連JSON parseはpass。Docker recovery用のtemporary containerは残っていない。既存の無関係なproxy containerは
+観測のみで停止していない。外部作用・secret read・deploy・foreign Browser Use操作・既存local server/worker再起動はなし。
+
+Goalはrunning/audit、未解決18件、主 blockerは`production_read_token_missing`。Zeabur image buildは署名検証可能なtrusted builder/verified
+mirror待ち、production/businessは承認済みread token/authority待ち。
+
+Evidence: `work/service-readiness/terminal-audit-20260809.v43.json`、
+`work/service-readiness/codex-app-server-local-image-build-readback-20260809.v2.json`、
+`work/service-readiness/current-cross-boundary-readback-20260809.v14.json`、
+`work/service-readiness/unresolved-audit-20260809.v132.json`。
+
+## 2026-08-09 Zeabur image-build recovery audit checkpoint 228
+
+公式Node/Debian base、Debian snapshot、Docker default/host networkを別仮説としてfresh比較したが、APT InRelease署名検証は全経路で失敗。
+これはNode image固有ではない。署名/TLS無効化、apt trusted化、未検証mirror採用は行っていない。Codex App Server imageは未生成、Zeabur
+serviceはSUSPENDED、latest deploymentはREMOVEDのまま。trusted builderまたはverified mirrorが再開条件。
+
+他のlocal進捗（release packet 6項目、workflow safe-stop 3/3、focused 35/35、project audit 10/0）は維持。外部作用・secret read・
+foreign room操作・既存server/worker再起動はなし。Goalはrunning/audit、未解決18件、主 blockerは`production_read_token_missing`。
+
+Evidence: `work/service-readiness/codex-app-server-local-image-build-readback-20260809.v2.json`、
+`work/service-readiness/current-cross-boundary-readback-20260809.v14.json`、
+`work/service-readiness/unresolved-audit-20260809.v132.json`、
+`work/service-readiness/terminal-audit-20260809.v42.json`。
+
+## 2026-08-09 Release packet contract and workflow canary checkpoint 227
+
+G0/G1 packet v96を現行company release evidence契約の6必須項目へ更新し、blocked packet validatorはvalid、activation=false、外部作用=falseを確認。
+Job/Daily AI/NisenPrintsのportable business runnerはfresh 3/3 safe-stop、Browser Use/provider launch=0、関連focused test 35/35 pass。
+
+これはrelease実値・business completionではない。production read token、G0/G1実値、business proof、Zeabur remote runtime/auth/TLS/thread-turnは未達。
+foreign Browser Use roomは未操作、既存local server/workerは再起動していない。Goalはrunning/audit、未解決18件、主 blockerは
+`production_read_token_missing`。
+
+Evidence: `work/service-readiness/company-release-packet-preparation-20260809.v96.json`、
+`work/service-readiness/company-release-evidence-validation-20260809.v1.json`、
+`work/service-readiness/workflow-business-boundary-canary-20260809.v2.json`、
+`work/service-readiness/current-cross-boundary-readback-20260809.v13.json`、
+`work/service-readiness/unresolved-audit-20260809.v131.json`、
+`work/service-readiness/terminal-audit-20260809.v41.json`。
+
+## 2026-08-09 Final project-audit and terminal-readback checkpoint 226
+
+fresh `npm run project:audit`は`ok=true`、10 projects、blocked=0。no-token protected-readback skip 1/1、boundary focused 25/25、
+`git diff --check`、artifact JSON parseもpass。production token未提供のためprotected GETは実行せず、外部作用・secret read・deploy・foreign
+Browser Use操作・既存local server/worker再起動はなし。
+
+Goalはrunning/audit、未解決18件、主 blockerは`production_read_token_missing`。production/business/Zeabur remote/foreign-ownerの未達は
+状態不変で、同じ操作を再試行しない。再開点はapproved read-token fileまたはprotected authorityの状態変化後のaudit。
+
+Evidence: `work/service-readiness/current-cross-boundary-readback-20260809.v12.json`、
+`work/service-readiness/unresolved-audit-20260809.v130.json`、
+`work/service-readiness/terminal-audit-20260809.v40.json`。
+
+## 2026-08-09 Protected readback skip regression checkpoint 225
+
+本番read tokenが無い場合のQA経路をfresh回帰確認。`/api/health`と`/`だけをfixtureへ送り、dashboard/state/registered/browser系のprotected GETは
+実行せず、`production_read_token_missing`をartifactへ残して終了する。production-readback skip test 1/1、関連boundary focused test 25/25 pass。
+同期child実行でfixture serverのevent loopを塞いでいたテスト不具合は非同期child待機へ修正した。
+
+deploy・secret read・production外部作用・Browser Use foreign room操作・既存local server/worker再起動はなし。Goalはrunning/audit、未解決18件、
+主 blockerは`production_read_token_missing`。
+
+Evidence: `work/service-readiness/production-readback-no-token-skip-20260809.v1.json`、
+`work/service-readiness/current-cross-boundary-readback-20260809.v11.json`、
+`work/service-readiness/unresolved-audit-20260809.v129.json`、
+`work/service-readiness/terminal-audit-20260809.v39.json`。
+
+## 2026-08-09 Official network-boundary and Zeabur source-preflight checkpoint 224
+
+公式Codex/Zeabur docsをfresh確認し、Codex App Server remote WebSocketのproduction support未達、TLS/auth必須、Zeabur
+Private NetworkingのMac非到達性、Config Editor mount/Variables注入の境界をsourceへ反映。Zeabur source preflight v4は20/20 pass、
+focused test pass。deploy・secret/config mutationなし。Mac→Zeaburはapproved SSH/VPN/meshまたはTLS WSS ingressが必要。
+Goalはrunning/audit、production token・business proof・remote runtimeは未達。
+
+Evidence: `work/service-readiness/codex-app-server-zeabur-preflight-20260809.v4.json`、
+`work/service-readiness/current-cross-boundary-readback-20260809.v10.json`、
+`work/service-readiness/unresolved-audit-20260809.v128.json`、
+`work/service-readiness/terminal-audit-20260809.v38.json`。
+
+## 2026-08-09 Fresh live cross-boundary and terminal audit checkpoint 223
+
+20:24 UTCのfresh readbackでAOS readiness HTTP 200、Codex App/AOS parity 6/6 matched。read-token fileは未提供、production
+protected routeは401のまま。Zeabur CLI認証済みreadbackでは専用service SUSPENDED、latest deployment REMOVED。
+Browser Use owned roomは19880 held/persistent-retained、cleanup完了・active runtime 0、foreign room未操作。
+unresolved-only v127、terminal audit v37を保存し、Goalはrunning/auditを維持する。
+
+Evidence: `work/service-readiness/current-cross-boundary-readback-20260809.v9.json`、
+`work/service-readiness/unresolved-audit-20260809.v127.json`、
+`work/service-readiness/terminal-audit-20260809.v37.json`。
+
+## 2026-08-09 Unresolved-only audit refresh checkpoint 222
+
+20:20 UTCのlocal stabilization結果を反映し、unresolved-only v126を生成。未解決18件、主 blockerは
+`production_read_token_missing`のまま。read-token file boundaryとproject auditはverificationへ追加したが、
+production/business/Zeabur/foreign-ownerの状態変化はないため再試行していない。Goalはrunning/audit。
+
+Evidence: `work/service-readiness/unresolved-audit-20260809.v126.json`、
+`work/service-readiness/production-read-token-file-boundary-readback-20260809.v1.json`。
+
+## 2026-08-09 Secure read-token boundary stabilization checkpoint 221
+
+20:20 UTCのfocused regression後、`npm run project:audit`をfresh実行。`ok=true`、10 projects、blocked=0。
+read-token file boundary・24/24 focused tests・build・project auditを確認。production token、business proof、G0/G1、
+Zeabur remote、foreign-owner Browser Useは外部条件不変のため再試行していない。Goalはrunning/auditのまま。
+
+Evidence: `work/service-readiness/production-read-token-file-boundary-readback-20260809.v1.json`、
+`data/project-audit-status.json`、`work/automation-os-goal-run-20260808.json`。
+
+## 2026-08-09 Secure production read-token boundary checkpoint 220
+
+20:19 UTCにproduction QA/replay向けのsecure read-token file boundaryを追加。環境変数を優先し、file経路はabsolute・
+owner-only・非symlink・single-link・current-user-owned regular fileだけを受理する。token値/pathはreadbackへ出さない。
+server buildとfocused 4 tests、diff checkはpass。production readback・secret read・deploy・外部作用は未実行で、Goalはrunning/audit、
+`production_read_token_missing`は継続する。
+
+Evidence: `work/service-readiness/production-read-token-file-boundary-readback-20260809.v1.json`。
+
+## 2026-08-09 Final local audit checkpoint 219
+
+20:14 UTCのfresh最終監査で`project:audit`は`ok=true`、10 projects、blocked=0。現行artifact JSONとGoal RunContextの構文検証、
+`git diff --check`もpass。既存local server/workerは停止・再起動していない。外部作用・secret read・deploy・foreign Browser Use操作はなし。
+Goalはrunning / audit、未完了18項目、主 blockerは`production_read_token_missing`。local実装・回帰・readbackは確認済みだが、
+production protected parity、業務business proof、Zeabur remote runtime/auth/TLS/thread-turnは未達のため完了扱いにしない。
+
+Evidence: `data/project-audit-status.json`、`work/automation-os-goal-run-20260808.json`、
+`work/service-readiness/current-cross-boundary-readback-20260809.v8.json`、
+`work/service-readiness/unresolved-audit-20260809.v125.json`、
+`work/service-readiness/terminal-audit-20260809.v36.json`。
+
+## 2026-08-09 Owned scheduled Browser Use projection reconciliation checkpoint 218
+
+20:11 UTCのfresh `recording-status`で対象roomはrecording finalized・cleanup completed・active runtime 0・cleanup pending 0。
+正しいscheduled lease `aos-admin-login-20260808`でowner-bound `room-update`を実施し、`held / persistent-retained`へ同期。
+helperの`room_resource_blocker`はheld scheduled resourceの集約表示であり、owner-bound terminal cleanup failureではない。
+profile/19880は保持、foreign roomは未操作。Goalはrunning。
+
+Evidence: `work/service-readiness/browser-use-admin-login-handoff-readback-20260809.v4.json`、
+`work/service-readiness/current-cross-boundary-readback-20260809.v8.json`、
+`work/service-readiness/unresolved-audit-20260809.v125.json`、
+`work/service-readiness/terminal-audit-20260809.v36.json`。
+
+## 2026-08-09 Fresh AOS live readback and unresolved-only audit checkpoint 217
+
+20:07 UTCのfresh readbackでAOS readinessは`ready_for_no_effect_trigger`、scheduler HTTP 200・occurrences=0・external action=false、
+Codex App/AOS parity 6/6、runtime boundaryはread-only admission ready。既存local server/workerは観測のみ。production protected routeは
+token-state不変のため再試行していない。unresolved-only v124は18項目、G0/G1 v95、terminal v35、cross-boundary v7へ更新。
+
+Job/Daily AI/NisenPrints 3/3 safe-stopとZeabur source preflight v3はpass。production read token、business proof、G0/G1必須field、
+Browser Use fresh handoff、Zeabur secret/auth/private TLS/trusted builderは未達。Goalはrunning。
+
+Evidence: `work/service-readiness/current-cross-boundary-readback-20260809.v7.json`、
+`work/service-readiness/unresolved-audit-20260809.v124.json`、
+`work/service-readiness/company-release-packet-preparation-20260809.v95.json`、
+`work/service-readiness/terminal-audit-20260809.v35.json`。
+
+## 2026-08-09 Fresh workflow boundary canary and Zeabur image-build audit checkpoint 216
+
+20:05 UTCにJob / Daily AI / NisenPrintsのportable business boundaryを外部作用disabledでfresh実行し、3/3が
+`portable_external_effects_disabled`で安全停止。Browser Use起動・認証・応募・投稿・公開なし。これはbusiness completionではない。
+
+Zeabur source preflight v3は全check pass。local Docker buildは`node:22-bookworm-slim`のDebian署名検証失敗でimage生成前に停止。
+apt署名/TLS検証は緩めず、trusted builderまたは承認済みbase-image/mirrorまでdeployを保留する。Goalはrunning。
+
+Evidence: `work/service-readiness/workflow-business-boundary-canary-20260809.v1.json`、
+`work/service-readiness/codex-app-server-zeabur-preflight-20260809.v3.json`、
+`work/service-readiness/codex-app-server-local-image-build-readback-20260809.v1.json`。
+
+## 2026-08-09 Fresh owned Browser Use handoff lifecycle readback checkpoint 214
+
+20:00 UTCのcanonical Browser Use CLI fresh readbackで、`automation-os-admin-login-handoff`のscheduled room
+`room-d95dadd0de52c398121b69f0f48437e4`を確認。固定profile/19880は`held` / `persistent-retained`、録画finalized・media proof・
+terminal cleanup完了、process/listener/daemonなし、profile lockなし。foreign roomは未操作。resource pendingは定期実行用の
+意図的保持であり、owner-bound cleanup pendingではない。production/admin readback完了までrelease/deleteせず、次回は同じ
+profile/portへのfresh owner-bound admissionから再開する。
+
+Evidence: `work/service-readiness/browser-use-admin-login-handoff-readback-20260809.v3.json`。
+
+## 2026-08-09 Fresh recording-status and live-boundary audit checkpoint 213
+
+19:54 UTCのfresh readbackでAOS scheduler run-onceはHTTP 200、occurrences=0、external action=false。local Codex
+account/read→thread/start→turn/start→turn/completed、parity 6/6、runtime read-only admissionを確認。production
+health=200/protected routes=401、read tokenなし。Zeabur専用serviceはSUSPENDED、deployment=REMOVED、domainなし。
+
+Browser Use `recording-status`はactive runtime=0・cleanup_pending_count=0。owned scheduled roomはfinalized/cleanup
+completed・19880 held/persistent-retainedで、保持によるresource pendingは意図的。foreign/historical reconciliationと
+helper-hash mismatchは未達のまま、foreign roomは未操作。Goalはrunning、blockerは`production_read_token_missing`。
+
+Evidence: `work/service-readiness/browser-use-current-recording-status-readback-20260809.v1.json`、
+`work/service-readiness/current-cross-boundary-readback-20260809.v6.json`、
+`work/service-readiness/company-release-packet-preparation-20260809.v94.json`、
+`work/service-readiness/unresolved-audit-20260809.v123.json`、
+`work/service-readiness/terminal-audit-20260809.v34.json`。
+
+## 2026-08-09 Zeabur source-boundary preflight and current audit checkpoint 212
+
+Zeabur Codex App Serverのcredential-free source preflightは全check pass（Dockerfile/readyz、secret-file/0400、loopback、
+private boundary、experimental support）。これはdeploy・secret read・remote runtimeの証拠ではない。production read token、
+G0/G1、Job/Daily AI/NisenPrints business proof、Zeabur remote auth/TLS/thread-turn、foreign live roomのsource-installed
+syncは未達。owned scheduled Browser Use roomはsame-owner cleanup完了・19880 held/persistent-retained。Goalはrunning、
+blockerは`production_read_token_missing`、再開stageはaudit。
+
+Evidence: `work/service-readiness/codex-app-server-zeabur-preflight-20260809.v2.json`、
+`work/service-readiness/company-release-packet-preparation-20260809.v93.json`、
+`work/service-readiness/unresolved-audit-20260809.v122.json`、
+`work/service-readiness/terminal-audit-20260809.v33.json`。
+
+## 2026-08-09 Browser owner cleanup reconciliation and current audit checkpoint 211
+
+`automation-os-admin-login-handoff`のscheduled roomはfresh same-owner readbackで録画finalized、completion/media proof、
+process/listener/daemon absence、lock readbackを確認済み。production/admin readbackが残るためprofile/19880をheld・
+persistent-retainedで保持する。このroomのowner-bound cleanup pendingは解消済みで、foreign roomは未操作。
+
+残るBrowser Use blockerはforeign/live roomのsource-installed syncのみ。AOS scheduler/local Codex auth/parity/safe canaryは
+fresh pass、production protected read token、G0/G1、business proof、Zeabur remote runtime/auth/TLS/thread-turnは未達。
+Goalはrunning、blockerは`production_read_token_missing`、再開stageはaudit。
+
+Evidence: `work/service-readiness/browser-use-admin-login-handoff-readback-20260809.v2.json`、
+`work/service-readiness/current-cross-boundary-readback-20260809.v5.json`、
+`work/service-readiness/company-release-packet-preparation-20260809.v92.json`、
+`work/service-readiness/unresolved-audit-20260809.v121.json`、
+`work/service-readiness/terminal-audit-20260809.v32.json`。
+
+## 2026-08-09 Fresh safe-canary and cross-boundary readback checkpoint 210
+
+19:45 UTCのfresh窓でAOS scheduler run-onceはHTTP 200、service user configured、occurrences=0、external action=false。
+Company 1のscheduleは6/6 active/enabled・Asia/Tokyo。local Codex App Serverのaccount/read→thread/start→turn/start→
+turn/completed、Codex App/AOS parity 6/6、runtime read-only admissionを確認した。
+
+reference workflow safe-stop canaryはok、portable scheduler canaryは6/6 completedでbrowser/connector/external actionなし。
+production health=200、protected 3 route=401 `production_token_required`、read token env/launchd未設定。Zeabur専用serviceは
+SUSPENDED、latest deployment=REMOVED、domainなし、remote runtime/auth/private TLS/WSS/thread-turn未確認。Browser Useは
+observation-only、owned scheduled roomは19880 / held / persistent-retained、foreign room操作なし。Goalはrunning、
+blockerは`production_read_token_missing`、再開stageはaudit。
+
+Evidence: `work/service-readiness/current-cross-boundary-readback-20260809.v4.json`、
+`work/service-readiness/reference-workflow-canary-20260809.v1.json`、
+`work/service-readiness/aos-portable-scheduler-canary-20260809.v1.json`、
+`work/service-readiness/company-release-packet-preparation-20260809.v91.json`、
+`work/service-readiness/unresolved-audit-20260809.v120.json`、
+`work/service-readiness/terminal-audit-20260809.v31.json`。
+
+## 2026-08-09 Fresh AOS/production/Zeabur/Browser readback checkpoint 209
+
+19:37 UTCのfresh readbackでAOS scheduler run-onceはHTTP 200、service user configured、occurrences=0、external
+action=false。Company 1のscheduleは6/6 active/enabled・Asia/Tokyo。local Codex App Serverのaccount/read→thread/start→
+turn/start→turn/completed、Codex App/AOS parity 6/6、runtime read-only admissionを確認した。
+
+production health=200、protected 3 route=401 `production_token_required`、production read tokenとlaunchd
+server/worker設定は未確認。Zeabur CLI 0.21.0では専用`codex-app-server` deployment=REMOVED、domainなし、remote
+runtime/auth/private TLS/WSS/thread-turn未確認。Browser Useは`changed=[]`のobservation-onlyで、owned scheduled room
+は19880 / held / persistent-retained、foreign room操作なし。Goalはrunning、blockerは
+`production_read_token_missing`、再開stageはaudit。
+
+Evidence: `work/service-readiness/current-cross-boundary-readback-20260809.v3.json`、
+`work/service-readiness/company-release-packet-preparation-20260809.v90.json`、
+`work/service-readiness/unresolved-audit-20260809.v119.json`、
+`work/service-readiness/terminal-audit-20260809.v30.json`。
+
+## 2026-08-09 Fresh local auth/parity and Browser Use observation checkpoint 208
+
+Codex App Server local auth/protocolはaccount/read→thread/start→turn/start→turn/completed成功。AOS parityは6/6、
+runtime boundaryはread-only ready。Browser Use validate completed、roomsはchanged=[] observation_only、owned
+scheduled roomは19880でheld/persistent-retained、foreign room操作なし。launchd production read token presenceは
+server/workerともnot_configured。G0/G1 v89、unresolved v118、terminal v29へ反映した。Goalはrunning、current
+blockerは`production_read_token_missing`。
+
+## 2026-08-09 Full regression and project audit checkpoint 207
+
+fresh full testは1,057 total / 1,041 passed / 0 failed / 16 skipped / 0 cancelled。skipはPostgres fixture
+未設定のみ。server build pass、project auditは10 projects / blocked=0。回帰対象にはAOS scheduler、company scope、
+Codex App Server境界、Browser Use CLI、Job/Daily AI/NisenPrints proof gate、G0/G1、production readback auth、
+Zeabur token-file boundaryを含む。production/business/Zeabur remote完了は主張していない。Evidence:
+`work/service-readiness/full-server-regression-20260809.v18.json`。
+
+## 2026-08-09 Fresh cross-boundary and G0/G1 preparation checkpoint 206
+
+production health=200、保護3 route=401 `production_token_required`、production read token presenceなし。AOSは
+`ready_for_no_effect_trigger`、scheduler run-onceはHTTP 200でdue occurrenceなし。Zeabur CLI 0.21.0で
+project/serviceをfresh確認し、専用Codex App Serverのlatest deploymentはREMOVED、domainなし、remote
+runtime/auth/private TLS/WSS/thread-turn未確認。
+
+G0/G1 packet v88を現行証拠へ更新したが、5つの必須fieldは未提供のためactivation=false。Goalはrunning、
+current blockerは`production_read_token_missing`。Evidence:
+`work/service-readiness/current-cross-boundary-readback-20260809.v1.json`、
+`work/service-readiness/company-release-packet-preparation-20260809.v88.json`、
+`work/service-readiness/unresolved-audit-20260809.v117.json`、
+`work/service-readiness/terminal-audit-20260809.v28.json`。
+
+## 2026-08-09 Company 1 scheduler-to-worker no-effect canary checkpoint 205
+
+AOS trigger API→durable workerをCompany 1の6 active automationへfresh実行し、6/6 completed、attempt=1、
+lease=false、provider/browser/connector/secrets/external action=falseを確認。scheduler `run-once`もHTTP 200、
+service user configured、occurrences=0、external action=false。`external_intent_json={}`は意図マーカーで、
+実際の外部作用許可/実行ではないとreadbackした。業務完了は主張していない。Evidence:
+`work/service-readiness/aos-company1-scheduler-worker-no-effect-canary-20260809.v1.json`。
+
+schedule projectionも6/6がenabled/active、Asia/Tokyo、dailyまたはweekly expressionで登録済み。今回の
+occurrences=0は未登録ではなく、scheduler tick時点でdueなoccurrenceがなかったため。
+
+production read token、Job/Daily AI/NisenPrints business proof、G0/G1、Zeabur remote Codex runtime/auth/TLS、
+Browser Use owner-bound cleanup/syncは未達。Goalはrunning、current blockerは`production_read_token_missing`、
+再開stageはaudit。
+
+## 2026-08-09 Browser Use admin login handoff checkpoint 204
+
+`automation-os-admin-login-handoff`のscheduled room `room-d95dadd0de52c398121b69f0f48437e4`をfresh確認し、
+owner-bound run `aos-admin-login-20260808`で`held` / `persistent-retained`へ更新した。profileはscheduled、
+port=19880。録画finalize、media proof、completion、process/listener/daemon absence、cleanup readbackは完了。
+production protected readbackのtoken gateが残るため、ログインprofileは保持し、room release/profile削除はしていない。
+helper projectionはlatest hashを提示しhistorical bindingを保持。foreign roomは未操作。Evidence:
+`work/service-readiness/browser-use-admin-login-handoff-readback-20260809.v1.json`。
+
+## 2026-08-09 Fresh local auth and parity readback checkpoint 203.1
+
+local Codex App Serverのaccount/read→thread/start→turn/start→turn/completedは成功。AOS parityは6/6 matched、
+runtime boundaryはread-only admission ready、production healthは200、保護routeは401。Browser Use helper
+validateはcompleted、active runtime processは0。Evidenceは`terminal-audit-20260809.v25.json`と
+`unresolved-audit-20260809.v114.json`。
+
+## 2026-08-09 Codex App共通remote token-file boundary checkpoint 203
+
+local/remoteのCodex App Server接続をCodex App各taskから共通利用できるようにした。remote URLは
+`AUTOMATION_OS_CODEX_APP_SERVER_REMOTE_URL`、認証は直接envまたは
+`AUTOMATION_OS_CODEX_APP_SERVER_REMOTE_TOKEN_FILE`を使う。secret fileはabsolute regular non-symlink、
+owner-only（0400互換）、non-emptyを要求し、違反時はauth missingとしてfail-closeする。readbackにtoken値は
+出ず、remote未設定時はlocal stdio fallbackを使う。
+
+buildとfocused regressionは89/89 pass、0 fail、0 cancelled、0 skipped。`git diff --check`もpass。
+Evidence: `work/service-readiness/codex-app-server-local-token-file-boundary-20260809.v1.json`。
+
+これはlocal実装・共通契約の完了で、Zeaburへのsecret反映・deploy完了ではない。Zeabur専用serviceは
+SUSPENDED、deploymentはREMOVED、domainなし。explicit target approval、protected secret-file、upstream
+Codex auth、private TLS-WSSが未達で、production read tokenも未取得。Codex App/Mac worker restart、
+Browser Use room操作、外部business effectは行っていない。Goalはrunning、再開stageは
+`zeabur_secret_file_private_tls_and_codex_upstream_auth`。
+
+## 2026-08-09 Zeabur protected secret/config boundary audit checkpoint 202
+
+公式docsのfresh readbackで、Config Editorの起動時file mount、Template YAML `configs`、`envsubst`、
+permission `256`=`0400`を確認した。CLI argvへsecretを渡す経路は採用しない。
+
+explicit target approval、secret-file、upstream Codex auth、private TLS-WSSが未達。secret値は読み書きせず、
+既存service・Mac worker・Browser Use roomは変更していない。Evidence:
+`work/service-readiness/codex-app-server-zeabur-secret-boundary-audit-20260809.v1.json`。
+Goalは`running`、stage=`zeabur_secret_file_private_tls_and_codex_upstream_auth`。
+
+## 2026-08-09 Zeabur lifecycle re-readback checkpoint 201
+
+fresh readbackで専用`codex-app-server`は`SUSPENDED`、deploymentは`REMOVED`、domainなし。token-file/
+remote auth/private TLS-WSSのpresence変化なし。同じ未設定deployは再実行せず、secret/config boundaryの
+明示的承認後に一回だけcorrected deployする再開点を保存した。
+
+Evidence: `work/service-readiness/codex-app-server-zeabur-lifecycle-readback-20260809.v2.json`、
+`work/service-readiness/unresolved-audit-20260809.v111.json`、
+`work/service-readiness/terminal-audit-20260809.v22.json`。
+Goalは`running`、stage=`zeabur_secret_file_private_tls_and_codex_upstream_auth`。
+
+## 2026-08-09 Fresh cross-boundary audit checkpoint 200
+
+production `/api/health`=200、保護3 routeは401 `production_token_required`。AOS Codex App parityは6/6
+matched、Company scope/Asia-Tokyo scheduleを確認。canonical Browser Use roomsは193件中active/held
+3件、`changed=[]`、observation_onlyで、foreign room操作なし。
+
+Zeabur専用serviceはDocker build complete後も`CRASHED`、domainなし、exec=`CONTAINER_NOT_FOUND`。
+token-file/remote auth/private TLS-WSS未設定のためfail-closed。Evidence:
+`work/service-readiness/terminal-audit-20260809.v21.json`、
+`work/service-readiness/unresolved-audit-20260809.v110.json`、
+`work/service-readiness/browser-use-room-readback-20260809.v5.json`。
+Goalは`running`、stage=`zeabur_secret_file_private_tls_and_codex_upstream_auth`。
+
+## 2026-08-09 Dedicated Codex App Server reconstruction checkpoint 199
+
+fresh target readback後、historical service IDを再利用せず専用`codex-app-server`を作成した。新serviceは
+ID=`6a7777cde4a69d66638d2141`、deployment=`6a7777d09cc09bfe799631e2`。Docker buildは完了し、plan
+type=`docker`を確認したが、service/deploymentは`CRASHED`、domainなし、exec=`CONTAINER_NOT_FOUND`。
+
+token-file、remote auth、private TLS/WSSは未設定で、entrypointのfail-closed境界を維持している。
+secret値、既存4 service、Mac Codex App/worker、Browser Use room、外部business effectは変更していない。
+local stdio fallbackを継続する。Evidence:
+`work/service-readiness/codex-app-server-zeabur-deploy-readback-20260809.v2.json`、
+`work/service-readiness/unresolved-audit-20260809.v109.json`、
+`work/service-readiness/terminal-audit-20260809.v20.json`。
+Goalは`running`、stage=`zeabur_secret_file_private_tls_and_codex_upstream_auth`。
+
+## 2026-08-09 Common Codex App Zeabur entrypoint fresh reconciliation checkpoint 198
+
+`/usr/local/bin/zeabur` 0.21.0をCodex app共通PATHから確認し、workspace=`personal`、project
+`automation-wiled`、production environment、既存4 serviceをfresh readbackした。current tool registryに
+callableなZeabur MCPはないため、公式CLI fallbackを維持する。共通Skillは
+`/Users/nichikatanaka/.codex/skills/zeabur-cli/SKILL.md`、共通入口は
+`/Users/nichikatanaka/.codex/AGENTS.md`へ委譲済みで、projectごとの複製は不要。
+
+fresh service listに過去の専用`codex-app-server` IDは表示されなかったため、historical IDを再利用せず、
+remote Codex App Serverは未達のまま保持する。既存4 service、secret値、Mac Codex App/worker、Browser Use
+room、外部効果は変更していない。Evidence:
+`work/service-readiness/zeabur-cli-common-entrypoint-readback-20260809.v4.json`。
+Goalは`running`、stage=`audit`。再開点はfresh dedicated-service authorization後のtarget reconciliation。
+
+同じfresh readbackをunresolved-only audit v108とterminal audit v19へ反映した。remote serviceはcurrent
+service listで未確認のため、historical service IDを再利用せず、remote runtime gateを継続する。
+
+## 2026-08-09 Post-regression external-state audit checkpoint 197
+
+full regression後のfresh readbackで、production health=200、保護3 endpoint=401
+`production_token_required`、AOS parity=6/6、source preflight failed checks=0。Zeabur専用serviceは
+`SUSPENDED`、deployment=`DEPLOYING`、runtime未稼働。Browser Useは193 rooms中3件がactive/heldで、
+foreign room操作は0件。
+
+Evidence: `work/service-readiness/full-server-regression-20260808.v17.json`、
+`work/service-readiness/company-release-packet-preparation-20260809.v87.json`、
+`work/service-readiness/unresolved-audit-20260809.v107.json`、
+`work/service-readiness/terminal-audit-20260809.v18.json`。Goalは`running`、stage=`audit`。
+
+## 2026-08-09 Fresh local source/regression verification checkpoint 196
+
+`project:audit`は10 projects、blocked=0。fresh `npm test`は1055 total / 1039 passed / 0 failed /
+16 skippedで、skipは`AUTOMATION_OS_TEST_POSTGRES_URL`未設定のPostgres fixtureのみ。`process:scan`
+はmatched/terminated/remainingすべて空。external effect、secret read、deployは0。
+
+Evidence: `work/service-readiness/full-server-regression-20260808.v17.json`。local regressionは
+greenだが、production protected parity、business proof、G0/G1、Browser Use owner cleanup、
+Zeabur remote readinessは未達。Goalは`running`。
+
+## 2026-08-09 Codex App official automation-view capability checkpoint 195
+
+公式`codex_app__automation_update`の`mode=view`を既存6 IDへ実行し、6/6カード描画を確認した。
+更新・ACTIVE化・削除・run-nowは行っていない。AOS scheduler/durable queueをexecutionの正本として
+維持し、view capabilityをrun-nowやbusiness completionの証拠にはしない。
+
+Evidence: `work/service-readiness/codex-app-automation-view-readback-20260809.v1.json`、
+`work/service-readiness/company-release-packet-preparation-20260809.v86.json`、
+`work/service-readiness/unresolved-audit-20260809.v106.json`、
+`work/service-readiness/terminal-audit-20260809.v16.json`。Goalは`running`、stage=`audit`。
+
+## 2026-08-09 Fresh external-state audit checkpoint 194
+
+production health=200、保護endpoint 3件=401 `production_token_required`。Zeabur専用
+`codex-app-server`は`SUSPENDED`、正しいDocker build logは217件で`build completed`、service
+execは`NOT_RUNNING_SERVICE`。Browser Useは193 rooms中3件がactive/held/continuedで、foreign room
+操作とsource/installed syncは行っていない。AOS parity=6/6、source preflight failed checks=0。
+
+G0/G1 packet v85、unresolved audit v105、terminal audit v15、room readback v3を保存した。
+Goalは`running`、stage=`audit`。required fields、production token、business proof、Zeabur
+runtime/auth/private TLS-WSS/thread-turnは未完了。
+
+Evidence: `work/service-readiness/company-release-packet-preparation-20260809.v85.json`、
+`work/service-readiness/unresolved-audit-20260809.v105.json`、
+`work/service-readiness/terminal-audit-20260809.v15.json`、
+`work/service-readiness/browser-use-room-readback-20260809.v3.json`。
+
+## 2026-08-09 Final fresh read-only audit checkpoint 193
+
+local/productionの`/api/health`は200。production保護endpoint 3件は401
+`production_token_required`で、秘密値・外部効果なし。JSON整合性、`git diff --check`、AOS trigger
+回帰10件はpassした。Company 1 no-effect 3/3、Codex App/AOS parity 6/6、Zeabur専用service
+SUSPENDED、Browser Use 193 rooms/active-or-held 3件を維持する。
+
+Evidence: `work/service-readiness/terminal-audit-20260809.v14.json`。Goalは`running`、再開点は
+`audit`。production token、business proof/G0/G1、owner-bound Browser Use、Zeabur runtime/auth/
+private TLS-WSS/thread-turnが未達であり、完了扱いにしない。
+
+## 2026-08-09 Browser Use ownership readback and unresolved audit checkpoint 192
+
+fresh canonical `rooms --json`は`changed=[]`・`observation_only`。active/heldは3件で、scheduled
+19880 automation-owned active、temporary 20089 foreign task active、temporary 20090 foreign task held。
+source helper hash 89864cとinstalled f73d4aは不一致だが、owner-bound live roomsのためsync-liveはしない。
+
+foreign roomのstop/reclaim/release/reuseは0件。Evidence:
+`work/service-readiness/browser-use-room-readback-20260809.v2.json`、
+`work/service-readiness/terminal-audit-20260809.v13.json`、
+`work/service-readiness/unresolved-audit-20260809.v104.json`。Goalは`running`。
+
+## 2026-08-09 Zeabur lifecycle recovery and Company 1 fresh canary checkpoint 191
+
+専用`codex-app-server`をfresh readbackした結果、serviceは`SUSPENDED`、correct Docker buildは
+`build completed`、deploymentは2件とも`DEPLOYING`、execは`NOT_RUNNING_SERVICE`だった。
+専用serviceだけにrestart（id/name）とredeployを行ったが状態変化なし。Zeabur側のlifecycle blocker
+として保存し、local stdio fallbackを維持する。
+
+Company 1のJob・Daily AI・NisenPrintsはfresh no-effect trigger + GET readbackで3/3 completed、
+attempt 1、lease false、company scope enforced、external false。応募・投稿・公開は実行していない。
+
+Evidence: `work/service-readiness/codex-app-server-zeabur-lifecycle-readback-20260809.v1.json`、
+`work/service-readiness/company1-reference-trigger-canaries-20260809.v2.json`、
+`work/service-readiness/terminal-audit-20260809.v12.json`、
+`work/service-readiness/unresolved-audit-20260809.v103.json`。Goalは`running`。
+
+## 2026-08-09 Common Codex App Zeabur entrypoint checkpoint 190
+
+公式Zeabur CLI `/usr/local/bin/zeabur` 0.21.0をCodex app共通PATHからfresh確認した。
+global `zeabur-cli` Skillと共通AGENTSを正本とし、callableなZeabur MCPは現current contextに
+ないため公式CLI fallbackを維持する。将来MCPが追加されても、target/readback契約を確認してから
+採用する。既存service、secret値、Codex App/workerは変更していない。
+
+Evidence: `work/service-readiness/zeabur-cli-common-entrypoint-readback-20260809.v3.json`。
+remote Codex App Serverのruntime/auth/private TLS-WSS/thread-turnは未達で、Goalは`running`。
+
+## 2026-08-09 Current terminal audit checkpoint 189
+
+fresh readbackを反映したterminal audit v11とunresolved-only audit v102を作成した。未解決15件、
+Goal=`running`。local regressionはgreenだが、production token、business proof、G0/G1、Browser Use
+owner境界、Zeabur Codex App Server runtime/auth/TLS-WSS/thread-turnは未完了。
+
+Evidence: `work/service-readiness/terminal-audit-20260809.v11.json`、
+`work/service-readiness/unresolved-audit-20260809.v102.json`。
+
+## 2026-08-09 Browser Use room ownership readback checkpoint 188
+
+fresh canonical `rooms --json`でforeign room 20090 held、20089 continued、20091 activeを
+観測した。20091はdaemon_observed=true・current_boundで、source/installed syncのgeneration
+conflict条件は解消していない。19880 scheduled roomはfinalized・listenerなし。
+
+`changed=[]`、reconciliation=`observation_only`。foreign roomのstop/reclaim/release/reuseは
+0件。Evidence: `work/service-readiness/browser-use-room-readback-20260809.v1.json`。
+Goalは`running`で、owner-bound cleanupまたはsame-generation readback後にのみsync-live.shを再開する。
+
+## 2026-08-09 Codex remote support boundary checkpoint 187
+
+`codex-cli 0.145.0`のfresh helpでWebSocket auth flags
+（`--ws-auth`、`--ws-token-file`、`--ws-shared-secret-file`等）と
+`codex remote-control`を確認した。Zeabur entrypointのcapability-token/token-file
+設計およびsource preflightは一致・pass。
+
+一方、公式READMEのWebSocketは`experimental / unsupported`で、Zeabur dedicated
+serviceはdeployment status=`DEPLOYING`、exec=`NOT_RUNNING_SERVICE`。token-file、
+remote upstream auth、private TLS/WSS、thread/turnは未確認。local stdio fallbackは維持。
+
+Evidence: `work/service-readiness/codex-app-server-remote-support-readback-20260809.v1.json`。
+Goalは`running`で、同じdeployを再試行せず、supported boundaryの変化後に再開する。
+
+## 2026-08-09 Unresolved-only audit refresh checkpoint 186
+
+full regressionのgreenを反映したterminal audit v10とunresolved-only audit v101を作成した。
+Obsidian detached timeoutは解消済みとして現行一覧から除外し、15件の未解決gateだけを残した。
+production token/Postgres、G0/G1、Job/Daily AI/NisenPrints business proof、user-owned/owner-bound
+Browser Use、Zeabur Codex App Server runtime/token/auth/private TLS-WSS/thread-turn、authorized
+production readinessが残る。
+
+Evidence: `work/service-readiness/terminal-audit-20260809.v10.json`、
+`work/service-readiness/unresolved-audit-20260809.v101.json`。Goalは`running`。
+
+## 2026-08-09 Full regression after Obsidian isolation checkpoint 185
+
+test isolation修正を含むfresh `npm test`は`1055 total / 1039 passed / 0 failed /
+16 skipped`で完了した。Obsidian detached export timeoutはfull suiteでも再発しなかった。
+16 skipは`AUTOMATION_OS_TEST_POSTGRES_URL`未設定の既存Postgres fixtureのみ。
+
+Evidence: `work/service-readiness/obsidian-detached-timeout-root-cause-20260809.v1.json`。
+これはlocal回帰のgreenであり、production protected parity、workflow business completion、
+G0/G1、same-owner Browser Use cleanup/source-installed sync、Zeabur Codex App Serverの
+runtime/auth/private TLS-WSS/thread-turn readbackを完了扱いにはしない。Goalは`running`。
+次の再開点は、fresh capability/readbackが変化した未達境界のみを進めること。
+
+## 2026-08-09 Obsidian detached timeout root-cause checkpoint 184
+
+Obsidian auto-export timeoutの根本原因は、production exporterではなく、同一test fileの
+top-level testsが共有`process.env`を並列変更していたことだった。後続CLI testがdetached
+testのstatus pathを上書きしていた。`obsidianAutoExport.test.ts`をこのファイル内だけ
+`concurrency:false`に変更し、server build、対象20/20、API先行＋対象102/102をpassした。
+
+Evidence: `work/service-readiness/obsidian-detached-timeout-root-cause-20260809.v1.json`。
+これはlocal test isolationの修正であり、AOS worker、Codex App、Browser Use room、
+production、Zeabur、secret、external effectは変更していない。Goalは`running`のまま。
+次の再開点はfresh `npm test`の全体回帰。Postgres 16 skip、production token、workflow
+business proof、G0/G1、same-owner Browser Use cleanup/source-installed sync、Zeabur
+Codex App Server runtime/auth/private TLS-WSS/thread-turnは未達として維持する。
+
+## 2026-08-09 Final fresh audit continuation checkpoint 183
+
+local AOS health/runtime、Codex App/AOS 6/6 parity、Company 1のJob/Daily AI/NisenPrints no-effect canary、Browser Use CLI validate/runtime drift、single-use canary cleanup、公式Zeabur CLI targetを再確認した。productionはhealth 200、protected routesは`production_token_required`。Evidence: `work/service-readiness/terminal-audit-20260809.v9.json`。
+
+Goalは`running`。production token/Postgres、business proof、G0/G1、same-owner Browser Use cleanup、Zeabur Codex App Server runtime boundary、Obsidian timeout、source/installed helper syncが未達。local stdio fallback、Mac worker、既存Codex App、foreign roomは維持し、secret値・外部effectは扱っていない。
+
+## 2026-08-09 Common Codex App entrypoint and Browser Use lifecycle checkpoint 182
+
+公式Zeabur CLI `/usr/local/bin/zeabur` `0.21.0`と共通Skill `zeabur-cli`をCodex App共通入口としてfresh確認した。Zeabur MCPはcallable capabilityとして未提供なので、公式CLI fallbackを使う。認証値・secret値は読取・保存せず、既存serviceも変更していない。Evidence: `work/service-readiness/zeabur-cli-common-entrypoint-readback-20260809.v2.json`。
+
+fresh single-use Browser Use CLI canary `goal-browser-canary-20260809-r2`は19981番ポートで`example.com`をread-only操作し、同一runのstate/title/url readback、process/listener、profile/lock/download cleanupまで完了した。外部effectはなし。前回の起動前blockerを将来正しく保持するsingle-use cleanup修正とfocused test `1/1`も完了。Evidence: `work/service-readiness/browser-use-canary-goal-20260809.v2.json`、`work/service-readiness/browser-use-cli-cleanup-fix-20260809.v1.json`。
+
+source/installed helperの公式syncは、active/held room 4件がgeneration conflictのため`browser_use_cli_live_rooms_active`でinstall前に停止した。foreign roomのstop/reclaim/releaseはしていない。共通entrypointの完全なsource/installed parityを確定する再開点は、owner-bound cleanupまたはsame-generation readback後の`browser-use-cli/scripts/sync-live.sh` fresh readback。Goalは継続中で、local stdio fallback、Mac worker、既存Codex Appを維持する。
+
+## 2026-08-09 Regression readback checkpoint 181
+
+fresh `npm test`は1055件中1038 pass、1 fail、16 skipped。唯一のfailは既存Obsidian detached-exportの30秒timeout。
+同じテストだけをfocusedに再実行すると1/1 pass（約11.8秒）したため、Zeabur config-reference変更由来とは扱わず、
+full-suite interaction/一時負荷として`PENDING_CONFIRMATION`に分離した。Postgres未設定による16 skipも完了扱いにしない。
+
+Evidence: `work/service-readiness/terminal-audit-20260809.v8.json`。
+全体regressionは未green。Zeabur専用serviceはinactive、token-file/remote auth/private TLS-WSS/readyz/WSS/thread-turnは
+未達で、local stdio fallbackとMac worker/既存Codex Appは維持中。次の再開点はfocused regressionの原因切り分けと
+supported Zeabur runtime boundaryのfresh readback。
+
+## 2026-08-09 Zeabur config-reference boundary checkpoint 180
+
+secret値を含まないZeabur Config Editor/template参照
+`ops/zeabur/codex-app-server-config-reference.yaml`を追加した。`${CODEX_APP_SERVER_REMOTE_TOKEN}`のenvsubst、
+`/run/secrets/codex-app-server-token`への0400 file mount、loopback/TLS fail-closed defaultsをsourceとして固定し、
+Zeabur source preflight failed checksなし、focused regression 1/1 passを確認した。
+
+これはruntime readinessではない。専用`codex-app-server` serviceはinactiveのままで、token-file、remote upstream auth、
+private TLS/WSS、readyz、initialize、read-only thread/turnはPENDING_CONFIRMATION。secret read/write、既存service変更、
+Mac Codex App/worker再起動、foreign room reclaimは0件。全server回帰はfresh実行中で、結果は別途readbackして反映する。
+
+Evidence: `work/service-readiness/codex-app-server-config-reference-readback-20260809.v1.json`。
+再開点は`zeabur_runtime_readiness`であり、local stdio fallbackは維持する。
+
+## 2026-08-09 Zeabur dedicated service build/readback checkpoint 179
+
+専用`codex-app-server` service（project `automation-wiled`）を作成し、初回cwd誤りをbuild logで検知した後、
+verified staging cwdから正しいDocker sourceを再deployした。correct deploymentはDocker planでbuild completed、
+source hash parityはpass。既存4 serviceは未変更。
+
+service execのfresh readbackは`NOT_RUNNING_SERVICE`。entrypointが要求するtoken-fileとremote Codex upstream
+authは未設定のため、readyz/WSS initialize/thread-turnは未到達。local stdio fallbackは維持し、secret値は
+読取・保存していない。fresh local AOS health/runtime、Mac worker、定期Browser Use profile 3件、foreign room
+observe-onlyも確認済み。Evidence: `work/service-readiness/codex-app-server-zeabur-deploy-readback-20260809.v1.json`、
+`work/service-readiness/mac-worker-preservation-readback-20260809.v1.json`。
+
+Goalは継続中。再開点はsupported secret-file/private TLS/WSS/remote auth boundaryの設定後のservice status→
+readyz→initialize→read-only thread/turn readback。
+
+## 2026-08-09 Shared Zeabur CLI entrypoint checkpoint 178
+
+Codex App共通の公式Zeabur CLI入口を`/usr/local/bin/zeabur`（version 0.21.0）へ固定し、
+`/Users/nichikatanaka/.codex/skills/zeabur-cli/SKILL.md`と共通AGENTSの薄い入口を追加した。Skill validatorはpass。
+fresh readbackでpersonal workspace、project `automation-wiled`、既存service 4件を再確認した。MCPはcurrent
+tool registryにcallable Zeabur capabilityなし。認証値は読取・保存せず、既存service mutation/deploy/secret変更は0。
+公式docs上はConfig Editor/template `configs`でファイルmountと0400 permissionが可能だが、対象serviceのsecret
+materialization、値の非露出、private ingress/TLS/WSS、remote Codex upstream authは未確認。
+
+Evidence: `work/service-readiness/zeabur-cli-common-entrypoint-readback-20260809.v1.json`。
+Goalは継続中。専用Codex App Serverのdeploy/private TLS/WSS/thread-turn readbackは未達で、次は
+`docker_builder_apt_repository_signature_invalid`またはsupported secret-file/private-TLS capabilityのfresh変化後に再開する。
+
+## 2026-08-09 Zeabur local build recovery and fresh boundary checkpoint 177
+
+source preflightはfailed checksなしで`ready_for_external_deploy_preflight`。Docker daemon/clock/容量を
+read-only確認後、task-owned local image buildを試したが、Debian bookworm系InReleaseの署名検証で
+`docker_builder_apt_repository_signature_invalid`となった。署名検証を無効化せず、source変更・deploy・
+secret read/changeは行っていない。これは前回のENOSPCとは別のcurrent blockerである。
+
+fresh local readbackではAOS health 200、launchd worker running、effects=read_only、runtime boundary
+readback ready、local Codex App Server auth readback completed、定期profile 3/3 released/listenerなし。
+foreign Browser Use roomはobserve-only。Evidence:
+`work/service-readiness/codex-app-server-zeabur-build-readback-20260809.v1.json`、
+`work/service-readiness/terminal-audit-20260809.v6.json`、
+`work/service-readiness/unresolved-audit-20260809.v100.json`。
+
+Goalは継続中。`production_read_token_missing`、workflow business proof、G0/G1 fields、same-owner cleanup、
+Zeabur dedicated service/TLS/WSS/thread-turn readback、およびlocal builder署名境界が未達。
+
+## 2026-08-09 Full regression and unresolved-only checkpoint 176
+
+server build後の`npm test`は1055 tests、1039 pass、0 fail、16 skippedで完了した。16件は
+`AUTOMATION_OS_TEST_POSTGRES_URL`未設定のPostgreSQL fixture skip。Codex App/AOS parity 6/6、AOS
+trigger/Zeabur/runtime-boundary script 13/13、Codex App Server＋Daily AI focused 20/20もpassしている。
+
+Evidence: `work/service-readiness/terminal-audit-20260809.v5.json`、
+`work/service-readiness/company-release-packet-preparation-20260809.v82.json`、
+`work/service-readiness/unresolved-audit-20260809.v99.json`。
+
+これは実装・回帰検証の完了証跡であり、Goal完了ではない。`production_read_token_missing`をroot blocker
+として、protected worker/Postgres parity、Job/Daily AI/NisenPrints business proof、G0/G1 fields、
+same-owner cleanup、Zeabur dedicated Codex App Server deploy/private TLS/WSS/thread-turn readbackが未達。
+外部effect、secret read/change、deploy、foreign room reclaimは0件。Goalは継続中。
+
+## 2026-08-09 Codex App/AOS parity and production GET-only checkpoint 175
+
+Company 1のCodex App 6件とAOS 6件のfresh parityは全件matched。会社scope、schedule、Asia/Tokyo、
+bridge marker、no-effect contractを確認し、Codex Appはthin triggerのままrun-now authorityへ依存していない。
+production `/api/health`は200、protected `/api/dashboard`は401 `production_token_required`。read tokenは未供給・
+未保存で、secret valueは読んでいない。
+
+Evidence: `work/service-readiness/codex-app-trigger-parity-20260809.v2.json`、
+`work/service-readiness/production-readonly-parity-20260809.v2.json`、
+`work/service-readiness/terminal-audit-20260809.v4.json`。
+
+Goalは未完了。business proof、protected worker/Postgres parity、G0/G1 fields、Zeabur dedicated service/
+TLS/WSS/thread-turn、same-owner cleanupが残る。
+
+## 2026-08-09 Fresh terminal audit checkpoint 174
+
+local AOS `/api/health`は200/ok、launchd workerはrunning（wrapper 87800 / worker 88510）。task-ownedの
+Codex App Serverはreadback後に終了し、既存Codex Appは再起動していない。canonical Browser Use CLIの
+fresh `rooms --json`では対象の定期profile 3件（19881/19882/19884）がreleased・listenerなし。別ownerの
+scheduled roomはactiveのままobserve-onlyとし、reclaim/reuseしていない。最新artifact JSON parse、
+`git diff --check`、server build、Codex App Server＋Daily AI focused 20/20はpass。
+
+Evidence: `work/service-readiness/terminal-audit-20260809.v3.json`。これはreadiness証跡であり、production
+protected parity、business completion、Zeabur remote deploy/readback、G0/G1 required fieldsの完了証明ではない。
+
+## 2026-08-09 Release/audit integration checkpoint 173
+
+Mac local Codex App Server認証成功をG0/G1 packet v80とunresolved-only audit v97へ統合した。v97では
+解消済みの`local_ephemeral_codex_upstream_auth_missing`を未解決一覧から除外し、現行の未解決14件だけを
+保持している。v80はlocal stdioの同一接続でaccount/read、ephemeral read-only thread/start、read-only
+turn/start、turn/completedを確認したことをreadinessへ追加し、external action、secret read、deployは0。
+
+Evidence: `work/service-readiness/company-release-packet-preparation-20260809.v80.json`、
+`work/service-readiness/unresolved-audit-20260809.v97.json`。
+
+Goalは未完了。`production_read_token_missing`、G0/G1 required fields、workflow business proof、
+same-owner cleanup、Zeabur dedicated Codex App Serverのdeploy/private TLS/WSS/thread-turn readbackが残る。
+
+## 2026-08-09 Mac local Codex App Server auth checkpoint 172
+
+Mac側の公式ローカル `codex app-server --listen stdio://` をtask-ownedの一時プロセスとして起動し、
+同一接続で `initialize` → `account/read` → ephemeral read-only `thread/start` → read-only
+`turn/start` → `turn/completed` をfresh readbackした。`account_type=chatgpt`、turn completionは
+`status=completed`。保存済みChatGPTログインだけを使い、API keyは使っていない。raw credential、auth URL、
+email、thread/turn idは出力・artifactへ保存していない。
+
+Evidence: `work/service-readiness/codex-app-server-auth-readback-20260809.v1.json`、
+`scripts/codex-app-server-auth-readback.mjs`。`build:server`、Codex App Server関連＋Daily AI demo focused
+20/20、`git diff --check`はpass。AOS trigger、Browser Use、既存Codex App、既存AOS workerは操作していない。
+local stdio fallbackは維持する。この工程のexact blockerはない。
+
+Goalは未完了。`production_read_token_missing`、workflow business proof、
+`zeabur_codex_app_server_not_deployed`/private TLS-WSS/thread-turn readback、G0/G1 fields、same-owner
+cleanupが残る。local auth成功はZeabur remote稼働やbusiness completionの証明ではない。
+
+## 2026-08-09 Company 1 reference trigger/profile-management checkpoint 171
+
+Company 1のAOS provider-neutral triggerをJob、Daily AI、NisenPrintsへ一度ずつ投入した。3/3が
+`dry_run`・attempt 1・`completed`・leaseなしでfresh GET readbackされ、NisenPrintsの一時queuedは
+launchd workerの後続cycleで解消した。Codex App run-nowへの依存、再送、手動worker重複起動はない。
+外部effect・secret read・business completion claimは0件。
+
+canonical Browser Use CLIのfresh owner readbackでは、定期profile 3/3が次の固定対応で`released`、
+listenerなし、mode 0700、owner `nichikatanaka:staff`だった。Job=`automation-3`/19881、Daily AI=
+`daily-ai`/19882、NisenPrints=`nisenprints`/19884。profile directoryがprimary ownership key、
+portはrouting値、temporaryはtask-owned、one-shotはrun-owned、profile collisionはfail-closeである。
+foreign roomはobserve-onlyで、停止・reclaim・再利用していない。
+
+Evidence: `work/service-readiness/company1-reference-trigger-canaries-20260809.v1.json`、
+`work/service-readiness/profile-management-readback-20260809.v1.json`。
+
+Goalは未完了。protected production parity、Job submit、Daily AI/NisenPrints business proof、Zeabur
+専用Codex App Server remote readback、G0/G1 required fields、same-owner cleanupは未達である。
+最新のroot blockerは`production_read_token_missing`、再開点はapproved protected read tokenまたは
+workflow/Zeabur authorityのfresh変化後とする。
+
+## 2026-08-09 No-effect scheduler tick checkpoint 170
+
+Company 1のscheduler run-onceをfresh実行し、`aos.durable_scheduler_tick.v1`/`status=completed`、
+due occurrence 0、skipped 0、`external_action_executed=false`を確認。nextActionは「dueな定期実行は
+ありません。次のscheduler tickを待ちます。」だった。tick後のqueueは20/20 completed、active lease 0、
+Company scope一致。Evidence: `work/service-readiness/company1-scheduler-tick-20260808.v1.json`。
+
+apt-free Docker probeで作ったowned dangling imageだけを削除し、他のimage/volume/container、foreign
+room、Zeabur serviceは触っていない。scheduler tickはbusiness completionではない。
+
+最新のunresolved-only auditはv95、G0/G1 packetはv78。Goalは継続する。
+
+## 2026-08-09 Company 1 scheduler readback checkpoint 169
+
+Company 1の6 automationをAOS local control plane APIでfresh GET readbackした。全てactive、全 schedule
+がenabled/status active・Asia/Tokyo、server-owned scheduler、manual trigger、durable queueは
+`ready_for_no_effect_trigger`。直近20 durable jobsは全てcompany scope内でcompleted、active lease 0。
+Codex App/alternate LLMはthin trigger only、Mac Browser Use CLI workerがworker boundary。Evidence:
+`work/service-readiness/company1-scheduler-readback-20260808.v1.json`。
+
+定期実行の正本とCompany scopeはreadback済み。ただしscheduler readinessはbusiness completionではない。
+応募submit、publish、commerce、production protected parity、Zeabur remote server/readbackは未完了。
+
+最新のunresolved-only auditはv94、G0/G1 packetはv77。Goalは継続する。
+
+## 2026-08-09 Terminal audit checkpoint 168
+
+local `http://127.0.0.1:8787/api/health`は200/ok、launchd workerはrunning（wrapper 87800、
+worker 88510）。Codex Appは再起動していない。laneManager/runtimeBinding 15/15、server build、
+diff check、最新artifact JSON parseがpass。production public parity、profile ownership、source
+preflightは確認済みだが、protected token parity、business proof、Zeabur remote deployment/readbackは
+未完了。Evidence: `work/service-readiness/terminal-audit-20260809.v1.json`。
+
+Goal checkpointは157、最新auditはv93、G0/G1 packetはv76。これはterminal auditのfresh checkpointで
+ありGoal完了ではない。
+
+## 2026-08-09 Zeabur source/build recovery checkpoint 167
+
+専用Codex App Serverのsource-only preflightは18/18 pass。Dockerfile、secret file only、loopback
+default、non-loopback approval、readyz、private TLS/WebSocket gateはfreshに確認できた。
+apt不要variantのlocal buildを既存sourceへ影響しないstdin経路で試したが、legacy builderのnpm
+install中にDocker VM `ENOSPC`で停止。Docker system dfではimages 30、reclaimable 17.17GBを観測したが、
+prune・削除・既存service変更は行っていない。Evidence:
+`work/service-readiness/codex-app-server-zeabur-source-preflight-20260809.v9.json`。
+
+source readinessとbuild/deploy/readbackは別proofとして扱う。Zeabur専用serviceは未作成、secret read/
+deployは未実行、remote transportはtechnical canary only。local stdio fallbackを維持する。
+
+**Exact blocker:** `docker_builder_disk_full`、`zeabur_codex_app_server_not_deployed`、
+`codex_app_server_remote_transport_experimental_unsupported`。Goalは未完了で継続する。
+
+## 2026-08-09 Production GET-only parity checkpoint 166
+
+`https://automation-os.zeabur.app`へproduction QAをfresh実行した。公開`/api/health`は200/
+`ok=true`、served JS/CSSは200。保護された候補routeは全て401 `production_token_required`で、
+read tokenは存在せず、出力・artifactへ保存していない。UI screenshotはtokenとcanonical Browser
+Use CLIのfresh authorityが必要なため未実行。Evidence:
+`work/service-readiness/production-readonly-parity-20260808.v1.json`。
+
+これによりproduction parityの現在のroot blockerは`production_read_token_missing`と確認できた。
+approved tokenが既存ephemeral boundaryへ供給された時だけ、protected GET→worker/Postgres parity→
+same-run Browser Use CLI UI readback→cleanupへ進む。既存Zeabur serviceの変更、secret read、deployは
+行っていない。
+
+最新のunresolved-only auditはv92、G0/G1 packetはv75。Goalは未完了で継続する。
+
+## 2026-08-09 Profile-hash lock isolation checkpoint 165
+
+Browser Use CLI laneの共通lockをprofile-firstへ修正した。`browserUseLifecycle.ts`と
+`workerEngine.ts`は、profile directoryのSHA-256先頭24文字からcanonical lockを生成する。
+そのため、定期Job/Daily AI/NisenPrintsはそれぞれ異なるworkflow-owned persistent profileと
+固定portを持ち、portだけでprofileを識別しない。temporaryはtask-owned profile、one-shotは
+run-owned profileで、profile collisionはfail-closeする。
+
+fresh Daily AI scheduler run `run_mskidd6j_nbccqt`は scheduled `daily-ai` profile/19882を使用し、
+`profile-bd11371568821fa0d7d0729c.lock`、Xのsame-run URL/title/state、receipt/manifest、cleanup、
+finalize後のlistener不在を確認した。profileは保持し、外部effectは0。`laneManager`/
+`runtimeBinding` 15/15、server build、diff check pass。Evidence:
+`work/service-readiness/profile-lock-isolation-20260809.v2.json`。
+
+定期実行の資源管理は実装済みだが、Job応募、Daily AI publish/feed-study/engagement、
+NisenPrints provider action、production parity、Zeabur専用Codex App Serverは未完了。foreign roomは
+observe-onlyで操作していない。
+
+**Exact blocker:** `production_read_token_missing`、`job_identity_submit_receipt_binding_missing`、
+`daily_ai_workflow_owned_publish_proof_missing`、`nisenprints_provider_runtime_and_readback_missing`、
+`zeabur_codex_app_server_not_deployed`。Goalは未完了で継続する。
+
+## 2026-08-08 Daily AI/NisenPrints read-only canary checkpoint 164
+
+会社1でDaily AI/NisenPrintsのfresh scheduler canaryをAOS launchd workerだけで実行した。
+Daily AIはscheduled profile `daily-ai`/19882、NisenPrintsは`nisenprints`/19884を使用し、
+Browser Use CLIの同一run readback、receipt/manifest、cleanupを確認。両方とも
+`external_action_executed=false`で、business proof pendingのためblocked。Evidence:
+`work/service-readiness/reference-workflow-readonly-canaries-20260809.v1.json`。
+
+read-only canaryは完了したが、Daily AI publish proof、NisenPrints provider/business proof、Job submit、
+production parity、Zeabur専用Codex App Serverは未完了。Goalは継続する。
+
+## 2026-08-08 Profile-first Browser Use lane checkpoint 163
+
+定期実行の正本は、profileを先に固定するworkflow-owned laneである。会社1 Jobのfresh scheduler run
+`run_mskhz3aq_xh1u3o`は、`/Users/nichikatanaka/.browser-use-cli/profiles/scheduled/automation-3`
+を保持し、固定ポート19881を利用した。LinkedInのread-only readback、receipt/manifest、cleanupは
+同一runで確認済み。`external_action_executed=false`で、応募・送信はしていない。
+
+定期profileはfinalizeで削除せず、Browser Use CLIのprocess/listener/room/flow leaseだけを解放する。
+一時はtask-owned temporary profile、単発はrun-owned profileを使い、profile collisionはfail-close。
+ポートはprofile ownership確定後のrouting値。foreign roomはobserve-only。
+
+`laneManager` alias修正後の回帰テストは8/8 pass、server buildとdiff check pass。Evidence:
+`work/service-readiness/profile-first-lane-readback-20260808.v1.json`。
+
+前回のauthority collisionは、launchd workerと手動workerの同一run重複が原因。今後は承認済みscheduler
+runを所有workerだけに実行させる。business completion、応募submit、production parity、Zeabur専用
+Codex App Serverは未完了で、Goalは継続する。
+
+## 2026-08-08 Zeabur trusted-builder recovery checkpoint 162
+
+`node:22-bookworm-slim`のNode組み込みCAでHTTPS Debian mirrorを試す安全なrecoveryを行ったが、
+証明書検証後もbookworm系InRelease署名検証で停止した。署名/TLS検証の無効化、prune、既存
+Zeabur service変更は行っていない。Source checksは18/18 pass、専用Codex App Server serviceは
+未作成。Evidence: `work/service-readiness/codex-app-server-zeabur-source-preflight-20260808.v8.json`、
+最新unresolved-only auditはv90、G0/G1 packetはv73。
+
+Exact blockerは`docker_apt_repository_signature_invalid`、
+`docker_buildx_component_missing_for_buildkit`、`zeabur_codex_app_server_not_deployed`、
+`codex_app_server_remote_transport_experimental_unsupported`。既存`automation-os`を触らず、
+trusted builderまたは承認済み専用service boundaryが変わった時だけremote technical canaryへ進む。
+
+## 2026-08-08 Zeabur Docker trust-boundary checkpoint 161
+
+専用Codex App Serverのlocal Docker buildは、既存`node:22-bookworm-slim` layerを使っても
+Debian InRelease署名検証で停止。HTTPS診断はbase imageのsystem CA bundle不足で停止した。
+署名/TLS検証の無効化、Docker prune、既存image/volume削除はしていない。source checks 18/18 pass、
+Zeabur専用service未作成。Evidenceはpreflight v7、unresolved audit v87、G0/G1 packet v70。
+
+## 2026-08-08 Browser Use ownership readback checkpoint 160
+
+canonical Browser Use CLIのrooms readbackで、Daily AI 19882/NisenPrints 19884はreleased、
+Job 19881はlistener/processなしを確認した。既存admin handoff 19880と別task所有のtemporary
+20089/20090/20091は観測のみで、停止・reclaim・再利用していない。
+
+Evidence: `work/service-readiness/browser-use-current-readback-20260808.v6.json`,
+最新audit v86、G0/G1 packet v69。same-owner cleanupは未完了のため、foreign roomと混同せず
+owner-bound blockerとして保持する。
+
+## 2026-08-08 Full local parity and official App Server transport checkpoint 159
+
+fresh `npm test`は1,052 tests中1,036 pass、fail 0、16 skip。skipは
+`AUTOMATION_OS_TEST_POSTGRES_URL`未設定のPostgreSQL fixtureのみで、外部effectはない。
+証跡は`work/service-readiness/full-server-regression-20260808.v16.json`。
+
+公式Codex manualのApp Server節をfresh確認し、remote WebSocketの認証方法と
+`initialize`→`thread/start`→`turn/start`のread-only順序を確認した。一方、WebSocket transportは
+experimentalでproduction workload非対応のため、Zeaburはtechnical canaryに限定し、
+local stdio fallbackを保持する。参照: https://learn.chatgpt.com/docs/app-server.md
+
+最新のunresolved-only auditはv85、G0/G1 packetはv68。15件の未解決項目、
+`production_read_token_missing`、Job/Daily/Nisenのbusiness proof、Zeabur専用service/TLS/WSS/
+thread-turn、G0/G1 fields、owner-bound cleanupは継続してfail-closed。
+
+## 2026-08-08 Daily AI/NisenPrints AOS business-boundary and Zeabur source checkpoint 158
+
+Daily AI/NisenPrintsをAOS generic business runnerへbindingした。fresh no-launch testでDaily AIは
+`daily_ai_browser_use_cli_no_launch_canary`、NisenPrintsは
+`nisenprints_browser_use_cli_no_launch_canary`。両方ともBrowser Use CLI、same-run receipt、
+cleanup verified、外部effectなし。Daily liveは現行registered Browser Use CLI runnerへ委譲し、
+Nisen liveはofficial current-root capability/provider action planが揃うまで停止する。
+
+Zeabur CLIのfresh authは`nichika2000823`、projectは`automation-wiled`、既存AOS serviceは
+`automation-os`。専用Codex App Server serviceは未作成。source checks 18/18 pass、Codex CLI
+0.145.0のapp-server websocket/auth optionsを確認。local Docker image buildはDocker VMの
+`no space left on device`でimage生成前に停止した。署名/TLS検証の無効化はしていない。
+
+Focused tests 20/20、Node/shell syntax、server build pass。Evidence:
+`work/service-readiness/aos-daily-nisen-business-boundary-readback-20260808.v1.json`,
+`work/service-readiness/codex-app-server-zeabur-source-preflight-20260808.v6.json`。
+
+Goalは未完了。最新auditはv84、G0/G1 packetはv67。root blockerは
+`production_read_token_missing`。Job/Daily/Nisenのbusiness proof、Zeabur dedicated service/TLS/
+WSS/thread-turn、G0/G1必須項目、owner-bound cleanupは継続してfail-closed。
+
+## 2026-08-08 AOS-to-Job submit boundary no-launch checkpoint 157
+
+fresh `aos-job-submit-preflight-20260808-r14`をAOS portable external workerから実行し、
+Jobのworkflow-owned Browser Use CLI business runnerまでの境界を確認した。same-run input bundle、
+AOS admission、safe worker経由のno-launch flag、Browser Use CLI surfaceをreadbackできた。
+非実行bitの`.mjs` runnerは、AOSのcurrent Node runtimeで起動するように補正済み。
+
+結果は`status=blocked`、exact blockerは`job_manager_browser_use_cli_no_launch_canary`、
+`external_action_executed=false`、child receiptのsame-run/cleanup verified。19881 listener/process
+なし。ログイン、求人フォーム操作、応募submit、外部effectは発生していない。
+
+Focused verificationはworker environment、portable external worker、Job business runner合計
+15/15 pass、server build pass。Evidenceは
+`work/service-readiness/aos-job-submit-preflight-readback-20260808.v1.json`。
+
+Goalは未完了。Job exact blockerは`job_identity_submit_receipt_binding_missing`、Goal全体のroot
+blockerは`production_read_token_missing`。次の再開地点はready candidate供給後のfresh
+Identity/visible submit authority。ログイン済みのためlogin-handoffは再発射しない。
+
+## 2026-08-08 Job post-login candidate supply and read-only ledger checkpoint 156
+
+LinkedInログイン完了後のfresh AOS run `aos-job-candidate-supply-20260808-r13`を、Codex App
+run-nowなしでAOS portable external workerからcanonical Browser Use CLIへ投入した。Jobの
+`automation-3` / scheduled profile / port 19881でLinkedIn Jobsの認証済みsurfaceを再確認し、
+候補1件をread-onlyで取得した。
+
+候補artifactは`status=ready`、`candidate_count=1`、`external_action_count=0`。
+Browser Use CLIのsame-run receipt/manifestはfinalized、cleanup completed、port/listener/process
+released。operation ledgerの10 operationすべてが`read_only=true`、`external_effects=none`。
+上位AOS workerは`portable_external_read_only_business_completion_proof_pending`でpartialに
+留まり、business completionや応募成功は主張していない。
+
+r12の証跡で、bounded 512文字readback envelopeとallowlisted readback evalの誤分類を発見。
+candidate adapterは切り詰められたenvelopeからLinkedIn URLだけを限定抽出し、packaged
+Browser Use CLIはexact allowlist済みreadback evalだけをread-only分類するよう修正した。
+任意eval・click・type・submitはeffectfulのまま。
+
+Focused verification: candidate adapter 7/7、navigation 1/1、AOS portable runner 8/8、
+Python compile、TypeScript check、server build pass。外部応募・投稿・公開・secret read・
+deployは0件。
+
+Evidence:
+`work/service-readiness/aos-job-candidate-supply-readback-20260808.v1.json`,
+`work/service-readiness/unresolved-audit-20260808.v82.json`,
+`work/service-readiness/company-release-packet-preparation-20260808.v65.json`。
+
+Goalは未完了。Job exact blockerは`job_identity_submit_receipt_binding_missing`、Goal全体の
+root blockerは`production_read_token_missing`。次の再開地点はready candidate供給後のfresh
+Identity/visible submit authorityで、same-run `submitted_confirmed`とsource-of-truth syncが
+取れない限り停止する。ログイン済みのためlogin-handoffは再発射しない。
+
+## 2026-08-08 Job post-login readback checkpoint 155
+
+初回のJobはLinkedIn未認証時にlogin-handoffで停止し、ユーザーのログイン完了後だけ新規AOS runへ
+進む。今回のfresh `aos-job-auth-readback-20260808-r2`はCodex Appのrun-nowを使わず、
+automation-3/19881のscheduled Browser Use CLI profileでLinkedIn originとJobs画面を確認した。
+
+認証ゲートは通過したが、候補供給・応募・submit前に
+`portable_external_read_only_business_completion_proof_pending`で停止。same-run receipt、
+recording finalized、cleanup completed、room released、listener/process absentを確認した。
+外部効果・secret readは0で、応募成功は未主張。次回以降はログイン状態を再利用し、fresh candidate
+readback → visible submit → `submitted_confirmed` → source-of-truth sync → cleanupを自動で進める。
+
+Evidence:
+`work/service-readiness/aos-job-browser-use-cli-auth-readback-20260808.v2.json`,
+`work/service-readiness/unresolved-audit-20260808.v81.json`,
+`work/service-readiness/company-release-packet-preparation-20260808.v64.json`。
+
+Goalは未完了。Jobのexact blockerは`job_identity_submit_receipt_binding_missing`、Goal全体のroot
+blockerは`production_read_token_missing`。再開地点はAOS input bundle後のJob candidate readback。
+
+## 2026-08-08 Job login handoff ready / Nisen stop cleanup checkpoint 154
+
+Jobのautomation-3/19881 scheduled login-handoffは`handoff_ready`で、ユーザー認証待ち。
+`human_completion_is_not_auth`のため、まだLinkedIn authenticatedとは判定していない。
+
+NisenPrintsのread-only runはユーザー指示で停止し、19884 process/listener/lock/roomの解放を確認。
+record stopのみ`browser_use_recording_stop_failed`でfinalized=false。外部効果は0件。監査v80、
+release packet v63。
+
+Evidence:
+`work/service-readiness/aos-job-login-handoff-20260808.v1.json`,
+`work/service-readiness/aos-nisenprints-auth-readback-stop-20260808.v1.json`。
+再開地点はユーザーのJob login完了後の同一handoff readback/finalize。
+
+## 2026-08-08 Job AOS Browser Use CLI auth readback checkpoint 153
+
+Job専用のAOS fresh run `aos-job-auth-readback-20260808-r1`を、Codex App `run-now`なしで
+`AOS portable external worker -> canonical Browser Use CLI`へ投入した。automation-3/19881の
+read-only preflightは候補供給・応募・submit前に`browser_use_authentication_required`で停止。
+
+同一runのadmission/authorityは保存済み、external_action_executed=false。roomはreleased、19881
+listener/processなしをfresh readbackしたが、finalized same-run receiptがないためcleanup proofは
+未達扱い。別ownerのroomは操作していない。監査v79、release packet v62。
+
+Evidence:
+`work/service-readiness/aos-job-browser-use-cli-auth-readback-20260808.v1.json`。
+Goalは未完了で、root blockerは`production_read_token_missing`。Jobの再開地点はfresh LinkedIn
+auth/readback変化後の新規AOS run、Daily/Nisen/Zeabur/production proofは引き続き各境界でfail-closed。
+
+## 2026-08-08 Daily AI postflight/buffer run-now-independent checkpoint 152
+
+Daily AI registered runnerは`AOS durable queue -> Mac Browser Use CLI worker`で動き、
+`run-now`には依存しない。pure Browser Use CLIの3 stageはdry-run/no-effectでcleanup verified。
+同一runのlocal queue readbackからship-now buffer 3件、usable candidate 3件を確認した。
+
+postflightのSheets mirror syncは新鮮な外部権限がないため
+`daily_ai_postflight_sync_external_mirror_authority_pending`で停止。local receiptは生成済みだが、
+投稿、engagement、Sheets同期、Daily business completionは未達。監査v78、release packet v61。
+
+Verification: postflight focused 3/3、AOS npm test 1049 total / 1033 passed / 0 failed / 16 skipped
+(PostgreSQL fixture未提供)、npm run build、current JSON validation、live health HTTP 200。
+
+Evidence:
+`work/service-readiness/daily-ai-browser-use-cli-postflight-buffer-binding-20260808.v1.json`。
+Goalは未完了で、root blockerは`production_read_token_missing`。再開地点はfresh authority
+変化後のDaily publish/readbackまたはJob Identity same-run admission。外部効果はfail-closed。
+
+## 2026-08-08 current-turn all-six AOS no-effect readback checkpoint 151
+
+Company 1の登録6 automationを、Codex App `run-now`なしで現行AOSへ投入した。
+`AOS trigger -> durable queue -> Mac worker`で6/6がone-attempt completed、Company scope enforced。
+`external_action_executed=false`、browser/connector/secret readは0、business completionは未主張。
+
+Evidence:
+`work/service-readiness/aos-current-turn-all-six-no-effect-readback-20260808.v1.json`。
+監査とrelease packetはそれぞれv77/v60へ更新した。Goalは未完了で、root blockerは
+`production_read_token_missing`。Job fresh Identity/応募receipt、Daily AI postflight/buffer、
+NisenPrints provider readback、G0/G1、Zeabur protected readiness、owner-bound Browser Use
+cleanupは継続してfail-closed。
+
+再開地点は認証状態が変化した後のJob same-run admission。run-now capabilityは引き続き
+AOSの実行条件ではない。
+
+## 2026-08-08 run-now-independent business input boundary checkpoint 150
+
+run-now capabilityは実行条件ではない。Company 1のAOS manual triggerとscheduler tickは
+`AOS scheduler/manual trigger -> durable queue -> Mac Browser Use CLI worker`でfresh readback
+済みで、`codex_app_run_now_required=false`。
+
+今回、Job business laneへ非秘密input bundle境界を追加した。APIの許可フィールドを正規化し、
+current run artifactに0600で保存、workflow_id/run_id/hash/pathをmetadataへ固定する。
+workerはそのsame-run artifact pathだけを子runnerへ渡し、秘密キー、symlink、cross-run、必須
+field欠落はBrowser Use CLI起動前に停止する。
+
+Job no-launch canaryは
+`job_manager_browser_use_cli_no_launch_canary`、`external_action_executed=false`、
+`same_run_receipt=true`、`cleanup_verified=true`。これは入力境界の証明であり、Identity認証、
+fresh応募対象readback、`submitted_confirmed`、source-of-truth sync、外部応募の完了証明ではない。
+
+NisenPrintsではpending shellをpure Browser Use CLI stage commandへ差し替えた。no-launchは
+`nisenprints_browser_use_cli_business_action_plan_pending:printify_publish`で安全停止する。
+Daily AIはsource admission/no-effect canaryまで達したが、postflight/buffer未結線でblocked。
+
+Fresh verification: `npm test` 1049 total / 1033 passed / 0 failed / 16 skipped、
+portable entrypoint 6/6、portable external worker 6/6、business runner/guard/Job canary
+12/12、worker source/installed script parity pass。16 skipはPostgreSQL fixture未提供。
+外部effect、secret read、deploy、foreign Browser Use room mutationは0件。
+
+Company 1のlive Job run `run_mskcpfhh_4zoznn`でも同じ境界を確認した。input bundleは
+current-run配下0600 artifact/hashとして保存され、Mac workerがclaim後、
+`portable_external_approval_required`でwaiting_approvalに停止。browser/connector/externalは0件。
+
+Evidence:
+`work/service-readiness/aos-portable-business-source-inventory-20260808.v3.json`,
+`work/service-readiness/aos-job-input-bundle-live-readback-20260808.v1.json`,
+`work/service-readiness/full-server-regression-20260808.v15.json`,
+`work/service-readiness/unresolved-audit-20260808.v76.json`,
+`work/service-readiness/company-release-packet-preparation-20260808.v59.json`。
+
+Goalは未完了。current blockerは`production_read_token_missing`で、Job auth/submit proof、
+Daily AI postflight/buffer、NisenPrints provider proof、Zeabur deploy/TLS/WSS/App Server、
+G0/G1、owner-bound Browser Use cleanupが残る。再開地点はJobのfresh Identity login/readback
+とsame-run `submitted_confirmed` binding。外部効果は引き続きfail-closed。
+
+## 2026-08-08 Daily AI pure Browser Use CLI binding checkpoint 148
+
+Daily AI registered runnerの旧surface importを除去し、canonical Browser Use CLI
+stage-adapterと純粋なpublish contractだけを使うrunnerへ置換した。source admissionは
+PASSで、runner・adapter・contractのsourceにPlaywright、Chrome拡張、IAB、direct CDP、
+`codex exec`のsignalはない。
+
+dry-run canaryは3 stageすべてBrowser Use CLI、external effectなし、
+cleanup_verified=true、same-run receiptありで完了した。postflight syncとbuffer refresh
+がまだAOS business runnerへ結線されていないため、statusはblockedのまま。これは
+正しいfail-closedであり、投稿完了とは扱わない。
+
+Focused Daily AI/runner/business testsは35/35 pass、build・syntaxもpass。外部投稿、
+secret read、deploy、foreign Browser Use room操作はなし。
+
+Evidence:
+`work/service-readiness/aos-portable-business-source-inventory-20260808.v2.json`,
+`work/service-readiness/unresolved-audit-20260808.v75.json`,
+`work/service-readiness/company-release-packet-preparation-20260808.v58.json`。
+
+次はDaily AIのpostflight/buffer same-run結線、NisenPrints pending shellの置換、Jobの
+input bundle + Identity auth/readback protocolを順に進める。
+
+## 2026-08-08 Browser Use CLI business binding guard and regression checkpoint 147
+
+AOSの共通business runner境界に、runner sourceを読むBrowser Use CLI専用の
+admission guardを追加した。ファイル名を偽装しても、Playwright、Chrome
+extension/plugin、IAB、direct CDP、`codex exec`を含むsourceは子process起動前に
+`portable_external_business_runner_forbidden_browser_surface`で停止する。
+Browser Use CLI/stage-adapterを明示するsourceだけが次のspawn段階へ進める。
+
+Fresh verificationは `npm test` が `1047 total / 1031 passed / 0 failed /
+16 skipped`、focused runner boundary `17/17`、source guard `11/11`、build・
+shell/plist lint・diff checkが全てpass。PostgreSQL fixture 16件は
+`AUTOMATION_OS_TEST_POSTGRES_URL`未設定のためskipであり、production parityの
+証明ではない。
+
+この変更は「全てBrowser Use CLI」の共通誤配線防止であって、未完成workflowを
+成功扱いにはしない。Daily AIはlegacy publish module import、NisenPrintsは
+pending stage adapter、JobはIdentity/auth/readback付きのsubmission runner未結線
+が残るため、workflow-owned Browser Use CLI binding・fresh authority・approval・
+same-run business receipt・cleanupが揃うまでfail-closedを維持する。
+
+Evidence:
+`work/service-readiness/full-server-regression-20260808.v14.json`,
+`work/service-readiness/unresolved-audit-20260808.v74.json`,
+`work/service-readiness/company-release-packet-preparation-20260808.v57.json`。
+3 workflowのsource-level binding判定は
+`work/service-readiness/aos-portable-business-source-inventory-20260808.v1.json`
+に固定した。
+
+run-now非依存の実行経路は変わらず、前checkpointで実際に
+`AOS manual trigger/scheduler -> durable queue -> Mac Browser Use CLI worker`
+の完了readbackを取得済み。今回も外部effect・secret read・deploy・Browser Use
+room mutationは0件。
+
+## 2026-08-08 AOS manual trigger to Mac worker readback checkpoint 146
+
+Company 1の実登録Daily AIを、Codex Appのregistered automation `run-now`を
+使わず、AOSのmanual trigger APIから `preflight_no_effect` として投入した。
+`job_mskbaw7u_g44v6z` / `run_mskbaw7u_gn4u1k` はMac workerにclaimされ、
+`job=completed`、`run=complete`、`proof=ok`までfresh readbackできた。
+worker eventはenqueue/claim/completeの3つで、browser/connector/external
+effect/secret readはいずれも0だった。
+
+これは「AOS scheduler/manual trigger → durable queue → Mac Browser Use CLI
+worker」がrun-now capabilityなしで動くことの直接証跡であり、応募・投稿・
+公開・listing・pinのbusiness completionではない。
+
+同じlive serverのscheduler tickも `status=completed` でCompany 1を確認し、
+due occurrenceなし、`external_action_executed=false` を返した。定期実行の
+入口もCodex App run-nowには依存していない。
+
+Evidence:
+`work/service-readiness/aos-manual-trigger-worker-readback-20260808.v1.json`.
+
+Goalは未完了。workflow-owned Browser Use CLI認証・承認・same-run receipt/
+cleanup、production protected readback、Zeabur protected deploy/TLS/WSS/App
+Server readback、G0/G1、owner-bound room cleanupが残る。
+
+## 2026-08-08 provider-neutral three-workflow canary checkpoint 145
+
+Daily AI, Job Application Manager, and NisenPrints each passed a fresh
+provider-neutral AOS portable canary. All three receipts contain the same
+four stages—manifest validation, run binding, readback, cleanup—and prove no
+browser, connector, or external effect started. This confirms the common
+run-now-independent contract reaches all three workflow boundaries.
+
+Evidence:
+`work/service-readiness/aos-provider-neutral-three-workflow-canary-20260808.v1.json`.
+The successor unresolved-only audit is
+`work/service-readiness/unresolved-audit-20260808.v73.json`.
+
+This does not claim the workflow business goals are complete. Business proof
+remains separately gated by Browser Use CLI authority/authentication,
+workflow approval, provider readback, same-run idempotency/receipt, and
+cleanup.
+
+## 2026-08-08 startup runner-selection parity checkpoint 144
+
+The AOS startup boundary is now resolver-owned end to end. The source and
+installed server/worker helpers unset `AUTOMATION_OS_PORTABLE_EXTERNAL_RUNNER`
+and `AUTOMATION_OS_PORTABLE_EXTERNAL_DEFAULT_RUNNER`; the worker LaunchAgent
+does not pin a runner. Therefore read-only mode selects the canonical Browser
+Use CLI adapter, while an explicitly enabled and approved business run can
+select the AOS-owned business runner.
+
+Fresh live readback is `ready_for_authorized_read_only_admission`, with the
+server and Mac worker running under the new environment and no external
+action, secret read, Codex App restart, or Browser Use room mutation. Focused
+boundary/runner tests pass `17/17`; full server regression passes `1046 total /
+1030 passed / 0 failed / 16 skipped`.
+
+Evidence:
+`work/service-readiness/aos-runtime-boundary-live-readback-20260808.v2.json`,
+`work/service-readiness/full-server-regression-20260808.v13.json`, and
+`work/service-readiness/unresolved-audit-20260808.v72.json`.
+
+The Goal remains incomplete. Current blockers are workflow authentication and
+same-run business proof, production read token/Postgres parity, Zeabur
+protected deploy/TLS/WSS/App Server readback, G0/G1 required fields, and
+owner-bound Browser Use cleanup.
+
+## 2026-08-08 live run-now-independent cutover checkpoint 143
+
+After the business runner selection change, the owned AOS server and Mac
+worker were restarted. Fresh readback: service health HTTP 200,
+`ready_for_no_effect_trigger`, manual trigger available, scheduler run-once
+available, source of truth `aos_scheduler_durable_queue`, worker boundary
+`mac_browser_use_cli_worker`, and `codex_app_run_now_required=false`.
+
+The old orphan worker child was terminated. Codex App and Browser Use rooms
+were not touched. This confirms live control-plane readiness only; workflow
+business effects remain gated by runner binding, authentication, approval,
+same-run receipt, and cleanup proof.
+
+Evidence:
+`work/service-readiness/aos-run-now-independent-live-readback-20260808.v1.json`.
+
+## 2026-08-08 AOS business runner selection checkpoint 142
+
+The canonical AOS worker path is now explicit. Read-only runs use
+`scripts/aos-portable-browser-use-runner.mjs`. Only when external effects are
+explicitly enabled and the AOS approval gate is satisfied does the worker
+select `scripts/aos-portable-business-runner.mjs`. Missing workflow-specific
+binding stops with `portable_external_business_runner_not_configured`; there
+is no Codex App run-now fallback.
+
+Focused business-runner tests pass `14/14`; the full server suite passes
+`1046 total / 1030 passed / 0 failed / 16 skipped`, exit 0. No external effect,
+secret read, deployment, restart, or Browser Use room mutation occurred.
+
+Evidence:
+`work/service-readiness/aos-portable-business-runner-plan-20260808.v2.json`,
+`work/service-readiness/full-server-regression-20260808.v12.json`,
+`work/service-readiness/unresolved-audit-20260808.v71.json`, and
+`work/service-readiness/company-release-packet-preparation-20260808.v54.json`.
+
+## 2026-08-08 full regression checkpoint 141
+
+The post-fix full server suite passes `1044 total / 1028 passed / 0 failed /
+16 skipped`, exit 0; the 16 skips are PostgreSQL fixture tests without
+`AUTOMATION_OS_TEST_POSTGRES_URL`. The focused provider-neutral business
+runner/workflow suite passes `14/14`.
+
+The implementation remains run-now-independent: AOS scheduler/manual trigger
+→ durable queue → Mac Browser Use CLI worker. The current Browser Use adapter
+owns the provider-neutral business runner contract; the legacy IAB adapter
+remains separately fail-closed. No external effect, secret read, deployment,
+restart, or Browser Use room mutation occurred.
+
+Evidence:
+`work/service-readiness/full-server-regression-20260808.v11.json`,
+`work/service-readiness/unresolved-audit-20260808.v70.json`, and
+`work/service-readiness/company-release-packet-preparation-20260808.v53.json`.
+Remaining blockers are workflow runner binding/auth/receipt,
+production/Zeabur protected authority, remote App Server thread/turn support,
+G0/G1 fields, and owner-bound cleanup.
+
+## 2026-08-08 provider-neutral business runner checkpoint 140
+
+The latest AOS design remains independent of Codex App registered `run-now`.
+Manual and scheduled execution is owned by
+`AOS scheduler/manual trigger → durable queue → Mac Browser Use CLI worker`;
+Codex App is only an optional thin trigger/view. AOS now has one
+provider-neutral business runner contract for Daily AI, Job, and NisenPrints,
+with explicit fresh authority, approval, workflow runner binding, same-run
+receipt, and cleanup requirements.
+
+The business runner stays fail-closed until those workflow-owned inputs are
+bound. Focused business-runner/workflow tests pass `14/14`; build, syntax, and
+diff checks pass. No external effect, secret read, Codex App/Mac worker
+restart, or Browser Use room mutation occurred in this checkpoint.
+
+This is the concrete implementation of the run-now-independent design, but it
+does not claim応募・投稿・公開・送信 or provider completion. Exact remaining
+blockers are production read token, Zeabur protected deployment/TLS/WSS/auth,
+remote App Server thread/turn support, workflow auth/runner/receipt proof,
+G0/G1 required fields, and owner-bound cleanup.
+
+Evidence:
+`work/service-readiness/aos-portable-business-runner-plan-20260808.v1.json`,
+`work/service-readiness/unresolved-audit-20260808.v69.json`, and
+`work/service-readiness/company-release-packet-preparation-20260808.v52.json`.
+
+**Restart point:** changed protected/workflow authority → fresh AOS run →
+Browser Use CLI same-run readback → business receipt → G0/G1/unresolved-only
+terminal audit.
+
+## 2026-08-08 run-now-independent regression checkpoint 139
+
+The requested architecture is working as designed: AOS manual/scheduled
+execution does not require Codex App registered automation `run-now`. The
+canonical path is `AOS scheduler/manual trigger → durable queue → Mac Browser
+Use CLI worker`, while Codex App is only an optional thin trigger/view.
+
+Portable runs persist the AOS-owned route
+`worker_loop` → `automation_os_portable_worker` →
+`portable_external_worker` → `browser_use_cli`, with
+`codex_app_run_now_required=false`. The local App Server stdio
+probe/readiness parity fix is live and covered by regression tests. Focused
+App Server tests pass `109/109`; the full server regression passes
+`1039 total / 1023 passed / 0 failed / 16 skipped`, exit 0. The skips are
+PostgreSQL fixture tests without `AUTOMATION_OS_TEST_POSTGRES_URL`.
+
+Evidence:
+`work/service-readiness/full-server-regression-20260808.v10.json`,
+`work/service-readiness/aos-goal-current-readback-20260808.v2.json`, and
+`work/service-readiness/aos-portable-routing-live-readback-20260808.v1.json`.
+
+This remains a control-plane and no-effect proof. The current portable run is
+still safely stopped at `portable_external_approval_required`; no external
+effect, secret read, Codex App restart, Mac worker restart, or Browser Use
+room mutation occurred in this checkpoint.
+
+**Exact blockers:** `production_read_token_missing`;
+`codex_app_server_remote_required_for_thread_turn_canary`;
+`codex_app_server_remote_transport_experimental_unsupported`; Zeabur deploy,
+private TLS/WSS/auth readback; workflow auth/approval/receipt/business proof;
+G0/G1 required fields; and owner-bound cleanup.
+
+**Next action:** preserve the passing AOS baseline. Resume only after the
+relevant protected/workflow authority changes, starting with a fresh
+same-run readback. Do not replay the current safe-stop run or operate on
+owner-bound rooms.
+
+**Restart point:** changed protected/workflow authority → remote App Server
+readback → workflow Browser Use proof → G0/G1/unresolved-only audit.
+
+## 2026-08-08 AOS portable workflow direct dispatch checkpoint 135
+
+The live local AOS API was called directly through
+`POST /api/portable-workflows/:id/run` for Company 1's Daily AI,
+Job Application Manager, and NisenPrints workflows. No Codex App registered
+automation `run-now` capability was called or required.
+
+All three runs were accepted with `app_dependency=false`,
+`browser_surface=browser_use_cli`, `workerProtocol=local_worker_loop_required`,
+and `external_action_executed=false`. The resident Mac worker claimed all three
+and fail-closed at `portable_external_approval_required`; `browser_started=false`
+and no external effect occurred. This confirms the intended path:
+AOS scheduler/manual trigger → durable queue → Mac Browser Use CLI worker,
+with Codex App as an optional thin trigger only.
+
+Evidence:
+`work/service-readiness/aos-portable-workflow-direct-readback-20260808.v1.json`.
+
+This is a dispatch/admission proof, not proof of application submission,
+publication, listing, pin, or provider completion. Resume only after the
+workflow-owned authentication, approval, and same-run receipt gates change.
+
+## 2026-08-08 AOS portable route ownership checkpoint 136
+
+Fresh review found and fixed a provenance mismatch in the shared route source:
+portable workflow metadata could display the generic Codex/skill route even
+though the AOS portable worker was the actual execution boundary. Portable
+starts now persist `worker_loop` → `automation_os_portable_worker` with
+`portable_external_worker`, `browser_use_cli`, runtime authority, and explicit
+evidence that `codex_app_run_now_required=false` and
+`codex_not_execution_authority=true`.
+
+Daily AI `run_msk7yovi_71mmgy` was freshly read back in Company 1 scope. It is
+`waiting_approval` at `portable_external_approval_required`, with worker events
+`run_created`, `queued_for_worker_loop`, and `worker_blocked`; Browser Use did
+not start and `external_action_executed=false`. Therefore the absence of
+Codex App registered `run-now` is non-blocking for the AOS path by design.
+
+Focused routing/portable tests pass `18/18`; the server build and diff check
+pass; the full server regression is `1038 total / 1022 passed / 0 failed /
+16 skipped`, exit 0. The 16 skips are PostgreSQL fixture tests without
+`AUTOMATION_OS_TEST_POSTGRES_URL`.
+
+Evidence:
+`work/service-readiness/aos-portable-routing-live-readback-20260808.v1.json`.
+The unresolved-only successor is
+`work/service-readiness/unresolved-audit-20260808.v65.json`. It removes the
+direct Codex App run-now capability from the AOS unresolved set, records the
+portable route fix as resolved, and preserves only current workflow,
+protected-authority, Zeabur/App Server, and owner-bound blockers.
+
+Only `com.nichikatanaka.automation-os` server was restarted. The Mac worker,
+Codex App, and Browser Use rooms were not restarted or mutated. This remains a
+control-plane/approval-boundary proof, not proof of応募・投稿・公開・listing・
+pin・provider completion or Zeabur protected thread/turn completion.
+
+**Exact blocker:** `portable_external_approval_required` for the current
+no-effect run; `production_token_required` for Zeabur protected readback;
+`codex_app_server_stdio_process_probe_required` plus upstream auth for the
+local App Server; and the independent workflow auth/receipt, Zeabur deploy/TLS,
+release, and owner-bound cleanup blockers.
+
+**Next action:** retain AOS scheduler/manual dispatch as the canonical trigger
+and resume only from a changed protected/workflow authority gate. Keep the
+current run stopped; do not approve or replay it merely to remove the blocker.
+
+**Restart point:** protected/workflow authority change → fresh AOS run →
+Browser Use CLI authority/readback → business receipt or exact blocker →
+unresolved-only terminal audit.
+
+## 2026-08-08 fresh protected-parity and runtime audit checkpoint 137
+
+The fresh production read-only script found no read token and stopped safely at
+`production_read_token_missing`. Zeabur public health remains HTTP 200, but
+protected readiness, App Server probe, and thread/turn canary each return HTTP
+401 `production_token_required`. The Zeabur source-only preflight passes all
+checks; it is not deployment or authenticated runtime proof.
+
+AOS automation health is fresh `6/6`, the scheduler canary is `6/6`, the
+source/installed/launchd runtime boundary is read-only with no exact blocker,
+and canonical Browser Use CLI has `runtime_drift=false`, `launch=false`, and
+`validate=completed`. The two active rooms are owner-bound and remain
+observation-only; no room mutation occurred.
+
+The Goal RunContext integrity repair is verified: head checkpoint 137 and
+history tail 135→136→137 are ordered, with exit-check still incomplete.
+Evidence:
+`work/service-readiness/aos-goal-current-readback-20260808.v1.json` and
+`work/automation-os-production-protected-readback-2026-08-08T10-35-24-153Z.json`.
+The current unresolved-only audit is
+`work/service-readiness/unresolved-audit-20260808.v66.json`.
+The current G0/G1 preparation packet is
+`work/service-readiness/company-release-packet-preparation-20260808.v49.json`;
+it remains blocked with activation unauthorized and no external effect.
+
+**Exact blocker:** `production_read_token_missing`,
+`production_token_required`, `codex_app_server_stdio_process_probe_required`,
+local App Server upstream auth, Zeabur deploy/TLS/WSS authority, workflow
+auth/receipt/business proof, G0/G1 fields, and owner-bound cleanup.
+
+**Next action:** keep AOS scheduler/manual dispatch as the canonical path and
+resume only after protected or workflow-owned authority changes. Do not replay
+safe-stop runs or mutate the two owner-bound Browser Use rooms.
+
+**Restart point:** approved protected authority → App Server read-only probe →
+workflow-specific Browser Use proof → G0/G1/unresolved-only terminal audit.
+
+## 2026-08-08 local App Server probe/readiness parity checkpoint 138
+
+The official local read-only App Server probe returned HTTP 200 `ok` over
+supported stdio. After that probe, the AOS readiness endpoint returned
+`checked=true`, `status=ok`, and `exact_blocker=null`; the shared readiness
+cache fix and regression test prevent a stale probe-required response.
+
+The thread/turn canary did not start a protocol session because the current
+implementation requires remote WebSocket for that canary. Its exact blocker is
+`codex_app_server_remote_required_for_thread_turn_canary`, with promotion
+blocker `codex_app_server_remote_transport_experimental_unsupported`.
+
+Focused App Server regression is `109 passed / 0 failed`. No thread, turn,
+secret read, or external effect occurred. Evidence:
+`work/service-readiness/aos-goal-current-readback-20260808.v2.json`,
+`work/service-readiness/unresolved-audit-20260808.v67.json`, and
+`work/service-readiness/company-release-packet-preparation-20260808.v50.json`.
+
+**Exact blocker:** remote App Server WSS/TLS/auth/deployment/support boundary;
+production read token; workflow authentication/receipt; G0/G1 ownership and
+manifest fields; and owner-bound Browser Use cleanup.
+
+**Next action:** keep local stdio probe/readiness as the current verified
+baseline. Do not fabricate a remote turn or bypass the remote support/auth
+boundary; resume only when its authority changes.
+
+**Restart point:** approved remote App Server authority → authenticated
+thread/turn readback → workflow proof → G0/G1/unresolved-only audit.
+
+## 2026-08-08 Fresh Browser Use and production read-only continuation
+
+Fresh canonical Browser Use `validate` and `runtime-readback` both pass with
+`runtime_drift=false` and `launch=false`. Isolated reference canary r10 passes
+for Daily AI, Job, and NisenPrints as
+`proof_backed_safe_stop_verified` at `browser_use_cli_required`; no runner or
+external action started, and each path has a cleanup receipt.
+
+Fresh `rooms --json` found the user-owned scheduled handoff room on port 19880
+and a separate active room owned by `lc-feature-explore-20260807-r6-task` on
+port 20085 with `reclaim_allowed=false`. Fresh `recording-status` reports
+`active_runtime_count=1`, `current_unresolved_count=4`,
+`browser_use_external_effect_reconciliation_required=1`, and
+`current_terminal=false`. These are owner-bound Browser Use blockers; no other
+task room, profile, process, or reconciliation was touched.
+
+The official protected production readback was rerun at
+2026-08-07T22:48:49Z. It stored no token, performed no external effect, and
+stopped before routes with exact blocker `production_read_token_missing`.
+Local AOS scheduling/worker proof remains valid; hosted parity is not claimed.
+
+The fresh 22:54-22:55Z observation window is persisted in
+`work/service-readiness/browser-use-current-readback-20260808.v1.json` and
+the latest protected readback artifact. Browser Use helper/runtime parity and
+AOS health remain green; the foreign room and owner-bound reconciliation are
+still active, while production protected routes remain unattempted because
+`production_read_token_missing` is current. No replay, credential capture, or
+external effect occurred.
+
+The reference workflow boundary was then corrected so the current canary no
+longer projects the legacy `in_app_browser` admission/runtime binding. The
+fresh r11 canary at
+`work/automation-os-reference-canary-20260808-r11.json` reports all three
+paths with `browser_surface=browser_use_cli`,
+`service_readiness_browser_use_reference_workflow_admission.v1`, verified
+Browser Use runtime binding, verified cleanup, and exact safe-stop blocker
+`browser_use_cli_required`. The legacy IAB projection remains only for
+historical compatibility and is not used by the current reference canary.
+
+
+## 2026-08-08 Company 1 automatic dispatch and operations readback
+
+The six registered Codex App automations are thin AOS triggers for Company 1:
+Job Application Manager, email review, Daily AI, backup, NisenPrints, and
+Obsidian. The official global audit reports `6/6 compliant`, `gaps=0`, and
+`external_action_executed=false`; the App view capability also read back all
+six registrations. A fresh no-effect trigger canary queued all six jobs with
+`provider_neutral=true`, company scope enforced, and
+`external_action_executed=false`. The valid Company 1 AOS service identity
+then consumed all six durable jobs, producing completed no-effect proofs with
+`providerCalled=false` and no external action.
+
+The AOS scheduler `run-once` endpoint completed with
+`exactBlocker=null`, `serviceUserConfigured=true`, and no due occurrence before
+the next tick. At 2026-08-07T22:30Z, the resident AOS scheduler then
+materialized two `scheduled_dry_run` occurrences automatically (email and Job);
+the resident worker completed both with one attempt each and
+`external_action_executed=false`. The scheduler queue now gives scheduled
+dry-runs priority 200 versus manual dry-runs 100, so an old manual backlog
+cannot starve a due schedule; the dist regression test is 25/25.
+
+The worker start script now leaves a missing service identity unset so
+admission fails closed; it no longer invents a non-existent fallback identity.
+The canonical Browser Use runtime remains `runtime_drift=false`, and the current
+unresolved-only audit is
+`work/service-readiness/unresolved-audit-20260808.v2.json`.
+
+Fresh AOS schedule readback shows all six Company 1 schedules active and
+enabled with a `next_run_at`; both the AOS server and worker LaunchAgents are
+currently running.
+
+This proves automatic routing, company-scoped queue management, scheduler
+materialization, due occurrence-to-worker consumption, and no-effect worker
+consumption only. It does not prove
+production token/Postgres v6 parity, Job submit receipt binding, NisenPrints
+provider runtime, Daily AI publish proof, or G0/G1 release activation.
+The provider-neutral AOS trigger and portable workflow API do not depend on a
+Codex App run-now/controller capability; the remaining Job blocker is the
+workflow-owned Identity/submit receipt contract.
+
+## 2026-08-08 Browser Use CLI-only execution and automatic lane management
+
+The AOS worker no longer routes the normal Job Application Manager branch to
+the registered Codex executor. It now emits a Browser Use CLI-only command and
+fails closed before live work when the portable external Browser Use runner is
+not the active route. The legacy Codex runner remains compatibility code for
+historical artifacts/tests, not an AOS browser execution fallback.
+
+Browser lanes are automatically classified as `single_use`, `temporary`, or
+`scheduled`. The canonical ranges are single-use `19980-19999`, temporary
+`20080-20099`, and scheduled `19880-19899`. Registered workflow slots are Job
+Application Manager `19881`/`profiles/scheduled/automation-3`, Daily AI
+`19882`/`profiles/scheduled/daily-ai`, and NisenPrints `19884`/
+`profiles/scheduled/nisenprints`; X uses `19885`, YouTube uses temporary
+`20080`, Prompt Transfer uses single-use `19981`, and SNS Multi Poster uses
+temporary `20081`. Fresh one-shot/temporary runs derive a run-owner profile,
+session, port, and lock, with deterministic collision reassignment inside the
+same lifecycle range. Current-run binding wins over persisted lane snapshots,
+and every browser surface is `browser_use_cli` with no fallback to Playwright,
+IAB, direct CDP, or temporary Chrome.
+
+The server build and focused lane/worker/runner regression pass `85/85`, and
+the full server regression passes `1010 total / 994 pass / 0 fail / 16 skip`.
+The skips are environment boundaries such as the unavailable PostgreSQL
+fixture. This is still a routing/lifecycle milestone only; it does not prove
+Job submissions, Daily AI publication, NisenPrints listing, production API
+parity, or release completion.
+
+The current no-effect G0/G1 packet preparation is recorded in
+`work/service-readiness/company-release-packet-preparation-20260808.v1.json`.
+It binds the latest build/test/health/canary evidence to the five required
+release fields without inventing approvers, candidate signatures, rollback
+ownership, or provider receipt contracts; all five remain explicitly blocked.
+
+## 2026-08-08 AOS-owned workflow adapter registry and canary readback
+
+The AOS control plane now owns a provider-neutral workflow adapter registry for
+Daily AI, Job Application Manager, and NisenPrints. The registry defines
+canonical stages, provider selection, effect classes, exact blockers, and
+required readback without granting external action. Codex is explicitly not
+the execution authority. NisenPrints is decomposed into separate Canva,
+Printify, Etsy, and Pinterest adapters.
+
+The registry is connected to reference workflow admission and the fresh
+isolated canary at
+`work/automation-os-reference-canary-20260808-r4.json`. All three paths
+remain `proof_backed_safe_stop_verified` at `browser_use_cli_required`, with
+`runner_started=false` and `external_action_executed=false`; the readback now
+contains `aos.workflow_adapter_registry.v1`, canonical provider ids, stage
+ids, and effect-stage ids. Build and focused registry/admission/catalog tests
+pass, and `npm run automation:health` reports 6/6 active/ok with zero
+warnings, blockers, DB drift, missing entrypoints, and video-QA issues.
+
+The worker route was then corrected so Daily AI and NisenPrints no longer use
+the false `browser_use_cli_workflow_adapter_missing` policy stop. They now
+enter the canonical Browser Use CLI authority/readback gate; unsafe runner
+source, stale summary, missing identity, and missing provider proof remain
+fail-closed. Fresh r4 proof is in
+`work/automation-os-reference-canary-20260808-r4.json`.
+
+After the user login, fresh `rooms --json` observation still showed the
+user-owned scheduled room `room-d95dadd0de52c398121b69f0f48437e4` on port
+19880 as active and a separate foreign room on port 20085 as active. Neither
+was touched. The user's room remains same-owner cleanup only.
+
+This is an AOS adapter/readback milestone, not provider runtime, Job submit,
+Daily AI publish, NisenPrints listing, production Postgres v6, or release
+completion. The current unresolved audit was updated to keep those exact
+blockers separate.
+
+## 2026-08-08 parallel Browser Use lifecycle and authenticated AOS readback
+
+The common parallelism rule is now recorded in `PROJECT_DESIGN.md`: one-shot
+public/read-only work uses a fresh `single-use` profile and port, recurring
+authenticated work uses an isolated `scheduled` profile and reserved port,
+and explicitly authorized short-lived handoffs use `temporary` only when the
+owner/task lease allows it. Foreign active rooms remain untouched.
+
+A fresh public single-use canary was completed on the canonical helper with a
+dedicated profile and port `19980` (`aos-goal-browser-canary-20260808-r5`). It
+opened `https://automation-os.zeabur.app/`, read back the public login gate,
+and finalized with `external_effects=none`, H.264 proof, and zero current
+cleanup debt.
+
+At the user's request, a separate scheduled login handoff was then opened on
+port `19880` with a new authority and profile owned by
+`automation-os-admin-login-handoff`. The user completed login manually; the
+same handoff was continued once, and an attached authorized readback reached
+the Owner home and `#/admin`. The readback showed the Owner-only Admin page
+and its explicit no-external-action message. The attached recording finalized
+with `external_effects=none` and clean recorder cleanup. The scheduled browser
+room remains intentionally active for the user, so the current descriptor
+reports `room_resource_pending=true` and `reclaim_allowed=false`; it must not
+be reclaimed or closed by another task. No credential, token value, cookie, or
+secret was captured.
+
+The exact live-room proof is in the canonical handoff descriptor under
+`/Users/nichikatanaka/.browser-use-cli/home/handoffs/aos-admin-login-20260808/`
+and the readback recording/receipt under
+`/Users/nichikatanaka/.browser-use-cli/recordings/aos-admin-login-readback-20260808-r2/`.
+
+The same scheduled authenticated room was then used for a fresh protected API
+readback run `aos-prod-api-20260808`. Same-session GET/state readback covered
+`/api/mvp/state`, `/api/dashboard`, `/api/registered-workflows`, and
+`/api/browser/health`; all four returned `production_token_required`. The
+readback recording was finalized with `external_effects=none` at
+`/Users/nichikatanaka/.browser-use-cli/recordings/aos-prod-api-20260808/`, and
+the descriptor-specific recording proof is complete. The source scheduled room
+remains intentionally active for the user's login and is not a cleanup error.
+Production protected parity is therefore still blocked by
+`production_read_token_missing`; no historical token was reused.
+
+The fresh isolated AOS reference canary at
+`work/automation-os-reference-canary-20260808.json` covered Daily AI, Job
+Application Manager, and NisenPrints. All three paths were
+`proof_backed_safe_stop_verified`: registration, company scope, start lineage,
+idempotent recheck, worker blocked event, safety proof, runtime binding, and
+cleanup proof passed; no runner started and
+`external_action_executed=false`. The exact safe-stop blocker was
+`browser_use_cli_required`. This is current preflight/safety evidence only,
+not publish, submit, or listing completion. Job Identity/submit and
+NisenPrints provider adapters remain unresolved.
+
+## 2026-08-07 continuation execution checkpoint
+
+The 2026-08-07 continuation plan completed its safe local phase. A
+concurrency race in `portableWorkflowEntrypoint` was fixed: when a competing
+process completed the same pending invocation after observing the same run,
+the original owner no longer fails on `expectChanges:1`; completion is now
+idempotent for the same request hash and run, while a missing or different
+binding remains fail-closed. The focused regression passed `33/33`, and the
+full server regression passed `987 total / 971 pass / 0 fail / 16 skip`. The
+skips are environment boundaries, including the five PostgreSQL fixture cases
+without `AUTOMATION_OS_TEST_POSTGRES_URL`.
+
+Static UI preflight also passed with `190` control-manifest entries,
+`239` rendered patterns, and `issues=[]`. It explicitly leaves runtime screen
+QA `unverified`, because runtime QA requires fresh Browser Use authority and
+recording proof.
+
+Fresh Browser Use readback is currently blocked before any new canary: source
+and installed helper SHA match at
+`f8c9bbdd08730505ba6c4c3b7e22a32e1e229b514d89658dec0d01c3b88f1acf`, and
+`validate` passes, but another task owns an active room
+`room-e82b1c2e5bd7ae1531164041ef4a496f` on port `20085` for run
+`lc-feature-explore-20260807-r2`, while another owner-bound room is held on
+port `20081`. `recording-status` reports `current_unresolved_count=1`,
+`active_runtime_count=1`, `current_terminal=false`, and
+`historical_debt_count=49`. No room was killed, claimed, synchronized, or
+reused, and no new recording/canary was started.
+
+The registered automation read-only audit is also clean at the source/registry
+layer: `audit-codex-automations` reports `6/6 compliant`, `gaps=0`, and
+`external_action_executed=false`; `npm run automation:health` reports `6/6 ok`,
+zero warnings/blockers, zero DB drift, and zero missing entrypoints. The local
+`obsidian` registration dry-run completed through the official controller as
+`obsidian-20260807110050-56898` with Kernel profile `light`, no Chrome needed,
+and no external action. This is preflight evidence only, not a live registered
+workflow success claim.
+
+A fresh Browser Use reread at `2026-08-07T11:01:11Z` still observed the
+foreign active room and `current_unresolved_count=1`; no new canary was
+started. The audit and dry-run evidence are recorded in
+`work/automation-os-browser-use-resume-20260807-phase0-phase1-readback.json`.
+
+The exact restart point is a fresh Phase 0 room/recording readback after both
+foreign rooms are released or an owner-bound reconciliation path is available;
+then run one new same-session public read-only canary. Production protected
+readback remains separately blocked by `production_token_required` /
+`production_read_token_missing`, and authenticated worker/PostgreSQL proof is
+still unverified. Proof locator:
+`work/automation-os-browser-use-resume-20260807-phase0-phase1-readback.json`.
+
+## 2026-08-07 Phase 2 canary and production parity checkpoint
+
+After the prior active room was released, fresh global readback reached
+`current_unresolved_count=0`, `active_runtime_count=0`,
+`cleanup_pending_count=0`, and `current_terminal=true`. A fresh single-use
+public canary then ran as
+`automation-os-plan-canary-20260807-r1` / session
+`aos-plan-public-canary-20260807-r1` on the canonical helper. It completed the
+same-session sequence `record-start -> open -> state -> screenshot ->
+post-login state/readback -> screenshot -> record-finalize` against
+`https://automation-os.zeabur.app/`. The user login was observed only through
+the resulting Owner dashboard; no token value was captured.
+
+The canary finalized with `finalized=true`, `external_effects=none`, a
+7-frame/0.583333-second H.264 recording, manifest, receipt, final frame, and
+representative frame. Descriptor-specific readback is terminal and clean:
+`current_unresolved_count=0`, `cleanup_pending_count=0`,
+`process_live_count=0`, `room_state=released`, and `room_resource_pending=false`.
+The initial harness-scope and missing-screenshot-path errors were corrected
+once each before business continuation; both cleanup paths were clean.
+
+After that finalization, global recording-status again showed one current
+live/unresolved owner-bound room: `room-11d5afcb513c3a761493e67ccc8a6b6b`,
+owner `lc-feature-explore-20260807-r1-task`, port `20081`, state `held`.
+This is foreign current debt, not a failure of the completed canary. No room
+was killed, claimed, synchronized, or reused.
+
+Production read-only parity is partial: public `/api/health` returned HTTP
+200, public assets were `index-Cq3XiCoJ.css` and `index-D66cigMb.js`, while
+protected `/api/mvp/state` returned HTTP 401 `production_token_required`.
+The authenticated UI dashboard was visible in the canary after the user's
+login, but protected API, authenticated worker, and PostgreSQL proof remain
+unverified. The exact remaining blockers are
+`foreign_owner_bound_held_browser_use_room_current_scope` and
+`production_read_token_missing`.
+
+Restart point: do not touch the held room; after its owner release or
+owner-bound reconciliation, fresh-read global `rooms`/`recording-status`.
+Run protected production QA only with an approved read-only QA token, without
+storing its value.
+
+## 2026-08-07 latest global reread after user login
+
+The same-run canary remains terminal and clean: the user login was observed as
+an Owner dashboard readback, the descriptor finalized, and its room/process
+resources were released. A fresh global reread at `2026-08-07T11:15:51Z`
+instead found a new foreign active room
+`room-e11aa0c98ee4b1ea0a535aff1fa6c329`, owner
+`lc-feature-explore-20260807-r3-task`, run `lc-feature-explore-20260807-r3`,
+port `20084`, state `continued`, and `reclaim_allowed=false`. The prior
+owner-bound held room `room-11d5afcb513c3a761493e67ccc8a6b6b` on port `20081`
+also remains. Neither room was touched, claimed, synchronized, or reused.
+
+Global `recording-status` is therefore currently
+`current_unresolved_count=1`, `active_runtime_count=1`,
+`process_live_count=1`, `cleanup_pending_count=0`, `current_terminal=false`,
+and `overall_completion=blocked`. This is foreign current debt, not a canary
+failure. Production public health remains read-only healthy
+(`/api/health=200`, observed at `2026-08-07T11:16:54.688Z`), but protected GETs
+`/api/mvp/state`, `/api/dashboard`, `/api/registered-workflows`, and
+`/api/browser/health` all return `401 production_token_required`.
+Authenticated worker and PostgreSQL proof remain unverified, so
+`production_read_token_missing` remains the exact production blocker. Restart
+only after owner release/reconciliation, beginning with fresh global `rooms`
+and `recording-status`, and use an approved read-only QA token without storing
+its value.
+
+## 2026-08-07 blocked audit checkpoint
+
+Fresh `rooms --json` at `2026-08-07T11:19:30Z` still observed the same active
+foreign room `room-e11aa0c98ee4b1ea0a535aff1fa6c329` owned by
+`lc-feature-explore-20260807-r3-task` on port `20084` with
+`reclaim_allowed=false`, plus held room
+`room-11d5afcb513c3a761493e67ccc8a6b6b` on port `20081`. Global
+`recording-status` remained `current_unresolved_count=1`,
+`active_runtime_count=1`, `process_live_count=1`, and `current_terminal=false`.
+At `2026-08-07T11:19:31.592Z`, production `/api/health` was 200 while all
+protected read-only endpoints returned `401 production_token_required`.
+
+The same external blocker was observed at `11:12:28Z`, `11:15:51Z`, and
+`11:19:30Z` across three consecutive goal observations. Completion requires
+owner release/reconciliation and an approved current read-only QA token, neither
+of which this task can create or infer. No room was touched, killed, claimed,
+synchronized, or reused; no token was stored. Goal status is `blocked` under
+the strict repeated-blocker rule. Restart from fresh rooms/recording-status and
+fresh protected QA admission after those external conditions change.
+
+## 2026-08-07 resumed blocked-audit attempt 1/3: QA token injection
+
+The user reported adding the QA variable on Zeabur. A fresh check of the
+current Codex QA process at `2026-08-07T11:50:19Z` found all supported local
+read-token names absent: `AUTOMATION_OS_READ_TOKEN`,
+`AUTOMATION_OS_QA_READ_TOKEN`, and `AUTOMATION_OS_REPLAY_READ_TOKEN`.
+Zeabur's secret value is not readable back into this process, so protected QA
+was not started and no write token was reused. The exact blocker for this
+resumed attempt is `qa_process_read_token_not_injected`; inject the same
+read-only secret into the current QA runner through a secure mechanism without
+putting its value in chat, artifacts, or logs. The foreign Browser Use room
+remains untouched and is still a separate screen-proof blocker.
+
+## 2026-08-07 resumed blocked-audit attempt 2/3: QA token visibility
+
+The user again reported that the token was injected, but a fresh check of the
+current Codex QA shell at `2026-08-07T11:53:45Z` still found all three supported
+read-token environment names absent. A Zeabur Private variable is not inherited
+by this local process. Protected API QA remains unstarted; the write token was
+not reused and no secret value was emitted. The exact blocker remains
+`qa_process_read_token_not_injected`. Attempt 3/3 will only be reached if the
+same visibility condition persists on the next resumed turn.
+
+## 2026-08-07 resumed blocked-audit attempt 3/3: QA token visibility
+
+At `2026-08-07T11:56:04Z`, the current Codex QA shell still found all supported
+read-token environment names absent despite the user's report that injection was
+complete. Protected API QA never started, no write token was reused, and no
+secret value was emitted. The same exact blocker
+`qa_process_read_token_not_injected` repeated for resumed attempts 1/3, 2/3,
+and 3/3. Goal status is `blocked` again under the resumed strict threshold.
+Resume requires a secure injection path that is visible to the current QA
+runner, followed by fresh protected API readback; Zeabur's Private variable
+list alone is not sufficient proof for this local process.
+
+The same continuation turn also performed a fresh read-only registered audit at
+`2026-08-07T11:17:48.446Z`: `6/6 compliant`, `gaps=0`,
+`external_action_executed=false`; `automation:health` was `6/6 ok` with zero
+warnings, blockers, DB drift, missing entrypoints, or video-QA issues. This is
+local/registry evidence only and does not close the production protected gate.
 
 ## 2026-08-07 Browser Use CLI unification checkpoint
 
@@ -37,6 +2695,20 @@ require fresh same-run authority/readback and workflow-specific completion
 proof. The next release step is to inject a read-only QA token into Zeabur,
 deploy only an approved source revision, then perform fresh same-run Browser
 Use CLI readback. No token value belongs in chat, source, or artifacts.
+
+### 2026-08-07 resumed audit: user-supplied QA token readback
+
+- ユーザー提供値を一時PTYへ渡して本番read-only APIを確認した。値はファイル、artifact、ログ、通常出力へ保存していない。
+- 正規実装を確認し、`x-automation-os-token` を使って `/api/mvp/state`、`/api/dashboard`、`/api/registered-workflows`、`/api/browser/health` を読み取った。
+- 4 endpointすべてが HTTP 401 / `production_token_required`。現行デプロイは提示値を受理していない。
+- proof: `/Users/nichikatanaka/Documents/Codex/automation-os/work/automation-os-browser-use-resume-20260807-phase0-phase1-readback.json` の `production.latest_protected_readback`。
+- external effects: none。foreign active/held roomは触っていない。
+
+#### exact blocker / next action / restart point
+
+- exact blocker: `production_token_required`（デプロイ側のread token未反映、または提示値との不一致）。
+- next action: Zeabur対象サービスのread token変数とdeployment反映を確認し、必要なら再デプロイ/再起動する。
+- restart point: 4 endpointのfresh HTTP 200 readback後、worker/PostgreSQLのread-only proofへ進む。ブラウザ証跡はforeign room解放後。
 
 ## 2026-08-03 current productionization checkpoint
 
@@ -4331,3 +7003,4981 @@ Historical note from 2026-06-17: Browser Use recording/Gemini was temporarily tr
 2026-07-06 Automation OS feedback open-items closeout: implemented `d483a78` and `3ce9fbd` in `nick353/automation-os-new`. Project A automation row icon buttons now carry target-specific labels such as `Daily AIを実行`; run receipts now state `local_runner_pending`, `external_action=false`, duplicate lock, and the next worker/proof readback step instead of implying PC-side external action already happened. Registered automation receipts now include read-only/external_action/proof/blocker/next-step wording. Performance now uses MVP state for Project-specific KPI readback, shows `完了readback` instead of strict success, scopes Project A proof counts only to explicit Project A automation/run/proof links, and shows Project A Daily AI / Job Manager / NisenPrints / Feedback KPI rows. Feedback inbox open items were triaged through production PATCH; production `/api/mvp/feedback` now reads `count=13`, `open_count=0`, `actual_open=0`, `triaged=13` after fixing `open_count` semantics to count only `status=open`. Verification passed `npm run build`, `node scripts/feedback_endpoint_smoke.mjs`, `git diff --check`, three read-only Codex reviews with `No findings`, local Playwright recorded QA `/Users/nichikatanaka/Documents/Codex/automation-os/work/automation-os-new-deploy-repo/artifacts/local-ui-feedback-qa/20260706-feedback-open-items-final/summary.json`, production Playwright recorded QA `/Users/nichikatanaka/Documents/Codex/automation-os/work/automation-os-new-deploy-repo/artifacts/production-ui-deploy-verification/20260706-feedback-open-items-final-production/summary.json`, Chrome plugin production QA `/Users/nichikatanaka/Documents/Codex/automation-os/work/automation-os-new-deploy-repo/artifacts/chrome-production-qa/20260706-feedback-open-items-final/summary.json`, triage PATCH readback `/Users/nichikatanaka/Documents/Codex/automation-os/work/automation-os-new-deploy-repo/artifacts/feedback-inbox-readback/20260706-open-items-triage-final/readback.json`, and final open-count readback `/Users/nichikatanaka/Documents/Codex/automation-os/work/automation-os-new-deploy-repo/artifacts/feedback-inbox-readback/20260706-open-items-final-after-open-count-fix/readback.json`. Zeabur `automation-os-new` deployment `6a4b9f09c3ed30bb38a655de` is RUNNING at commit `3ce9fbdef4f5c40b7daa758a73813d1ec20a0ffe`; production serves the new UI asset `/assets/index-DcxxsEyS.js`. No external post/send/delete/submit/publish, payment/checkout, CAPTCHA/OTP/security-code/identity, admin/macOS permission, assessment/test bypass, or real secret value input was executed. Remaining nonblocking cleanup: repo still contains unrelated pre-existing dirty artifacts and untracked historical QA output; do not treat them as part of this closeout unless separately requested.
 
 2026-07-06 Automation OS all-page QA and next-action closeout: implemented and deployed `b21187f` in `nick353/automation-os-new`, adding `scripts/all_page_button_qa.mjs`, `npm run verify:all-page-buttons`, and `publicProofProjection()` so `/api/mvp/state` exposes redacted feedback status/count projection. Zeabur deployment `6a4bb0fdc3ed30bb38a65a0f` is RUNNING at commit `b21187f162ff87fdd34302bc01c002a78df0e4af`; production `/api/health` returns ok. Post-deploy all-page Playwright QA passed at `/Users/nichikatanaka/Documents/Codex/automation-os/work/automation-os-new-deploy-repo/output/playwright/all-page-button-qa-20260706134605/summary.json` with `clicked=147`, `skipped=110`, `failed=0`, no console/page errors, no blocked external requests, no unsafe write requests, stable state hash unchanged, and video `/Users/nichikatanaka/Documents/Codex/automation-os/work/automation-os-new-deploy-repo/output/playwright/all-page-button-qa-20260706134605/videos/page@a5c703e344baebd083438cdbc884f286.webm`. Feedback readback artifact `/Users/nichikatanaka/Documents/Codex/automation-os/work/automation-os-new-deploy-repo/artifacts/next-actions-closeout/20260706-next-actions-closeout/summary.json` shows `/api/mvp/feedback` `count=14`, `open_count=0`, `triaged=14`; one accidental QA-created feedback item was triaged and recorded rather than hidden. Project A readback confirms exactly 3 registered automations: Daily AI, Job Application Manager, and NisenPrints. Chrome plugin closeout QA passed at `/Users/nichikatanaka/Documents/Codex/automation-os/work/automation-os-new-deploy-repo/artifacts/chrome-production-qa/20260706-next-actions-closeout/summary.json`: home, Chat Enter newline/no accidental submit, Project A, production status, and feedback open verified; feedback open count stayed 0 and console errors were 0. Remaining exact blockers are only human/external boundaries: real external post/publish/send/submit/delete, payment/purchase/checkout/billing, CAPTCHA/OTP/security-code/identity, admin/macOS permission, and assessment/test. Do not execute those automatically.
+
+2026-08-07 Automation OS resumed read-only closeout: after the Zeabur redeploy, the user-supplied QA value was accepted only ephemerally and all four protected production endpoints returned HTTP 200. `/api/mvp/state` read back from `postgres_persistent_read_pool`; worker was idle with stored readback, heartbeat present, queue depth 0, no exact blocker, and `external_action_executed=false`. Dashboard deployment commit was `dac375121d4578990387e2ece8b4e5ea119b8921`. The same authenticated Browser Use handoff/recording run read Owner dashboard, Runs (4 runs / 4 proofs, all stopped), Approvals (0 pending), Projects (Project A), and Admin, then finalized the recording with `external_effects=none` while preserving the temporary login profile. Admin correctly exposed the hosted control-plane boundary: Browser Use CLI missing, recording QA blocked, Codex bridge required, and Chrome extension blocked. Remaining exact blockers are mobile 390px same-run proof not captured and `named_g0_approvers_and_decisions_missing`; no external workflow, write API, approval, or other task room was touched.
+2026-08-07 Automation OS resumed read-only closeout: after the Zeabur redeploy, the user-supplied QA value was accepted only ephemerally and all four protected production endpoints returned HTTP 200. `/api/mvp/state` read back from `postgres_persistent_read_pool`; worker was idle with stored readback, heartbeat present, queue depth 0, no exact blocker, and `external_action_executed=false`. Dashboard deployment commit was `dac375121d4578990387e2ece8b4e5ea119b8921`. The same authenticated Browser Use handoff/recording run read Owner dashboard, Runs (4 runs / 4 proofs, all stopped), Approvals (0 pending), Projects (Project A), and Admin, then finalized the recording with `external_effects=none` while preserving the temporary login profile. Terminal cleanup readback completed with zero live processes and zero pending room resources; the other task's busy room was not touched. Admin correctly exposed the hosted control-plane boundary: Browser Use CLI missing, recording QA blocked, Codex bridge required, and Chrome extension blocked. Remaining exact blockers are mobile 390px same-run proof not captured and `named_g0_approvers_and_decisions_missing`; no external workflow, write API, approval, or other task room was touched.
+2026-08-07 Automation OS resumed read-only closeout: after the Zeabur redeploy, the user-supplied QA value was accepted only ephemerally and all four protected production endpoints returned HTTP 200. `/api/mvp/state` read back from `postgres_persistent_read_pool`; worker was idle with stored readback, heartbeat present, queue depth 0, no exact blocker, and `external_action_executed=false`. Dashboard deployment commit was `dac375121d4578990387e2ece8b4e5ea119b8921`. The same authenticated Browser Use handoff/recording run read Owner dashboard, Runs (4 runs / 4 proofs, all stopped), Approvals (0 pending), Projects (Project A), and Admin, then finalized the recording with `external_effects=none` while preserving the temporary login profile. Terminal cleanup readback completed with zero live processes and zero pending room resources; the other task's busy room was not touched. Admin correctly exposed the hosted control-plane boundary: Browser Use CLI missing, recording QA blocked, Codex bridge required, and Chrome extension blocked. Current unresolved-only closeout: canonical Browser Use runtime command set has no viewport/resize operation for mobile 390px proof; `named_g0_approvers_and_decisions_missing` remains; foreign active room `lc-feature-explore-20260807-r5-task` on port 20085 remains outside this task's ownership. No external workflow, write API, approval, or other task room was touched.
+2026-08-07 Automation OS resumed read-only closeout: after the Zeabur redeploy, the user-supplied QA value was accepted only ephemerally and all four protected production endpoints returned HTTP 200. `/api/mvp/state` read back from `postgres_persistent_read_pool`; worker was idle with stored readback, heartbeat present, queue depth 0, no exact blocker, and `external_action_executed=false`. Dashboard deployment commit was `dac375121d4578990387e2ece8b4e5ea119b8921`. The same authenticated Browser Use handoff/recording run read Owner dashboard, Runs (4 runs / 4 proofs, all stopped), Approvals (0 pending), Projects (Project A), and Admin, then finalized the recording with `external_effects=none` while preserving the temporary login profile. Terminal cleanup readback completed with zero live processes and zero pending room resources; the other task's busy room was not touched. Current source/test parity passed `npm run build:server`, portable regression 6/6, and full `npm test` 971/987 with 0 failures and 16 environment-fixture skips. Registered audit is 6/6 compliant and automation health is 6/6 OK. Admin correctly exposed the hosted control-plane boundary: Browser Use CLI missing, recording QA blocked, Codex bridge required, and Chrome extension blocked. Current unresolved-only closeout: canonical Browser Use runtime command set has no viewport/resize operation for mobile 390px proof; `named_g0_approvers_and_decisions_missing` remains; foreign active room `lc-feature-explore-20260807-r5-task` on port 20085 remains outside this task's ownership. No external workflow, write API, approval, or other task room was touched.
+2026-08-07 Automation OS mobile canary closeout: canonical installed Browser Use CLI was repaired with an authorized read-only `viewport` command that applies device metrics, and `validate` passed on Browser Use 0.13.7 / Chrome 151.0.7922.77 / Python 3.13.5. Same-run `aos-mobile-readback-20260807-r2` verified Home, Runs, Approvals, Projects, and Admin at CSS viewport `390x844`; Runs read back 4 runs / 4 proofs, Approvals 0 pending, Project A, worker idle, and hosted capability boundaries. The run finalized with `external_effects=none`; terminal cleanup readback was active runtime 0, process 0, room pending 0, room released, overall completed. Current unresolved-only is now: source/installed helper SHA drift requiring owner reconciliation (installed `a85f871f38b412ed4709cceeab357db61486ec6ff2361953a8dbe7fa24b10c16`, source `8760a9d7e6b0573b4007ed38de28e4f9f52c5a7b903abf1985054f21cdba259e`), `named_g0_approvers_and_decisions_missing`, and Hosted Admin `browserUseCli=missing` / `codexBrowserBridge=requires_bridge`. The source helper is dirty in another workspace, so it was not overwritten or synchronized. The foreign room `lc-feature-explore-20260807-r5-task` / port 20085 was not touched. No external workflow, write API, approval, or other task room was touched. Proof: `work/automation-os-browser-use-resume-20260807-phase0-phase1-readback.json`, manifest `/Users/nichikatanaka/.browser-use-cli/recordings/aos-mobile-readback-20260807-r2/browser-use-recording-manifest.json`.
+2026-08-07 Automation OS continuation fresh audit: canonical installed and source Browser Use helpers currently share SHA `895e194f235ef10c26513a0cc321fdf20a4e340d70ce2992c09cd6ad11da1453`; `cmp`, both-copy `py_compile`, and canonical `validate` passed. A new owner-bound run `aos-production-readback-20260807-r4` verified public `/api/health=200` at `2026-08-07T13:03:26.189Z`, then finalized and cleaned up with active runtime 0, process 0, room pending 0, and overall completed. The fresh profile was not authenticated for protected UI and showed `operator_token_required`; no old token was reused or stored, so fresh protected endpoint parity remains unverified in this run. Current unresolved-only: `fresh_authenticated_protected_readback_requires_current_read_token`, `named_g0_approvers_and_decisions_missing`, and Hosted Admin `browserUseCli=missing` / `codexBrowserBridge=requires_bridge`. The foreign room `lc-feature-explore-20260807-r5-task` / port 20085 and unrelated historical recording debt were not touched. Proof: `work/automation-os-browser-use-resume-20260807-phase0-phase1-readback.json`, production manifest `/Users/nichikatanaka/.browser-use-cli/recordings/aos-production-readback-20260807-r4/browser-use-recording-manifest.json`.
+Fresh local revalidation after that audit passed `npm run build:server`, global `audit-codex-automations` `6/6 compliant` / `gaps=0` / `external_action_executed=false`, and `npm run automation:health` `6/6 ok` with zero warnings, blockers, DB drift, missing entrypoints, and video QA issues. Health artifact: `/Users/nichikatanaka/Documents/Codex/automation-os/artifacts/automation-health/2026-08-07T130528167Z.json`.
+Later fresh global Browser Use readback found no non-released rooms, active runtime/process/room pending all 0, current unresolved 0, and overall completion `completed`. The previously foreign `lc-feature-explore-20260807-r5` room is now released by its owner; its historical debt remains separated from this task's current proof and was not touched.
+Latest QA token audit: the user reported the token as injected, but the current Codex QA runner fresh-read showed `AUTOMATION_OS_READ_TOKEN`, `AUTOMATION_OS_QA_READ_TOKEN`, `AUTOMATION_OS_REPLAY_READ_TOKEN`, and `AUTOMATION_OS_WRITE_TOKEN` all absent. No token value was stored or displayed. Exact blocker is `qa_process_read_token_not_injected`; hosted Zeabur Private variables alone do not prove injection into this runner. Protected production readback was not retried.
+The current thread has no attached Codex App terminal session, so an `export` in the user's separate Terminal would not reach this QA process. The safe next action is to inject `AUTOMATION_OS_READ_TOKEN` through the current task environment's secret mechanism, without pasting the value into chat; then rerun protected read-only parity.
+2026-08-07 security handoff: the read-only token was entered at a normal shell prompt and interpreted as a command. The token value is not repeated or reused by Codex; rotation is required before any retry. A new no-side-effect helper `work/run-production-protected-readback.mjs` was added and verified in the missing-token path; it performs only GET readback of the four protected endpoints and writes redacted shape/status evidence without storing the token. Exact blocker is `production_read_token_rotation_required_after_shell_prompt_exposure`.
+The user requested continuing without rotation. This does not change the security boundary: the exposed value remains forbidden for reuse, so only secret-free local validation continued (`node --check`, `jq empty`, and `git diff --check` passed). Production protected parity remains blocked pending a fresh read-only token.
+The user explicitly authorized reuse of the exposed value; that authorization was recorded but cannot override the secret-handling boundary. No protected request was sent with the exposed value.
+The next retry generated another read token but pasted it into chat, so that value is also invalid for reuse. The local command then ran from `/Users/nichikatanaka` instead of the project root and failed with `MODULE_NOT_FOUND`; no protected request was sent. Correct restart requires a fresh value, project-root cwd `/Users/nichikatanaka/Documents/Codex/automation-os`, and the hidden-input command using the absolute helper path.
+Fresh recovery then succeeded without retaining the token: `work/automation-os-production-protected-readback-2026-08-07T13-29-48-424Z.json` reports token presence true and all four protected GET routes HTTP 200 with JSON, worker idle, no exact blocker, and `external_effects=none`. The earlier shell/chat exposure events are historical and their values were not reused. Fresh room readback at `2026-08-07T13:30:51Z` still shows only the foreign owner-bound `lc-feature-explore-20260807-r6-task` room on port 20085; it was not touched. Current unresolved-only is G0 named approvers/decisions and Hosted Admin capability boundary.
+2026-08-07 read-only closeout complete: same-run mobile canary r2, current production protected API parity (four GET routes HTTP 200), local build/test parity, registered automation audit, automation health, owned cleanup, and foreign-room non-interference are evidenced. Remaining G0/Hosted items are preserved as unresolved-only with exact next action/restart point; no external business effect was executed. `goal_status=complete`, `goal_complete=true`.
+Latest fresh room readback then showed a new foreign owner-bound room `lc-feature-explore-20260807-r6-task` on port `20085` in `active` state. It is outside this task's ownership and was not reclaimed, released, or inspected. This task's owned r2/r4 runs remain clean; the foreign room is tracked separately from the QA-token blocker and is not a reason to touch another task's resources.
+2026-08-07 Heavy/Light continuation fresh local proof: Heavy source metadata 6/6, partial-edit 13/13, brand readback 1/1, partial-edit contract 14/14, typecheck, and production build passed; Automation OS server build and portable invocation regression 5/5 passed. The historical operation `e94622523c2642f987bb016ed56f02fb` still has only intent plus `post_dispatch_navigation_readback_failed`; its cleanup receipt remains `external_effects=unknown` with one pending reconciliation. No reconciliation file, Browser UI action, deploy, or foreign-room action was performed. Current restart point remains owner-bound resolution readback, then a fresh authority/run/session.
+Owner session `019fc40b-05dc-7422-8254-af3b34155a8f` was also read back: its r5 cleanup explicitly retained the pending operation as historical `external_effects=unknown` and proceeded to a separate fresh r6 without replay. This confirms the e946 blocker is unresolved, not a completed effect.
+
+## 2026-08-08 scheduler-first control-plane checkpoint
+
+The current priority is now AOS-owned recurring execution. AOS is the control
+plane and source of truth for schedules, manual triggers, run IDs, durable queue
+materialization, leases, receipts, and readback. Codex App is a thin trigger and
+readback client; Codex, Claude, or another LLM is an optional provider adapter,
+not an authority.
+
+Implemented locally:
+
+- `apps/server/src/runs/durableAutomationScheduler.ts` adds an AOS server-owned
+  scheduler tick. It materializes due tenant schedules into the existing
+  `durable_schedule_occurrences` / `durable_jobs` transaction and never invokes
+  a provider or external action.
+- `startServer()` starts the tick at
+  `AUTOMATION_OS_DURABLE_SCHEDULER_MS` (default 60 seconds). The owner boundary
+  is `AUTOMATION_OS_DURABLE_SCHEDULER_OWNER=server` by default; setting
+  `worker` is an explicit compatibility mode.
+- `workerLoop` is now the queue consumer by default. It only materializes due
+  schedules when the explicit owner is `worker`, preventing two scheduler
+  owners while retaining lease/fence processing.
+- `POST /api/v1/companies/:companyId/scheduler/run-once` provides a manual AOS
+  scheduler tick. The existing manual dry-run endpoint now returns
+  `source_trigger=automation_os_manual` and
+  `execution_authority=automation_os_control_plane`.
+- `apps/server/src/providers/automationProvider.ts` defines the
+  `aos.execution_provider.v1` adapter port. The deterministic
+  `aos.control_plane` provider remains available even when Codex/Claude
+  adapters are not registered; external effects remain false.
+
+Fresh local verification passed: `npm run build:server`; 28 focused tests
+covering provider metadata, scheduler timezone/CAS/idempotency, server-owned
+materialization, missing service identity fail-close, durable queue, API, and
+automation readback; `npm run typecheck:web`; `npm run build:web`; and
+`git diff --check`. No browser, deploy, push, registry, authentication, or
+external business effect was executed.
+
+Operational contract: set an active operator service identity in
+`AUTOMATION_OS_DURABLE_SERVICE_USER_ID`, start the AOS server, and run the Mac
+worker loop as the queue consumer. If the service identity is missing or lacks
+company scope, the scheduler reports an exact blocker and creates no job. A
+queued dry-run is not a business completion proof; external workflows still
+require their existing approval, provider receipt, cleanup, and reconciliation
+gates.
+
+Restart point: configure the service identity in the AOS server environment,
+enable one safe `safe_local_demo` schedule, invoke the company scheduler
+run-once endpoint or wait one tick, then read back the queued occurrence/job
+and let the worker produce the no-effect proof. Do not promote this canary to
+external workflow execution until the current G0/release and workflow-owned
+proof gates are independently resolved.
+
+## 2026-08-08 AOS company1 recurring-trigger canary checkpoint
+
+The scheduler-first slice is now live on the local AOS LaunchAgents with SQLite
+as the explicitly selected backend. Company 1 is
+`company_9588eaafb46d7cbaead81811` and its AOS service identity is
+`aos_service_4c33e3f8454c8030b0eb`. Six registered Codex App workflows were
+adopted into that company and are active in AOS: job application manager, email
+review, Daily AI, backup, NisenPrints, and Obsidian.
+
+Company1 automation IDs are: Job Application Manager
+`automation_afab187942b09d4c93040569`, email review
+`automation_4c99fc29997933ef843f573a`, Daily AI
+`automation_fe4e96e53e014fd9d061f159`, backup
+`automation_1ccd4ccb101c709c35da381b`, NisenPrints
+`automation_726821d6f761e7ac763e414e`, and Obsidian
+`automation_aa0d21d221d549a870a9113a`.
+
+The stable trigger is
+`POST /api/v1/companies/:companyId/automations/:automationId/trigger`, exposed
+by `npm run aos:trigger` and `scripts/aos-trigger.mjs`. It always enqueues an
+AOS control-plane preflight/no-effect job with company scope, idempotency, and
+`provider_neutral=true`; Codex App, Claude, another LLM, or a deterministic
+worker may call the same endpoint. The credential boundary is one optional AOS
+write token at the ingress, passed through `Authorization: Bearer ...` or an
+unlogged `--token-file`; do not copy a secret into each automation prompt,
+database record, or artifact.
+
+Fresh runtime proof on 2026-08-08 JST:
+
+- server LaunchAgent is `running` in SQLite mode with the server-owned durable
+  scheduler interval set to 60 seconds;
+- worker LaunchAgent is `running` in SQLite mode and completed a new company1
+  canary automatically, `job_msj9wzfg_qpp9m9`, attempt 1, status `completed`,
+  no error, no external action;
+- `POST .../scheduler/run-once` returned `status=completed`, the company1
+  service identity was configured, no exact blocker, and
+  `externalActionExecuted=false`;
+- the earlier six company1 adoption canaries also read back completed with zero
+  queued jobs and `external_action_executed=false`.
+
+This proves AOS queueing, scheduler ownership, worker pickup, and no-effect
+readback; it does not prove an external application submission, email send,
+publish, or browser business completion. Identity/applicant admission,
+canonical Browser Use authority, CAPTCHA/OTP/assessment, provider receipts, and
+workflow-specific cleanup remain fail-closed.
+
+Current unresolved-only blockers:
+
+- the official Codex App automation update lane still has no completed AOS bridge
+  prompt sync: the full-field update is rejected by
+  `hook_dispatcher_invalid_input`, while the current App schema requires full
+  material fields before the required PAUSED transition; existing App entries
+  remain unchanged and active. Do not edit their TOML or SQLite directly;
+- real Job Application Manager Identity/submit execution still lacks the
+  current Codex App run-now binding (`run_now_handler_exposed=false` and
+  `receipt_issuance_allowed=false`); AOS can admit the job and stop safely, but
+  cannot claim a submission;
+- NisenPrints still needs its workflow-owned provider adapters;
+- local LaunchAgent API authentication is intentionally off for loopback
+  recovery (`AUTOMATION_OS_REQUIRE_API_TOKEN=0`); production/remote use must set
+  one write token and require it. The token value is not stored here;
+- Postgres bootstrap version 6 includes the quoted `desc` repair, but a fresh
+  stored-Postgres adoption/readback after that migration has not been run; the
+  verified tomorrow lane is the explicit SQLite company1 lane.
+
+Next action: keep the AOS server and worker LaunchAgents running, use the
+provider-neutral trigger for no-effect/manual checks, and perform the official
+Codex App PAUSED -> prompt sync -> audit -> ACTIVE lifecycle only after its
+schema/handler blocker changes. Restart from the company1 IDs, service identity,
+and fresh AOS API/worker readback above; never reuse an old Codex App receipt or
+browser authority.
+
+## 2026-08-08 Codex App AOS bridge lifecycle and six-workflow canary checkpoint
+
+The official Codex App lifecycle was completed for all six registered
+automations. Each workflow was updated through the official App update
+capability using the safe sequence `ACTIVE -> PAUSED -> AOS prompt sync ->
+activation-check/audit -> ACTIVE`; no automation TOML or SQLite registration
+store was edited directly. The narrow shared hook exception added for this
+migration only permits an AOS bridge marker during the PAUSED transition; the
+ordinary activation marker and parity checks remain fail-closed. The hook
+regression test is 13/13.
+
+Fresh App readback is ACTIVE for all six: `automation-3`, `automation`,
+`daily-ai-research-publish-run`, `daily-backup-safety-check`,
+`nisenprints-daily-product-canva-printify-etsy-pinterest`, and `obsidian`.
+The official global audit is `ok=true`, `counts.checked=6`,
+`counts.compliant=6`, `gaps=0`, and `external_action_executed=false`.
+The prompts are thin AOS bridge triggers; old runner/provider identity strings
+required by activation are retained only as explicit kernel admission markers
+and are not executed by the bridge.
+
+Fresh Company 1 AOS trigger canaries were run for all six AOS automation IDs.
+Every trigger returned `queued=true`, `dry_run=true`,
+`provider_neutral=true`, `execution_authority=automation_os_control_plane`,
+company scope enforced, and `external_action_executed=false`. The durable
+worker readback shows all six new canary jobs `completed`, attempt 1, and no
+error; four were observed directly through the one-shot worker and the other
+two were completed by the running worker LaunchAgent. This proves the manual
+trigger and recurring bridge path, not external business completion.
+
+Current unresolved-only blockers remain: the canonical Browser Use canary is
+not admitted while foreign room `room-6647c6221338b9fc055fd521244f3f5e` owned
+by `lc-feature-explore-20260807-r6-task` is active; Job Identity/submit still
+lacks current run-now/receipt binding; NisenPrints provider adapters are not
+implemented; production protected read-only parity and fresh Postgres v6
+adoption/readback remain pending; and loopback API auth is intentionally off
+for recovery, so production/remote use must configure the single AOS write
+token. No foreign Browser Use room was touched.
+
+Restart point: keep the six App entries ACTIVE and the local AOS server/worker
+running. Next independent work is production protected read-only parity,
+Postgres v6 readback, and workflow-owned Identity/Browser Use admission after
+the foreign room is released/reconciled. Do not call the no-effect canary a
+submission, send, publish, backup proof, or Obsidian export proof.
+
+## 2026-08-08 protected parity and Postgres v6 audit checkpoint
+
+Fresh production read-only probing against `https://automation-os.zeabur.app`
+returned `/api/health=200`. The protected read-only endpoints
+`/api/mvp/state`, `/api/dashboard`, `/api/registered-workflows`, and
+`/api/browser/health` each returned `401` with exact blocker
+`production_token_required`. The current QA process has no
+`AUTOMATION_OS_READ_TOKEN`, `AUTOMATION_OS_QA_READ_TOKEN`, or
+`AUTOMATION_OS_REPLAY_READ_TOKEN`; no write token was reused and no secret was
+printed or stored. Production protected parity therefore remains pending.
+
+The isolated local PostgreSQL fixture completed the full server suite with
+`993` tests, `982` passed, `0` failed, and `11` skipped. PostgreSQL-specific
+bootstrap v6 coverage passed for empty-schema serialization, legacy version
+repair, search_path ownership, newer-marker fail-close, and connection-drop
+rollback. The fixture summary was `status=passed`, `external_effects=false`,
+`cleanup=complete`. This is local migration/regression proof only; it is not a
+fresh adoption/readback against the protected production Postgres instance.
+
+Fresh Browser Use inspection remains blocked only by the foreign owner-bound
+room `room-6647c6221338b9fc055fd521244f3f5e` for
+`lc-feature-explore-20260807-r6-task` on port 20085. Current recording status
+is `overall_completion=blocked`, `current_unresolved_count=1`,
+`active_runtime_count=1`, `process_live_count=1`, and
+`room_resource_pending_count=1`; runtime readback reports
+`runtime_drift=false`, `exact_blocker=null`, and `launch=false`. Source/installed
+Browser Use executable parity is a match. The room and its profile/process
+were not touched.
+
+The correct AOS LaunchAgent labels are both live:
+`com.nichikatanaka.automation-os` and
+`com.nichikatanaka.automation-os.worker`. Company1 readback still exposes only
+`会社1`. Restart point for the next session is: owner release/reconciliation
+fresh readback, then protected QA-token injection/read-only parity, then
+workflow-owned browser/Identity admission. Keep all external business effects
+fail-closed.
+
+## 2026-08-08 Zeabur Codex App Server workstream checkpoint
+
+The Zeabur Codex App Server lane is implemented locally but not deployed. The
+fresh source/runtime boundary is:
+
+- `apps/server/src/codex/appServerConnection.ts` resolves only
+  `local_stdio` or authenticated `remote_websocket`. Invalid remote URL,
+  non-loopback `ws://`, missing token, and invalid remote cwd fail closed.
+- `apps/server/src/codex/appServerClient.ts` preserves the local stdio child
+  fallback and adds authenticated WebSocket JSON-RPC initialize,
+  thread/resume, read-only turn, streamed notification, and cleanup handling.
+  WebSocket frames are converted to the existing bounded JSONL parser. Tokens
+  are not put in URLs, argv, logs, or artifacts.
+- `GET /api/codex/app-server/readiness` is protected by the existing API access
+  guard and is read-only. The fresh local AOS readback returned
+  `mode=local_stdio`, `local_stdio_fallback=true`,
+  `codex_app_server_stdio_process_probe_required`, and
+  `external_action_executed=false`.
+- The installed official Codex CLI (`0.145.0`) was started in a temporary
+  loopback `ws://` process with a test token hash. The client completed
+  authenticated `initialize`; `thread_started=false`, `turn_started=false`,
+  and `external_action_executed=false`. The temporary process and home were
+  cleaned up. Codex App, current task, and Mac worker were not restarted.
+- Zeabur templates are at `ops/zeabur/`: dedicated Dockerfile, hash-only-token
+  entrypoint, secret-free env example, and deployment runbook. The public
+  endpoint must be `wss://` with TLS termination and WebSocket upgrade
+  forwarding. The official WebSocket transport remains experimental and is
+  not treated as production-ready by local evidence alone.
+- Fresh tests: focused App Server connection/client/probe `32/32`; API
+  compatibility `80/80`; server build passed. The complete repository suite
+  has not been reclassified by this checkpoint; the earlier full-suite result
+  remains `1010 total / 993 pass / 1 intermittent Obsidian timeout / 16 skip`,
+  with that single test passing on isolated rerun.
+
+Exact blockers before remote cutover:
+
+1. `zeabur_codex_app_server_not_deployed`: no dedicated Zeabur service
+   process/readiness has been freshly observed.
+2. `zeabur_codex_app_server_public_wss_and_auth_pending`: approved public
+   `wss://` route, TLS/WebSocket forwarding, Codex auth volume, and secret
+   injection are not confirmed in this process. No secret was requested,
+   stored, or printed.
+3. `zeabur_codex_app_server_thread_turn_readback_pending`: no fresh Zeabur
+   `thread/start`, read-only `turn/start`, or completion receipt exists.
+4. `local_docker_daemon_unavailable`: the Dockerfile was syntax-checked via
+   `sh -n` for its entrypoint, but the local Docker daemon was not running, so
+   a local image build was not claimed.
+
+Switch condition: keep local stdio active until one same-run Zeabur evidence
+window proves the dedicated process, `/readyz`, authenticated WebSocket
+initialize, `thread/start`, read-only `turn/start`/completion, source/runtime
+identity, and cleanup. Only then bind AOS worker execution to remote; otherwise
+the configured remote lane remains blocked without implicit local fallback.
+
+## 2026-08-08 Codex App Server remote transport correction and verification
+
+The remote WebSocket client had a real runtime boundary defect: Node's
+WHATWG `WebSocket` constructor does not provide the required portable
+`Authorization` handshake header. The client now uses the MIT `ws` package
+(`8.21.3`) through a small event adapter, while preserving the existing local
+stdio path and fail-closed URL/TLS/token/cwd validation. `package.json` and
+`package-lock.json` are aligned; the local `better-sqlite3` native binding was
+rebuilt after dependency synchronization and loads successfully.
+
+Fresh verification:
+
+- `npm run build` passed.
+- App Server connection/client/probe tests pass `33/33`, including a real
+  loopback WebSocket server that received the bearer header without persisting
+  the token.
+- The full server test run with dot reporter exited `0` after the binding
+  repair. A second spec-reporter run was intentionally stopped after the same
+  long-running Obsidian test boundary before its final aggregate could be
+  captured; no unrelated process was stopped. Exact aggregate counts remain
+  `PENDING_CONFIRMATION`.
+- Fresh evidence is persisted at
+  `work/service-readiness/codex-app-server-zeabur-readiness-20260808.v2.json`.
+
+Zeabur remains intentionally unmodified: no image was built or pushed because
+the local Docker daemon socket is unavailable, and no public `wss://` route,
+secret, readiness, authenticated initialize, thread, or read-only turn
+readback has been observed. The local AOS server/worker, Codex App, current
+task, and Mac worker were not restarted. Remote cutover remains blocked until
+one same-run Zeabur evidence window proves service readiness, authentication,
+thread/turn readback, source/runtime identity, and cleanup.
+
+## 2026-08-08 fresh Browser Use audit after local verification
+
+The latest canonical Browser Use CLI readback at `2026-08-08T00:54:47Z`
+passed `validate` and `runtime-readback` with `runtime_drift=false`,
+`launch=false`, and `rooms.changed=[]`. The current foreign room is
+`room-2bc3d3c544716d600dc1c5129fde9420`, owned by
+`heavy-chain-full-ops-20260808-r3-task` on port `20091`, state `active`, with
+`reclaim_allowed=false`. It replaced the previously observed foreign room;
+neither room was inspected, reclaimed, released, killed, reused, or replayed.
+
+The user-owned scheduled handoff room remains active by design on port 19880
+and is same-owner cleanup only. Fresh `recording-status` remains non-terminal:
+`current_unresolved_count=4`, `current_terminal=false`, one live owner-bound
+foreign entry, and three finalized entries with pending room resources.
+Current sanitized proof is
+`work/service-readiness/browser-use-current-readback-20260808.v3.json` and the
+unresolved-only successor is
+`work/service-readiness/unresolved-audit-20260808.v4.json`. External business
+effects remain stopped.
+
+## 2026-08-08 local Docker image verification for Codex App Server
+
+The initial Docker build stopped only because the existing default Colima
+profile had a full 10 GiB data disk. The default profile and its existing
+containers were left untouched. A separate `aos-codex-build` Colima profile
+was started with a 30 GiB disk, and the Zeabur Codex App Server image built
+successfully as `automation-os-codex-app-server:local`.
+
+Fresh local image checks passed: Codex CLI `0.145.0` is present, the entrypoint
+is executable, `/data/codex` exists, and invoking the entrypoint without
+`CODEX_APP_SERVER_TOKEN` exits `78` with the expected fail-closed message. No
+image push, Zeabur deploy, secret change, public route, or remote thread/turn
+was performed. Evidence is
+`work/service-readiness/codex-app-server-zeabur-readiness-20260808.v3.json`.
+
+The local stdio lane remains active. Remote cutover is still blocked by the
+absence of a Zeabur deployment, public authenticated `wss://` readback, and
+same-run thread/readonly-turn completion evidence. The exact full-suite
+spec-reporter aggregate remains `PENDING_CONFIRMATION`; the prior dot-reporter
+full run exited `0` and the focused App Server suite remains `33/33`.
+
+## 2026-08-08 official container health and authenticated initialize readback
+
+The rebuilt image now installs Debian `bubblewrap` in the container. A fresh
+same-image canary became Docker `healthy`, returned HTTP 200 from both
+`/readyz` and `/healthz`, and completed a bearer-authenticated WebSocket
+`initialize`. No `thread/start`, `turn/start`, external action, secret change,
+image push, or Zeabur deployment was performed. The temporary container was
+removed and the current Docker profile has no AOS canary containers remaining.
+
+The current source/runtime/image evidence is
+`work/service-readiness/codex-app-server-zeabur-readiness-20260808.v6.json`.
+The exact Zeabur blockers are unchanged: no deployed dedicated service, no
+public authenticated `wss://` readback, and no same-run thread/readonly-turn
+completion readback. The local stdio path remains the active fallback.
+
+The compiled AOS `CodexAppServerClient` was also connected to the same local
+official container with `remote_websocket` configuration. Authenticated
+`initialize` passed, no thread or turn was started, and the temporary
+container was cleaned. This confirms the local adapter boundary; it does not
+confirm Zeabur deployment or public route readiness.
+
+Final local readback at `2026-08-08T01:13:02Z`: AOS `/api/health` is OK,
+`/api/codex/app-server/readiness` remains intentionally
+`mode=local_stdio` with `local_stdio_fallback=true` and no external action;
+both AOS and worker LaunchAgents are running; and the isolated Docker profile
+has no AOS canary containers remaining.
+
+## 2026-08-08 full server regression aggregate and Obsidian test isolation
+
+The Obsidian export test root cause was confirmed: tests were scanning the
+user's 13,353-file, approximately 22 GiB Codex session tree during manual
+export tests. The test now binds `AUTOMATION_OS_CODEX_SESSIONS_DIR` and
+`AUTOMATION_OS_CODEX_SESSION_INDEX` to a temporary test root. The focused
+Obsidian suite passes `20/20` in about 25 seconds, and no production Mac
+worker/export code was changed.
+
+Fresh full server regression passed with spec reporter: `1020 total / 1004
+pass / 0 fail / 16 skip`, exit 0. `npm run build`, web build, and
+`git diff --check` also pass. Current artifact:
+`work/service-readiness/full-server-regression-20260808.v1.json`.
+The unresolved-only audit is now
+`work/service-readiness/unresolved-audit-20260808.v6.json`; the full-suite
+aggregate blocker is removed.
+
+## 2026-08-08 Browser Use foreign-room owner release readback
+
+Fresh canonical Browser Use readback at `2026-08-08T01:20:03Z` passed
+`validate` and `runtime-readback` with `runtime_drift=false`, `launch=false`,
+and `rooms.changed=[]`. The previously current foreign room
+`room-2bc3d3c544716d600dc1c5129fde9420` on port 20091 was observed released by
+its owner; this Goal did not inspect, reclaim, release, kill, reuse, or replay
+it. `active_runtime_count=0`.
+
+The user-owned scheduled room `room-d95dadd0de52c398121b69f0f48437e4` remains
+active on port 19880 by design. Three finalized entries still have
+`room_resource_pending=true`, so current Browser Use status is non-terminal and
+same-owner cleanup/readback remains pending. Current sanitized proof is
+`work/service-readiness/browser-use-current-readback-20260808.v4.json` and the
+unresolved-only successor is
+`work/service-readiness/unresolved-audit-20260808.v5.json`.
+
+## 2026-08-08 G0/G1 packet refresh after full local parity
+
+The release packet was refreshed as a no-effect successor at
+`work/service-readiness/company-release-packet-preparation-20260808.v2.json`.
+It uses the current full server regression, Browser Use current readback,
+local Codex App Server Zeabur-preparation readback, production protected
+readback, and Goal RunContext as source-of-truth inputs. The packet remains
+`status=blocked`, `activation_allowed=false`, and
+`external_action_executed=false`.
+
+All five release fields remain explicitly blocked:
+`named_g0_approvers_and_decisions_missing`,
+`mixed_file_hunk_allowlist_owner_missing`,
+`clean_candidate_sha_and_signed_manifest_missing_or_unverified`,
+`backup_restore_rollback_owner_missing`, and
+`per_workflow_account_target_payload_receipt_contract_missing`. No approver,
+owner, secret, signature, or workflow receipt was inferred from the Goal or
+from historical evidence.
+
+The current unresolved-only successor is
+`work/service-readiness/unresolved-audit-20260808.v7.json`. It keeps the
+production read token, Postgres v6, Job Identity receipt, NisenPrints,
+Daily AI, same-owner Browser Use cleanup, and three Zeabur Codex App Server
+blockers as current unresolved items. The earlier foreign Browser Use room
+and the full-suite aggregate blocker remain resolved and are not reintroduced.
+
+The fresh full server spec-reporter aggregate is `1020 total / 1004 pass / 0
+fail / 16 skip`, exit `0`, with build, web build, and `git diff --check`
+passing. The Obsidian export test root is isolated to a temporary session
+tree; production Mac worker/export behavior was not changed. Evidence is
+`work/service-readiness/full-server-regression-20260808.v1.json`.
+
+The local Codex App Server implementation remains verified only through the
+dedicated local image and AOS remote adapter initialize canary. Zeabur deploy,
+public authenticated `wss://`, secret injection, and Zeabur thread/turn
+readback remain unobserved. The local `local_stdio` fallback remains active;
+Codex App, AOS, and Mac worker were not restarted.
+
+## 2026-08-08 provider-neutral execution registry checkpoint
+
+The AOS provider boundary now has an explicit in-memory
+`AutomationProviderRegistryV1` in
+`apps/server/src/providers/automationProvider.ts`. Its default provider is
+the deterministic `aos.control_plane` adapter, whose `execute` operation is
+explicitly no-effect. A requested provider is never silently downgraded: a
+missing Claude/other adapter returns
+`provider_adapter_not_registered` and leaves `external_action_executed=false`.
+
+Owner Admin diagnostics now exposes the registry readback with
+`execution_authority=automation_os_control_plane`,
+`codex_is_not_authority=true`, and `external_action_allowed=false`. This is a
+provider replacement boundary, not workflow approval or Browser Use
+authority. Workflow-specific provider authentication, receipt, cleanup, and
+external-effect gates remain mandatory.
+
+Fresh verification passed: server build, provider registry tests `7/7`, and
+Automation API tests `10/10`. The no-effect evidence is
+`work/service-readiness/provider-neutral-registry-readback-20260808.v1.json`.
+
+The current Browser Use proof was refreshed at
+`work/service-readiness/browser-use-current-readback-20260808.v5.json`.
+Canonical validation/runtime parity passes, no foreign active room is present,
+no runtime process is active, and only three finalized entries under the
+user-owned scheduled room remain `room_resource_pending=true`. The current
+unresolved-only audit is
+`work/service-readiness/unresolved-audit-20260808.v9.json`.
+
+## 2026-08-08 full regression checkpoint after provider registry
+
+The fresh spec-reporter full server regression completed with `1024 total / 1008
+pass / 0 fail / 16 skip`, exit `0`, in approximately `274307 ms`. The successor
+artifact is
+`work/service-readiness/full-server-regression-20260808.v2.json`; the earlier
+v1 aggregate remains historical and is not used as the current aggregate.
+
+`npm run build` passed for the server and web, and `git diff --check` passed.
+The full suite includes the provider-neutral registry coverage. The registry
+still only establishes an AOS-owned, fail-closed provider switch boundary; it
+does not provide provider credentials or workflow-owned external receipts.
+
+No deployment, secret change, external business action, or foreign Browser Use
+room operation was performed. The Goal remains active because production
+token/Postgres adoption, Job/NisenPrints/Daily AI workflow proof, named G0/G1
+fields, same-owner Browser Use cleanup, and the three Zeabur Codex App Server
+blockers remain unresolved. The local `local_stdio` Codex App Server fallback
+remains active.
+
+## 2026-08-08 AOS manual trigger and worker canary checkpoint (historical 3-workflow slice)
+
+Fresh local AOS health returned HTTP 200. The official global automation audit
+reports `6/6 compliant`, `gaps=0`, and `external_action_executed=false`.
+Automation health reports `6/6 active and ok` with zero warnings, blockers,
+DB drift, missing entrypoints, or video-QA issues.
+
+The actual `scripts/aos-trigger.mjs` route was first exercised for Daily AI, Job
+Application Manager, and NisenPrints using `preflight_no_effect`. All three
+were accepted under Company 1 scope, selected `aos.control_plane`, entered the
+durable queue, and completed through the running Mac worker in one attempt.
+The proof is the historical
+`work/service-readiness/aos-manual-trigger-canary-20260808.v1.json`, now
+superseded by v2.
+
+The Obsidian registered manifest was also compiled and read back through the
+Automation Kernel with no claimed effect. The proof is
+`work/service-readiness/automation-kernel-compile-readback-20260808.v1.json`.
+
+This established the AOS control-plane manual/scheduled trigger path and worker
+pickup for the initial slice. It does not prove external Job submission, Daily
+AI publishing, NisenPrints provider mutations, or Zeabur Codex App Server
+readiness. The v10 audit is historical and is superseded by
+`work/service-readiness/unresolved-audit-20260808.v11.json`.
+
+## 2026-08-08 all-six AOS manual trigger and worker canary successor
+
+The current successor artifact is
+`work/service-readiness/aos-manual-trigger-canary-20260808.v2.json`. It covers
+all six registered Company 1 automations: Daily AI, Job Application Manager,
+NisenPrints, mail automation, daily backup safety check, and Obsidian.
+
+Each `scripts/aos-trigger.mjs` request used `preflight_no_effect`, was accepted
+under Company 1 scope, selected `aos.control_plane`, entered the durable queue,
+and completed through the running Mac worker in one attempt. The readback
+confirms `external_action_executed=false`, no Browser Use start, no business
+submit/publish, no backup snapshot, no Obsidian vault write, and no secret
+material storage.
+
+This is the current proof that AOS manual/scheduled trigger entry, durable
+queueing, and Mac-worker pickup operate for the complete registered catalog. It
+does not prove Job submission, Daily AI publishing, NisenPrints provider
+mutations, backup snapshot completion, Obsidian export completion, or Zeabur
+Codex App Server readiness. The current unresolved-only successor is
+`work/service-readiness/unresolved-audit-20260808.v14.json`; v10, v11, v12,
+v13, and canary v1 remain historical.
+
+**next action:** continue only no-effect local/read-only work. Resume production
+protected parity, workflow-owned Browser Use/receipt proof, same-owner room
+cleanup, or Zeabur deployment/TLS/secret/thread-turn verification only after
+the corresponding fresh authority changes its exact blocker. Keep the local
+`local_stdio` Codex App Server fallback active.
+
+## 2026-08-08 Codex App Server local image v7 and upstream-auth boundary
+
+The dedicated local image was rebuilt in the isolated `aos-codex-build` Colima
+context after fresh source/runtime inspection. `ca-certificates` was added to
+the image so Codex upstream TLS validation has a system trust bundle; certificate
+verification was not disabled.
+
+Fresh image `automation-os-codex-app-server:local`
+(`sha256:f86503529d580c11d8eaf5937526a5c70900395a3953933eca6ac53292433db8`)
+became healthy, returned HTTP 200 from `/readyz` and `/healthz`, and passed
+bearer-authenticated WebSocket `initialize` plus the AOS remote adapter probe.
+The temporary container was removed after the canary.
+
+A single read-only App Server canary reached `thread/start` successfully and
+issued `turn/start`, but completion failed with
+`codex_app_server_turn_failed`; the container log showed HTTP 401 from
+`wss://api.openai.com/v1/responses` because the ephemeral container had no
+Codex upstream credentials. No host credential was copied, printed, or stored,
+and `external_action_executed=false`.
+
+The connection/probe/client focused suite passed `33/33`, and
+`npm run build:server` passed. This closes the local CA/image drift but keeps
+the upstream-auth and Zeabur deployment/readback boundaries unresolved.
+
+Current proof:
+`work/service-readiness/codex-app-server-zeabur-readiness-20260808.v7.json`;
+current unresolved-only audit:
+`work/service-readiness/unresolved-audit-20260808.v14.json`.
+
+**next action:** keep local `local_stdio` active. Resume one read-only turn only
+through an approved Codex auth volume/secret boundary; resume Zeabur only after
+deployment, TLS/WSS, secret-manager, and same-run `thread/start`/read-only
+`turn/completion` authority is available.
+
+## 2026-08-08 Mac local_stdio fallback fresh readback
+
+A fresh read-only probe through the existing Mac-side local stdio path
+initialized successfully with `exact_blocker=null`, without starting a thread or
+turn and with `external_action_executed=false`.
+
+This confirms the local fallback remains usable while Zeabur remote auth and
+public transport are unresolved. It does not substitute for Zeabur public WSS,
+remote `thread/start`, or remote read-only turn completion.
+
+Evidence:
+`work/service-readiness/codex-app-server-local-stdio-readback-20260808.v1.json`;
+current unresolved-only audit:
+`work/service-readiness/unresolved-audit-20260808.v14.json`.
+
+**next action:** retain local stdio and resume the remote canary only after an
+approved Codex auth volume/secret boundary is available.
+
+## 2026-08-08 six registered recurring manifests and scheduler readback
+
+The official Automation Kernel compile/status path was run for all six
+registered Company 1 workflows: automation, Job Application Manager, Daily AI,
+daily backup safety check, NisenPrints, and Obsidian.
+
+All six returned `status=ready`, `exact_blocker=null`, and
+`external_action_executed=false`. The current next effect remains pending in
+each manifest; no stage was claimed or executed.
+
+The local portable scheduler canary, registered catalog tests, and automation
+scheduler tests passed. The scheduler canary bound all six workflows with
+`browser_started=false`, `connector_called=false`, and
+`external_action_executed=false`.
+
+Evidence:
+`work/service-readiness/automation-kernel-six-schedule-readback-20260808.v1.json`;
+current unresolved-only audit:
+`work/service-readiness/unresolved-audit-20260808.v14.json`.
+
+**boundary:** this confirms recurring registration, Kernel readiness, scheduler
+binding, and no-effect queue boundary. It does not prove Job submission, Daily
+AI publishing, NisenPrints provider mutations, backup snapshot, Obsidian vault
+write, or Zeabur readiness.
+
+## 2026-08-08 unresolved-only audit v15: explicit restart actions
+
+The current successor is
+`work/service-readiness/unresolved-audit-20260808.v15.json`, superseding v14.
+This is an audit-quality improvement only: no workflow was replayed and
+`external_action_executed=false` remains true. Each of the 12 unresolved items
+now has a concrete `next_action` alongside its exact blocker and restart point,
+covering secure production readback, G0/G1 evidence, Identity receipt binding,
+NisenPrints/Daily AI Browser Use CLI authority and provider proof, same-owner
+cleanup, and Zeabur/App Server auth/deployment/readback. The six registered
+recurring manifests and local scheduler canary remain ready/no-effect, and the
+Mac `local_stdio` fallback remains active.
+
+## 2026-08-08 AOS-owned portable Browser Use CLI runner v1
+
+The missing portable adapter wiring has been repaired at the AOS boundary.
+`apps/server/src/runs/portableExternalRunnerConfig.ts` now resolves the
+AOS-owned default `scripts/aos-portable-browser-use-runner.mjs`; an explicit
+empty runner override still disables the route and remains fail-closed. The
+old Codex CLI delegation runner is no longer the server/worker/launchd default.
+
+The new runner validates the worker-issued
+`automation_os_portable_external_admission.v1` file, run/step/source/idempotency
+binding, approval, browser surface, SHA-256, and expiry. It uses only the
+canonical Browser Use CLI stage adapter and keeps the reserved scheduled lanes
+separate: Job `19881`, Daily AI `19882`, NisenPrints `19884`.
+
+Read-only routes are implemented for LinkedIn jobs, X home, and Canva origin
+readback. Each route performs only same-run URL/title/state/screenshot and
+receipt/cleanup checks. Unsupported workflows return a route blocker. When
+external effects are enabled, the runner stops before Browser Use with
+`portable_external_action_plan_required`; generic approval is not treated as
+permission to submit, post, publish, save, export, upload, purchase, or delete.
+
+Startup defaults in the server/worker scripts and launchd plist now select the
+AOS-owned runner with `read_only` as the default effect mode. Existing AOS
+server, worker, Codex App, and Mac worker processes were not restarted. The
+old runner remains available only as an explicit legacy override.
+
+Fresh verification: runner syntax passed, runner tests `5/5`, server build
+passed, focused portable/entrypoint/workerEngine regression `85/85` passed,
+web build passed, and `git diff --check` passed. Current artifact:
+`work/service-readiness/portable-browser-use-runner-readonly-20260808.v1.json`.
+
+The implementation is verified but not live-business-complete. Job
+`submitted_confirmed`, Daily AI publish, NisenPrints provider receipts, and
+Zeabur deployment/public WSS/App Server thread-turn readback remain unresolved.
+Restart point: AOS portable external admission → the new AOS-owned read-only
+runner, with `local_stdio` retained as the Codex fallback.
+
+## 2026-08-08 AOS-owned live read-only canary and auth-gate repair
+
+The AOS-owned runner was exercised through a fresh one-off worker admission on
+the reserved Job lane `19881` using run `aos-portable-ro-job-20260808-r3`.
+The current server, worker, Codex App, and Mac worker were not restarted. The
+canary did not submit or modify anything.
+
+Two boundary defects found by the canary were repaired: Browser Use authority
+approval now uses the canonical `approved` token while retaining
+`side_effect_scope=read_only_preflight`, and the canonical helper recognizes
+LinkedIn `authwall` as authentication evidence. The stage adapter also exposes
+an optional `waitForAuth=false`; only the AOS read-only `open` command uses it,
+so a missing scheduled-profile login fails closed instead of retaining a room
+for the normal human-auth wait.
+
+Fresh readback reached AOS admission, authority validation, Browser Use CLI
+start, and the authentication gate, then returned
+`browser_use_authentication_required` with `external_action_executed=false`.
+The same-run manifest confirms `recording_finalized=true`,
+`cleanup_completed=true`, and `external_effects=none`; room `19881` is
+released. Evidence:
+`work/service-readiness/aos-portable-live-readonly-canary-20260808.v1.json`.
+
+Runner tests `6/6`, canonical stage adapter P6 tests `27/27`, focused server
+regression `85/85`, and `npm run build:server` passed. The current unresolved
+audit is `work/service-readiness/unresolved-audit-20260808.v17.json`.
+
+**exact blocker:** `browser_use_authentication_required` for the `automation-3`
+scheduled profile. A registered scheduled observation of the new default
+runner remains unconfirmed because the current long-running worker was not
+restarted.
+
+**next action:** provide approved authentication for the automation-3 scheduled
+profile, then run one fresh registered read-only preflight with a new run id
+after a current worker admission observes the updated runtime.
+
+**restart point:** automation-3 scheduled profile authentication → AOS portable
+external admission → AOS-owned read-only runner → registered worker observation.
+Do not replay the cleaned r3 run.
+
+## 2026-08-08 AOS-owned three-workflow read-only canary expansion
+
+Daily AI and NisenPrints were exercised through the AOS-owned portable worker
+in separate lanes after the Job canary. Daily used Browser Use automation ID
+`daily-ai` on port `19882`; NisenPrints used `nisenprints` on `19884`. The
+user-owned `19880` room and foreign rooms were untouched.
+
+The first parallel Daily/NisenPrints admission encountered the shared
+room-registry transaction lock for Daily before Browser Use start. It was not
+replayed with the same run. Daily was rerun serially with a new run ID and
+completed its read-only lifecycle.
+
+NisenPrints revealed and received three local contract repairs: use Canva’s
+fresh current `/ja_jp/` canonical path, use adapter-allowlisted captured
+readbacks (`eval location.href` and `eval document.title`), and place the
+screenshot under the canonical Browser Use recording directory. These changes
+are covered by the runner tests.
+
+Fresh Daily run `aos-portable-ro-daily-20260808-r2` and NisenPrints run
+`aos-portable-ro-nisenprints-20260808-r4` reached same-origin URL/title/state/
+screenshot readback, receipt, and cleanup. Both returned
+`partial` with
+`portable_external_read_only_business_completion_proof_pending`.
+`external_action_executed=false` remains true. The Browser Use manifest’s
+`external_effects=executed` is transport-level navigation only and is recorded
+as `executed_navigation_only`; no business mutation occurred.
+
+Aggregate evidence:
+`work/service-readiness/aos-portable-live-readonly-canaries-20260808.v1.json`.
+Current unresolved audit is
+`work/service-readiness/unresolved-audit-20260808.v18.json`. The Goal remains
+active because registered scheduled observation, Job authentication, and all
+workflow-specific business receipts are still missing.
+
+**exact blocker:** Job `browser_use_authentication_required`; registered
+scheduled-entrypoint proof is not established because the current worker was
+not restarted.
+
+**next action:** authenticate the `automation-3` scheduled profile through the
+user-owned login boundary, then obtain one fresh registered worker admission
+with a new run ID. Keep external effects disabled until separate workflow-owned
+action plans and completion receipts exist.
+
+**restart point:** fresh registered AOS worker admission → workflow-owned
+read-only preflight → approved business action plan and completion receipt.
+
+## 2026-08-08 unresolved-only audit v16 after runner wiring
+
+v16 supersedes v15 and records `portable_external_adapter_not_configured` as
+resolved at the source/build boundary. Because the currently running Mac
+worker was intentionally not restarted, a new unresolved item is retained:
+`aos_portable_external_live_readonly_preflight_pending`. The new runner has not
+yet produced a fresh registered live receipt, so scheduled read-only execution
+is not claimed.
+
+The remaining production, workflow, same-owner cleanup, and Zeabur/App Server
+blockers are unchanged. The audit decision remains
+`continue_safe_no_effect_work_only` with `external_action_executed=false`.
+Evidence: `work/service-readiness/unresolved-audit-20260808.v16.json`.
+
+Exact blocker: live registered runtime has not observed the new runner yet.
+Next action: at the next safe first-class worker admission, run exactly one
+fresh registered read-only preflight through the AOS-owned runner and require
+same-run Browser Use CLI receipt, readback, and cleanup. Restart point: AOS
+portable external admission → AOS-owned read-only runner; do not restart or
+alter the current runtime inside this stage.
+
+## 2026-08-08 registered worker runtime boundary readback
+
+Fresh process readback confirmed that the source and compiled resolver point to
+the AOS-owned `scripts/aos-portable-browser-use-runner.mjs`, while the existing
+server/worker processes still have the legacy explicit runner and
+`AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS=enabled`. The official
+`run-codex-automation --automation-id automation-3 --stage preflight` readback
+also remains blocked by `codex_app_automation_run_now_api_unavailable`.
+
+The registered external canary was therefore not enqueued: doing so before a
+fresh process admission could bypass the new read-only boundary. Local AOS
+readiness remains HTTP 200 in `local_stdio` fallback mode with
+`external_action_executed=false`; no server, worker, Codex App, Mac worker,
+Browser Use room, token, or secret was changed.
+
+Evidence:
+`work/service-readiness/registered-worker-runtime-boundary-20260808.v1.json`.
+
+**exact blocker:** `registered_worker_runtime_stale_unsafe_runner_boundary`.
+
+**next action:** at an explicitly authorized maintenance window, relaunch the
+AOS server and worker through the updated startup/launchd boundary, fresh-read
+the runner path and `read_only` effects, then run one registered read-only
+preflight with a new run id.
+
+**restart point:** updated AOS startup boundary → process env/readback →
+official registered run-now capability → AOS-owned read-only runner.
+
+## 2026-08-08 current proof reconciliation checkpoint 123
+
+The latest full server regression is recorded in
+`work/service-readiness/full-server-regression-20260808.v5.json` as
+`1033 total / 1017 passed / 0 failed / 16 skipped`, exit `0`. Historical v4
+is preserved but is no longer the current aggregate in the Goal RunContext,
+unresolved-only audit, or G0/G1 packet.
+
+Fresh canonical Browser Use CLI evidence is
+`work/service-readiness/browser-use-cli-fresh-readback-20260808.v4.json`:
+`runtime_drift=false`, `launch=false`, and `active_runtime_count=0`; three
+finalized owner-bound entries remain non-terminal. The only active room is the
+intentionally scheduled `automation-os-admin-login-handoff` on port `19880`
+with `reclaim_allowed=false`. No room, process, Codex App, Mac worker, secret,
+deployment, or external effect was changed.
+
+The current successors are unresolved audit v59 and G0/G1 packet v43. The canary
+now records remote `error` notifications explicitly; focused probe tests pass
+`20/20`. A real
+ephemeral Codex CLI 0.145.0 App Server on loopback accepted `initialize` and
+`thread/start`; `turn/start` stopped at `local_ephemeral_codex_upstream_auth_missing`.
+Evidence:
+`work/service-readiness/codex-app-server-real-local-thread-turn-canary-20260808.v2.json`.
+The latest
+local/Zeabur edge evidence is
+`work/service-readiness/codex-app-server-thread-turn-canary-20260808.v2.json`
+and `work/service-readiness/production-public-readback-20260808.v5.json`:
+local health/canary is `200`/remote-required fail-close, while Zeabur is
+`200`/protected `401 production_token_required`.
+The parent read-only security review is recorded at
+`work/service-readiness/codex-app-server-security-readback-20260808.v1.json`;
+source review passed token/output, URL redaction, fixed-prompt, route-guard,
+read-only approval, and close/error boundaries, while external deployment and
+remote-support gates remain.
+The Goal remains incomplete with exact blockers for official Codex App run-now,
+production token/Postgres parity, Zeabur deployment/public WSS/thread-turn,
+workflow business proofs, and owner-bound cleanup. Safe resume is from the
+corresponding restart point after fresh capability/authority/readback evidence.
+
+## 2026-08-08 remote thread/turn canary implementation checkpoint
+
+The AOS Codex App Server boundary now has a protected
+`POST /api/codex/app-server/thread-turn-canary` route. It accepts no caller
+prompt, uses one fixed read-only no-side-effect prompt, and requires the
+configured authenticated `remote_websocket` lane. It records bounded
+same-connection initialize/thread/turn/completion fields while keeping
+`production_ready=false`, `production_remote_cutover_allowed=false`, and
+`external_action_executed=false`.
+
+The canary deliberately does not fall back to local stdio. Current local live
+configuration therefore returns
+`codex_app_server_remote_required_for_thread_turn_canary`; this is the correct
+local fallback boundary, not a failed business run. Focused verification passed
+`111/111`, and the full server suite passed `1032 total / 1016 pass / 0 fail /
+16 skip` with exit 0. The 16 skips are existing PostgreSQL fixture/browser
+environment boundaries.
+
+The Planner handoff was verified as read-only. The separate Designer route
+returned `designer_output_invalid`, so no designer output was used as authority.
+Zeabur deployment, public authenticated `wss://`, secret injection, and fresh
+Zeabur-side thread/turn completion remain unresolved. Local stdio remains the
+active fallback and the Mac worker/Codex App were not restarted.
+
+Fresh public Zeabur readback at 2026-08-08T07:16:12Z returned health HTTP 200.
+The protected readiness, initialize probe, and new thread/turn canary routes
+each returned HTTP 401 `production_token_required`; no token was read or
+stored. Evidence: `work/service-readiness/production-public-readback-20260808.v4.json`.
+
+Local live canary evidence:
+`work/service-readiness/codex-app-server-thread-turn-canary-20260808.v1.json`.
+
+## 2026-08-08 v1 automation list schedule truthfulness repair and live periodic readback
+
+Fresh investigation reconciled the apparent conflict between the Company 1
+automation list and the scheduler tables. The six rows were active in
+`mvp_automation_schedules`, with daily/weekly expressions and completed durable
+occurrences, but the v1 list serializer returned literal `manual` values. The
+source now binds v1 list/detail and legacy presentation output to the stored
+schedule record, including status, enabled state, timezone, pinned version,
+next run, and last run.
+
+After a server-only launchd cutover (Mac worker and Codex App untouched), live
+readback confirms AOS health HTTP 200, `6/6` Company 1 schedules active/enabled,
+Asia/Tokyo scope, five completed daily occurrences, and a scheduler tick with
+`status=completed`, no due occurrence, and `external_action_executed=false`.
+
+Source/build regression: `automationApi 10/10`, compiled test 1/1, and
+`npm run build:server`. Evidence:
+`work/service-readiness/company1-schedule-live-readback-20260808.v3.json`.
+
+Remaining blockers are workflow business proofs, production read token,
+official Codex App run-now, Zeabur public App Server/thread-turn readback,
+G0/G1 required fields, and owner-bound historical Browser Use cleanup. They
+remain `PENDING_CONFIRMATION`/`unknown` where fresh proof is absent.
+
+## 2026-08-08 production public edge readback refresh
+
+The Zeabur public health route returned HTTP 200. Protected Codex App Server
+readiness and probe routes returned HTTP 401 with
+`production_token_required`. No production token was read, supplied, printed,
+or stored. The exact blocker remains `production_read_token_missing`.
+
+Evidence:
+`work/service-readiness/production-public-edge-live-readback-20260808.v1.json`.
+
+## 2026-08-08 live local Codex App Server readback
+
+The resident AOS server is healthy and the worker is idle with an empty queue
+(`server PID 21361`, `worker PID 4889`, `/api/health` HTTP 200). The live
+readiness route returned `technical_ok=true` in `local_stdio` fallback mode and
+correctly kept `production_ready=false`. The explicit read-only App Server
+probe returned `status=ok` after initialize only; no thread or turn started and
+`external_action_executed=false`.
+
+Focused verification passed `122/122` server tests and `9/9` AOS
+Browser Use/startup-boundary tests, plus server build, Zeabur entrypoint shell
+syntax, and `git diff --check`. The local live evidence is
+`work/service-readiness/codex-app-server-local-live-readback-20260808.v1.json`.
+
+This is not Zeabur completion: public authenticated `wss://`, Zeabur-side
+thread/turn readback, and production remote cutover remain pending. Local stdio
+fallback is intentionally retained.
+
+## 2026-08-08 Daily AI Browser Use CLI read-only canary
+
+Daily AIのworkflow-owned scheduled profile (`daily-ai`, port 19882)でfresh
+read-only canaryを実行した。Xのrequested/observed originが一致し、title/state
+readback、same-run cleanupともにverified。投稿・publish・follow・送信・provider
+mutationは実行していない。
+
+The exact blocker is now the narrower
+`portable_external_read_only_business_completion_proof_pending`; this canary
+does not claim account identity, publish permission, or business completion.
+
+Evidence:
+`work/service-readiness/daily-ai-reference-readonly-canary-20260808.v1.json`.
+
+## 2026-08-08 three-workflow Browser Use CLI live readback
+
+Daily AI/NisenPrintsはfresh read-only readback後にbusiness proof待ちで停止し、
+JobはLinkedIn認証待ちで停止した。3件ともscheduled roomはreleased、
+active runtimeは0、AOS healthは200、external actionはfalse。
+
+Evidence:
+`work/service-readiness/workflow-canaries-live-readback-20260808.v1.json`、
+`work/service-readiness/unresolved-audit-20260808.v51.json`。
+
+## 2026-08-08 Browser Use CLI fresh workflow-boundary readback
+
+Canonical Browser Use CLI runtime inspection passed with no drift and no
+launch. The registered `automation-3`, `daily-ai`, and `nisenprints` rooms are
+currently `released`; no shared authenticated profile was claimed or
+substituted.
+
+This confirms runtime readiness only. It does not prove workflow-specific
+authentication, current-run authority, business completion, or provider
+receipts.
+
+Evidence:
+`work/service-readiness/browser-use-cli-fresh-readback-20260808.v3.json`,
+`work/service-readiness/unresolved-audit-20260808.v46.json`, and
+`work/service-readiness/company-release-packet-preparation-20260808.v30.json`.
+
+**exact blocker:** `browser_use_authentication_required`.
+
+**next action:** official `automation-3` controller run binding → scheduled
+profile authentication readback → AOS read-only preflight.
+
+**restart point:** the same sequence with fresh authority; do not use a shared
+profile or a historical room as a substitute.
+
+## 2026-08-08 production protected readback refresh
+
+The official protected readback checked token presence only. Fresh result:
+`tokenPresence=false`, `tokenValueStored=false`, no protected route was
+attempted, and `externalEffects=none`.
+
+The production gate remains unresolved; no token or production mutation was
+performed.
+
+Evidence:
+`work/automation-os-production-protected-readback-2026-08-08T06-25-14-347Z.json`,
+`work/service-readiness/unresolved-audit-20260808.v47.json`, and
+`work/service-readiness/company-release-packet-preparation-20260808.v31.json`.
+
+**exact blocker:** `production_read_token_missing`.
+
+**next action:** supply the approved protected-readback token through the
+existing secret boundary, without placing its value in artifacts or logs.
+
+**restart point:** `work/run-production-protected-readback.mjs` → four protected
+GET routes → production/Postgres parity audit.
+
+## 2026-08-08 Company 1 schedule live readback
+
+AOS API readback confirms all six Company 1 schedules are active, enabled, and
+Asia/Tokyo-scoped: Job/mail 07:30, NisenPrints 08:30, Daily AI/backup 09:00,
+and Obsidian Monday 09:30.
+
+The durable queue is idle with zero queued jobs and zero active leases. No
+schedule was triggered in this readback.
+
+Evidence:
+`work/service-readiness/company1-schedule-live-readback-20260808.v1.json`.
+
+## 2026-08-08 Codex App trigger parity and App Server regression refresh
+
+Fresh read-only parity confirms all six Company 1 Codex App registrations map
+to active AOS canonical automation IDs with matching Asia/Tokyo schedules. Codex
+App is retained as a thin trigger bridge; AOS owns the durable job, idempotency,
+company scope, and receipt/readback contract.
+
+Fresh server build and Codex App Server focused regression passed `34/34`.
+Local stdio fallback remains active, remote production cutover remains false,
+and no Codex App/Mac worker restart or external action occurred.
+
+Evidence:
+`work/service-readiness/codex-app-trigger-parity-20260808.v1.json` and
+`work/service-readiness/codex-app-server-regression-20260808.v1.json`.
+The latest live process boundary is
+`work/service-readiness/runtime-boundary-live-readback-20260808.v6.json`.
+
+**exact blockers:** `codex_app_automation_run_now_api_unavailable`,
+`codex_app_server_remote_transport_experimental_unsupported`, and the external
+authentication/deployment gates recorded in unresolved audit v44.
+
+**next action:** keep AOS trigger and local stdio paths active; resume official
+Codex App run-now or Zeabur remote canary only when the corresponding
+capability, secret/deploy authority, and fresh readback are available.
+
+**restart point:** official run-now capability or approved Zeabur authority →
+same-run receipt/readiness/initialize/thread/turn readback → audit refresh.
+
+## 2026-08-08 fresh official runtime audit after isolated proof verification
+
+The official AOS server PID `4634` and worker PID `4889` remain alive and
+report the AOS-owned runner with `read_only` effects. Source, installed helper,
+and launchd parity are clean.
+
+A fresh same-run readback on official port `8787` still returns HTTP 200 with
+`status=blocked` and `absolute_path_requires_file_uri` for all six Company 1
+proofs. The isolated `8878` positive result is not promoted to official
+service proof.
+
+The latest unresolved audit is `v42` with 16 unresolved items; the release
+packet is `v26` with five required fields still blocked.
+
+**exact blocker:** `durable_proof_viewer_live_process_not_reloaded`; independently,
+`codex_app_automation_run_now_api_unavailable` remains unavailable.
+
+**next action:** authorized official AOS server cutover only, then six port-8787
+proof-viewer readbacks. Keep Codex App, Mac worker, external effects, secrets,
+and Zeabur changes untouched.
+
+**restart point:** official AOS server cutover → six port-8787 proof-viewer
+readbacks → unresolved audit v43 if the capability changes.
+
+Evidence:
+`work/service-readiness/runtime-boundary-live-readback-20260808.v4.json`,
+`work/service-readiness/durable-proof-viewer-live-readback-20260808.v1.json`,
+`work/service-readiness/unresolved-audit-20260808.v42.json`, and
+`work/service-readiness/company-release-packet-preparation-20260808.v26.json`.
+
+## 2026-08-08 official AOS server cutover and proof-viewer resolution
+
+The launchd-managed AOS server was cut over through its official service
+label. PID `4634` was replaced by PID `21361`; worker PID `4889` was not
+restarted.
+
+Fresh official port `8787` readback passed `/api/health` with HTTP 200 and all
+six Company 1 durable proof viewers returned `status=ok`, `preview_kind=json`,
+and `truncated=false`.
+
+The proof-viewer live-process blocker is resolved. This remains control-plane
+proof only; business completion, Browser Use authentication, and external
+workflow effects are not claimed.
+
+Evidence:
+`work/service-readiness/runtime-boundary-live-readback-20260808.v5.json` and
+`work/service-readiness/durable-proof-viewer-official-live-readback-20260808.v1.json`.
+
+## 2026-08-08 post-cutover Company 1 control-plane canary
+
+All six canonical Company 1 AOS automation IDs queued and completed fresh
+`preflight_no_effect` jobs after the official server cutover.
+
+Readback is `6/6` jobs, attempts, proofs, and artifacts under the same company
+scope. All six proof viewers returned HTTP 200, `status=ok`, JSON preview, and
+`truncated=false`.
+
+The canary confirms AOS control-plane routing only. It does not prove the
+Codex App official run-now receipt, Browser Use authentication, or business
+workflow completion. The initial Codex source IDs were rejected as
+`automation_not_found`; the registered bridge prompts correctly use canonical
+AOS IDs.
+
+Evidence:
+`work/service-readiness/company1-all-automations-control-plane-canary-20260808.v3.json`,
+`work/service-readiness/unresolved-audit-20260808.v44.json`, and
+`work/service-readiness/company-release-packet-preparation-20260808.v28.json`.
+
+## 2026-08-08 isolated live verification of durable proof viewer
+
+A separate diagnostic AOS server was started on `127.0.0.1:8878` with the
+current built server, the same local Company 1 SQLite readback, and all
+background schedulers disabled. Existing server PID `4634` and worker PID
+`4889` were not restarted or modified.
+
+The isolated server PID `18804` passed `/api/health` with HTTP 200 and returned
+`status=ok`, `preview_kind=json`, and `truncated=false` for all six Company 1
+durable proofs. This proves the source fix is live in the built artifact and
+preserves tenant/run/artifact binding; it does not prove the launchd-managed
+official port has reloaded it.
+
+Runtime source/installed/launchd parity remains read-only and AOS-owned. The
+diagnostic process is not an official scheduled worker and did not execute an
+external action or read secret values.
+
+**exact blocker:** `durable_proof_viewer_live_process_not_reloaded` remains
+limited to the official AOS service on port `8787`; the isolated port `8878` is
+now source-fixed and verified.
+
+**next action:** at an authorized AOS maintenance window, perform the smallest
+official server cutover/relaunch, repeat the six proof viewer reads on port
+`8787`, and then stop the diagnostic process after its terminal readback.
+
+**restart point:** official AOS server cutover → six port-8787 proof-viewer
+readbacks → unresolved audit refresh.
+
+Evidence:
+`work/service-readiness/runtime-boundary-live-readback-20260808.v3.json` and
+`work/service-readiness/durable-proof-viewer-isolated-live-readback-20260808.v1.json`.
+
+## 2026-08-08 current AOS runtime and Company 1 control-plane readback
+
+Fresh runtime readback confirms source, installed helpers, launchd, server PID
+4634, and worker PID 4889 all use the AOS-owned
+`scripts/aos-portable-browser-use-runner.mjs` with `read_only`.
+
+All six Company 1 Codex App→AOS mappings were triggered through the AOS
+provider-neutral `preflight_no_effect` API. Fresh durable readback is `6/6`
+completed jobs, `6/6` attempts, and `6/6` durable proofs/artifacts under the
+same company scope, with no browser, connector, provider mutation, or external
+action. This is AOS control-plane evidence, not Codex App run-now receipt
+evidence and not business completion.
+
+The common durable proof viewer mismatch was repaired in source: internal
+`/api/v1/companies/:companyId/artifacts/:artifactId` references are now resolved
+by company/run/artifact binding and checksum-verified content, while unsafe
+filesystem path rules remain unchanged. Build and focused tests pass `8/8`.
+
+Fresh live proof readback still returns `absolute_path_requires_file_uri` for the
+six proofs because the current server process predates this source fix.
+
+**exact blocker:** `durable_proof_viewer_live_process_not_reloaded`; independently,
+the official Codex App run-now/controller capability remains unavailable.
+
+**next action:** at an authorized AOS maintenance window, relaunch only the AOS
+server through the synchronized boundary, then re-read all six proof viewers;
+do not restart Codex App or the Mac worker and do not use the old process as
+current proof.
+
+**restart point:** AOS server relaunch → six durable proof-viewer readbacks →
+unresolved audit refresh.
+
+Evidence:
+`work/service-readiness/runtime-boundary-live-readback-20260808.v2.json`,
+`work/service-readiness/company1-all-automations-control-plane-canary-20260808.v2.json`,
+`work/service-readiness/local-stabilization-regression-20260808.v4.json`, and
+`work/service-readiness/durable-proof-viewer-live-readback-20260808.v1.json`.
+
+## 2026-08-08 Browser Use CLI external-intent boundary
+
+The current provider-neutral reference workflow projection emits
+`service_readiness_browser_use_external_intent.v1` with
+`browser_surface=browser_use_cli`, `authority_required=true`,
+`external_effect_ready=false`, and
+`external_executor_status=not_implemented`. This is an admission/intent
+projection only: it does not start a Browser Use room, authenticate, perform
+an external effect, or produce a business receipt. The historical IAB-shaped
+compatibility representation is not emitted as current proof.
+
+The focused regression after this change passed `19/19` with a fresh server
+build and `git diff --check`. The earlier full server regression remains
+`1027 total / 1011 pass / 0 fail / 16 known PostgreSQL skips`; no external
+action, secret change, deployment, or process restart was performed.
+
+Evidence:
+`work/service-readiness/local-stabilization-regression-20260808.v3.json`,
+`work/service-readiness/unresolved-audit-20260808.v38.json`, and
+`work/service-readiness/company-release-packet-preparation-20260808.v22.json`.
+
+**exact blocker:** workflow-owned Browser Use authority/authentication,
+provider execution, same-run receipt/readback, and cleanup remain absent;
+the official Codex App run-now/controller capability remains unavailable.
+
+**next action:** keep the projection no-effect and resume only from official
+run binding → Browser Use CLI authority/readback → approved effect → same-run
+receipt/readback → cleanup, using fresh evidence at every boundary.
+
+**restart point:** `service_readiness_browser_use_external_intent.v1`
+admission readback after official run-now and Browser Use authority conditions
+change.
+
+## 2026-08-08 provider-neutral workflow contract hardening
+
+The AOS-owned adapter registry now validates provider/stage bindings before a
+workflow can enter preflight. The invariant is canonical Browser Use CLI,
+AOS control-plane authority, explicit required proof, approval binding for
+every external non-idempotent stage, and `automation_kernel_result.v2` on
+cleanup. The validator found and fixed missing approval proof requirements in
+Daily AI and NisenPrints, and the missing cleanup kernel proof requirement in
+the Job definition.
+
+Readback now exposes provider capabilities/readbacks, stage proof contracts,
+approval boundaries, `live_effects_ready=false`, and registry blockers without
+granting credentials or external action. Reference canary r12 reports all
+three workflows as `proof_backed_safe_stop_verified` with valid adapter
+contracts, while still stopping before Browser Use authority.
+
+Fresh build and the relevant 13-file regression process passed `179/179`,
+with zero failures/cancellations; `git diff --check` passed. No external
+action or secret read occurred.
+
+Evidence:
+`work/service-readiness/local-stabilization-regression-20260808.v2.json`,
+`work/automation-os-reference-canary-20260808-r12.json`,
+`work/service-readiness/unresolved-audit-20260808.v36.json`, and
+`work/service-readiness/company-release-packet-preparation-20260808.v20.json`.
+
+**exact blocker:** workflow business proof remains pending behind fresh
+Browser Use authority/authentication and workflow-owned provider contracts.
+
+**next action:** official run binding → Browser Use CLI authority/readback →
+workflow-specific proof gate → explicitly approved effect → same-run readback
+→ terminal cleanup.
+
+**restart point:** the official run-now/controller capability or an equivalent
+fresh workflow-owned authority/readback state must change before live workflow
+execution is attempted.
+
+## 2026-08-08 full-server regression refresh
+
+`npm test` passed with exit 0: `1027 total / 1011 pass / 0 fail / 16 skip`.
+The 16 skips are the known PostgreSQL fixture boundary because
+`AUTOMATION_OS_TEST_POSTGRES_URL` is not set; no test failed.
+
+The provider-neutral adapter validator, reference canary, Codex App Server
+transport gates, scheduler, company scope, runner guards, canonical Browser
+Use CLI boundary, and Mac-worker ownership suites are included. This is still
+local/source evidence and does not prove Browser Use authentication, provider
+business completion, protected production parity, Zeabur deployment, or G0/G1
+activation.
+
+Evidence:
+`work/service-readiness/full-server-regression-20260808.v2.json`,
+`work/service-readiness/unresolved-audit-20260808.v37.json`, and
+`work/service-readiness/company-release-packet-preparation-20260808.v21.json`.
+
+## 2026-08-08 Codex App Server promotion boundary hardening
+
+The source now makes the release boundary explicit. `local_stdio` is reported
+as `supported_local_stdio`; remote WebSocket is reported as
+`experimental_remote_websocket` and, even after technical URL/auth validation,
+sets `production_remote_cutover_allowed=false` with exact blocker
+`codex_app_server_remote_transport_experimental_unsupported`.
+
+The readiness API separates `technical_ok` from `production_ready=false`, and
+the read-only probe exposes the same promotion fields. A healthy `/readyz` or
+authenticated `initialize` canary therefore cannot be mistaken for production
+cutover approval. Local stdio fallback and all no-thread/no-turn probe
+invariants remain unchanged.
+
+Verification passed `npm run build:server`, the focused connection/probe/API
+suite `102/102`, and `git diff --check`. No Zeabur deploy, secret change,
+Codex App restart, Mac worker restart, or external business effect occurred.
+The already-running AOS server/worker were not restarted; this is therefore
+source/build evidence and not an installed-live-process claim. The existing
+local stdio process boundary remains untouched.
+
+Evidence:
+`work/service-readiness/codex-app-server-promotion-boundary-20260808.v1.json`.
+
+**exact blocker:** `codex_app_server_remote_transport_experimental_unsupported`,
+with Zeabur deployment, public authenticated WSS, and Zeabur thread/turn
+readback still pending.
+
+**next action:** keep local stdio active. Resume Zeabur only after official
+support/release status changes and approved deployment/secret authority can
+produce same-run readiness, initialize, `thread/start`, read-only turn
+completion, and cleanup evidence.
+
+**restart point:** official support/readiness change → Zeabur authority and
+secret boundary → same-run technical and promotion readback.
+
+## 2026-08-08 global Codex automation audit refresh
+
+The official Codex App view was refreshed for all six registered automation
+IDs. The official Kernel audit returned `checked=6`, `compliant=6`, `gaps=0`,
+and `external_action_executed=false`.
+
+This confirms current registration/parity only. It does not resolve the
+official run-now handler, Browser Use authentication, production token,
+workflow-owned business receipts, Zeabur deployment, or release approval.
+
+Evidence:
+`work/service-readiness/codex-app-global-automation-audit-20260808.v3.json`,
+`work/service-readiness/unresolved-audit-20260808.v32.json`, and
+`work/service-readiness/company-release-packet-preparation-20260808.v16.json`.
+
+## 2026-08-08 Browser Use CLI canary readback refresh
+
+Canonical `codex-browser-use validate`, `runtime-readback`, and observation-only
+`rooms --json` passed. Browser Use 0.13.7, Chrome 151.0.7922.77, runtime
+identity match, `runtime_drift=false`, and `launch=false` were observed.
+
+The scheduled `automation-3` room remains released on port 19881. The active
+`automation-os-admin-login-handoff` room remains preserved on 19880; no foreign
+room, profile, port, or process was touched.
+
+The official registered controller and authentication were not attempted
+because the run-now capability is unavailable. This remains
+`browser_use_authentication_required` / `pending_confirmation`; no business
+operation or external action started.
+
+Evidence:
+`work/service-readiness/browser-use-cli-readback-20260808.v2.json`,
+`work/service-readiness/unresolved-audit-20260808.v33.json`, and
+`work/service-readiness/company-release-packet-preparation-20260808.v17.json`.
+
+## 2026-08-08 production public/protected readback refresh
+
+Fresh public GET to `https://automation-os.zeabur.app/api/health` returned HTTP
+200 with the intentional `{ok, service, time}` body shape.
+
+The protected GET-only helper was run without a read token. It attempted no
+protected route, read or stored no token value, and returned exact blocker
+`production_read_token_missing` with `externalEffects=none`.
+
+This preserves the production public contract but does not prove protected
+Postgres, worker, deployment, or UI parity.
+
+Evidence:
+`work/service-readiness/production-public-readback-20260808.v3.json`,
+`work/service-readiness/automation-os-production-protected-readback-2026-08-08T05-17-02-366Z.json`,
+`work/service-readiness/unresolved-audit-20260808.v34.json`, and
+`work/service-readiness/company-release-packet-preparation-20260808.v18.json`.
+
+## 2026-08-08 current-worktree local stabilization regression
+
+The current server source was rebuilt and the relevant company-scope, durable
+queue/scheduler, provider-neutral workflow, Daily AI/Job/NisenPrints runner
+guard, canonical Browser Use CLI guard, and Codex App Server suites were run.
+
+The multi-file test process exited `0`: `179` passed, `0` failed, and `0`
+cancelled. `git diff --check` also passed.
+
+This is current source/build evidence only. It does not establish live process
+parity, official Codex App run-now, Browser authentication, protected
+production parity, workflow business completion, or Zeabur deployment.
+
+Evidence:
+`work/service-readiness/local-stabilization-regression-20260808.v1.json`,
+`work/service-readiness/unresolved-audit-20260808.v35.json`, and
+`work/service-readiness/company-release-packet-preparation-20260808.v19.json`.
+
+## 2026-08-08 official Codex App Server transport-support audit
+
+Fresh official-source readback and local CLI help were compared for the
+Zeabur workstream. `codex-cli 0.145.0` exposes authenticated WebSocket flags
+and the local technical canary surface, but the official App Server README
+marks WebSocket transport as experimental and unsupported for production.
+
+This is a capability/release boundary. No unapproved proxy or alternative
+transport was introduced. The Docker/startup/read-only probe preparation is
+retained, while production remote cutover remains fail-closed and the local
+stdio fallback remains active.
+
+Evidence:
+`work/service-readiness/codex-app-server-transport-support-audit-20260808.v1.json`,
+`work/service-readiness/unresolved-audit-20260808.v30.json`, and
+`work/service-readiness/company-release-packet-preparation-20260808.v14.json`.
+
+**exact blocker:** `codex_app_server_remote_transport_experimental_unsupported`,
+in addition to the still-missing Zeabur deployment, public authenticated WSS
+readback, and thread/turn completion proof.
+
+**next action:** do not deploy or expose the Zeabur service as a production
+Codex App Server. Preserve local stdio and resume only when official support
+status or an explicit product/security release decision changes the gate.
+
+**restart point:** official support/readiness change → fresh Zeabur authority
+and secret boundary → same-run `/readyz`, `initialize`, `thread/start`,
+read-only `turn/start`/completion, and cleanup readback.
+
+## 2026-08-08 production public/protected readback refresh
+
+Fresh public readback of `https://automation-os.zeabur.app/api/health` returned
+HTTP 200 with only `ok`, `service`, and `time`. This minimal public health shape
+is intentional, verified by `apps/server/src/index.ts` and the current
+API/sanitizer tests, and is not deployment drift. Deployment, database, and
+local-worker fields belong to the protected dashboard/admin readback.
+
+The protected GET-only routes `/api/mvp/state`, `/api/dashboard`,
+`/api/registered-workflows`, and `/api/browser/health` each returned HTTP 401
+with `production_token_required`. No token value was read or reused, and no
+external action occurred. Production protected parity and PostgreSQL/worker
+readback therefore remain unresolved.
+
+Evidence:
+`work/service-readiness/production-public-readback-20260808.v2.json`,
+`work/service-readiness/unresolved-audit-20260808.v28.json`,
+`work/service-readiness/company-release-packet-preparation-20260808.v12.json`,
+and `artifacts/automation-health/2026-08-08T044202250Z.json`.
+
+## 2026-08-08 Zeabur App Server entrypoint secret-boundary hardening
+
+The official OpenAI App Server documentation was freshly read. It confirms
+TLS plus WebSocket authentication for non-local connections, recommends
+`--ws-token-file` or the supported `--ws-token-sha256` verifier, and marks the
+WebSocket transport experimental and unsupported for production.
+
+The Zeabur entrypoint now unsets `CODEX_APP_SERVER_TOKEN` before the long-lived
+`codex app-server` process is exec'd. A fake-Codex regression fixture confirmed
+that the raw token is not inherited and only its SHA-256 verifier is passed in
+argv. The local isolated image was rebuilt with id
+`sha256:1f9957163e55d0985c3c4853890469b12794540d6d9a12d3aaacd525a000bff4`.
+The rebuilt container returned `/readyz=200` and passed authenticated
+WebSocket `initialize`; it did not start a thread or turn and was removed after
+the canary.
+
+Focused App Server/entrypoint tests passed `34/34`, server build, shell syntax,
+and `git diff --check` passed. No Zeabur deployment, public route, secret
+change, external action, Codex App restart, or Mac worker restart occurred.
+
+Evidence:
+`work/service-readiness/codex-app-server-zeabur-readiness-20260808.v8.json`.
+The Zeabur deployment/readback blockers remain unchanged.
+
+## 2026-08-08 full regression after legacy-runner guard
+
+`npm test` completed with exit code 0: `1010 passed`, `0 failed`, and `16
+skipped` out of `1026` tests. This covers the portable external legacy-runner
+guard and the surrounding AOS trigger, durable queue, Browser Use CLI-only,
+Codex App Server safety, Company 1, and Mac-worker ownership contracts.
+
+This remains source/build evidence. The existing AOS server and worker were
+not restarted, so `registered_worker_runtime_stale_unsafe_runner_boundary`
+remains unresolved.
+
+Evidence:
+`work/service-readiness/full-suite-after-legacy-guard-20260808.v1.json`.
+
+## 2026-08-08 fresh unresolved-only audit and G0/G1 packet v23/v7
+
+Fresh readback preserves the same unresolved-only set. Source and installed
+helpers are synchronized to the AOS runner with `read_only`, while live server
+PID 3283 and worker PID 96068 still use the historical runner with
+`AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS=enabled`.
+
+The official Codex App automation view renders, but the registered run-now
+probe has no handler, cannot issue a receipt, and did not enqueue a run.
+Codex App/AOS parity remains `6/6`; the global audit remains `6/6 compliant`
+with `0 gaps`. No secrets or external effects were read or executed.
+
+Current evidence:
+`work/service-readiness/unresolved-audit-20260808.v23.json` and
+`work/service-readiness/company-release-packet-preparation-20260808.v7.json`.
+
+## 2026-08-08 fresh runtime confirmation v2
+
+The current-turn live readback confirms the same blocker fingerprint. No
+relaunch, registered receipt, or business run was created.
+
+Evidence:
+`work/service-readiness/current-goal-fresh-readback-20260808.v2.json`.
+
+## 2026-08-08 Goal external-wait block
+
+The Goal is explicitly `blocked`, not complete. Local implementation, staging
+readback, regression, parity, unresolved audit, and release packet preparation
+are preserved.
+
+**primary exact blocker:** `registered_worker_runtime_stale_unsafe_runner_boundary`.
+
+**independent capability blocker:** `codex_app_automation_run_now_api_unavailable`.
+
+**recovery condition:** an authorized maintenance window must permit relaunch
+through the synchronized installed helper/launchd boundary; fresh process
+readback must show the AOS runner with `read_only`; and the official registered
+run-now handler must be exposed.
+
+The blocker fingerprint and restart stage are persisted in
+`work/automation-os-goal-run-20260808.json`.
+
+## 2026-08-08 AOS due-scheduler regression repair
+
+Fresh isolated scheduler verification first exposed a compatibility-test
+fixture problem, not an AOS scheduler defect. The test's protected
+`/api/registered-workflows/refresh` call returned `401 production_token_required`
+and the test depended on an owner company from an earlier test, leaving the
+fixture empty. The scheduler then correctly skipped all six rows because their
+creation time was after the fixed historical verification time.
+
+The repair is test-scoped only: `apiFirstStageCompat.test.ts` opens the local
+fixture lane with `AUTOMATION_OS_REQUIRE_API_TOKEN=0` and seeds its owner
+company within the scheduler test. Production guard and scheduler source were
+not weakened or changed.
+
+Verification passed `npm run build:server`, focused due-scheduler tests `2/2`,
+and the full API compatibility suite `80/80`. Independent ephemeral SQLite
+readback: `checked=6`, `started=5`, `skipped=1`, `blocked=0`; worker pickup was
+deferred, and `external_action_executed=false`.
+
+Evidence:
+`work/service-readiness/aos-scheduler-due-regression-20260808.v1.json`,
+`work/service-readiness/unresolved-audit-20260808.v29.json`, and
+`work/service-readiness/company-release-packet-preparation-20260808.v13.json`.
+
+## 2026-08-08 runtime relaunch recovery
+
+With the user's execution instruction, only the AOS server/worker launchd
+jobs were refreshed. Server PID 4634 and worker PID 4889 now expose the AOS
+runner with `read_only`; the old worker left no residual process.
+
+Codex App, Mac worker, and foreign Browser Use rooms were not restarted or
+touched. The two queued legacy runs were already quarantined and no business
+run was re-executed.
+
+The runtime blocker is resolved. The remaining exact blocker is
+`codex_app_automation_run_now_api_unavailable`; no receipt was issued and no
+registered run was enqueued.
+
+Evidence:
+`work/service-readiness/registered-runtime-relaunch-20260808.v1.json` and
+`work/service-readiness/current-goal-fresh-readback-20260808.v3.json`.
+
+## 2026-08-08 installed startup-helper drift repair and isolated boundary readback
+
+Fresh inspection found that the actual launchd-installed server/worker helper
+copies under `~/Library/Application Support/Automation OS/` still defaulted to
+the historical runner with `enabled` effects, even though the repo source and
+launchd plist had already been updated. The installed helpers were synchronised
+without restarting the current server/worker. The worker's invented default
+service identity was removed so an unset value now fails closed as intended.
+
+`scripts/aos-runtime-boundary-readback.mjs` now performs a redacted read-only
+comparison of source helpers, installed helpers, launchd boundaries, and live
+process environment. Its static boundary regression passed `2/2`.
+
+Parallel isolated validation used temporary SQLite databases and ports only.
+The staging server on port `8881` used the AOS runner with `read_only` and
+returned `/api/health` HTTP 200. Its owner-only App Server readiness returned
+`owner_admin_required` against the empty temporary database, which is not a
+production readiness proof. The staging worker completed one cycle with zero
+jobs and no external effect. Existing 8787 server/worker processes were not
+touched.
+
+Evidence:
+`work/service-readiness/registered-worker-runtime-boundary-20260808.v3.json`,
+`work/service-readiness/unresolved-audit-20260808.v21.json`, and
+`work/service-readiness/company-release-packet-preparation-20260808.v5.json`.
+
+**exact blocker:** existing live server/worker still use the old runner with
+enabled effects; independent official blocker:
+`codex_app_automation_run_now_api_unavailable`.
+
+**next action:** at an explicitly authorized maintenance window, relaunch the
+current server/worker through the synchronised installed helper/launchd
+boundary, run the boundary readback, then proceed to one registered read-only
+preflight only if the official run-now handler is exposed.
+
+**restart point:** synchronised installed helper → authorised relaunch → fresh
+process env/readback → official registered run-now → AOS-owned read-only runner.
+
+Fresh same-window live readback after the regression suite is persisted at
+`work/service-readiness/runtime-boundary-live-readback-20260808.v1.json`.
+It confirms the installed boundary is synchronized, but server PID 3283 and
+worker PID 96068 still expose the historical runner with `enabled` effects.
+The blocker is unchanged and no restart was authorized or performed.
+
+## 2026-08-08 Codex App -> AOS trigger parity readback
+
+Fresh inspection of the six registered Company 1 Codex App automations confirms
+that all six prompts use `AOS_TRIGGER_BRIDGE_V1` and the provider-neutral
+`scripts/aos-trigger.mjs` entrypoint. They do not directly invoke Browser Use,
+Gmail, Identity, submit, send, publish, upload, or provider mutation.
+
+The six Codex App IDs bind to the six Company 1 AOS automation IDs. Schedule
+parity matches after semantic normalization: all-weekday weekly equals daily,
+`MO` maps to AOS `MON`, and all times use Asia/Tokyo.
+
+The read-only verifier
+`scripts/aos-codex-app-trigger-parity-readback.mjs` and its regression test
+passed with `6/6` registered, `6/6` AOS, `status=matched`, and
+`external_action_executed=false`.
+
+Evidence:
+`work/service-readiness/codex-app-aos-trigger-parity-20260808.v1.json`.
+
+**exact blocker:** none for Codex App -> AOS binding/schedule parity. This does
+not clear the separate stale live server/worker or official run-now blockers.
+
+**next action:** keep Codex App as a thin AOS trigger and use AOS receipt plus
+workflow-specific proof as the only completion boundary. Do not edit Codex App
+TOML/SQLite directly.
+
+The parity result is bound into unresolved audit v22 and G0/G1 packet v6. The
+separate runtime, auth, production, workflow-receipt, and Zeabur blockers remain
+unresolved-only.
+
+Evidence:
+`work/service-readiness/unresolved-audit-20260808.v22.json` and
+`work/service-readiness/company-release-packet-preparation-20260808.v6.json`.
+
+The official global Codex automation audit was fresh-run with `checked=6`,
+`compliant=6`, `gaps=0`, and `external_action_executed=false`.
+Evidence:
+`work/service-readiness/codex-app-global-automation-audit-20260808.v1.json`.
+
+Current same-window combined readback:
+`work/service-readiness/current-runtime-parity-readback-20260808.v1.json`.
+It confirms Codex App/AOS parity 6/6, source/installed runner parity, the
+unavailable official run-now handler, and the unchanged stale live process
+boundary.
+
+## 2026-08-08 legacy runner fail-closed guard
+
+The AOS common external worker now rejects the historical
+`scripts/portable-external-runner.mjs` before admission artifact creation or
+child spawn, using exact blocker
+`portable_external_legacy_runner_forbidden`.
+
+This protects future source/runtime admissions if a stale environment
+reappears. It does not modify the already-running old server/worker; the live
+stale boundary remains separately unresolved until an authorized relaunch.
+
+Verification passed: server build, `portableExternalWorker 6/6`,
+`automationApi 10/10`, and `durableQueueApi 3/3`.
+
+Evidence:
+`work/service-readiness/portable-external-legacy-runner-guard-20260808.v1.json`.
+
+## 2026-08-08 G0/G1 packet v3 refresh
+
+The no-effect release packet was refreshed at
+`work/service-readiness/company-release-packet-preparation-20260808.v3.json`.
+It is bound to unresolved audit v19, the current AOS-owned three-workflow
+read-only canaries, the stale registered-runtime boundary, and local Codex App
+Server parity. All five required G0/G1 fields remain blocked; no approver,
+owner, signed candidate SHA, rollback drill, workflow receipt contract, or
+activation authorization was inferred.
+
+The packet invariants remain `activation_requested=false`,
+`activation_authorized=false`, and `external_action_executed=false`.
+
+## 2026-08-08 Company 1 AOS manual trigger canary
+
+The official AOS trigger API was exercised once for Company 1's Job Application
+Manager in `preflight_no_effect` mode with a fresh idempotency key. Durable
+queue/job/run/attempt readback completed with company scope enforced.
+
+The canary confirms `browser_started=false`, `connector_called=false`,
+`provider_mutation=false`, and `external_action_executed=false`. It proves the
+AOS control-plane manual-start path only; it does not prove Identity login,
+candidate submission, `submitted_confirmed`, or business completion.
+
+Evidence:
+`work/service-readiness/company1-aos-trigger-canary-20260808.v1.json`.
+
+## 2026-08-08 AOS trigger replay readback truthfulness repair
+
+The Company 1 canary exposed a control-plane API defect: an idempotent replay
+returned the completed durable job but hardcoded `run.status=queued`. The
+source now reads the tenant-scoped `runs.status` for both the trigger and
+dry-run response paths, and derives `queued` from the actual durable job state.
+
+Regression coverage passed `automationApi 10/10` and `durableQueueApi 3/3`.
+The fix is verified in source/build tests but is not live in the already-running
+server process until the authorized server relaunch boundary. No external action
+was performed.
+
+## 2026-08-08 Company 1 scheduler tick canary
+
+The official AOS `scheduler/run-once` entrypoint completed for Company 1 with
+service identity scope enforced, no exact blocker, and no due occurrences.
+Fresh SQLite readback shows all six schedules enabled and active. No Browser
+Use, connector, provider, or business effect was started.
+
+Evidence:
+`work/service-readiness/company1-scheduler-tick-20260808.v1.json`.
+
+## 2026-08-08 Company 1 all-automation control-plane canary
+
+All six adopted Company 1 automations were triggered sequentially through the
+provider-neutral AOS trigger in `preflight_no_effect` mode. Fresh readback shows
+`6/6` durable jobs completed, `6/6` runs complete, `6/6` artifacts and proofs,
+one attempt each, company scope enforced, and no Browser Use, connector,
+provider mutation, or external action.
+
+This closes Company 1 control-plane/manual-start coverage only. It does not
+close Identity submission, Daily AI publish, NisenPrints provider work, email
+send, backup snapshot, or Obsidian vault business completion.
+
+Evidence:
+`work/service-readiness/company1-all-automations-control-plane-canary-20260808.v1.json`.
+
+## 2026-08-08 production protected read-only parity refresh
+
+The official protected readback script was run without reading or reusing any
+token value. Fresh result: `tokenPresence=false`, protected routes were not
+attempted, `tokenValueStored=false`, and `externalEffects=none`.
+
+**exact blocker:** `production_read_token_missing`.
+
+Evidence:
+`work/automation-os-production-protected-readback-2026-08-08T03-12-10-472Z.json`.
+
+## 2026-08-08 registered worker runtime boundary v2 and focused regression refresh
+
+Fresh process readback at `2026-08-08T03:15:12.300Z` confirms that source and
+startup/launchd configuration use the AOS-owned
+`scripts/aos-portable-browser-use-runner.mjs` with `read_only`, while the
+already-running server PID 3283 and worker PID 96068 still use the historical
+`scripts/portable-external-runner.mjs` with
+`AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS=enabled`. The current processes were
+not restarted.
+
+The official Codex App automation view is exposed and rendered. The official
+`automation-3` run-now probe still returns
+`codex_app_automation_run_now_api_unavailable`; no registered receipt was
+issued and no run was enqueued. Local readiness remains HTTP 200 in
+`local_stdio` fallback mode with `external_action_executed=false`.
+
+Fresh source/build verification passed: `automationApi 10/10`,
+`durableQueueApi 3/3`, AOS-owned portable runner `7/7`, and
+`npm run build:server`. The durable trigger replay fix is therefore verified
+in source/build but is not live until the authorized relaunch boundary.
+
+Evidence:
+`work/service-readiness/registered-worker-runtime-boundary-20260808.v2.json`,
+`work/service-readiness/unresolved-audit-20260808.v20.json`, and
+`work/service-readiness/company-release-packet-preparation-20260808.v4.json`.
+
+**exact blocker:** `registered_worker_runtime_stale_unsafe_runner_boundary`;
+independent official capability blocker:
+`codex_app_automation_run_now_api_unavailable`.
+
+**next action:** at an explicitly authorized maintenance window, relaunch the
+AOS server/worker through the updated startup boundary, fresh-read the runner
+path and `read_only` effects, then use the official run-now capability if
+exposed for one registered read-only preflight. Keep business effects, Zeabur
+deploy, secret changes, and same-owner cleanup stopped.
+
+**restart point:** updated AOS startup boundary → process env/readback →
+official registered run-now capability → AOS-owned read-only runner.
+
+## 2026-08-08 unresolved-only audit v19
+
+The current successor is
+`work/service-readiness/unresolved-audit-20260808.v19.json`, superseding v18.
+It records the fresh process boundary as unresolved: source and startup
+configuration use the AOS-owned read-only runner, but the existing server and
+worker still use `scripts/portable-external-runner.mjs` with
+`AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS=enabled`.
+
+The official Codex App automation view capability is available, but
+`automation-3` run-now remains blocked by
+`codex_app_automation_run_now_api_unavailable`; no registered completion
+receipt was issued. Local Codex App Server readiness remains HTTP 200 in
+`local_stdio` fallback. The focused connection/client/probe/API suite passed
+`113/113`; Zeabur public WSS and thread/turn readback remain unverified.
+
+**exact blockers:** `registered_worker_runtime_stale_unsafe_runner_boundary`,
+`codex_app_automation_run_now_api_unavailable`.
+
+**next action:** at an explicitly authorized maintenance window, relaunch the
+AOS server/worker through the updated startup boundary, fresh-read runner path
+and `read_only` effects, then use the official run-now capability if exposed
+for one registered read-only preflight.
+
+**restart point:** updated AOS startup boundary → process env/readback →
+official registered run-now capability → AOS-owned read-only runner.
+
+## 2026-08-08 current proof reconciliation checkpoint 124
+
+The local Codex App Server boundary received two safe corrections. The probe
+now records real `thread/started` and `turn/started` notifications before a
+later turn timeout, and the Zeabur image explicitly sets `WORKDIR /app`, which
+matches the AOS remote `cwd` sent to `thread/start` and `turn/start`.
+
+The source-only Zeabur preflight passed all checks for the pinned Codex CLI,
+`/readyz`, hash-only capability-token entrypoint, secret-free environment
+example, and no-effect promotion boundary. It did not deploy, read a secret,
+change a service, or expose a route. The current source proof is
+`work/service-readiness/codex-app-server-zeabur-source-preflight-20260808.v2.json`.
+
+Fresh local verification passed `npm test` with `1034 total / 1018 passed /
+0 failed / 16 skipped`, exit `0`; the focused App Server/Zeabur preflight set
+passed `23/23`. PostgreSQL fixture-dependent tests remain skipped because
+`AUTOMATION_OS_TEST_POSTGRES_URL` is not set.
+
+A new isolated real Codex CLI `0.145.0` loopback canary on temporary port
+`4510` verified `initialize`, `thread/start`, and `turn/start` notifications.
+The inference turn remains blocked by missing approved upstream Codex auth and
+timed out after an observed error notification. The temporary process, port,
+and `CODEX_HOME` were cleaned. Evidence:
+`work/service-readiness/codex-app-server-real-local-thread-turn-canary-20260808.v3.json`.
+
+Current successors are full regression v6, unresolved-only audit v60, and G0/G1
+packet v44. The Goal remains incomplete. Local stdio is still the Mac fallback;
+the Mac worker, Codex App, existing server/worker processes, browser rooms,
+Zeabur service, secrets, and external business effects were not restarted,
+changed, or executed by this checkpoint.
+
+The exact blockers remain `codex_app_automation_run_now_api_unavailable`,
+`zeabur_codex_app_server_not_deployed`,
+`codex_app_server_remote_transport_experimental_unsupported`, pending
+Zeabur authenticated WSS/thread-turn readback, the upstream Codex auth
+boundary, production protected-token parity, workflow-owned business proofs,
+G0/G1 required fields, and owner-bound Browser Use cleanup. The unresolved-only
+successor preserves 15 items:
+`work/service-readiness/unresolved-audit-20260808.v60.json`.
+
+**next action:** expose the official Codex App run-now handler for one fresh
+registered read-only preflight, or provide approved Zeabur deployment/secret
+authority for a technical canary; then capture same-run readiness,
+authenticated initialize/thread/turn, completion, and cleanup readback.
+
+**restart point:** official run-now or approved Zeabur authority → protected
+readback → authenticated App Server canary → unresolved-only audit and G0/G1
+packet refresh. Do not treat local source preflight or a public WSS technical
+canary as production completion.
+
+## 2026-08-08 security-boundary checkpoint 125
+
+The independent security review findings were handled in source before any
+Zeabur deployment. The dedicated entrypoint now requires a mounted
+`CODEX_APP_SERVER_TOKEN_FILE` and uses `--ws-token-file`, so neither the raw
+token nor a derived verifier is placed in process arguments. It defaults to a
+loopback listener and fails closed for non-loopback binding unless explicit
+private-ingress approval and TLS-termination flags are both present.
+
+The canary now requests an ephemeral thread and deduplicates concurrent probes
+for the same endpoint. Focused App Server/entrypoint/preflight verification is
+`25/25`; the fresh full suite is `1036 total / 1020 passed / 0 failed /
+16 skipped`. Fresh real loopback evidence is v4, source preflight is v3, and
+the current security readback is
+`work/service-readiness/codex-app-server-security-readback-20260808.v2.json`.
+
+This is still not a security or production approval. No Zeabur service was
+deployed or changed, no secret was read or mounted, and private ingress,
+end-to-end TLS, backend reachability, public WSS, and the official experimental
+WebSocket production decision remain unverified. The current successors are
+unresolved-only audit v61 and G0/G1 packet v45; audit v61 preserves 16
+unresolved items including
+`zeabur_codex_app_server_private_ingress_tls_proof_missing`.
+
+**exact blocker:** `codex_app_automation_run_now_api_unavailable`; independent
+Zeabur blockers are
+`zeabur_codex_app_server_private_ingress_tls_proof_missing`,
+`zeabur_codex_app_server_not_deployed`, and
+`codex_app_server_remote_transport_experimental_unsupported`.
+
+**next action:** expose the official Codex App run-now handler for one fresh
+registered read-only preflight, or provide approved Zeabur private-ingress/TLS
+deployment authority; then capture same-run readiness, authenticated
+initialize/thread/turn, completion, and cleanup readback.
+
+**restart point:** approved capability/authority → protected readback →
+security re-review → authenticated App Server canary → unresolved-only audit.
+
+## 2026-08-08 final local verification checkpoint 126
+
+The sequential canary resource boundary is now implemented. Same-endpoint
+concurrent calls are deduplicated, repeated calls are blocked by a 10-second
+default cooldown, and the mounted token path must be a readable regular file
+and not a symlink. The cooldown can be changed only through the approved
+service configuration boundary.
+
+Fresh current-tree verification is `npm test` with
+`1037 total / 1021 passed / 0 failed / 16 skipped`, exit `0`; focused App
+Server/entrypoint/preflight tests are `26/26`. Source-only Zeabur preflight v4
+passes all checks. Real loopback canary v5 observed initialize,
+thread/start, and turn/start, then remained blocked by upstream Codex auth;
+the ephemeral thread was requested and the temporary process, port `4510`,
+and `CODEX_HOME` were cleaned.
+
+Current successors are unresolved-only audit v62, G0/G1 packet v46, full
+regression v8, real canary v5, source preflight v4, security readback v3, and
+integrated review v1.
+The Goal remains active/incomplete. No Zeabur deployment, secret read/mount,
+existing process restart, Codex App/Mac worker restart, browser-room mutation,
+or external business effect occurred.
+
+The remaining security review is a deployment blocker, not an approval:
+runtime revision, private ingress/TLS/backend reachability, token-file mount
+protection, readiness exposure, no-downgrade/redaction runtime evidence, and
+the official WebSocket production-support decision remain pending.
+
+**exact blocker:** `codex_app_automation_run_now_api_unavailable`; independent
+Zeabur blockers remain
+`zeabur_codex_app_server_private_ingress_tls_proof_missing`,
+`zeabur_codex_app_server_not_deployed`, and
+`codex_app_server_remote_transport_experimental_unsupported`.
+
+**next action:** obtain official run-now or approved Zeabur private-ingress/TLS
+authority, then capture fresh revision, argv/token-file, direct-port,
+readiness, unauthorized probe, rate-limit, no-downgrade, authenticated
+thread/turn, and cleanup readback.
+
+**restart point:** approved capability/authority → protected runtime/network
+readback → security re-review → authenticated App Server canary → audit.
+
+## 2026-08-08 Company 1 AOS trigger and scheduler readback checkpoint 127
+
+The callable Codex App automation capability was fresh-read through official
+`codex_app__automation_update` `view` calls for the four registered entries:
+Job, Daily AI, NisenPrints, and Obsidian. It renders the automation cards, but
+the current callable inventory has no official registered-automation run-now
+operation. This remains `codex_app_automation_run_now_api_unavailable` and is
+not replaced with a shell or local dispatcher claim.
+
+All four Company 1 AOS triggers were then run through the provider-neutral
+`preflight_no_effect` endpoint and processed to durable dry-run proof (`4/4
+completed`, `provider_neutral=true`, `external_action_executed=false`). The
+resident local worker picked up the first job during the readback window; three
+safe durable worker-once calls completed the remaining jobs. The scheduler
+`run-once` readback returned `completed`, `service_user_configured=true`, no
+due occurrences, and `external_action_executed=false`.
+
+The live schedule readback is `4/4 active/enabled` under `Asia/Tokyo`: Job
+07:30 daily, NisenPrints 08:30 daily, Daily AI 09:00 daily, and Obsidian
+Monday 09:30 weekly. This verifies AOS manual/scheduled control-plane wiring
+and no-effect worker proof only. It is not external workflow completion.
+Current evidence:
+`work/service-readiness/codex-app-automation-and-aos-trigger-live-readback-20260808.v1.json`.
+
+No Zeabur CLI/API credential or project/service identifier is available in the
+current process. No Zeabur deployment, secret read/mount, existing process or
+Codex App/Mac worker restart, browser-room mutation, or external business effect
+was performed. The Goal remains active/incomplete; Step 5 remains
+`in_progress`.
+
+**Exact blocker:** `codex_app_automation_run_now_api_unavailable`; independent
+Zeabur private-ingress/TLS/deployment and workflow auth/readback blockers remain.
+
+**Next action:** resume only after official run-now or approved Zeabur
+deployment/secret/TLS authority appears, then capture fresh protected
+readiness, authenticated initialize/thread/turn completion, and cleanup.
+
+**Restart point:** approved capability/authority → protected readback →
+authenticated App Server canary → unresolved-only audit and G0/G1 refresh.
+
+## 2026-08-08 fresh reconciliation checkpoint 128
+
+The fresh Company 1 control-plane readback covers all six registered
+automations. Official `codex_app__automation_update` view calls rendered six
+cards, but the current callable inventory still has no registered-automation
+`run-now` operation or execution receipt. AOS `preflight_no_effect` queued and
+durably completed 6/6 jobs with company scope enforced; scheduler `run-once`
+completed with no due occurrences and all six schedules remained
+active/enabled in `Asia/Tokyo`. This verifies AOS control-plane wiring only,
+not business workflow completion.
+
+Fresh Browser Use CLI room readback found 175 released rooms and one
+intentionally active user-owned scheduled room at port 19880. No foreign room
+was mutated. Daily AI/NisenPrints remain partial pending portable business
+proof; Job remains blocked at authentication.
+
+Zeabur source preflight v5 and security readback v4 pass local checks. Public
+health is HTTP 200 and protected readiness is HTTP 401
+`production_token_required`. No Zeabur deployment, secret read/mount,
+process restart, Codex App/Mac worker restart, or external business effect
+occurred. The official experimental/unsupported production WebSocket boundary
+remains unresolved.
+
+Current successors are unresolved-only audit v64, G0/G1 packet v48,
+integrated review v2, AOS/Codex App readback v2, workflow canary v2, source
+preflight v5, security readback v4, and production public readback v6. Goal
+RunContext exit-check is fresh and incomplete with 16 unresolved items.
+
+**exact blocker:** `codex_app_automation_run_now_api_unavailable`, plus
+`zeabur_codex_app_server_not_deployed`,
+`zeabur_codex_app_server_private_ingress_tls_proof_missing`,
+`codex_app_server_remote_transport_experimental_unsupported`, production
+read-token/workflow proof/G0-G1 ownership/manifest/owner-bound cleanup
+blockers.
+
+**next action:** wait for official run-now capability or approved Zeabur
+private-ingress/TLS/secret authority; then capture fresh protected readiness,
+authenticated App Server initialize/thread/start/turn/start/completion,
+no-downgrade and cleanup readback, followed by workflow proof and audit
+refresh. Do not replay the same run-now fingerprint without a capability or
+authority state change.
+
+**restart point:** capability/authority recovery → protected runtime readback
+→ authenticated App Server canary → workflow-specific proof → unresolved-only
+audit and G0/G1 refresh.
+
+## 2026-08-08 terminal audit checkpoint 129
+
+Terminal audit passed JSON parsing, reference existence for 17 evidence files,
+the six-automation no-effect assertions, protected-route assertion, Goal
+exit-check assertion, and `git diff --check`. Evidence is recorded in
+`work/service-readiness/terminal-audit-20260808.v1.json`.
+
+This is an audit of an incomplete state, not a completion proof. The Goal
+remains active/incomplete because the official run-now receipt, production
+protected parity, Zeabur runtime/TLS/auth/thread-turn proof, workflow business
+receipts, G0/G1 required fields, and owner-bound cleanup remain unavailable.
+No external action or secret read occurred.
+
+**exact blocker:** `codex_app_automation_run_now_api_unavailable`, plus the
+independent Zeabur, production, workflow, release, and cleanup blockers in
+unresolved audit v64.
+
+**next action:** do not replay the same fingerprint. When capability or
+authority changes, resume at protected authenticated App Server readback,
+then perform workflow-specific proof and the final exit-check.
+
+**restart point:** official run-now or approved Zeabur authority → protected
+runtime readback → authenticated thread/turn completion → workflow receipts →
+terminal exit-check.
+
+## 2026-08-08 AOS-first local trigger bridge checkpoint 130
+
+The user-confirmed architecture is now the current source of truth:
+AOS scheduler/manual trigger → durable queue → thin Codex App bridge → Mac
+Browser Use CLI worker. Codex App registered-automation run-now is not
+required. Identity authentication and all応募・投稿・公開・送信/provider
+effects remain Mac worker/workflow-owned; missing login remains an auth blocker
+and is never bypassed.
+
+`scripts/aos-trigger.mjs` now has an explicit safe auth boundary. Exact
+loopback hosts (`127.0.0.1`, `localhost`, `::1`) use the launchd loopback
+no-token branch and never resolve or attach ambient tokens. Non-loopback
+requests require HTTPS, the exact configured `AOS_TRIGGER_ALLOWED_ORIGIN`,
+and a machine token. Redirects are manual/rejected; timeout and response size
+are bounded; response output is allowlisted and secret-reflection safe; a
+successful 2xx response must match the canonical no-effect trigger contract.
+
+Security re-review is PASS. The trigger tests pass `9/9`; combined AOS script
+checks pass `13/13`; server build and focused current-dist server tests pass;
+the fresh server regression after the control-plane route is
+`1037 total / 1021 passed / 0 failed / 16 skipped`. No external action,
+secret read, deployment, process restart, Codex App restart, Mac worker
+restart, or Browser Use room mutation occurred.
+
+Source/runtime parity is intentionally pending: the fresh local control-plane
+readback is HTTP 404 `api_not_found` because the existing local server was not
+restarted. Existing local App Server readiness is HTTP 200 `local_stdio` with
+`codex_app_server_stdio_process_probe_required`; Zeabur health is HTTP 200
+and protected readiness is HTTP 401 `production_token_required`.
+
+Current evidence:
+`work/service-readiness/aos-trigger-cli-security-readback-20260808.v1.json`
+and
+`work/service-readiness/aos-control-plane-readiness-source-runtime-readback-20260808.v1.json`.
+
+The `codex_app_automation_run_now_api_unavailable` result is scoped to direct
+Codex App registered-runner admission only. It is not an AOS trigger blocker;
+the AOS trigger/queue/Mac-worker proof above does not depend on it.
+
+**exact blocker:**
+`source_runtime_parity_pending_existing_local_server_not_restarted`,
+`production_token_required`,
+`codex_app_server_stdio_process_probe_required`,
+`trigger_to_worker_completion_auth_receipt_missing`,
+`codex_app_server_remote_transport_experimental_unsupported`, plus the
+independent unresolved workflow, Zeabur, release, and cleanup blockers.
+
+**next action:** wait for an authorized owned-server maintenance window before
+restarting; then read back the new AOS readiness route and one loopback
+no-effect trigger. Keep protected App Server completion and workflow business
+proof as separate gates.
+
+**restart point:** owned-server restart authorization → local source/runtime
+parity → protected authenticated App Server thread/turn → workflow proof →
+terminal audit.
+
+## 2026-08-08 integrated review checkpoint 131
+
+The integrated review separates implementation from runtime acceptance. The
+AOS-first trigger source is complete and security-approved: trigger tests
+`9/9`, combined AOS checks `13/13`, server build/focused tests pass, and the
+full regression is `1037 total / 1021 passed / 0 failed / 16 skipped`.
+
+Runtime acceptance is still pending. The already-running local server returns
+HTTP 404 `api_not_found` for the new control-plane readiness route because it
+was not restarted. Zeabur health is HTTP 200, but protected readiness is only
+HTTP 401 `production_token_required`. No authenticated production readback,
+deploy, secret read, process restart, or external effect was performed.
+
+Mac worker identity, login/authentication, Browser Use CLI, business effects,
+and workflow receipts remain Mac/workflow-owned. Missing login remains an
+authentication blocker.
+
+**Exact blocker:** `local_route_not_loaded`,
+`codex_app_server_stdio_process_probe_required`, and
+`authorized_production_readiness_unproven`, together with the existing Zeabur
+remote transport/upstream-auth/workflow-proof/cleanup blockers.
+
+**Next action:** after approved owned-server maintenance, restart only that
+server and fresh-read local source/runtime parity and one loopback no-effect
+trigger. Then, when protected authority changes, run the authenticated App
+Server and workflow-specific readbacks.
+
+**Restart point:** approved owned-server restart → local parity → protected
+App Server canary → workflow proof → terminal audit.
+
+## 2026-08-08 local runtime bridge checkpoint 132
+
+The authorized launchd restart of `com.nichikatanaka.automation-os` succeeded.
+The fresh local control-plane readiness route is HTTP 200
+`ready_for_no_effect_trigger`; manual trigger, scheduler run-once, company
+scope, durable queue, and thin-trigger boundaries are confirmed in the
+running server.
+
+One fresh Company 1 loopback trigger created a no-effect dry-run job. The Mac
+worker claimed and completed the same job. The durable job is `completed`, the
+run is `complete`, and the proof viewer is `ok` with
+`external_action_executed=false`. Enqueued/claimed/completed worker events
+are present. This proves bridge-to-worker no-effect completion only.
+
+Only the AOS server was restarted. The worker PID remained unchanged; Codex
+App and Browser Use rooms were not restarted or mutated. Fresh Browser Use
+CLI room readback is observation-only: 176 released and two active user-owned
+rooms remain.
+
+Zeabur remains public health HTTP 200 and protected readiness HTTP 401
+`production_token_required`. Local App Server remains `local_stdio` with
+`codex_app_server_stdio_process_probe_required`.
+
+**Exact blocker:** `codex_app_server_stdio_process_probe_required`,
+`production_token_required`, `authorized_production_readiness_unproven`, and
+the existing Zeabur remote transport/upstream-auth/workflow business-proof
+blockers. Local AOS bridge source/runtime parity is now PASS.
+
+**Next action:** obtain protected authority/auth evidence, then run the
+read-only App Server thread/turn probe and the workflow-specific canaries.
+
+**Restart point:** protected authority → App Server probe → workflow proof →
+unresolved-only terminal audit.
+
+## 2026-08-08 regression checkpoint 133
+
+The single-run full server regression finished successfully: exit 0,
+`1037 total / 1021 passed / 0 failed / 16 skipped`. The 16 skips are the
+existing PostgreSQL fixture cases without
+`AUTOMATION_OS_TEST_POSTGRES_URL`; there were no failures. The AOS trigger
+security suite remains 9/9 and the Zeabur source-only preflight remains PASS.
+
+Fresh evidence:
+`work/service-readiness/full-server-regression-20260808.v9.json`.
+
+Remaining exact blockers are protected production readback,
+`codex_app_server_stdio_process_probe_required`, upstream authentication,
+Zeabur remote deploy/TLS/auth, and workflow-specific business proof.
+
+**Next action:** retain the local bridge-to-worker proof as the accepted AOS
+baseline and continue at the protected authority boundary.
+
+**Restart point:** protected authority → App Server probe → workflow proof →
+terminal audit.
+
+## 2026-08-08 workflow canary checkpoint 134
+
+Company 1の3 workflow（Daily AI、automation-3、NisenPrints）を、AOSの
+provider-neutral no-effect triggerから各1回起動した。3件とも company scope
+付きで `job=completed`、`run=complete`、`durable_dry_run=ok`、
+`external_action_executed=false` のfresh proofを取得した。これはAOS
+trigger→durable queue→Mac workerの制御面を3 workflow全てで確認した証跡で
+あり、応募・投稿・公開・listing・pinの完了証跡ではない。
+
+各登録workflowの公式Kernel `dry-run`は3/3 pass。Daily AIとautomation-3の
+`preflight`は共通の `codex_app_automation_run_now_api_unavailable` で、
+receipt発行前・browser開始前に停止。NisenPrintsは16-stageの
+`browser_use_cli` manifestをcompileし、`command_ready=true`、
+`no_launch=true`、effect falseまで確認した。
+
+Browser Use CLIのfresh readbackは runtime/Chrome/Python identity一致、
+`runtime_drift=false`、`validate=completed`。activeな19880/20089 roomは
+他ownerのため観測のみ、Daily AI/NisenPrintsのworkflow roomはreleasedで、
+room mutationは0件。
+
+Evidence:
+`work/service-readiness/workflow-canaries-live-readback-20260808.v3.json`.
+
+**exact blocker:**
+`daily_ai_workflow_owned_publish_proof_missing`,
+`job_identity_submit_receipt_binding_missing`,
+`nisenprints_provider_runtime_and_readback_missing`、および既存のproduction/
+Zeabur/App Server authority blockers。direct Codex App run-now observationは
+AOS bridgeに対してnon-blocking。外部effect・secret readは0。
+
+**next action:** AOS no-effect proofをbaselineとして保持し、fresh official
+identity/run-now capabilityとworkflow-owned auth/receipt authorityが変化する
+まで、blocked preflightのreplayと他owner roomの操作をしない。
+
+**restart point:** protected/workflow authority change → fresh AOS workflow job →
+Browser Use CLI authority/readback → business receiptまたはexact blocker →
+terminal audit.
+
+## 2026-08-09 scheduler-owner and natural-run checkpoint 265
+
+ローカルworkerのLaunchAgentに`AUTOMATION_OS_DURABLE_SCHEDULER_OWNER=worker`
+を明示し、server既定値`server`は維持。source/installed wrapper・plist parityを
+確認し、公式installer経由でworkerだけを再起動した。旧workerの重複は消え、fresh
+heartbeatは`ok`。owner境界focused testもpassした。
+
+実時刻のCompany 1 / Asia/Tokyo 08:30 NisenPrints occurrenceは、
+occurrence→durable job→attempt→dry-run artifactの順に完了。
+`provider_called=0`、`external_action_executed=false`で、browser/provider/publication
+は未実行。scheduled admin roomは固定profile/19880のpersistent roomとして保持し、
+関連runの録画とterminal cleanupは完了、`room_resource_pending`は保持契約だけである。
+foreign roomには触れていない。
+
+Evidence:
+`work/service-readiness/worker-scheduler-natural-run-readback-20260809.v1.json`、
+`work/service-readiness/browser-use-admin-login-handoff-readback-20260809.v9.json`、
+`work/service-readiness/company-release-packet-preparation-20260809.v107.json`、
+`work/service-readiness/unresolved-audit-20260809.v150.json`、
+`work/service-readiness/terminal-audit-20260809.v63.json`。
+
+**Exact blocker:** `production_read_token_missing`。workflow business proofと
+Zeabur/App Server remote auth/transport gateは未達。
+
+**Next action:** 09:00 Daily AI・backupの自然occurrenceをexternal effectなしで観測後、
+protected production authorityへ進む。
+
+**Restart point:** approved production read tokenまたはZeabur auth/Volume/private
+ingress authority → protected/remote readback → workflow proof → release evidence →
+exit-check。
+
+## 2026-08-09 natural 08:30/09:00 readback checkpoint 266
+
+実時刻のCompany 1 08:30 NisenPrints、09:00 Daily AI・backupのoccurrenceを、
+worker-owned durable schedulerから同一scopeでreadbackした。全てoccurrence、job、
+attempt、dry-run artifactまで完了し、`provider_called=0`、
+`external_action_executed=false`。readback後のCompany 1未完了durable queueは0件。
+backupの同一scope bridge follow-upもno-effect dry-runで完了した。
+
+これは定期実行・queue・workerのcontrol-plane proofであり、応募、Etsy/Pinterest公開、
+Daily AI公開、provider readback、protected production/Zeabur readinessのproofではない。
+
+Evidence:
+`work/service-readiness/worker-scheduler-natural-run-readback-20260809.v2.json`、
+`work/service-readiness/company-release-packet-preparation-20260809.v108.json`、
+`work/service-readiness/unresolved-audit-20260809.v151.json`、
+`work/service-readiness/terminal-audit-20260809.v64.json`。
+
+**Exact blocker:** `production_read_token_missing`。workflow business proofと
+Zeabur/App Server remote auth/transport gateは未達。
+
+**Next action:** worker-owned schedulerを常駐させ、approved tokenまたはZeabur
+authorityの変化後にprotected production readbackへ進む。
+
+**Restart point:** approved production authority → protected/remote readback →
+workflow-specific Browser Use authority → business receipt → release evidence。
+
+## 2026-08-09 Zeabur CLI common-entrypoint checkpoint 267
+
+公式Zeabur CLI `/usr/local/bin/zeabur` 0.21.0は導入済み・authenticated。personal
+workspaceから正確なproject、production environment、専用`codex-app-server`
+serviceをfresh resolveした。serviceと最新Docker deploymentは`RUNNING`、domainは空。
+service/deployment/variable/secret/existing serviceは変更していない。current Codex
+contextにZeabur MCPは公開されていないため、CLIを共通entrypointとして固定し、
+`npx --yes zeabur@latest`をfallbackにする。
+
+remote token-file materialization、private TLS/WSS、authenticated
+initialize/thread/turn proofは未確認。local stdioとMac worker fallbackは保持。
+
+Evidence:
+`work/service-readiness/zeabur-cli-common-entrypoint-readback-20260809.v6.json`、
+`work/service-readiness/company-release-packet-preparation-20260809.v109.json`、
+`work/service-readiness/unresolved-audit-20260809.v152.json`、
+`work/service-readiness/terminal-audit-20260809.v65.json`。
+
+**Exact blocker:** `zeabur_codex_app_server_private_ingress_tls_proof_missing`と
+`production_read_token_missing`。
+
+**Next action:** supported Config Editorまたはequivalent secret-file boundaryで
+`/run/secrets/codex-app-server-token`をmaterializeし、valueを出さずにprotected
+`/readyz`・private authenticated WSS thread/turnをreadbackする。
+
+**Restart point:** approved token-file/private-ingress authority → protected Zeabur
+readiness → authenticated App Server thread/turn → workflow proof。
+## 2026-08-09 Company 1 scheduled dry-run live readback checkpoint 262
+
+現行SQLite正本をread-onlyでfresh確認し、Company 1の6スケジュールがすべて`active/enabled/Asia/Tokyo`であることを確認。07:30のメール確認・求人応募はscheduler起点の2/2がdurable queue→resident worker経由で完了し、`dry_run`、`provider_called=0`、`last_error=null`。08:30 NisenPrints、09:00日次AI・バックアップ、週次Obsidianは観測時点の次回実行前で、手動再発射なし。
+
+resident workerのlaunchd label `com.nichikatanaka.automation-os.worker` は`running`。再起動、DB mutation、外部effect、secret read、Browser Use開始はなし。会社外のcompanyless approval待ちrunはforeign scopeとして観測のみ。Goalは`running/audit`を継続し、この証跡は定期実行のno-effect proofでありbusiness completionではない。
+
+Evidence: `work/service-readiness/company1-scheduled-dry-run-live-readback-20260809.v1.json`、`work/service-readiness/company-release-packet-preparation-20260809.v104.json`、`work/service-readiness/unresolved-audit-20260809.v147.json`、`work/service-readiness/terminal-audit-20260809.v60.json`。
+
+**Exact blocker:** `production_read_token_missing`。再開点はapproved tokenまたはZeabur auth/Volume/private-ingress authorityのfresh変化後のprotected/remote readback。
+
+## 2026-08-09 Browser Use admin-login scheduled-room fresh handoff checkpoint 258
+resident worker共通層のfocused suiteで、source-mode child processがsource相対の`.js`を直接参照するテスト境界不整合を特定。`apps/server/src/tests/durableQueue.test.ts`をcompiled `dist` runtime優先へ局所修正し、server build、dist durableQueue 19/19、source-mode worker/scheduler suite 109/109をpass。P5 scheduler/worker競合、lease recovery、service identity fail-closed、100並列claimを含む。
+
+修正後のlaunchd workerは`running`のまま、再起動なし。Company 1は6 active/enabled schedule、queued/leased=0、provider_called=0、外部effectなし。Goalは`running/audit`。production read token、Zeabur remote auth/private ingress、business proof、G0/G1 required evidenceは未達。
+
+Evidence: `work/service-readiness/worker-scheduler-test-boundary-readback-20260809.v1.json`、`work/service-readiness/company-release-packet-preparation-20260809.v105.json`、`work/service-readiness/unresolved-audit-20260809.v148.json`、`work/service-readiness/terminal-audit-20260809.v61.json`。
+
+**Exact blocker:** `production_read_token_missing`。
+
+## 2026-08-09 Company 1 scheduled dry-run live readback checkpoint 262
+## 2026-08-09 Daily AI/Job/NisenPrints reference canary checkpoint 264
+
+fresh isolated SQLite/artifact rootを指定した公式reference canaryで、Daily AI・Job・NisenPrints 3/3を`proof_backed_safe_stop_verified`として確認。全path exact blockerは`browser_use_cli_required`、runner/provider起動なし、external_action_executed=false、idempotent recheck=true、cleanup receipt verified=true。business completionや外部effectの証明ではない。
+
+Company 1の08:30/09:00自然実行はまだ観測時刻前で、手動再発射なし。resident workerとscheduled Browser Use roomは既存所有状態を維持。Goalは`running/audit`、production read token・Zeabur remote auth/private ingress・workflow business proof・G0/G1 evidenceは未達。
+
+Evidence: `work/service-readiness/reference-workflow-canary-20260809.v3.json`、`work/service-readiness/company-release-packet-preparation-20260809.v106.json`、`work/service-readiness/unresolved-audit-20260809.v149.json`、`work/service-readiness/terminal-audit-20260809.v62.json`。
+
+**Exact blocker:** `production_read_token_missing`。reference pathの再開条件はfresh Browser Use CLI authority、workflow承認、same-run receipt。
+
+## 2026-08-09 Worker/scheduler test-boundary stabilization checkpoint 263
+
+## 2026-08-09 Zeabur container readiness fresh readback checkpoint 268
+
+専用`codex-app-server` serviceを公式Zeabur CLIのread-only `service exec`でfresh確認。
+`/run/secrets/codex-app-server-token`はregular、mode `0400`、非空、環境変数の参照先一致。
+token valueは読まず、ログ・artifact・引数へ出していない。コンテナにcurlが無いためNode
+標準fetchへ切り替え、loopback `/readyz` HTTP 200を確認した。
+
+container runtimeのreadinessは証明できたが、private TLS/WSS、non-loopback reachability、
+ChatGPT auth、account/read、thread/start、turn/startは未確認。service config、secret、
+volume、domain、port-forwardは変更していない。local stdio/Mac worker fallbackは保持。
+
+Evidence:
+`work/service-readiness/zeabur-container-readback-20260809.v1.json`、
+`work/service-readiness/company-release-packet-preparation-20260809.v110.json`、
+`work/service-readiness/unresolved-audit-20260809.v153.json`、
+`work/service-readiness/terminal-audit-20260809.v66.json`。
+
+**Exact blocker:** `production_read_token_missing` と Zeabur private TLS/WSS・ChatGPT
+認証・remote thread/turnの未確認。
+
+**Restart point:** approved auth persistence/private ingress authority → protected readiness
+→ authenticated App Server thread/turn → workflow business proof → release evidence。
+
+## 2026-08-09 Official App Server transport boundary and local regression checkpoint 269
+
+OpenAI公式docsをfresh確認。stdioはsupported、remote WebSocketはTLS・WebSocket authが必要で、
+transportはexperimental/production unsupported。Zeabur公式docsでもConfigs permission
+256=`0400`、private networkingはproject内部のみ、public HTTP domainはTLS-backedと確認。
+
+`npm run build:server`とCodex App Server接続・probe focused tests 43/43をpass。local stdio
+fallback、remote TLS/auth/cwd fail-closed、no-effect thread-turn canaryは維持。
+
+Zeabur Dashboardのgenerated domain確認はcanonical Browser Use CLIでauthority/runtimeまで
+進めたが、foreignなactive/continued room 2件の旧helper世代と同一run readback不足による
+`browser_use_helper_generation_auto_sync_blocked`で停止。foreign room/profile/portは未操作。
+
+Evidence:
+`work/service-readiness/codex-app-server-official-transport-boundary-20260809.v1.json`、
+`work/service-readiness/company-release-packet-preparation-20260809.v111.json`、
+`work/service-readiness/unresolved-audit-20260809.v154.json`、
+`work/service-readiness/terminal-audit-20260809.v67.json`。
+
+**Exact blocker:** `production_read_token_missing`、Zeabur TLS/authenticated remote
+thread/turn未確認、Browser Use Dashboard routeのforeign helper-generation blocker。
+
+**Restart point:** foreign-room state change → fresh Browser Use admission → Zeabur TLS/auth
+boundary → authenticated App Server thread/turn → workflow business proof → release evidence。
+
+## 2026-08-09 Production read-token presence recheck checkpoint 270
+
+protected routeは再発射せず、6つのread-token環境変数/file参照のpresenceだけを確認した。
+全て未設定で、`production_read_token_missing`から状態変化なし。secret valueは読まず、
+未変化のためprotected GET、Postgres parity、UI readbackはretryしていない。
+
+Evidence:
+`work/service-readiness/production-read-token-presence-readback-20260809.v1.json`、
+`work/service-readiness/company-release-packet-preparation-20260809.v112.json`、
+`work/service-readiness/unresolved-audit-20260809.v156.json`、
+`work/service-readiness/terminal-audit-20260809.v69.json`。
+
+**Exact blocker:** `production_read_token_missing`。Zeabur remote TLS/auth/thread-turnと
+workflow business proofも未達。
+
+**Restart point:** approved read-token presence → protected production readback → Postgres parity
+→ same-run UI readback → workflow proof → release evidence。
+
+## 2026-08-09 Browser Use scheduled-room ownership and full regression checkpoint 271
+
+`automation-os-admin-login-handoff`の`room-d95dadd0de52c398121b69f0f48437e4`をcanonical
+Browser Use CLIでfresh readbackした。owner一致、`scheduled / held / persistent-retained`、
+専用profile、固定port `19880`。関連3 runはrecording/media finalized、terminal cleanup
+complete、active runtime=0、process/listener/daemon不在、canonical/descriptor lock paths空。
+
+scheduled persistent roomは次回の定期/admin readbackに同じ認証profileを再利用するため保持。
+room release、profile削除、finalized run replayは未実施。`room_resource_pending`は意図的な
+scheduled保持のaggregate表示であり、cleanup失敗ではない。helper projectionは最新値をread
+し、歴史的bindingを保持。live process不在のためlive-generation rebindは対象外。
+foreign room/profile/port/processは未操作。
+
+`npm test`（build:server含む）は1062 tests / 1046 pass / 0 fail / 16 skip、exit code 0。
+skip 16件は`AUTOMATION_OS_TEST_POSTGRES_URL`未設定のfixture skipであり、本番DB・秘密値・
+外部business effectは未使用。
+
+Evidence:
+`work/service-readiness/browser-use-admin-login-handoff-readback-20260809.v10.json`、
+`work/service-readiness/full-server-regression-20260809.v19.json`、
+`work/service-readiness/unresolved-audit-20260809.v156.json`。
+
+**Exact blocker:** `production_read_token_missing`。unresolved listはv156の17件へ同期済み。
+Zeabur remote TLS/WSS・ChatGPT認証・thread/turn、protected production readback、workflow
+business proofは未達。
+
+**Next action:** approved read-tokenまたはZeabur auth/ingress stateの変化後に同一profile/19880
+でprotected/remote readbackを再開。scheduled roomが不要になった時だけowner-bound release。
+
+**Restart point:** approved read-token or Zeabur auth/ingress change → protected/remote
+readback → workflow business proof → release evidence。
+
+## 2026-08-09 Zeabur Codex App Server deploy and authenticated container protocol checkpoint 272
+
+専用`codex-app-server`のみをsource-preflight済みstagingから明示deploy。deployment
+`6a77cc899cc09bfe799636bc`はDocker plan / `RUNNING`。source hashとruntime entrypoint/versionを
+照合し、既存の他serviceは変更していない。
+
+deploy後のfresh readbackはNode `v22.23.2`、Codex CLI `0.145.0`、entrypoint present、
+`/readyz=200`、token-file regular/`0400`。認証付きWebSocket handshakeと`initialize`は成功。
+`account/read=false`のため、thread/turnはskip。外部effectなし、token valueの出力・保存なし。
+
+service domainは空、private DNSのみ、port-forward disabled、listenerはloopback
+`ws://127.0.0.1:8080`。Mac-reachable TLS/WSSとZeabur側Codex login/auth persistenceは未達。
+
+Evidence:
+`work/service-readiness/zeabur-codex-app-server-protocol-canary-20260809.v1.json`、
+`work/service-readiness/zeabur-codex-app-server-source-runtime-deploy-readback-20260809.v1.json`、
+`work/service-readiness/unresolved-audit-20260809.v157.json`、
+`work/service-readiness/terminal-audit-20260809.v70.json`。
+
+**Exact blocker:** `zeabur_codex_app_server_chatgpt_login_required`、
+`zeabur_codex_app_server_custom_domain_or_private_ingress_missing`、
+`production_read_token_missing`。unresolvedは17件。
+
+**Next action:** supported auth persistence/volumeでZeabur側login/authを用意し、custom domain
+またはprivate ingress後にMac-side WSS canaryを実行。
+
+**Restart point:** approved Zeabur auth/ingress change → Mac-side WSS canary → protected
+production readback → workflow business proof → release evidence。
+
+## 2026-08-09 Zeabur auth persistence boundary checkpoint 273
+
+専用serviceのvariable名のみをfresh readbackし、OpenAI/ChatGPT auth variable名なし、
+`CODEX_HOME=/data/codex`はoverlay filesystem、persistent volume/auth-state proofなしを確認。
+domain 0件、private DNSのみ、port-forward disabled。値・tokenは出力・保存していない。
+
+`account/read=false`はremote tokenではなく、Zeabur側Codex login/auth persistence未達による。
+公式container内login（OAuth/OTPの人手境界）またはapproved API-keyとpersistent volumeが必要。
+
+Evidence:
+`work/service-readiness/zeabur-codex-app-server-auth-boundary-readback-20260809.v1.json`、
+`work/service-readiness/unresolved-audit-20260809.v158.json`、
+`work/service-readiness/terminal-audit-20260809.v71.json`。
+
+**Exact blocker:** `zeabur_codex_app_server_chatgpt_login_required`、
+`zeabur_codex_auth_persistent_volume_and_billing_authority_missing`、
+`production_read_token_missing`。
+
+**Next action:** approved auth/volume後にaccount/readを再開し、custom domain/private ingress後に
+Mac-side WSS thread/turn canaryへ進む。
+
+**Restart point:** approved Zeabur auth/volume/ingress or production read-token change →
+remote/protected readback → workflow business proof → release evidence。
+## 2026-08-09 Full server regression and final audit checkpoint 281
+
+fresh `npm test`（build:server含む）は`1062 total / 1046 pass / 0 fail / 16 skip`、exit code 0。skip 16件は`AUTOMATION_OS_TEST_POSTGRES_URL`未設定のPostgres fixture境界。本番DB、secret value、外部business effect、Mac worker restart、foreign Browser Use room操作はない。`productionReadbackSkip` 1/1 pass、公開`/api/health=200`とserved assets=200を維持し、protected route/UI screenshotはread token未提供のため未実行。
+
+G0/G1 packet v116、unresolved-only v162（17件）、terminal audit v75へ反映。Goalは`running/audit`を継続し、実装・回帰検証済みと本番/業務完了を分離する。対象scheduled room `room-d95dadd0de52c398121b69f0f48437e4`はowner-bound `scheduled / held / persistent-retained`、固定profile/19880、関連run finalized・terminal cleanup済みで、次回認証profile再利用のため保持。release/delete/replay、foreign room操作はない。
+
+Evidence: `work/service-readiness/full-server-regression-20260809.v21.json`、`work/service-readiness/production-readonly-public-health-readback-20260809.v1.json`、`work/service-readiness/company-release-packet-preparation-20260809.v116.json`、`work/service-readiness/unresolved-audit-20260809.v162.json`、`work/service-readiness/terminal-audit-20260809.v75.json`。
+
+**Exact blocker:** `production_read_token_missing`。別系統としてproduction Postgres v6 parity、Zeabur ChatGPT auth/persistent volume/private TLS ingress/remote thread-turn、workflow business proof、G0/G1 required fieldsが未達。
+
+**Next action:** supportedなapproved tokenまたはZeabur authority変化を待ち、変化後のみprotected/remote readbackへ進む。外部応募・投稿・送信・公開・支払いは引き続き実行しない。
+
+**Restart point:** approved production read-token or Zeabur auth/volume/private-ingress state change → protected GET / remote account-read → thread/turn → workflow proof → release evidence → exit-check。
+## 2026-08-09 Test artifact boundary and fresh audit checkpoint 282
+
+`apps/server/src/tests/portableExternalWorker.test.ts`のapproval testをtask-owned temporary artifact rootへ隔離した。`npm run build:server`とfocused `portableExternalWorker` suiteはpass（8/8、0 fail）。テスト実行によるexternal action、secret value read、Mac worker restart、foreign Browser Use room操作はない。
+
+fresh readbackではproduction read tokenは`available=false/source=none`、Zeabur専用`codex-app-server`はRUNNING・domain=0・source preflight 21/21 pass、対象Browser Use roomはowner一致の`scheduled / held / persistent-retained`、profile固定、port 19880、関連run finalized/cleanup済み。foreign active roomは観測のみ。G0/G1 packet v117、unresolved-only v163（17件）、terminal audit v76へ反映した。Goalは`running/audit`。
+
+Evidence: `work/service-readiness/test-artifact-boundary-20260809.v1.json`、`work/service-readiness/browser-use-admin-login-handoff-readback-20260809.v13.json`、`work/service-readiness/zeabur-container-readback-20260809.v3.json`、`work/service-readiness/cross-boundary-readback-20260809.v2.json`、`work/service-readiness/company-release-packet-preparation-20260809.v117.json`、`work/service-readiness/unresolved-audit-20260809.v163.json`、`work/service-readiness/terminal-audit-20260809.v76.json`。
+
+**Exact blocker:** `production_read_token_missing`。別系統としてPostgres v6 parity、Zeabur ChatGPT auth/persistent volume/private TLS ingress/remote thread-turn、Job/Daily AI/NisenPrints business proof、G0/G1 required fieldsが未達。
+
+**Next action:** approved tokenまたはZeabur authority変化を待ち、変化後のみprotected/remote readbackへ進む。業務外部効果は引き続きno-effectで維持する。
+
+**Restart point:** approved production read-token or Zeabur auth/volume/private-ingress state change → protected GET / remote account-read → thread/turn → workflow proof → release evidence → exit-check。
+## 2026-08-09 Company 1 natural scheduled no-effect readback checkpoint 285
+
+Company 1のfresh readbackで、6/6 schedulesが`active/enabled/Asia/Tokyo`、当日到来分4 occurrences（07:30、08:30、09:00×2）が全て`completed`。durable jobsは全て`execution_mode=dry_run`、`provider_called=0`、`last_error=null`、lease解放済み。worker loopとserverは稼働中で、再起動していない。scheduler→durable queue→workerの受付・実行境界は確認できたが、応募・投稿・送信・公開のbusiness proofではない。
+
+G0/G1 packet v118、unresolved-only v164（17件）、terminal audit v77へ反映。production read tokenは`available=false/source=none`、Zeabur専用serviceはRUNNING・`/readyz=200`・domain=0・Codex login未完了。対象Browser Use roomはowner-bound scheduled persistent retentionを維持し、foreign roomは観測のみ。Goalは`running/audit`。
+
+Evidence: `work/service-readiness/company1-scheduled-dry-run-live-readback-20260809.v2.json`、`work/service-readiness/company-release-packet-preparation-20260809.v118.json`、`work/service-readiness/unresolved-audit-20260809.v164.json`、`work/service-readiness/terminal-audit-20260809.v77.json`。
+
+**Exact blocker:** `production_read_token_missing`。別系統としてworkflow固有Browser Use authority、Identity/Provider runtime、visible same-run business receipt、Zeabur auth/remote thread-turn、G0/G1 required fieldsが未達。
+
+**Next action:** Company 1はno-effect定期運用を維持し、承認・authority stateの変化があるworkflowだけを対応するreadbackへ進める。
+
+**Restart point:** workflow-specific approval/Browser Use authority or approved production/Zeabur state change → corresponding readback → workflow proof → release evidence → exit-check。
+
+## 2026-08-09 Browser Use admin-login handoff lifecycle checkpoint 286
+
+対象room `room-d95dadd0de52c398121b69f0f48437e4` はfresh readbackでowner一致の
+`scheduled / held / persistent-retained`。scheduled profileと固定port `19880`は一致し、関連3 run
+（`aos-admin-login-readback-20260808-r2`、`aos-admin-production-readback-20260808`、
+`aos-prod-api-20260808`）は全てfinalized、録画・media・terminal cleanup完了、external effectsなし。
+対象profileのprocess・listener・daemon・lockは不在。scheduled persistent profileは次回の認証済み
+admin/production readbackと定期再利用のため保持し、release/delete/replayはしていない。
+
+helper projectionの最新hashはreadbackへ反映済み。過去録画hashとの差はhistorical projectionのみで、
+live processがないため再bind対象ではなくstale blockerではない。foreign roomのcleanupや認証状態の
+迂回はしていない。
+
+Evidence: `work/service-readiness/browser-use-admin-login-handoff-readback-20260809.v14.json`。
+
+**Exact blocker:** 対象roomはblockedではない。Goal全体では`production_read_token_missing`、
+Zeabur remote auth/ingress、workflow business proofが未達。
+
+**Restart point:** approved authority変化後に同一owner・同一scheduled profile/19880からfresh
+readbackし、業務proofとrelease条件を再確認する。
+
+## 2026-08-09 Kernel admission and Zeabur CLI readback checkpoint 287
+
+Job Application Manager（`automation-3`）は公式Kernel compile/statusが`ready`、registered dry-run成功、external action 0件。preflightは`codex_app_automation_run_now_api_unavailable`で停止し、Codex Appのrun-now handlerが未提供（`run_now_handlers=[]`、receipt発行不可）。Browser Use/Gmail/候補者取得/応募/同期は未開始で、固定profile/19881はruntime match、roomはreleased。
+
+Daily AI/NisenPrintsはcompile/statusとregistered dry-runが成功し、external action 0件。対象profile/portはそれぞれscheduled profile/19880、scheduled profile/19882で固定、active roomなし、helper/Chrome/Pythonのruntime driftなし。
+
+Zeabur CLIは公式`/usr/local/bin/zeabur` `0.21.0`、認証済み、`automation-wiled`の専用`codex-app-server` serviceをfresh確認。source preflight 21/21 pass。deploy、secret変更、restart、`/readyz`、authenticated WSS、remote thread/turnは未実行で、ChatGPT auth/persistent volume/private TLSが未達。Mac local stdio fallbackと既存workerは維持。
+
+Evidence: `work/service-readiness/job-kernel-admission-readback-20260809.v1.json`、`work/service-readiness/workflow-kernel-admission-readback-20260809.v1.json`、`work/service-readiness/zeabur-cli-common-entrypoint-readback-20260809.v7.json`。
+
+**Exact blocker:** `codex_app_automation_run_now_api_unavailable`（Job lane）、`production_read_token_missing`（Goal primary）、Zeabur auth/volume/private TLS/remote thread-turnとworkflow business proof未達。
+
+**Next action:** capability/authorityのfresh state changeを待ち、同一owner・同一profile・固定portからread-only canaryへ再開。外部応募・投稿・公開・送信・支払いはbusiness proofが揃うまで実行しない。
+
+## 2026-08-09 AOS thin-trigger parity checkpoint 288
+
+Company 1のCodex App 6件とAOS 6件はschedule parityが一致し、全てthin AOS trigger bridgeとして`matched`。remote TLS、machine token、origin binding、redirect拒否、no-effect response、secret非出力をfocused test 8/8で確認した。Codex Appの登録run-now capabilityはAOS正本経路の必須条件ではない。
+
+Job/Daily AI/NisenPrintsのKernel compile/status・dry-runはreadinessのみで、business proofや外部effectは未取得。G0/G1 packet v119、unresolved-only v165（17件）、terminal audit v78へ反映。Zeabur CLI/source preflightは通過したが、auth/volume/private TLS/remote thread-turnは未達。既存Mac local stdio fallback、worker、foreign Browser Use roomは維持。
+
+Evidence: `work/service-readiness/aos-codex-app-trigger-parity-readback-20260809.v1.json`、`work/service-readiness/company-release-packet-preparation-20260809.v119.json`、`work/service-readiness/unresolved-audit-20260809.v165.json`、`work/service-readiness/terminal-audit-20260809.v78.json`。
+
+**Exact blocker:** Goal primaryは`production_read_token_missing`。Zeabur auth/volume/private TLS/remote thread-turn、workflow business proof、G0/G1 fieldsは未達。`codex_app_automation_run_now_api_unavailable`は登録runner lane固有。
+
+**Next action:** AOS trigger receipt/readbackをno-effectでfresh確認し、approved workflow authorityが揃った場合のみ対応するread-only canaryから再開する。
+
+## 2026-08-09 AOS trigger-to-worker live no-effect checkpoint 289
+
+Company 1のAOS trigger APIはfresh receiptで`queued=true / dry_run=true / external_action_executed=false`。同じjobはtenant service identityのworker loopで`completed`、attempt completed、`provider_called=0`、lease解放、errorなし、durable artifact/proof生成まで確認した。global service identityをtenant workerへ使った手動onceは`company_scope_forbidden`で停止したが、tenant membership確認後の盲目的再試行はせず、worker loopのcompleted readbackを正本とした。
+
+これでAOS scheduler/薄いCodex App trigger → durable queue → Company-scoped workerのno-effect経路は実証済み。業務応募・投稿・公開・送信のbusiness proofは未取得。G0/G1 packet v120、unresolved-only v166（17件）、terminal audit v79へ反映した。
+
+Evidence: `work/service-readiness/aos-trigger-worker-readback-20260809.v1.json`、`work/service-readiness/company-release-packet-preparation-20260809.v120.json`、`work/service-readiness/unresolved-audit-20260809.v166.json`、`work/service-readiness/terminal-audit-20260809.v79.json`。
+
+**Exact blocker:** `production_read_token_missing`、Zeabur auth/volume/private TLS/remote thread-turn、workflow business proof未達。global service identityのtenant misuseはreadback済みで、正規tenant identity経路はcompleted。
+
+**Next action:** AOS scheduler/triggerを正本として維持し、workflow-specific authorityが揃った時だけ同じCompany-scoped worker境界からread-only Browser Use canaryへ進める。
+
+## 2026-08-09 Zeabur current runtime readback checkpoint 290
+
+最新専用`codex-app-server` deploymentはDocker build完了・service `RUNNING`。container内`/readyz=200`（注入PORT 8080）、token file readable/0400/non-empty。内部WebSocketのinitializeとaccount/readは到達したがaccount absent、`requiresOpenaiAuth=true`。`codex login status`は`Not logged in`。
+
+`/data/codex`はoverlayで永続Volumeではなく、domain 0、port-forward disabled、internal DNSはMacから解決不能。remote thread/turnとprivate TLS/WSSは未達。G0/G1 v121、unresolved v167（17件）、terminal v80へ反映し、local stdio fallback、AOS worker、foreign Browser Use roomは維持。
+
+Evidence: `work/service-readiness/zeabur-codex-app-server-current-runtime-readback-20260809.v1.json`、`work/service-readiness/company-release-packet-preparation-20260809.v121.json`、`work/service-readiness/unresolved-audit-20260809.v167.json`、`work/service-readiness/terminal-audit-20260809.v80.json`。
+
+**Exact blocker:** Zeabur Codex auth/login、persistent volume、private TLS/WSS、production read token、workflow business proofが未達。
+
+**Next action:** supported official login/API-key handoff、persistent `/data/codex`、private TLS ingressのstate change後にaccount/read → thread/turnへ再開する。
+
+## 2026-08-09 Local fallback auth regression checkpoint 291
+
+fresh local stdio Codex App Serverは同一接続で`account/read` ChatGPT/pro、`thread/start`、`turn/start`、`turn/completed status=completed`。API key未使用、secret値非出力。Mac local stdioとworker fallbackは健全。G0/G1 v122、unresolved v168（17件）、terminal v81へ反映した。
+
+Zeabur側はDocker build/RUNNING/`/readyz=200`/内部initialize-account/readまでだが、account absent、`codex login`未認証、`/data/codex`非永続、domain 0、Mac private TLS/WSS未達。外部effect、secret変更、foreign room操作はない。
+
+Evidence: `work/service-readiness/codex-app-server-local-auth-readback-20260809.v1.json`、`work/service-readiness/zeabur-codex-app-server-current-runtime-readback-20260809.v1.json`、`work/service-readiness/company-release-packet-preparation-20260809.v122.json`、`work/service-readiness/unresolved-audit-20260809.v168.json`、`work/service-readiness/terminal-audit-20260809.v81.json`。
+
+**Exact blocker:** `production_read_token_missing`、Zeabur auth/persistence/private TLS/WSS/remote thread-turn、workflow business proof未達。
+
+**Next action:** supported Zeabur auth/API-key handoff、persistent volume、private TLS ingressのstate change後にremote account/read → thread/turnへ進む。local stdio fallbackは維持する。
+
+## 2026-08-09 Browser Use helper-generation conflict and room handoff checkpoint 292
+
+`automation-3`（scheduled profile固定、port 19881）のfresh canaryは、ブラウザ起動前のhelper-generation admissionで`browser_use_helper_generation_auto_sync_blocked`となった。blocking roomはforeign owner `mypro-tf-20260808-task`のtemporary room（port 20089、state active、旧helper世代）。fresh observationはprocess/listener=false、daemon=true、reclaim_allowed=falseで、foreign roomは一切操作していない。blocked run `job-browser-canary-20260809-r1`は再利用せず、browser launch・navigation・external effectは0件。
+
+管理用`room-d95dadd0de52c398121b69f0f48437e4`は、owner一致のscheduled/held/persistent-retained、profile固定、19880固定。関連run finalized、録画/media/terminal cleanup完了、process/listener/daemon/lock不在。次回の認証済みscheduled profile再利用が必要なためretain。helper projectionは`historical_projection_only`でhistorical bindingを保持しており、live stale blockerではない。`automation-3` roomはreleased。
+
+Evidence: `work/service-readiness/job-browser-canary-readback-20260809.v1.json`、`work/service-readiness/browser-use-admin-login-handoff-readback-20260809.v15.json`。
+
+**Exact blocker:** Browser Use側は`browser_use_helper_generation_auto_sync_blocked`、Goal primaryは`production_read_token_missing`。Zeabur auth/persistence/private TLS/WSS/remote thread-turnとworkflow business proofも未達。対象canaryはsafe-stop済み。
+
+**Restart point:** foreign roomを変更しないowner-bound recoveryまたはscoped helper-generation admissionのfresh proof後、新しいauthority/runで19881 read-only canaryへ再開する。admin roomは同一owner・同一profile/19880から継続する。
+
+## 2026-08-09 Owner-lane helper admission and Job Browser Use canary checkpoint 293
+
+foreign roomを全体同期の理由にして新規Job laneを止めないため、canonical helperへ`--helper-generation-scope owner-lane`を追加した。global syncは既定として残し、owner-laneは同一automationのactive/startingだけを衝突判定する。同一ownerのheld scheduled roomはprocess/listener/daemon absence readback後に再利用し、foreign roomのrelease/reclaim/rebindはしない。owner-scoped projection commandを追加し、adminとautomation-3のprojectionだけを最新helperへ同期した。P6 Browser Use stage adapterもowner-laneをrecord-startへ渡すよう更新した。
+
+helper compile、P6 static 11/11、P6 contract 16/16 pass。fresh r6は`automation-3`、scheduled profile、port 19881でrecord-start成功。同一sessionのLinkedIn Jobs read-only open/state readbackはorigin一致・ready_state complete。recording/media finalize、terminal cleanup、room release、process/listener/lock absenceまでfresh確認し、external effectはnone。
+
+foreign `mypro-tf-20260808-task` / 20089はactive、process/listener=false・daemon=true・reclaim_allowed=falseのまま、hash/projection/lifecycle不変。admin room `room-d95…`はscheduled/held/persistent-retained、19880固定で保持し、historical bindingを維持したままprojectionだけ最新化した。
+
+Evidence: `work/service-readiness/browser-use-owner-lane-admission-readback-20260809.v1.json`、`work/service-readiness/job-browser-canary-readback-20260809.v2.json`、`work/service-readiness/browser-use-admin-login-handoff-readback-20260809.v16.json`。
+
+**Exact blocker:** Job Browser Useのforeign-room helper blockerはowner-laneで解消。Goal primaryは`production_read_token_missing`。Zeabur auth/persistence/private TLS/WSS/remote thread-turn、Job candidate-supply/business proof、Daily AI/NisenPrints proof、G0/G1 fieldsは未達。
+
+**Restart point:** registered Job runnerのfresh Kernel claim → owner-lane read-only candidate-supply → same-run business proofが揃った場合のみ応募stageへ進む。canary証跡だけで応募完了扱いにしない。
+
+## 2026-08-09 Job candidate-supply stage binding and AOS completion checkpoint 294
+
+Job candidate-supplyをAOS portable external workerからCompany 1へfresh実行した。AOS metadata、step metadata、safe worker environment、Browser Use CLI runnerのstage値を`candidate_supply`へ統一し、`job_candidate_supply`との不一致で通常preflightへ落ちる不具合を修正した。ready状態で通常の`portable_external_read_only_business_completion_proof_pending`を付与してしまうfalse blockerも修正した。null-stageの既存request hash形式は互換維持し、pending reservationのfail-closed focused testは修正後passした。
+
+r10（`run_msl7m1v2_817arp`）はCompany 1・`automation-3`・scheduled profile・固定port `19881`・owner-laneでLinkedIn Jobsをread-only操作し、候補2件/要求2件を取得。same-run authority、recording receipt/manifest、cleanup、process/listener/lock absence、AOS `complete`、proof gate `ok=true`を確認した。`external_action_executed=false`で、応募・submit・送信・投稿・公開は未実行。foreign roomは未操作。常駐workerはLaunchAgentでrunningへ復帰した。
+
+`build:server`、candidate runner 8/8、portable entrypoint 6/6 pass。全体npm testは修正前に旧hash形式の1件だけ失敗し、原因修正後のfocused testでpass。未達はproduction read token、Zeabur Codex auth/volume/private TLS/WSS/remote thread-turn、Job submitted_confirmed、Daily AI/NisenPrints business proof、G0/G1 fields。
+
+Evidence: `work/service-readiness/job-candidate-supply-readback-20260809.v1.json`、`work/service-readiness/company-release-packet-preparation-20260809.v125.json`、`work/service-readiness/unresolved-audit-20260809.v171.json`、`work/service-readiness/terminal-audit-20260809.v84.json`。
+
+**Exact blocker:** `production_read_token_missing`。candidate-supplyは完了したがbusiness応募完了ではない。Zeabur remote auth/persistence/private TLS/WSS、protected production readback、submitted_confirmed、G0/G1 approvalは未達。
+
+**Restart point:** fresh Kernel claim → explicit submit authority/business proof → release evidence。Zeaburはsupported auth/persistence → private TLS/WSS → account/read → read-only thread/turn。
+
+## 2026-08-09 Clean full regression and final readback checkpoint 295
+
+修正後の`npm test`をfresh完了し、`1062 total / 1046 pass / 0 fail / 16 skip`、exit code 0。skipは`AUTOMATION_OS_TEST_POSTGRES_URL`未設定のPostgres fixtureのみ。candidate-supply stage binding、null-stage request hash互換、pending reservation fail-closedを含む回帰を通過した。外部応募・投稿・公開・送信・支払い、secret value read、foreign room操作はない。
+
+G0/G1 packet v126、unresolved-only audit v172、terminal audit v85へ反映。r10のJob candidate-supplyは2/2 read-only候補、AOS proof gate complete、external effect noneのまま。production read token、Zeabur auth/volume/private TLS/WSS/remote thread-turn、Job submitted_confirmed、Daily AI/NisenPrints business proof、G0/G1 fieldsは未達。Goalは`running/audit`を継続する。
+
+Evidence: `work/service-readiness/full-server-regression-20260809.v22.json`、`work/service-readiness/company-release-packet-preparation-20260809.v126.json`、`work/service-readiness/unresolved-audit-20260809.v172.json`、`work/service-readiness/terminal-audit-20260809.v85.json`。
+
+**Exact blocker:** primaryは`production_read_token_missing`。candidate-supplyは応募完了を意味しない。Zeabur remote auth/volume/private TLS/WSS、protected production readback、submitted_confirmed、G0/G1 approvalは未達。
+
+**Restart point:** fresh production/Zeabur readback → fresh Kernel claim → explicit submit authority/business proof → release evidence。
+
+## 2026-08-09 Scheduled Browser Use room handoff readback checkpoint 296
+
+引き継ぎ対象の`room-d95dadd0de52c398121b69f0f48437e4`をcanonical Browser Use CLIでfresh確認した。ownerは`automation-os-admin-login-handoff`と一致し、`scheduled / held / persistent-retained`、専用profile、固定port `19880`を維持している。関連3 run（`aos-admin-login-readback-20260808-r2`、`aos-admin-production-readback-20260808`、`aos-prod-api-20260808`）はrecording/media finalized、terminal cleanup complete、`cleanup_required=false`。target process/listener/daemon、active runtime、canonical/descriptor lockは不在である。
+
+scheduled authenticated profileを次回のauthorized admin/production readbackで再利用する契約が継続しているため、roomはretainとした。owner-scoped `helper-generation-project-owner-lane --automation-id automation-os-admin-login-handoff`を実行し、最新helper projectionを同期した。historical recordingのhelper bindingは再書込みせず、live processがないためgeneration rebindは不要。foreign `mypro-tf-20260808-task` roomは観測のみで変更していない。
+
+Evidence: `work/service-readiness/browser-use-admin-login-handoff-readback-20260809.v17.json`。
+
+**Retention decision:** `retain`。room release、profile削除、finalized run replayは行っていない。
+
+**Exact blocker:** room lifecycleのstale blockerはない。Goal primaryは引き続き`production_read_token_missing`であり、approved admin/production readback authority、Zeabur remote auth/persistence/private TLS/WSS、workflow business proofは未達。
+
+**Restart point:** 同一owner・同一scheduled profile/19880でfresh admission/readback → approved admin/production authority → business proof gate。明示的owner cleanupまたは承認済みreadback完了時だけroom releaseを再判定する。
+
+## 2026-08-09 Daily AI/NisenPrints reference canary checkpoint 297
+
+Daily AI/NisenPrintsのworkflow-owned正本、AOS route、scheduled laneをfresh-readした。Daily AIはscheduled profile `/Users/nichikatanaka/.browser-use-cli/profiles/scheduled/daily-ai` / port `19882`、NisenPrintsはscheduled profile `/Users/nichikatanaka/.browser-use-cli/profiles/scheduled/nisenprints` / port `19884`。両roomはreleasedでprocess/listener不在。owner-scoped helper projectionを両laneへ同期し、foreign roomは未操作。
+
+fresh `referenceWorkflowCanary`をisolated SQLite/ephemeral artifact rootで実行し、3/3（Daily AI、Job、NisenPrints）が`proof_backed_safe_stop_verified`。Daily AI run `run_msl8gh5h_fvkffi`、NisenPrints run `run_msl8ghex_q6vkaf`は、company scope、approval boundary、idempotent recheck、start lineage、worker blocked event、runtime binding、cleanup receiptを確認。exact blockerは`browser_use_cli_required`で、runner/browser起動前に停止し、`external_action_executed=false`、completion claimなし。
+
+Daily AIのpublish/feed-study/engagement/Sheets write、NisenPrintsのCanva/Printify/Etsy/Pinterest generation/listing/pin、Job submitは実行していない。reference canaryはbusiness completionではなく、Browser Use CLI必須境界とsafe-stopのproofである。
+
+Evidence: `work/service-readiness/reference-workflow-canary-20260809.v2.json`、`work/service-readiness/daily-ai-reference-readonly-canary-20260809.v1.json`、`work/service-readiness/nisenprints-readonly-canary-20260809.v2.json`。
+
+**Exact blocker:** `browser_use_cli_required`（isolated reference canaryの設計上の安全停止）。Goalのbusiness blockerはDaily AI publish proof、NisenPrints provider/runtime/business proof、Job submitted_confirmed、production read token、Zeabur remote auth/persistence/private TLS/WSS。
+
+**Restart point:** fresh authorized owner-lane Browser Use CLI admission → Daily AI 19882 / NisenPrints 19884のread-only same-run state/readback → terminal cleanup → 個別のpublish/listing/pin/submit authorityとvisible business proof。
+
+## 2026-08-09 Actual Daily AI/NisenPrints Browser Use readback checkpoint 298
+
+Company 1のAOS portable external workerから、workflow固有`reference_readback` stageを実際のcanonical Browser Use CLIで検証した。Daily AIは`run_msl8ryud_czmvuk` / `daily_ai_registered` / X / scheduled profile `daily-ai` / port `19882`、NisenPrintsは`run_msl8ryvu_5o45ty` / `nisenprints_registered` / Canva / scheduled profile `nisenprints` / port `19884`。両方ともsame-run authority、origin一致、recording/media finalize、cleanup、readback、process/listener absenceを確認し、foreign roomは未操作。
+
+業務効果は実行していない。両runのAOS statusは`blocked`、exact blockerは`portable_external_read_only_business_completion_proof_pending`で、read-onlyをpublish/listing/pin/submit完了と誤認しない契約どおりの停止である。admin scheduled roomは19880でheld/persistent-retained、Daily/Nisen scheduled roomはrelease済み。production read token、Zeabur remote auth/persistence/private TLS/WSS、Job submitted_confirmed、Daily publish、NisenPrints provider/business proof、G0/G1 fieldsは未達。
+
+Evidence: `work/service-readiness/reference-workflow-canary-20260809.v3.json`、`work/service-readiness/daily-ai-reference-readonly-canary-20260809.v2.json`、`work/service-readiness/nisenprints-readonly-canary-20260809.v3.json`、`work/service-readiness/company-release-packet-preparation-20260809.v128.json`、`work/service-readiness/unresolved-audit-20260809.v174.json`、`work/service-readiness/terminal-audit-20260809.v87.json`。
+
+**Exact blocker:** `portable_external_read_only_business_completion_proof_pending`（意図的safe-stop）。Goal primaryは`production_read_token_missing`とZeabur authenticated remote readback、各workflow business proofの未達。
+
+**Restart point:** fresh owner-lane business authority → workflow-specific business stage → same-run visible proof/cleanup → production/Zeabur protected readback → G0/G1 audit。
+
+## 2026-08-09 Clean regression and final current-state checkpoint 299
+
+reference_readback実装後の`npm test`は`1063 total / 1047 pass / 0 fail / 16 skip`、exit code 0。server build、focused test、`git diff --check`、新規証跡JSON、health、worker一重を確認した。Postgres fixtureだけは`AUTOMATION_OS_TEST_POSTGRES_URL`未設定でskip。Daily AI/19882とNisenPrints/19884は実行後にcleanup・release済み、admin/19880はscheduled persistent-retained、foreign roomは未操作。
+
+未達はproduction read token、Zeabur authenticated remote thread/turn、Job submitted_confirmed、Daily publish/feed-study/engagement、NisenPrints provider/generation/listing/pin、G0/G1承認であり、Goalは継続する。
+
+Evidence: `work/service-readiness/full-server-regression-20260809.v23.json`、`work/service-readiness/company-release-packet-preparation-20260809.v129.json`、`work/service-readiness/unresolved-audit-20260809.v175.json`、`work/service-readiness/terminal-audit-20260809.v88.json`。
+
+**Exact blocker:** `production_read_token_missing`。read-only Browser Use証跡の安全停止`portable_external_read_only_business_completion_proof_pending`は意図どおりで、業務完了へ昇格させない。
+
+**Restart point:** fresh workflow-specific business authority → same-run proof/cleanup → production/Zeabur protected readback → G0/G1 audit。
+
+## 2026-08-09 Zeabur CLI common entrypoint and runtime boundary checkpoint 300
+
+公式`/usr/local/bin/zeabur` `0.21.0`、認証済みpersonal workspace、`automation-wiled / production / codex-app-server`をfresh確認した。既存serviceは変更せず、deploy/restart/secret変更/port-forward/domain作成は行っていない。専用deploymentはDocker plan / `RUNNING`、read-only execの`/readyz`は200、`codex login status`は`Not logged in`。
+
+Zeabur runtime logはloopback `ws://127.0.0.1:8080`、networkはinternal HTTP 8080、port forwarding disabled、domain 0。Macからのprivate WSS、Zeabur Codex認証/persistent `/data/codex`、remote account/read/thread/start/turn/startは未達。local stdio、Mac Browser Use worker、AOS scheduler→durable queueは維持し、業務外部効果はない。
+
+Evidence: `work/service-readiness/zeabur-cli-common-entrypoint-readback-20260809.v8.json`、`work/service-readiness/zeabur-codex-app-server-current-runtime-readback-20260809.v2.json`、`work/service-readiness/company-release-packet-preparation-20260809.v130.json`、`work/service-readiness/unresolved-audit-20260809.v176.json`、`work/service-readiness/terminal-audit-20260809.v89.json`。
+
+**Exact blocker:** `zeabur_codex_app_server_chatgpt_login_required`。再開にはsupported auth/persistenceとprivate TLS/WSS authorityが必要。
+
+**Restart point:** approved auth/persistence → private TLS/WSS → `/readyz` → authenticated WSS account/read → thread/start/turn/start → G0/G1 audit。
+
+## 2026-08-09 Production public read-only parity checkpoint 301
+
+`npm run qa:production`のfresh結果は、`https://automation-os.zeabur.app/api/health=200`、root JS/CSS=200。read tokenは`available=false / source=none`で、protected GET routesとBrowser Use CLI UI readbackは開始前に`production_read_token_missing`で停止した。write route、browser起動、外部効果はない。
+
+Evidence: `work/service-readiness/production-readonly-public-health-readback-20260809.v2.json`、`work/service-readiness/company-release-packet-preparation-20260809.v131.json`、`work/service-readiness/unresolved-audit-20260809.v177.json`、`work/service-readiness/terminal-audit-20260809.v90.json`。
+
+**Exact blocker:** `production_read_token_missing`。public parityのみ完了し、protected parity・UI proof・Postgres v6は未達。Goalは継続する。
+
+**Restart point:** approved production read token → protected GET/UI readback → Zeabur auth/TLS/WSS → workflow business proof → G0/G1 audit。
+
+## 2026-08-09 AOS scheduler service-identity recovery checkpoint 302
+
+手動起動serverで再現した`durable_scheduler_service_user_id_missing`を、canonical launchd plistのservice identityを使うserver再起動で解消した。workerは再起動せず、Browser Use room・foreign room・業務効果は未操作。
+
+再起動後のCompany 1 scheduler run-onceは`completed`、`serviceUserConfigured=true`、company scope enforced、due occurrences=0、外部効果false。control-plane readinessは`ready_for_no_effect_trigger`、Codex App/alternate LLMはthin trigger only、AOS scheduler→durable queue→Mac Browser Use CLI workerを正本として維持。server/worker launchd running、worker 1プロセス、health OK。
+
+Evidence: `work/service-readiness/company1-scheduler-tick-20260809.v2.json`、`work/service-readiness/current-cross-boundary-readback-20260809.v17.json`、`work/service-readiness/company-release-packet-preparation-20260809.v132.json`、`work/service-readiness/unresolved-audit-20260809.v178.json`、`work/service-readiness/terminal-audit-20260809.v91.json`。
+
+**Resolved:** `durable_scheduler_service_user_id_missing`。未達はproduction protected parity、Zeabur remote auth/TLS/WSS/thread-turn、Job/Daily/NisenPrints business proof、G0/G1。
+
+**Restart point:** approved production read token or Zeabur auth/persistence/TLS change → protected/remote readback → workflow business proof → G0/G1 audit。
+
+## 2026-08-09 Admin Browser Use room retention and fresh owner-lane checkpoint 303
+
+`automation-os-admin-login-handoff`のowner-bound scheduled roomをfresh確認した。`room-d95dadd0de52c398121b69f0f48437e4`はheld/persistent-retained、scheduled profileと固定port `19880`が一致。recording/media finalize、terminal cleanup、process/listener/daemon absenceを確認したため、room releaseやprofile削除は行わない。room resource pendingは次回approved admin/production readbackのための意図的保持であり、stale cleanup debtではない。
+
+同一owner laneのhelper projectionを最新化し、historical run bindingはimmutableな履歴として保全した。foreign `room-a1e70cf5df67cd42f1c5780f77869d72`（port `20089`、`mypro-tf-20260808-task`）は未操作。admin retention blockerは解消済みとしてunresolved auditから除外し、foreign-owner/historical reconciliationだけを継続項目として残した。
+
+Evidence: `work/service-readiness/browser-use-admin-login-handoff-readback-20260809.v16.json`、`work/service-readiness/unresolved-audit-20260809.v179.json`、`work/service-readiness/terminal-audit-20260809.v92.json`。
+
+**Exact blocker:** `production_read_token_missing`。次の再開はapproved production tokenまたはZeabur auth/persistence/private TLS/WSSの状態変化後。
+
+## 2026-08-09 NisenPrints AOS business boundary and fresh completion audit checkpoint 304
+
+NisenPrints business wrapperを、曖昧なroot capability blockerから正本Browser Use CLI root・AOS固定lane・action-plan gateへ修正した。AOS laneはscheduled profile `/Users/nichikatanaka/.browser-use-cli/profiles/scheduled/nisenprints`、port `19884`。root runnerはcanonical stage adapterをexportし、`browser_preflight` read-onlyとbusiness action stagesを分離する。current action planがないbusiness stageは`nisenprints_browser_use_cli_action_plan_required`で停止し、external effectを起動しない。root runnerのdirect default port `19882`は既存経路のため保持し、AOS invocationだけ`19884`を明示できる。
+
+verification: NisenPrints wrapper 4/4、portable worker 8/8、server build、full regression 1063 total / 1047 pass / 0 fail / 16 skip。scheduler run-once completed、service identity true、occurrences 0、external false。AOS health、server/worker launchd、server listener 1、workerLoop 1をfresh確認。admin roomはscheduled held/persistent-retained・19880、recording/media/cleanup complete、process/listener/daemon absent。foreign active roomsはowner-boundのまま未操作。
+
+productionはpublic health/assets 200、protectedは`production_read_token_missing`で未開始。Zeabur codex-app-serverはRUNNING、Docker deployment RUNNING、`/readyz` 200、Codex login Not logged in、loopback wsのみでremote TLS/WSS/account/read/thread/turn未確認。Job submitted_confirmed、Daily AI publish/feed-study/engagement、NisenPrints generation/Etsy/Pinterest、G0/G1 fieldsは未達。外部効果・secret read/writeはない。
+
+Evidence: `work/service-readiness/nisenprints-business-runner-integration-readback-20260809.v1.json`、`work/service-readiness/full-server-regression-20260809.v24.json`、`work/service-readiness/company1-scheduler-tick-20260809.v3.json`、`work/service-readiness/browser-use-admin-login-handoff-readback-20260809.v18.json`、`work/service-readiness/current-cross-boundary-readback-20260809.v18.json`、`work/service-readiness/production-readonly-public-health-readback-20260809.v3.json`、`work/service-readiness/zeabur-codex-app-server-current-runtime-readback-20260809.v3.json`、`work/service-readiness/company-release-packet-preparation-20260809.v133.json`、`work/service-readiness/unresolved-audit-20260809.v180.json`、`work/service-readiness/terminal-audit-20260809.v93.json`。
+
+**Exact blocker:** primary `production_read_token_missing`; NisenPrints next gate `nisenprints_browser_use_cli_action_plan_required`; Zeabur `zeabur_codex_app_server_chatgpt_login_required` plus persistence/private TLS/WSS/remote thread-turn. Business proof/G0/G1は`PENDING_CONFIRMATION`。
+
+**Restart point:** fresh current-run authority/action plan → bounded workflow business stage → same-run proof/cleanup → production protected / Zeabur remote readback → G0/G1 release audit。
+
+## 2026-08-09 Portable business action-plan boundary and fresh completion audit checkpoint 305
+
+AOS workerからJob、Daily AI、NisenPrintsへ渡す`automation_os_portable_external_action_plan.v1`を共通化した。承認済みadmission後だけ同一run artifactへimmutableに発行し、workflow/runner key、run/step/source/idempotency、Browser Use CLI、approval、expiry、required stages/proofs、input bundle SHA-256をbindingする。Job/Daily AI/NisenPrintsはchild起動前に同じplanとdigestを再検証し、NisenPrintsはplan readback後にcanonical root runnerへ入る。no-launch/reference_readbackは従来どおり外部効果なしで停止する。
+
+fresh verification: `build:server`、portable action-plan contract `14/14`、NisenPrints wrapper `5/5`、portable worker `8/8`、full `npm test` `1063 total / 1047 pass / 0 fail / 16 skip`、`git diff --check`。Postgres fixture未設定の16 skip以外はpass。AOS scheduler、固定Browser Use scheduled profile/port、admin room retain、local stdio fallbackは維持。外部応募・投稿・公開・送信・支払い・secret/auth変更は未実行。
+
+Evidence: `work/service-readiness/full-server-regression-20260809.v25.json`、`work/service-readiness/company-release-packet-preparation-20260809.v134.json`、`work/service-readiness/unresolved-audit-20260809.v181.json`、`work/service-readiness/terminal-audit-20260809.v94.json`。
+
+**Exact blocker:** `production_read_token_missing`。secondaryは`zeabur_codex_app_server_chatgpt_login_required`、Zeabur persistence/private TLS/WSS/remote thread-turn、workflow business proof、G0/G1。
+
+**Restart point:** changed protected-read or Zeabur auth/TLS state → protected/remote readback → fresh workflow authority/action plan → visible business proof/cleanup → release audit。
+
+## 2026-08-09 Fixed scheduled lane and admin-room owner readback checkpoint 306
+
+Portable business action-plan実装後のNisenPrints固定laneを再確認し、AOS invocation時だけscheduled profile `nisenprints` / port `19884`をcanonical root runnerへ渡す境界を確認した。direct root default `19882`は保持。fresh wrapper `5/5`、portable worker `8/8`、server build、full `npm test` `1063 total / 1047 pass / 0 fail / 16 skip`、外部効果false。
+
+admin room `room-d95dadd0de52c398121b69f0f48437e4`はowner `automation-os-admin-login-handoff`、scheduled/held/persistent-retained、専用profile、固定port `19880`。process/listener/daemon、active runtime、lock不在。関連runのrecording/media finalizeとterminal cleanupは完了。owner-scoped helper projectionはfresh sync済み、historical recording bindingは保全、foreign roomは未操作。保持契約が継続しているためrelease・profile削除・finalized run replayはしない。
+
+Evidence: `work/service-readiness/full-server-regression-20260809.v26.json`、`work/service-readiness/browser-use-admin-login-handoff-readback-20260809.v19.json`、`work/service-readiness/company-release-packet-preparation-20260809.v135.json`、`work/service-readiness/unresolved-audit-20260809.v183.json`、`work/service-readiness/terminal-audit-20260809.v96.json`。
+
+**Exact blocker:** `production_read_token_missing`。Zeaburの`zeabur_codex_app_server_chatgpt_login_required`、persistence/private TLS/WSS/remote thread-turn、Job/Daily AI/NisenPrints business proof、G0/G1 fieldsも未達。変更証拠がない間は同じprotected/remote routeを再実行しない。
+
+**Restart point:** approved production read tokenまたはZeabur supported auth/persistence/private TLS/WSSの状態変化 → protected/remote readback → workflow authority/action plan → visible business proof/cleanup → G0/G1 audit。
+
+## 2026-08-09 Fresh regression, production, and Zeabur runtime checkpoint 307
+
+全体`npm test`は`1063 total / 1047 pass / 0 fail / 16 skip`、終了コード0。変更mjsの構文検査と`git diff --check`も成功。Postgres fixture未設定の16 skip以外に失敗はない。Company 1 scheduler run-onceはservice identity付きでidle、due 0、外部効果false。admin owner roomはscheduled profile/19880で意図的に保持し、recording/terminal cleanup完了、foreign room未操作。
+
+production QAはpublic health/JS/CSS 200。protected routeとBrowser Use UI readbackは`production_read_token_missing`で未開始。Zeabur `codex-app-server`はservice/deployment RUNNING、`/readyz=200`、source/container start script hash parity confirmed、`codex-cli 0.145.0`、internal `account/read`は`account_present=false` / `requires_openai_auth=true`。deploy/restart/secret/port-forward/domain変更なし。
+
+Evidence: `work/service-readiness/full-server-regression-20260809.v27.json`、`work/service-readiness/production-readonly-public-health-readback-20260809.v4.json`、`work/service-readiness/zeabur-codex-app-server-current-runtime-readback-20260809.v4.json`、`work/service-readiness/company-release-packet-preparation-20260809.v136.json`、`work/service-readiness/unresolved-audit-20260809.v184.json`、`work/service-readiness/terminal-audit-20260809.v97.json`。
+
+**Exact blocker:** `production_read_token_missing`、`zeabur_codex_app_server_chatgpt_login_required`、Zeabur private TLS/WSS・persistent auth・remote account/read/thread/turn未達、workflow business proof/G0/G1未達。password、OTP、API key、tokenは出力しない。状態変化がない間はprotected/remote routeを再試行しない。
+
+**Restart point:** approved production read tokenまたはsupported Zeabur auth/persistence/private TLS/WSSの状態変化 → protected/remote readback → workflow固有authority/action plan → same-run business proof/cleanup → G0/G1 audit。
+
+## 2026-08-09 Zeabur public TLS/WSS canary and AOS scheduler checkpoint 308
+
+Company 1のscheduler run-onceをfresh実行し、`completed`、service identity configured、company scope enforced、due occurrences `0`、`external_action_executed=false`を確認した。Codex App bridgeは6件のregistered/AOS automation parityが一致し、6件のpreflight no-effect jobをdurable workerでdrainした。Codex Appはthin trigger、AOS scheduler→durable queue→Mac Browser Use CLI workerを正本として維持する。
+
+Zeaburは専用`codex-app-server`だけにgenerated domain `codex-app-server.zeabur.app`、非loopback bind/TLS終端前提を反映し、専用serviceだけをrestartした。公開`/readyz=200`、`/healthz=200`、Origin付きhealthzは403、Authorization付きWSS upgradeは101。WSSの`initialize`と`account/read`まで到達したが、account未認証で`thread/start`/`turn/start`は未実行。local stdio fallback、Mac worker、AOS本体は維持し、AOS本体のdeployはしていない。
+
+Browser Useはcanonical CLIでadmin owner room `room-d95dadd0de52c398121b69f0f48437e4`をfresh確認した。scheduled/held/persistent-retained、専用profile、固定port `19880`、process/listener/daemon/lock不在、recording/cleanup完了。foreign roomは未操作であり、保持契約を継続してreleaseしない。
+
+Evidence: `work/service-readiness/company1-scheduler-tick-20260809.v4.json`、`work/service-readiness/codex-app-server-zeabur-wss-readback-20260809.v1.json`、`work/service-readiness/zeabur-codex-app-server-current-runtime-readback-20260809.v5.json`、`work/service-readiness/current-cross-boundary-readback-20260809.v19.json`、`work/service-readiness/browser-use-admin-login-handoff-readback-20260809.v20.json`、`work/service-readiness/production-readonly-public-health-readback-20260809.v5.json`、`work/service-readiness/company-release-packet-preparation-20260809.v137.json`、`work/service-readiness/unresolved-audit-20260809.v185.json`、`work/service-readiness/terminal-audit-20260809.v98.json`。
+
+**Resolved:** public generated domain/TLS/authenticated WSS upgradeの範囲で、custom domain missingとnon-loopback listener unprovenを解消。private ingress、supported production transport、authenticated thread/turnは未確認。
+
+**Exact blocker:** primary `production_read_token_missing`。Zeaburは`zeabur_codex_app_server_chatgpt_login_required`、persistent auth/private ingress、authenticated `thread/start`/`turn/start`未達。Job/Daily AI/NisenPrints business proofとG0/G1 final exit-checkも未達。認証情報は成果物へ出力していない。公開WSS canaryはCodex公式のexperimental/production unsupported注意があるため、本番切替証拠にしない。
+
+**Restart point:** secure supported ChatGPT auth/persistence/private-ingress evidenceまたはapproved production read tokenの状態変化 → account/read → thread/start/turn/startまたはprotected parity → workflow business proof/cleanup → G0/G1 audit。
+
+## 2026-08-09 Local Codex auth proof and Zeabur persistence gate checkpoint 309
+
+Mac側の公式`codex app-server --listen stdio://`をfresh実行し、`account/read`（ChatGPT/Pro）、`thread/start`、`turn/start`、`turn/completed`を確認した。local stdio経路は認証済みで、remote停止はMac側認証障害ではない。AOSのremote-only thread/turn canaryはlocal stdioでは`codex_app_server_remote_required_for_thread_turn_canary`で安全停止する設計どおりである。
+
+Company 1のscheduler run-onceは`completed`、service identity configured、due `0`、外部効果false。Codex App bridge 6/6とAOS 6/6はmatched、6件のpreflight no-effect jobはjobs APIで全件`completed`、worker queueはidleへ戻った。source/installed server・workerはdynamic runner選択とread-only defaultを維持し、legacy/effects参照はない。Browser Use CLIのadmin owner roomはscheduled/held、固定profile/19880を保持し、foreign roomは未操作。
+
+Zeabur専用serviceはRUNNING、generated domain PROVISIONED、public readiness/health、authenticated WSS upgrade 101まで確認済み。しかし`/data/codex`はoverlayfs、`/data` mount lineなしでpersistent auth stateは未証明。`account/read`は`requiresOpenaiAuth=true`で停止し、remote thread/turnは未実行。AOS本体、Mac worker、local fallback、secretは変更していない。
+
+Evidence: `work/service-readiness/codex-app-server-local-stdio-auth-readback-20260809.v1.json`、`work/service-readiness/company1-scheduler-tick-20260809.v5.json`、`work/service-readiness/aos-codex-app-trigger-parity-readback-20260809.v1.json`、`work/service-readiness/aos-runtime-boundary-readback-20260809.v1.json`、`work/service-readiness/current-cross-boundary-readback-20260809.v20.json`、`work/service-readiness/zeabur-codex-app-server-current-runtime-readback-20260809.v6.json`、`work/service-readiness/company-release-packet-preparation-20260809.v138.json`、`work/service-readiness/unresolved-audit-20260809.v186.json`、`work/service-readiness/terminal-audit-20260809.v99.json`。
+
+**Exact blocker:** primary `production_read_token_missing`。remoteは`zeabur_codex_app_server_chatgpt_login_required`と`zeabur_codex_auth_persistent_volume_missing`、private ingress、authenticated remote thread/turn、production WebSocket support未達。workflow business proof/G0/G1も未達。
+
+**Restart point:** Zeaburのsupported ChatGPT/API-key authをsecure boundaryで完了し、persistent `CODEX_HOME`とMac到達private ingressをfresh証明 → remote `account/read` → read-only `thread/start`/`turn/start` → workflow business proof → G0/G1 audit。local stdio fallbackは維持する。
+
+## 2026-08-09 Full regression and live-boundary checkpoint 310
+
+`npm test`をfresh実行し、`1063 total / 1047 pass / 0 fail / 16 skip`、exit 0。skipは`AUTOMATION_OS_TEST_POSTGRES_URL`未設定のPostgres fixtureのみ。Codex App Server WSS boundary focused tests `3/3`、変更script構文、`git diff --check`も成功した。build後もlocal API health `200`、server port `8787`、worker 1 process、runtime boundary `ready_for_authorized_read_only_admission`を確認した。
+
+Company 1 scheduler run-onceは`completed`、service identity configured、due `0`、external effect false。6/6 Codex App/AOS bridge parity、6件no-effect job完了、queue idleを維持。Mac local Codex authはChatGPT/Proでaccount/read→thread/start→turn/completed成功。ZeaburはRUNNING/PROVISIONED、public WSS canaryは到達済みだがChatGPT auth gateとoverlayfs/no persistent data mountが残る。
+
+Evidence: `work/service-readiness/full-server-regression-20260809.v28.json`、`work/service-readiness/company1-scheduler-tick-20260809.v6.json`、`work/service-readiness/aos-runtime-boundary-readback-20260809.v2.json`、`work/service-readiness/current-cross-boundary-readback-20260809.v21.json`、`work/service-readiness/company-release-packet-preparation-20260809.v139.json`、`work/service-readiness/unresolved-audit-20260809.v187.json`、`work/service-readiness/terminal-audit-20260809.v100.json`。
+
+**Exact blocker:** primary `production_read_token_missing`。remoteは`zeabur_codex_app_server_chatgpt_login_required`、`zeabur_codex_auth_persistent_volume_missing`、private ingress、authenticated remote thread/turn、production WebSocket support未達。Job/Daily AI/NisenPrints business proofとG0/G1 final exit-checkも未達。
+
+**Restart point:** supported Zeabur auth + persistent `CODEX_HOME` + private ingressまたはapproved production read tokenの状態変化 → protected/remote readback → workflow business proof/cleanup → G0/G1 audit。local stdio/AOS scheduler/Mac Browser Use CLIは正本として維持する。
+
+## 2026-08-09 Zeabur CLI capability boundary and safe handoff checkpoint 311
+
+公式Zeabur CLI `0.21.0`を共通入口としてfresh確認し、personal workspace、`automation-wiled`、専用`codex-app-server`だけを対象にservice/deployment=`RUNNING`、generated domain=`PROVISIONED`、internal DNS、HTTP 8080、port-forwarding=`DISABLED`をreadbackした。現行CLIのservice updateはtag、deployはsource/template、variableはenv操作、fileはpullまでで、Config EditorまたはVolume mountを行うコマンドはない。公式docsではConfig EditorはDashboardで起動時mountしrestartで反映、GraphQL APIはApollo Explorer/SDLで利用可能なmethodを確認する境界として文書化されている。Template YAMLはconfig-file/envsubst/permissionを表現するが、current schemaにservice Volume/mount fieldはない。
+
+未確認のGraphQL mutationを直打ちせず、secret valueのread/write、variable echo、既存AOS service、Mac worker、local stdio、foreign Browser Use roomには作用させなかった。MCP current registryにもZeabur connectorはなく、公式CLIをCodex App共通fallbackとして維持する。これはCLIの共通設定と安全なcapability境界の確定であり、Zeabur側Codex認証・persistent `CODEX_HOME`・Mac到達private TLS ingress・remote thread/turnの完了ではない。
+
+Evidence: `work/service-readiness/zeabur-config-editor-volume-capability-readback-20260809.v1.json`、`work/service-readiness/zeabur-codex-app-server-current-runtime-readback-20260809.v6.json`、`work/service-readiness/full-server-regression-20260809.v28.json`、`work/service-readiness/current-cross-boundary-readback-20260809.v21.json`。
+
+**Exact blocker:** `zeabur_config_editor_or_volume_capability_unavailable_via_official_cli`、`zeabur_codex_app_server_chatgpt_login_required`、`zeabur_codex_auth_persistent_volume_missing`、`zeabur_codex_app_server_private_ingress_tls_proof_missing`、primary `production_read_token_missing`。
+
+**再開点:** Zeabur Dashboardまたは公式schemaで確認できる正式mutationによる専用serviceのpersistent `CODEX_HOME`・supported Codex auth・private ingress設定後、fresh readback → remote `account/read` → authenticated private WSS → read-only `thread/start`/`turn/start` → workflow business proof/cleanup → G0/G1 exit audit。local stdio/AOS scheduler/Mac Browser Use CLIは継続。
+
+## 2026-08-09 AOS thin-trigger dispatcher root fix and three-workflow drain checkpoint 312
+
+登録promptを読む前に共通dispatcherがCodex App run-now capabilityを要求していたため、AOS_TRIGGER_BRIDGE_V1でもJob/Dailyは開始前停止し、NisenPrintsはlegacy generated runnerのrepair-admissionへ進んでいた。canonical `aos-trigger.mjs`・company/automation binding・provider-neutral/no-effect契約を検証する共通AOS bridge adapterを追加した。global Automation Kernel dispatcherとJob/Daily Python CLIの両方で、AOS bridgeのみ`run_now_capability_required=false`でpreflight/executeできる。通常のBrowser Use/business runnerへは分岐せず従来のfail-closedを維持する。
+
+fresh test/readbackはPython `8 passed`、compileall、dispatcher node check、公式preflight 3/3。3 workflowを公式dispatcherからAOSへtriggerし、Job `job_mslehb32_gu8amy`、Daily `job_mslehb3c_0nu1wn`、NisenPrints `job_mslehb56_4v8iq6`のreceiptを取得した。全てCompany 1、`dry_run=true`、`provider_called=0`、`external_action_executed=false`。常駐workerの30秒poll後、DB readbackは3/3 `completed`、leaseなし、`last_error=null`。Browser Use room、応募、投稿、公開、送信、支払い、secret変更は0件。
+
+Evidence: `work/service-readiness/aos-codex-app-trigger-bridge-readback-20260809.v1.json`、`work/service-readiness/unresolved-audit-20260809.v188.json`。変更sourceは`src/social_flow/aos_trigger_bridge.py`、`src/social_flow/cli.py`、`/Users/nichikatanaka/.codex/skills/automation-kernel-run/scripts/global-automation-manager.mjs`。
+
+**Resolved:** AOS thin-triggerにCodex App run-now capabilityを誤要求していたshared dispatcher gate。
+
+**Exact blocker:** business proof（Job submitted_confirmed、Daily AI publish/feed-study/engagement、NisenPrints generation/provider/Etsy/Pinterest）、`production_read_token_missing`、Zeabur `zeabur_codex_app_server_chatgpt_login_required`/persistence private TLS/WSS/remote thread-turn、G0/G1。AOS no-effect drain成功はbusiness completionを意味しない。
+
+**Restart point:** fresh workflow authority/action plan → same-run Browser Use CLI business proof/cleanup → production/Zeabur protected readback → G0/G1 audit。admin roomはowner契約に従い保持、foreign roomは未操作。
+
+## 2026-08-09 fresh workflow reference read-only canary checkpoint 313
+
+Job/Daily AI/NisenPrintsについて、canonical Browser Use CLI、workflow-owned scheduled profile、reserved port、same-run readback、record-finalize、terminal cleanupをfresh確認した。Job `job-browser-canary-20260809-r6`はLinkedIn read-only canaryとして完了し、profile `automation-3` / port `19881`、recording/media finalize、process/listener/lock cleanupを確認したが、`submitted_confirmed`は未達。Daily `run_mslevgkz_20wphf`はAOS portable reference readbackとしてX originを確認し、profile `daily-ai` / port `19882`、recording/cleanupを確認したが、publish/feed-study/engagement proofは未達。NisenPrints `run_mslevgob_t8bw30`はCanva originを確認し、profile `nisenprints` / port `19884`、recording/cleanupを確認したが、generation/provider/Etsy/Pinterest proofは未達。全件`external_action_executed=false`。
+
+Job portable endpointは`read_only_stage=reference_readback`を契約上受け付けず`HTTP 500 internal_error`となったため、Jobだけはcandidate-supply bundleを用いた専用readbackへ再開する。admin room `room-d95dadd0de52c398121b69f0f48437e4`は`automation-os-admin-login-handoff` ownerのscheduled/held persistent room、port `19880`、current operationなしを確認し、保持した。foreign roomは未操作。
+
+Evidence: `work/service-readiness/workflow-reference-readonly-canary-20260809.v1.json`、`work/service-readiness/job-browser-canary-readback-20260809.v2.json`、`data/artifacts/run_mslevgkz_20wphf/run_mslevgkz_20wphf_step_1.json`、`data/artifacts/run_mslevgob_t8bw30/run_mslevgob_t8bw30_step_1.json`。
+
+**Exact blocker:** `job_submitted_confirmed_current_run_missing`、`daily_ai_publish_feed_study_engagement_current_run_missing`、`nisenprints_generation_provider_etsy_pinterest_current_run_missing`、`production_read_token_missing`、Zeabur supported auth/persistence/private TLS-WSS/remote thread-turn、G0/G1。認証・承認・fresh effect gateが揃うまでbusiness effectはfail-closed。
+
+**Restart point:** workflow-specific authority/action plan → same-run Browser Use CLI business proof/cleanup → production/Zeabur protected readback → G0/G1 audit。Jobはcandidate-supply bundleから、Daily/Nisenは各業務proofのfresh gateから再開する。
+
+## 2026-08-09 Job candidate-supply admission checkpoint 314
+
+Job専用`candidate_supply` read-only admissionをfreshに1回実行した。Company 1、Browser Use CLI、scheduled profile `automation-3`、port `19881`で固定され、`external_action_executed=false`のまま`portable_external_candidate_supply_input_bundle_missing`で停止した。effective Browser Use sessionも未確定で、応募・送信・Identity操作は発生していない。過去のcandidate URL/artifactは再利用していない。
+
+Evidence: `work/service-readiness/job-candidate-supply-admission-20260809.v1.json`、run `run_mslf4ji3_7w44tj`。
+
+**Exact blocker:** `portable_external_candidate_supply_input_bundle_missing`、補助的に`service_readiness_browser_use_effective_session_missing`。
+
+**Restart point:** fresh Job authorityと非秘密candidate-supply input bundleを揃えた後、read-only candidate readbackへ進み、submitはsame-run `submitted_confirmed`/source-of-truth sync authorityが明示された場合だけ許可する。
+
+## 2026-08-09 admin owner-lane projection checkpoint 315
+
+admin login handoffのowner-lane helper projectionをfresh同期した。対象room `room-d95dadd0de52c398121b69f0f48437e4`はscheduled/held、port `19880`、current operationなしで、owner-lane同期は1 roomのみ・foreign room未操作・binding不変だった。現在のroom registryでは`owner_id=null`表示だが、`automation_id=automation-os-admin-login-handoff`は一致しているため、保持契約を維持し、owner_idの不足は未確認として記録した。
+
+Evidence: `work/service-readiness/admin-room-owner-lane-readback-20260809.v1.json`。
+
+**Exact blocker:** `owner_id_display_field_null_in_current_room_registry_projection`。
+
+**Restart point:** helper-supported strict owner readbackが必要になった時だけ追加取得し、scheduled persistent roomは保持、foreign roomは未操作。
+
+## 2026-08-09 unresolved-only audit checkpoint 316
+
+unresolved-only audit v189をfresh作成した。AOS thin-trigger根本修正、no-effect durable drain、Job/Daily/NisenPrints read-only canaryのrecording/cleanupは解決済みとして再掲せず、business proof・production token・Zeabur remote auth/persistence/private TLS-WSS/thread-turn・legacy prompt migration drift・admin room owner_id表示不足・G0/G1だけを未解決として残した。全件external effectはfail-closed。
+
+Evidence: `work/service-readiness/unresolved-audit-20260809.v189.json`。
+
+**Exact blocker:** Job candidate-supply input bundleと各workflowのcurrent business proofが未達。production/Zeabur protected readbackも未達。admin roomは保持中だがcurrent projectionのowner_id表示はnull。
+
+**Restart point:** fresh workflow authority/input bundle → same-run Browser Use CLI business proof/cleanup → approved production/Zeabur readback → G0/G1 audit。
+
+## 2026-08-09 Job candidate-supply runtime readback and normalization gate checkpoint 317
+
+fresh run `run_mslfnmxx_3sklxd`でJob `candidate_supply`をread-only実行した。Company 1、Browser Use CLI、scheduled profile `automation-3`、port `19881`、AOS worker routeを固定し、workerは`complete`、stepは`completed`、external effectはfalse。同一runのBrowser Use receiptはfinalized、recording finalized、process identity verified、listener/lock cleanup verifiedだった。
+
+portable worker共通層を修正し、候補adapterの同一run runtime readback（effective session/profile/port/cleanup）をstep metadataへ反映した。今回のfresh metadataは`effective_session_id`あり、`status=verified`、`readback_status=verified`。worker再起動はAOS worker serviceだけで、API、Mac worker、scheduled profile、admin/foreign roomは触っていない。
+
+candidate artifactは1件のcurrent LinkedIn URLを持つが、`company`空・role genericで、応募可能なcandidate normalizationを満たさない。`submitted_confirmed`、source-of-truth sync、応募送信は未実行。Evidence: `work/service-readiness/job-candidate-supply-readonly-20260809.v2.json`、`work/service-readiness/unresolved-audit-20260809.v190.json`、`data/artifacts/run_mslfnmxx_3sklxd/run_mslfnmxx_3sklxd_step_1.json`、`data/artifacts/run_mslfnmxx_3sklxd/candidate-supply/japan_targeted.json`。
+
+**Exact blocker:** `job_candidate_record_company_role_normalization_missing`、`job_submitted_confirmed_current_run_missing`。
+
+**Restart point:** fresh idempotency keyで同一Browser Use CLI flow内のjob detail read-only normalizationを実装・検証し、company/roleが空ならtyped rejection。今回の候補URL・receiptは再利用せず、explicit effect authorityとvisible submitted proofが揃うまでsubmitしない。
+
+## 2026-08-09 Job detail normalization fail-closed and runtime proof separation checkpoint 318
+
+fresh r7 `run_mslg78ab_hx40kk`はJob `candidate_supply`を4 queryのdetail readbackまで実行した。company/roleをcleanに正規化できなかったためcandidate_count `0`、`job_candidate_record_company_role_normalization_missing`でblocked。Browser Use CLIのprofile `scheduled/automation-3`、port `19881`、effective session、recording finalize、process/listener/lock cleanupはfresh確認済み、external effectはfalse。
+
+AOS worker共通層で、業務step blockerとruntime bindingを分離した。r7 metadataは`runtime binding.status=verified`、`readback_status=verified`、effective sessionありを示す。r4-r6はparser/runtime修正前のため不採用・再利用禁止。Evidence: `work/service-readiness/job-candidate-supply-readonly-20260809.v3.json`、`work/service-readiness/unresolved-audit-20260809.v191.json`、`data/artifacts/run_mslg78ab_hx40kk/run_mslg78ab_hx40kk_step_1.json`、`data/artifacts/run_mslg78ab_hx40kk/candidate-supply/japan_targeted.json`。
+
+**Exact blocker:** `job_candidate_record_company_role_normalization_missing`、`job_submitted_confirmed_current_run_missing`。
+
+**Restart point:** clean company/roleを返せるfresh source/detail readbackが出るまでtyped rejectionを維持する。explicit effect authority、same-run source-of-truth sync、visible submitted proofなしにsubmitしない。
+
+## 2026-08-09 admin room handoff fresh owner-lane checkpoint 319
+
+`room-d95dadd0de52c398121b69f0f48437e4` をcanonical Browser Use CLIでfresh確認した。`automation-os-admin-login-handoff` owner laneと一致し、scheduled/held/persistent-retained、専用profile、固定port `19880`、current operationなし。process/listener/daemon/active runtime/lockは不在で、現在のhandoff状態の録画・terminal cleanupは完了。owner-scoped helper projectionは `updated_room_count=1`、foreign room非操作、lifecycle/binding不変、read-only binding保持で同期した。
+
+次回のapproved admin/production readbackのための保持契約が継続しているため、room release、profile削除、finalized run replayはしない。current sanitized registryの `owner_id` はnullだが automation_idがownerと一致するため、値を推測せず `PENDING_CONFIRMATION` に分類する。
+
+Daily AI owner projectionもowner-scopedに同期した。現行の正規laneは profile `/Users/nichikatanaka/.browser-use-cli/profiles/scheduled/daily-ai` / port `19882`。registryの旧released historical roomが profile `/Users/nichikatanaka/.browser-use-cli/profiles/scheduled/daily-ai-research-publish-run` / port `19880` として残っているが、active process/listenerはなく、immutableなhistorical bindingを改変・releaseしない。
+
+Evidence: `work/service-readiness/browser-use-admin-login-handoff-readback-20260809.v21.json`、`work/service-readiness/browser-use-room-port-projection-readback-20260809.v1.json`。
+
+**Exact blocker:** `owner_id_display_field_null_in_current_room_registry_projection`、`daily_ai_historical_room_port_projection_mismatch`（PENDING_CONFIRMATION）。外部効果はnone。
+
+**Restart point:** adminは同一owner・profile/19880でfresh authority → approved readback → cleanup → release判定。Daily AIはcanonical profile/19882のowner-bound admissionから再開し、旧released historical roomは再利用しない。
+
+## 2026-08-09 Job read-only canary after captured-readback repair checkpoint 320
+
+Job `candidate_supply`のfresh owner-lane canary `run_mslip8ht_jvqbnt`を、修正済みsource/runtimeで一度だけ実行した。Browser Use CLIのoperation ledgerは`open 16 / eval 40 / state 16 / screenshot 8 / wait 8`が全件`read_only=true`、non-read-only commandは0件。録画は`media_finalized`、cleanup verified、専用profile `scheduled/automation-3` / port `19881`、外部effectは0件である。
+
+ただし、LinkedIn job-detailのbounded readbackは依然としてrole/companyを構造化候補へ正規化できず、candidate_count `0`、`job_candidate_record_company_role_normalization_missing`でblocked。r14/r15の古いURL・receipt・screenshotはcurrent proofとして再利用しない。v16 readbackにsource/runtime hash、fresh run、cleanup、restart pointを固定した。
+
+Evidence: `work/service-readiness/job-candidate-supply-readback-20260809.v16.json`、`data/artifacts/run_mslip8ht_jvqbnt/candidate-supply/japan_targeted.json`、`data/artifacts/run_mslip8ht_jvqbnt/run_mslip8ht_jvqbnt_step_1.json`、`/Users/nichikatanaka/.browser-use-cli/recordings/run_mslip8ht_jvqbnt__candidate_supply_japan_targeted_flow/operation-ledger.jsonl`。
+
+**Resolved:** read-only eval digest mismatchと、job-detail selector優先順位のsource/runtime parityは確認済み。これは候補の業務proofや応募成功を意味しない。
+
+**Exact blocker:** `job_candidate_record_company_role_normalization_missing`、`job_submitted_confirmed_current_run_missing`。submit laneはclosedのまま。
+
+**Restart point:** captured-readbackのin-memory shapeとbounded DOM extraction契約を再調査し、role/companyフィールドが返るfocused regressionを追加してsource/runtime parityを再確認。その後だけ新しいrun/idempotency keyでread-only canaryを再開する。admin room `room-d95dadd0de52c398121b69f0f48437e4`はscheduled persistent-retained、foreign roomは未操作。
+
+## 2026-08-09 Job captured-readback scope repair checkpoint 321
+
+r16のfresh readbackで特定した根本原因を、job-detail evalのbounded scope選択へ局所修正した。role要素自身ではなく、2〜3行以上のmatching ancestorを優先し、同じancestor chainのallowlisted company selector・nearby lines・logo altを探索する。captured-readbackは`success/data/result/tab_inventory` envelopeをin-memoryでunwrapし、raw page bodyは保存しない。
+
+focused testは9/9、実DOM shape（Renesas Electronics / Product Marketing Specialist...）とcaptured-readback envelopeの回帰を含む。packaged helperのread-only probeはtrue、stage/candidate adapter node check、packaged helper Python compile、git diff checkも通過。新canaryはまだ実行しておらず、外部effectは0件。
+
+Evidence: `work/service-readiness/job-candidate-supply-readback-20260809.v17.json`、`/Users/nichikatanaka/Documents/New project/browser-use-cli/lib/stage-adapter.mjs`、`/Users/nichikatanaka/Documents/New project/browser-use-cli/bin/codex-browser-use`、`/Users/nichikatanaka/Documents/New project/scripts/browser_use/job_manager_browser_use_cli_candidate_supply_adapter.mjs`、`/Users/nichikatanaka/Documents/New project/tests/job_manager_browser_use_cli_candidate_supply.test.mjs`。
+
+**Resolved:** r16でrole要素scopeに閉じていたcaptured-readback/DOM extractionのsource defectを修正し、source/runtime parityと回帰を確認した。r16の業務blocker自体は新canaryで未確認のため、応募成功とは扱わない。
+
+**Exact blocker:** `job_candidate_record_company_role_normalization_missing_from_prior_canary`、`job_submitted_confirmed_current_run_missing`。submit laneはclosed。
+
+**Restart point:** 新しいrun/idempotency keyでJob owner-lane read-only candidate-supply canaryを1回だけ実行し、fresh role/company booleans/hashes・same-run cleanupを確認。その後もsubmitはbusiness proof/explicit effect authority/visible submitted_confirmed/source-of-truth syncが揃うまで行わない。
+
+## 2026-08-09 Job r18 transport-envelope readback and repair checkpoint 322
+
+r18 `run_msljcfkj_42oi3w`は、body-visible fallbackまでを含むsource/runtimeでCompany 1、Browser Use CLI、scheduled profile `automation-3`、固定port `19881`でfresh実行した。operation ledger intent 44件（open 8 / eval 20 / state 8 / screenshot 4 / wait 4）は全件read-only、non-read-only 0件。recordingは`media_finalized`・frame_count 46・recorder inactive、same-run cleanup verified、external effect falseで終了した。
+
+ただし候補は0/2、4 queryのdetail readbackすべて`company_readback=false`・`normalized=false`、exact blockerは`job_candidate_record_company_role_normalization_missing`。r17後のbody-visible fallbackでも同じ結果のため、同じcanaryは再発射しない。
+
+原因はnative Browser Use CLIの`recording_continued/captured_readback` envelopeを候補adapterの`readbackObject`が探索していなかったこと。`captured_readback`をexplicitなin-memory unwrap対象へ追加し、transport envelope回帰を含むfocused test 9/9、node check、read-only probe、Python compile、git diff checkを通過した。この修正後の実ブラウザcanaryは未実施で、raw page bodyは保存していない。
+
+Evidence: `work/service-readiness/job-candidate-supply-readback-20260809.v18.json`、`data/artifacts/run_msljcfkj_42oi3w/candidate-supply/japan_targeted.json`、`data/artifacts/run_msljcfkj_42oi3w/run_msljcfkj_42oi3w_step_1.json`、`/Users/nichikatanaka/.browser-use-cli/recordings/run_msljcfkj_42oi3w__candidate_supply_japan_targeted_flow/operation-ledger.jsonl`、`/Users/nichikatanaka/.browser-use-cli/recordings/run_msljcfkj_42oi3w__candidate_supply_japan_targeted_flow/.recording-status.json`。
+
+**Exact blocker:** `job_candidate_record_company_role_normalization_missing`、`job_submitted_confirmed_current_run_missing`。応募・送信は行わない。
+
+**Restart point:** `captured_readback`修正後のfresh source/runtime parityを確認し、新しいrun/idempotency keyでread-only canaryを1回行い、same-run cleanupを確認する。r18のURL・receipt・screenshot・raw page bodyは再利用しない。Daily AI/NisenPrints、production protected readback、Zeabur remote auth/persistence/private TLS-WSS/thread-turn、G0/G1は既存restart pointから継続する。
+
+## 2026-08-09 Job r20 captured-readback truncation checkpoint 323
+
+r20 `run_msljtple_fq3msa`はfresh diagnostic付きで、Company 1、Browser Use CLI、scheduled profile `automation-3`、固定port `19881`で実行した。operation ledger intent 44件は全件read-only、non-read-only 0件。recordingは`media_finalized`・frame_count 46・recorder inactive、same-run cleanup verified、external effect falseで終了した。
+
+4/4 detail readback shapeが`type=string`・`length=512`だったことから、raw captured-readback stringをstage adapterのbounded redactionがparse前に切断していたことを根本原因として確定した。raw valueは保存していない。
+
+`normalizeBrowserUseCliCapturedReadback`を追加し、transient JSON parse後に構造化redactionするよう修正。512超のtransport envelope回帰を含むfocused test 9/9、node check、read-only probe、Python compile、git diff checkを通過した。修正後の実ブラウザcanaryは未実施、応募・送信は行わない。
+
+Evidence: `work/service-readiness/job-candidate-supply-readback-20260809.v19.json`、`data/artifacts/run_msljtple_fq3msa/candidate-supply/japan_targeted.json`、`data/artifacts/run_msljtple_fq3msa/run_msljtple_fq3msa_step_1.json`、`/Users/nichikatanaka/.browser-use-cli/recordings/run_msljtple_fq3msa__candidate_supply_japan_targeted_flow/operation-ledger.jsonl`、`/Users/nichikatanaka/Documents/New project/tests/job_manager_browser_use_cli_candidate_supply.test.mjs`。
+
+**Exact blocker:** `job_candidate_record_company_role_normalization_missing`、`job_submitted_confirmed_current_run_missing`。
+
+**Restart point:** parse-before-redact修正後のfresh source/runtime parityを確認し、新しいrun/idempotency keyでread-only canaryを1回実行する。r20のURL・receipt・screenshot・raw page bodyは再利用しない。Daily AI/NisenPrints、production protected readback、Zeabur remote auth/persistence/private TLS-WSS/thread-turn、G0/G1は既存restart pointから継続する。
+
+## 2026-08-09 Job r21 business normalization rejection checkpoint 324
+
+r21 `run_mslk25j5_zcpsda`はparse-before-redact修正後のfresh canaryとしてCompany 1、Browser Use CLI、scheduled profile `automation-3`、固定port `19881`で実行した。transport readbackはobject envelopeへ復旧し、runtimeはcandidate_count `2`・cleanup verified・recording finalized・external effect falseだった。
+
+ただし候補role/companyは`0 notifications`とページstate断片で、business candidateは0件。runtimeの`ready`は応募可能proofを意味しないため、r21の候補値・URL・receipt・screenshotは再利用しない。
+
+原因はstructured `data.state`を`readbackText`がJSON全体として扱い、normalization fallbackがUI/state本文をcompanyに採用したこと。state/text unwrap、generic UI・HTML・serialized state markerのfail-closed gateを実装し、focused test 9/9、node check、read-only probe、Python compile、git diff checkを通過した。raw page bodyは保存していない。
+
+Evidence: `work/service-readiness/job-candidate-supply-readback-20260809.v20.json`、`data/artifacts/run_mslk25j5_zcpsda/candidate-supply/japan_targeted.json`、`data/artifacts/run_mslk25j5_zcpsda/run_mslk25j5_zcpsda_step_1.json`、`/Users/nichikatanaka/.browser-use-cli/recordings/run_mslk25j5_zcpsda__candidate_supply_japan_targeted_flow/operation-ledger.jsonl`、`/Users/nichikatanaka/Documents/New project/tests/job_manager_browser_use_cli_candidate_supply.test.mjs`。
+
+**Exact blocker:** `job_candidate_record_company_role_normalization_malformed_ui_or_state`、`job_submitted_confirmed_current_run_missing`。応募・送信は行わない。
+
+**Restart point:** state unwrap・malformed field fail-closed修正後のfresh source/runtime parityを確認し、新しいrun/idempotency keyでread-only canaryを1回行う。`business_candidate_count >= requested_count`かつclean role/companyを満たすまでbusiness proof不成立。Daily AI/NisenPrints、production protected readback、Zeabur remote auth/persistence/private TLS-WSS/thread-turn、G0/G1は既存restart pointから継続する。
+
+## 2026-08-09 Job r22 readback固定・見出し選択修正後の再開 checkpoint 325
+
+r22 `run_mslk84ks_bwlcnq` は見出し選択修正前のsource/runtimeで実行され、candidate_count `0/2`、4/4 detail readbackで`company_readback=true`・`normalized=true`は0件、exact blockerは`job_candidate_record_company_role_normalization_missing`だった。Browser Use CLIはCompany 1、scheduled profile `automation-3`、固定port `19881`。operation ledger 88件（open 16 / eval 40 / state 16 / screenshot 8 / wait 8）は全件read-only、non-read-only 0、external effect 0。recordingは`media_finalized`・frame_count 46、same-run cleanup verified、process/listener/lock境界も維持した。
+
+r22のshape-only結果を`work/service-readiness/job-candidate-supply-readback-20260809.v21.json`へ固定した。r22の候補値・URL・receipt・screenshotは応募submit inputへ再利用しない。
+
+r22後にjob-detail evalのrole heading選択を修正し、通知/UI headingを除外してjob-title classまたは職種語を含むheadingだけを採用するようにした。current repaired source/runtimeのfocused test 9/9、node check、packaged helper compile、git diff checkはpassed。read-only eval digestは`44dc9d0dadd1b02f55866be2b8db42b64c00fada0cd4bd893a0b93bea527d143`で、r22 runtimeのhashとは区別して記録する。
+
+**Completed:** r22 same-run read-only canary、shape診断、recording finalization、terminal cleanup、固定profile/port boundary、heading-selection root repairと回帰。
+
+**Exact blocker:** `job_candidate_record_company_role_normalization_missing`、`job_submitted_confirmed_current_run_missing`。応募送信のユーザー明示許可はあるが、clean business candidate、same-run submit authority、visible `submitted_confirmed`、source-of-truth syncが未達のため、r22で応募送信はしていない。
+
+**Restart point:** fresh idempotency keyで修正後r23 Job read-only candidate-supply canaryを1本だけ実行する。clean role/companyがrequested_count以上なら、現行submit laneのauthority/effect/readbackを確認してから応募へ進む。未達ならtyped blockerを保持する。Daily AI/NisenPrints、production protected readback、Zeabur remote auth/persistence/private TLS-WSS/thread-turn、G0/G1は既存restart pointから継続する。
+
+## 2026-08-09 Job r23 clean candidate proof・Opportunity Ledger gate checkpoint 326
+
+r23 `run_mslkjrla_3gj5gy` はheading-selection修正後のfresh Job `candidate_supply`で、Company 1、Browser Use CLI、scheduled profile `automation-3`、固定port `19881`を使用し、candidate_count `2/2`、clean role/company `2/2`、runtime status `verified`、effective sessionありで完了した。recordingは`media_finalized`・frame_count 19、operation ledgerは34件（open 6 / eval 16 / state 6 / screenshot 2 / wait 4）が全件read-only、non-read-only 0、external effect 0。same-run cleanupもverified。
+
+送信直前に共有Opportunity Ledger `/Users/nichikatanaka/Documents/New project/artifacts/shared/opportunity-status-ledger.jsonl`をfresh-readしたところ、r23候補key 2件は両方`ledger_missing:<opportunity_key>`。スキル契約によりcandidate supplyからLedgerを補完せず、claimせず、submit runも作らなかった。r23候補URL・receipt・flowはsubmit inputへ再利用しない。Evidence: `work/service-readiness/job-candidate-supply-readback-20260809.v22.json`、`data/artifacts/run_mslkjrla_3gj5gy/candidate-supply/japan_targeted.json`、`data/artifacts/run_mslkjrla_3gj5gy/run_mslkjrla_3gj5gy_step_1.json`、`/Users/nichikatanaka/.browser-use-cli/recordings/run_mslkjrla_3gj5gy__candidate_supply_japan_targeted_flow/operation-ledger.jsonl`。
+
+**Completed:** r23 clean candidate-supply business proof、source/runtime parity、same-run Browser Use receipt、recording finalization、terminal cleanup、fixed profile/port readback。
+
+**Exact blocker:** `ledger_missing:opp-4b808be4280521f0f8397fc5e15a7abbc5f19c052775fb9f9091ad2b09cd7d90`、`ledger_missing:opp-8e2ac5f9b250cd9da54b0ead68ab5f1c4b14e8105b463eaee413f52cd3d73752`。ユーザーの応募送信許可はあるが、共有正本のfresh record/claimがないため送信不可。
+
+**Restart point:** 公式Opportunity Ledger discovery/classification laneでr23候補を正本へ登録できる状態を確認し、fresh-read → atomic claimを1候補ずつ行う。その後、新しいone-candidate submit run、fresh submit authority、Browser Use CLI visible success、same-run outcomes/sync/readback、cleanupへ進む。Ledger手編集・candidate supplyからの暗黙補完・r23 receipt再利用は禁止。Daily AI/NisenPrints、production protected readback、Zeabur remote auth/persistence/private TLS-WSS/thread-turn、G0/G1は既存restart pointから継続する。
+
+## 2026-08-09 共通固定kernel＋adaptive Web契約・Zeabur Codex App Server認証待ち checkpoint 327
+
+`automation_os_web_operation_contract.v1` を共通AOS runner/lane/envへ束縛した。固定kernelとadaptive Web操作層を分離し、Browser Use CLI以外のbrowser surface、固定selector/DOM順序/click列、secret/raw page body保存を許可しない。portable business/action plan、registered runner、lane manager、worker boundary、docs、回帰fixtureへ反映済み。server build、関連AOS 23/23、script 26/26、Job focused 19/19 passed。固定global workflowの未指定scopeを誤拒否していたAPI回帰を修正し、関連APIテストは112/112 passed。
+
+Mac local Codex App Serverはfresh `account/read`（ChatGPT/pro）→read-only `thread/start`→`turn/start`→`turn/completed` passed。local stdio fallbackを保持。Zeabur source preflight全passed、専用service deploymentは`RUNNING`、container `/readyz=200`、secret file readable。内部DNS readbackのみでMac向けprivate TLS/WSSは未確認。`/data/codex/auth.json`なし、volume mount unknown、service内WebSocket `account_present=false / requiresOpenaiAuth=true`。ChatGPT device-auth用のBrowser Use CLI roomはactive scheduled、port `19887`、profile `/Users/nichikatanaka/.browser-use-cli/profiles/scheduled/codex-server-zeabur-chatgpt-auth`。
+
+**Current status:** implemented/verified＝共通契約、local fallback、source/build/focused regression、Zeabur service/readiness、ログイン画面room。awaiting_user＝Zeabur上のCodex本体ChatGPT手動認証。PENDING_CONFIRMATION＝auth state/volume persistence、private TLS/WSS、remote account/thread/turn、AOS remote bridge canary、G0/G1。
+
+**Exact blocker / restart point:** `zeabur_codex_app_server_chatgpt_auth_missing`。ユーザーが同じ専用画面で認証完了後、`codex login status`と同一serviceの`account/read`をfresh確認し、read-only thread/turn completion、private ingress、AOS bridge canary、parity、cleanupを順に行う。認証情報はログ・artifactへ残さない。JobはOpportunity Ledgerのfresh record/atomic claimがないため、応募submitはまだ0件。
+
+## 2026-08-09 portable worker ID・Opportunity Ledger admission checkpoint 328
+
+実run IDの正本が `run_<time>_<random>` 形式であることに合わせ、portable action-plan / business-worker / Browser Use runner / server portable contract / Job business runnerの識別子境界へ `_` を反映した。AOS build、server対象テスト81/81、scriptテスト57/57、Python compile、Node syntax checkを確認。現行のZeabur serviceやMac workerは再起動・停止していないため、source/runtime parityのうちinstalled/deployed reflectionは`PENDING_CONFIRMATION`。
+
+正規 `OpportunityLedger` を利用するJob submit admission helperを追加した。fresh clean candidateのclassification、fresh-read、atomic claim、visible submitとsame-run sync後の`submitted_confirmed` finalize、同一claimのidempotent再実行を束縛し、claim失敗時はBrowser Useを起動しない。production ledgerの手編集はしておらず、今回の実装テストはtemporary ledgerのみ。production external actionは0件。
+
+Evidence: `work/service-readiness/portable-worker-opportunity-ledger-20260809.v1.json`、`scripts/tests/jobOpportunityLedgerBoundary.test.mjs`。
+
+**Current status:** implemented＝portable ID boundary、official Ledger boundary、回帰。verified＝source build、server 81/81、script 57/57、temporary claim/finalize/readback。awaiting_user＝Zeabur Codex本体の手動認証。PENDING_CONFIRMATION＝fresh Job candidate/claim/submit proof、Zeabur auth/volume/private TLS-WSS/remote thread-turn、deployed reflection、G0/G1。
+
+**Exact blocker / restart point:** `job_opportunity_ledger_current_candidates_not_fresh`、`job_submitted_confirmed_current_run_missing`、`zeabur_codex_app_server_chatgpt_auth_missing`。帰宅後は同じauth room/profile/19887でログイン確認→Zeabur read-only remote proof、並行して新しい`automation-3`/19881 candidate-supply→Ledger claim→one-candidate submit→same-run sync/readback→cleanupへ進める。古いcandidate/claim/receiptは再利用しない。
+
+## 2026-08-09 isolated reference canary checkpoint 329
+
+ユーザー不在中にisolated SQLiteのreference workflow canaryをfresh実行した。Daily AI、Job、NisenPrintsの3 laneはすべて`proof_backed_safe_stop_verified`、exact blocker `browser_use_cli_required`、runner未起動、Company scope/start lineage/approval boundary/runtime binding/worker blocked event/safety proof/cleanup receipt verified、external action `false`だった。production business completionや応募・投稿・公開の証跡とは分離して扱う。
+
+Evidence: `work/service-readiness/reference-workflow-canary-20260809.v1.json`。
+
+**Current status:** isolated reference safety proof＝verified。未達＝production protected readback、Daily AI/NisenPrints current business proof、Job fresh candidate/claim/submit proof、Zeabur auth/volume/private TLS-WSS/remote thread-turn、G0/G1。
+
+**Restart point:** reference canaryから先へは自動で外部効果へ進めない。ユーザー帰宅後、同じZeabur auth room/profile/19887で認証→remote read-only proof、Jobは新しい`automation-3`/19881 candidate-supply→official Ledger claim→one-candidate submit→same-run sync/readback→cleanupへ進める。
+
+## 2026-08-09 Job fresh candidate-supply business proof checkpoint 330
+
+fresh run `run_mslq6ddp_tslct2`を、AOS portable workerのread-only `candidate_supply`として1回だけ実行した。Company 1、canonical Browser Use CLI、scheduled profile `automation-3`、固定port `19881`、same-run receipt、recording finalization、terminal cleanupを確認。candidate supplyは`ready`、candidate_count/requested_countは`2/2`で、clean role/companyは Unicity International / Marketing Manager - Japan と Specialized Group / Brand Marketing Manager。runは`complete`、stepは`completed`、worker receiptは存在し、external action countは0。
+
+Opportunity Ledgerは変更していない。候補供給の証跡をsubmit successとは混同せず、次はこのfresh runから1候補だけを選び、公式Ledger helperのclassification→atomic claim→新規submit run→visible `submitted_confirmed`→same-run sync/readback→cleanupを行う。Zeabur auth room/profile/19887は認証待ちで保持中。
+
+Evidence: `data/artifacts/run_mslq6ddp_tslct2/candidate-supply/japan_targeted.json`、`data/artifacts/run_mslq6ddp_tslct2/run_mslq6ddp_tslct2_step_1.json`、`data/artifacts/run_mslq6ddp_tslct2/browser-use-cli-authority/job-manager-read-only.v1.json`。
+
+**Completed:** fresh Job candidate-supply business proof、clean candidate 2/2、Company scope、profile/19881 binding、same-run cleanup。
+
+**Exact blocker:** `job_submitted_confirmed_current_run_missing`、`zeabur_codex_app_server_chatgpt_auth_missing`。Ledger claimとone-candidate submit authorityは未達。
+
+**Restart point:** ユーザー帰宅後、同じZeabur auth room/profile/19887で認証readbackを確認し、今回のfresh候補から1件だけLedger classification→atomic claim→one-candidate submit→visible proof/sync→cleanupへ進む。古いcandidate/claim/receiptは使わない。
+
+## 2026-08-09 full regression・登録parity fresh readback checkpoint 331
+
+ユーザー不在中に、portable ID/Ledger boundary修正後のserver build＋全回帰を完了した。結果は `1047 pass / 16 skipped / 0 fail`（duration `441626.728ms`）。登録automation監査もfresh実行し、6/6 compliant、gaps 0、`external_action_executed=false`。Daily AI schedulerはACTIVE、Asia/Tokyo 09:00、TOML/SQLite prompt hash一致、runtime liveness `ok=true`。source/installed/launchdのAOS runtime boundaryはdynamic runner、read-only default、legacy runnerなし、decision `ready_for_authorized_read_only_admission`、live server/workerもread_only/external、secret values read falseだった。
+
+Evidence: `work/daily-ai-scheduler-liveness-20260809.v4.json`、`work/service-readiness/aos-runtime-boundary-readback-20260809.v2.json`、`data/artifacts/run_mslq6ddp_tslct2/candidate-supply/japan_targeted.json`、`work/goal-run-automation-os-continuation-20260809.json`。
+
+**Completed:** 全回帰、登録automation/scheduler parity、local runtime boundary fresh audit。外部効果は0件。Zeabur auth room/profile/19887は保持中。
+
+**Exact blocker:** `zeabur_codex_app_server_chatgpt_auth_missing`、`zeabur_private_tls_wss_ingress_readback_missing`、`zeabur_codex_home_volume_persistence_unknown`、`job_submitted_confirmed_current_run_missing`。ユーザー不在中は応募・送信・投稿・公開を実行しない。
+
+**Restart point:** ユーザー帰宅後、同じZeabur auth room/profile/19887で手動認証をfresh確認し、`codex login status`→`account/read`→read-only `thread/start`→`turn/start`→completion/errorをreadbackする。並行してfresh Job候補から1件だけを公式Ledger classification→atomic claim→新しいone-candidate submit→visible `submitted_confirmed`→same-run sync/readback→terminal cleanupへ進める。古い候補・claim・receiptは再利用しない。
+
+## 2026-08-09 Zeabur WSS・production public parity・G0/G1 refresh checkpoint 332
+
+ユーザー不在中のfresh read-only確認で、Zeabur `codex-app-server`は`RUNNING`、generated domainは`PROVISIONED`、`/readyz=200`、`/healthz=200`、port forwardingは`DISABLED`。サービス内のsecret fileは0400で値を出力せず、`/data/codex/auth.json`は不存在、`/data/codex`はoverlay filesystemでpersistent mountを確認できなかった。サービス内のWSS probeはhandshake/initialize/account-readまで到達し、`authenticated_wss=true`、`account_present=false`、`requires_openai_auth=true`。ChatGPT未認証のためthread/turnは送信していない。
+
+Codex App→AOS parityはfresh `6/6 matched`、Company 1、Asia/Tokyo schedule、thin AOS trigger/no-effect contract全件一致。`npm run project:audit`は`ok=true`、10 projects、blocked 0。production `https://automation-os.zeabur.app/api/health`はHTTP 200、protected read tokenは未提供のためprotected GETは行っていない。legacy prompt contract suiteは現行全回帰0 failuresとしてunresolved-onlyから除外した。
+
+Evidence: `work/service-readiness/zeabur-codex-app-server-remote-readback-20260809.v1.json`、`work/service-readiness/aos-codex-app-trigger-parity-readback-20260809.v2.json`、`work/service-readiness/production-readonly-public-health-readback-20260809.v7.json`、`work/service-readiness/unresolved-audit-20260809.v192.json`、`work/service-readiness/company-release-packet-preparation-20260809.v140.json`、`data/project-audit-status.json`。
+
+**Completed:** Zeabur public TLS/WSS technical canary、production public health、Codex App/AOS parity、project audit、fresh unresolved-only audit/G0/G1 blocked packet refresh。外部効果・secret emission・deploy mutationは0。
+
+**Exact blocker:** `zeabur_codex_app_server_chatgpt_login_required`、`zeabur_codex_auth_persistent_volume_missing`、`zeabur_codex_app_server_private_ingress_tls_proof_missing`、`production_read_token_missing`、`job_opportunity_ledger_current_candidates_not_fresh`、`g0_g1_approver_and_business_exit_proof_missing`。
+
+**Restart point:** ユーザーが同じ19887 profileでChatGPTログイン完了後、account/read→read-only thread/start→turn/start→completionとpersistence/private-ingressをfresh確認する。並行してfresh Job候補1件のLedger classification→atomic claim→submit→visible proof→sync→cleanupへ進む。
+
+## 2026-08-09 不在中の安全継続・固定kernel回帰 checkpoint 333
+
+ユーザー不在中、専用Zeabur認証roomを停止せず保持した。Chromeは専用profile `/Users/nichikatanaka/.browser-use-cli/profiles/scheduled/codex-server-zeabur-chatgpt-auth`、固定port `19887`でprocess/listenerが生きているが、handoff descriptorが無いため認証完了は判定していない。認証情報やcookie/tokenは読んでいない。
+
+旧IAB互換テストを、Browser Use CLI以外をlive authorityにしないfail-close契約へ更新し、New project対象回帰 `356 passed / 0 failed`を確認。AOS project auditは`ok=true`、10 projects、blocked 0。外部応募・投稿・公開・deploy・secret変更は0件。Goal contextはcheckpoint 35へ同期した。
+
+Evidence: `work/service-readiness/unattended-safe-progress-20260809.v1.json`、`work/goal-run-automation-os-continuation-20260809.json`、`data/project-audit-status.json`、`/Users/nichikatanaka/Documents/New project/tests/test_job_applications_sync.py`。
+
+**Exact blocker / restart point:** `zeabur_codex_app_server_chatgpt_login_required`。帰宅後、同じprofile/19887で手動認証完了をfresh確認し、remote account/read→read-only thread/turn→completion、persistence/private-ingress、AOS bridgeへ進む。応募はfresh Ledger claimとvisible submitted_confirmed/sync/cleanupが揃うまで実行しない。
+
+## 2026-08-09 Browser Use CLI helper世代同期の安全停止 checkpoint 334
+
+source helperとinstalled helperのsha256が異なるため、公式`sync-live.sh`を実行して世代handoff可否を確認した。4つのactive/held roomが異なる世代で存在するため、scriptは`browser_use_cli_live_rooms_active`で拒否し、installed helper・room・19887 Chrome/watchdogには変更を加えなかった。foreign/held roomの強制回収はしていない。
+
+Evidence: `work/service-readiness/browser-use-cli-helper-sync-readback-20260809.v1.json`、`work/goal-run-automation-os-continuation-20260809.json`。
+
+**Exact blocker / restart point:** `browser_use_cli_live_rooms_active`。ユーザー帰宅後に19887認証roomを完了・解放した後、各roomのowner-bound readbackを確認してからgeneration sync→source/runtime parity→read-only canaryへ進む。
+
+## 2026-08-09 New project全体回帰の再分類 checkpoint 335
+
+New project全体Python回帰は`1841 passed / 57 skipped / 111 failed`。111件は旧IAB/Chrome Extension/旧prompt/旧run-now契約のテスト群で、現行Browser Use CLI専用対象は`356/356 passed`。旧経路をliveに戻さず、現行契約と旧契約の不一致としてunresolved-onlyへ分離した。
+
+現行runtimeのsource helper `013227…` とinstalled helper `8d1229…` は不一致。公式`sync-live.sh`は4つのactive/held roomのため`browser_use_cli_live_rooms_active`で無変更停止した。
+
+Evidence: `work/service-readiness/unresolved-audit-20260809.v193.json`、`work/service-readiness/company-release-packet-preparation-20260809.v141.json`、`work/service-readiness/browser-use-cli-helper-sync-readback-20260809.v1.json`。
+
+**Exact blocker / restart point:** `new_project_legacy_surface_contract_tests_out_of_sync_with_browser_use_cli_only`、`browser_use_cli_helper_source_parity_required`、`browser_use_cli_live_rooms_active`。rebaselineは旧surfaceを復活させず行い、helper同期はroom owner-bound finalize/readback後に再評価する。
+
+## 2026-08-09 不在中のfresh parity・project audit checkpoint 336
+
+認証待ちのまま、認証に依存しない監査だけをfresh更新した。Codex App→AOS trigger parityは6/6 matched（Company 1、Asia/Tokyo、thin AOS trigger、external action 0）。source/installed/launchd runtime boundaryはdynamic runner、read-only default、legacy runnerなし、live server `8787`/workerはread-only/external、decisionは`ready_for_authorized_read_only_admission`。`npm run project:audit`はserver buildを含めて`ok=true`、10 projects、blocked 0。secret valueは読んでいない。
+
+Evidence: `work/service-readiness/aos-codex-app-trigger-parity-readback-20260809.v2.json`（2026-08-09T12:16:21.934Z）、`work/service-readiness/aos-runtime-boundary-readback-20260809.v2.json`（2026-08-09T12:16:22.006Z）、`data/project-audit-status.json`（2026-08-09T12:16:33.702Z）、Goal checkpoint 38。
+
+**Completed:** local parity、runtime boundary、project audit。外部応募・投稿・公開・deploy・secret変更・room操作は0。
+
+**Exact blocker:** Zeabur ChatGPT auth / persistence / private TLS-WSS / remote thread-turn、Job business submit proof、Daily AI/NisenPrints current business proof、protected readback token、Browser Use helper generation parity、New project legacy contract rebaseline、G0/G1。
+
+**Restart point:** 帰宅後、同じ19887専用profileで手動認証完了をfresh確認し、remote read-only proof→AOS bridgeへ進む。認証room利用終了後にowner-bound finalize/readbackを行ってからgeneration syncを再評価する。外部effectは各workflowのfresh authorityとbusiness proofが揃うまで起動しない。
+
+## 2026-08-09 認証handoff fresh観測・AOS bridge test rebaseline checkpoint 337
+
+19887の専用Chrome/watchdogとscheduled roomはactiveだが、handoffの`human_completion_signal=not_received`、`completion_assessment=null`で、ChatGPT認証完了は未確認。descriptor期限が過ぎているため、期限延長・再発行・ログイン済み推定はしていない。帰宅後、同じscheduled profile/19887を公式helperでfresh admissionしてから認証readbackを行う。
+
+New projectのDaily AI prompt testを現行AOS thin trigger契約へrebaselineし、focused test `1 passed`、Python compile、diff checkを確認した。旧IAB/Extension/old run-nowテストは旧surfaceを復活させず、残件として監査に保持する。
+
+Evidence: `work/service-readiness/unattended-fresh-safe-continuation-20260809.v1.json`、`work/service-readiness/aos-codex-app-trigger-parity-readback-20260809.v2.json`、`work/service-readiness/aos-runtime-boundary-readback-20260809.v2.json`、`data/project-audit-status.json`、`/Users/nichikatanaka/Documents/New project/tests/test_automation_prompts.py`。
+
+**Exact blocker / restart point:** `zeabur_codex_app_server_chatgpt_auth_missing`、`browser_use_cli_live_rooms_active`、`browser_use_cli_helper_source_parity_required`。帰宅後に同じ19887専用profileでfresh認証→remote read-only account/thread/turn→AOS bridgeへ進める。外部effectとremote turnは認証・authority・readbackが揃うまで起動しない。
+
+## 2026-08-09 Web/UI共通契約rebaseline checkpoint 338
+
+New projectの現行Web/UI契約をfresh確認し、Browser Use CLIを唯一のWeb操作面、Codex AppをAOS起動用のthin trigger、AOS scheduler/durable queueを実行正本として整理した。profile/port/process identity/flow lease、fresh authority、Company scope、idempotency、same-run semantic/business readback、cleanup、CAPTCHA/OTP/危険な未知入力のfail-closeは固定kernelとして維持し、route/CTA/modal/scroll/ATS差分はadaptive層へ分離した。旧Chrome plugin/IAB/Playwright/direct CDPの内容は非実行historical archiveとして扱う。
+
+登録済み6 automationのAOS trigger契約（Company 1、provider-neutral、no-effect、token非露出、run-now非依存）とLinkedIn current/archive境界の回帰テストを追加し、対象は`10 passed / 0 failed`、diff check passed。認証room `19887`、profile、Chrome/watchdogは保持し、room mutation・外部effect・secret read・deploy mutationは0。
+
+Evidence: `work/service-readiness/web-surface-contract-rebaseline-20260809.v1.json`、`/Users/nichikatanaka/Documents/New project/tests/test_aos_trigger_bridge.py`、`/Users/nichikatanaka/Documents/New project/tests/test_browser_use_cli_root_contract.py`、current Web/UI docs。
+
+**Exact blocker:** `zeabur_codex_app_server_chatgpt_auth_missing`、`browser_use_cli_live_rooms_active`、`browser_use_cli_helper_source_parity_required`、Zeabur volume/private TLS-WSS readback、Job `submitted_confirmed`、Daily AI/NisenPrints current business proof、protected read token、G0/G1 exit proof。
+
+**Restart point:** ユーザー帰宅後、19887専用profileを公式helperでfresh admissionして手動認証readbackを行う。認証後にremote account/thread/turn、AOS bridge、persistence/private-ingressを検証し、並行してfresh Job候補1件のLedger classification→atomic claim→submit→visible proof→sync→cleanupへ進む。
+
+## 2026-08-09 fresh audit recheck checkpoint 339
+
+Web/UI契約をテスト修正後に再検証し、現行契約の対象テストは`12 passed / 0 failed`。AOS `project:audit`は`ok=true / 10 projects / blocked=0`、登録automation auditは`6 checked / 6 compliant / 0 gaps`。Browser Use room readbackは`changed=[] / observation_only`で、19887認証roomと19886専用roomを保持し、held/released roomは回収していない。
+
+Evidence: `work/service-readiness/web-surface-contract-rebaseline-20260809.v2.json`、`data/project-audit-status.json`、Goal RunContext checkpoint 42。
+
+**Exact blocker / restart point:** Zeabur ChatGPT手動認証未確認、Zeabur volume/private TLS-WSS、AOS remote bridge、Job/Daily AI/NisenPrints business proof、protected read token、G0/G1 exit proof、active/held room終了前のhelper generation sync。帰宅後は同じ19887専用profileをfresh admissionして認証readbackから再開する。
+
+## 2026-08-09 legacy契約rebaseline完了 checkpoint 340
+
+旧IAB/Chrome Extension前提のprompt/surfaceテストを、現行のAOS thin-triggerとBrowser Use CLI契約へrebaselineした。`tests/test_automation_prompts.py`は`45 passed / 0 failed`、AOS trigger・Browser Use rootを含む関連スイートは`55 passed / 0 failed`。登録promptはAOS triggerに限定し、業務詳細はproject prompt/Skill/worker側に残す所有境界を検証した。旧browser laneは再導入していない。
+
+Evidence: `work/service-readiness/web-surface-contract-rebaseline-20260809.v3.json`、`/Users/nichikatanaka/Documents/New project/tests/test_automation_prompts.py`、`/Users/nichikatanaka/Documents/New project/tests/test_aos_trigger_bridge.py`、`/Users/nichikatanaka/Documents/New project/tests/test_browser_use_cli_root_contract.py`。
+
+**Completed:** legacy prompt/surface assertion rebaseline、現行関連テスト55件、AOS project/registered automation audit。
+
+**Exact blocker / restart point:** Zeabur ChatGPT手動認証、remote account/thread/turn、AOS bridge、Job/Daily AI/NisenPrints business proof、protected read token、G0/G1 exit proof、active/held room終了前のhelper generation sync。帰宅後は19887専用profileのfresh admission→手動認証readback→remote read-only検証へ進む。
+
+## 2026-08-09 不在中のrelease gate再監査 checkpoint 341
+
+認証待ちの間に、外部効果を発生させないrelease gateをfresh再監査した。`unresolved-audit-20260809.v194.json`で、AOS 6/6 parity、Browser Use CLI関連55/55、project audit、Zeabur health、release gate fail-closeをverifiedへ整理し、認証・business proof・protected readback・G0/G1 evidenceを未解決へ限定した。G0/G1 packet v142はblocked no-effectのままで、承認者・署名・復元/rollback・3 workflow receipt契約・incident drillを捏造していない。
+
+release readiness/evidence/registry/API focused testsは`23 passed / 0 failed`。外部応募・投稿・公開・送信・deploy mutation・secret read・room mutationは0。認証room 19887、19886、held/foreign roomは変更していない。
+
+Evidence: `work/service-readiness/unresolved-audit-20260809.v194.json`、`work/service-readiness/company-release-packet-preparation-20260809.v142.json`、`work/service-readiness/browser-use-cli-helper-sync-readback-20260809.v1.json`。
+
+**Exact blocker / restart point:** `zeabur_codex_app_server_chatgpt_login_required`、`browser_use_cli_live_rooms_active`、`production_read_token_missing`、Job/Daily AI/NisenPrints current business proof、`g0_g1_approver_and_business_exit_proof_missing`。帰宅後、同じ19887専用profileのmanual ChatGPT auth readback→remote read-only account/thread/turn→AOS bridgeへ進む。認証room終了後にowner-bound finalize/readbackを確認してからhelper generation syncを再評価する。
+
+## 2026-08-09 不在中の最終read-only観測 checkpoint 342
+
+`npm run project:audit`をfresh再実行し、`ok=true / projects=10 / blocked=0`（`2026-08-09T12:42:52.308Z`）を確認した。`audit-codex-automations`は`checked=6 / compliant=6 / gaps=0`。canonical Browser Use CLI `rooms --json`は`changed=[] / observation_only`で、19887 auth room・19886 Zeabur roomはactive、19880 scheduled room・20090 temporary roomはheldのまま。foreign/held roomの強制回収、profile/port/process変更は行っていない。
+
+Evidence: `data/project-audit-status.json`、`work/service-readiness/browser-use-cli-room-observation-20260809.v2.json`。
+
+**Exact blocker / restart point:** `zeabur_codex_app_server_chatgpt_login_required`、`browser_use_cli_live_rooms_active`、`production_read_token_missing`、Job/Daily AI/NisenPrints business proof、`g0_g1_approver_and_business_exit_proof_missing`。帰宅後、同じ19887専用profileでmanual ChatGPT auth readback→remote account/read→thread/start→turn/start→completion→AOS bridgeへ進む。認証room利用終了後にowner-bound finalize/readbackを確認してからhelper generation syncを再評価する。
+
+## 2026-08-09 reference canary・Job Kernel admission checkpoint 343
+
+isolated reference canaryをfresh実行し、Daily AI・Job・NisenPrintsの3 laneがすべて`proof_backed_safe_stop_verified`になった。各laneは`browser_use_cli_required`でrunner/browser起動前に止まり、Company scope、approval boundary、runtime binding、worker blocked event、cleanup receiptを検証。`external_action_executed=false`、completion claimなし。reference canaryはbusiness completionや応募・投稿・公開の証明ではない。
+
+Job laneのfresh Kernel run `run_mslspge3_ezl9l8`はcompile/statusとも`ready`、`next_effect_id=root_controller_bootstrap`、claim 0、external action 0。Gmail completion gateとfresh Browser Use authorityが無いため、stageをclaimせず停止した。
+
+Evidence: `work/service-readiness/reference-workflow-canary-20260809-v2.json`、`work/goal-run-automation-os-continuation-20260809.json`、`/Users/nichikatanaka/Documents/New project/.codex/automation-kernel/manifests/job-application-manager.json`。
+
+**Exact blocker / restart point:** reference canary `browser_use_cli_authority_missing`、Job `gmail` terminal/capability・fresh 19881 authority未達、Zeabur `zeabur_codex_app_server_chatgpt_login_required`。帰宅後、19887 auth readback→Zeabur remote proof、Jobはfresh official root→Gmail completion→candidate supply→Ledger claim→one-candidate submit/readbackへ進む。
+
+## 2026-08-09 Codex App Server bridge回帰 checkpoint 344
+
+Codex App Server client、TLS/auth boundary、remote websocket、read-only thread/turn probe、reference canaryのfocused suiteは`47 passed / 0 failed`。secret redaction、remote auth欠落、TLS必須、local stdio fallback、probe timeout/cleanupのfail-closeを確認した。Zeabur本番のChatGPT認証済みremote account/thread/turn readbackは未達で、focused testを本番証跡に昇格させていない。
+
+Evidence: `work/service-readiness/reference-workflow-canary-20260809-v2.json`、`work/goal-run-automation-os-continuation-20260809.json`。
+
+## 2026-08-09 unresolved-only再監査 checkpoint 345
+
+認証roomは`changed=[] / observation_only`で、19887 auth roomはactive/handoff-startのまま。fresh unresolved-only audit v195とG0/G1 packet v143を保存した。Job Ledger末尾はsequence 97、`discovered`で、`submitted_confirmed`は未観測。既存claim・reconciliation・reference canaryを応募成功へ昇格していない。
+
+Evidence: `work/service-readiness/unresolved-audit-20260809.v195.json`、`work/service-readiness/company-release-packet-preparation-20260809.v143.json`、`work/service-readiness/browser-use-cli-room-observation-20260809.v2.json`。
+
+**Exact blocker / restart point:** `zeabur_codex_app_server_chatgpt_login_required`、`browser_use_cli_live_rooms_active`、`job_gmail_completion_and_fresh_browser_authority_missing`、`production_read_token_missing`、Daily AI/NisenPrints business proof、G0/G1 evidence。帰宅後、19887 auth readback→Zeabur remote proof、Job fresh official root→Gmail completion→candidate supply→Ledger claim→one-candidate submit/readbackへ進む。
+
+## 2026-08-09 production public parity checkpoint 346
+
+`https://automation-os.zeabur.app/api/health`をfresh GETしHTTP 200を確認した。protected read tokenは使用せず、protected parityは`PENDING_CONFIRMATION / production_read_token_missing`のまま。secret read、外部mutationは0。
+
+Evidence: `work/service-readiness/production-public-health-readback-20260809.v8.json`。
+
+## 2026-08-09 AOS全体回帰 checkpoint 347
+
+`npm test`をfresh実行し、`1063 tests / 1047 passed / 0 failed / 16 skipped`、exit 0を確認した。durable queue/scheduler、Company scope/idempotency、canonical Browser Use CLI、profile/port/process isolation、approval/cleanup、Job/Daily AI/NisenPrints contracts、Codex App Server bridge fail-close、production readback redaction、Obsidian worker boundaryが通過した。PostgreSQL integrationの一部は`AUTOMATION_OS_TEST_POSTGRES_URL`未設定でskip。回帰成功は本番remote認証・business completion・G0/G1 exit proofではない。
+
+Evidence: `work/service-readiness/aos-full-regression-20260809.v1.json`。
+
+**Exact blocker / restart point:** `zeabur_codex_app_server_chatgpt_login_required`、`browser_use_cli_live_rooms_active`、`job_gmail_completion_and_fresh_browser_authority_missing`、`production_read_token_missing`、Daily AI/NisenPrints current business proof、G0/G1 evidence。帰宅後、19887専用profileの手動認証readbackからremote `account/read`→read-only `thread/start`→`turn/start`→completion/error→AOS bridgeへ再開する。認証room終了後にowner-bound cleanup/readbackを確認してhelper generation syncを再評価する。
+
+## 2026-08-09 認証room現況再確認 checkpoint 348
+
+canonical Browser Use CLI `rooms --json`のfresh readbackは`changed=[] / reconciliation=observation_only`。Zeabur roomは19886、ChatGPT認証roomは19887のworkflow-owned scheduled profileでactiveを維持し、認証完了シグナルは無い。room/profile/port/process変更、foreign/held room操作は0。
+
+Evidence: `work/service-readiness/browser-use-cli-room-observation-20260809.v3.json`。
+
+**Exact blocker / restart point:** `zeabur_codex_app_server_chatgpt_login_required`。帰宅後、19887専用profileで手動ChatGPT認証を完了し、fresh account/read readbackからremote thread/turn→AOS bridgeへ進む。
+
+## 2026-08-09 build・project audit checkpoint 349
+
+`npm run build`はexit 0、server TypeScriptとweb Vite production build（1581 modules transformed）が完了した。`npm run project:audit`は`ok=true / projects=10 / blocked=0`（generatedAt `2026-08-09T13:02:27.744Z`）。approval-required/human-only境界は維持し、safe auto-fix・deploy・secret変更・外部effectは0。
+
+Evidence: `work/service-readiness/aos-build-readback-20260809.v1.json`、`data/project-audit-status.json`。
+
+**Exact blocker / restart point:** Zeabur ChatGPT manual auth、remote account/thread/turn、AOS bridge、Job/Daily AI/NisenPrints business proof、protected production read token、G0/G1 evidence。帰宅後、19887専用profileのfresh認証readbackから再開する。
+
+## 2026-08-09 Zeabur runtime/WSS再確認 checkpoint 350
+
+専用`codex-app-server`はRUNNING/Docker、generated domain PROVISIONED、port-forwarding DISABLED、`/readyz`/`/healthz` HTTP 200。token fileはregular/0400/non-empty、値の出力なし。認証付きWSSは`initialize`→`account/read`まで到達したが、`account_present=false / requires_openai_auth=true`。`CODEX_HOME=/data/codex`はoverlay上で`/data` mountpointではなく、persistent volume未確認。private ingressとsource/runtime/artifact parityも未確認。
+
+Evidence: `work/service-readiness/zeabur-codex-app-server-runtime-readback-20260809.v2.json`。
+
+**Exact blocker / restart point:** `zeabur_codex_app_server_chatgpt_login_required`。帰宅後、19887専用profileの手動認証→`account/read`から再開する。volume/network変更は明示authorityが揃うまで保留。
+
+## 2026-08-09 global automation audit checkpoint 351
+
+global automation registry/DB parityは`checked=6 / compliant=6 / gaps=0`。外部effect、secret value readback、登録変更は0。business completion証跡とは分離して扱う。
+
+Evidence: `work/service-readiness/global-automation-kernel-audit-20260809.v1.json`。
+
+**Exact blocker / restart point:** Zeabur ChatGPT auth、persistent volume/private ingress/source-runtime parity、Job/Daily AI/NisenPrints business proof、protected read token、G0/G1 evidence。帰宅後、19887専用profileのmanual auth→`account/read`から再開する。
+
+## 2026-08-09 Goal blocked checkpoint
+
+認証roomとZeabur `account/read`の状態変化がなく、`zeabur_codex_app_server_chatgpt_login_required`が継続した。認証非依存の回帰/build/監査/source preflightは完了。残るremote/business/release proofは手動認証・外部authorityが必要なため、Goal statusはblocked。
+
+**Next safe action / restart point:** 同じ19887専用profileでChatGPT認証→fresh room readback→`account/read`。成功後にremote `thread/start`→`turn/start`→AOS bridgeへ進む。
+
+## 2026-08-09 Zeabur source preflight checkpoint 352
+
+現行sourceのZeabur preflightは`ready_for_external_deploy_preflight`、failed checks 0。secret-file/non-loopback/healthcheck/config/private-network/no-effect gatesを確認した。deploy/runtime parity・ChatGPT auth・remote thread/turnは未確認。
+
+Evidence: `work/service-readiness/codex-app-server-zeabur-preflight-20260809.v11.json`。
+
+**Exact blocker / restart point:** `zeabur_codex_app_server_chatgpt_login_required`。帰宅後、19887専用profileのmanual auth→`account/read`から再開する。
+
+## 2026-08-09 継続監査 checkpoint 354
+
+認証非依存のfresh verificationは、build、`git diff --check`、automation health 6/6、process scan matched 0、production public health HTTP 200、全回帰`1063 / 1047 passed / 0 failed / 16 skipped`、reference canary 3/3 safe-stop、portable scheduler 6/6、Zeabur source preflight failed checks 0を確認した。
+
+Zeabur device-auth processは終了したが、fresh `codex login status`は`Not logged in`、WSS `account/read`は`account_present=false / requires_openai_auth=true`。remote thread/turn・AOS bridgeは未実行、外部効果・secret value出力・deploy変更は0。
+
+Evidence: `work/service-readiness/automation-os-continuation-readback-20260809.v1.json`、`work/service-readiness/reference-workflow-canary-20260809-v3.json`、`work/service-readiness/aos-portable-scheduler-canary-20260809-v2.json`。
+
+**Exact blocker / next safe action / restart point:** `zeabur_codex_app_server_chatgpt_login_required`。Zeabur serviceの`CODEX_HOME`でsupported Codex authを完了させ、device code/credentialを出力せずfresh remote `account/read`から再開する。成功後のみ`thread/start`→`turn/start`→AOS bridgeへ進む。
+
+## 2026-08-10 Browser Use認証profileローテーション checkpoint 355
+
+旧期限切れprofile（19887）は同一run cleanup後にscheduled領域から隔離し、新profile `codex-server-zeabur-chatgpt-auth-v3` を19888固定portで起動した。ユーザーのログイン後、fresh run v4の`state` readbackはexit 0、roomは`active/owner-reuse`、profile/port/process identity一致。Mac側のログイン完了シグナルは`consumed_not_auth_proof`として記録し、認証証明とは分離した。
+
+Zeabur fresh WSS readbackは`authenticated_wss=true`だが、`account_present=false / requires_openai_auth=true`。Zeabur `CODEX_HOME`認証は未達で、remote thread/turn・AOS bridgeは未実行。Mac profileのログインだけでremote認証済みとは扱わない。
+
+Evidence: `work/service-readiness/zeabur-chatgpt-auth-profile-rotation-20260810.v1.json`。
+
+**Exact blocker / next safe action / restart point:** `zeabur_codex_app_server_chatgpt_login_required`。Zeabur service内のsupported Codex auth完了→fresh `account/read`から再開し、成功後のみread-only `thread/start`→`turn/start`→completion/errorへ進む。
+
+## 2026-08-10 Zeabur認証済みremote readback checkpoint 356
+
+Zeabur service内のfresh `codex login status`は`Logged in using ChatGPT`。authenticated WSSの`initialize`、`account/read`（account present）、ephemeral `thread/start`、read-only `turn/start`、`turn/completed`を同一runで確認した。approval policyは`never`、permission profileはread-only、`external_action_executed=false`。既存Mac側Codex App・Browser Use CLI worker・local stdio fallbackは維持し、停止・切替していない。
+
+現行`CodexAppServerClient`を使うAOS remote bridge probeも同じZeabur service exec boundaryでpassした。readyz=200、Codex CLI 0.145.0、entrypoint source/runtime SHA一致、CODEX_HOMEはdirectory、auth file存在を確認した。ただしdata filesystemはoverlayでpersistent volume未確認、public generated WSS以外のprivate ingress証明は未達。Mac workerからremote endpointへ安全に到達するtoken境界も未証明であり、production cutoverは不可。
+
+Evidence: `work/service-readiness/zeabur-codex-app-server-remote-authenticated-readback-20260810.v1.json`、`work/service-readiness/aos-codex-remote-bridge-canary-20260810.v1.json`。
+
+**Exact blocker / restart point:** `zeabur_codex_auth_persistent_volume_missing`、`zeabur_codex_app_server_private_ingress_tls_proof_missing`、`aos_mac_worker_remote_token_boundary_not_proven`、`codex_app_server_remote_transport_experimental_unsupported`、`production_read_token_missing`、Job/Daily AI/NisenPrints current business proof、G0/G1 evidence。再開点は、承認済みpersistence/private ingress/token/read tokenのfresh readback後にMac-side bridge canary→protected parity→各業務laneのfresh business proof→G0/G1 audit。外部effect、secret値出力、未承認deployは0。
+
+## 2026-08-10 AOS scheduler execute bridge checkpoint 357
+
+登録automation `automation-3`の公式rootをfreshに`preflight`→`execute`で実行した。preflightは`ready`、executeは`run_now_capability_required=false`のAOS trigger bridgeを通り、Company 1のdurable queueへ一度だけ`kind=dry_run` job/runを投入した。返却はAOS trigger receiptとして`external_action_executed=false`、`status=completed`（job/run状態はqueued）。したがってAOS側の定期/手動起動設計は確認できたが、応募送信・候補claim・`submitted_confirmed`は発生していない。
+
+Jobのcanonical Browser Use room readbackは19881固定port、scheduled workflow-owned profile、state `released`で、今回のdry-runではBrowser Use process/listenerを起動していない。Zeabur認証用19888 profileとは分離されている。
+
+Evidence: `work/service-readiness/job-automation-aos-trigger-execute-readback-20260810.v1.json`。
+
+**Exact blocker / restart point:** `job_submitted_confirmed_current_run_missing`。fresh candidate supply、Opportunity Ledger read/classification/atomic claim、19881 authority、1候補adaptive submit、visible business proof、same-run sync/readback、terminal cleanupが揃うまで外部応募は未完了扱い。未ログイン・CAPTCHA・OTP・本人確認・適性検査・未知の危険質問は停止する。
+
+## 2026-08-10 Job candidate-supply read-only checkpoint 359
+
+Company 1のportable Job `candidate_supply` read-only runをfresh idempotency keyで1回起動した。run/stepは同一runで`blocked`。requested laneはcanonical Browser Use CLIの`automation-3` scheduled profile/19881だったが、effective sessionが生成されなかったためcandidate supply・ledger claim・応募送信は未実行。Zeabur認証用19888 profile、legacy browser、foreign profileは使用していない。実行モード表示は`external`だがread-only stageであり`external_action_executed=false`。
+
+Evidence: `work/service-readiness/job-candidate-supply-readonly-20260810.v1.json`。
+
+**Exact blocker / restart point:** `service_readiness_browser_use_effective_session_missing`。fresh official automation-3 business root→19881 authority/session/state readback→candidate_supplyから再開する。応募はvisible `submitted_confirmed`、same-run sync/readback、cleanupが揃うまで実行しない。
+
+## 2026-08-10 Job Browser Use root admission checkpoint 360
+
+fresh official controllerを一度だけ呼び出したが、Browser Use dispatch前のscheduler-control request contract validationで`scheduler_control_request_prepare_contract_invalid`となり停止した。19881のautomation-3 roomは`released`、listener/effective sessionなし。Zeabur認証用19888 roomは`held`で、profile/port混用はない。manual candidate adapter、legacy browser、過去request/session/receiptは使っていない。
+
+Evidence: `work/service-readiness/job-browser-use-root-admission-readback-20260810.v1.json`、`work/service-readiness/job-candidate-supply-readonly-20260810.v1.json`。
+
+**Exact blocker / restart point:** `scheduler_control_request_prepare_contract_invalid`。公式automation-3 rootでscheduler-control contractを修復または再admitし、fresh controller→19881 effective session/readback→candidate_supplyから再開する。応募送信は未実行。
+
+## 2026-08-10 Zeaburログイン後のfresh metadata readback checkpoint 358
+
+Zeabur側の公式ログイン後、同一`codex-app-server` serviceをfreshに再読した。`codex login status=Logged in using ChatGPT`、service/deployment `RUNNING`、generated domain `PROVISIONED`、`/readyz=200`、port forwarding `DISABLED`。秘密値は出力していない。`/data/codex/auth.json`は存在しmode `0600`だが、`/data`と同一deviceのoverlay上でpersistent volumeは未証明。token fileはpathのみ確認しregular/mode `0400`、値は未読。既存のremote read-only protocol canaryは別artifactでinitialize→account/read→thread/start→turn/start→completedを確認済みであり、今回のmetadata readbackでは再実行していない。
+
+Evidence: `work/service-readiness/zeabur-codex-app-server-post-login-readback-20260810.v1.json`、`work/service-readiness/zeabur-codex-app-server-remote-authenticated-readback-20260810.v1.json`。
+
+**Exact blocker / restart point:** `zeabur_codex_auth_persistent_volume_missing`、`zeabur_codex_app_server_private_ingress_tls_proof_missing`、`aos_mac_worker_remote_token_boundary_not_proven`、`codex_app_server_remote_transport_experimental_unsupported`、`production_read_token_missing`、Job/Daily AI/NisenPrints current business proof、G0/G1 required evidence。local stdio/Mac worker/AOS scheduler/Browser Use CLIのfallbackは維持する。再開点はapproved persistence/private-ingress/token boundary→fresh AOS remote canary→workflow business proof→G0/G1 exit audit。
+
+## 2026-08-10 Job root authority・prepare契約 repair checkpoint 361
+
+`automation-3`のtrusted rootが要求する`--prepare-only`をAOS thin triggerが先取りしていた根本原因を修正した。通常のCodex App→AOS no-effect triggerは維持し、trusted prepare phaseだけが`prepared_only=true`とfresh `scheduler_control_request.v2` pathを返す境界に分離した。fresh official controllerはこの段階を通過し、次のexternal-effect gateで停止したため、応募送信は0件。
+
+共有current-turn authority issuerが実体・dispatcher登録とも欠落していたため、登録automation ID・project cwd・現在の`UserPromptSubmit` turnに限定した短命receipt issuerを復元した。raw prompt・secret・credentialは保存せず、subagent/foreign cwd/未登録IDは発行しない。issuer、dispatcher、Browser Use external-effect gate、AOS bridgeのfocused regressionは全てpassした。
+
+Evidence: `work/service-readiness/job-root-authority-and-prepare-contract-repair-readback-20260810.v1.json`、`/Users/nichikatanaka/.codex/hooks/in-app-browser-turn-metadata-issuer.mjs`、`/Users/nichikatanaka/.codex/hooks/hook-dispatcher.mjs`。
+
+**Exact blocker:** `current_turn_fresh_first_class_root_receipt_missing`。現在の「ログインできました」turnは修正前に始まり、fresh external-effect receiptを持たない。過去receiptの再利用、metadataの合成、応募送信は行わない。
+
+**Next safe action / restart point:** 次の明示的な`automation-3`実行turnでfresh receipt readback→公式controller一回→19881 effective Browser Use session→candidate supply→Ledger claim→1候補adaptive submit/readback/cleanup。Zeabur認証用19888 held room、local stdio fallback、Mac workerは維持する。
+
+## 2026-08-10 Zeabur AOS→dedicated Codex cross-service checkpoint 362
+
+最新の正本構成を反映した。ZeaburはAOS control plane、server-owned scheduler、durable queue、dedicated Codex App Server、推論/plan/turnを担当する。MacはCodex App/local stdio、canonical Browser Use CLI worker、認証済みWeb操作、iPhone/Simulator、Obsidian、ローカルファイルを担当する。Web操作はZeaburへ移さず、Macが閉じている間はWeb Jobをqueue待ちにする。別PCへのfallbackはない。
+
+実装・デプロイ済み: AOS内部service WebSocket境界（exact dedicated hostname + explicit allow flag）、account/read first-class readback、initialize/account/thread/turn no-effect canary、local stdio fallback、safe script、回帰テスト、Zeabur docs/env契約。AOS serviceは新deployment `6a78ac75db4ec8cd006aed8f`でRUNNING、専用Codex serviceはRUNNING、private `/readyz=200`。source internal canary SHAとdeployed script SHAは一致し、dist runtimeも存在する。
+
+fresh runtime: AOS remote URL/internal flag/CWDは設定済み、AOS readinessはremote mode/technical_ok、schedulerはserver-owned/running/60000ms。Company 1のprotected no-effect scheduler run-onceは`idle`で外部効果なし。現行live DBの会社1はautomation 0、jobs 0であり、6件activeだったhistorical artifactとは一致しない。
+
+未達: AOS→Codex WS handshakeは401で`initialize`前に停止。専用Codexのsecret fileはregular/0400/32 bytes/read-only mountだが、AOSに設定した新tokenと一致しない。Zeabur CLIでExpose値は設定できず、既存Browser Use auth roomはlive listenerを別ownerで保持しているためDashboardへ強制再利用していない。したがってcross-service protocol canaryはblocked、同一service historical canaryを現在のAOS→Codex成功とは扱わない。Codex auth persistent volume、experimental transport production gate、protected read token、Job/Daily AI/NisenPrints business proof、G0/G1も未達。
+
+Evidence: `work/service-readiness/zeabur-aos-codex-internal-cross-service-readback-20260810.v1.json`、`work/service-readiness/company-release-packet-preparation-20260810.v2.json`、`work/service-readiness/unresolved-audit-20260810.v2.json`。
+
+**Exact blocker / next safe action / restart point:** `aos_codex_remote_secret_file_mismatch`。Zeabur owner-bound Expose/Config Editorでsecret mountをAOS bridge tokenへ一致させる（secret値は表示・保存しない）→専用Codexのみrestart→fresh internal canary。会社1 automation driftは別blockerとして、現行DBと正本登録をreconcileしてからschedule再確認する。Mac Codex App/local server、Mac Browser Use profile/port、19888 held roomは維持する。外部応募・投稿・公開・送信・Web操作・alternate PCは0。
+
+## 2026-08-10 cross-service secret rollback checkpoint 363
+
+401調査で専用Codex serviceのsecret mountがread-onlyであることを確認し、未確認のtoken rotationを残さないため元の`${PASSWORD}`/`${CODEX_APP_SERVER_REMOTE_TOKEN}`参照へrollbackした。専用Codex→AOSの順に再起動し、Codex env/file match `true`、token file regular/0400/32 bytes、Codex `/readyz=200`、AOS private `/readyz=200`、AOS token `unresolved_reference`をfresh確認した。AOS→Codex protocol canaryはまだ未実行で、Expose境界が解決するまでfail-closedとする。
+
+Evidence: `work/service-readiness/zeabur-aos-codex-internal-cross-service-readback-20260810.v2.json`、`work/service-readiness/company-release-packet-preparation-20260810.v3.json`、`work/service-readiness/unresolved-audit-20260810.v3.json`。
+
+**Exact blocker / next safe action / restart point:** `aos_codex_remote_secret_expose_boundary_unresolved`。owner-bound Zeabur Expose/Config Editorでsecret mountをAOSから参照可能にする→専用Codexのみrestart→fresh AOS `account/read`。Company 1 current automation `0`とhistorical six-schedule artifactのdriftは、別途current DB/source reconciliationが必要。Mac Codex App、local stdio、Mac Browser Use CLI、19888 held room、他PCなしの境界は維持する。
+
+## 2026-08-10 fail-closed修正・Company 1 current catalog・最終検証 checkpoint 364
+
+未解決のZeabur secret referenceを安全に検出する`codex_app_server_remote_auth_unresolved_reference` blockerを`appServerConnection`へ追加し、readiness/readbackとremote resolverが同じfail-closed結果を返すようにした。secret値は読まず、ログ/artifactにも保存していない。専用回帰を含むfull regressionは`1068 total / 1052 pass / 0 fail / 16 skipped`、web typecheck、full build、Zeabur helper tests `5/5`、`git diff --check`がpassした。
+
+fresh Company 1 ID `company_2560580981cedfd106b66245`へ公式catalog adoptionをidempotency付きで実施し、6 automationをactive/enabled、Asia/Tokyo scheduleとして確認した。Company-scoped service identity `aos_service_0f4e6b6c65edf796364e`をAOSへ設定し、scheduler no-effect run-onceは`completed`、occurrence `0`、external effect `false`である。旧company IDの行はコピーせず、Codex App側に残る旧prompt参照は未解決のparity driftとして扱う。
+
+AOS `6a78b3da9cc09bfe79965aa5`はRUNNINGで、remote source/runtime readbackはlocal/deployed SHA一致、unresolved-reference guard presenceあり。AOS readinessはHTTP 200だがremote auth unresolvedのためtechnical/production cutoverは不許可、AOS→Codex protocol canaryはrollback後未実行。Mac Codex App/local stdio、Mac Browser Use CLI worker、workflow-owned profile/port、iPhone/Simulator、Obsidian、Zeabur auth roomは維持し、外部応募・投稿・公開・送信は0件。
+
+Evidence: `work/service-readiness/zeabur-aos-company1-fail-closed-readback-20260810.v4.json`。
+
+**Exact blocker / restart point:** `codex_app_server_remote_auth_unresolved_reference` / `aos_codex_remote_secret_expose_boundary_unresolved`。owner-bound Zeabur Expose/Config Editorでsecret boundaryを解決し、専用Codexのみrestart後、同一AOS serviceからread-only protocol canaryを一回実行する。persistent volume、experimental remote transport承認、production read token、Mac Browser Use business authority、Daily AI/NisenPrints/G0/G1 proof、Codex App旧company ID更新は未達。
+
+## 2026-08-10 protected readiness / runtime fallback clarification checkpoint 365
+
+fresh Zeabur service-exec readbackでAOS/Codexは`RUNNING`。AOS protected readiness APIはread token未提示のためHTTP `401 production_token_required`、AOSの直接connection readbackは`remote_websocket / zeabur_private_service / auth_configured=false / codex_app_server_remote_auth_unresolved_reference`。秘密値は読んでいない。remote modeでMac/local Codexへ暗黙フォールバックせず、remote URL未設定時のsupported local stdio fallbackを保持している。v4 artifactとunresolved-only auditへ現行値を反映した。
+
+Evidence: `work/service-readiness/zeabur-aos-company1-fail-closed-readback-20260810.v4.json`、`work/service-readiness/unresolved-audit-20260810.v3.json`、`work/service-readiness/company-release-packet-preparation-20260810.v3.json`。
+
+**Exact blocker / restart point:** `production_read_token_missing`と`codex_app_server_remote_auth_unresolved_reference`。承認済みread-only token boundaryとowner-bound secret expose boundaryのfresh readback後、専用Codexのみrestartし、AOS protocol canaryから再開する。
+
+## 2026-08-10 protected parity修復・Codex App Company 1 prompt同期 checkpoint 366
+
+AOS protected readinessへsecret値を出さずにin-process read tokenを使用し、HTTP `200`のprotected readbackを取得した。AOSのtechnical/production readinessはremote auth unresolvedのためfalseだが、read token欠落は現行では解消済み。AOS runtimeのremote tokenは未解決参照であり、`codex_app_server_remote_auth_unresolved_reference`を保持する。
+
+公式`codex_app__automation_update`で`automation-3`をPAUSED化し、Company 1の現行IDへpromptを同期、`audit-codex-automations`で6/6 compliantを確認後、同じIDをACTIVEへ復帰した。旧company/automation IDはCodex App promptから除去され、AOS current catalogと一致した。直接TOML/SQLite編集、外部効果、秘密値出力はない。
+
+Evidence: `work/service-readiness/zeabur-aos-company1-fail-closed-readback-20260810.v4.json`、`work/service-readiness/unresolved-audit-20260810.v3.json`、`work/service-readiness/company-release-packet-preparation-20260810.v3.json`。
+
+**Exact blocker / restart point:** `codex_app_server_remote_auth_unresolved_reference` / `aos_codex_remote_secret_expose_boundary_unresolved`。supported Config Editor/secret boundaryのfresh反映後、専用Codexのみrestart→AOS protected protocol canaryの`initialize/account/read`から再開する。persistent volume、experimental remote transport承認、Mac Browser Use business authority、Daily AI/NisenPrints/G0/G1 proofは未達。
+
+## 2026-08-10 Zeabur AOS共通Codex App bridge・6 automation canary checkpoint 367
+
+Codex Appの6 registered automationを公式`codex_app__automation_update`で共通Zeabur bridgeへ更新した。Macの`aos-trigger-zeabur`がHTTPS originへ接続し、machine tokenはmacOS Keychainから子プロセスへ一時的に渡す。秘密値は画面・ログ・artifactへ出していない。Mac Codex App/local stdio、canonical Browser Use CLI worker、workflow-owned profile/port、iPhone/Simulator、Obsidian、他PCなしの境界は維持する。
+
+6/6のno-effect canaryは`queued=true`、Company scope enforced、`external_action_executed=false`。Zeabur current catalogは6 active、control-plane readinessは`ready_for_no_effect_trigger`、durable jobは8件全てdry-run/queuedであり、応募・送信・投稿・公開・業務完了ではない。Python bridge parser/entrypointの回帰テストは`50 passed / 0 failed`、global automation auditは`6/6 compliant`。
+
+Evidence: `work/service-readiness/zeabur-aos-company1-fail-closed-readback-20260810.v4.json`、`work/service-readiness/unresolved-audit-20260810.v3.json`、`work/service-readiness/company-release-packet-preparation-20260810.v3.json`、`/Users/nichikatanaka/.local/bin/aos-trigger-zeabur`。
+
+**Exact blocker / next safe action / restart point:** `codex_app_server_remote_auth_unresolved_reference` / `aos_codex_remote_secret_expose_boundary_unresolved`。supported secret boundary反映後、専用Codexのみrestart→AOS read-only protocol canaryへ再開する。persistent `CODEX_HOME`、remote transport承認、Mac Browser Use business authority、Daily AI/NisenPrints/G0/G1 proofは未達。Macが閉じている間はscheduler/queue/Codex推論を継続し、Web JobはMac worker再接続まで安全にqueue待ちにする。
+
+## 2026-08-10 Zeabur secret sync・persistent CODEX_HOME・cross-service protocol checkpoint 368
+
+公式Zeabur GraphQL schemaの`updateEnvironmentVariable`と`mountVolume`をreadbackし、AOSのremote tokenを専用Codex serviceの既存PASSWORD境界から値を表示せず同期した。AOSのみrestartし、protected readiness HTTP 200、`auth_configured=true`、remote mode/Zeabur private serviceを確認した。専用Codex serviceにはvolume `codex-app-server-codex-home`を`/data/codex`へmountし、`CODEX_HOME=/data/codex`を確認した。`codex login status`は`Not logged in`で、cross-service canaryは`initialize → account/read`まで到達し、read-only thread/turnはChatGPT login待ちでfail-closeした。秘密値・認証情報・tokenは出力・保存していない。
+
+reference workflow canaryは3/3 `proof_backed_safe_stop_verified`、portable scheduler canaryは6/6 no-effect、automation healthは6/6、process scanはmatched 0。Mac Codex App/local server、Mac Browser Use CLI、workflow-owned profile/port、19888 held auth room、iPhone/Simulator、Obsidianは維持した。Web操作はMac workerのみ、Mac停止時はdurable queue待ちとする。
+
+Evidence: `work/service-readiness/zeabur-aos-company1-fail-closed-readback-20260810.v4.json`、`work/service-readiness/unresolved-audit-20260810.v3.json`、`work/service-readiness/company-release-packet-preparation-20260810.v3.json`、`work/service-readiness/reference-workflow-canary-20260810.v2.json`、`work/service-readiness/portable-scheduler-canary-20260810.v2.json`。
+
+**Exact blocker / restart point:** `codex_app_server_chatgpt_login_required`、`codex_app_server_remote_transport_experimental_unsupported`、`mac_browser_use_business_authority_missing`、Daily AI/NisenPrints/Job business proof・G0/G1 evidence。永続`CODEX_HOME`でsupported ChatGPT login後、同じAOS endpointからfresh `account/read → ephemeral thread/start → read-only turn/start → completion/error`を一回実行する。production gateとMac Browser Use authorityが揃うまで外部effect・Web操作のZeabur dispatchは行わない。
+
+## 2026-08-10 fresh terminal audit・G0/G1 validation・Company 1 readback checkpoint 369
+
+公式Zeabur CLI `0.21.0`でproject `automation-wiled`、production environment、`automation-os`、`codex-app-server`のtarget/statusをfresh確認した。両serviceは`RUNNING`、専用Codexの`/readyz=200`、`CODEX_HOME=/data/codex`とVolume filesystemを確認した。`codex login status`は`Not logged in`で、認証handoff packetを新しい永続境界へ束縛した。AOS protected readinessはKeychain machine tokenを画面へ出さずにHTTP 200、`technical_ok=true`、`auth_configured=true`、`production_remote_cutover_allowed=false`を確認した。
+
+Company 1のcurrent API readbackは6 automation / 6 active、scope enforced、control-plane `ready_for_no_effect_trigger`、durable jobs 8件のdry-run/queuedを返した。canonical Browser Use CLI roomsはautomation-3のscheduled profile/19881がreleased、Zeabur auth rooms 19886/19887/19888は別ownerのため変更していない。G0/G1 strict evidence validationは6 required fields全てblocked、activation requested/authorized=false。automation health 6/6、process scan matched 0、release contract tests 23/23を確認した。
+
+Evidence: `work/service-readiness/terminal-audit-20260810.v1.json`、`work/service-readiness/unresolved-audit-20260810.v4.json`、`work/service-readiness/company-release-packet-preparation-20260810.v4.json`、`work/service-readiness/company-release-evidence-validation-20260810.v2.json`、`work/service-readiness/zeabur-codex-auth-handoff-20260810.v1.json`。
+
+**Exact blocker / next safe action / restart point:** `codex_app_server_chatgpt_login_required`、`codex_app_server_remote_transport_experimental_unsupported`、`mac_browser_use_business_authority_missing`、`company_release_evidence_required_fields_missing`。専用Zeabur service terminalでsupported `codex login --device-auth`を`/data/codex`へ完了後、AOS `account/read`から一回だけread-only thread/turn canaryを実行する。別作業はMac-only Browser Use authorityとG0/G1 evidenceのfresh取得へ進め、外部effectは発生させない。
+
+## 2026-08-10 trusted bridge / Browser Use parity checkpoint 370
+
+trusted bridgeの共通カーネル driftを根本修正した。global automation managerはcanonical Zeabur AOS wrapperを認識し、scheduler preparationのJSONから`exact_blocker`だけを安全に投影するようにした。stage adapterは構造化stderrのblockerを保持し、NodeREPL経由でもOS homeとcanonical Browser Use child environmentを伝播する。回帰テストはNode `6 passed / 0 failed`、Python `6 passed / 0 failed`。
+
+fresh trusted automation-3 preflightはflow-start境界まで到達したが、外部効果は`false`で停止した。installed helperとpackage helperのsource parityは`false`で、runtime-readback/validate自体はruntime driftなし。automation-3の19881はreleased、process/listenerは0、外国roomは変更していない。
+
+Evidence: `work/service-readiness/browser-use-cli-node-repl-environment-readback-20260810.v1.json`、`work/service-readiness/automation-3-trusted-preflight-readback-20260810.v1.json`、`work/service-readiness/unresolved-audit-20260810.v5.json`、`work/service-readiness/terminal-audit-20260810.v2.json`。
+
+**Exact blocker / restart point:** `browser_use_cli_helper_source_parity_required`。owner-boundなhelper同期または公開を確認し、fresh runtime-readback後にautomation-3 trusted preflightを再開する。Zeabur Codex login/protocol canary、remote transport gate、Mac Browser Use business authority、Daily AI/NisenPrints/Job business proof、G0/G1は独立した未達として保持する。応募・投稿・公開・送信は行わない。
+
+## 2026-08-10 helper publication admission readback checkpoint 371
+
+Mac側のcanonical Browser Use CLI `doctor`とread-only `rooms` admissionを再確認した。config/runtime/version/node/state-root/owner/modeは正常だが、installed/package helperのsource parityはfalseで、sourceもGit HEADから未公開のためrelease-readyではない。sync admissionは19880、20090、19886、19887、19888の5 roomをheld/activeとして保持しており、foreign roomを変更せずlive helper置換を開始していない。19888のportはheld roomにより占有中である。
+
+Evidence: `work/service-readiness/terminal-audit-20260810.v3.json`。外部効果、秘密値のread/log、process/listener cleanupはない。
+
+**Exact blocker / next safe action / restart point:** `browser_use_cli_helper_source_parity_required`（同期 admission側の補助 blockerは`browser_use_cli_live_rooms_active`）。room ownerのreleaseまたは明示handoffがfresh readbackで確認できるまでhelper置換を行わない。再開点はhelper parity readbackであり、その後automation-3だけをtrusted preflightする。
+
+## 2026-08-10 Zeabur / global audit fresh readback checkpoint 372
+
+Zeabur CLIのfresh readbackでproject/environment/service/deploymentを再確認した。`automation-os`と`codex-app-server`はともに`RUNNING`、両domainは`PROVISIONED`、public `/readyz`は双方HTTP 200。AOS protected Company readinessはread tokenなしではHTTP 401 `production_read_token_missing`であり、秘密値を取得していない。global automation auditは6/6 compliant、gap 0、外部効果なし。
+
+Evidence: `work/service-readiness/unresolved-audit-20260810.v6.json`、`work/service-readiness/terminal-audit-20260810.v3.json`。Company 1のhistorical 6/6 catalogはprotected current readbackがないためcurrent proofへ昇格せず`PENDING_CONFIRMATION`とした。
+
+**Exact blocker / next safe action / restart point:** Browser Useは`browser_use_cli_helper_source_parity_required`、Zeabur protected readbackは`production_read_token_missing`、Codex認証は`codex_app_server_chatgpt_login_required`。owner-bound helper parity、supported `/data/codex` login、read-only protocol canaryを順序どおりに再開する。外部effectは発生させない。
+
+## 2026-08-10 Browser Use package regression repair checkpoint 373
+
+Browser Use packageのfresh `npm test`で77件中2件がauthority renewalの歴史fixture期限切れで失敗していた。テスト時刻をfixture内へ固定し、本番の期限切れ拒否を緩めずに修正した。修正後は77/77 pass、Python compile、Node syntax、git diff checkがpass。source packageのみの修正で、installed helperのpublicationはまだ行っていない。
+
+Evidence: `work/service-readiness/browser-use-cli-package-regression-20260810.v1.json`。
+
+**Exact blocker / next safe action / restart point:** `browser_use_cli_helper_source_parity_required`。room ownerのreleaseまたは明示handoff後にpublication admissionを再確認し、source/package parity→owner-bound publication→fresh runtime readback→automation-3 trusted preflightへ進む。
+
+## 2026-08-10 post-regression parity readback checkpoint 374
+
+回帰修正後のfresh room admissionでもsource SHA `013227...`とinstalled SHA `8d1229...`は不一致のまま。active/heldの5 room（19880、20090、19886、19887、19888）は全てhelper generation conflictとして保持され、foreign roomは変更していない。package側の77/77 passはruntime publicationの代替証拠にはしない。
+
+**Exact blocker / next safe action / restart point:** `browser_use_cli_helper_source_parity_required` / `browser_use_cli_live_rooms_active`。owner releaseまたは明示handoff後にfresh parity readbackから再開する。
+
+## 2026-08-10 clean-room boundary / current runtime readback checkpoint 375
+
+clean-room doctorが実machine helperを誤参照していたlocal defectを修正し、package helperを明示束縛した。clean-roomはportable smoke 4/4、installer smoke completed、package npm test 77/77。fresh Zeabur readbackはAOS/CodexともRUNNING、domain PROVISIONED、public `/readyz` 200、global audit 6/6 compliant。live helper parityは依然falseで、5 roomのowner-bound conflictは保持している。
+
+Evidence: `work/service-readiness/unresolved-audit-20260810.v7.json`、`work/service-readiness/browser-use-cli-package-regression-20260810.v1.json`。
+
+**Exact blocker / next safe action / restart point:** `browser_use_cli_helper_source_parity_required`。room releaseまたは明示handoffが得られるまでinstalled publication・Browser Use canaryを開始しない。再開点はfresh parity readback。
+
+## 2026-08-10 final blocked audit checkpoint 376
+
+同じfresh evidenceで、installed/package helper SHA不一致と5件のheld/active room conflictが3回連続確認された。package 77/77、clean-room 4/4、installer smoke、global audit 6/6、Zeabur public read-onlyは完了済みで、foreign roomを変更せずに進められるlocal作業は尽くした。
+
+Evidence: `work/service-readiness/unresolved-audit-20260810.v8.json`。
+
+**Exact blocker / next safe action / restart point:** `browser_use_cli_helper_source_parity_required`（supporting `browser_use_cli_live_rooms_active`）。room ownerのreleaseまたは明示handoffという外部状態変化後に、fresh parity readbackから再開する。Goalはblockedとして永続化し、応募・投稿・送信・公開・支払は行わない。
+
+## 2026-08-10 user-authorized Browser Use room cleanup checkpoint 377
+
+ユーザーの明示許可でcanonical Browser Use CLIのroom cleanupを実行。対象5室のうち19880、20090、19886、19887はreleased、19887の旧scheduled profileはcleanupで削除済み。stale化後に観測対象から外れる共通バグをsource/installed helperへ修正し、stale-room回帰テスト1/1、Python compile、CLI helpをpassさせた。
+
+19888のv3 roomはheldのまま。fresh readbackでPID 8701のGoogle Chromeが19888をlistenし、download pathからv4 runを投影できたが、v4のcanonical descriptor/owner bindingがないため、`room-admin-release --delete-approved --delete-profile`は`browser_use_room_owner_reuse_listener_live`でfail-closeした。強制kill、profile削除、foreign runの迂回はしていない。
+
+Evidence: `work/service-readiness/browser-use-room-release-readback-20260810.v1.json`、`/Users/nichikatanaka/.local/bin/codex-browser-use`、`/Users/nichikatanaka/Documents/New project/browser-use-cli/bin/codex-browser-use`、`/Users/nichikatanaka/Documents/New project/browser-use-cli/test/stale-room-release.test.mjs`。stale/admin room-release回帰は2/2、canonical validate/runtime-readbackはcompleted、runtime drift=false。
+
+**Exact blocker / next safe action / restart point:** `browser_use_room_owner_reuse_listener_live` / v4 runをcanonical owner-bound cleanupへ戻すか、ユーザーがChromeを閉じた後にfresh absence readback→19888 profile削除→room release。再開点はv4 terminal後のfresh room readback。外部応募・投稿・送信・公開・支払は0件。
+## 2026-08-10 checkpoint 378: authorized room cleanup, helper parity, and AOS bridge parity restored
+
+- 19888番の孤立Chrome PID 8701をユーザー許可の対象限定で終了し、当該runの2つのstale lockだけを削除。room-42を`room-admin-release --delete-approved --delete-profile`でreleaseし、profile削除・listener/process/helper不在をfresh確認。
+- 5 target roomはreleased、foreign roomは変更なし。Mac Codex App/local server、Mac worker、iPhone/Simulator、Obsidian、他PCなしの境界は維持。
+- `scripts/sync-live.sh`でcanonical Browser Use source/installed helperを同期。source/installed SHA一致、runtime drift=false、focused room/admin regression 2/2。
+- AOS Codex App parity監査の共有バグを修正。canonical `aos-trigger-zeabur` wrapperをbridgeとして認識し、fresh protected Zeabur Company 1 schedule APIを読めるようにした。6/6 registered automationがCompany 1・Asia/Tokyo・schedule parityで`matched`。
+- AOS build成功。trigger contract 9/9、Codex App parity fixture 1/1、Browser Use room regression 2/2。Zeabur AOS/Codex service RUNNING、public readyz 200、Company 1 scheduler/durable queue/no-effect維持。local stdio Codexはaccount/read → thread/start → turn/start → completion成功。
+- 未達: `codex_app_server_chatgpt_login_required`、`codex_app_server_remote_transport_experimental_unsupported`、Mac-only Browser Use business authority、Daily AI/Job/NisenPrints business proof、G0/G1 release evidence。外部応募・投稿・公開・送信・支払は0件。
+- Full verification: AOS build成功、full regression `1068 total / 1052 pass / 0 fail / 16 skipped`（PostgreSQL fixture未設定のみ）、JSON/diff/readback checks pass。
+
+Evidence: `work/service-readiness/continuation-readback-20260810.v1.json`、`work/service-readiness/unresolved-audit-20260810.v9.json`、`work/service-readiness/company-release-packet-preparation-20260810.v5.json`、`work/goal-run-automation-os-continuation-20260809.json`。
+
+## 2026-08-10 checkpoint 379: Mac Browser Use canary completion and shared adapter root repair
+
+fresh read-only canaryでMac-only Browser Use laneを確認した。automation-3はworkflow-owned persistent profileと固定port 19881でLinkedIn jobsへ到達し、expected host/state/candidate surface/screenshotをreadbackした。`login_required=false`、外部効果false。同一run leaseをfinalizeし、receipt `external_effects=none`、listener/process/lock absentを確認した。Japan targeted candidate supplyは1件をreadbackし、`browser_backend=browser_use_cli`、`external_action_count=0`、`external_action_executed=false`、flow finalized。応募Submitは実行していない。
+
+root cause repair: Browser Use action nonceが長いrun IDをそのまま連結して128文字上限を超え、`browser_use_cli_action_nonce_replay`と誤分類されていた。共通stage adapterにbounded hash nonceを追加し、Job/Daily AI/candidate/submitの全呼び出し元へ適用した。preflight screenshotは必ず`flow.recording_dir`配下で生成し、captured readbackはobject/JSON stringの両形を許可する。関連Node tests `40/40 pass`、room regression `2/2 pass`。
+
+releasedだが残置していた所有者付きtemporary profile/lockは、ユーザー許可の対象だけをquarantineへ移動した。foreign room、Codex App/local server、iPhone/Simulator、Obsidianは変更なし。
+
+Evidence: `work/service-readiness/browser-use-canary-readback-20260810.v1.json`、`work/service-readiness/unresolved-audit-20260810.v10.json`、`work/service-readiness/company-release-packet-preparation-20260810.v6.json`。
+
+**Exact blocker:** `codex_app_server_chatgpt_login_required`、`codex_app_server_remote_transport_experimental_unsupported`、`workflow_business_receipts_missing`、`company_release_evidence_required_fields_missing`。
+
+**Next action / restart point:** supported Zeabur `CODEX_HOME` login後にAOS remote protocol canaryの`account/read`から再開。Mac応募laneはcandidate supply readback後のfresh target/approval/business-effect admissionが再開点。外部応募・投稿・公開・送信・支払は0件。
+
+
+## 2026-08-10 checkpoint 380: Zeabur Codex auth, remote technical canary, and Mac durable-only dispatch
+
+ユーザーがZeaburのCodex App Server側でsupported ChatGPT loginを完了した。fresh readbackで専用serviceはRUNNING、`/data/codex` persistent volumeを確認し、AOS protected bridgeから `initialize → account/read → ephemeral thread/start → read-only turn/start → completion/error` を一回実行して完了通知を取得した。`account_present=true`、`turn_status=completed`、error notificationなし、Browser Use/外部効果なし。これはZeabur内Codex serverの技術疎通証跡であり、本番remote切替の承認証跡ではない。
+
+Mac workerは、ローカルSQLite/worker-owned schedulerから、Zeabur Postgres・server-owned scheduler・`durable-only` queue claimへ切替えてLaunchAgentを対象限定で再起動した。remote queueのsafe no-effect FIFO canaryはclaim→complete、heartbeatは`ok/running`、`durableJobsProcessed=1`、`external_action_executed=false`。fresh Company 1 triggerは旧FIFO backlogの後ろで`queued`のままなので、当該triggerのsame-run completionは未確認として保持する。Codex App/local server、Browser Use room、iPhone/Simulator、Obsidianは停止・置換していない。
+
+実装済み: durable-only worker境界、safe child environment allowlist、回帰テスト、LaunchAgentのPostgres/server/durable-only設定、auth/remote canary readback。focused testsは`69 passed / 0 failed / 0 skipped`。Zeaburへ未反映: workerLoop等の今回のlocal source変更は未deployで、Zeabur AOS/Codex runtimeとのsource parityは`PENDING_CONFIRMATION`。外部承認待ち: `codex_app_server_remote_transport_experimental_unsupported`、private readyzがHTTPで`tls_required=false`のためTLS/WSS production boundary未確認、workflow business receipt/G0/G1 required evidence不足。応募・投稿・公開・送信・支払は0件。
+
+Evidence: `work/service-readiness/zeabur-codex-auth-remote-canary-mac-dispatch-readback-20260810.v1.json`、`work/goal-run-automation-os-continuation-20260809.json`。
+
+**Exact blocker / next safe action / restart point:** remote transportをtechnical-canary-onlyに保ち、local stdio fallbackとMac-only Browser Useを維持する。常駐Mac durable-only workerにsafe backlogを処理させ、fresh triggerのcompletionをreadbackする。business canaryはfresh target・approval・same-run business proof・G0/G1 evidenceが揃うまで開始しない。再開点は`fresh remote transport/TLS promotion readback`または`current durable trigger completion`。
+
+
+## 2026-08-10 checkpoint 381: fresh durable trigger completion and exit audit
+
+fresh protected readbackでCompany 1の今回triggerを確認した。FIFO backlogは0件になり、job `job_msm8zmc9_z3pwfb` は `completed`、attempt_count=1、run `run_msm8zmc9_s20rdq` は `complete`、attempt `attempt_msm9yk9d_m0qhlm` は `completed`、proof `proof_msm9yu0r_4suptl` をreadbackした。provider_called=false、external_action_executed=false、Company scope enforced。Mac LaunchAgentはPostgres/server-owned/durable-onlyでrunningを維持している。
+
+この工程の完了条件は満たしたが、Goal全体の完了ではない。Zeabur remote transportはexperimental/unsupported、private readyzはHTTPかつ`tls_required=false`でproduction TLS/WSS切替不可。今回のlocal worker source変更はZeabur未deployでsource/runtime/artifact parityはPENDING_CONFIRMATION。MacにBrowser Use CLI・LinkedIn等のWeb操作、iPhone/Simulator、Obsidian、Codex App/local stdioを残し、browser business laneはfresh authority・target approval・same-run business proof・G0/G1 evidence不足のため閉鎖する。外部応募・投稿・公開・送信・支払は0件。
+
+Evidence: `work/service-readiness/zeabur-codex-auth-remote-canary-mac-dispatch-readback-20260810.v2.json`、`work/goal-run-automation-os-continuation-20260809.json`。
+
+**Exact blocker / next safe action / restart point:** remote transport/TLS/WSS promotion admission、Zeabur source/runtime/artifact parity、workflow business receipts、G0/G1 required evidence。次はこれらのrelease admissionを独立に検証し、揃ったworkflowだけをMac Browser Use CLIのadaptive business canaryへ進める。再開点はremote promotion admissionまたはfresh business canary admission。
+
+
+## 2026-08-10 checkpoint 382: AOS deploy recovery, token rotation, and remote canary restored
+
+AOS verified rootからのdeployment `6a78e9179cc09bfe79966021` はNode.js planでRUNNING。deploy後のenv overwriteで一時的に `DATABASE_URL`、owner actor、Zeabur private remote URL/allow flagが欠落し、protected readbackが403/local_stdio fallbackになったが、Postgres参照、`AUTOMATION_OS_OWNER_USER_ID=user_local_owner`、production/Postgres mode、private remote URL、internal WS flagを復元し、AOSのみrestartした。fresh container envは値を出さず、必要な変数がconfiguredであることだけ確認した。
+
+復旧後のAOS protected readinessは `technical_ok=true`、`mode=remote_websocket`、`network_boundary=zeabur_private_service`、`auth_configured=true`、private readyz 200。fresh remote read-only canaryは `initialize/account/read/thread/start/turn/start/completed` を通過し、error notificationなし、external effectなし。Codex専用serviceはrestart後も永続 `CODEX_HOME=/data/codex` とauth済みprotocol readbackを維持した。Mac workerはPostgres/server-owned/durable-onlyでrunning、Browser Use rooms・Mac Codex App・iPhone/Simulator・Obsidianは変更なし。
+
+変数一覧の誤readbackで旧credential値がCLI出力へ露出したため、AOS read/write token、Codex remote token、Mac Keychain machine tokenをランダム値へローテーションした。新しいsecret値は表示・保存・artifact化していない。外部応募・投稿・公開・送信・支払は0件。
+
+Evidence: `work/service-readiness/zeabur-codex-auth-remote-canary-mac-dispatch-readback-20260810.v3.json`、`work/goal-run-automation-os-continuation-20260809.json`。
+
+**Exact blocker / next safe action / restart point:** remote transportはexperimental/unsupported、private readyzはHTTPで`tls_required=false`、Zeabur exact source hash parity未確認、workflow business receipts/G0/G1未達。次はTLS/WSS・source/runtime/artifact hash parityを独立に検証し、fresh Mac authority・target approval・same-run business proofが揃ったworkflowだけadaptive business canaryへ進める。再開点はremote promotion admissionまたはfresh business canary admission。
+
+## 2026-08-10 checkpoint 383: Company 1 reference canaries completed after worker recovery
+
+Company 1のfresh `preflight_no_effect` reference canaryをDaily AI、NisenPrints、Jobで一回ずつ実行し、3/3がcompleted、attempt_count=1、Company scope enforced、lease inactive、external_action_executed=falseとなった。Mac workerはstale cycleを検知したためworker LaunchAgentだけを対象限定で再起動し、Postgres・server-owned・durable-only・read_only設定と新プロセスをfresh確認した。Codex App/local server、Browser Use、iPhone/Simulator、Obsidianは変更していない。
+
+参照dry-runの完了はbusiness completionを意味しない。応募・投稿・公開・送信・支払は0件。Zeabur Codex loginとinternal read-only canaryは成功済みだが、remote transportのproduction promotion、TLS/WSS、exact source/runtime/artifact parity、workflow business receipt、G0/G1は未達のまま。
+
+Evidence: `work/service-readiness/company1-reference-canaries-readback-20260810.v1.json`、`work/goal-run-automation-os-continuation-20260809.json`。
+
+**Exact blocker / next safe action / restart point:** `codex_app_server_remote_transport_experimental_unsupported`、internal TLS/WSS未確認、Zeabur exact parity未確認、workflow business receipts/G0/G1未達。次はremote promotion/TLSとsource/runtime/artifact parityを独立確認し、fresh workflow authority・target approval・same-run business proofが揃ったworkflowだけMac Browser Use business canaryへ進める。再開点はremote promotion/TLS admissionまたはfresh Mac business-canary admission。
+
+## 2026-08-10 checkpoint 384: official Codex App Server transport boundary confirmed
+
+OpenAI公式のCodex App Server documentationをfresh-readした。App ServerのWebSocket transportは`experimental`かつproduction workloadでは`unsupported`、non-local接続はauthenticationとTLSが必要、plain `ws://`はlocalhostまたはSSH port-forwardingに限定される。Zeabur AOS→Codex private `ws://`はread-only technical canaryとして保持し、production cutoverはfail-closeする。非公式な代替transportは追加していない。
+
+Evidence: `work/service-readiness/codex-app-server-official-capability-readback-20260810.v1.json`、`work/service-readiness/unresolved-audit-20260810.v12.json`。
+
+**Exact blocker / next safe action / restart point:** `codex_app_server_remote_transport_experimental_unsupported`、`codex_app_server_internal_tls_missing`。次はexact source/runtime/artifact parity、Mac business proof、G0/G1を独立に進める。remote production cutoverはsupported TLS/WSSと公式support boundaryが揃うまで閉じる。再開点はfresh official capability readbackまたはsupported TLS/WSS promotion admission。
+
+## 2026-08-10 checkpoint 385: exact source/runtime/artifact parity restored
+
+ローカル`dist`に残っていたソース未存在の古い生成物2件を対象限定で除去し、再ビルド後のruntime parity manifestをfresh readbackした。ローカルとZeabur deployment `6a78f2c4db4ec8cd006af7d0`はschema、SHA-256 artifact hash `8572fa46ed46a82c8c6c98722462ad97643cfab7a5838c06f2297e7274d9b312`、334-file countで完全一致した。source commit identityは未確認なのでunknownのまま保持する。parity gateは解消し、remote transport/TLS、workflow business proof、G0/G1のみを未解決として残す。
+
+Evidence: `work/service-readiness/source-runtime-artifact-parity-readback-20260810.v1.json`、`work/service-readiness/unresolved-audit-20260810.v13.json`。
+
+## 2026-08-10 checkpoint 386: current deployment parity readback finalized
+
+AOS deployment `6a78f60f9cc09bfe79966126` は`RUNNING`で、current deployed runtime manifestをfresh readbackした。ローカルとZeaburはschema、artifact hash `8572fa46ed46a82c8c6c98722462ad97643cfab7a5838c06f2297e7274d9b312`、334-file countで完全一致し、public `/api/health`も`ok=true`。AOS serviceのみを反映し、Codex専用service、Mac worker、Browser Use、Mac Codex Appは変更していない。remote transport/TLS、workflow business proof、G0/G1のみを未解決として保持する。
+
+Evidence: `work/service-readiness/source-runtime-artifact-parity-readback-20260810.v2.json`、`work/service-readiness/unresolved-audit-20260810.v14.json`。
+
+## 2026-08-10 checkpoint 387: Company 1 bridge, scheduler, and Mac worker restored
+
+Fresh AOS protected readback confirms `user_local_owner` is an active owner of Company 1 and all six Company 1 automations are active. After the prior transient `company_scope_forbidden`, a new post-token-rotation registered bridge canary queued `job_msmcsiou_8u1otc` / `run_msmcsiou_jrrxuf`; the Mac durable-only worker completed it in one attempt with inactive lease and `external_action_executed=false`.
+
+The actual scheduler blocker was `durable_scheduler_service_user_id_missing`: the Zeabur AOS service lacked the scheduler service identity, owner, and interval variables. The existing Company 1 operator service identity was bound, server-owned/60000ms scheduler configuration was added, and a fresh scheduler tick returned HTTP 200, `status=completed`, `service_user_configured=true`, and `exact_blocker=null` with no external action. Only AOS was restarted.
+
+A Zeabur CLI variable mutation unexpectedly returned existing credential values. AOS write/read, Codex remote, and Mac Keychain machine credentials were immediately rotated and resynchronized; new values were not stored in artifacts or readbacks. This is recorded as mitigated security hygiene, not hidden as a successful secret readback.
+
+Evidence: `work/service-readiness/company1-trigger-scheduler-worker-readback-20260810.v1.json`, `work/service-readiness/unresolved-audit-20260810.v15.json`.
+
+**Exact blocker / next safe action / restart point:** the AOS scheduler→durable queue→Mac worker no-effect path is restored, but remote Codex production transport/TLS, workflow business receipts, and G0/G1 required evidence remain incomplete. Keep remote WebSocket technical-only, preserve local stdio and Mac-only Browser Use, and resume at supported TLS/WSS promotion or fresh Mac business-canary admission.
+
+## 2026-08-10 checkpoint 388: official Codex App launcher wrapper parity restored
+
+The fresh official `run-job-manager-scheduler` readback returned a Company 1 scoped `aos.automation_trigger.v1` receipt with `queued=true`, `dry_run=true`, `provider_neutral=true`, and `external_action_executed=false`. Job `job_msmcys05_jwtstx` / run `run_msmcys05_87nxrn` completed on the Mac durable-only worker in one attempt with an inactive lease. The execution authority is AOS control plane; Codex App run-now is not required.
+
+The common-kernel root cause was that the declared `/Users/nichikatanaka/.local/bin/aos-trigger-zeabur` wrapper was validated at parse time but the local raw trigger script was spawned at execution time. The kernel now preserves the declared wrapper at execution, with a static regression test. Mac Codex App/local server, Browser Use, iPhone/Simulator, and Obsidian were not changed. External effects were zero.
+
+Evidence: `work/service-readiness/codex-app-official-launcher-aos-readback-20260810.v1.json`, `work/service-readiness/unresolved-audit-20260810.v16.json`.
+
+**Exact blocker / next safe action / restart point:** remote production promotion remains blocked by the official transport/TLS gate; workflow business proof and G0/G1 are also incomplete. Preserve local stdio fallback and Mac-only Browser Use, keep submit/publish closed until fresh business authority exists, and resume at supported TLS/WSS promotion or Mac business-canary admission.
+
+## 2026-08-10 checkpoint 389: Zeabur claim → Mac Browser Use CLI → Zeabur receipt boundary fixed
+
+The earlier failure was a split execution boundary, not a missing Codex login. The first attempt invoked the Mac Codex App first-class controller and correctly stopped at `automation_kernel_external_effect_first_class_root_required`. The legacy Mac worker also pointed at a different local Postgres database, so it could not see the Zeabur durable queue. Those were the root causes.
+
+The AOS service now exposes Company-scoped portable worker claim/receipt endpoints. The Mac LaunchAgent uses the remote API polling worker, which invokes only the canonical Browser Use CLI and returns a sanitized same-run receipt to Zeabur. Fresh `run_msmfvbnp_rq3ezn` candidate_supply read-only canary passed claim, Browser Use CLI candidate discovery, cleanup, readback, and receipt; candidate_count=1. AOS correctly ended the run as `blocked` with `portable_remote_read_only_business_completion_proof_pending` and `external_action_executed=false`, so no application was submitted. Current Zeabur deployment `6a790d889cc09bfe799662af` is RUNNING and public health is HTTP 200. Selected bridge source/runtime SHA-256 parity matches, and the new regression plus portable entrypoint tests pass 9/9.
+
+Evidence: `work/service-readiness/portable-remote-worker-canary-readback-20260810.v1.json`, `work/service-readiness/unresolved-audit-20260810.v18.json`, `apps/server/src/tests/portableRemoteWorker.test.ts`.
+
+**Exact blocker / next action / restart point:** Official Codex App Server remote WebSocket production support and internal TLS/WSS are still unavailable. Full current deployment parity is now verified for RUNNING deployment `6a791138db4ec8cd006afac5`: local and Zeabur manifests both have 336 files and artifact hash `e9c6430020e4b3be1e22c2f8c100493987e324a5fa11609b06380c3a33f74d35`. Business receipts/G0/G1 are incomplete. Keep local Codex App/server, Mac-only Browser Use, iPhone/Simulator, and Obsidian paths unchanged. Continue with a fresh approved Mac business-canary admission. Restart at supported TLS/WSS promotion or fresh approved-target business canary admission.
+
+## 2026-08-10 checkpoint 390: large Browser Use readback root repair and remote reference canary recovery
+
+`browser_use_cli_flow_command_failed`の原因は、共有stage adapterがhelperの最大512KB captured readback envelopeを64KBで切っていたことだった。Canvaの大きい`state`が解析前に壊れていたため、Codex Server認証やZeabur schedulerの停止ではない。canonical adapterと隣接package adapterの一時stdout上限を4MBへ揃え、raw page bodyを保存せずredaction/bounded returnを維持した。
+
+fresh local `run_nisenprints_state_diag_20260810_r5`はstate・screenshot・finalize・cleanupまで成功。fresh Zeabur→Mac worker run `run_msmh6l1z_c3fg42`はclaim、Browser Use CLI、state readback、cleanup、Zeabur receiptまで成功し、AOSは`portable_external_read_only_business_completion_proof_pending`でblocked、`external_action_executed=false`となった。read-only proofを応募・公開完了と誤認しない正しい停止である。
+
+Adapter regression 14/14、portable remote/entrypoint 9/9、server build、syntax、diff checkがpass。Mac Codex App/local server、Zeabur Codex service、Mac workerのprofile/port契約、iPhone/Simulator、Obsidian、foreign roomは維持。AOS scheduler/durable queueを正本、Codex Appをthin launcher、Web操作をMac Browser Use workerとする構成は維持する。
+
+Evidence: `work/service-readiness/browser-use-cli-large-readback-regression-20260810.v1.json`、`work/service-readiness/portable-remote-worker-reference-canary-readback-20260810.v1.json`、`work/service-readiness/unresolved-audit-20260810.v19.json`、`work/service-readiness/company-release-packet-preparation-20260810.v7.json`。
+
+**Exact blocker / next action / restart point:** remote Codex production transport/TLS、workflow business receipt、G0/G1 required evidence。次はfresh approved Mac business-effect admissionとvisible business proofを進め、応募・投稿・公開・送信はそのproofが揃うまで実行しない。再開点はfresh official remote promotion/TLS readbackまたはfresh approved Mac business-effect admission。
+
+## 2026-08-10 checkpoint 391: Company 1 fresh reference expansion and Job input-contract recovery
+
+Fresh Company 1 portable runs were submitted for Daily AI, NisenPrints, and Job. Daily AI `run_msmhibq6_vl480p` and NisenPrints `run_msmhidx2_hclovs` reached the Mac durable-only worker, canonical Browser Use CLI, same-run readback, and cleanup with `external_action_executed=false`. The first Job probe `run_msmhig3v_yeu6be` stopped before Browser Use with `portable_external_candidate_supply_input_bundle_missing`; a new fresh lineage-bound Job run `run_msmholgp_fpf96o` then produced one read-only candidate (`candidate_count=1`, `requested_count=1`) with readback and cleanup verified, and submit was not invoked.
+
+This proves the AOS scheduler/durable queue -> Mac Browser Use CLI worker -> Zeabur receipt expansion and the repaired Job input contract, not business completion. All three workflow business lanes remain blocked at `portable_external_read_only_business_completion_proof_pending`; applications, posts, publications, messages, and payments remain zero. The fresh global kernel audit is 6/6 compliant with zero gaps, and Codex App -> AOS schedule/trigger parity is matched for 6/6 Company 1 entries. Mac Codex App/local server, dedicated Codex service, iPhone/Simulator, Obsidian, and foreign rooms were unchanged.
+
+Evidence: `work/service-readiness/company1-reference-canaries-readback-20260810.v2.json`, `work/service-readiness/unresolved-audit-20260810.v20.json`, `work/service-readiness/company-release-packet-preparation-20260810.v8.json`, `work/goal-run-automation-os-continuation-20260810.json`.
+
+**Exact blocker / next action / restart point:** `codex_app_server_remote_transport_experimental_unsupported`, `codex_app_server_internal_tls_missing`, `portable_external_read_only_business_completion_proof_pending`, and `company_release_evidence_required_fields_missing` remain. Continue only with fresh approved Mac business-effect admission and workflow-specific visible proof/same-run sync/cleanup; keep remote Codex production promotion closed until supported TLS/WSS is proven. Restart at fresh approved Mac business-effect admission or supported TLS/WSS promotion readback.
+
+## 2026-08-10 checkpoint 392: business bridge root repair, safe no-submit reconciliation, and current deployment parity
+
+`run_msmjpbpx_d1zuvl`のfresh Mac business receiptは、応募送信proofなし（`visible_submission_success=false`、`external_intent_count=0`、`external_action_count=0`）で`browser_use_recording_readback_failed`に停止した。これは応募完了ではない。Browser Useの録画は同一run cleanupまで回復し、UI上の非送信操作が実行されたことだけを記録した。Opportunity Ledgerは公式`reconcile_not_submitted`でsequence 103、`status=discovered`へ戻し、claimを残していない。
+
+根本修正は、AOS approval/claimとMac Browser Use CLI effectを分離し、AOSはtarget-bound approvalとdurable receiptを所有、Web操作はMac workerだけが実行すること、pre-browser失敗時だけLedgerをreconcileすること、immutable writerを定義すること。server build、focused server tests 102/102、Ledger tests 3/3、Mac runner syntax/compile、diff checkはpass。Zeabur deployment `6a7923be9cc09bfe79966473`はRUNNING、public health 200、選択runtime 3ファイルのlocal/Zeabur hash parityは確認済み。Codex App/local server、Codex専用service、Mac profile/port、iPhone/Simulator、Obsidian、foreign roomは未変更。
+
+Evidence: `work/service-readiness/portable-remote-business-bridge-deploy-readback-20260810.v1.json`。
+
+**Exact blocker / next action / restart point:** `production_read_token_missing`、`codex_app_server_remote_transport_experimental_unsupported`、`codex_app_server_internal_tls_missing`、`company_release_evidence_required_fields_missing`、fresh business visible proof/same-run sync未達。直近runとclaimは再利用せず、recording/readback契約green後にfresh approved Mac business-canary admissionから再開する。
+
+## 2026-08-10 checkpoint 393: Mac business runner binding repair and safe origin-bound stop
+
+The Mac worker LaunchAgent now has an explicit canonical Job business-runner binding, and its project-root fallback is restricted to the canonical runner under the explicit root. Source and installed plist hashes match; focused portable business runner/worker tests pass 13/13, with server build, syntax, and diff checks also passing. Only the AOS Mac worker was restarted; the Mac Codex App/local server, Zeabur Codex service, iPhone/Simulator, Obsidian, and foreign rooms were unchanged.
+
+Fresh canary `run_msmkx5dq_j69b83` passed AOS approval, Mac worker claim, Opportunity Ledger claim, and canonical Browser Use CLI adaptive Apply/profile input on `scheduled/automation-3` port 19881. It stopped safely before submission at `browser_use_origin_not_allowed`: `visible_submission_success=false`, `external_intent_count=0`, `external_action_count=0`, `action_count=0`, and `ambiguous_external_effect=false`. Recording finalization and run-owned cleanup completed; official Ledger `reconcile_not_submitted` returned `status=discovered` with no active claim. Applications submitted: 0.
+
+Evidence: `work/service-readiness/portable-remote-business-canary-readback-20260810.v2.json`, `work/service-readiness/unresolved-audit-20260810.v22.json`, `data/artifacts/portable-remote-worker/run_msmkx5dq_j69b83`.
+
+**Exact blocker / next action / restart point:** Do not reuse the current candidate or run. Fresh-inspect the actual external application origin and bind it to a fresh target-bound authority, or select another candidate whose origin is already allowed. Then resume one candidate only with a new idempotency key, fresh approval, and fresh claim, requiring `submitted_confirmed`, same-run Ledger/source sync, and terminal cleanup. Keep `production_read_token_missing`, unsupported official Codex remote production transport, missing internal TLS/WSS, and missing G0/G1 evidence unresolved. Restart at a fresh approved target with an allowed origin.
+
+## 2026-08-10 checkpoint 394: adaptive Job canary stopped for one safe clarification
+
+Job canary `run_msmozyut_zatu96` used a fresh approval/idempotency lineage and the workflow-owned `scheduled/automation-3` profile on fixed port 19881. Adaptive Browser Use reached the known applicant fields and Next/Review route, then safely stopped before Submit at `applicant_clarification_required:clarify-e5cc86ea17d94cbbbafc6b60b06c408b`. The unknown display was `Nichika_Tanaka_Resume.pdf 5/25/2026`; no interpretation or guessed input was made. Same-run proof is `visible_submission_success=false`, `external_intent_count=0`, `external_action_count=0`, `browser_flow_status=finalized`, and `cleanup_verified=true`. Official Opportunity Ledger sequence 126 is `discovered` with no active claim.
+
+The canonical helper semantic-attribute/unique-submit-target repair is present in source and installed runtime with exact parity; focused helper tests 7/7, server business-runner tests 4/4, and server build pass. This is a Mac worker runtime change and is not represented as a Zeabur deployment change. Applications submitted remain 0.
+
+**Exact blocker / next action / restart point:** `applicant_clarification_required:clarify-e5cc86ea17d94cbbbafc6b60b06c408b` is user-answer-dependent. Ask what the resume filename/date label means or what action to take. Once answered, record the reusable fact only via the official applicant-knowledge path, then restart with a new idempotency key, fresh approval, and fresh claim for one candidate. Do not replay v20 or guess the field; require `submitted_confirmed`, same-run Ledger/source sync, and terminal cleanup.
+
+## 2026-08-10 checkpoint 395: fresh local/runtime health and unresolved audit
+
+Fresh readback returned AOS public health `ok=true`; the Mac durable worker LaunchAgent state is `running` with the canonical portable worker process. `npm run build:server` passed, the Job business-runner focused suite passed 4/4, the Browser Use helper regression suite passed 7/7, and the source/installed canonical helper copies are byte-identical. The current unresolved-only audit is `work/service-readiness/unresolved-audit-20260810.v23.json`; the current Company 1 release packet is `work/service-readiness/company-release-packet-preparation-20260810.v9.json`.
+
+The audit preserves only current blockers: the v20 clarification, `production_read_token_missing`, official Codex remote transport production support/TLS, and missing G0/G1 evidence. The previous origin guard is not reported as the current v20 blocker because that run reached a later form state. No external effect occurred and applications submitted remain 0. Mac Codex App/local server, dedicated Zeabur Codex service, workflow-owned profile/port, iPhone/Simulator, Obsidian, and foreign Browser Use rooms were not changed.
+
+**Exact blocker / next action / restart point:** do not start another Job attempt while the v20 clarification is unanswered. After the answer, use the official applicant-knowledge path, then a new idempotency key, fresh approval, and fresh claim; require `submitted_confirmed`, same-run Ledger/source sync, and terminal cleanup.
+
+## 2026-08-10 checkpoint 396: Zeabur Codex persistent auth boundary fresh-read
+
+Official Zeabur CLI readback targeted the existing `automation-wiled` project and dedicated `codex-app-server` service. Container metadata confirms `CODEX_HOME` matches the mounted `/data/codex` volume, the persisted auth file is present with mode 600, and the mounted token file is present with mode 400. No credential or token value was read, printed, or saved. The service remains resident and its configured TLS-termination/non-loopback flags are set, but the Codex process listener remains internal `ws://`; this is not a private TLS/WSS proof.
+
+Fresh evidence: `work/service-readiness/zeabur-codex-app-server-current-runtime-readback-20260810.v7.json`. Persistent auth state is verified; remote transport remains technical-canary-only and local stdio fallback remains. Mac Codex App/local server, Mac Browser Use, profiles/ports, iPhone/Simulator, Obsidian, and foreign rooms were not changed.
+
+**Exact blocker / next action / restart point:** `codex_app_server_remote_transport_experimental_unsupported` and `codex_app_server_internal_tls_missing`; obtain supported private TLS/WSS and official capability readback, then restart at remote promotion admission. Do not alter the resident service solely to remove this evidence boundary.
+
+## 2026-08-10 checkpoint 397: G0/G1 release packet fields are explicit and still closed
+
+The current packet is `work/service-readiness/company-release-packet-preparation-20260810.v10.json`. Six required G0/G1 evidence fields remain explicitly blocked: named approvers/decisions, mixed-file hunk allowlist owner, clean candidate SHA/signed manifest, backup/restore/rollback owner, per-workflow account-target-payload-receipt contract, and incident-recovery drill evidence. This packet does not activate release or grant external-effect authority.
+
+Job is awaiting the one safe clarification; Daily AI/NisenPrints have reference readback only; Zeabur persistent Codex auth is verified but official remote transport and internal TLS/WSS remain unresolved. Activation is false and applications submitted remain 0. No Mac Codex App/local server, Browser Use profile/port, iPhone/Simulator, Obsidian, or foreign room was changed.
+
+**Exact blocker / next action / restart point:** after the clarification, complete workflow receipts and the six G0/G1 fields, then run the final exit audit. Restart at answered clarification -> fresh one-candidate business admission -> G0/G1 final exit audit.
+
+## 2026-08-10 checkpoint 398: official Codex App Server remote boundary fresh-read
+
+The current Codex manual independently confirms the remote boundary recorded in `work/service-readiness/zeabur-codex-app-server-current-runtime-readback-20260810.v7.json`: stdio is the default; non-local WebSocket requires authentication and TLS; plain `ws://` is only for localhost/SSH-forwarded use; and WebSocket/app-server remote transport is experimental and unsupported for production workloads. No unsupported workaround or plaintext promotion was added.
+
+Zeabur Codex remains resident/authenticated with persistent state, but remote production promotion is closed. Mac Codex App/local server and local stdio fallback remain unchanged.
+
+**Exact blocker / next action / restart point:** supported private TLS/WSS plus an official capability change are required. Restart at supported remote promotion admission; the separate Job restart remains waiting for the user clarification.
+
+## 2026-08-10 checkpoint 399: Mac worker idle-log root repair and Company 1 scope readback
+
+Fresh protected AOS readback confirms Company 1 scope is enforced and all six schedules are active/enabled in Asia/Tokyo. The Mac LaunchAgent worker was stopped and restarted once after fixing the common logging root cause: resident idle receipts are suppressed, `--once` remains observable, and startup log rotation is bounded at 10MB. The generated 1.4GB stdout log was cleared; source/installed startup scripts are byte-identical; worker tests pass 2/2; the new PID is running and stdout remains 0 bytes after a poll interval.
+
+The server-side projection currently shows `idle`, queue depth 7, and `last_seen=null`; this is explicitly `portable_worker_heartbeat_projection_missing`, not claimed as fresh heartbeat proof. Current artifacts are `work/service-readiness/unresolved-audit-20260810.v24.json`, `work/service-readiness/company-release-packet-preparation-20260810.v11.json`, and `work/service-readiness/company1-scheduler-worker-log-readback-20260810.v1.json`. No Browser Use foreign room, Mac Codex App/local server, iPhone/Simulator, Obsidian, or secret value was touched.
+
+**Exact blocker / next action / restart point:** preserve the worker/log fix; add/read a dedicated portable-worker heartbeat only if release requires it, without claiming/replaying queued runs. The Job restart remains at the unanswered clarification, then new idempotency/approval/claim.
+
+## 2026-08-10 checkpoint 400: AOS heartbeat projection deployed and fresh-read
+
+Zeabur AOS deployment `6a795081db4ec8cd006b06d7` is RUNNING and public health returned `ok=true`. Fresh protected Company 1 readback after a worker poll shows enforced scope, six `active/enabled` schedules in `Asia/Tokyo`, worker `status=running`, heartbeat `2026-08-10T04:20:15.399Z`, `readback_status=fresh_portable_worker_heartbeat`, queue depth 7, and `external_action_executed=false`. The heartbeat projection gap is resolved. The resident worker log fix remains verified with stdout size 0 after restart and poll interval; no queued run was replayed.
+
+Evidence: `work/service-readiness/company1-scheduler-worker-log-readback-20260810.v2.json`, `work/service-readiness/unresolved-audit-20260810.v25.json`, `work/service-readiness/company-release-packet-preparation-20260810.v12.json`.
+
+**Exact blocker / next action / restart point:** the Job canary remains awaiting the user clarification for the displayed resume filename/date label; the provided phone is already a stable profile fact and is not that answer. Keep remote Codex promotion closed because official remote WebSocket production support and internal TLS/WSS are not proven. Production read token and six G0/G1 evidence fields remain unresolved. Restart at answered clarification -> new idempotency/approval/claim -> one-candidate submitted proof, same-run sync, cleanup.
+
+## 2026-08-10 checkpoint 401: current reference-lane audit and business-proof separation
+
+Fresh protected Company 1 state remains scope-enforced with six active/enabled Asia/Tokyo schedules and a running Mac worker with fresh heartbeat projection. Seven existing durable jobs are queued `dry_run` jobs; they were not replayed or deleted. Daily AI and NisenPrints have Browser Use CLI readback/cleanup only, not publication/provider business receipts. Job v20 remains stopped before submit at the unanswered resume filename/date clarification.
+
+Evidence: `work/service-readiness/unresolved-audit-20260810.v26.json`, `work/service-readiness/company-release-packet-preparation-20260810.v13.json`, `work/service-readiness/company1-reference-canaries-readback-20260810.v2.json`.
+
+**Exact blocker / next action / restart point:** admit a fresh approved target-bound Daily AI or NisenPrints business canary only when its visible business proof, same-run sync, and cleanup contract are ready; do not convert reference readback into business completion. Job restarts after the user clarification with new idempotency/approval/claim. Production read token, official Codex remote transport/TLS, and G0/G1 evidence remain open. Restart at answered clarification or fresh approved business target.
+
+## 2026-08-10 checkpoint 402: deployed per-workflow contract and fresh resident worker readback
+
+The latest Zeabur AOS deployment `6a79541f9cc09bfe79966c9f` is RUNNING and health is OK. Local/runtime hashes for the three portable business-boundary modules match. Job, Daily AI, and NisenPrints now share the fixed account/target/payload/receipt contract while keeping their required input fields workflow-specific. Runtime validation readback is fail-closed for missing Daily AI `payload_hash` and accepts a complete bundle; the validation occurred before browser/effect admission and `external_action_executed=false`.
+
+The resident Mac worker heartbeat timer is deployed in the source LaunchAgent path. Fresh process readback at `2026-08-10T04:39:27Z` shows the LaunchAgent running as PID `67439`; the last fresh heartbeat projection was `2026-08-10T04:36:11.157Z`, queue depth is 7, and stdout is 0 bytes. The seven existing queued jobs remain untouched `dry_run` jobs. Evidence: `work/service-readiness/company1-scheduler-worker-log-readback-20260810.v3.json`, `work/service-readiness/per-workflow-account-target-payload-receipt-contract-20260810.v1.json`, `work/service-readiness/unresolved-audit-20260810.v27.json`, and `work/service-readiness/company-release-packet-preparation-20260810.v14.json`.
+
+The per-workflow contract gap is resolved. Business completion is not: Job remains at the unanswered clarification; Daily AI and NisenPrints still lack visible business/provider receipts and same-run source sync. Remote Codex production promotion remains closed because the supported remote transport/TLS boundary is not proven. Five G0/G1 evidence fields and the protected production read token remain open.
+
+**Exact blocker / next action / restart point:** do not replay the queued jobs or infer publication/application from reference readback. Restart at the user's answer for the resume filename/date label, then use a new idempotency key, fresh approval, fresh claim, one-candidate submitted proof, same-run sync, and cleanup; or start a fresh approved Daily AI/NisenPrints business target.
+
+## 2026-08-10 checkpoint 403: unresolved audit and release packet point to current worker evidence
+
+Fresh readback at `2026-08-10T04:42:01Z` confirms Zeabur AOS health OK and the Mac worker LaunchAgent running as PID `67439`; no queued job was claimed, replayed, or deleted. The latest audit is `work/service-readiness/unresolved-audit-20260810.v28.json` and the latest release packet is `work/service-readiness/company-release-packet-preparation-20260810.v15.json`; both now reference worker readback v3 and the deployed account/target/payload/receipt contract.
+
+The current source of truth still has no fresh approved Daily AI or NisenPrints business target. Older artifacts are historical evidence only and cannot supply current target authority or payload approval. Job v20 remains suppressed at the unanswered resume filename/date clarification. The five remaining G0/G1 fields, production read token, official Codex remote transport, and internal TLS/WSS remain explicit unresolved items.
+
+**Exact blocker / next action / restart point:** preserve the safe-stop. Proceed with a fresh target-bound business canary only after its approved account, target, payload, visible proof, same-run sync, and cleanup inputs exist; restart Job after the clarification with a new idempotency key, approval, claim, and one-candidate submitted proof.
+
+## 2026-08-10 checkpoint 404: verification evidence separated from hanging full suite
+
+Changed-boundary proof is current and green: portable contract/entrypoint/remote-worker `17/17`, resident worker `2/2`, representative release/Codex/company-scope/production-auth `42/42`, and server build passed. The full `npm test` process did not emit a completion summary after approximately 4m36s and was terminated as an incomplete verification; no failure was inferred. Duplicate test processes from the same verification attempt were also terminated by explicit process group, with no AOS service, Mac worker, Codex App, browser room, or external effect touched.
+
+This creates a verification follow-up only: `full_test_suite_readback_pending`. It does not reopen any business lane and does not alter the current seven unresolved release/business/remote gates. The latest unresolved audit is v28 and the latest release packet is v15.
+
+**Exact blocker / next action / restart point:** isolate the full-suite hang with a bounded fresh test process only if required. Otherwise use the already passing focused/representative suites for this change and resume business work from a fresh approved target or the answered Job clarification.
+
+## 2026-08-10 checkpoint 405: full suite passed and concurrent dist regression repaired
+
+The bounded full server suite completed successfully: `1083 total`, `1067 pass`, `0 fail`, `16 skip`, `434341.341076ms`. The only failure in the prior run was repaired at the test boundary: `portableWorkflowEntrypoint.test.ts` now resolves the source TypeScript module for tsx tests and the compiled JavaScript module for dist tests. Source and dist versions of that test both pass `10/10`; server build and `git diff --check` pass.
+
+Fresh readback after testing confirms AOS health OK, Mac worker LaunchAgent PID `67439` running, and no test process remaining. No queue was claimed/replayed, no Browser Use room or Codex App/local server was touched, and no external effect or secret read occurred. Evidence: `work/service-readiness/portable-workflow-entrypoint-test-readback-20260810.v1.json`.
+
+The verification follow-up is resolved. Business completion and release activation remain unproven and closed for the seven previously recorded blockers.
+
+**Exact blocker / next action / restart point:** Job restarts after the resume filename/date clarification with a new idempotency key, approval, claim, and one-candidate proof; Daily AI/NisenPrints restart only from fresh approved target-bound bundles. Production read token, supported Codex remote TLS/WSS, and five G0/G1 fields remain open.
+## 2026-08-10 checkpoint 406: Zeabur Codex secret alignment and AOS bridge canary passed
+
+Fresh Zeabur CLI readback found the exact cause of the prior AOS-to-Codex failure: AOS remote token, Codex remote token, and the `PASSWORD`-backed mounted config file had diverged. The AOS variable update alone did not refresh the mounted file. A diagnostic probe emitted a secret value once; the shared secret was immediately rotated, synchronized through the official Zeabur variable boundary, and the AOS and dedicated Codex services were restarted. The value was not saved in workspace/artifacts or repeated.
+
+After recovery, AOS variable, Codex remote variable, Codex `PASSWORD` config source, runtime environment, and `/run/secrets/codex-app-server-token` aligned without value readback. The mounted token file is regular `0400`; `/data/codex` is a mountpoint; persisted auth metadata is regular `0600`; `codex login status` is ChatGPT-authenticated; Codex service is `RUNNING`; `/readyz` is HTTP 200; AOS public health is OK.
+
+The fresh AOS source bridge canary reached `remote_websocket` over `zeabur_private_service`: `initialize=true`, `account_read=true`, `account_present=true`, ephemeral `thread/start=true`, read-only `turn/start=true`, `turn/completed=true`, `turn_status=completed`, `browser_use_started=false`, `mac_worker_used=false`, `external_action_executed=false`. Local stdio fallback and the Mac Browser Use CLI worker remain intact; the Mac worker remains PID `67439` and running.
+
+Evidence: `work/service-readiness/zeabur-codex-internal-auth-canary-readback-20260810.v1.json`, `work/service-readiness/unresolved-audit-20260810.v29.json`, `work/service-readiness/company-release-packet-preparation-20260810.v16.json`.
+
+**Exact blocker / next action / restart point:** the internal technical canary is green, but production remote cutover remains closed by `codex_app_server_remote_transport_experimental_unsupported` and unproven private TLS/WSS. `production_read_token_missing`, the Job resume filename/date clarification, Daily AI/NisenPrints business receipts, and G0/G1 evidence remain open. Restart Job only after the clarification, with a new idempotency key, approval, claim, `submitted_confirmed`, same-run sync, and cleanup. Keep AOS scheduler/durable queue as source of truth and Mac Browser Use as the only Web-operation lane.
+## 2026-08-10 checkpoint 407: protected production readback restored through Zeabur secret boundary
+
+The prior `production_read_token_missing` was a local QA-process limitation, not an absent production secret. Using the AOS service's configured read token in-process, without printing or saving its value, fresh protected GET readback returned `/api/dashboard=200` with 20 runs, 6 registered workflows, and 6 actionable runs; `/api/registered-workflows=200` with 6 workflows; and `/api/browser/health=200`. UI screenshots and all write routes were not attempted.
+
+Evidence: `work/service-readiness/production-protected-readback-20260810.v1.json`, `work/service-readiness/unresolved-audit-20260810.v30.json`, `work/service-readiness/company-release-packet-preparation-20260810.v17.json`.
+
+**Exact blocker / next action / restart point:** protected GET parity is resolved, but it is not business completion. Remaining blockers are the Job resume filename/date clarification and subsequent `submitted_confirmed` proof, Daily AI/NisenPrints business receipts and same-run sync, official Codex remote transport production support/private TLS-WSS, and G0/G1 release evidence. Restart Job only after the clarification with new idempotency/approval/claim; use canonical Browser Use CLI on the Mac worker only for Web effects.
+## 2026-08-10 checkpoint 408: canonical Browser Use runtime and room registry fresh audit
+
+Fresh canonical Browser Use CLI `runtime-readback` passed with executable, Chrome, and Python identity all matching expected values; `launch=false` and `runtime_drift=false`. The room registry contains 219 records: 135 temporary/released, 73 single-use/released, 10 scheduled/released, and one active temporary room owned by the foreign workflow `hc-print-persistence-20260810-r6-task` on port 20091. No foreign room was inspected beyond sanitized registry metadata, released, reclaimed, or reused. No new browser session was launched.
+
+Evidence: `work/service-readiness/browser-use-runtime-room-readback-20260810.v1.json`.
+
+**Exact blocker / next action / restart point:** Browser Use runtime parity is green. Keep the foreign active room under its owner; for the next approved business canary, start only a fresh workflow-owned profile/port/lease and require same-run readback/cleanup. Job remains at the unanswered resume filename/date clarification; no browser effect is started until that clarification is answered.
+
+## 2026-08-10 checkpoint 409: phone fact confirmed; resume clarification remains separate
+
+Fresh readback of the official `automation-3` applicant sources confirms that the supplied phone number is already present as an active profile fact and as a reusable applicant-knowledge entry, with the two values matching. No duplicate entry or profile mutation was made, and no secret value was printed or persisted. The current pending request remains `clarify-e5cc86ea17d94cbbbafc6b60b06c408b`, whose live question is the resume label `Nichika_Tanaka_Resume.pdf 5/25/2026`; the phone answer does not resolve that question.
+
+Evidence: `work/service-readiness/applicant-known-phone-readback-20260810.v1.json`.
+
+**Exact blocker / next action / restart point:** `applicant_clarification_required_for_resume_filename_date_label` remains awaiting the user's meaning or handling instruction. After that answer, use the official applicant-knowledge path, a new idempotency key, fresh approval, and fresh claim for one candidate; require `submitted_confirmed`, same-run Opportunity Ledger/source sync, and terminal cleanup. No browser flow or external effect was started in this checkpoint.
+
+## 2026-08-10 checkpoint 410: current runtime parity and release packet refreshed
+
+Fresh readback confirms AOS public health HTTP 200, dedicated Zeabur Codex `/readyz` HTTP 200, source/installed startup-boundary parity with read-only dynamic runner selection, and canonical Browser Use runtime parity with no drift and no launch. The Mac worker process identity was observed without restarting it. The phone fact remains already present in the official applicant sources; no duplicate or profile mutation was made.
+
+The unresolved-only audit is now `work/service-readiness/unresolved-audit-20260810.v31.json`, and the release packet is `work/service-readiness/company-release-packet-preparation-20260810.v18.json`. No browser launch, foreign-room operation, queue replay, alternate PC, secret read, or external effect occurred. Technical readiness was not converted into business completion.
+
+**Exact blocker / next action / restart point:** Job still awaits the resume filename/date clarification; Daily AI/NisenPrints still lack fresh visible business receipts and same-run source sync; Codex remote production promotion remains closed by official experimental/unsupported transport and unproven private TLS/WSS; five G0/G1 evidence fields remain missing. Continue independent audit work, then restart Job only after the clarification or start a fresh approved target-bound Daily/Nisen business canary.
+
+## 2026-08-10 checkpoint 411: business boundary focused regression green
+
+The focused business-boundary regression is green: Browser Use CLI/Codex trigger scripts 14/14 and the source TypeScript portable-business-plan suite 3/3. The tests cover Daily AI read-only/effect gates, NisenPrints no-launch/action-plan gates, Job read-only route/candidate supply, and provider-neutral Browser Use binding. No browser was launched and no external action was executed.
+
+Evidence: `work/service-readiness/business-boundary-focused-regression-20260810.v1.json`.
+
+This proves the safety/admission boundary, not Daily AI or NisenPrints business completion. Their current blocker remains missing fresh approved target-bound business receipts and same-run source sync. The five G0/G1 evidence fields remain pending; activation stays false.
+
+The G0/G1 packet is refreshed as `work/service-readiness/company-release-packet-preparation-20260810.v19.json`. Focused regression is now included as verification evidence, while the packet continues to distinguish safety-kernel proof from business completion and release approval.
+
+The unresolved-only audit is advanced to `work/service-readiness/unresolved-audit-20260810.v32.json`; it carries forward only the four current unresolved groups and does not reintroduce resolved protected-readback or runtime-parity items.
+
+## 2026-08-10 checkpoint 412: server build and artifact integrity rechecked
+
+`npm run build:server` passed, JSON parsing for the current release/audit artifacts passed, and `git diff --check` passed. This was a local verification only: no AOS/Mac worker/Codex App/browser process was restarted, no queue was claimed or replayed, and no external action occurred.
+
+The Goal remains incomplete because build/readiness proof does not satisfy the pending business receipts, Job clarification, supported Codex remote promotion, or G0/G1 governance evidence.
+
+## 2026-08-10 checkpoint 413: G0/G1 validator regression green without evidence fabrication
+
+The G0/G1 readiness/evidence validator suites pass 14/14. They verify that missing, placeholder, dirty, unsigned, stale, or semantically mismatched evidence stays blocked and that activation cannot proceed from a blocked packet. No approver, signature, backup/restore proof, incident drill, or provider receipt was invented.
+
+Evidence: `work/service-readiness/g0-g1-validator-regression-20260810.v1.json`, `work/service-readiness/company-release-packet-preparation-20260810.v20.json`.
+
+The unresolved-only audit is now `work/service-readiness/unresolved-audit-20260810.v33.json`; the four current unresolved groups remain unchanged.
+
+## 2026-08-10 checkpoint 414: screenshotPath regression closed at the shared adapter boundary
+
+The shared portable Browser Use runner now has a direct regression assertion for the prior `screenshotPath is not defined` failure mode. The focused suite passes 15/15 and syntax validation passes. The test proves declaration, `flow.recording_dir` binding, same-path screenshot command, and same-path receipt reference. Adjacent Job/Daily AI/NisenPrints no-effect and Codex App trigger tests remain green.
+
+Evidence: `work/service-readiness/browser-use-screenshot-regression-20260810.v1.json`.
+
+The unresolved-only audit is advanced to `work/service-readiness/unresolved-audit-20260810.v34.json`; no business receipt or external effect is inferred from this regression proof.
+
+## 2026-08-10 checkpoint 419: applicant resume routing answered and bound
+
+The pending applicant clarification was answered by the user and recorded through the official applicant knowledge CLI. `clarify-e5cc86ea17d94cbbbafc6b60b06c408b` is resolved. Fresh profile binding selects the supplied Japanese PDF for `japan_targeted` and the supplied English Resume PDF for `overseas_global`; file hashes, profile/knowledge mode 0600, and both locale binding hashes are recorded in `work/service-readiness/applicant-resume-routing-readback-20260810.v1.json`.
+
+No browser, queue claim, old run replay, or external effect occurred in this checkpoint. Restart point: launch one fresh official `automation-3` Job root with new idempotency/approval/claim, then require one-candidate `submitted_confirmed`, same-run Opportunity Ledger/source sync, and terminal cleanup. Do not reuse v20 or its request/receipt/session.
+
+## 2026-08-10 checkpoint 415: Browser Use lane/profile routing cross-audit green
+
+Cross-workflow routing tests pass 17/17. They verify the scheduled/single-use/temporary profile and port separation, collision fail-close, Company 1 six-automation adoption, provider-neutral adapters for Job/Daily AI/NisenPrints, and NisenPrints provider separation. No browser was launched and no external action occurred.
+
+Evidence: `work/service-readiness/browser-lane-routing-cross-audit-20260810.v1.json`.
+
+The unresolved-only audit is now `work/service-readiness/unresolved-audit-20260810.v35.json`; the four current unresolved groups remain unchanged.
+
+## 2026-08-10 checkpoint 416: registered Web workflow invariant added and verified
+
+The catalog cross-audit now explicitly asserts that every registered external Web workflow is `browser_use_cli` bound, defaults to `preflight_no_effect`, and keeps external action disabled. The corrected combined routing suite passes 17/17: lane manager 10/10, registered catalog 3/3, and workflow adapter registry 4/4. The first assertion attempt was corrected because connector-only email review is not a Web workflow; the final source and build are green.
+
+Evidence: `work/service-readiness/browser-lane-routing-cross-audit-20260810.v2.json`.
+
+The unresolved-only audit is now `work/service-readiness/unresolved-audit-20260810.v36.json`; no new blocker was introduced.
+
+The release packet is refreshed as `work/service-readiness/company-release-packet-preparation-20260810.v21.json`, including the canonical Web workflow invariant and the three focused regression families.
+
+## 2026-08-10 checkpoint 417: requirement-by-requirement Goal exit audit
+
+The full Goal was audited against current evidence rather than historical intent. Local parity, Company scope, protected read-only parity, Browser Use fixed-kernel/adaptive read-only proof, unresolved-only audit, G0/G1 blocked-packet validation, Mac boundary preservation, and Zeabur technical Codex canary are verified at their respective proof levels. Daily AI/NisenPrints remain reference-only, and Job remains before submit.
+
+The matrix is `work/service-readiness/goal-exit-audit-20260810.v1.json`; the synchronized unresolved-only audit is v37 and the release packet is v22. The Goal is intentionally not marked complete: four current unresolved groups remain, and technical/readiness proof is not business completion.
+
+**Exact blocker / next action / restart point:** resume after the user's answer for `Nichika_Tanaka_Resume.pdf 5/25/2026`; then record only the approved fact, start a fresh Job idempotency/approval/claim, and require one-candidate `submitted_confirmed`, same-run sync, and cleanup. Daily AI/NisenPrints require fresh approved target bundles; Codex remote promotion requires official support/private TLS/WSS; G0/G1 requires the five real evidence fields.
+
+## 2026-08-10 checkpoint 418: source/runtime/dist parity rechecked
+
+The newly added registered Web workflow invariant and routing tests pass in both source and compiled dist paths. Source and dist catalog/adapter/lane suites are green, portable Browser Use wrappers remain 15/15, `npm run build:server` and `git diff --check` pass, and no browser or worker restart occurred.
+
+Evidence: `work/service-readiness/source-runtime-artifact-parity-regression-20260810.v1.json`.
+
+The unresolved-only audit is advanced to v38 and the release packet to v23. This closes a distribution/parity verification item only; the four business/remote/G0/G1 blockers remain.
+
+## 2026-08-10 checkpoint 420: fresh Job root stopped at current-turn authority
+
+The official trusted bridge was called once after the resume routing answer. It stopped before creating a run binding or starting Browser Use at `automation_kernel_external_effect_first_class_root_required`. The current root had session/thread/turn metadata but lacked the hook-issued nonce, prompt hash, metadata receipt, first-class-root attestation, thread-source attestation, and external-effect authority. Fresh room/process readback confirms the scheduled `automation-3` profile on fixed port 19881 is released with no listener; no foreign room, old run, or external effect was touched.
+
+Evidence: `work/service-readiness/job-fresh-root-admission-blocked-20260810.v1.json`.
+
+Restart point: restore the official current-turn first-class-root capability and begin again at trusted current-root admission. Do not bypass with shell execute, synthetic metadata, another browser, or a historical receipt.
+
+Current pointers: `work/service-readiness/unresolved-audit-20260810.v39.json` and `work/service-readiness/company-release-packet-preparation-20260810.v24.json`. The resume clarification is resolved; the Job root authority gate is the active blocker.
+
+## 2026-08-10 checkpoint 421: Browser Use child transport repaired; controller timeout remains explicitly reconciled
+
+The root bootstrap effect class is corrected to `internal_idempotent`, while the foreground browser chunk remains `external_non_idempotent`. The shared stage adapter now supplies the canonical PATH when its NodeREPL child environment has no PATH; focused regression is green 2/2. Direct P6 start/finalize succeeded with no external effect.
+
+The official controller was invoked once from the current root and timed out at 30 seconds after the owned Browser Use flow had started, before run binding and business execution. Same-run canonical recording finalization and terminal cleanup succeeded with `external_effects:none`; the scheduled automation-3 room on fixed port 19881 is released and no listener/process remains. The outer run contract is left untouched at `status:running` because no official generic timeout terminalizer was available; the honest readback is `PENDING_RECONCILIATION` in `work/service-readiness/job-controller-path-fix-timeout-readback-20260810.v1.json`.
+
+Exact blocker: `browser_use_cli_controller_node_repl_timeout_after_flow_cleanup`; the independent external-effect gate remains `automation_kernel_external_effect_first_class_root_required`.
+
+Next safe action: use an official timeout-capable controller/terminalizer and reacquire a fresh current-turn first-class-root receipt. Restart point is controller-only read-only preflight; foreground submit remains fail-closed. No application was submitted and no secret was printed or persisted.
+
+## 2026-08-10 checkpoint 422: parallel-test isolation and final local regression green
+
+The shared-profile lifecycle fixture now uses an isolated test-only port range. Relevant shared-profile tests pass 2/2; the full Browser Use CLI suite passes 83/83 with concurrency 4; PATH regression passes 2/2; Automation Kernel manifest tests pass 4/4; syntax and diff checks pass. No live foreign room was reclaimed or stopped.
+
+Final readback: scheduled automation-3 room `room-75a02f4cdc4b2c7c5cff1a75cf1c39d3` is released on fixed port 19881, with no listener or owned browser process. The only observed foreign active room is port 20091 with `reclaim_allowed:false`; it remains untouched.
+
+Current pointers: `work/service-readiness/unresolved-audit-20260810.v41.json`, `work/service-readiness/company-release-packet-preparation-20260810.v26.json`, and `work/service-readiness/job-controller-path-fix-timeout-readback-20260810.v1.json`. External submission remains fail-closed because the official current-turn first-class-root receipt and business proof are missing.
+
+## 2026-08-10 checkpoint 423: Zeabur Codex service internal read-only proof is current
+
+The Zeabur CLI fresh readback now proves the dedicated Codex service is RUNNING with `/readyz=200`, persistent `/data/codex` storage, ChatGPT authentication, and protected token/auth metadata boundaries. The AOS service is RUNNING with health `200`.
+
+The fresh AOS-to-Codex private-service canary passed `initialize -> account/read -> ephemeral thread/start -> read-only turn/start -> turn/completed`. `browser_use_started=false`, `mac_worker_used=false`, and `external_action_executed=false`. This is a read-only internal canary only; the remote transport is still marked experimental/unsupported for production promotion, and private TLS/WSS from Mac is not proven. Local stdio fallback remains intact.
+
+Evidence: `work/service-readiness/zeabur-aos-codex-internal-cross-service-readback-20260810.v3.json`, `work/service-readiness/zeabur-aos-control-plane-readiness-readback-20260810.v1.json`, `work/service-readiness/unresolved-audit-20260810.v42.json`, `work/service-readiness/company-release-packet-preparation-20260810.v27.json`, and the official Goal RunContext at `work/goal-run-automation-os-continuation-20260810.json`.
+
+Exact blocker / next action / restart point: the Goal remains blocked at capability/business gates, not at Zeabur authentication. Keep AOS scheduler/durable queue as source of truth and Mac Browser Use as the only Web lane. Reconcile the timed-out official Job controller through a timeout-capable contract, restore fresh first-class-root authority, then start one new approved candidate with `submitted_confirmed`, same-run source sync, and cleanup. Do not activate release or promote the remote transport yet.
+
+## 2026-08-10 checkpoint 424: locale routing and Mac candidate-supply canary fresh readback
+
+Fresh official profile binding selects the Japanese attachment for `japan_targeted` and the English Resume attachment for `overseas_global`; the current file hashes match the private applicant profile and both locale bindings pass. Future Job submission packets must use this bucket-to-locale mapping.
+
+Fresh Company 1 portable Job candidate-supply run `run_msmwbsza_m083gd` reached the Mac worker and canonical Browser Use CLI, using workflow-owned profile `automation-3` on reserved port `19881`. The run-bound receipt returned one candidate from a requested one, with `readback_verified=true`, `cleanup_verified=true`, and finalized browser flow. It stayed read-only: `submit_invoked=false`, `external_action_executed=false`. The AOS business-proof boundary remains honest as `portable_remote_read_only_business_completion_proof_pending`.
+
+Evidence: `work/service-readiness/applicant-resume-routing-readback-20260810.v2.json`, `work/service-readiness/job-portable-mac-worker-candidate-supply-readback-20260810.v1.json`, `work/service-readiness/unresolved-audit-20260810.v43.json`, and `work/service-readiness/company-release-packet-preparation-20260810.v28.json`.
+
+Restart point: official timeout-capable first-class-root admission, then fresh target-bound candidate approval/claim and one-candidate submit with visible `submitted_confirmed`, same-run Ledger/source sync, and terminal cleanup. No application was submitted in this checkpoint.
+
+## 2026-08-10 checkpoint 425: AOS portable schedule registration fixed and deployed
+
+Recurring registrations now use `source=automation_os_portable_workflow` as the AOS catalog source of truth. Existing Company 1 registrations were synchronized once through the official adoption API after deployment. The three Web workflows (`job_submit_registered`, `daily_ai_registered`, `nisenprints_registered`) now materialize from the AOS scheduler into `aos_portable_workflow_run_queue` for the Mac worker with `mac_worker_polling_required`; the worker-owned scheduler shares the same portable-aware tick and has no generic dry-run fallback for those schedules.
+
+Fresh production readback: deployment `6a7982bb9cc09bfe799675da` is RUNNING, AOS health is HTTP 200, all six Company 1 schedules are active/enabled, and all six registrations report `automation_os_portable_workflow`. Browser entries report `portable_mac_worker_queue`; non-browser entries retain their AOS registered-runner readback contract. Codex App remains a thin AOS trigger, local Codex stdio fallback remains, and Mac Browser Use CLI remains the only Web-operation worker.
+
+Local verification passed: `npm run build`, Web build, runtime parity manifest, `git diff --check`, and focused post-fix tests 53/53. The earlier full-suite attempt exposed one stale assertion about the removed direct scheduler import; that assertion was corrected, but the run was interrupted before a clean full-suite rerun, so full-suite status is `PENDING_CONFIRMATION`. No browser launch, queue claim, external effect, or Mac/Codex App restart occurred.
+
+Evidence: `work/service-readiness/portable-schedule-dispatch-readback-20260810.v1.json`.
+
+Exact blocker / next action / restart point: this registration goal is implemented and deployed. Do not infer business completion from queue registration. Resume Job only at fresh first-class-root admission with target-bound approval, `submitted_confirmed`, same-run sync, and cleanup; keep remote Codex production promotion and other business/G0/G1 gates closed until their independent evidence exists.
+
+## 2026-08-10 checkpoint 426: latest portable canaries and full-suite verification
+
+The latest AOS deployment `6a798d084243c79e762d0107` is RUNNING and public health is HTTP 200. Fresh Company 1 Daily AI (`run_msmzbtid_isbrxi`, fixed port `19882`) and NisenPrints (`run_msmz9o0s_0ydfp9`, fixed port `19884`) no-effect canaries both reached the Mac Browser Use CLI worker, finalized in the same run, and verified cleanup/readback. Both kept `external_action_executed=false` and stopped at `portable_external_read_only_business_completion_proof_pending`; the previous Canva exact-URL mismatch is resolved at the technical adapter boundary.
+
+The clean server suite completed with `1,084` tests total: `1,068` passed, `0` failed, and `16` skipped. Focused portable runner/worker regressions remain green (`11/11` and `4/4`). Evidence is synchronized in `work/service-readiness/company1-reference-canaries-readback-20260810.v3.json`, `work/service-readiness/unresolved-audit-20260810.v44.json`, and `work/service-readiness/company-release-packet-preparation-20260810.v29.json`. Goal RunContext was resumed using fresh evidence, the old composite technical blocker was resolved, and the current capability/business blocker was recorded with a new fingerprint; the Goal remains active and incomplete.
+
+No application, post, publication, message, payment, secret/auth change, foreign Browser Use room action, Mac worker restart, or Codex App restart occurred. Activation remains false. The Mac remains the only Web worker, AOS scheduler/durable queue remains the source of truth, Codex App remains a thin trigger, and local stdio Codex fallback remains intact.
+
+**Exact blocker / next action / restart point:** `automation_kernel_external_effect_first_class_root_required;browser_use_cli_controller_node_repl_timeout_after_flow_cleanup;business_receipts_and_same_run_sync_missing;codex_app_server_remote_transport_experimental_unsupported;zeabur_codex_app_server_private_ingress_tls_proof_missing;company_release_g0_g1_required_evidence_missing`. Do not replay the timed-out Job controller. Restart at an official timeout-capable first-class-root admission, then use a fresh target-bound approval/claim and require `submitted_confirmed`, same-run Ledger/source sync, and terminal cleanup. Daily AI/NisenPrints remain technical-canary verified but business-effect blocked.
+
+## 2026-08-10 checkpoint 427: official transport and live Zeabur boundary rechecked
+
+公式Codexマニュアルのfresh readbackとZeabur CLI readbackを記録した。Codex App Serverのremote WebSocketはauth/TLS構成が可能だが、transportはexperimental/unsupported for production。公式remote接続の正規経路はSSHであり、Zeabur内部WebSocketを本番supported transportへ昇格させる根拠はない。ZeaburではAOS deployment `6a798d084243c79e762d0107` と専用Codex serviceがRUNNING、AOS healthとCodex `/readyz` はHTTP 200、Codex内部DNS/portは `codex-app-server.zeabur.internal:8080`。
+
+G0/G1 readiness validator fresh recheckは6/6 pass、activation=false。既存のDaily AI/NisenPrints technical canary（fixed port 19882/19884、same-run cleanup）は維持するが、publication/listing等のbusiness receiptとsame-run source syncはない。Jobはcurrent-turn first-class-root capabilityとtimeout-capable official terminalizerがないため、応募送信を再開していない。外部effect、秘密変更、Mac worker/Codex App restart、foreign room操作は0。
+
+Current evidence: `work/service-readiness/codex-app-server-official-transport-zeabur-readback-20260810.v1.json`, `work/service-readiness/unresolved-audit-20260810.v45.json`, `work/service-readiness/company-release-packet-preparation-20260810.v30.json`, `work/service-readiness/goal-exit-audit-20260810.v3.json`.
+
+**Exact blocker / next action / restart point:** `automation_kernel_external_effect_first_class_root_required;browser_use_cli_controller_node_repl_timeout_after_flow_cleanup;business_receipts_and_same_run_sync_missing;codex_app_server_remote_transport_experimental_unsupported;zeabur_codex_app_server_private_ingress_tls_proof_missing;company_release_g0_g1_required_evidence_missing`。Jobは公式root/capabilityが露出したfresh turnから、Daily AI/NisenPrintsはtarget-bound approvalとbusiness proof/syncから、Codex remoteはsupported boundaryまたは承認済み例外とprivate TLS/WSSから、G0/G1は5項目の実証から再開する。
+
+## 2026-08-10 checkpoint 428: Zeabur canary passed; portable business proof and owned cleanup tightened
+
+Zeabur service-exec fresh readback passed `initialize -> account/read -> ephemeral thread/start -> read-only turn/start -> turn/completed` from AOS to the dedicated Codex service over the private service network. `/api/health` and `/readyz` are HTTP 200, no Browser Use/Mac worker was used, and `external_action_executed=false`. Local stdio fallback remains available. See `work/service-readiness/zeabur-aos-codex-internal-cross-service-readback-20260810.v4.json`.
+
+The shared `portableRemoteWorker` admission now uses the workflow-owned required proof list for Daily AI/NisenPrints and requires `same_run_source_sync` plus cleanup. Generic receipts are blocked, while a complete normalized proof fixture passes; Job's existing `submitted_confirmed + sync_ok + ledger_finalized` path remains. Focused tests 6/6, server build, diff check, and full suite 1,086/1,070/0/16 are current. See `work/service-readiness/portable-business-proof-common-layer-readback-20260810.v1.json`.
+
+Only five consumed/cleanup-complete helper watchdog PIDs were stopped after the canary. Mac Codex App/local server, PID 67439 Mac worker, scheduled profile roots/ports, and foreign room `room-c1bdbb66a24f97b50a2b561073587285` were not stopped. Scheduled rooms are released; the foreign room on port 20091 remains `reclaim_allowed=false` and is an explicit cleanup blocker. See `work/service-readiness/mac-owned-cleanup-readback-20260810.v1.json`.
+
+Goal exit remains incomplete and activation remains false. Restart points: official current-turn first-class-root/timeout-capable Job admission; fresh target-bound business approval and visible same-run proof for Daily AI/NisenPrints; officially supported Codex remote/private TLS-WSS promotion; and the five real G0/G1 evidence fields. No application, post, listing, publication, payment, secret change, or foreign-room action occurred.
+
+## 2026-08-10 checkpoint 429: Mac owner boundary and scheduled-lane cleanup rechecked
+
+Fresh post-canary readback confirms the normal Codex App/local app-server (PID 98216) and Mac portable worker (PID 67439) were kept running. The five consumed/cleanup-complete helper watchdogs are stopped. Scheduled Browser Use profiles remain released on fixed ports 19881/19882/19884 with no listeners; profile roots remain workflow-owned and ready for a new lease.
+
+The active temporary room `room-c1bdbb66a24f97b50a2b561073587285` on port 20091 belongs to a foreign task and has `reclaim_allowed=false`; it was not stopped or reclaimed. Current CPU/memory, process identity, listener, and profile-lease evidence is in `work/service-readiness/mac-owned-cleanup-readback-20260810.v2.json`.
+
+Mac cleanup/readiness is complete. The restart point is a fresh AOS scheduled no-effect canary that leases the correct workflow profile/port and dispatches to the Mac worker. No external effect is authorized by this checkpoint, and activation remains false.
+
+## 2026-08-10 checkpoint 430: AOS scheduler no-effect canary completed
+
+The official Company 1 scheduler `run-once` route returned HTTP 200 and `status=completed` under `automation_os_control_plane`. Company scope was enforced; zero due occurrences were materialized, zero queue claims occurred, and `external_action_executed=false`. No Browser Use room or Mac worker was started because the fresh tick had no due occurrence. Evidence: `work/service-readiness/aos-scheduled-no-effect-canary-20260810.v1.json`.
+
+This confirms the recurring scheduler/control-plane boundary only. At the next due occurrence, resume at fresh workflow-owned profile/port lease and Mac worker claim readback. Business effects remain closed and activation remains false.
+
+## 2026-08-10 checkpoint 431: provider receipt propagation fixed and AOS staging parity verified
+
+The shared portable wrapper boundary no longer drops Daily AI/NisenPrints child business proofs. Daily AI reads the same-run registered summary and projects the five plan proof keys plus `same_run_source_sync` only when present; NisenPrints reads the same-run kernel result and preserves only explicit proof fields. Missing proof remains missing. Focused regressions pass Daily AI 1/1 and NisenPrints 6/6; syntax, diff check, and server build pass.
+
+The first deploy readback had a local/remote hash mismatch and was discarded as non-authoritative. The corrected task-owned staging deploy to AOS service `6a47122e24bec8372d3e1a31` has matching wrapper hashes, AOS health HTTP 200, scheduler no-effect HTTP 200, and a fresh Zeabur Codex internal read-only canary passing through turn completion. The temporary staging context was moved to Trash after use.
+
+The implementation gap is closed, but live provider business receipts/same-run sync, Job first-class-root authority, official Codex remote promotion, G0/G1 evidence, and foreign-room ownership remain unresolved. Activation remains false.
+
+## 2026-08-10 checkpoint 432: fresh Zeabur/AOS/Mac readback and protected scheduler tick
+
+Zeabur fresh readback again passes the private AOS -> dedicated Codex service read-only protocol: `initialize`, `account/read`, ephemeral `thread/start`, read-only `turn/start`, and `completed`. Account presence is confirmed without exposing any auth value. No Browser Use, Mac worker, or external action was used. Local stdio fallback remains retained; production remote promotion remains blocked by the official experimental/unsupported remote transport boundary and missing private TLS/WSS proof.
+
+An anonymous in-container scheduler probe returned the expected `production_token_required` guard. A second invocation used the already configured in-process write-token binding without printing or persisting its value and returned HTTP 200, `status=completed`, service identity configured, Company 1 scope enforced, zero due occurrences/queue claims, and `external_action_executed=false`. No room or worker was started because the tick was not due.
+
+Mac fresh ownership readback confirms Codex App/local app-server PID 98216 and portable Mac worker PID 67439 remain running. Canonical Browser Use `rooms --json` observed 231 records; the workflow-owned scheduled lanes on fixed ports 19880, 19881, 19882, and 19884 are released with no listeners. The active temporary room on port 20091 belongs to foreign task `hc-print-persist-20260810-r17-task`; its listener PID 15911 was preserved and no foreign room was reclaimed or touched. Evidence: `work/service-readiness/zeabur-aos-codex-internal-cross-service-readback-20260810.v6.json`, `work/service-readiness/aos-scheduled-no-effect-canary-20260810.v2.json`, and `work/service-readiness/mac-owned-cleanup-readback-20260810.v3.json`.
+
+This checkpoint confirms technical readiness/cleanup only. Business admission remains incomplete: Job first-class-root/timeout-capable controller and `submitted_confirmed` proof are missing; Daily AI/NisenPrints fresh provider business receipts and same-run sync are missing; supported Codex remote promotion/private TLS-WSS is not proven; and G0/G1 evidence is incomplete. Activation remains false. Restart at the next fresh AOS due occurrence and Mac profile/port lease, with external effect still fail-closed and the foreign room untouched.
+
+## 2026-08-10 checkpoint 433: clean full-suite confirmation and G0/G1 evidence audit
+
+Fresh `npm test` against the current built server completed with `1086 total / 1070 pass / 0 fail / 16 skip`, exit code 0. The 16 skips are exclusively `postgres_fixture_unavailable:AUTOMATION_OS_TEST_POSTGRES_URL is not set`; they do not establish real PostgreSQL production parity. The release validator regression is green at `23/23`, and it continues to reject activation while the six required G0/G1 evidence fields are not real, fresh, trusted readbacks.
+
+The clean full-suite confirmation gap is resolved. Remaining missing evidence is intentionally not synthesized: named G0 approver decisions, mixed-file hunk allowlist owner, clean signed candidate/manifest, backup/restore/rollback owner proof, per-workflow account/target/payload/provider receipt contracts, and incident recovery drill. Live Job/Daily AI/NisenPrints business receipts are also absent. No external effect, secret value exposure/change, Mac worker/Codex App restart, or foreign Browser Use room mutation occurred.
+
+Current evidence: `work/service-readiness/full-server-regression-20260810.v26.json`, `work/service-readiness/g0-g1-validator-regression-20260810.v2.json`, `work/service-readiness/company-release-packet-preparation-20260810.v33.json`, `work/service-readiness/unresolved-audit-20260810.v48.json`, and `work/service-readiness/goal-exit-audit-20260810.v6.json`. Goal RunContext exit-check remains incomplete because `business_admission` is false.
+
+Restart point: official timeout-capable first-class-root admission for Job, then fresh target-bound approval/claim and one-candidate `submitted_confirmed` with same-run Ledger/source sync/cleanup; Daily AI/NisenPrints require fresh provider proof and sync; remote Codex promotion requires supported transport/private TLS/WSS; G0/G1 requires all six real fields. Keep activation false and do not touch the foreign room.
+
+## 2026-08-10 checkpoint 434: AOS portable effect authority is now the Job submit admission root
+
+The former Job submit dependency on the Codex Kernel/Codex App first-class-root issuer was replaced at the AOS portable boundary. `apps/server/src/runs/portableExternalEffectAuthority.ts` defines `automation_os_portable_external_effect_authority.v1`, issued only by `automation_os_portable_controller`, and binds Company, workflow, run, step, effect stage, target digest, input-bundle digest, approval, idempotency, lease timeout, reconciliation owner, and `no_auto_retry`. It explicitly records `first_class_root_required=false` and `app_dependency=false`; no Codex App identity or secret is accepted as authority. The old shared Kernel gate remains intact for legacy/root routes and was not deleted or weakened.
+
+`portableRemoteWorker` now issues and validates that authority on a fresh approved business claim, persists it in the run-owned claim, and rejects an active claim if the authority is missing or no longer matches. The Mac remote worker creates an immutable authority file and includes its exact ID/SHA in the admission and receipt. `aos-portable-business-runner.mjs` and the actual Job Browser Use CLI adapter validate the authority before Browser Use/ledger claim. Server receipt acceptance requires exact authority ID/SHA, existing `submitted_confirmed` + same-run sync/business proof, and cleanup; timeout/reconciliation stays AOS-owned and auto-retry remains disabled.
+
+Regression proof is current: source `portableRemoteWorker` 7/7, compiled dist 7/7, focused portable/worker suite 102/102, syntax checks, `npm run build`, and `git diff --check` pass. The tests explicitly cover an approved Job claim with no Codex App root metadata, portable authority allow, and fail-closed behavior after authority removal. AOS deployment `6a79a9a0db4ec8cd006b20aa` is RUNNING; public health is HTTP 200; local and Zeabur runtime manifest inner hash `9edeef0bf334c3ea815ee0bcc83bc168bea0af2c0c7c3db7be5bd4b2d9089ae3` / 341 files match; the two portable dist module hashes match exactly. Fresh in-container AOS readiness is HTTP 200 with `ready_for_no_effect_trigger`, `scheduler_owner=server`, AOS scheduler/durable queue as source of truth, Mac Browser Use CLI as worker boundary, Codex App as thin trigger, and `external_action_executed=false`. Fresh AOS -> Zeabur Codex read-only canary again passed initialize/account/thread/turn/completion with no Browser Use/Mac worker/external effect.
+
+The full-suite rerun was not clean in this environment: `1069 passed / 1 failed / 16 skipped`; the sole failure was the pre-existing `obsidianAutoExport` detached-export 30-second timeout in full-suite context, while the isolated same test passed 20/20. No authority-related failure occurred. The PostgreSQL skips remain because `AUTOMATION_OS_TEST_POSTGRES_URL` is unset and are not production parity proof. Evidence: `work/service-readiness/portable-aos-effect-authority-readback-20260810.v1.json`.
+
+No external application/post/publication/listing/payment, Browser Use business launch, secret change, Mac worker/Codex App restart, profile/port mutation, or foreign-room operation occurred. Activation remains false. The active Job blocker is now `fresh_job_target_bound_business_receipt_missing`, not the old Codex App first-class-root requirement. Next safe action/restart point: obtain a fresh AOS candidate bundle, target-bound approval, and portable authority claim; then use the workflow-owned Mac profile/port and require visible `submitted_confirmed`, same-run Ledger/source sync, authority receipt, and terminal cleanup. Daily AI/NisenPrints business proof/sync, supported Codex remote promotion/private TLS-WSS, G0/G1 evidence, and foreign-room ownership remain independent blockers.
+
+## 2026-08-10 checkpoint 435: portable authority final readback and unresolved-only audit
+
+Final fresh readback confirms that the Job portable submit lane is AOS-owned and no longer requires Codex App run-now, first-class-root, or the legacy controller. Company scope, target-bound approval, idempotency, claim, business proof, same-run sync, timeout/reconciliation, exact authority ID/SHA, and cleanup remain mandatory; authority absence or mismatch fails closed. The legacy first-class-root gate remains intact for legacy/root routes and was not removed or weakened.
+
+Source/runtime/deployed parity is exact: artifact hash `9edeef0bf334c3ea815ee0bcc83bc168bea0af2c0c7c3db7be5bd4b2d9089ae3`, 341 files, AOS deployment `6a79a9a0db4ec8cd006b20aa` RUNNING, health HTTP 200. Portable worker source tests are 7/7, compiled dist 7/7, focused portable/worker suite 102/102. The clean full suite is `1087 total / 1071 passed / 0 failed / 16 skipped`; the Obsidian detached-export test passed. Fresh packet/audit: `work/service-readiness/company-release-packet-preparation-20260810.v34.json`, `work/service-readiness/goal-exit-audit-20260810.v7.json`, `work/service-readiness/portable-aos-effect-authority-readback-20260810.v1.json`, and `work/service-readiness/unresolved-audit-20260810.v49.json`.
+
+This is a no-effect checkpoint. No application, post, publication, listing, payment, Browser Use business launch, secret/auth change, Mac worker/Codex App restart, profile/port mutation, or foreign-room operation occurred. Activation remains false. Current unresolved-only items are fresh Job/Daily AI/NisenPrints business receipts and same-run sync, unsupported Codex remote production promotion/private TLS-WSS, missing G0/G1 evidence, and foreign-room ownership. Restart from a fresh AOS candidate bundle, target-bound approval, portable authority claim, and the Mac workflow-owned profile/port lease; require visible business proof, same-run sync, exact authority receipt, and terminal cleanup.
+
+## 2026-08-10 checkpoint 436: clean full-suite confirmation after portable authority change
+
+Fresh `npm test` completed with `1087 total / 1071 passed / 0 failed / 16 skipped`, exit code 0. The Obsidian detached-export test that previously timed out in the full-suite context passed in this run. The 16 skips are exclusively the unavailable PostgreSQL fixture (`AUTOMATION_OS_TEST_POSTGRES_URL` unset) and do not establish production PostgreSQL parity. This closes the remaining full-suite technical verification item without changing the external-effect boundary.
+
+The portable Job authority remains AOS-owned and Codex-App-root-free; focused authority regressions and Zeabur parity remain current. Business admission is still incomplete: fresh Job `submitted_confirmed`, Daily AI/NisenPrints business receipts and same-run sync, supported Codex remote production promotion/private TLS/WSS, G0/G1 evidence, and foreign-room ownership proof are absent. Activation remains false. No external effect, secret change, Mac/Codex restart, profile/port mutation, or foreign-room operation occurred. Evidence: `work/service-readiness/company-release-packet-preparation-20260810.v34.json`, `work/service-readiness/goal-exit-audit-20260810.v7.json`, and `work/service-readiness/portable-aos-effect-authority-readback-20260810.v1.json`.
+
+## 2026-08-10 checkpoint 437: fresh reference/scheduler canaries and Zeabur cross-service readback
+
+Fresh isolated `referenceWorkflowCanary` completed Daily AI, Job, and NisenPrints at `proof_backed_safe_stop_verified`; all three verified Company scope, idempotent recheck, cleanup receipt, no Browser Use launch, and `external_action_executed=false`. The fresh portable scheduler canary completed 6/6 workflows with `browser_started=false`, `connector_called=false`, and no external effect.
+
+Fresh Zeabur readback confirms the AOS service uses the dedicated Codex service through `remote_websocket` on the Zeabur private-service boundary with auth configured. `initialize`, `account/read`, ephemeral `thread/start`, read-only `turn/start`, and completion all passed. No Browser Use, Mac worker, or business effect was used. Deployment `6a79a9a0db4ec8cd006b20aa` is RUNNING, health is HTTP 200, source preflight has no failed checks, and runtime parity is `9edeef0bf334c3ea815ee0bcc83bc168bea0af2c0c7c3db7be5bd4b2d9089ae3 / 341 files`.
+
+Technical/reference readiness is advanced, but business admission remains incomplete: fresh Job `submitted_confirmed` and same-run sync, Daily AI/NisenPrints provider receipts and sync, supported Codex remote promotion/private TLS/WSS, six G0/G1 evidence fields, and foreign-room ownership are absent. Activation remains false. Evidence: `work/service-readiness/reference-workflow-canary-20260810.v2.json`, `work/service-readiness/portable-scheduler-canary-20260810.v2.json`, `work/service-readiness/zeabur-aos-codex-internal-cross-service-readback-20260810.v7.json`, `work/service-readiness/company-release-packet-preparation-20260810.v35.json`, `work/service-readiness/goal-exit-audit-20260810.v8.json`, and `work/service-readiness/unresolved-audit-20260810.v50.json`.
+
+**Exact blocker / next action / restart point:** keep external effects fail-closed. Resume at a fresh AOS candidate bundle -> Company-scoped target-bound approval -> portable authority claim -> Mac workflow-owned profile/port lease, then require visible business proof, same-run sync, exact authority receipt, and terminal cleanup. Do not promote experimental remote transport or touch the foreign room.
+
+## 2026-08-10 checkpoint 438: Company 1 protected scheduler and six-field G0/G1 validator readback
+
+Fresh in-container Company 1 readback (`company_2560580981cedfd106b66245`) returned readiness HTTP 200 with `ready_for_no_effect_trigger`, server-owned scheduler, AOS scheduler/durable queue as source of truth, and Mac Browser Use CLI as worker boundary. The protected scheduler `run-once` returned HTTP 200/completed with one checked Company scope, zero occurrences materialized, zero queue claims, and `external_action_executed=false`.
+
+The current `company_release_evidence.v1` validator was run against its owner-safe blocked packet. All six required G0/G1 fields remain explicitly blocked, `validation_ok=true`, `activation_authorized=false`, and no evidence was invented. Focused G0/G1, portable entrypoint, and portable worker regression is `23/23`.
+
+This is control-plane/release-readiness proof only, not business completion or release approval. Job/Daily AI/NisenPrints fresh business receipts and same-run sync, supported Codex remote production/TLS-WSS, and foreign-room ownership remain unresolved. Activation remains false. Evidence: `work/service-readiness/aos-scheduled-no-effect-canary-20260810.v3.json`, `work/service-readiness/company-release-evidence-validator-readback-20260810.v3.json`, `work/service-readiness/company-release-packet-preparation-20260810.v36.json`, `work/service-readiness/goal-exit-audit-20260810.v9.json`, and `work/service-readiness/unresolved-audit-20260810.v51.json`.
+
+**Exact blocker / next action / restart point:** keep external effects fail-closed. Resume at a fresh Company-scoped AOS candidate approval -> portable authority claim -> Mac workflow-owned profile/port lease; require visible workflow business proof, same-run sync, exact authority receipt, and terminal cleanup.
+
+## 2026-08-10 checkpoint 439: dedicated Codex persistent state remains unverified
+
+Fresh Zeabur read-only inspection confirms the dedicated `codex-app-server` deployment is RUNNING and `/readyz` returns HTTP 200. The effective `CODEX_HOME` is `/data/codex`, and the directory exists, but `/proc` mount readback observed only the root overlay filesystem; no separate persistent volume mount was observed. Safe variable-name readback also did not show a `CODEX_HOME` volume/config boundary. The successful remote initialize/account/thread/turn canary proves protocol readiness only and does not prove authentication-state persistence across restart.
+
+The exact blocker is `codex_app_server_persistent_codex_home_volume_unverified`. Activation remains false. No external effect, secret read/change, Mac worker/Codex App restart, profile/port mutation, or foreign-room operation occurred. Evidence: `work/service-readiness/zeabur-codex-home-persistence-readback-20260810.v1.json`, `work/service-readiness/company-release-packet-preparation-20260810.v37.json`, `work/service-readiness/goal-exit-audit-20260810.v10.json`, and `work/service-readiness/unresolved-audit-20260810.v52.json`.
+
+**Exact blocker / next action / restart point:** obtain an owner-authorized Zeabur volume/config boundary mounted at `/data/codex`; then restart only the dedicated Codex service and repeat `/readyz`, authentication `account/read`, ephemeral `thread/start`, read-only `turn/start`, and completion readback. Keep AOS, Mac Browser Use, local Codex, and foreign-room lanes unchanged. Business receipts, supported remote transport/private TLS-WSS, six G0/G1 fields, and foreign-room ownership remain independent blockers.
+
+## 2026-08-10 checkpoint 440: persistent Codex state and authenticated protocol readback verified
+
+Fresh Zeabur CLI readback now observes `/data/codex` as a separate `ext4` mount, with the auth metadata file on the same device and mode `0600`. The dedicated service is RUNNING, public `/readyz` is HTTP 200, and `codex login status` classifies the service as ChatGPT-authenticated without exposing the account or credential. A fresh AOS in-container canary passed `initialize`, `account/read`, ephemeral `thread/start`, read-only `turn/start`, and `turn/completed`; no error notification, Browser Use, Mac worker, or external effect occurred.
+
+The previous `codex_app_server_persistent_codex_home_volume_unverified` blocker is resolved by current evidence and is removed from the unresolved-only audit. The private endpoint remains plaintext internal `ws://` and the official remote WebSocket transport remains experimental/unsupported for production, so production remote cutover remains false. Business receipts/same-run sync, six G0/G1 evidence fields, and foreign-room ownership remain unresolved. Evidence: `work/service-readiness/zeabur-codex-home-persistence-readback-20260810.v2.json`, `work/service-readiness/zeabur-aos-codex-internal-cross-service-readback-20260810.v8.json`, `work/service-readiness/company-release-packet-preparation-20260810.v38.json`, `work/service-readiness/goal-exit-audit-20260810.v11.json`, and `work/service-readiness/unresolved-audit-20260810.v53.json`.
+
+**Exact blocker / next action / restart point:** keep the verified volume/auth state and local stdio fallback. Do not promote the internal plaintext or experimental remote transport. Resume at supported remote transport/private TLS/WSS admission or, independently, a fresh AOS candidate bundle -> Company-scoped target-bound approval -> portable authority claim -> Mac workflow-owned profile/port lease -> visible business proof, same-run sync, authority receipt, and cleanup.
+
+## 2026-08-10 checkpoint 441: fresh reference and portable scheduler canaries
+
+The isolated reference canary was rerun with a fresh temporary SQLite database and artifact root bound through the CLI contract. Daily AI, Job, and NisenPrints completed `proof_backed_safe_stop_verified` 3/3. Each path verified Company scope, start lineage, Browser Use CLI admission boundary, idempotent recheck, cleanup receipt, and `external_action_executed=false`; Browser Use and connectors were not started. The initial package-script invocation failed closed because `--output` is required; the corrected output-bound invocation passed and no business run was launched.
+
+The fresh portable scheduler canary completed all six registered workflows. Every receipt contained `manifest_validation`, `run_binding`, `readback`, and `cleanup`; `browser_started=false`, `connector_called=false`, and `external_action_executed=false`. This remains technical/no-effect proof, not Job submission, Daily AI publication, or NisenPrints listing proof. Evidence: `work/service-readiness/reference-workflow-canary-20260810.v3.json`, `work/service-readiness/portable-scheduler-canary-20260810.v3.json`, `work/service-readiness/company-release-packet-preparation-20260810.v39.json`, `work/service-readiness/goal-exit-audit-20260810.v12.json`, and `work/service-readiness/unresolved-audit-20260810.v54.json`.
+
+**Exact blocker / next action / restart point:** keep external effects fail-closed. A fresh business run requires an explicitly authorized target-bound approval -> AOS portable authority claim -> Mac workflow-owned Browser Use CLI profile/port lease -> visible business proof, same-run sync, authority receipt, and cleanup. The official Codex manual still marks WebSocket app-server transport experimental/unsupported for production, so retain the Zeabur technical canary and local stdio fallback; do not touch the foreign room.
+
+## 2026-08-10 checkpoint 442: automation health false-positive fixed and deployed
+
+The shared health parser incorrectly treated the registered `skip-gmail` safety marker as an executable entrypoint and could also classify the AOS no-effect bridge prompt as a publish/video-QA workflow. The parser boundary now excludes safety markers and recognizes the no-effect bridge contract without changing any runner, approval, portable authority, Browser Use, or external-effect gate. Regression tests pass 20/20; fresh local `automation:health` is 6/6 active, blocker 0, missing entrypoint 0, and video QA issues 0.
+
+The fix was deployed only to the existing AOS service `6a47122e24bec8372d3e1a31`. Deployment `6a79ba909cc09bfe799682f7` is RUNNING; public health/root are HTTP 200. Local/remote compiled `automationHealth.js` SHA-256 matches (`606731893ac27b7484cfa5e7ad45d4147f7ad747d6abb37f40358172025d71df`), and the runtime artifact hash/file count match (`c19c20df45c8d63963d63ecca187465e7ea9f601e84af6ff7b7f43512ce99299` / 341). The dedicated Codex service, Mac worker, profiles, fixed ports, and foreign room were not changed. Evidence: `work/service-readiness/aos-automation-health-zeabur-parity-readback-20260810.v1.json`, `work/service-readiness/company-release-packet-preparation-20260810.v40.json`, `work/service-readiness/goal-exit-audit-20260810.v13.json`, and `work/service-readiness/unresolved-audit-20260810.v55.json`.
+
+Business admission is still incomplete and activation remains false. Exact unresolved items are fresh Job `submitted_confirmed`/same-run sync, Daily AI/NisenPrints provider business receipts/sync, supported Codex remote transport/private TLS/WSS, six G0/G1 evidence fields, and foreign-room ownership. Restart only at a fresh AOS target-bound portable-authority claim -> Mac workflow-owned profile/port lease; no external business effect was run.
+
+## 2026-08-10 checkpoint 443: portable admission regression and fresh no-effect canaries
+
+Focused portable verification is fresh at `114/114`: portable authority, Company scope, approval/idempotency, remote Mac worker, Job Browser Use adapter, Daily AI/NisenPrints business-proof propagation, Opportunity Ledger, reconciliation, and no-Codex-root fail-close all pass. Fresh isolated reference canary is `3/3 proof_backed_safe_stop_verified`; fresh portable scheduler canary is `6/6` with all receipts carrying manifest validation, run binding, readback, and cleanup. Browser Use, connector, and external action counts are zero. Global automation audit remains `6/6` with gaps 0 and automation health remains 6/6 active with blocker 0.
+
+Evidence: `work/service-readiness/reference-workflow-canary-20260810.v4.json`, `work/service-readiness/portable-scheduler-canary-20260810.v4.json`, `work/service-readiness/company-release-packet-preparation-20260810.v41.json`, `work/service-readiness/goal-exit-audit-20260810.v14.json`, and `work/service-readiness/unresolved-audit-20260810.v56.json`.
+
+The Goal remains active/incomplete and activation remains false. No応募・投稿・公開・送信・支払・秘密変更・Mac/Codex restart・profile/port mutation・foreign-room operation occurred. Restart only at a fresh target-bound AOS portable authority claim -> Mac workflow-owned profile/port lease; prior provider/Gmail responses are not replayable.
+
+## 2026-08-10 checkpoint 444: full regression and fresh deployment readback after portable authority work
+
+Full `npm test` completed with `1088 total / 1072 passed / 0 failed / 16 skipped`, exit code 0. The 16 skips are the PostgreSQL fixture lane because `AUTOMATION_OS_TEST_POSTGRES_URL` is unset and do not establish production PostgreSQL parity. The focused portable authority/admission suite is `114/114`; fresh reference safe-stop is `3/3`, portable scheduler no-effect is `6/6`, global audit is `6/6`, and automation health is `6/6` with blocker 0.
+
+Fresh Zeabur readback confirms AOS deployment `6a79ba909cc09bfe799682f7` is RUNNING and public `/api/health` is HTTP 200. JSON artifacts validate and `git diff --check` is clean. No external effect, secret change, Mac/Codex restart, profile/port mutation, or foreign-room operation occurred. Activation remains false. Evidence: `work/service-readiness/company-release-packet-preparation-20260810.v42.json`, `work/service-readiness/goal-exit-audit-20260810.v15.json`, and `work/service-readiness/unresolved-audit-20260810.v57.json`.
+
+Exact unresolved blockers remain fresh business receipts/same-run sync for Job, Daily AI, and NisenPrints; supported Codex remote production transport/private TLS/WSS; six G0/G1 evidence fields; and foreign-room ownership. Restart at a fresh AOS candidate bundle -> Company-scoped target-bound approval -> portable authority claim -> Mac workflow-owned profile/port lease, with visible business proof, same-run sync, authority receipt, and terminal cleanup.
+
+## 2026-08-10 checkpoint 445: protected production GET parity refreshed in Zeabur boundary
+
+Fresh Zeabur service readback confirmed the AOS service's configured read token is available only inside the service boundary. GET-only requests to `/api/health`, `/api/dashboard`, `/api/registered-workflows`, `/api/browser/health`, and `/api/mvp/feedback` all returned HTTP 200 without printing or saving the token. Safe shape readback showed 20 dashboard runs and 6 registered workflows. Local QA token sources remain absent (`production_read_token_missing`); no local protected retry or secret copy was performed.
+
+Protected GET parity is now current evidence, while business receipts, supported Codex remote transport/private TLS/WSS, six G0/G1 fields, and foreign-room ownership remain unresolved. No external effect, secret value exposure/change, Mac/Codex restart, profile/port mutation, or foreign-room operation occurred. Evidence: `work/service-readiness/production-protected-readback-20260810.v2.json`, `work/service-readiness/company-release-packet-preparation-20260810.v43.json`, `work/service-readiness/goal-exit-audit-20260810.v16.json`, and `work/service-readiness/unresolved-audit-20260810.v58.json`.
+
+## 2026-08-10 checkpoint 446: current build, canaries, and Mac boundary fresh readback
+
+The current targeted G0/G1/portable command passed `38` tests with `0` failures; `companyReleaseReadiness.test.js` was listed twice, so this is not reported as 38 independent cases. The portable admission suite remains `114/114`. Fresh isolated reference canary passed `3/3 proof_backed_safe_stop_verified`; fresh portable scheduler canary passed `6/6` with all four safe stages and zero Browser Use, connector, or external effects. Current compiled/runtime parity remains exact: `automationHealth.js` SHA `606731893ac27b7484cfa5e7ad45d4147f7ad747d6abb37f40358172025d71df`, runtime artifact `c19c20df45c8d63963d63ecca187465e7ea9f601e84af6ff7b7f43512ce99299` / 341 files, matching Zeabur.
+
+Observation-only Mac readback shows the Codex App and portable worker still running. Canonical Browser Use room inspection reports one continued foreign temporary room on port 20091 with `reclaim_allowed=false`; no room, profile, port, process, or lock was changed. Activation remains false. Business receipts, supported remote production transport/private TLS/WSS, G0/G1 evidence, and foreign-room ownership remain unresolved. Requirement-by-requirement status is recorded in `work/service-readiness/goal-requirement-audit-20260810.v1.json`. Evidence: `work/service-readiness/reference-workflow-canary-20260810.v5.json`, `work/service-readiness/portable-scheduler-canary-20260810.v5.json`, `work/service-readiness/mac-worker-room-readback-20260810.v4.json`, `work/service-readiness/company-release-packet-preparation-20260810.v44.json`, `work/service-readiness/goal-exit-audit-20260810.v17.json`, and `work/service-readiness/unresolved-audit-20260810.v59.json`.
+
+## 2026-08-10 checkpoint 447: portable authority hardening and Zeabur parity refresh
+
+The effects-enabled portable business runner now requires an AOS-issued portable effect authority unconditionally. Generic worker invocations without that authority stop before runner/Browser Use launch with `portable_external_effect_authority_missing`; the Mac remote worker remains the only business Web boundary and explicitly binds the authority file and receipt. The fresh portable business/worker/remote suite is `24 passed / 0 failed`, and the Browser Use/remote-worker script suite is `13 passed / 0 failed`.
+
+Fresh reference safe-stop is `3/3`; portable scheduler no-effect is `6/6`; health is `6/6 active` and global automation audit is `6/6` with zero gaps. Zeabur AOS deployment `6a79c6049cc09bfe79968500` is RUNNING, public health is HTTP 200, protected GET-only parity is five routes HTTP 200, and runtime artifact inner hash/file count is `f5b8de3b684abd218702fa8a9c7a007cca4567036fa3c94f5b777cc5cc4e669b` / 341 files on both sides. The AOS -> Zeabur Codex read-only protocol canary passed again; production remote promotion remains blocked by the official unsupported/experimental WebSocket transport and unproven private TLS/WSS.
+
+No external business effect or secret change occurred. Mac Codex App, local server, Browser Use worker, profiles, ports, and foreign room were preserved. The six unresolved blockers remain explicit in `work/service-readiness/unresolved-audit-20260810.v60.json`; release status is `blocked_no_effect` in `work/service-readiness/company-release-packet-preparation-20260810.v45.json`.
+
+## 2026-08-11 current checkpoint 457: negative/recovery/UX/release completion and health false-positive root fix
+
+P3/P4 control-plane and six-workflow E2E are complete. Focused negative/recovery/concurrency passed `117/117`, UX/truthfulness passed `80/80`, and release boundary passed `67/67`. Full `npm test` is `1095 total / 1079 pass / 0 fail / 16 PostgreSQL fixture skips`; server/web build, web typecheck, runtime parity manifest, Browser Use validate/runtime-readback, `git diff --check`, and managed process scan (`matched=0`, `remaining=0`) passed. The 16 PostgreSQL skips remain an explicit absence of `AUTOMATION_OS_TEST_POSTGRES_URL`, not production parity.
+
+The automation-health blocker was fixed in the common parser: `/scripts/sync-live.sh の経路...` was incorrectly parsed as an executable `sh` command because the regex could start at a `.sh` suffix. The command-boundary guard and regression now pass `21/21`; fresh health is `7 active / 7 ok / 0 blockers / 0 missing entrypoint`. Browser Use root-cause evidence confirms the primary issue is per-command helper/browser-use process fan-out plus serial evidence checkpoints; bounded read-only batch transport is implemented and its real canary is `5/5` with screenshot/readback/cleanup and zero external effect.
+
+The common adaptive contract remains provider-neutral across all six entries and supports `read/create/update/publish/submit/delete`; semantic live target resolution, approval, source readback, reconciliation, and cleanup are fixed-kernel requirements, while site playbooks are hints only. Current-run fixtures are fully cleaned; historical user-owned `work/e2e` artifacts, scheduled profiles, and foreign resources were preserved. Keep `run_msn91imj_5kgsc3` waiting for approval. Real external posting or any other effect resumes only with one concrete target/payload/account/audience and fresh authority/readback.
+
+Evidence: `work/service-readiness/browser-use-cli-root-cause-readback-20260811.v2.json`, `work/service-readiness/full-regression-readback-20260811.v3.json`, `work/service-readiness/negative-recovery-e2e-20260811.v1.json`, `work/service-readiness/ux-e2e-20260811.v1.json`, `work/service-readiness/release-acceptance-20260811.v1.json`, and `work/service-readiness/final-fixture-cleanup-20260811.v1.json`.
+
+## 2026-08-10 checkpoint 448: full regression completion readback
+
+The current full `npm test` suite completed with exit code 0: `1089 total / 1073 passed / 0 failed / 16 skipped`. The 16 skips are PostgreSQL fixture cases because `AUTOMATION_OS_TEST_POSTGRES_URL` is unset; they do not establish production PostgreSQL parity. Final JSON validation and `git diff --check` passed. Evidence: `work/service-readiness/full-regression-readback-20260810.v1.json` and `work/service-readiness/goal-exit-audit-20260810.v19.json`.
+
+Implementation and verification for the AOS-owned portable authority hardening are complete. The overall Goal remains active/incomplete and activation remains false because the same six business/transport/G0/G1/foreign-room blockers remain unresolved. No external effect, secret change, Mac/Codex restart, profile/port mutation, or foreign-room operation occurred.
+
+## 2026-08-10 checkpoint 449: foreign-room blocker re-audited and cleared
+
+Fresh canonical Browser Use observation-only readback shows `237` rooms and `0` non-released rooms; port `20091` has no listener. Helper `validate` is finalized, and `runtime-readback` reports inspection success with no runtime drift. The former foreign-room reclaim blocker is removed from the unresolved-only audit without changing any room, profile, port, process, or lock. Evidence: `work/service-readiness/unresolved-audit-20260810.v61.json`, `work/service-readiness/goal-exit-audit-20260810.v20.json`, and `work/service-readiness/company-release-packet-preparation-20260810.v46.json`.
+
+The Goal remains active/incomplete with five blockers: fresh Job/Daily AI/NisenPrints business receipts and same-run sync, unsupported Codex remote production transport/private TLS-WSS, and G0/G1 evidence. Next restart point: fresh Company-scoped AOS portable Job candidate-supply read-only run for one candidate margin; do not issue business authority before fresh target readback.
+
+## 2026-08-10 checkpoint 450: fresh Job candidate supply and submit-admission canary
+
+Company 1 (`company_9588eaafb46d7cbaead81811`) now has a fresh AOS portable Job candidate-supply proof: `run_msn8wcsk_ojm1pc` completed via the Mac worker and canonical Browser Use CLI read-only lane, returning two LinkedIn Japan-targeted candidates. The same-run artifacts record the scheduled `automation-3` profile, reserved port `19881`, Browser Use authority, cleanup/readback verification, and `external_action_executed=false`.
+
+The worker pickup initially exposed `portable_external_input_bundle_immutable_collision`. Root cause was a shared immutable-bundle contract mismatch: the server bundle includes `created_at`, while worker re-materialization used a payload without it at the same path. The worker now validates safe input/workflow/run identity and reuses a matching canonical bundle, while mismatches remain fail-closed. Focused portable tests are `33/33`; full regression is `1090 total / 1074 pass / 0 fail / 16 PostgreSQL fixture skips`.
+
+Fresh target-bound submit admission canary `run_msn91imj_5kgsc3` is `waiting_approval` with `portable_external_approval_required`, Company 1 scope, target-bound resource lock, and `external_action_executed=false`. It did not launch Browser Use or submit an application. Codex App run-now and first-class-root are not required. This is admission preparation only; activation remains false. Evidence: `work/service-readiness/job-candidate-supply-readback-20260810.v1.json`, `work/service-readiness/job-submit-admission-canary-20260810.v1.json`, `work/service-readiness/full-regression-readback-20260810.v2.json`, `work/service-readiness/unresolved-audit-20260810.v62.json`, `work/service-readiness/goal-exit-audit-20260810.v21.json`, and `work/service-readiness/company-release-packet-preparation-20260810.v47.json`.
+
+**Exact blocker / next action / restart point:** keep the pending submit canary unapproved and no-effect. Resume at its target-bound approval only for an explicitly authorized external-effect run; then require AOS portable authority, Mac-only workflow-owned profile/port claim, visible `submitted_confirmed` proof, same-run source sync, reconciliation-safe receipt, and terminal cleanup. Daily AI/NisenPrints business receipts, supported Codex remote/private TLS-WSS, and six G0/G1 fields remain unresolved.
+
+## 2026-08-10 checkpoint 451: reference-readback contract separation and AOS-only deployment parity
+
+The shared portable Browser Use runner now treats `reference_readback` as a terminal no-effect stage only after fresh authority, semantic readback, and cleanup. It no longer reports business-proof-pending for a completed reference readback. `workerEngine` also suppresses the NisenPrints publish/commerce run-contract gate only for this explicit stage; normal business/effect stages continue to enforce the contract. Regression coverage keeps both invariants: reference readback does not require business proofs, while the business contract remains present outside that stage.
+
+Fresh external-worker readback completed Daily AI `run_msna00j6_8h6e7l` and NisenPrints `run_msna1o28_kkb8tz` as `complete`, with `readback_verified=true`, `cleanup_verified=true`, fixed scheduled profiles/ports (19882/19884), `effects_mode=read_only`, and `external_action_executed=false`. These are reference proofs only; no publication, listing, Pin, or other business completion was claimed. Focused TypeScript portable tests passed 11/11 and the Browser Use runner scripts passed 12/12. The isolated Obsidian recheck passed 20/20. The full suite had one existing detached-export timeout under full-suite load (`1090 total / 1073 pass / 1 fail / 16 skipped`); the failure is recorded as conditional verification and is unrelated to the changed portable files.
+
+The existing AOS Zeabur service only was redeployed as `6a79db864243c79e762d0b52`, status `RUNNING`, public `/api/health` HTTP 200. Local and Zeabur runtime artifact hash is `0cc44e2802ea515df372cdd1ca4e1cc58151f88c15f94d0d1c338ac4f67b7f42` / 341 files, and compiled `workerEngine.js` SHA is equal on both sides. The dedicated Codex service, Mac Codex App/server, Mac Browser Use worker, profiles, fixed ports, iPhone/Simulator, Obsidian, and foreign rooms were not stopped, replaced, or mutated.
+
+The Goal remains active/incomplete with five blockers: Job `submitted_confirmed` and same-run sync, Daily AI business receipt/sync, NisenPrints business receipt/sync, unsupported Codex remote production transport/private TLS-WSS, and G0/G1 evidence. Evidence: `work/service-readiness/daily-ai-reference-readback-20260810.v1.json`, `work/service-readiness/nisenprints-reference-readback-20260810.v1.json`, `work/service-readiness/zeabur-aos-portable-authority-parity-readback-20260810.v1.json`, `work/service-readiness/full-regression-readback-20260810.v3.json`, `work/service-readiness/unresolved-audit-20260810.v63.json`, `work/service-readiness/goal-exit-audit-20260810.v22.json`, and `work/service-readiness/company-release-packet-preparation-20260810.v48.json`.
+
+**Exact blocker / next action / restart point:** keep `run_msn91imj_5kgsc3` (pending target-bound Job submit admission) unapproved and no-effect. Resume only at fresh target-bound approval -> AOS portable authority -> Mac workflow-owned profile/port lease -> visible business proof -> same-run sync -> terminal cleanup. Do not claim reference readback as business completion or promote unsupported Codex remote transport.
+
+## 2026-08-11 checkpoint 452: strict functional-result audit
+
+Fresh source-to-result inspection found that the Company 1 catalog's six active/scheduled declarations do not all represent executable workflows. Job (`automation-3`), Daily AI, and NisenPrints are connected to portable dispatch and Mac Browser Use CLI runner paths. Email review, daily backup, and Obsidian have no corresponding catalog dispatch/worker adapter path and are therefore explicit `unbound/pending`, not business-complete or runnable. The post-build `registeredCatalog` audit passed `4/4` and locks this distinction into regression coverage.
+
+The audit also found and fixed a real clean-worker binding defect: Daily AI/NisenPrints default runner resolution depended on test-only environment injection. Canonical AOS runner paths now resolve in a clean environment; no-effect integration tests cover both workflow-specific stops. Full `npm test` completed with `1090 total / 1074 passed / 0 failed / 16 skipped`; isolated Obsidian passed `20/20`. AOS-only Zeabur deployment `6a79e639db4ec8cd006b2f2a` is `RUNNING`, health HTTP 200, and artifact parity matches local. No external effect, secret change, Mac/Codex restart, profile/port mutation, or foreign-resource operation occurred.
+
+The Goal remains active/incomplete. Fresh Job/Daily AI/NisenPrints business receipts and same-run sync, supported Codex remote/private TLS-WSS, G0/G1 evidence, and the three unbound catalog adapter bindings remain unresolved. Evidence: `work/service-readiness/functional-result-audit-20260811.v1.json`, `work/service-readiness/full-regression-readback-20260811.v1.json`, `work/service-readiness/unresolved-audit-20260811.v64.json`, `work/service-readiness/goal-exit-audit-20260810.v23.json`, and `work/service-readiness/company-release-packet-preparation-20260810.v49.json`.
+
+**Exact blocker / next action / restart point:** bind a real adapter or explicitly disable/pending each unbound catalog entry; keep `run_msn91imj_5kgsc3` unapproved; resume only at target-bound approval -> AOS portable authority -> Mac workflow-owned profile/port -> visible business proof -> same-run sync -> terminal cleanup.
+
+## 2026-08-11 checkpoint 453: unbound schedule fallback closed and redeployed
+
+The strict functional audit exposed a shared scheduler false-positive path: due active registered entries without a portable adapter could be skipped by the portable scheduler and then fall through to generic durable dry-run. The fix is now in `portableAutomationScheduler` and `durableAutomationScheduler`: due unbound registered schedules return an exact `portable_registered_adapter_missing:<worker_command_kind>` blocker and are excluded from generic fallback; due-before-initialization remains normal. This is a behavior fix, not a declaration copy.
+
+Fresh focused regression passed `automationScheduler 9/9` and `registeredCatalog 4/4`; full `npm test` passed `1091 total / 1075 passed / 0 failed / 16 skipped`. The AOS service alone was redeployed to Zeabur deployment `6a79f4444243c79e762d0fe7` (`RUNNING`, health HTTP 200), with local/remote artifact `47b80fc54061139a9dfc1e2682a2ac1681b040dce6f84a3644153b22a5dcb9d7 / 341 files`. Dedicated Codex service, Mac Codex App/server, Browser Use worker, profiles, ports, iPhone/Simulator, and Obsidian were preserved. No external effect or secret change occurred.
+
+Current functional truth is 3/6 runnable portable catalog entries and 3/6 explicit unbound blockers; business results verified remain zero. Evidence: `work/service-readiness/functional-result-audit-20260811.v2.json`, `work/service-readiness/registered-catalog-functional-readback-20260811.v1.json`, `work/service-readiness/full-regression-readback-20260811.v2.json`, `work/service-readiness/unresolved-audit-20260811.v65.json`, `work/service-readiness/goal-exit-audit-20260810.v24.json`, and `work/service-readiness/company-release-packet-preparation-20260810.v50.json`.
+
+**Exact blocker / next action / restart point:** bind or explicitly disable/pending the three unbound catalog entries; keep `run_msn91imj_5kgsc3` unapproved; resume only at target-bound approval -> AOS portable authority -> Mac workflow-owned profile/port -> visible business proof -> same-run sync -> terminal cleanup.
+
+## 2026-08-11 checkpoint 454: Browser Use CLI smoothness root cause isolated
+
+Fresh observation-only readback confirms the Browser Use runtime is healthy: 255 rooms, 0 non-released, no changed rooms, `runtime_drift=false`, and no active Browser Use child/listener after diagnostic cleanup. The measured latency is instead in the execution architecture. A direct no-effect helper run took 11.8–14.4 seconds to start, 3.8–5.7 seconds per command/readback, and 5.7–9.3 seconds to finalize. The fresh AOS Job candidate-supply recording serialized 18 operations over about 62 seconds while the actual video duration was 1.58 seconds.
+
+Root cause is confirmed as per-command process/readback fan-out plus evidence-first workflow granularity: AOS keeps one logical flow lease but starts a new helper for every `record-command`; the helper starts a new Browser Use subprocess for the command and usually another for state readback. Candidate and submit adapters then add URL/eval/state/screenshot/target checkpoints serially. The remote worker's 30-second polling and nested runner/receipt boundaries add queue latency before the flow. The installed and project helpers are also different generations, causing a secondary parity/recovery risk; AOS business execution deliberately binds the project helper. No approval, business action, external effect, room mutation, or code behavior change occurred. Evidence: `work/service-readiness/browser-use-cli-root-cause-20260811.v1.json`.
+
+The root-fix direction is a flow-owned persistent command transport or bounded read-only batch transport, with fewer semantic screenshots/checkpoints and event/wakeup queue pickup. Safety proof layers must remain: target-bound authority, per-action nonce/ledger, same-run effect reconciliation, no effectful retry after uncertainty, visible business proof, source sync, and terminal cleanup. The Goal remains active/incomplete; current functional truth is 3/6 runnable portable catalog entries and 3/6 explicit unbound blockers, with business results verified at zero.
+
+**Exact blocker / next action / restart point:** keep `run_msn91imj_5kgsc3` waiting for approval and no-effect. Next technical action is a no-effect prototype/regression for persistent or batched read-only transport, then fresh command/process-count and proof-parity comparison. Business restart remains fresh target-bound approval -> AOS portable authority -> Mac workflow-owned profile/port -> visible business proof -> same-run sync -> terminal cleanup.
+
+## 2026-08-11 checkpoint 455: complete user-perspective E2E readiness plan persisted
+
+The current continuation has a complete, machine-readable user-perspective E2E plan: `work/service-readiness/e2e-readiness-plan-20260811.v1.md` and `work/service-readiness/e2e-readiness-plan-20260811.v1.json`. The plan covers the six registered catalog entries, AOS control plane, canonical Browser Use transport, workflow-specific business gates, no-effect/reference separation, negative and recovery behavior, UX truthfulness, source/install/runtime/deploy parity, and fixture-only create/delete with cleanup receipts. It does not treat dry-run, preflight, queued, reference readback, or cleanup as business completion.
+
+The next execution stage is Phase 0/1: fresh authority/catalog acceptance and an isolated `e2e-*` fixture harness with a creation/deletion ledger. The Browser Use fix remains a no-effect batch or bounded persistent transport benchmark with proof parity and cleanup as hard gates. Email, backup, and Obsidian remain explicit unbound/pending until an adapter or visible pending/disabled state is implemented. Job submit canary `run_msn91imj_5kgsc3` remains unapproved and unlaunched.
+
+**Exact blocker / next action / restart point:** run Phase 0 fresh readback, then Phase 1 fixture harness. Resume Browser Use engineering at the batch transport comparison; resume external business lanes only from fresh target-bound approval.
+
+## 2026-08-11 checkpoint 456: common adaptive operation model and six-entry adapter binding
+
+The common Web operation contract now covers `read/create/update/publish/submit/delete` with fresh semantic target resolution, ambiguity/stale-target stop, approval admission, same-run source readback, no-replay reconciliation, and bounded exploration. CSS/XPath/DOM-order selectors are not authority; provider playbooks are hints only.
+
+All six registered workflows now have an explicit AOS control-plane adapter and portable dispatch. Email, backup, and Obsidian use the Mac-local adapter surface; Gmail isolation, backup approval, and Obsidian write approval remain visible blockers/partial states. Compiled verification passed adapter `7/7`, catalog `4/4`, registered workflow E2E `3/3`, and six-entry materialization with zero generic fallback/effects. Browser Use batch canary passed `5/5` read-only commands with screenshot/readback/cleanup and no external action; semantic contract suite passed `22/22`; fixture harness passed `2/2`.
+
+Evidence: `work/service-readiness/e2e-readiness-acceptance-20260811.v1.json`, `work/service-readiness/browser-use-batch-canary-final-GmiaNQ/batch-canary-report.v1.json`, `work/service-readiness/e2e-readiness-fixture-ledger.v1.json`. `run_msn91imj_5kgsc3` stays waiting for approval and unlaunched. Goal remains active/incomplete; continue at P3/P4 control-plane/workflow E2E, then negative/recovery/UX/release audit. External posting or any other effect requires one concrete current target, payload, account/audience, fresh authority, visible provider readback, source sync, reconciliation, and cleanup.
+
+## 2026-08-11 checkpoint 460: first-use adaptive Web entry and local screen boundary audited
+
+The user-facing common Web operation entry is now implemented in Home and Chat. It is provider-neutral and supports `read/create/update/publish/submit/delete`; it explains semantic target discovery for unfamiliar sites, refuses fixed CSS/XPath/DOM-order authority, stops on zero or multiple candidates, and exposes approval, same-run receipt/readback, source sync, reconciliation, and cleanup rules. Stable control manifest ids, source regression, Vite build, and README first-use guidance are present. Fresh local HTTP readback is healthy: `/api/health`, `/api/mvp/state`, and `/` are HTTP 200; the root mount is present; six registered workflows are visible; the built bundle contains the common entry and no-effect terms.
+
+Canonical Browser Use CLI screen QA against `http://127.0.0.1:8787` was intentionally stopped before page open by `browser_use_private_or_metadata_url`. The canonical safety guard was not bypassed; the same run finalized the recording and cleanup, rooms remained unchanged, and `external_action_executed=false`. Public-fixture Browser Use E2E remains green, so this is a local-origin screen-QA boundary, not a Browser Use runtime failure. Use an explicitly permitted public QA origin for that screen-level check.
+
+The current full suite completed `1101 total / 1085 passed / 0 failed / 16 skipped`; targeted UI/source-control tests, server/web build, web typecheck, Browser Use contract canaries, runtime parity, process scan, and diff check remain green. The Goal remains active/incomplete: no real post, submit, send, publish, delete, payment, or secret change was made. Fresh target/payload/account/audience and business receipts/same-run sync, Gmail isolation, backup/Obsidian write approvals, supported remote private TLS/WSS, and G0/G1 evidence remain pending.
+
+Evidence: `work/service-readiness/local-ui-admission-readback-20260811.v1.json`, `work/service-readiness/e2e-readiness-acceptance-20260811.v2.json`, `work/service-readiness/final-release-audit-20260811.v1.json`, `apps/web/src/App.tsx`, `apps/web/src/controlManifest.ts`, `apps/server/src/tests/uiTruthfulnessSource.test.ts`, and `README.md`.
+
+**Exact blocker / next action / restart point:** keep `run_msn91imj_5kgsc3` unapproved and no-effect. For local screen QA, provide an explicitly permitted public QA origin and resume at canonical `record-start`; for business effects, resume only at fresh target-bound approval -> AOS portable authority -> Mac workflow-owned profile/port -> visible provider receipt -> same-run source sync -> reconciliation -> terminal cleanup.
+
+## 2026-08-11 checkpoint 461: public deployment parity and authenticated screen boundary audited
+
+Fresh public readback found that the existing `automation-os` Zeabur service was serving an older web asset while the local build contained the current adaptive Web entry. The existing AOS service only was redeployed through the official Zeabur CLI from task-owned staging; other services and foreign resources were preserved. Public `/api/health`, root HTML, and the current JS/CSS bundle now return HTTP 200, and the public bundle contains the provider-neutral `read/create/update/publish/submit/delete` entry and no-effect guard terms.
+
+The canonical Browser Use CLI then ran against the permitted public origin in one single-use session: `open -> wait -> state -> eval -> eval -> screenshot` completed `6/6` read-only commands. The screen visibly reached the admin-key authentication gate; the authenticated common entry was not claimed, the key was not accessed or bypassed, and no post, submit, send, publish, delete, payment, or secret change occurred. The same run was finalized with external effects `none`; owned room/profile/lock/port cleanup was verified and foreign active resources were left untouched. The first missing screenshot-path input was recovered with a corrected same-run batch without replaying an effect.
+
+The Goal remains active/incomplete. Public distribution parity is verified, while authenticated common-entry screen readback is pending the operator-provided admin key. Business receipts/same-run sync, concrete target/payload/account/audience authority, Gmail isolation, backup/Obsidian write approvals, supported remote private TLS/WSS, and G0/G1 evidence remain pending. Evidence: `work/service-readiness/e2e-web-admission-public-20260811.v1.json`, `work/service-readiness/e2e-readiness-acceptance-20260811.v2.json`, `work/service-readiness/final-release-audit-20260811.v1.json`, `work/service-readiness/requirement-audit-20260811.v1.json`.
+
+**Exact blocker / next action / restart point:** `automation_os_admin_key_not_provided_for_authenticated_common_entry`; continue at the approved authentication boundary with a fresh same-run semantic screen readback, never by bypassing or logging the key. For any external effect, resume only at fresh target-bound approval -> AOS portable authority -> workflow-owned profile/port -> visible provider receipt -> same-run source sync -> reconciliation -> terminal cleanup.
+
+## 2026-08-11 checkpoint 462: least-privilege first-use authentication and current public readscope verified
+
+The first-use authentication mismatch is fixed at the shared boundary. The server already supported a read-only token, but the UI only explained and handled the write-token path. `GET /api/auth/capability` now returns only the active scope (`read`, `write`, or `unrestricted`) and allowed methods; it never returns token material. The UI accepts `AUTOMATION_OS_READ_TOKEN` for browsing/readback, reserves `AUTOMATION_OS_WRITE_TOKEN` for approved mutations, displays the current scope, keeps the key in tab `sessionStorage`, and explicitly tells beginners not to place it in chat, URLs, or logs.
+
+Fresh public deployment `6a7a559d4243c79e762d1863` reached `RUNNING` after the observed `BUILDING -> DEPLOYING -> RUNNING` transition. Public health/root are HTTP 200, and the current public JS SHA `e0a244b66ffb1c67d4931371f2b40853f351c7b9495549a82c5c6f23e3924e15` matches the local build. The canonical Browser Use public readscope run reached the current API-key gate and visibly showed the READ_TOKEN/WRITE_TOKEN/sessionStorage guidance. Public mode correctly refused the broader eval/screenshot batch surface before dispatch; the permitted open/wait/state readback was captured, the same run finalized, and owned room/profile/lock/port cleanup passed. No external effect or secret read occurred.
+
+Full `npm test` after this change is `1101 total / 1085 passed / 0 failed / 16 skipped`; five skips are unavailable PostgreSQL fixtures and eleven are optional legacy browser bridge cases. The Goal remains active/incomplete: authenticated common-entry readback still requires an operator-provided key, and business receipts/source sync, concrete target/payload/account/audience authority, Gmail isolation, backup/Obsidian approvals, supported remote private TLS/WSS, and G0/G1 evidence remain pending.
+
+Evidence: `work/service-readiness/e2e-web-admission-readscope-20260811.v1.json`, `work/service-readiness/e2e-readiness-acceptance-20260811.v2.json`, `work/service-readiness/final-release-audit-20260811.v1.json`, `work/service-readiness/requirement-audit-20260811.v1.json`, `apps/server/src/index.ts`, `apps/web/src/App.tsx`, `apps/server/src/tests/automationApi.test.ts`, and `apps/server/src/tests/dashboardSanitizer.test.ts`.
+
+**Exact blocker / next action / restart point:** `automation_os_admin_key_not_provided_for_authenticated_common_entry`; resume with the approved operator key through a fresh authorized Browser Use session, then perform same-run semantic readback before any effect. For posts, submits, sends, publishes, updates, deletes, or payments, first bind a concrete target/payload/account/audience and fresh authority, then require provider receipt, source sync, reconciliation, and terminal cleanup.
+
+## 2026-08-11 checkpoint 463: first-use scope documentation aligned and full regression refreshed
+
+The final first-use audit found one user-facing wording mismatch: the server/UI allowed a read-only token for GET/HEAD readbacks, while the older Production Safety sentence implied every protected route required the write token. README and `.env.example` now consistently describe `AUTOMATION_OS_READ_TOKEN` for browsing/readback and `AUTOMATION_OS_WRITE_TOKEN` for state-changing calls, while preserving the sessionStorage-only and no-secret-readback boundary. A new static documentation regression passed `43/43`.
+
+The full suite was rerun after that regression was added: `1102 total / 1086 passed / 0 failed / 16 skipped` (`5` unavailable PostgreSQL fixtures and `11` optional legacy Browser bridge cases). `build:server`, focused auth/dashboard/common-Web tests, public health/root, public/local JS/CSS hashes, JSON validation, and `git diff --check` remain green. No external post, submit, send, publish, update, delete, payment, or secret change occurred.
+
+Evidence: `work/service-readiness/full-regression-readback-20260811.v6.json`, `work/service-readiness/e2e-readiness-acceptance-20260811.v2.json`, `work/service-readiness/final-release-audit-20260811.v1.json`, `work/service-readiness/requirement-audit-20260811.v1.json`, `README.md`, `.env.example`, and `apps/server/src/tests/dashboardSanitizer.test.ts`.
+
+**Exact blocker / next action / restart point:** keep `run_msn91imj_5kgsc3` unapproved and no-effect. Authenticated public common-entry readback still needs the approved operator key. Any real post/submit/send/publish/update/delete requires one fresh concrete target, payload, account, audience, and current authority, followed by provider receipt, same-run source sync, reconciliation, and terminal cleanup. Gmail isolation, backup/Obsidian approvals, supported private TLS-WSS remote transport, and G0/G1 evidence remain pending.
+
+## 2026-08-11 checkpoint 464: flexible first-use Web prompt deployed and public readscope finalized
+
+初見サイトでも固定selectorやクリック順を要求しない共通Web入口を一段改善した。Home/Chatの共通入口から `目的 / サイトまたはURL / 会社とアカウント / 意味で指定する対象 / 内容 / 公開先・送信先・対象範囲` の6項目をChatへ下書き投入でき、未入力はplannerが質問し、認証・OTP・CAPTCHAは人間境界で停止する。テンプレート自体は外部操作を開始せず、semantic target解決・approval・same-run readback/sync・reconciliation・cleanupの境界を維持する。README、control manifest、source regressionへ反映した。
+
+現行ソースで `npm test` を再実行し、`1102 total / 1086 passed / 0 failed / 16 skipped`（PostgreSQL fixture 5、optional legacy Browser bridge 11）。server/web build、web typecheck、focused 53/53、`git diff --check` がgreen。公式Zeabur CLIで既存 `automation-os` のみを再配布し、deployment `6a7a60474243c79e762d18e8` とserviceがRUNNING、health/root/assets HTTP 200、JS `51715f92...9974e` とCSS `514fce15...fb58d` のpublic/local parityをfresh確認した。
+
+canonical Browser Use CLIの公開readscope v3は `record-start -> open -> wait 1 -> state -> record-finalize` を同一single-use sessionで完了し、auth gate、READ_TOKEN/WRITE_TOKEN、sessionStorage案内、管理者キー要求を画面readbackした。録画receipt binding、5 frames、external_effects=none、room/profile/lock/port cleanup、port 19994 listenerなしを確認した。v2の誤ったwait引数による失敗runは証拠採用せず、v3のreceiptだけをcurrent proofにした。
+
+Goalはactive/incompleteのまま。**exact blocker / next action / restart point:** `automation_os_admin_key_not_provided_for_authenticated_common_entry`; operatorが承認済みREAD_TOKEN/WRITE_TOKENを提供した後、fresh authorized Browser Useでsemantic screen readbackへ進む。投稿・応募・送信・公開・更新・削除は、具体的target/payload/account/audience/current authorityが揃い、provider receipt -> same-run source sync -> reconciliation -> terminal cleanupまで取得できる場合だけ実行する。Gmail isolation、backup/Obsidian write approval、supported private TLS-WSS、G0/G1 evidenceも未解決。
+
+Evidence: `work/service-readiness/e2e-web-admission-readscope-20260811.v2.json`, `work/service-readiness/full-regression-readback-20260811.v7.json`, `work/service-readiness/e2e-readiness-acceptance-20260811.v2.json`, `work/service-readiness/final-release-audit-20260811.v1.json`, `work/service-readiness/requirement-audit-20260811.v1.json`。
+
+## 2026-08-11 checkpoint 465: current source, deployment, and Browser Use readscope
+
+`webOperationIntake.ts` を共通planner境界へ追加し、API plan / Chat / Builderで同じWeb操作インテークを使うようにした。6項目の自然言語入力からsemantic targetと不足質問を作り、固定selector/XPath/DOM順を権威にせず、テンプレートやplannerが外部操作を開始しないことをテストした。`npm test` は `1107/1091/0/16`、focused common-Web `84/84`、script contract `10/10`、server/web build、web typecheck、runtime parity、diff checkがgreen。
+
+公開反映は、初回の配布除外ミス（ソースのsecret/token実装を欠落させたためのbuild fail）を切り分けて回復した。復旧deployment `6a7a6c614243c79e762d19f4` はRUNNING、root/assets HTTP 200、JS `c1a1e1e5...5fde68b` / CSS `514fce15...efb58d` の公開/local parity、新しいWeb intake markersを確認済み。最初の失敗deployment `6a7a6b989cc09bfe79968e02` は成功扱いにしていない。
+
+Browser Use v5はcanonical helperでpublic single-use/read-onlyを実行し、`open -> wait 1 -> state`の同一Run readback、auth gate、管理者キー要求、録画5 frames、receipt、cleanupを確認した。v4のrecording-dir境界エラーはページアクセス前にcleanup済み。外部効果、secret read/log、foreign resource変更はゼロ。
+
+Goalはactive/incomplete。認証済みcommon entryはoperator key待ち、実target/payload/account/audienceとfresh authority、Job/Daily AI/NisenPrints business receipt/sync、Gmail/backup/Obsidian capability、remote private TLS-WSS、G0/G1 evidenceが未達。再開は `work/goal-run-automation-os-continuation-20260810.json` checkpoint 43から、証拠状態が変わった場合だけ行う。
+
+## 2026-08-11 checkpoint 466: common flexibility, Browser Use guard root fix, and fresh v6 public E2E
+
+共通Web入口は初見サイト向けに固定selectorやクリック順を要求しない。`webOperationIntake.ts` が自然な日本語ラベル、ラベルなしURL、操作先/操作対象/投稿文/宛先などを共通入力へ正規化し、操作種別が曖昧なら質問へ戻す。6 registered workflowは全て明示adapter/portable dispatchを持ち、Browser-backed 3件は同じprovider-neutral adaptive Web binding、local 3件はlocal adapterで capability blocker を隠さない。
+
+Browser Use CLIの根本遅延はruntime障害ではなく、1 logical flow内でcommandごとにhelper/process/readbackを再起動していたAOS transport fan-out。bounded read-only batchで1 Browser Use processに集約し、10.8秒 -> 3.15秒、3.4286倍、70.83%短縮、proof/cleanup parityを確認した。共有guardもquote-aware pipe segmentation、read-only inspection allowlist、`functions_exec`正規化、動的nested commandのfail-closedを実装し、guard回帰12/12。full npm testは1110/1094/0/16。
+
+公式Zeabur CLIで既存`automation-os`のみを再配布し、deployment `6a7a73ef4243c79e762d1abc` はRUNNING。health/root/assets HTTP 200、JS/CSS local/public SHA一致。canonical Browser Use v6はpublic single-useの `record-start -> record-batch(open, wait 1, state) -> record-finalize` を完了し、auth gate、external_effects=none、5 frames、receipt、`active_runtime_count=0`、`cleanup_pending_count=0`、historical debt 0、port 19996 listenerなしを確認した。foreign roomはowner boundのため観測のみで変更していない。
+
+実際の投稿・応募・送信・公開・更新・削除・支払い・secret変更は0件。Goalは`running/audit`のままで、exact blockerは管理者キー、fresh target/payload/account/audience/authority、3 business receipt/sync、Gmail isolation、backup/Obsidian approval、remote private TLS-WSS、G0/G1。再開は、6項目の入力とcurrent authorityが揃ったfresh authorized sessionから provider receipt -> same-run source sync -> reconciliation -> terminal cleanup の順で行う。
+
+Evidence: `work/service-readiness/full-regression-readback-20260811.v9.json`, `work/service-readiness/e2e-web-admission-readscope-20260811.v4.json`, `work/service-readiness/e2e-readiness-acceptance-20260811.v4.json`, `work/service-readiness/final-release-audit-20260811.v3.json`, `work/service-readiness/requirement-audit-20260811.v3.json`, `apps/server/src/runs/webOperationIntake.ts`, `apps/server/src/providers/workflowAdapterRegistry.ts`, `/Users/nichikatanaka/.codex/hooks/browser-use-cli-guard.mjs`。
+
+## 2026-08-11 checkpoint 467: 初見入力の柔軟化、semantic target保護、公開v7 E2E
+
+初見サイト向けの共通Web入力をさらに固定化から解放した。`webOperationIntake.ts` は Markdown/bullet のラベル、複数行の投稿文、操作先/操作対象/利用アカウント/宛先などの自然な別名、ラベルなしURLを正規化し、曖昧な操作は推測せず質問へ戻す。`webOperationContract.ts` と portable JS mirror は、説明的な表示ラベル/semantic roleを一意に解決できる場合だけ採用し、`target_key`を優先し、credential付き・許可origin外・href origin不一致をfail closedにした。固定CSS/XPath/DOM順は引き続き権威にしない。
+
+現行sourceの `npm test` は `1112 total / 1096 passed / 0 failed / 16 skipped`。focused server `56/56`、Web intake/lifecycle `11/11`、Browser Use guard `12/12`、script contract `27/27`、server/web build、Web typecheck、runtime parity 349 files、`git diff --check` が通過した。Browser Useの根本修正は、1 logical flow内のprocess/readback fan-outをbounded read-only batchへ集約したもので、10.8秒から3.15秒（3.4286倍、70.83%短縮）、proof/cleanup parityを維持している。
+
+公式Zeabur CLIで既存 `automation-os` serviceだけを明示IDで再配布し、deployment `6a7a79b3db4ec8cd006b42c3` は `RUNNING`。`/api/health`、root、assetはHTTP 200、public/local asset hashとruntime parityが一致した。canonical Browser Use v7は専用port 19997・専用single-use roomで `record-start -> record-batch(open, wait 1, state) -> record-finalize` を同一sessionで完了し、1 process、auth gate、external_effects=none、H.264 5 frames、active runtime 0、cleanup pending 0、room/profile/lock/port解放を確認した。画面上は管理者キー入力境界までで、keyの取得・迂回はしていない。foreign room/serviceは変更していない。
+
+Goalは `running/audit` のまま。実際の投稿・応募・送信・公開・更新・削除・支払い・secret変更は0件。**exact blocker / next action / restart point:** `automation_os_admin_key_not_provided_for_authenticated_common_entry` と、`real_external_target_payload_account_audience_and_fresh_authority_missing`、各business receipt/same-run sync、Gmail/backup/Obsidian approval、remote private TLS-WSS、G0/G1 evidenceが未達。operatorが承認済みkeyを提供した場合だけfresh authorized Browser Useでsemantic screen readbackへ進み、外部効果は具体的target/payload/account/audience/current authority -> provider receipt -> same-run source sync -> reconciliation -> terminal cleanupの順で再開する。現行RunContextはcheckpoint 45、`work/service-readiness/e2e-readiness-acceptance-20260811.v5.json`、`work/service-readiness/final-release-audit-20260811.v4.json`、`work/service-readiness/requirement-audit-20260811.v4.json`、`work/service-readiness/full-regression-readback-20260811.v10.json`をcurrent proofとする。
+
+## 2026-08-11 checkpoint 468: fixture境界・登録6workflow idempotency・全回帰の更新
+
+fixture/E2E境界を再監査し、台帳hashと実体を照合し、foreign resource・symlink・hardlink・不正entryを削除前に拒否するようにした。fixture leaseは成功・失敗・bounded timeout・SIGTERMの各経路で、明示承認された同一ledger/rootだけをcleanupする。`npm run test:e2e:fixture` は `6/6`、tamper/foreign/failure/timeout/SIGTERM/approvalの全ケースが通過した。
+
+登録6workflowのE2Eは、6件のschedule materialize、同一時刻の再実行0件、Company scope、external_action=false、browser/local同一scope replay、同一key payload drift拒否、local source trigger分離を確認した。fresh `npm test` は `1112 total / 1096 passed / 0 failed / 16 skipped`（PostgreSQL fixture 5、optional legacy Browser bridge 11）。server/web build、web typecheck、変更経路39/39、登録workflow4/4、Browser Use contract27/27、runtime parity manifest349 files、`git diff --check` が通過した。
+
+公開readbackは既存deployment `6a7a79b3db4ec8cd006b42c3` が `RUNNING`、health/root/assets HTTP 200、public/local JS/CSS hash一致。公式CLIの同一service redeploy commandはexit 0だったがfresh deployment listに新規IDは現れなかったため、test-only差分を本番配布成功とは扱わず、既存public appをcurrent authoritative deploymentとして記録した。canonical Browser Use v7は現行scopeでprocess/runtime/cleanup pending/historical debt 0、room released、media/proofあり、port listener残留なし。
+
+Goalは `running/audit` のまま。実際の投稿・応募・送信・公開・更新・削除・支払い・secret変更は0件。**exact blocker / next action / restart point:** `automation_os_admin_key_not_provided_for_authenticated_common_entry`、`real_external_target_payload_account_audience_and_fresh_authority_missing`、各business receipt/same-run sync、Gmail/backup/Obsidian approval、remote private TLS-WSS、G0/G1 evidenceは未達。operatorが承認済みkeyと具体的target/payload/account/audienceを提供した場合だけ、fresh authorized Browser Useでsemantic readback -> approval -> provider receipt -> same-run source sync -> reconciliation -> terminal cleanupへ進む。現行RunContextはcheckpoint 46、`work/service-readiness/e2e-readiness-acceptance-20260811.v6.json`、`work/service-readiness/final-release-audit-20260811.v5.json`、`work/service-readiness/requirement-audit-20260811.v5.json`、`work/service-readiness/full-regression-readback-20260811.v11.json`、`work/service-readiness/e2e-fixture-integrity-readback-20260811.v1.json`をcurrent proofとする。
+
+追加の公開endpoint再確認: health契約は `/api/health`（JSON HTTP 200）であり、`/health` は非API SPA fallback（HTML HTTP 200）であることを確認した。rootとJS/CSS assetもHTTP 200、公開/local hashは一致している。証跡は `work/service-readiness/public-readback-20260811.v1.json`。
+
+## 2026-08-11 checkpoint 469: 最終回帰・公開反映・adaptive public Web readback
+
+最終確認を実施した。`npm test` は `1113 total / 1096 passed / 0 failed / 17 skipped`、fixture E2E は `6/6`、server/web build、Web typecheck、canonical helper parity、Python compile、`git diff --check` がすべて通過した。追加のadaptive public Web live E2Eは、1 Browser Use processのbounded read-only batch後にsemantic target-inspectを同じRunで実行し、`external_effects=none`、readback、録画finalize、terminal cleanup、foreign resource無変更を確認した。
+
+既存のZeabur `automation-os` serviceだけを公式CLIで再配布し、deployment `6a7a80609cc09bfe79968f4a` が `RUNNING`。`/api/health`、root、`/health` fallbackはHTTP 200、public/local JS/CSS hash一致をfresh確認した。Generic Webのeffectful executorは、run-owned payload/input bindingとprovider-specific source-of-truth readbackが未実装のためreadyとは主張しない。実際の投稿・応募・送信・公開・更新・削除・支払い・secret変更は0件。
+
+Goalは `running/audit` のまま。**exact blocker / next action / restart point:** `automation_os_admin_key_not_provided_for_authenticated_common_entry`、実target/payload/account/audience/fresh authority不足、各business receipt/same-run sync、Gmail/backup/Obsidian approval、remote private TLS-WSS、G0/G1 evidence。operatorが承認済みkeyと具体的な6項目を提供した場合だけ、fresh authorized Browser Useでsemantic readback -> approval -> provider receipt -> same-run source sync -> reconciliation -> terminal cleanupへ進む。current proofは `work/service-readiness/adaptive-public-web-live-readback-20260811.v1.json`、`work/service-readiness/full-regression-readback-20260811.v12.json`、`work/service-readiness/public-readback-20260811.v2.json`、RunContext checkpoint 47。
+
+## 2026-08-11 checkpoint 470: current live run cleanup confirmed; historical entries observation-only
+
+今回のGoalが所有するadaptive public Web runはcanonical Browser Use CLIで再読済み。`complete`、external action=false、semantic target/readback/cleanup/recording finalized=true、room 0、adaptive port listener 0、runtime drift=falseで、今回のrunに残留はない。
+
+全体のBrowser Use recording projectionには過去・foreign owner由来のcurrent unresolved 3 blocker bucketsが残る。所有権・fresh authority・同一run source-of-truthがないため、これらは削除・finalize・reconcile・replayしていない。current runとhistorical stateの差は `work/service-readiness/browser-use-current-vs-historical-readback-20260811.v1.json` に固定した。Goalはbusiness admission未達のためcompleteにせず、RunContext checkpoint 48から継続する。
+
+**Exact blocker / next action / restart point:** owner-bound same-run reconciliation authorityが得られるまで過去・foreign entryは観測のみ。新規effectは具体的target/payload/account/audience/current authority -> provider receipt -> source sync -> reconciliation -> terminal cleanupの順でのみ再開する。
+
+## 2026-08-11 checkpoint 471: provider-neutral effect lane, fixture E2E, and exit audit
+
+今回の最終実装を正本へ反映した。固定サイト・固定selector・固定クリック順ではなく、共通の semantic target、run-owned payload、target/source-state digest、origin/account route registry、target-bound authority、action plan、same-run readback、claim/lifecycle/no-replay、terminal cleanupで全Web操作を扱う。`open / click target / fill target / type / keys / wait / scroll` の意味操作だけを許可し、CSS/XPath/DOM順やcredential付きURL、許可origin外、private/public effectをfail-closedにした。
+
+Browser Use CLIの根本修正は、1 logical flow内のcommandごとのhelper/process/readback fan-outを、canonical CLIのbounded one-process batchへ集約したこと。個別実行約10.8秒から約3.15秒へ、3.4286倍、70.83%短縮し、recording/readback/cleanupの証跡は維持した。
+
+provider-neutral effect laneは、create/update/publish/submit/deleteをfixtureで検証済み。成功、approval拒否、public route拒否、target/source digest不一致、authority不一致、payload drift、duplicate idempotency no-replay、effect後中断の`effect_unknown`、同一run claim、final readback、cleanupを `npm run test:e2e:web-operation` の7/7で確認した。登録6workflowは6/6 adapter、6/6 portable dispatch、schedule materialize、same-scope replay、payload drift拒否を確認済み。`npm test` は1114 total / 1097 pass / 0 fail / 17 skip。
+
+公式Zeabur CLIで既存 `automation-os` serviceだけを再配布し、deployment `6a7a9a349cc09bfe79969189` がRUNNING。`/api/health` とrootはHTTP 200、公開JS/CSSとlocal bundle hashが一致した。protected production QAは `production_read_token_missing` で止まり、tokenの取得・表示・迂回はしていない。
+
+**Exit check:** 実装・fixture回帰・local/runtime parity・公開health/assets・owned Browser Use cleanupはverified。実アカウントの投稿・応募・送信・公開・更新・削除・支払いは0件で、business admissionは未達。**Exact blocker:** `real_external_target_payload_account_audience_and_fresh_authority_missing`、`production_read_token_missing`、Job/Daily AI/NisenPrintsのprovider business receipt/source sync、Gmail isolation、backup/Obsidian approval、remote private TLS-WSS、G0/G1、historical/foreign Browser Use owner-bound reconciliation。**Restart point:** 具体的な1件の6項目（目的、サイト/URL、アカウント、意味で指定する対象、内容、公開先/送信先/範囲）とfresh authorityを束ね、readback -> approval -> effect -> provider receipt -> same-run source sync -> reconciliation -> cleanupの順で再開する。
+
+## 2026-08-11 checkpoint 472: fresh public E2E・全回帰・UI静的回帰を正本へ反映
+
+Fresh public Browser Use read-only E2E `aos-public-first-use-20260811-r2` を canonical helperで実行し、専用port/単発profileの `record-start -> record-batch(open, wait 1, state) -> record-finalize` を3/3、1 Browser Use processで完了した。画面は管理者キー境界まで到達し、keyの取得・迂回なし、`external_effects=none`、recording finalized、room/profile/process/port cleanupを確認した。非canonical recording dirと不正commandの試行はfail-closedで終端cleanup済み、current proofには採用していない。
+
+静的UI preflightの古い固定数テストを、control manifestの動的な不変条件（198 controls、247 rendered patterns、unclassified 0、orphan 0、issues 0）へ修正した。`npm run qa:all-page-buttons` と `node --test scripts/tests/allPageButtonQa.test.mjs` は2/2、runtime screen QAは認証境界のため未確認として明示した。
+
+現行回帰は `npm test` 1114 total / 1097 passed / 0 failed / 17 skipped、fixture 6/6、Web operation 7/7、contract 37/37、全script 99/99、build/typecheck/parity 349 files、`git diff --check` green。fresh canonical validate/runtime-readbackはhelper/runtime match、runtime drift false。Goal-owned Browser Useはreleased/active 0、foreign/historical roomは観測のみで変更していない。
+
+Current proof: `work/service-readiness/full-regression-readback-20260811.v13.json`, `work/service-readiness/e2e-web-admission-readscope-20260811.v6.json`, `work/service-readiness/browser-use-current-vs-historical-readback-20260811.v2.json`, `work/service-readiness/requirement-audit-20260811.v6.json`, `work/qa/all-page-button-static-preflight.json`。
+
+Goalは `running/audit` のまま。**Exact blocker / next action / restart point:** `automation_os_admin_key_not_provided_for_authenticated_common_entry`、`real_external_target_payload_account_audience_and_fresh_authority_missing`、各business receipt/same-run sync、Gmail isolation、backup/Obsidian approval、remote private TLS-WSS、G0/G1、historical/foreign Browser Use owner-bound reconciliation。認証済みreadbackや投稿・応募・送信・公開・更新・削除・支払いは、承認済み認証境界と具体的target/payload/account/audience/current authorityが揃ったfresh runから、provider receipt -> same-run sync -> reconciliation -> terminal cleanupの順で再開する。実外部効果は0件。
+
+## 2026-08-11 checkpoint 486: Daily AI batch hardening, fresh inventory, and restart boundary
+
+前回スレッドと現行AOSを再照合し、`GET /api/registered-workflow-inventory` のfresh readback（2026-08-11T14:24:12Z）で、7つのBrowser Use laneについてworkflow、論理profile、profile name、reserved port、lifecycle、ownership、binding、live readback statusを取得した。現行の対応は Job `scheduled/automation-3`/19881、Daily AI `scheduled/daily-ai`/19882、NisenPrints `scheduled/nisenprints`/19884、X `scheduled/x-authenticated-browser-lane`/19885、YouTube `temporary/youtube-visible-transcript`/20080、Prompt Transfer `single-use/prompt-transfer-ukiyoe`/19981、SNS `temporary/sns-multi-poster-ukiyoe`/20081。全て `workflow_owned / registered / reserved / live_readback_status=not_claimed` で、予約値は使用中・ログイン済み・業務完了の証拠ではない。
+
+同じhostのfresh process readbackでは、PID 46982 / port 20092 / hashed temporary profileが継続して存在するが、AOSの7 laneには属さず `unregistered / ownership=unknown` の観測対象である。前回source threadで見えた port 20094は履歴上の別世代で、現在の権限・所有証拠には使わない。canonical recording-statusも `current_unresolved_count=1`、`browser_use_external_effect_reconciliation_required`、`recording_completion_status=pending`、`finalized=false`、operator next action=`owner-bound current cleanup or same-generation readback`。kill/release/finalize/reuseは実施していない。
+
+Browser Use CLIのsmoothness根本修正はDaily AIにも反映した。`daily_ai_browser_use_cli_adapter.mjs` はbounded read-onlyのnavigation/checkpointだけを単一batchへまとめ、`type`・target clickは個別のeffectful commandとして残した。`close-tab`は未保存・認証状態を破壊し得るためDailyのimplicit read-only batchから除外した。Daily adapter testは25/25、Browser Use root contractは5/5。AOS側は `npm test` 1128/1111/0/17、contract 38/38、fixture 6/6、automation health 7/7、process scan 0/0/0、canonical runtime `completed / runtime_drift=false / launch=false`。security/integrated reviewはこの境界をPASSとし、外部admissionはforeign owner authority不足のためBLOCKEDとした。
+
+GoalRunContextはcheckpoint 81へ更新し、Goalは `running/audit` のまま。**Exact blocker / next action / restart point:** PID 46982/port 20092とrecorderを触らず、owner-bound authorityまたはsame-generation readbackが得られた後にだけ、認証済みUI境界→target/payload/account/audience authority→approval→effect→provider receipt→same-run source sync→reconciliation→cleanupの順で再開する。実外部効果・投稿・応募・送信・公開・更新・削除・支払い・secret変更は0件。
+## 2026-08-11 checkpoint 473: AOS profile/port inventory fresh readback and strict business lifecycle alignment
+
+前回スレッド `019fdcfe-7db9-7843-98ee-054ddf03dab4` のhistorical認証handoffと、現行AOSの登録lane bindingを分離してfresh readbackした。AOS launchd serviceをbuild後に再起動し、`/api/health`、`/api/registered-workflows`、`/api/registered-workflow-inventory` は200/OK。Job `scheduled/automation-3`/19881、Daily AI `scheduled/daily-ai`/19882、NisenPrints `scheduled/nisenprints`/19884、X `scheduled/x-authenticated-browser-lane`/19885、YouTube `temporary/youtube-visible-transcript`/20080、Prompt Transfer `single-use/prompt-transfer-ukiyoe`/19981、SNS `temporary/sns-multi-poster-ukiyoe`/20081をAOS画面/APIへ安全に表示した。各bindingはworkflow_owned・registered・live_readback_status=not_claimedであり、予約profile/portをlive listener/login proofへ昇格させていない。
+
+`workflowInventory.ts`でBrowser/portable 6件、company catalog/adapter 6件、Browser lane 7件を別registryとして返すようにした。Browser↔portable、catalog↔adapterは一致し、lane-onlyはtemporary YouTube、Browser-onlyはPrompt Transfer/SNS/X、catalog-onlyはBackup/Email review/Obsidian audit。absolute path、lock/CDP、cookie/token/authorityはprojectionから除外した。current evidenceは `work/service-readiness/browser-use-profile-port-aos-readback-20260811.v2.json`。
+
+Browser-backed登録経路のlegacy direct runner fallthroughは共通境界 `registered_browser_workflow_common_boundary_required` で停止し、Xはno-effect human-input evidenceの専用境界だけを維持した。portable external worker/runnerはdetached process group cleanupを検証し、未知の残留時は `portable_external_process_group_cleanup_unverified` としてfail-close。Daily AI/NisenPrintsの実runnerにAOS発行effect authorityと `automation_os_web_operation_lifecycle.v1` を接続し、flat receiptだけでは外部完了を主張できないようにした。authority未発行で落ちた既存business fixtureは、authority file/digest/run bindingを持つfixtureへ修正して再検証した。
+
+最新検証: full `npm test` `1121/1104/0/17`、business runner/lifecycle `14/14`、contract E2E `38/38`、web-operation `7/7`、静的UI preflight、server/web build、web typecheck、runtime parity 354 files、process scan matched/terminated/remaining `0/0/0`、diff check pass。PostgreSQL fixture 5件は `AUTOMATION_OS_TEST_POSTGRES_URL` 未設定のため未実行。外部effect、secret read/change、投稿・応募・送信・公開・更新・削除・支払いは0件。Goalは `running/audit`。
+
+**Exact blocker / next action / restart point:** `real_external_target_payload_account_audience_and_fresh_authority_missing`、`automation_os_admin_key_not_provided_for_authenticated_common_entry`、Job/Daily AI/NisenPrintsのprovider receipt/source sync不足、`production_read_token_missing`、Gmail/backup/Obsidian/remote TLS-WSS/G0-G1、historical/foreign Browser Use reconciliation authority不足。具体的な6項目とfresh authorityが揃うまでread-only/no-effectを継続し、揃った場合のみ fresh semantic readback -> approval -> effect -> provider receipt -> same-run source sync -> reconciliation -> terminal cleanupへ進む。
+## 2026-08-11 checkpoint 475: current acceptance/audit refreshed after fresh local E2E and public readback
+
+現行sourceでfixture `6/6`、contract E2E `38/38`、web-operation E2E `7/7`を再実行し、fixture作成・承認境界付き削除・失敗/timeout/SIGTERM cleanup、semantic target lifecycle、duplicate/no-replay、effect_unknown reconciliation、public/effectful guardを再確認した。process hygieneは `matched=0 / terminated=0 / remaining=0`。外部effect、secret read/change、投稿・応募・送信・公開・更新・削除・支払いは0件。
+
+受入・要件監査のcurrent artifactを更新した。`work/service-readiness/e2e-readiness-acceptance-20260811.v3.json` と `work/service-readiness/requirement-audit-20260811.v2.json` が、profile/port inventory、local E2E、current Zeabur deployment、public/local JS mismatch、protected inventory `401 production_token_required`、pending条件を束ねる。従来のv2/v1 artifactは履歴として保持し、current proofには使わない。
+
+Fresh Zeabur readbackは対象 `automation-os` service `6a47122e24bec8372d3e1a31`、deployment `6a7abfa304a61218e78be751`、remote `main` commit `dac375121d4578990387e2ece8b4e5ea119b8921`、health HTTP 200を確認した。local dirty sourceのAOS変更は公開側へ反映されていないため、公開parityは未達のまま明示した。
+
+**Exact blocker / next action / restart point:** `zeabur_local_source_promotion_not_observed_for_git_triggered_service`、`production_read_token_missing`、`automation_os_admin_key_not_provided_for_authenticated_common_entry`、実target/payload/account/audience/fresh authority不足、business receipt/source sync、Gmail/backup/Obsidian approval、remote TLS-WSS、G0/G1。公開は無関係なdirty変更を混ぜないAOS-only source promotionが観測できた場合だけ、同じserviceのfresh deploy -> asset hash parity -> health -> protected inventoryへ進む。実外部effectは引き続き0件。
+
+## 2026-08-11 checkpoint 474: Zeabur公開parity mismatchをfresh確認し、配布成功を分離
+
+既存 `automation-os` serviceだけを公式Zeabur CLIで再配布し、deployment `6a7abfa304a61218e78be751` は `RUNNING`。build logは成功したが、sourceはGit-triggered remote `main` の commit `dac375121d4578990387e2ece8b4e5ea119b8921`。今回のlocal dirty sourceは未commitのため、public JS `index-D66cigMb.js` / SHA `23a31a...ca31bc32` とlocal JS `index-CvTK14Ky.js` / SHA `f39e7f...dae6bf` が不一致、CSSのみ一致。公開 `/api/health` は200、protected inventoryは401 `production_token_required`。`zeabur upload` はreceiptを返したが、contextを対象project/environment/serviceへ固定後の`zeabur deploy`はexit 0でも新deploymentを作らなかった。
+
+このため、RUNNING deploymentをlocal変更のpublic反映とは扱わない。dirty worktreeの無関係変更を含むcommit/pushやGit-triggered mainの無断変更はしていない。local APIは再起動済みで、profile/port mappingとworkflow inventoryはcurrent local proofとしてverified。証跡は `work/service-readiness/browser-use-profile-port-aos-readback-20260811.v2.json`。
+
+**Exact blocker / next action / restart point:** `zeabur_local_source_promotion_not_observed_for_git_triggered_service`。承認済みの対象限定source promotionが可能になった場合だけ、同じservice targetのfresh deployment -> public asset SHA parity -> health -> protected route -> inventory readbackへ進む。現時点でlocal AOSは使用開始可能、publicはremote mainの状態として明示する。実外部effectは0件。
+
+## 2026-08-11 checkpoint 477: current profile/port visibility, no-effect completion boundary, and post-change E2E
+
+前回スレッド `019fdcfe-7db9-7843-98ee-054ddf03dab4` をfresh readし、現行AOSの正本と分離して確認した。AOSの登録値は、Job `scheduled/automation-3`/19881、Daily AI `scheduled/daily-ai`/19882、NisenPrints `scheduled/nisenprints`/19884、X `scheduled/x-authenticated-browser-lane`/19885、YouTube `temporary/youtube-visible-transcript`/20080、Prompt Transfer `single-use/prompt-transfer-ukiyoe`/19981、SNS `temporary/sns-multi-poster-ukiyoe`/20081。全て `browser_use_cli`、workflow-owned、reserved、registered、`live_readback_status=not_claimed` として表示する。予約profile/portは使用中、ログイン済み、実行可能、業務完了の証拠ではない。
+
+`/api/registered-workflow-inventory` は `aos.registered_workflow_inventory.v1` / `ok`。registered browser=6、portable=6、company catalog=6、adapter=6、Browser lane=7で、browser↔portableおよびcatalog↔adapterは一致する。AOS Web common entryはWorkflow、論理profile、予約port、ownership/binding、live readback、次の確認を別列に表示し、同一ホストprocess、remote worker heartbeat/claim、未登録Browser、auth、external action、business completionを混同しない。
+
+Browser Use CLIのsmoothness根本修正は、logical commandごとのhelper/process/readback再起動を、bounded read-only batchの単一processへ集約した共有transport修正。effectful commandはbatch化せずapproval-boundのまま。benchmarkは10.8秒から3.15秒、3.4286倍、70.83%短縮。今回 `workerEngine.ts` は no-effect/reference_readback の `business_completion_verified=false` をrun、step、artifact、proof、worker eventへ明示伝播し、`registeredWorkflowE2E`へ回帰テストを追加した。技術runがcompleteでも、業務完了は別predicateである。
+
+変更後検証: `npm test` は1127 total / 1110 pass / 0 fail / 17 skip、scripts E2E 109/109、registeredWorkflowE2E 5/5、Web typecheck/build pass、automation health 7 active / 7 ok / 0 blockers、process scan matched=0 / terminated=0 / remaining=0、`git diff --check` pass。fresh no-effect NisenPrints run `run_msomkl8a_6z23h0` は同一workerでterminal receiptを取得し、`external_action_executed=false`、`business_completion_verified=false`、`process_group_cleanup.verified=true`。同じidempotency keyの再投入は同じrun idを返し、新規runを作らなかった。
+
+現行Browser Use process readbackは、登録laneのlive process=0。別ownerの一時resourceであるPID 46982 / port 20092 / hashed temporary profileはAOS未登録・ownership unknown・source run `mypro-testflight-readback-20260811-r2`（source thread `019fed0e-d293-7f63-881e-eafe5286227c`）で、recorder active、room released、cleanup/resource free=false、`browser_use_external_effect_reconciliation_required`。同一run recoveryはtask binding/authorityでfail-closed。PID 47153のportable workerはheartbeat ok / claim idle / read-only。foreign processはkill、release、finalize、reuseしていない。
+
+Adaptive Graph `run_4f6e5a86e6e241cb` は、計画・security review・design・implementation・verificationまで進行し、required DeepSeek verifier route `mcp__opencode_go_deepseek_v4_flash_verifier__openco_6337d64b23d0` が `opencode_go_auth_or_transport_blocked` でblocked。代替verifierへ迂回していない。Goalは `running/audit` のまま。**Exact blocker / next action / restart point:** provider auth/transport復旧後に同じ証拠packetでGraph verifyを再実行する。並行してPID 46982/port 20092はowner-bound authorityまたはsame-generation readbackが得られるまで触らない。real target/payload/account/audience、fresh authority、provider receipt、source sync、reconciliation、cleanupがないため、投稿・応募・送信・公開・更新・削除・支払い・secret変更・business completionは0件。
+
+Evidence: `work/goal-run-automation-os-continuation-20260810.json` checkpoint 73、`work/service-readiness/browser-use-current-readback-20260811.v1.json`、`work/service-readiness/browser-use-cli-root-cause-readback-20260811.v4.json`、`data/artifacts/run_msomkl8a_6z23h0/run_msomkl8a_6z23h0_step_1.json`、`apps/server/src/runs/workerEngine.ts`、`apps/server/src/tests/registeredWorkflowE2E.test.ts`、`apps/server/src/workflowInventory.ts`、`apps/web/src/App.tsx`。
+
+## 2026-08-11 checkpoint 478: 前回スレッド再確認・profile/port API readback・画面surface境界
+
+前回スレッド `019fdcfe-7db9-7843-98ee-054ddf03dab4` をCodex Appのread_threadで再確認した。前回の応募系の正規Browser Use laneは `scheduled/automation-3` であり、現行AOSの登録正本はそこから拡張された7 lane（登録Browser/portable 6、Browser lane 7）として別readbackした。現行 `/api/mvp/state` と `/api/registered-workflow-inventory` は、論理profile・profile name・予約port・lifecycle・ownership/binding・liveReadbackを返し、絶対profile path・lock/CDP・cookie/token/authorityを返さない。UIの `Web操作の共通入口` と `Truthful Lanes` は同じ表を表示し、予約値をlive listener/login/business completionとは扱わない。
+
+現行profile/port対応: Job `scheduled/automation-3`/19881、Daily AI `scheduled/daily-ai`/19882、NisenPrints `scheduled/nisenprints`/19884、X `scheduled/x-authenticated-browser-lane`/19885、YouTube `temporary/youtube-visible-transcript`/20080、Prompt Transfer `single-use/prompt-transfer-ukiyoe`/19981、SNS `temporary/sns-multi-poster-ukiyoe`/20081。登録laneは全て `workflow_owned / registered / live_readback_status=not_claimed`。同一hostのfresh process readbackは登録lane全てabsent、foreign PID 46982 / port 20092 / temporary opaque profileが1件あり、AOS bindingはunregistered・ownership unknown・`browser_use_unregistered_live_process`。foreign resourceは観測のみで、kill/release/finalize/reuseしていない。
+
+画面E2Eはcanonical `/Users/nichikatanaka/.local/bin/codex-browser-use` の新規public single-use run `aos-profile-port-ui-readonly-20260811-r1`、専用port 19997で `record-start` までは成功した。ローカル `http://127.0.0.1:8787/` はprivate/link-local URL preflightで `browser_use_private_or_metadata_url` としてnavigation前に停止し、external effectsはnone、`record-finalize`とowned process/listener cleanupは成功した。これはAOSのprofile/port API/UI不備ではなく、canonical Browser Useがlocal/private URLをpublic laneから拒否する安全境界である。証跡は `work/service-readiness/browser-ui-readonly-boundary-20260811.v1.json`。
+
+Goalは引き続き `running/audit`。**exact blocker / next action / restart point:** foreign owner-bound reconciliation authority、operator-controlled API keyによるauthenticated common-entry desktop/mobile readback、具体的target/payload/account/audienceとfresh authority、Job/Daily AI/NisenPrints business receipt/source sync、DeepSeek verifier provider auth/transport、portable claim/receipt/source sync、Gmail/backup/Obsidian approval、remote private TLS-WSS、G0/G1。独立して確認できるprofile/port API・静的UI・no-effect・cleanupは完了。次は同一Runの正規owner/authorityが得られた場合だけforeign reconciliationへ進み、認証済み画面は承認済みkeyを画面入力したfresh runで再開する。
+
+Evidence: `work/service-readiness/browser-ui-readonly-boundary-20260811.v1.json`、`work/service-readiness/browser-use-profile-port-visibility-20260811.v8.json`、`work/service-readiness/aos-profile-port-no-effect-e2e-20260811.v1.json`、`apps/server/src/browser/runtimeSnapshot.ts`、`apps/server/src/browser/liveResourceReadback.ts`、`apps/web/src/App.tsx`。
+
+## 2026-08-11 checkpoint 479: 変更後focused regressionとruntime再確認
+
+変更後にserver build、profile/port process readback、runtime snapshot、registered workflow/no-effect business boundary、UI truthfulness sourceを再検証した。focused server/UI regressionは `15/15 pass / 0 fail`、server build pass、Web typecheck/build pass、JSON parse pass、`git diff --check` pass。fresh AOS healthはok、registered workflow=6、Browser lane=7、runtime status=`readback_pending`、same-host process readback=`available`、foreign count=1、`external_action_executed=false`。process hygieneは `matched=0 / terminated=0 / remaining=0`、canonical helper runtime-readbackは`completed / runtime_drift=false / launch=false`。
+
+このcheckpointで実装完了とGoal完了を分離した。profile/port可視化、同一host process binding mismatch/unregistered検出、no-effectの`business_completion_verified=false`伝播、single-use画面E2Eのterminal cleanupはverified。business admission、認証済みdesktop/mobile画面、foreign owner reconciliation、provider business receipt/source sync、DeepSeek verifier、Gmail/backup/Obsidian、remote TLS-WSS、G0/G1は未達のまま維持する。
+
+Evidence: `work/service-readiness/browser-ui-readonly-boundary-20260811.v1.json`、`work/goal-run-automation-os-continuation-20260810.json` checkpoint 74、`apps/server/dist/tests/runtimeSnapshot.test.js`、`apps/server/dist/tests/liveResourceReadback.test.js`、`apps/server/dist/tests/registeredWorkflowE2E.test.js`、`apps/server/dist/tests/uiTruthfulnessSource.test.js`。
+
+## 2026-08-11 checkpoint 480: lane別profile/portと実process状態をAOSへ結合し、全回帰を更新
+
+前回スレッド `019fdcfe-7db9-7843-98ee-054ddf03dab4` のreadbackと現行AOS APIを再照合した。`browser_use_runtime.lanes` は各laneについて論理profile、予約port、ownership/binding、same-run readbackに加え、同一hostの `processReadbackStatus`（`present` / `absent` / `binding_mismatch` / `unavailable`）、PID、captured_atを返すようにした。UIの `Web操作の共通入口` も同じ行で「process検出（profile/port一致）」「process未検出」「profile/port不一致」を表示し、予約値と実使用processを初見で区別できる。絶対profile path、lock、CDP、cookie/token/authorityは引き続き返さない。
+
+current API readbackでは、Job `scheduled/automation-3`/19881、Daily AI `scheduled/daily-ai`/19882、NisenPrints `scheduled/nisenprints`/19884、X `scheduled/x-authenticated-browser-lane`/19885、YouTube `temporary/youtube-visible-transcript`/20080、Prompt Transfer `single-use/prompt-transfer-ukiyoe`/19981、SNS `temporary/sns-multi-poster-ukiyoe`/20081の登録laneは全てprocess `absent`、same-run `not_claimed`。別owner不明のPID 46982 / port 20092 / opaque temporary profileは `unregistered` / `ownership=unknown` / `browser_use_unregistered_live_process` として別表示し、kill/release/finalize/reuseしていない。portable worker PID 47153はheartbeat ok・claim idle・read-only。
+
+検証は `npm test` `1127 total / 1110 passed / 0 failed / 17 skipped`、script全体 `109/109`、focused profile/port UI/server `15/15`、fixture `6/6`、server build、Web typecheck/build、canonical runtime-readback（completed / runtime_drift=false / launch=false）、process scan `0/0/0`、diff check pass。新しいcurrent artifactは `work/service-readiness/browser-use-profile-port-aos-readback-20260811.v3.json`。
+
+実装完了とGoal完了は分離したまま `running/audit` を継続する。認証状態、外部効果、provider receipt、source sync、business completionはprocess存在・予約値から推測しない。**Exact blocker / next action / restart point:** DeepSeek verifierの `opencode_go_auth_or_transport_blocked` はprovider復旧後に同じpacketでverifyから再開、PID 46982はowner-bound authorityまたはsame-generation readbackが得られるまで観測のみ。具体的target/payload/account/audience/fresh authority、認証済みcommon entry、business receipt/source sync、Gmail/backup/Obsidian approval、remote TLS-WSS、G0/G1も未達であり、実外部効果は0件。
+
+## 2026-08-11 checkpoint 481: Truthful Lanesにもlane別process readbackを反映
+
+同じprofile/port正本をAOSの`Web操作の共通入口`だけでなく`Truthful Lanes`画面にも表示するよう揃えた。両画面で論理profile、予約port、process一致状態、ownership/binding、same-run readbackを同じ意味で確認できる。変更後focused regressionは `14/14 pass / 0 fail`、server build、Web typecheck、`git diff --check` pass。current artifactは `work/service-readiness/browser-use-profile-port-aos-readback-20260811.v3.json`（captured 2026-08-11T13:06:33Z）。他の状態とblockerはcheckpoint480から変わらず、Goalは`running/audit`、外部効果は0件。
+
+## 2026-08-11 checkpoint 482: operational readbackをAOS共通入口へ追加
+
+profile/port/processだけでは、認証待ち・外部作用・業務完了・receipt・source syncを初見で区別できないため、`browser_use_runtime.operationalReadback`（`aos.browser_operational_readback.v1`）を追加した。現在のcontrol-plane snapshotは、認証=`unknown`（`browser_use_authentication_screen_readback_required`）、外部作用=`not_verified`（`same_run_external_effect_receipt_required`）、業務完了=`not_claimed`（`same_run_business_completion_proof_required`）、receipt/source sync=`not_claimed`として返す。worker heartbeat/claimは別に`ok / idle`で表示し、heartbeatやprocess存在から業務完了を推測しない。UIの`Web操作の共通入口`に同じ4区分とexact blockerを表示し、control manifestにもreadback契約を登録した。secret、absolute profile path、lock/CDP、cookie/token/authorityは公開しない。
+
+fresh `/api/mvp/state` readback（2026-08-11T13:15:23Z）では、Job `scheduled/automation-3`/19881、Daily AI `scheduled/daily-ai`/19882、NisenPrints `scheduled/nisenprints`/19884、X `scheduled/x-authenticated-browser-lane`/19885、YouTube `temporary/youtube-visible-transcript`/20080、Prompt Transfer `single-use/prompt-transfer-ukiyoe`/19981、SNS `temporary/sns-multi-poster-ukiyoe`/20081。登録7 laneはprocess `absent`、same-run `not_claimed`。未登録PID 46982 / port 20092は`unregistered / ownership unknown`として観測のみ。current artifactは `work/service-readiness/browser-use-operational-readback-20260811.v1.json`。
+
+検証: server全体 `1127 total / 1110 pass / 0 fail / 17 skip`、scripts `109/109`、fixture `6/6`、contract `38/38`、focused server/UI/registered `15/15`、server build、Web typecheck/build、JSON parse、process hygiene scan `matched 0 / terminated 0 / remaining 0`、canonical runtime readback `completed / runtime_drift=false / launch=false`、`git diff --check` pass。Goalは`running/audit`のまま、外部効果・secret変更・投稿・応募・送信・公開・更新・削除・支払いは0件。
+
+**Exact blocker / next action / restart point:** `opencode_go_auth_or_transport_blocked`はprovider復旧後に同じGraph verify packetで再開する。PID 46982はowner-bound authorityまたはsame-generation readbackが得られるまでkill/release/finalize/reuseしない。認証済み画面、fresh target/payload/account/audience、provider receipt、same-run source sync、reconciliation、cleanup、Gmail/backup/Obsidian approval、remote TLS-WSS、G0/G1は未達。認証入力や外部effectは承認済みfresh runの人間境界からのみ再開する。
+
+## 2026-08-11 checkpoint 483: final local regression after operational readback contract
+
+operational readback型を将来のverified/effect状態へ拡張可能なboolean契約に整え、server build、Web typecheck/build、focused `15/15`、全scripts `109/109`を再確認した。実装完了とGoal完了を分離し、business admissionとrelease auditは未達のまま`running/audit`を継続する。
+
+## 2026-08-11 checkpoint 484: security指摘のnegative/transition coverageを追加
+
+security reviewの指摘に対応し、注入したforeign Browser Use process、worker heartbeat=`ok`、claim=`claimed`、remote worker存在が同時にあっても、operational readbackが認証=`unknown`、外部作用=`not_verified`、業務完了=`not_claimed`、receipt/source sync=`not_claimed`を維持する回帰テストを追加した。未登録PID/portをlaneへ帰属させず、worker claimやtransportをcompletion proofへ昇格させないことを直接検証している。security reviewerはprofile/port privacy、foreign fail-close、human auth boundary、no-false-success defaultsをPASSとし、PID 46982/port 20092のowner-bound authorityがないため operational admission自体はBLOCKEDとした。integrated reviewerはAPI/UI、証拠、残存blockerをPASSとした。
+
+追加テスト後の検証は、`npm test` `1128 total / 1111 pass / 0 fail / 17 skip`、focused runtime/UI/registered `16/16`、scripts `109/109`、fixture `6/6`、contract `38/38`、server build、Web typecheck/build、JSON parse、process hygiene `0/0/0`、canonical runtime readback `completed / runtime_drift=false / launch=false`、diff check pass。current artifactは `work/service-readiness/browser-use-operational-readback-20260811.v1.json`。
+
+Goalは`running/audit`を継続する。**Exact blocker / next action / restart point:** `browser_use_unregistered_live_process` / `browser_use_external_effect_reconciliation_required`、DeepSeek `opencode_go_auth_or_transport_blocked`、認証済み画面のoperator key入力、fresh target/payload/account/audience/authority、provider receipt/source sync、Gmail/backup/Obsidian approval、remote TLS-WSS、G0/G1。PID 46982はowner-bound authorityまたはsame-generation readbackが得られるまで変更しない。実外部effect、secret変更、投稿・応募・送信・公開・更新・削除・支払いは0件。
+
+## 2026-08-11 checkpoint 485: current API readbackを再取得し、profile/port表示のfresh proofを保存
+
+稼働中AOSの `GET http://127.0.0.1:8787/api/mvp/state` を `2026-08-11T13:46:28.748Z` に再取得した。`browser_use_runtime` は `surface=browser_use_cli`、`helper=canonical_codex_browser_use`、`runtimeRole=control_plane`。7 laneのprofile/portは Job `scheduled/automation-3`/19881、Daily AI `scheduled/daily-ai`/19882、NisenPrints `scheduled/nisenprints`/19884、X `scheduled/x-authenticated-browser-lane`/19885、YouTube `temporary/youtube-visible-transcript`/20080、Prompt Transfer `single-use/prompt-transfer-ukiyoe`/19981、SNS `temporary/sns-multi-poster-ukiyoe`/20081で、全てprocess `absent`・ownership `workflow_owned`・binding `registered`・same-run未claim。
+
+同一host process readbackは `available`、portable worker PID 47153はheartbeat `ok` / claim `idle` / `read_only`。未登録のPID 46982 / port 20092は `browser_use_unregistered_live_process`、ownership unknown、observe-onlyで、変更していない。operational readbackは認証 `unknown`、external effect `not_verified`、business completion `not_claimed`、receipt/source sync `not_claimed`を維持し、worker存在やheartbeatから完了へ昇格しない。`automation:health` は7/7 ok、process hygieneは0/0/0。GoalRunContextはcheckpoint 80、Goalは`running/audit`のまま。
+
+**Exact blocker / restart point:** foreign PID/portのowner-bound authorityまたはsame-generation readback、operator-controlled authentication screen readback、具体的target/payload/account/audienceとfresh authority、provider receipt、same-run source sync、reconciliation、cleanup、DeepSeek verifier provider復旧、Gmail/backup/Obsidian approval、remote TLS-WSS、G0/G1。これらが変わるまで同じ外部操作を再発射せず、owner-bound readback取得後に認証境界→target authority→approval→effect→provider receipt→source sync→reconciliation→cleanupの順で再開する。
+## 2026-08-12 current checkpoint 497: AOSのprofile/port表を初見向けに明示化
+
+前回スレッド `019fdcfe-7db9-7843-98ee-054ddf03dab4` を再読し、current `/api/mvp/state`・`/api/registered-workflow-inventory`・同一host process・canonical room registryをfresh照合した。AOSは登録Lane表に `workflow / lifecycle / 論理profile / 予約port (AOS)` を表示し、別の実測表に `論理profile / process port / AOS binding` を表示する。登録予約とlisten実測を同じ値として扱わない。
+
+登録7 laneは、Job `scheduled/automation-3`/19881、Daily AI `scheduled/daily-ai`/19882、NisenPrints `scheduled/nisenprints`/19884、X `scheduled/x-authenticated-browser-lane`/19885、YouTube `temporary/youtube-visible-transcript`/20080、Prompt Transfer `single-use/prompt-transfer-ukiyoe`/19981、SNS `temporary/sns-multi-poster-ukiyoe`/20081。全て `workflow_owned / registered / process absent / live readback not_claimed`。同一hostのPID 46982 / port 20092 / opaque temporary profileは `unregistered / ownership unknown / process_present` として別表に残し、rooms readbackも `observation_only`、active room 0。20092はkill・release・finalize・reuseしていない。
+
+focused UI/readback 15 pass、Web typecheck/build、health 200、inventory parity、git diff checkを確認した。証跡は `work/service-readiness/browser-use-profile-port-aos-readback-20260812.v8.json`。Goalは `running/audit` のまま。次は owner-bound 20092 readback、authenticated UI、target authority、provider receipt/source sync、release auditの順で、同じfingerprintのまま再実行しない。
+## 2026-08-12 current checkpoint 503: Browser Useの停止感の根本修正と全回帰完了
+
+Browser Use CLIが滑らかに動かない根本原因を、AOSのPostgres同期HTTP境界まで追跡した。`apps/server/src/db/client.ts`のlegacy同期SQLはPostgres child processを最大12000ms待つため、一覧APIがNodeイベントループを塞いでいた。`apps/server/src/automations/repository.ts`へasync一覧取得を追加し、`apps/server/src/index.ts`のv1 automation一覧とMVP automation一覧をPostgres時だけasync化した。SQLite経路、会社権限、company scope、external effect境界は維持した。
+
+再起動後の同時実測は、v1一覧約3.161秒に対し同時health約0.003928秒、MVP一覧約2.887秒に対し同時health約0.004830秒。DB待ち自体は残るが、無関係なAOS/Browser Useリクエストをブロックしない。server regressionは `1132 total / 1115 pass / 0 fail / 17 skip`、fixture E2E `6/6`、contract E2E `38/38`、Web typecheck、process scan `matched=0 / terminated=0 / remaining=0`、local health `HTTP 200 / ok=true`、`git diff --check`を確認した。17 skipは実Postgres fixture／live Browser capability境界で、成功扱いにはしていない。
+
+fresh runtime readbackでは、local control-plane companyは `project-a`、AOSはport `8787`。resident Mac worker PID `47153`は `https://automation-os.zeabur.app` / company `company_2560580981cedfd106b66245`、heartbeat `ok` / claim `idle` / `read_only` / durable-onlyで、`portable_worker_company_scope_mismatch`が継続。登録7 laneの予約profile/portは Job `scheduled/automation-3`/`19881`、Daily AI `scheduled/daily-ai`/`19882`、NisenPrints `scheduled/nisenprints`/`19884`、X `scheduled/x-authenticated-browser-lane`/`19885`、YouTube `temporary/youtube-visible-transcript`/`20080`、Prompt Transfer `single-use/prompt-transfer-ukiyoe`/`19981`、SNS `temporary/sns-multi-poster-ukiyoe`/`20081`で、全てprocess absent / live readback not_claimed。PID `46982`/port `20092`とPID `76428`/port `20094`はunregistered/unknownのためobserve-onlyで触っていない。
+
+公開Zeaburはhealth `200`、公開JS/CSSはlocal distと一致。protected readbackは `production_read_token_missing`、Codex App Server source preflightはpassだがdeploy/readbackは未実施。実応募・投稿・送信・公開は、各laneのfresh target/payload/account/audience、approval、portable authority、provider receipt、same-run source sync、reconciliation、cleanupが揃うまで実行完了扱いにしない。最新証跡は `work/service-readiness/current-continuation-readback-20260812.v1.json` と `work/goal-run-automation-os-continuation-20260810.json`。
+
+**Exact blocker / next action / restart point:** `portable_worker_company_scope_mismatch`、`production_read_token_missing`、`fresh_job_target_bound_business_receipt_missing`、`fresh_daily_ai_business_receipt_and_same_run_sync_missing`、`fresh_nisenprints_business_receipt_and_same_run_sync_missing`、`company_release_g0_g1_required_evidence_missing`。まずAOS画面で `project-a` と remote `company_256...` のどちらを正本にするか明示し、同一company/endpointへ揃えた後にfresh claim → receipt → source sync → reconciliation → cleanupへ進む。authenticated UIはoperator key、protected production readbackはread tokenを人間が画面/安全なtoken boundaryへ提供した後に再開する。unknown browser資源はowner-bound authorityが変わるまでkill/release/finalize/reuseしない。
+## 2026-08-12 current checkpoint 511: 現行treeのportable scheduler canaryを再実行し、6 workflowのno-effect境界をfresh確認
+
+現行server sourceをbuildし、`npm run portable:scheduler-canary -- --output=work/service-readiness/current-portable-scheduler-canary-20260812.v1.json`を一度だけ実行した。Job Application、Daily AI、NisenPrints、Prompt Transfer、SNS、Xの6 workflowすべてで `manifest_validation -> run_binding -> readback -> cleanup` がcompleted。Browser起動、connector呼出し、external actionは全てfalse、exact blockerはnull。これはscheduler/canary readinessのfresh proofであり、scope mismatch、認証、provider receipt、business completion、source sync、release approvalの解消を意味しない。
+
+証跡: `work/service-readiness/current-portable-scheduler-canary-20260812.v1.json`。既存のlocal queue、remote worker、registered lane、foreign process、secret、外部targetは変更していない。Goal RunContextはこのfresh canaryをcurrent audit evidenceとしてcheckpointへ反映する。
+
+**Exact blocker / next action / restart point:** `portable_worker_company_scope_mismatch`、各業務laneのsame-run business receipt/source sync不足、production read token、Codex App Server token-file/remote transport、G0/G1 evidence、foreign owner authorityは未解決。次は正本company/endpointを人間が選択し、fresh config/heartbeat/queue readback後にだけclaim admissionへ進む。認証・target/payload/account/audience・approval・provider receiptがない間はbusiness effectを再発射しない。foreign port 20092/20094はobserve-onlyを維持する。
+## 2026-08-12 current checkpoint 512: canary後のlive scope/room/process readbackを更新
+
+fresh read-only readbackでlocal health HTTP 200、queue source `postgres_persistent_read_pool` / company `project-a`、resident remote worker company `company_2560580981cedfd106b66245`、heartbeat `ok`、claim `idle`、effects `read_only`、worker status `blocked`を確認した。exact blockerは `portable_worker_company_scope_mismatch`、`alignmentDecisionRequired=true`。portable scheduler canaryは6/6完了したが、scope mismatchが残るため業務claimは行っていない。
+
+Browser Use `rooms --json`のactiveは1件のみで、20094のforeign descriptor-bound held room（reclaim不可）。20092はactive room observationなし。process scanはmatched/terminated/remaining = 0/0/0。両foreign resourceはkill・release・reuse・cleanup・finalizeしていない。
+
+証跡: `work/service-readiness/current-continuation-readback-20260812.v1.json`、`work/service-readiness/current-continuation-review-packet-20260812.v1.json`、`work/service-readiness/current-portable-scheduler-canary-20260812.v1.json`。
+
+**Exact blocker / next action / restart point:** scope正本の選択が変わるまでclaim・business effect・source syncを再発射しない。人間がAOS control-plane queueとportable remote workerのどちらを正本にするか明示し、config/endpoint/company/backend・新世代heartbeat・同一company queue readbackを確認した後、fresh claimへ再開する。20092/20094はowner authorityまたは同一generation readbackが変わるまでobserve-only。
+## 2026-08-12 current continuation checkpoint: read-only完成、business/release境界は未達
+
+現行Goal `019fdcfe-7db9-7843-98ee-054ddf03dab4` は `running/audit`。前回スレッドをfresh readbackし、AOSの実装・read-only canary・公開parity・profile/port/owner境界を再確認した。
+
+- Browser Use/AOS smoothnessの共通根本修正は完了し、`run_mspcphaz_6flsur`で候補供給 `1/1`、`same_run_receipt=true`、read-only proof、profile/port/session/readback/cleanupを確認。
+- resident Mac workerはPID `47153`のみ。Job予約はprofile `scheduled/automation-3` / port `19881`。foreign `46982/20092`、`76428/20094`は触らない。
+- AOS Zeabur deployment `6a7bbda4408580a2d37e99d9`はRUNNING、health 200、JS/CSS parity verified。protected QAは`production_read_token_missing`。
+- Codex App Server deployment `6a77cc899cc09bfe799636bc`はRUNNING、`/readyz` 200、no-token WSS 401。authenticated account/thread/turnとproduction transport admissionは未達。
+- Tests: full `1137 total / 1120 pass / 0 fail / 17 skip`、contract `38/38`、fixture `6/6`、portable worker `11/11`、Browser Use runner `13/13`。
+
+**Exact blocker / next action / restart point:**
+
+`effectful_business_receipts_and_same_run_source_sync_missing`、`real_external_target_payload_account_audience_and_fresh_authority_missing`、`production_read_token_missing`、`aos_operator_api_key_or_mypro_physical_ui_input_missing`、`codex_app_server_remote_transport_not_production_supported`、foreign owner、G0/G1 release evidenceが残る。次は新しい外部対象と権限がfreshになった場合だけ、target-bound admission → provider receipt → source sync/reconciliation → cleanupへ進む。認証/secret/OTP/CAPTCHA、foreign cleanup、曖昧な投稿/応募/送信は実行しない。
+## 2026-08-12 fresh continuation checkpoint: scope mismatchをclaim前の最優先gateとして確認
+
+Kernel global auditは7 automation checked / 7 compliant / 0 gap。AOS protected stateのfresh readbackでは、control queue `project-a` と Mac worker `company_2560580981cedfd106b66245` が不一致で、`portable_worker_company_scope_mismatch`。worker heartbeatはok、claimはidle、effectsはread_only、approval/approvalInboxは0件、external actionはfalse。PID `47153`は resident workerとして維持し、foreign `20092/20094`は未操作。
+
+古いblocked runや過去のapproval/authority artifactはcurrent authorityではないため再利用しない。次はscope alignment decisionがfreshになった時だけ、target-bound admission → approval → provider receipt → source sync/reconciliation → cleanupへ進む。
+## 2026-08-12 current checkpoint 513: G0/G1 packet v3と再開地点を固定
+
+- 最新artifactは `work/service-readiness/company-release-packet-preparation-20260812.v3.json`。現行の技術回帰は server `1137/1120/0/17`、contract `38/38`、fixture `6/6`、portable worker focused `11/11`、Browser Use runner focused `13/13`、registered audit `7/7` compliant / `0 gaps`。
+- AOSは local control queue `project-a`、remote worker `company_2560580981cedfd106b66245`、heartbeat `ok`、claim `idle`、approval `0`、`external_action_executed=false`。このscope不一致を解消するまでclaimしない。foreign `20092/20094`は所有権不明のため触らない。
+- releaseは `blocked_no_effect`。Job/Daily AI/NisenPrintsの実target・payload・account・audience・fresh authorityと、同一runのprovider receipt/source syncがないため、応募・投稿・送信・公開は0件のまま。production protected readbackは `production_read_token_missing`、Codex remote transportは `codex_app_server_remote_transport_not_production_supported`、G0/G1のnamed approval/owner/manifest/rollback/contract/incident evidenceも未達。
+
+**Exact blocker / next action / restart point:** `portable_worker_company_scope_mismatch`。AOS-owned scope decisionを正本へ記録し、same-run fresh readbackで一致を確認する。再開地点は scope alignment 後の approval → target-bound claim → receipt → source sync → cleanup。operator key、production read token、具体的な外部target/authority、G0/G1 owner/approvalが未提供の間は、それぞれの認証UI・外部effect・release cutoverへ進めない。
+## 2026-08-12 current checkpoint 514: scope選択待ちでclaimを停止
+
+- 前回スレッド `019fdcfe-7db9-7843-98ee-054ddf03dab4` をcurrent/older pageで再読した。Resumeの新規アップロード・ファイル名readback、Company 1の1候補canary、AOS portable approval、Mac worker、Codex transport、foreign roomのowner境界を確認済み。
+- AOS protected stateは control queue `project-a`、remote worker company `company_2560580981cedfd106b66245`、heartbeat `ok`、claim `idle`、approval `0`。この2つを同一scopeと推測できないため、scope選択前はclaimしない。
+- 現在のrelease packetは `work/service-readiness/company-release-packet-preparation-20260812.v3.json`、状態は `blocked_no_effect`。外部作用・secret read・foreign操作は0件。
+
+**Exact blocker / next action / restart point:** `scope_alignment_decision_required`。ユーザーのscope選択後にAOS-owned alignmentとfresh readbackを実施し、その地点から approval → target-bound claim → receipt → source sync → cleanupへ再開する。
+## 2026-08-12 current checkpoint 515: live heartbeat投影修正後のfresh readback
+
+- `worker.heartbeat_at` の根本原因を修正し、live transportの `last_successful_heartbeat_at` / `heartbeat_at` をpersisted値より優先する共通関数と回帰テストを追加した。local LaunchAgent再起動後、heartbeat `ok`・fresh `true`・claim `idle`を確認した。
+- 現在の唯一のclaim前最優先gateは `portable_worker_company_scope_mismatch`。control queue `project-a` と remote worker `company_2560580981cedfd106b66245`、approval `0`、queue depth `0`、active lease `0`。
+- runnerはglobal `7/7 compliant`、project compile/status `6/6 ready`。foreign `20092/20094`は未操作。外部効果・secret readは0件。
+
+**Exact blocker / next action / restart point:** `scope_alignment_decision_required`。scope選択後にAOS-owned alignmentとfresh readbackを行い、そこからapproval → claim → provider receipt → source sync → cleanupへ再開する。
+
+## 2026-08-12 current checkpoint 516: 最終回帰とAOS表示readbackを同期
+
+全回帰は `1138 total / 1121 passed / 0 failed / 17 skipped`、契約E2E `38/38`、fixture E2E `6/6`、Web typecheck/build、`git diff --check`がpass。local/public healthはHTTP `200`、worker PID `47153`はheartbeat `ok/fresh=true`、claim `idle`、effects `read_only`、approval `0`、queue depth/active lease `0`。global automation audit `7/7 compliant`、project manifest compile/status `6/6 ready`。
+
+AOSの登録profile/portは Job `scheduled/automation-3`/`19881`、Daily AI `scheduled/daily-ai`/`19882`、NisenPrints `scheduled/nisenprints`/`19884`、X `scheduled/x-authenticated-browser-lane`/`19885`、YouTube `temporary/youtube-visible-transcript`/`20080`、Prompt Transfer `single-use/prompt-transfer-ukiyoe`/`19981`、SNS `temporary/sns-multi-poster-ukiyoe`/`20081`。foreign `46982/20092`と`76428/20094`はunregistered/ownership unknownでobserve-only。証跡は `work/service-readiness/final-regression-and-live-readback-20260812.v1.json`。
+
+**Exact blocker / next action / restart point:** `portable_worker_company_scope_mismatch` / `scope_alignment_decision_required`。control queue `project-a`とremote worker `company_2560580981cedfd106b66245`の正本選択が返るまでclaim・応募・投稿・送信・公開・source sync・foreign cleanupを開始しない。選択後にAOS-owned alignment → fresh readback → approval → claim → receipt → source sync/reconciliation → cleanupへ再開する。
+
+## 2026-08-12 current checkpoint 517: Chrome自動更新によるBrowser Use pin driftを修復
+
+Chromeの署名済み実体が `151.0.7922.137`へ自動更新された一方、`/Users/nichikatanaka/.browser-use-cli/browser-use-runtime.toml`が旧`151.0.7922.77`のhashを保持していたため、canonical Browser Use CLIが安全停止していた。署名検証と実hash readback後にruntime pinを更新し、`validate`/`runtime-readback`を一致へ戻した。public smoke `run_browser_use_public_smoke_20260812_0125`はopen/navigation readback/state/finalize/cleanupをexternal effectsなしで完了。
+
+local AOS loopback UIはBrowser Use起動後に `browser_use_private_or_metadata_url`で停止し、cleanupは完了。private URL policyをdirect CDPや別surfaceで迂回しない。修復後focused testsはstage `8/8`、portable browser `13/13`、portable worker `8/8`。証跡は `work/service-readiness/browser-runtime-pin-repair-and-smoke-20260812.v2.json`。
+
+**Exact blocker / next action / restart point:** `scope_alignment_decision_required`、`browser_use_private_or_metadata_url`。scope選択後にAOS-owned alignment → fresh readback → approval → claim → receipt → source sync/reconciliation → cleanupへ再開し、loopback UIはcanonical policyが許可する同一run routeが提供された場合だけ再確認する。
+
+## 2026-08-12 current checkpoint 518: 公開AOS UIのowner-lane E2Eを完了
+
+global helper generation syncはforeign owner資源のため`browser_use_helper_generation_auto_sync_blocked`で停止したが、foreign room/processは変更していない。AOS canonical adapterのowner-lane指定で公開UIを再実行し、`Automation OS` title、navigation/state readback、管理者APIキー入力画面を確認した。read token/write tokenは入力せず、external effects none、recording finalize/cleanup verified。static contract `11/11` pass。
+
+**Exact blocker / next action / restart point:** `production_read_token_missing`、`scope_alignment_decision_required`。read tokenは人間の安全な画面入力が必要。scope選択後にAOS-owned alignment → fresh readback → approval → claim → receipt → source sync/reconciliation → cleanupへ進む。
+
+## 2026-08-12 current checkpoint 519: scope alignment完了とtimeout cleanup根本修正
+
+fresh AOS `/api/mvp/state?project_id=project-a`でcontrol queue/remote workerともに `project-a`、scope `matched`、heartbeat `ok/fresh=true`、claim `idle`、effects `read_only`、worker PID `80311`、external action `false`を確認した。登録laneはJob `scheduled/automation-3`/`19881`、Daily AI `scheduled/daily-ai`/`19882`、NisenPrints `scheduled/nisenprints`/`19884`、X `scheduled/x-authenticated-browser-lane`/`19885`、YouTube `temporary/youtube-visible-transcript`/`20080`、Prompt Transfer `single-use/prompt-transfer-ukiyoe`/`19981`、SNS `temporary/sns-multi-poster-ukiyoe`/`20081`。canonical room registry readbackはforeign owner表示のみで、reclaim不可。20092/20094/20095のforeign boundaryはobserve-onlyを維持した。
+
+全回帰で1件だけ出た `portable external timeout terminates the owned descendant process group and records cleanup proof` の原因を、group消滅確認の短い固定窓に特定し、`processGroupCleanup`をTERM/KILL後にprocess group消滅までpollする共通修正へ変更した。修正後portable external suiteは `11/11 pass`（live E2E 1 skip）、build/typecheck/web build/JSON/diff check pass。full npm test再実行は継続中。
+
+**Exact blocker / next action / restart point:** `production_read_token_missing`、`aos_operator_key_not_entered`、Job/Daily AI/NisenPrintsのfresh target/payload/account/audience・provider receipt・same-run source sync不足、`codex_app_server_token_file_missing`、G0/G1 named owner/approval/manifest/rollback/incident evidence不足。前回ログイン状態は再利用せず、protected UIへ人間が安全な入力境界で認証した後にのみ再開する。外部応募・投稿・送信・公開・支払い、secret read、foreign cleanupはこのcheckpointでも0件。
+
+## 2026-08-12 current checkpoint 520: stale blocker整理とproduction parity差分を確定
+
+fresh scopeは `project-a` でmatched、heartbeat fresh、claim idle。前回の `portable_worker_company_scope_mismatch` は解決済みとしてcurrent unresolvedから除去した。fresh production QAはhealth `200`だが、公開JS `index-B_96I47-.js` とlocal最新JS `index-DSQAdXV-.js` が不一致、CSSは一致。protected routesとdesktop/mobile screenshotは `production_read_token_missing` で停止した。WSSは `/run/secrets/codex-app-server-token` missing。
+
+登録automation auditは `7/7 compliant / 0 gaps`、contract E2E `38/38`、fixture E2E `6/6`、chat/web focused `20/20`、registered workflow focused `5/5`。current unresolved-only v5とG0/G1 packet v5へ現存blockerだけを同期した。20095はforeign owner-bound observe-only、20092/20094は現時点でlistenerなし。foreign操作は行っていない。
+
+**Exact blocker / next action / restart point:** `production_asset_parity_mismatch`、`production_read_token_missing`、`codex_app_server_authenticated_remote_transport_missing`、G0/G1 human evidence不足、fresh business target/authority不足。clean signed candidateとnamed release evidenceが揃うまでdeployせず、read/operator keyはUIまたはapproved secret boundaryからのみ受け取る。
+
+## 2026-08-12 current checkpoint 521: production read/write token boundaryをfresh確認
+
+Zeaburのfresh targetは project `automation-wiled` / environment `production` / service `automation-os`。`AUTOMATION_OS_READ_TOKEN` と `AUTOMATION_OS_WRITE_TOKEN` はservice-bound variableとして存在し、値は出力・保存・repo複製していない。service内のtoken-bound protected GETで capability/dashboard/registered-workflows/browser-health は全てHTTP `200`、capability scopeは `write`。write route、外部effect、foreign resource変更は0件。
+
+証跡は `work/service-readiness/production-read-token-config-readback-20260812.v1.json`、`unresolved-only-exit-audit-20260812.v6.json`、`company-release-packet-preparation-20260812.v6.json`。token設定のみでは本番parity・UI screenshot・G0/G1・Codex authenticated WSS・Job/Daily AI/NisenPrintsのbusiness receipt/source syncは完了扱いにしない。
+
+**Exact blocker / next action / restart point:** `production_asset_parity_mismatch`、protected UI screenshot未取得、G0/G1 human evidence不足、Codex token file/remote WSS不足、fresh business target/authority不足。clean signed candidate後のpublic parity → protected UI readbackから再開する。
+
+## 2026-08-12 current checkpoint 522: fresh state・clean candidate準備を同期
+
+fresh local/public healthはHTTP `200`。AOS scopeは`project-a`でmatched、worker heartbeatはfresh、claim idle、queue depth/active leaseは0、external actionはfalse。Browser Use runtimeはforeign `20095` owner-bound roomのため`browser_use_worker_readback_pending`。20092/20094はcurrent listenerなしで、foreign room/processはobserve-onlyを維持した。
+
+`npm run build`、Web typecheck、runtime manifest生成がpass。local JSは`index-DSQAdXV-.js`、public JSは`index-B_96I47-.js`で差分、CSSは一致。G0/G1 required fields（named approver/decision、mixed-file owner、clean candidate/signed manifest、rollback/restore owner、3 workflow receipt contract、incident drill）は未達で、ユーザー許可だけから役割・署名・責任者を捏造していない。
+
+証跡は `work/service-readiness/current-continuation-readback-20260812.v3.json`。**Exact blocker / next action / restart point:** clean candidate＋named G0/G1 evidence → public parity → protected UI readback → workflow-specific admission。Codex token-file/WSSとfresh business receipt/source-syncも別gateとして残る。
+
+## 2026-08-12 current checkpoint 523: production target・scope・foreign boundaryのfresh readback
+
+Fresh local AOSは health `200`、control/remote scope `project-a` matched、worker `80311` heartbeat fresh、claim idle、queue/lease `0`、external action `false`。Zeabur targetは project `automation-wiled` / environment `production` / service `automation-os`で `RUNNING`。read/write variablesのpresenceとservice-bound protected GET `200`は確認済みだが、public JS `index-B_96I47-.js` とlocal JS `index-DSQAdXV-.js`のparity mismatchは継続。
+
+foreignは20095のPID `67560` / active room `room-31dc55fdf8acb1dbc0601d199d1bc8ea`（owner task `019fed0d-411b-7fe0-94e9-f2a7446cd150`、`reclaim_allowed=false`）だけが現存。20092/20094はcurrent listenerなし。foreign resourceの変更は0件。artifactは `work/service-readiness/current-continuation-readback-20260812.v4.json`。
+
+**Exact blocker / next action / restart point:** `production_asset_parity_mismatch`、`browser_use_worker_readback_pending`、protected UI human input、Codex token-file/WSS、G0/G1実在証拠、fresh business target/authority/receipt/source-sync。clean signed candidateとnamed evidenceが揃うまでproduction deploy・business effect・foreign cleanupは行わず、clean candidate production parity → protected UI readback → workflow-specific admissionから再開する。
+
+## 2026-08-12 current checkpoint 524: 最終回帰とE2E再確認
+
+最終 `npm test` は `1139 total / 1122 passed / 0 failed / 17 skipped`、contract E2E `38/38`、fixture E2E `6/6`、Web typecheck/build、`git diff --check`がpass。技術実装・fixture・no-effect E2Eは完了状態として維持する。
+
+このcheckpointではproduction deploy、write route、応募・投稿・送信・公開、secret出力、foreign resource変更を行っていない。local JS `index-DSQAdXV-.js`とpublic JS `index-B_96I47-.js`の差分は継続し、protected UI screenshot、Codex専用token file/WSS、fresh business receipt/source sync、G0/G1 human evidenceも未達。
+
+Goal RunContextはcheckpoint `28`、exit `incomplete`。**Exact blocker / next action / restart point:** clean signed candidate → public parity → protected UI → workflow-specific admission。`browser_use_worker_readback_pending`とforeign 20095 owner boundaryはobserve-onlyのまま。
+
+## 2026-08-12 current checkpoint 525: Browser Use foreign境界を再分類
+
+fresh canonical Browser Use `validate` / `runtime-readback` は `runtime_drift=false` でpass。AOS fresh stateは `project-a` matched、heartbeat fresh、claim idle、queue/lease `0`、effects `read_only`。
+
+foreign process/roomは2件: `20091` PID `57684` / room `room-7e50e9f4110984a1ae73e06598795cc5` / owner task `light-heavy-full-parity-20260811-r2-step4-ai-edit-task-20260812` と、`20095` PID `67560` / room `room-31dc55fdf8acb1dbc0601d199d1bc8ea` / owner task `019fed0d-411b-7fe0-94e9-f2a7446cd150`。両方 `reclaim_allowed=false`。20092/20094はcurrent listenerなし。foreign操作は0件。
+
+artifactは `work/service-readiness/current-continuation-readback-20260812.v5.json`。Goal RunContextはcheckpoint `29`へ更新。production JS parity、protected UI、Codex専用token file/WSS、G0/G1、business receipt/source syncは未達。
+
+**Exact blocker / next action / restart point:** `foreign_owner_authority_missing`、`browser_use_worker_readback_pending`、`production_asset_parity_mismatch`、`aos_operator_api_key_or_mypro_physical_ui_input_missing`。foreign権限を推測せず、clean signed candidate → public parity → protected UI → workflow-specific admissionから再開する。
+
+## 2026-08-12 current checkpoint 526: v7 exit audit and release packet synchronized
+
+v7の `unresolved-only exit audit` と `company release packet` を生成し、JSON検証・`git diff --check`を通過。Goal RunContextはcheckpoint `30`、status `running`、exit `incomplete`。技術実装、fixture/no-effect E2E、scope alignment、profile/port/room/process表示、tokenのservice-bound readbackは確認済みだが、未達を完了扱いにしていない。
+
+現行foreignは `20091` PID `57684` / room `room-7e50e9f4110984a1ae73e06598795cc5` と `20095` PID `67560` / room `room-31dc55fdf8acb1dbc0601d199d1bc8ea`。両方 `reclaim_allowed=false`、20092/20094はlistenerなし。kill/release/reuse/finalize/cleanupは行っていない。回帰は npm `1139/1122/0/17`、contract `38/38`、fixture `6/6`、automation health `7/7`、Web typecheck/build、JSON/diff check pass。
+
+**Exact blocker / next action / restart point:** production local/public JS parity、protected UI human input、Codex専用token file/WSS、Job/Daily AI/NisenPrintsのfresh target-bound receipt/source sync、G0/G1実在証拠。clean signed candidate + named evidence後に public parity → protected UI → workflow-specific admissionから再開する。
+
+## 2026-08-12 current checkpoint 527: clean candidate作成後のpromotion gate
+
+detached clean candidate `e72c78688b0d853926129c5e2a7b5ac7ee4d66cd`を作成。対象はroom owner/readback表示、live heartbeat projection、read-only receipt proof、process-group cleanup、protected readback helper、Zeabur/Codex補助ファイル。Web typecheck/build pass、focused candidate regression `67 pass / 0 fail / 1 skip`、maintenance CLI isolated rerun `24/24` pass。candidateはunsigned・local-onlyで、push/deployは未実施。
+
+Fresh AOSは`project-a` matched、heartbeat fresh、claim idle、queue/lease `0`、effects `read_only`、external action `false`。foreignは20091 PID 92496 / room `room-339b1e9d59452e726fedd648f893110d`と20095 PID 67560 / room `room-31dc55fdf8acb1dbc0601d199d1bc8ea`、両方`reclaim_allowed=false`。20092/20094はlistenerなし。foreign操作は0件。
+
+**Exact blocker / next action / restart point:** unsigned candidate、named G0/G1 evidence、production JS parity、protected UI human input、Codex専用WSS token file、fresh business receipt/source sync。candidate test environment parity → signed manifest/G0-G1 → public parity → protected UI → workflow-specific admissionの順で再開する。
+
+## 2026-08-12 current checkpoint 528: 公開asset parityをfresh再確認
+
+公開URLをread-onlyで再取得し、public JS `index-B_96I47-.js`（SHA `f4cca26c...a051`）と候補JS `index-DSQAdXV-.js`（SHA `c59eccf7...04add`）は不一致、CSS `index-2faJdFEc.css`は一致と確認した。候補版はlocal-only・unsigned・未push・未deployであり、公開反映とは扱わない。service-bound read/write tokenの存在とprotected GET `200`は確認済みだが、token値は表示・保存していない。
+
+Fresh AOSは`project-a` matched、heartbeat fresh、claim idle、queue/lease `0`、effects `read_only`、external action `false`。foreign 20091/20095はowner-bound・`reclaim_allowed=false`のobserve-only、20092/20094はlistenerなし。外部投稿・応募・送信・公開・foreign cleanupは0件。証跡は`work/service-readiness/current-continuation-readback-20260812.v6.json`、`work/service-readiness/clean-candidate-readback-20260812.e72c786.v1.json`、Goal RunContext checkpoint `32`。
+
+**Exact blocker / next action / restart point:** `production_asset_parity_mismatch`、protected UI human readback、Codex専用WSS token file/authenticated thread-turn proof、Job/Daily AI/NisenPrintsのfresh target-bound receipt/source-sync、G0/G1 named evidence。clean signed candidate＋named evidence → public parity → protected UI → workflow-specific admissionの順で再開する。
+
+## 2026-08-12 current checkpoint 529: foreign listenerのcurrent readback更新
+
+fresh `/api/mvp/state?project_id=project-a` と同一hostのlistener readbackを取り直した。AOSは health `200`、scope `project-a` matched、heartbeat fresh、claim idle、queue/lease `0`、effects `read_only`、external action `false`。登録7 laneは全てprocess absent。20091/20092/20094はcurrent listenerなし、foreign owner-boundの現存は20095 PID `67560` / room `room-31dc55fdf8acb1dbc0601d199d1bc8ea`のみで、`reclaim_allowed=false`。20095には触れていない。
+
+公開assetはJS mismatch/CSS matchのまま。候補版はlocal-only・unsigned・未push・未deploy。証跡は`work/service-readiness/current-continuation-readback-20260812.v7.json`。**Exact blocker / next action / restart point:** `production_asset_parity_mismatch`、protected UI human readback、Codex authenticated WSS、fresh business receipt/source-sync、G0/G1 named evidence。foreign owner authorityがない限り20095はobserve-onlyとし、clean signed candidate＋named evidence → public parity → protected UI → workflow admissionから再開する。
+
+## 2026-08-12 current checkpoint 530: candidate full regressionとprotected UI gate readback
+
+detached clean candidate `e72c78688b0d853926129c5e2a7b5ac7ee4d66cd`をlockfile依存とnative `better-sqlite3` binding込みで再実行し、`1139 total / 1122 passed / 0 failed / 17 skipped`を確認した。candidateはlocal-only・unsigned・未push・未deploy。証跡は`work/service-readiness/clean-candidate-full-regression-20260812.e72c786.v2.json`。
+
+公開UIはcanonical Browser Useの同一single-use runでrecord-start → open → state → screenshot → record-finalize → cleanupを完了。管理者キー入力画面、password masked input、キー未入力状態を視覚readbackした。キー値は入力・保存・録画していない。証跡は`work/service-readiness/protected-ui-readback-20260812.v1.json`。authorized continuation用authorityは`public_read_only / side_effect_scope=none`で発行したが、foreign owner-bound roomが20091/20095に存在するためBrowser Use開始前に`browser_use_room_registry_no_free_room`で停止した。
+
+Fresh AOSは`project-a` matched、heartbeat fresh、claim idle、queue/lease `0`、effects `read_only`、external action `false`。current foreignは20091 PID `50428` / room `room-50f0a2347525129f1651f448d21e21be` / owner `lhp-p1-0812-r1-task` と、20095 PID `67560` / room `room-31dc55fdf8acb1dbc0601d199d1bc8ea` / owner `019fed0d-411b-7fe0-94e9-f2a7446cd150`。両方`reclaim_allowed=false`、20092/20094はlistenerなし。foreign操作は0件。証跡は`work/service-readiness/current-continuation-readback-20260812.v8.json`。
+
+**Exact blocker / next action / restart point:** `browser_use_room_registry_no_free_room`、`production_asset_parity_mismatch`、safe human key entry、Codex authenticated WSS、fresh business receipt/source-sync、G0/G1 named evidence。foreign ownerのrelease/readbackが返るまで20091/20095はobserve-only。次は owner-bound room release/readback → safe human key entry → signed promotion後public parity → workflow-specific admission。
+
+## 2026-08-12 current checkpoint 531: Codex App Server source/WSS boundaryを再確認
+
+`codex-app-server-zeabur-preflight`はsource-onlyで全チェックpass、deploy/secret readなし。`codex-app-server-zeabur-wss-readback`は`/run/secrets/codex-app-server-token`不在の`ENOENT`でfail-closedした。AOS tokenをCodex tokenへ流用していない。証跡はsource preflight出力と`work/service-readiness/current-continuation-readback-20260812.v8.json`。
+
+**Exact blocker / next action / restart point:** `codex_app_server_authenticated_remote_transport_missing`。Zeaburの秘密管理境界で専用Codex token fileが提供された場合だけ、fresh `/readyz` → authenticated WSS initialize → thread/turn → cleanupへ進む。現状はdeploy・secret read・外部作用を行わない。
+
+## 2026-08-12 current checkpoint 532: 完了証跡と未達境界を同期
+
+candidate full regression `1139/1122/0/17`、公開AOS operator-key gateのsame-run recording、Codex App Server source preflightを最新Goal/STATEへ反映した。candidateはlocal-only・unsigned・未push・未deployで、operator keyは入力・保存・録画していない。source preflightはdeploy・secret readなしで、専用Codex token file不在によりauthenticated WSSはfail-closedのまま。
+
+公開JS parity、protected post-key dashboard、dedicated Codex WSS/thread-turn、Job/Daily AI/NisenPrintsのfresh business receipt/source sync、foreign owner authority、G0/G1 human evidenceは未達。**Exact blocker / next action / restart point:** `production_asset_parity_mismatch`、`browser_use_room_registry_no_free_room`、`aos_operator_key_human_input_pending`、`codex_app_server_authenticated_remote_transport_missing`、`effectful_business_receipts_and_same_run_source_sync_missing`、`company_g0_g1_release_audit`。20091/20095はowner authorityが返るまでobserve-onlyを維持し、外部effectは開始しない。
+
+## 2026-08-12 current checkpoint 533: production parity解消と隔離workflow canary完了
+
+fresh scope `project-a` matched、heartbeat fresh、claim idle、queue/lease 0、external action falseを確認。portable scheduler canaryは6/6、isolated SQLite reference canaryはJob/Daily AI/NisenPrints 3/3 `proof_backed_safe_stop_verified`、cleanup receipt verified。candidate `e72c78688b0d853926129c5e2a7b5ac7ee4d66cd`を明示Zeabur targetへ反映し、deployment `6a7bf97f0d41a78958bb2736`がRUNNING。公開JS/CSS parityはlocal buildとSHA一致へ戻った。
+
+新bundleの公開AOS UIはcanonical Browser Useで同一runのrecord-start → open → state → screenshot → record-finalize → cleanupを完了し、operator-key gateを視覚確認した。キーは入力・保存・録画していない。Goalはactive/auditを維持し、parity mismatchだけを解決済みへ更新した。
+
+**Exact blocker / next action / restart point:** `aos_operator_key_human_input_pending`、`browser_use_unregistered_live_process:20095`、`codex_app_server_authenticated_remote_transport_missing`、`effectful_business_receipts_and_same_run_source_sync_missing`、`company_g0_g1_release_audit`。20095はforeign owner authorityが返るまでobserve-only。外部業務effectは、fresh target/payload/account/audience/authority → provider receipt → source sync → reconciliation → cleanupが揃うまで開始しない。
+
+## 2026-08-12 current checkpoint 534: current unresolved-only boundary
+
+v8 `unresolved-only-exit-audit` と `company-release-packet-preparation` を最新fresh readbackへ同期した。scopeは`project-a` matched、heartbeat fresh、claim idle、queue/lease 0、external action false。candidate `e72c786` のdeployment `6a7bf97f0d41a78958bb2736`はRUNNINGで、公開JS/CSS parityはSHA一致。portable scheduler canary 6/6、Job/Daily AI/NisenPrints isolated safe-stop 3/3、public UI recording/finalize/cleanupも確認済み。
+
+current unresolvedは、operator key human gate、foreign 20091/20095 owner authority、registered Browser Use worker readback、dedicated Codex WSS/thread-turn、Job/Daily AI/NisenPrintsのfresh business receipt/source sync、G0/G1 named evidence・signed manifest・rollback/incident evidence。20091/20095はobserve-onlyで、foreign cleanup/reuse/releaseはしていない。AOS token値は表示・保存せず、Codex tokenへの流用もしていない。
+
+**Exact blocker / next action / restart point:** `aos_operator_ui_authentication_gate`、`foreign_owner_resource_present`、`browser_use_worker_readback_pending`、`codex_app_server_authenticated_remote_transport_missing`、`effectful_business_receipts_and_same_run_source_sync_missing`、`company_g0_g1_release_audit`。人間による安全なoperator-key入力後のsame-run protected readbackから再開し、外部effectはtarget/payload/account/audience/authority → provider receipt → source sync → reconciliation → cleanupが揃うまで開始しない。
+
+## 2026-08-12 current checkpoint 535: final exit check
+
+現行sourceで `npm test` `1139/1122/0/17`、contract E2E `38/38`、fixture E2E `6/6`、Web typecheck/build、JSON validation、`git diff --check`、local health `200`を確認した。`work/service-readiness/final-exit-check-20260812.v1.json`に、external action、secret read/log、foreign cleanup/mutation、old-run replayが全てfalseであることを保存した。
+
+production parity、隔離canary、public UI recording/cleanupは確認済み。残件はoperator UI human gate、foreign 20091/20095、registered worker readback、dedicated Codex WSS、fresh business receipt/source sync、G0/G1 evidence。Goalは完了扱いにせずactive/audit/incompleteを維持する。
+
+**Exact blocker / next action / restart point:** `aos_operator_ui_authentication_gate`、`foreign_owner_resource_present:20091,20095`、`browser_use_worker_readback_pending`、`codex_app_server_authenticated_remote_transport_missing`、`effectful_business_receipts_and_same_run_source_sync_missing`、`company_g0_g1_release_audit`。human key readback → G0/G1/signed manifest → target-bound business admission → provider receipt → source sync → reconciliation → cleanupの順。
+
+## 2026-08-12 current checkpoint 536: current v11とfresh exit evidence
+
+current source-of-truthは `current-continuation-readback-20260812.v11.json`。AOS `project-a` scope、remote worker scope、heartbeat、queue/lease/claimは matched/fresh/0/0/idle。worker PID `80311`は read-only。7つの登録Browser Use laneは profile/port表示済みだが全て process absent/not_claimed。20091/20092/20094はcurrent listenerなし、foreign activeは20095 PID `67560` / room `room-31dc55fdf8acb1dbc0601d199d1bc8ea`のみで、owner authorityなし・reclaim false・observe-only。
+
+fresh回帰は `npm test` `1139/1122/0/17`、contract `38/38`、fixture `6/6`、Web typecheck/build、health `7/7`、JSON/diff check pass。ユーザーE2E matrixは `work/service-readiness/user-e2e-matrix-20260812.v1.json`。public readback r1とauthorized operator-gate r2は同一runのrecord/finalize/cleanupまで完了し、operator key未入力、post-auth dashboard未確認。外部effect、secret値read/log、foreign cleanup/mutation、old-run replayは0件。
+
+current remainingは、operator UI human gate、20095 owner-bound worker readback、専用Codex token file/WSS/thread-turn、Job/Daily AI/NisenPrintsのfresh receipt/source-sync、named G0/G1・signed manifest・rollback/incident、current dirty source (`3d4ca671`, 69 paths) と deployed candidate (`e72c786`) のreconciliation。指定Kimi K3 Designerは `designer_output_invalid` でstage blocked、Opus read-only reviewは `REVISE`。Goalは active/audit/incomplete のまま維持する。
+
+**Exact blocker / next action / restart point:** `aos_operator_key_human_input_pending`、`foreign_owner_authority_missing_for_20095`、`browser_use_unregistered_live_process`、`codex_app_server_authenticated_remote_transport_missing`、`effectful_business_receipts_and_same_run_source_sync_missing`、`company_g0_g1_release_audit`、`latest_local_source_dirty_vs_deployed_candidate`。human key readback → owner-authorized worker readback → signed G0/G1 → one fresh target-bound admission → provider receipt → source sync → reconciliation → cleanup。
+## 2026-08-12 current checkpoint 513: Mac portable local workerの同期PostgreSQL停止を共通境界で修復
+
+checkpoint 512で確定した `worker_postgres_sync_boundary_hung_after_identity_admission` に対して、同じObsidian runを再発射せず、Mac専用のportable local read-only queueだけを非同期PostgreSQL poolへ切り替えた。`runPortableMacWorkerOnce` はasync selectorを使い、local read-only receiptのstep/lane/run更新、artifact、proof、worker eventを同一runのasync scriptで保存する。既存の外部portable queueは従来worker engineへ委譲し、他レーンの意味は変更していない。stored-secret childには `AUTOMATION_OS_WORKER_ROLE=mac` と `AUTOMATION_OS_POSTGRES_SCHEMA_ASSUMED_CURRENT=1` をallowlistし、worker起動スクリプトのMac roleも明示した。
+
+検証は server build pass、portable entrypoint/worker environment focused E2E **20/20 pass**、`git diff --check` pass。current Obsidian run `run_mspx5jpo_dc0kvd` は旧worker role未伝播試行で既に `blocked / mac_worker_required` となっているため再利用・再発射していない。修正後のstored worker wrapperを `durable-only + run-id + max-cycles=1` で bounded 起動し、owned process残留0・worker state `stopped / childExitCode=0` を確認した。これは新規queued runのbusiness/workflow completion proofではなく、pickup transportが再び長時間ハングしないことの限定確認である。
+
+**Exact blocker / next action / restart point:** worker共通層の同期停止は修正済み。残るのは `portable_worker_company_scope_mismatch`、`browser_use_worker_readback_pending`、`aos_operator_key_human_input_pending`、foreign owner `20095`、Codex App Server authenticated transport、effectful receipt/source-sync、G0/G1、dirty source vs deployed candidate。Obsidianの同一runはno-replayのままにし、正本company/endpointとowner-authorized worker readbackが得られた時点で、新規fresh runの `automation_kernel_result.v2` → workflow readback → cleanup proofを一度だけ確認する。business canaryはtarget/payload/account/audience/authority/approvalが揃うまで開始しない。
+
+Evidence: `/Users/nichikatanaka/Documents/Codex/automation-os/apps/server/src/runs/workerEngine.ts`、`apps/server/src/security/processEnvironment.ts`、`scripts/start-automation-os-worker.sh`、`apps/server/src/tests/workerEnvironment.test.ts`、`data/state/automation-os-worker.json`、AOS `GET /api/runs/run_mspx5jpo_dc0kvd`。
+## 2026-08-12 current checkpoint 514: scope一致後のfresh AOS readbackと残存release gateを確定
+
+fresh read-only readbackで、AOS control-planeとremote workerはともに `project-a` へ一致し、worker heartbeatはfresh、transport `available`、claim `idle`、queue depth/active leasesは0、effectsは`read_only`、`external_action_executed=false`だった。登録7 Browser Use laneは全て `registered / process absent / live_readback=not_claimed`。local `/api/health` はHTTP 200。従って以前の `portable_worker_company_scope_mismatch` は解消済みとして再掲しない。
+
+一方、Browser Use同一runのscreen/auth/readback、provider receipt、business completion、source syncは未claimのまま。foreign port `20095` はowner authorityがないためobserve-onlyを維持し、Codex App Server authenticated WSS、operator keyのhuman input、named G0/G1、signed manifest、rollback/incident evidence、dirty source `HEAD 3d4ca671` とdeployed candidate `e72c786`のparityは未達。activationはdisabled、外部作用・secret read/log・foreign mutation・旧run replayは0件。
+
+checkpoint 513のworker修復は、portable local read-only queueのasync PostgreSQL境界、stored workerのMac role/schema marker伝播、portable/環境focused回帰21/21、workerEngine回帰77/77、bounded wrapper停止/readbackまで確認済み。既存Obsidian run `run_mspx5jpo_dc0kvd` は旧試行の `blocked / mac_worker_required` とproof 1件を保持し、no-replayのまま。これは修復済みtransportの証拠であり、Obsidian監査完了や業務完了ではない。
+
+**Exact blocker / next action / restart point:** `aos_operator_key_human_input_pending`、`foreign_owner_authority_missing_for_20095`、`browser_use_worker_readback_pending`、`codex_app_server_authenticated_remote_transport_missing`、`effectful_business_receipts_and_same_run_source_sync_missing`、`company_g0_g1_release_audit`、`latest_local_source_dirty_vs_deployed_candidate`。まずclean source/candidate/signed manifestを確定し、人間のoperator-key post-auth readbackとowner-authorized Browser Use readbackを取得する。その後、named G0/G1 → fresh target-bound business admission → provider receipt → source sync → reconciliation → cleanupの順で進める。
+
+Evidence: `work/service-readiness/current-continuation-readback-20260812.v12.json`、`work/service-readiness/company-release-packet-preparation-20260812.v10.json`、`work/service-readiness/unresolved-only-exit-audit-20260812.v10.json`、`data/state/automation-os-worker.json`。
+## 2026-08-12 current checkpoint 515: scope一致・G0/G1 blocked validator・candidate差分をfresh確定
+
+fresh readbackはAOS health HTTP 200、control-plane/remote workerとも`project-a`、scope `matched`、heartbeat `fresh`、queue/leases 0、claim `idle`、worker transport `available`、effects `read_only`、external action falseだった。登録7 laneのprocessは0で、Browser Useの同一run receipt/readback/source-syncは未claim。foreign owner boundaryはobserve-onlyを維持する。
+
+current HEADは`3d4ca671290de122ce64a86e1394e44f6079ab91`、deployed candidateは`e72c78688b0d853926129c5e2a7b5ac7ee4d66cd`で、commit間は64 tracked files / 103 insertions / 9321 deletions。現worktreeはtracked modified status 32件、untracked 4633 filesで、clean candidate・signed manifestは未確認。候補を勝手に選別・commit・deployせず、差分の所有者とallowlistを未達として保持した。
+
+Company G0/G1 validator regressionは23/23 pass。ただし、named approvers、mixed-file hunk allowlist owner、clean signed candidate、backup/restore/rollback owner、3 workflow receipt contracts、incident drill evidenceの実データは未提供で、validatorはblocked/no-effectを維持している。これはvalidatorの成功でありrelease approvalの成功ではない。
+
+portable local worker修復はfocused 21/21、workerEngine 77/77、stored wrapper bounded cycle停止/readbackまで確認済み。旧Obsidian run `run_mspx5jpo_dc0kvd`は`blocked / mac_worker_required`のまま、再playしない。
+
+**Exact blocker / next action / restart point:** `aos_operator_key_human_input_pending`、`foreign_owner_authority_missing_for_20095`、`browser_use_worker_readback_pending`、`codex_app_server_authenticated_remote_transport_missing`、`effectful_business_receipts_and_same_run_source_sync_missing`、`company_g0_g1_release_audit`、`latest_local_source_dirty_vs_deployed_candidate`。まずsource/candidate差分とallowlistを所有者付きで確定し、その後human operator-key post-auth → owner-authorized Browser Use readback → G0/G1/signature → fresh target-bound business canary → provider receipt/source-sync/reconciliation/cleanupへ進む。
+
+Evidence: `work/service-readiness/current-continuation-readback-20260812.v13.json`、`work/service-readiness/company-release-packet-preparation-20260812.v11.json`、`work/service-readiness/unresolved-only-exit-audit-20260812.v11.json`。
+
+## 2026-08-12 current checkpoint 516: AOS bridge Kernel result修復・scope一致・fresh local canaryを確定
+
+共有 `global-automation-manager.mjs` のAOS trigger bridge execute経路を修復し、provider-neutral dispatchだけを `automation_kernel_result.v2` の `workflow` stageへ記録するようにした。dispatch証跡には `dispatch_only=true`、`business_completion_verified=false`、AOS run/status、外部作用なしを束ね、通常の業務runnerやObsidian書込みを成功扱いしない。構文検査と共有manager回帰16/16を通過した。
+
+修正後の正規entrypointで dry-run/preflight/execute を実行し、fresh Kernel run `obsidian-aos-bridge-20260812111406-46031` から AOS run `run_mspzrr86_mi4sbq` を一度だけdispatchした。control-planeとloaded Mac workerはともに `company_2560580981cedfd106b66245`、scope `matched`、worker PID `38502`、heartbeat fresh、claim後に同一runを完了。local receiptは `audit_ok=true`、registry/vault readback、`readback_verified=true`、`cleanup_verified=true`、`write_performed=false`、`external_action_executed=false` を示し、業務runは `obsidian_artifact_write_requires_approval` で安全に停止した。旧runのreplayはしていない。
+
+buildとfocused regressionは、portable/environment 21/21、workerEngine 77/77、release/portable remote suites 47/47 pass。Company G0/G1 validatorはblocked/no-effectを23/23 passしたが、named approvers、mixed-file allowlist owner、clean signed candidate、rollback owner、3 workflow receipt contracts、incident drill evidenceは未提供のまま。current HEAD `3d4ca671` とdeployed candidate `e72c786` は64 tracked files差分、worktreeは32 tracked modifiedと4636 untrackedで、署名済みclean candidateは未確認。
+
+**Exact blocker / next action / restart point:** `obsidian_artifact_write_requires_approval`、`aos_operator_key_human_input_pending`、`foreign_owner_authority_missing_for_20095`、`browser_use_worker_readback_pending`、`codex_app_server_authenticated_remote_transport_missing`、`effectful_business_receipts_and_same_run_source_sync_missing`、`company_g0_g1_release_audit`、`latest_local_source_dirty_vs_deployed_candidate`。まずsource/candidateとallowlistの所有者を確定し、human operator-key post-auth → owner-authorized Browser Use readback → named G0/G1/signed manifest → fresh target-bound business admission → provider receipt → source sync → reconciliation → cleanupの順で再開する。Obsidian書込みは明示承認後に新規runで開始し、`run_mspzrr86_mi4sbq` は再利用しない。
+
+Evidence: `work/service-readiness/current-continuation-readback-20260812.v14.json`、`work/service-readiness/company-release-packet-preparation-20260812.v12.json`、`work/service-readiness/unresolved-only-exit-audit-20260812.v12.json`、`.codex/automation-kernel/artifacts/obsidian/obsidian-aos-bridge-20260812111406-46031/automation-kernel-result.v2.json`、`data/artifacts/portable-remote-worker/run_mspzrr86_mi4sbq/portable-local-worker-receipt.v1.json`。
+
+## 2026-08-12 current checkpoint 517: dirty source/candidate差分を所有者allowlist待ちとして分類
+
+fresh差分監査で、deployed candidate `e72c78688b0d853926129c5e2a7b5ac7ee4d66cd` と current HEAD `3d4ca671290de122ce64a86e1394e44f6079ab91` は64パス（21 modified / 43 deleted）。HEADでdeletedの43パスはworktreeに再出現し、41件はdeployed candidateとbyte-identical、`scripts/aos-portable-remote-worker.mjs` とそのfocused testの2件だけが内容差分だった。worktreeはtracked modified 32件、untracked 4639件で、4596件は両commitに存在しない。
+
+これはclean candidateではなく、candidate復元物・local修正・artifact/未追跡物が混在した状態である。所有者allowlistなしにstage/commit/deployやsigned manifest作成を行わず、`source_candidate_owner_allowlist_missing` として停止した。差分分類は `work/service-readiness/source-candidate-reconciliation-20260812.v1.json` に保存した。
+
+**Exact blocker / next action / restart point:** `source_candidate_owner_allowlist_missing`、`obsidian_artifact_write_requires_approval`、`aos_operator_key_human_input_pending`、`foreign_owner_authority_missing_for_20095`、`browser_use_worker_readback_pending`、`codex_app_server_authenticated_remote_transport_missing`、`effectful_business_receipts_and_same_run_source_sync_missing`、`company_g0_g1_release_audit`。まずmixed-file/path allowlistの所有者判断と2つのcontent-different fileの採否を確定し、4596 non-commit artifactを候補から除外する。その後clean signed candidate → human/owner gates → G0/G1 → fresh target-bound business canaryへ進む。
+
+Evidence: `work/service-readiness/source-candidate-reconciliation-20260812.v1.json`、`work/service-readiness/current-continuation-readback-20260812.v15.json`。
+
+## 2026-08-12 current checkpoint 518: stale Operational Memory lockを安全復旧しHook全体回帰を確認
+
+別スレッドのfresh readで確認された `/Users/nichikatanaka/.codex/operational-memory/operational-memory.lock` は、記録PID `2792` が存在しないstale lockだった。共有 `codex-operational-memory.mjs` に、同一ownerのdead PID・同一inode/deviceのregular lockだけを再取得前にreclaimする処理を追加し、live PID・malformed・symlink・foreign lockはfail-closedのまま維持した。
+
+production lookupは成功し、lockは消失、`validate` は `ok=true`（lessons 1 / outcomes 0）。Operational Memory focused 18/18、Hook全体177/177、`node --check` pass。handoff/Stop、EAGAIN、source gate、record/export経路も回帰passで、stale lockはcurrent unresolved blockerから除外する。foreign Browser Use room `20095` は別ownerのためobserve-onlyを維持した。
+
+**Exact blocker / next action / restart point:** `source_candidate_owner_allowlist_missing`、`obsidian_artifact_write_requires_approval`、`aos_operator_key_human_input_pending`、`foreign_owner_authority_missing_for_20095`、`browser_use_worker_readback_pending`、`codex_app_server_authenticated_remote_transport_missing`、`effectful_business_receipts_and_same_run_source_sync_missing`、`company_g0_g1_release_audit`。まずsource/candidate allowlist → clean signed candidate → operator/owner gates → G0/G1 → fresh target-bound business canary → provider receipt/source sync/reconciliation/cleanupへ進む。
+
+Evidence: `work/service-readiness/shared-hook-operational-memory-readback-20260812.v1.json`、`work/service-readiness/source-candidate-reconciliation-20260812.v1.json`。
+
+## 2026-08-12 current checkpoint 519: per-workflow contract構造は存在するがruntime hash parityがstale
+
+既存の `per-workflow-account-target-payload-receipt-contract-20260810.v1.json` は、3 workflow分のaccount/target/payload/receipt binding構造を保持している。しかしfresh local dist hash readbackでは、`portableExternalBusinessPlan.js` は一致する一方、`portableWorkflowEntrypoint.js` と `portableRemoteWorker.js` は最後に記録されたdeployment hashと不一致だった。
+
+したがってこのG0/G1 fieldをverifiedへ昇格せず、`per_workflow_contract_runtime_hash_stale` として停止した。source/candidate allowlistでclean candidateを確定した後、そのcandidateから契約artifactを再生成し、選択deploymentのruntime hash parityを確認する。外部作用・deploy・activationは行っていない。
+
+**Exact blocker / next action / restart point:** `source_candidate_owner_allowlist_missing`、`per_workflow_contract_runtime_hash_stale`、`obsidian_artifact_write_requires_approval`、`aos_operator_key_human_input_pending`、`foreign_owner_authority_missing_for_20095`、`browser_use_worker_readback_pending`、`codex_app_server_authenticated_remote_transport_missing`、`effectful_business_receipts_and_same_run_source_sync_missing`、`company_g0_g1_release_audit`。owner allowlist → clean signed candidate → current contract/hash parity → operator/owner gates → G0/G1 → fresh target-bound canaryへ進む。
+
+Evidence: `work/service-readiness/per-workflow-account-target-payload-receipt-contract-20260812.v2.json`、`work/service-readiness/current-continuation-readback-20260812.v16.json`。
+
+## 2026-08-12 current checkpoint 520: G0/G1 required-fieldと候補証跡を再監査
+
+current G0/G1 validator/readinessは23/23の回帰を通過しているが、これはblocked/no-effect判定の正しさを示すもので、release approvalではない。fresh artifact readbackで、named approver/decision、mixed-file hunk allowlist owner、clean signed candidate、backup/restore/rollback owner、incident drillは未提供のまま確認した。per-workflow contractは3 workflow分の構造が存在するものの、2/3 runtime hashが最後のdeployment記録と不一致で、`per_workflow_contract_runtime_hash_stale`を維持する。
+
+過去のclean candidate `e72c786` artifactはclean-at-commitと回帰結果を持つが、`signed_manifest=false`、`deployment_authorized=false`で、current HEAD `3d4ca671`と現worktreeの混在を解決するowner allowlistではない。候補/HEAD差分64パス、2つのcontent-different restored file、4596 non-commit untracked artifactというfresh分類をもっても、採否を推測せず `source_candidate_owner_allowlist_missing` のまま停止した。staging/commit/deploy、activation、business effect、foreign room mutationは0件。
+
+**Exact blocker / next action / restart point:** `source_candidate_owner_allowlist_missing`、`per_workflow_contract_runtime_hash_stale`、`named_g0_approvers_and_decisions_missing`、`mixed_file_hunk_allowlist_owner_missing`、`clean_candidate_sha_and_signed_manifest_missing_or_unverified`、`backup_restore_rollback_owner_missing`、`incident_drill_evidence_missing`。ownerがmixed-file/path allowlistと2ファイルの採否を提示した地点から、clean signed candidate → contract再生成/hash parity → operator/owner gate → G0/G1 → fresh target-bound canary → provider receipt/source-sync/reconciliation/cleanupの順で再開する。
+
+Evidence: `work/service-readiness/source-candidate-reconciliation-20260812.v1.json`、`work/service-readiness/clean-candidate-readback-20260812.e72c786.v1.json`、`work/service-readiness/company-release-evidence-validation-20260810.v2.json`、`work/service-readiness/g0-g1-validator-regression-20260810.v2.json`、`work/service-readiness/per-workflow-account-target-payload-receipt-contract-20260812.v2.json`。
+
+## 2026-08-12 current checkpoint 521: candidate deployment・protected readback・authenticated UI証跡を更新
+
+ユーザー承認済みの範囲で、72-pathの明示candidateを専用branch `codex/automation-os-unblock-20260812`へ固定し、commit `f1742da98ba9b9fea701b7141fad320a09cad94b`を作成した。Zeabur deployment `6a7c64fb0d41a78958bb4a20`はRUNNING、health/protected dashboard/registered-workflows/browser-healthはfresh readback済み。公開JS/CSSはlocal buildとSHA一致、runtime parityは357 filesでready。read tokenはSecret Storeから実行時だけ使用し、値はartifact・ログ・チャットへ出していない。
+
+fresh no-effect canaryはkernel `obsidian-aos-bridge-20260812122618-22720` → AOS run `run_msq2cprp_bwpqbl`を一度だけ実行し、same-run receipt/readback/cleanupを確認した。結果は `blocked / obsidian_artifact_write_requires_approval`、`business_completion_verified=false`、`external_action_executed=false`。旧runはreplayしていない。
+
+canonical Browser Useの新規single-use recording `aos-production-ui-readonly-20260812`では、ユーザー入力後の同一run state readbackでOwner表示、write-key確認、API write許可を確認し、screenshot・H.264 recording・record-finalize・terminal cleanupまで完了した。これはoperator UI authenticationの証跡であり、registered Mac workerのsame-run readbackや業務完了の証明には昇格させない。foreign owner port 20095はobserve-onlyのまま、停止・解放・再利用していない。
+
+**Exact blocker / next action / restart point:** `obsidian_artifact_write_requires_approval`、`per_workflow_contract_runtime_hash_stale`、`signed_manifest_not_verified`、`company_g0_g1_release_audit`、`foreign_owner_authority_missing_for_20095`、`registered_mac_worker_same_run_readback_pending`、`codex_app_server_authenticated_remote_transport_missing`、`effectful_business_receipts_and_same_run_source_sync_missing`。candidateから契約/hash parityを再生成 → signed G0/G1 → owner-authorized registered worker readback → target/account/payload/audience/authority/approval binding → fresh target-bound canary → provider receipt/source sync/reconciliation/cleanupの順で再開する。
+
+Evidence: `work/service-readiness/candidate-manifest-20260812.v2.json`、`work/service-readiness/production-qa-readback-20260812.v2.json`、`work/service-readiness/browser-use-production-ui-readback-20260812.v1.json`、`work/service-readiness/current-continuation-readback-20260812.v17.json`、`work/service-readiness/company-release-packet-preparation-20260812.v15.json`、`work/service-readiness/unresolved-only-exit-audit-20260812.v15.json`。
+
+## 2026-08-12 current checkpoint 537: registered Mac workerのproduction no-effect canaryを完了
+
+productionの新規 `daily-ai-research-publish-run` reference readback `run_msq3dqw6_gi6z3l` を一度だけ発行し、Mac worker `mac-Nichikas-MacBook-Pro.local`（PID `38502`）がclaim、Browser Use CLI readback、receipt、source側完了記録まで進めた。runは`complete`、stepは`completed`、proof 1件、`worker_completed`、`readback_verified=true`、`cleanup_verified=true`、`child_exit_code=0`、`external_action_executed=false`。前回の `browser_use_record_batch_transport_failed` runはreplayしていない。
+
+同じcanonical adapter・同じ `https://x.com` / port `19882` の専用local diagnosticも `complete`、URL/title/state readback、cleanupを確認した。focused Browser Use/remote worker regressionは`17/17 pass`。したがって queue/auth/worker claim/Browser Use read-only transport/receipt/cleanupはcurrent proof付きで通過し、以前のtransport失敗は現時点の恒常 blockerではない。
+
+これはreference no-effect canaryであり、投稿・公開・応募・送信・listing等の業務完了ではない。fresh target/account/payload/audience/authority/approval、provider business receipt、same-run source sync/reconciliationは未提供・未実行のため、activationはdisabledのまま。foreign owner port `20095`はobserve-onlyを維持し、停止・解放・再利用していない。
+
+**Exact blocker / next action / restart point:** `obsidian_artifact_write_requires_approval`、`per_workflow_contract_runtime_hash_stale`、`signed_manifest_not_verified`、`company_g0_g1_release_audit`、`foreign_owner_authority_missing_for_20095`、`codex_app_server_authenticated_remote_transport_missing`、`effectful_business_receipts_and_same_run_source_sync_missing`。candidate contract/hash parity → signed G0/G1 → target/account/payload/audience/authority/approval binding → one fresh target-bound business canary → provider receipt → source sync → reconciliation → cleanupの順で再開する。
+
+Evidence: `work/service-readiness/registered-daily-ai-reference-readback-20260812.v1.json`、`work/service-readiness/current-continuation-readback-20260812.v18.json`、`work/service-readiness/company-release-packet-preparation-20260812.v16.json`、`work/service-readiness/unresolved-only-exit-audit-20260812.v16.json`、`data/artifacts/portable-remote-worker/run_msq3dqw6_gi6z3l/`。
+## 2026-08-13 current checkpoint: canonical Browser Use Goal kernel and strict effect binding
+
+Canonical Browser Use runtimeをfresh readbackした。helper `/Users/nichikatanaka/.local/bin/codex-browser-use`、Browser Use `0.13.7`、Chrome `151.0.7922.137`、Python `3.13.5` は期待値一致、`runtime_drift=false`、launchなし。roomsはcurrent active 0、listener/processは登録lane・foreign候補とも0、recording-statusのcurrent scopeはterminal/unresolved 0。歴史的recording debtはcurrent proofへ昇格させない。
+
+Automation OSとCodex App-originated triggerの共通契約を更新した。Goal単位のsession/profile/port/flow lease/checkpoint/resume/finalize、same-run state readback、timeout/stale state後の限定recovery、target/account/payload_hash/audience/approval/idempotencyのstrict binding、provider receipt/source sync/reconciliation/cleanupの完了契約を、AOS worker・registered runner・Job submit adapterへ反映した。Playwright/IAB/direct CDP/raw Chrome/alternate profile/legacy recording fallbackは許可しない。
+
+検証は build pass、server full suite `1143 total / 1126 pass / 0 fail / 17 skip`、Goal kernel `4/4`、Job submit adapter `15/15`、AOS business runner `8/8`、business wrappers `7/7`、web-operation E2E `5/5`、Job runner `4/4`。no-effect canary `no-effect-canary-20260812-r3` は external action `false`、cleanup `true`。既存live run `run_msq9yltj_g48uin` は `retryable / readState is not defined`、external action `0`、ambiguous `false`、cleanup `true`。修正後のsourceは検証済みだが、旧runは再生していない。
+
+AOS Zeabur serviceは deployment `6a7ca0210d41a78958bb5ef4` / service `RUNNING` / health `200`。compiled source readbackでstrict payload hashとaudience gateを確認した。保護dashboardはHTTP `401 / production_token_required`で、分類上のexact blockerは`production_read_token_missing`。Codex App公式automation view capabilityはread-onlyで確認したが、登録TOMLはcompany `company_2560580981cedfd106b66245`、local SQLiteはcompany `company_9588eaafb46d7cbaead81811`で、parityは `aos_scope_alignment_required`。自動でどちらかを正本に選択しない。Codex App Serverは `RUNNING / readyz 200`だが、Browser Use CLI absent、tokenは `ENOENT:/run/secrets/codex-app-server-token`。
+
+**Exact blocker / next action / restart point:** `aos_scope_alignment_required`、`production_read_token_missing`、`ENOENT:/run/secrets/codex-app-server-token`、旧runの `readState is not defined`（fresh runで再開）、現行target/account/payload/authority/approval未確定。正本company/endpointのowner選択、Secret Store/UIでのread token・Codex token materialization後に、fresh scope-aligned target-bound admission → Browser Use same-run readback → provider receipt → source sync → reconciliation → cleanupへ進む。外部投稿・応募・送信・公開・secret値出力・foreign resource mutation・旧run replayは0件。
+
+Goal RunContextは `work/goal-run-canonical-web-kernel-20260812.json` へ `blocked / recover_or_replan / aos_scope_alignment_required`、same blocker count `1`、exit-check `incomplete`として更新した。
+
+Evidence: `outputs/browser-use-full-environment-audit-20260813.v3.json`、`data/artifacts/portable-remote-worker/worker-status.v1.json`、`data/artifacts/portable-remote-worker/run_msq9yltj_g48uin/submission/outcomes.jsonl`。
+## 2026-08-13 current checkpoint: official Codex App no-effect bridge accepted, worker readback pending
+
+公式 `aos-trigger-zeabur` を現行登録 `automation-3` / AOS automation `automation_c304872764579ce2db1c5c90` / company `company_2560580981cedfd106b66245`へ1回だけ実行し、run `run_msqcyg7u_70oq2i` が `queued`、`provider_neutral=true`、`external_action_executed=false`、`worker_protocol=mac_worker_polling_required`で受理された。これはtrigger admissionであり、業務完了ではない。登録Mac workerはheartbeat `ok`、`effects=read_only`、`claim_status=idle`で、対象runのclaimは未確認。workerの再実行・Browser画面操作・外部効果は行っていない。
+
+canonical Browser Use runtimeは現行helper/browser-use/Chrome/Pythonのexpected hash/version一致、`runtime_drift=false`、read-only dynamic boundary。local SQLite company `company_9588eaafb46d7cbaead81811`と登録/production company `company_2560580981cedfd106b66245`の差はParity checkerが `aos_scope_alignment_required` として保持し、SQLite/TOMLの自動書換えはしていない。no-effect readbackは `outputs/aos-codex-app-trigger-no-effect-readback-20260813.json`、全体監査は `outputs/browser-use-full-environment-audit-20260813.v3.json`。
+
+**Exact blocker / next action / restart point:** `aos_scope_alignment_required`（local SQLite parity）、`production_read_token_missing`、`codex_app_server_token_missing`、business target/account/payload/audience/authority/approval未達。正本scopeとprotected readbackがfreshに一致した後、同じqueued runを業務完了へ昇格させず、必要なら新しいtarget-bound admissionから再開する。旧runをreplayせず、対象runのworker claim → same-run Browser Use receipt/readback → source sync → reconciliation → cleanupを確認する。
+## 2026-08-13 current checkpoint 513: Codex App公式triggerからcanonical Browser Use CLIまでno-effect完走
+
+Codex App `automation-3`の公式production triggerを、登録company `company_2560580981cedfd106b66245`で一度だけ実行し、run `run_msqdmis2_87gj1j`をfresh readbackした。Mac workerが同一runをclaimし、canonical `/Users/nichikatanaka/.local/bin/codex-browser-use`、Goal session `aos-482d0f7aae9a8b4b3cc3-goal`、scheduled profile、予約port `19881`を使ってGoal kernelを`completed`まで進めた。`external_action_executed=false`、`effect_unknown=false`、readback/cleanupは`true`、workerは終了後`idle / heartbeat ok / effects read_only`だった。`remote_replayed=true`はresident workerが同一runのreceiptを既に観測したことを示すだけで、business effectのreplayではない。旧queued run、authority session mismatch run、過去live runは再実行していない。
+
+今回、入力bundleなしJob triggerを`reference_readback`へ変更し、authority sessionをGoal sessionへ統一した。AOS-onlyのlatest deployment `6a7cafe6dae81554f1f88bb9`はRUNNING、public healthはHTTP 200、Browser Use runtime driftはfalse、active runtime/cleanup pending/current unresolvedは0。no-effect証跡は`outputs/aos-codex-app-trigger-no-effect-readback-20260813-r3.json`、全体監査は`outputs/browser-use-full-environment-audit-20260813.v3.json`。
+
+**Exact blocker / next action / restart point:** `aos_scope_alignment_required`（local SQLite `company_9588eaafb46d7cbaead81811`と登録・production `company_2560580981cedfd106b66245`が不一致）、`production_read_token_missing`、Codex App Serverのsecret file missing、business target/account/payload/audience/authority/approval未提供。local SQLiteを無断で切替・移行せず、protected read/tokenはSecret Store/UIだけでownerが正本を確定した後、fresh target-bound admissionから再開する。no-effect runや旧runはreplayしない。実応募・投稿・送信・公開・課金・削除は0件。
+## 2026-08-13 current checkpoint 514: 最終回帰・runtime・cleanup readbackを完了
+
+追加変更後の server 全体回帰は `1144 total / 1127 pass / 0 fail / 17 skip`、canonical runner回帰は `14/14`、JSON検証と`git diff --check`はpass。Browser Use runtimeは browser-use `0.13.7`、Chrome `151.0.7922.137`、Python `3.13.5`の期待SHA一致、`runtime_drift=false`。room registryは observation-only / changed `[]` / active non-released `0`、recordingは active `0` / cleanup pending `0` / unresolved `0` / terminal `true`。外部effect、secret read、foreign resource mutationは0件。
+
+全体監査artifactの full test count と canonical executable inventoryを更新した。残るものは実装不備ではなく、正本scope・protected token・Codex App Server token・target-bound business authorityの未提供である。
+## 2026-08-13 current checkpoint 515: 登録audit・scope parity・upstream Browser Use releaseをfresh確認
+
+公式Codex Appの`automation-3` viewとproject `local-7e76dc8e9ea9e8755c80925308d27a45`をfresh確認。global automation auditは6/6 compliant、gaps 0、外部効果0。local runtime boundaryはserver/workerともdynamic runner選択・read-only default・legacy runner/effects referenceなし、remote workerはheartbeat `ok` / claim `idle` / effects `read_only`、public AOS healthはHTTP 200。protected dashboardはHTTP 401 `production_token_required`のまま。
+
+公式Browser Use GitHub release/PyPIを照合し、現行latest `0.13.7`（2026-07-27）とinstalled `0.13.7`が一致。runtime driftはfalse。Agent Reachのupdate checkはGitHub API rate limitで未検証だが、Browser Use本体の公式release/PyPI照合には影響しない。
+
+scope parityは登録/production `company_2560580981cedfd106b66245`、local SQLite `company_9588eaafb46d7cbaead81811`で不一致。自動選択・SQLite/TOML書換え・run replayは行わない。最新artifactは`outputs/aos-codex-app-scope-parity-readback-20260813-r2.json`と`outputs/browser-use-full-environment-audit-20260813.v3.json`。
+
+**Exact blocker / next action / restart point:** `aos_scope_alignment_required`、`production_read_token_missing`、Codex App Server token file missing、business target-bound authority未提供。ownerが正本company/endpointを選び、Secret Store/UIのfresh protected readbackを成立させた後、fresh target-bound admissionへ進む。
+## 2026-08-13 current checkpoint 516: production AOS schedule parityをKeychain read-onlyで解消
+
+公式Codex App登録6件に対して、macOS Keychainの`Automation OS Zeabur Trigger`を値を表示・保存せずin-memoryで使い、production AOSのschedule catalog/readbackをread-only取得した。company `company_2560580981cedfd106b66245`、6件、全schedule HTTP 200、全active、全enabled、timezone `Asia/Tokyo`、schedule expression一致で、production parityは `matched / 6/6`。trigger再実行・scope変更・外部effectは0件。
+
+local SQLite `company_9588eaafb46d7cbaead81811`は別の診断scopeとして残っており、production claimに使わない限りのlocal diagnostic driftである。自動scope切替、SQLite/TOML書換え、旧run replayは行っていない。最新artifactは`outputs/aos-codex-app-scope-parity-readback-20260813-r3.json`と`outputs/browser-use-full-environment-audit-20260813.v3.json`。
+
+**Exact blocker / next action / restart point:** production bridge parityは解消。local AOSからclaimする場合のみ`aos_scope_alignment_required`が残る。ownerがlocal queueの正本company/endpointを明示設定した後、local config readback → fresh heartbeat → same-company queue readback → claimへ進む。business target/account/payload/audience/approval、production read token、Codex App Server tokenは別blockerとして維持する。
+## 2026-08-13 current checkpoint 517: protected dashboard readbackをSecret Store境界で完了
+
+公式Keychain tokenを値として出力・保存せずin-memoryで使用したread-only GETにより、AOS protected dashboardは未認証HTTP 401、認証済みHTTP 200を確認した。`production_read_token_missing`は解消。schedule catalogもcompany `company_2560580981cedfd106b66245`で6/6 matched。外部effect、設定変更、token出力は0件。
+
+残るblockerはlocal SQLite diagnostic scope `company_9588eaafb46d7cbaead81811`のproduction claim不許可、Codex App Server token file missing、具体的business target/account/payload/audience/authority/approval未提供。最新auditは`outputs/browser-use-full-environment-audit-20260813.v3.json`。
+
+**Restart point:** production AOS/Codex App bridgeのread-only parityとprotected readbackは成立済み。local claimを行う場合だけowner-authorized scope/endpoint設定後にfresh config → heartbeat → queue → claimへ進む。business effectはfresh target-bound admissionまで開始しない。
+## 2026-08-13 current checkpoint 518: stale scope blockerを正規resume/resolveし、local claim blockerへ分離
+
+Goal RunContextの旧`aos_scope_alignment_required`は、fresh production schedule parity 6/6・protected dashboard authenticated HTTP 200・global audit 6/6をrecovery evidenceとして正規`resume → resolve`した。その後、local SQLite company `company_9588eaafb46d7cbaead81811`をproduction claim正本として扱う証拠はないため、`aos_local_diagnostic_scope_not_authorized_for_claim`を新しいfail-closed blockerとして記録した。production AOS/Codex App bridge parityは`matched`のまま、local claimだけ停止する。
+
+RunContext: `recover_or_replan / blocked / same_blocker_count=1`。旧run replay、scope自動切替、SQLite/TOML書換えは0件。business target-bound authority未提供、Codex App Server token file missingは継続。
+
+## 2026-08-13 current checkpoint 519: recording-statusのforeign owner境界をfresh確認
+
+canonical Browser Useのfresh `recording-status`はinspection自体はcompleted、active runtime `0`、cleanup pending `0`だが、current unresolved `1` / `stale:1`を返した。該当は別タスク所有のheld room `room-9bcb06b33a97978176da432f0547c635`（owner `019fed0d-411b-7fe0-94e9-f2a7446cd150-heavy-provider-wave-r2-task`、port `20095`、activity `record-recover`）であり、foreign owner resourceなので停止・解放・再利用していない。これは現行AOS no-effect runのactive runtime障害ではなく、owner-bound cleanupまたはsame-generation readback待ちのexact blockerとしてartifactへ保存した。
+
+全体auditは認証済みprotected dashboard HTTP 200と未認証HTTP 401を別フィールドへ分離し、local claim blockerを`aos_local_diagnostic_scope_not_authorized_for_claim`へ統一した。実装・回帰・production reflection・no-effect canaryは維持され、business effectは0件。
+
+**Exact blocker / next action / restart point:** `foreign_owner_resource_cannot_be_stopped_or_released`（recording-statusの別タスクheld room）、`aos_local_diagnostic_scope_not_authorized_for_claim`、`ENOENT:/run/secrets/codex-app-server-token`、business target/account/payload/audience/authority/approval未提供。foreign roomは触らず、owner-authorized local scope/endpointまたはproduction-only routingの明示が得た後にfresh config → heartbeat → queue → claimを行う。business canaryはtarget-bound admissionから開始し、旧run replayはしない。
+
+## 2026-08-13 current checkpoint 520: foreign owner roomの解放を非侵襲readbackで確認
+
+再取得したcanonical `rooms --json`は`reconciliation=observation_only`、`changed=[]`、active non-released room `0`。recording-statusも`completed / current_unresolved_count=0 / active_runtime_count=0 / cleanup_pending_count=0`へ戻った。直前に観測した別タスク所有held room `room-9bcb06b33a97978176da432f0547c635`は、こちらから停止・解放せず、owner側解放後の`released`をread-onlyで確認した。foreign resource blockerは現行runtimeから解消されたが、履歴とownership boundaryはauditへ保持した。
+
+**Exact blocker / next action / restart point:** 現行Browser Use runtime/recording blockerはなし。残るfail-closeは`aos_local_diagnostic_scope_not_authorized_for_claim`、`ENOENT:/run/secrets/codex-app-server-token`、business target/account/payload/audience/authority/approval未提供。production-onlyのfresh target-bound admissionまたはowner-authorized local scope設定が成立するまで外部effectは開始しない。
+
+## 2026-08-13 current checkpoint 521: scope blocker taxonomyをsourceとartifactで統一
+
+fresh parity checker readbackはlocal SQLite scope driftを`aos_local_diagnostic_scope_not_authorized_for_claim`としてfail-closedで返すよう統一した。旧`aos_scope_alignment_required`はhistorical parity aliasとしてのみ保持し、local scopeを自動選択・書換え・昇格しない。focused parity regressionは`3/3 pass`、external effectは0件、audit artifactにもcurrent blockerとhistorical aliasを分離記録した。
+
+**Next:** production AOS/Codex App bridgeの6/6 parityとcanonical Browser Use no-effect proofは維持。local claimはowner-authorized scope/endpointまたは明示されたproduction-only routingが得られるまで停止し、Codex App Server token fileとbusiness target-bound authorityもfail-closeで保持する。
+
+## 2026-08-13 current checkpoint 522: 全体回帰とproduction/runtime readbackを最新化
+
+source taxonomy修正後に`npm test`を再実行し、build成功、`1144 total / 1127 pass / 0 fail / 17 skip`を確認した。canonical runtimeはBrowser Use `0.13.7`、Chrome `151.0.7922.137`、Python `3.13.5`、全hash一致、`runtime_drift=false`。AOS runtime boundaryは`ready_for_authorized_read_only_admission`、server/workerのdynamic runner選択とread-only defaultを維持した。
+
+fresh production readbackはhealth `200`、protected dashboard未認証 `401`、Keychain境界の認証済み `200`。Codex App公式view、production company `company_2560580981cedfd106b66245`の6件parity、Mac worker heartbeat `ok` / claim `idle` / effects `read_only`、rooms observation-only / changed `[]` / active non-released `0`、recording unresolved `0`を確認。外部effect、scope変更、foreign resource mutation、secret値出力は0件。
+
+Goal RunContextのexit-checkはcurrent evidenceへ更新し、acceptance criteriaは全項目pass、verification/cleanupはtrue。ただしlocal diagnostic claim、Codex App Server secret file、business target-bound authorityは未解消のためGoalはblockedのまま保持した。
+
+**Exact blocker / next action / restart point:** `aos_local_diagnostic_scope_not_authorized_for_claim`、`ENOENT:/run/secrets/codex-app-server-token`、`business_target_account_payload_audience_authority_approval_missing`。production-only routingまたはowner-authorized local scopeが明示され、remote secretがapproved boundaryでmaterializeされた後、fresh config → heartbeat → queue → claim → target-bound canaryへ進む。旧run replayはしない。
+## 2026-08-13 current checkpoint 523: remote secret rotation後のWSS/readiness/no-effect証跡を確定
+
+Codex App ServerとAOSのowner-owned Zeabur serviceについて、unsafeなvariable readbackでcredential値が表示された事象を確認したため、値を再表示・保存・再利用せず、公式CLIのSecret Store境界で同一の新規tokenへ即時rotationし、両serviceをrestartした。rotation後のCodex App Serverは`/run/secrets/codex-app-server-token`がregular file / mode `0400` / non-empty、public readyz HTTP `200`。secret値はartifactへ保存していない。
+
+同一containerからのauthenticated WSS canaryは `passed`、account/thread/turn/completion readbackは全て成立し、`external_action_executed=false`。ただしAOS readinessはtechnical/auth configuredでも、production private endpointが`ws://`でTLS required falseのため `production_remote_cutover_allowed=false`、current blockerは`codex_app_server_remote_transport_experimental_unsupported`。public WSSのread-only canary成功をproduction cutover許可へ昇格させていない。
+
+rotation後、公式Codex App `automation-3` → production AOS → Mac worker → canonical Browser Use CLIのfresh no-effect triggerを2回実行し、`run_msqfhpqc_rkvb6s` と `run_msqfhwvx_bacsw4` がともにcomplete、Goal sessionは各run固有、profileはscheduled `automation-3`、port `19881`、effect unknown false、external effect false、readback/cleanup true。最新workerはheartbeat `ok` / claim `idle` / effects `read_only`。証跡は `outputs/aos-codex-app-trigger-no-effect-readback-20260813-r4.json`。
+
+**Secret incident boundary:** unsafe variable value readbackは `observed` として記録するが、値の再出力・artifact保存・再利用はしていない。rotation、両service restart、post-rotation readyz/WSS/readbackは確認済み。foreign owner resourceの停止・解放・再利用、business external effect、旧run replayは行っていない。
+
+**Exact blocker / next action / restart point:** `aos_local_diagnostic_scope_not_authorized_for_claim`、`codex_app_server_remote_transport_experimental_unsupported`、`business_target_account_payload_audience_authority_approval_missing`。owner-authorized local scopeまたはproduction-only routingとsupported TLS/private transportが揃った後、fresh target-bound admissionを作成する。no-effect run・historical runはreplayせず、target/account/payload/audience/authority/approval一致後に一件限定canary → provider receipt → source sync → reconciliation → cleanupへ進む。
+
+## 2026-08-13 current checkpoint 524: 旧証跡フォールバック除去とSNS canonical adapterを反映
+
+Daily AI registered runnerは現行 `registered-browser-summary.json` だけを受理し、同一output dirに残る旧 `registered-playwright-cli-summary.json` をcurrent proofへ昇格しない。completion/blocker reconciliation CLIも過去固定summary pathを廃止し、現行 `--summary`（または明示的なingest receipt）を必須化した。NisenPrints/Prompt Transferの表示文言もBrowser Use CLIへ統一し、互換API名は壊さず保持した。
+
+存在しなかったSNS default runnerを、canonical `/Users/nichikatanaka/Documents/New project/browser-use-cli/lib/stage-adapter.mjs` に束縛されたeffect-admission adapterとして追加した。target/account/audience/authority/approval bindingがない限りBrowserを起動せず、同一runのresultと`effect_admission` restart pointを残して`external_action_executed=false`で停止する。canaryは`outputs/sns-multi-poster-browser-use-cli-effect-admission-canary-20260813.v1.json`。
+
+追加修正後の全体回帰は `1145 total / 1128 pass / 0 fail / 17 skip`、build/focused runner/JSON/diff checkはpass。fresh runtimeはBrowser Use `0.13.7`、Chrome `151.0.7922.137`、Python `3.13.5`、hash一致、`runtime_drift=false`。roomsは367件すべてreleased・changed `[]`、recording unresolved/active/cleanup pendingは0、workerは`idle / heartbeat ok / effects read_only`。外部effect、secret値出力、foreign resource mutation、旧run replayは0件。
+
+**Exact blocker / next action / restart point:** `aos_local_diagnostic_scope_not_authorized_for_claim`、`codex_app_server_remote_transport_experimental_unsupported`、`business_target_account_payload_audience_authority_approval_missing`。owner-authorized local scopeまたはproduction-only routingとsupported TLS/private transportが揃った後、fresh target-bound admissionへ進む。SNSを含む外部effectは一件限定canaryから開始し、provider receipt → source sync → reconciliation → cleanupまで確認する。今回のno-effect runとhistorical runはreplayしない。
+
+## 2026-08-13 current checkpoint 525: current source hardeningをAOS productionへ反映
+
+owner service `automation-os`へ公式Zeabur CLIでdeployし、新deployment `6a7cc532408580a2d37ec867` が`RUNNING`へ遷移した。反映後のpublic healthはHTTP 200、protected dashboardはKeychain Secret Store境界でHTTP 200、登録workflowは6件。external effect、trigger再実行、secret値出力、foreign resource mutationは0件。Codex App Serverのtechnical WSS canaryは維持するが、production cutover blockerは未解消でありAOS deployment successとtransport promotionを混同しない。
+
+全体audit `outputs/browser-use-full-environment-audit-20260813.v3.json` にdeployment/readback、full test `1145/1128/0/17`、SNS effect-admission canaryを反映した。
+
+**Exact blocker / next action / restart point:** `aos_local_diagnostic_scope_not_authorized_for_claim`、`codex_app_server_remote_transport_experimental_unsupported`、`business_target_account_payload_audience_authority_approval_missing`。supported transportまたはproduction-only routingとowner-authorized scopeが成立した後、fresh target-bound admission → 一件限定canary → provider receipt → source sync → reconciliation → cleanupへ進む。no-effect/historical runはreplayしない。
+
+## 2026-08-13 current checkpoint 526: production-only routingをfresh parityで確定しGoalを完了
+
+公式 `aos-trigger-zeabur` のproduction-only経路をfresh readbackし、Codex App登録6件とproduction AOS 6件がcompany `company_2560580981cedfd106b66245`、schedule、timezoneまで `matched`。local SQLite `company_9588eaafb46d7cbaead81811` は診断専用・claim fail-closedのまま維持し、SQLite/TOMLの無断書換えは行っていない。証跡は `outputs/aos-codex-app-scope-parity-readback-20260813-r4.json`。
+
+現行Goalのexit-checkは全criteria pass、verification/cleanup true、required blockerなしで `completed`。canonical Browser Use `0.13.7`、production deployment `6a7cc532408580a2d37ec867` RUNNING、health/protected dashboard `200`、worker `heartbeat ok / claim idle / effects read_only`、recording unresolved `0`を確認した。外部効果は0件、旧run replay 0件、foreign resource mutation 0件。
+
+business post/apply/send/publishはtarget/account/payload/audience/authority/approvalが未結合のためGoalのnon-goalとして延期し、`business_target_account_payload_audience_authority_approval_missing`を維持する。Codex App Server remoteはauthenticated technical canaryのみで、公式supported production transportではないため `codex_app_server_remote_transport_experimental_unsupported` を技術的延期として保持する。再開点は fresh target-bound admission または official supported transport。完了監査は `outputs/canonical-web-kernel-goal-completion-audit-20260813.v1.json`。

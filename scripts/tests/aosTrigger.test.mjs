@@ -15,6 +15,7 @@ const execFileAsync = promisify(execFile);
 function envWithoutTokens(extra = {}) {
   const env = { ...process.env, ...extra };
   delete env.AOS_TRIGGER_TOKEN;
+  delete env.AOS_TRIGGER_SERVICE_IDENTITY;
   delete env.AUTOMATION_OS_WRITE_TOKEN;
   delete env.AOS_TRIGGER_TOKEN_FILE;
   return env;
@@ -130,6 +131,17 @@ test("remote trigger requires HTTPS and a machine token before fetch", async () 
   const missingToken = await runTrigger(["--company", "company-a", "--automation", "automation-a", "--base-url", "https://example.test"], missingTokenEnv);
   assert.equal(missingToken.status, 2);
   assert.equal(jsonStdout(missingToken).exact_blocker, "aos_trigger_machine_token_required");
+});
+
+test("remote trigger never falls back to an operator/write token", async () => {
+  const env = envWithoutTokens({
+    AUTOMATION_OS_WRITE_TOKEN: "operator-token-must-not-authorize",
+    AOS_TRIGGER_ALLOWED_ORIGIN: "https://example.test"
+  });
+  const result = await runTrigger(["--company", "company-a", "--automation", "automation-a", "--base-url", "https://example.test"], env);
+  assert.equal(result.status, 2);
+  assert.equal(jsonStdout(result).exact_blocker, "aos_trigger_machine_token_required");
+  assert.doesNotMatch(result.stdout, /operator-token-must-not-authorize/iu);
 });
 
 test("remote token is origin-bound before it can be attached to a request", async () => {

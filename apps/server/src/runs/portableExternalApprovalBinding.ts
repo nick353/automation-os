@@ -11,6 +11,7 @@ export type PortableApprovalTarget = {
   candidate_key?: string;
   application_url?: string;
   job_url?: string;
+  job_id?: string;
   target_key?: string;
   account_ref?: string;
   content_key?: string;
@@ -22,6 +23,13 @@ export type PortableApprovalTarget = {
   attempt?: number;
   company?: string;
   role?: string;
+  audience?: string;
+  resume_locale?: string;
+  resume_sha256?: string;
+  owner_ref?: string;
+  authority_ref?: string;
+  source_snapshot_expires_at?: string;
+  input_bundle_ref?: string;
   target_digest?: string;
   source_state_digest?: string;
 };
@@ -86,9 +94,10 @@ function safeTargetValue(value: unknown): string | number | undefined {
 function targetForBundle(workflowId: string, bundle: Record<string, unknown>): PortableApprovalTarget {
   const target: PortableApprovalTarget = {};
   const keys: Array<keyof PortableApprovalTarget> = [
-    "candidate_key", "application_url", "job_url", "target_key", "account_ref", "content_key",
+    "candidate_key", "application_url", "job_url", "job_id", "target_key", "account_ref", "content_key",
     "product_key", "asset_manifest_id", "source_snapshot_id", "bucket", "sequence", "attempt",
-    "company", "role", "target_digest", "source_state_digest"
+    "company", "role", "audience", "resume_locale", "resume_sha256", "owner_ref", "authority_ref",
+    "source_snapshot_expires_at", "input_bundle_ref", "target_digest", "source_state_digest"
   ];
   for (const key of keys) {
     const value = safeTargetValue(bundle[key]);
@@ -109,8 +118,9 @@ function targetForBundle(workflowId: string, bundle: Record<string, unknown>): P
 export function portableBusinessTargetDigest(bundle: Record<string, unknown>): string {
   const keys = [
     "account_ref", "target_key", "payload_hash", "content_key", "product_key", "asset_manifest_id",
-    "job_url", "application_url", "candidate_key", "bucket", "sequence", "attempt",
-    "source_snapshot_id", "supply_run_id", "company", "role", "target_digest", "source_state_digest"
+    "job_url", "job_id", "application_url", "candidate_key", "bucket", "sequence", "attempt",
+    "source_snapshot_id", "source_snapshot_expires_at", "supply_run_id", "company", "role", "audience",
+    "resume_locale", "resume_sha256", "owner_ref", "authority_ref", "input_bundle_ref", "target_digest", "source_state_digest"
   ];
   return sha256(JSON.stringify(Object.fromEntries(keys.filter((key) => key in bundle).map((key) => [key, bundle[key]]))));
 }

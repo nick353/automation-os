@@ -24,7 +24,7 @@ const postgresWorkerTimeoutMs = Number(process.env.AUTOMATION_OS_POSTGRES_WORKER
 const postgresSchemaAssumedCurrent = process.env.AUTOMATION_OS_POSTGRES_SCHEMA_ASSUMED_CURRENT === "1";
 // Bump when an idempotent migration adds a durable schema object that must be
 // applied to already-bootstrapped PostgreSQL databases.
-export const postgresSchemaBootstrapVersion = 6;
+export const postgresSchemaBootstrapVersion = 8;
 
 export const dbPath = process.env.AUTOMATION_OS_DB ?? defaultDbPath;
 export const dbBackend = postgresUrl ? "postgres" : "sqlite";
@@ -948,6 +948,88 @@ function runIdempotentMigrations(): void {
     CREATE UNIQUE INDEX IF NOT EXISTS service_readiness_effect_ledger_company_capability_idx
       ON service_readiness_effect_ledger(company_id, capability_id)
       WHERE capability_id <> '';
+  `);
+  execSql(`
+    CREATE TABLE IF NOT EXISTS task_effect_ledger (
+      operation_key TEXT PRIMARY KEY,
+      company_id TEXT NOT NULL,
+      trace_id TEXT NOT NULL,
+      task_id TEXT NOT NULL,
+      workflow_id TEXT NOT NULL,
+      target_hash TEXT NOT NULL CHECK (length(target_hash) = 64),
+      payload_hash TEXT NOT NULL CHECK (length(payload_hash) = 64),
+      audience_hash TEXT NOT NULL CHECK (length(audience_hash) = 64),
+      state TEXT NOT NULL CHECK (state IN ('planned', 'admitted', 'executing', 'intent', 'confirmed', 'reconciled', 'closed')),
+      external_action_executed INTEGER NOT NULL CHECK (external_action_executed IN (0, 1)),
+      ambiguous INTEGER NOT NULL CHECK (ambiguous IN (0, 1)),
+      retry_forbidden INTEGER NOT NULL CHECK (retry_forbidden IN (0, 1)),
+      provider_receipt_hash TEXT,
+      source_sync_hash TEXT,
+      reconciliation_hash TEXT,
+      cleanup_hash TEXT,
+      exact_blocker TEXT,
+      restart_point TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      closed_at TEXT,
+      UNIQUE(company_id, operation_key)
+    );
+    CREATE INDEX IF NOT EXISTS task_effect_ledger_company_state_idx
+      ON task_effect_ledger(company_id, state, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS task_effect_ledger_trace_idx
+      ON task_effect_ledger(company_id, trace_id, updated_at DESC);
+  `);
+  execSql(`
+    CREATE TABLE IF NOT EXISTS job_application_target_admissions (
+      id TEXT PRIMARY KEY,
+      company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+      workflow_id TEXT NOT NULL CHECK (workflow_id = 'job-application-manager'),
+      registered_automation_id TEXT,
+      candidate_key TEXT NOT NULL,
+      job_url TEXT,
+      job_id TEXT,
+      application_url TEXT,
+      company_name TEXT NOT NULL,
+      role TEXT NOT NULL,
+      account_ref TEXT NOT NULL,
+      audience_json TEXT NOT NULL,
+      resume_locale TEXT NOT NULL,
+      resume_sha256 TEXT NOT NULL CHECK (length(resume_sha256) = 64),
+      payload_ref TEXT,
+      payload_sha256 TEXT CHECK (payload_sha256 IS NULL OR length(payload_sha256) = 64),
+      input_bundle_ref TEXT,
+      input_bundle_sha256 TEXT CHECK (input_bundle_sha256 IS NULL OR length(input_bundle_sha256) = 64),
+      owner_ref TEXT NOT NULL,
+      authority_ref TEXT NOT NULL,
+      approval_action_kind TEXT NOT NULL,
+      approval_policy_version TEXT NOT NULL,
+      approval_id TEXT,
+      approval_status TEXT NOT NULL DEFAULT 'not_started'
+        CHECK (approval_status IN ('not_started', 'pending', 'approved', 'rejected', 'expired')),
+      idempotency_key TEXT NOT NULL,
+      source_snapshot_id TEXT NOT NULL,
+      source_snapshot_expires_at TEXT NOT NULL,
+      bucket TEXT NOT NULL CHECK (bucket IN ('japan_targeted', 'overseas_global')),
+      sequence INTEGER NOT NULL CHECK (sequence >= 0),
+      attempt INTEGER NOT NULL CHECK (attempt >= 1),
+      supply_run_id TEXT NOT NULL,
+      target_digest TEXT NOT NULL CHECK (length(target_digest) = 64),
+      status TEXT NOT NULL DEFAULT 'registered'
+        CHECK (status IN ('registered', 'approval_pending', 'approved', 'running', 'submitted', 'reconciled', 'blocked', 'rejected', 'expired', 'cancelled')),
+      run_id TEXT,
+      trigger_idempotency_key TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(company_id, workflow_id, candidate_key),
+      UNIQUE(company_id, workflow_id, idempotency_key)
+    );
+    CREATE INDEX IF NOT EXISTS job_application_target_admissions_company_idx
+      ON job_application_target_admissions(company_id, workflow_id, status, created_at DESC);
+    CREATE INDEX IF NOT EXISTS job_application_target_admissions_run_idx
+      ON job_application_target_admissions(company_id, run_id, updated_at DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS job_application_target_admissions_one_active_idx
+      ON job_application_target_admissions(company_id, workflow_id)
+      WHERE status IN ('registered', 'approval_pending', 'approved', 'running', 'submitted', 'reconciled');
   `);
   normalizeLaneDefaults();
 }

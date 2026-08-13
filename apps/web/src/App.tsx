@@ -18,7 +18,6 @@ import {
   FolderKanban,
   Gauge,
   Home,
-  KeyRound,
   Layers3,
   LayoutTemplate,
   Lock,
@@ -54,44 +53,9 @@ const subTabLabels = [
   ["復旧", "recovery"]
 ];
 
-const writeTokenStorageKey = "automation-os-write-token";
-var runtimeWriteToken = "";
-
-function readWriteToken() {
-  if (runtimeWriteToken.trim()) return runtimeWriteToken.trim();
-  try {
-    return (window.sessionStorage.getItem(writeTokenStorageKey) || "").trim();
-  } catch {
-    return runtimeWriteToken.trim();
-  }
-}
-
-function persistWriteToken(value: string) {
-  runtimeWriteToken = value.trim();
-  try {
-    const normalized = value.trim();
-    window.sessionStorage.setItem(writeTokenStorageKey, normalized);
-    window.localStorage.removeItem(writeTokenStorageKey);
-  } catch {
-    // ignore storage errors in read-only mode
-  }
-}
-
-function clearWriteToken() {
-  runtimeWriteToken = "";
-  try {
-    window.sessionStorage.removeItem(writeTokenStorageKey);
-    window.localStorage.removeItem(writeTokenStorageKey);
-  } catch {
-    // ignore storage errors in read-only mode
-  }
-}
-
 function withMvpApiHeaders(init: RequestInit = {}) {
   const headers = new Headers(init.headers || {});
-  const token = readWriteToken();
-  if (token) headers.set("x-automation-os-token", token);
-  return { ...init, headers };
+  return { ...init, credentials: "include" as const, headers };
 }
 
 async function mvpFetch(input: RequestInfo | URL, init: RequestInit = {}) {
@@ -1414,6 +1378,14 @@ async function readMvpState() {
   return response.json();
 }
 
+async function bootstrapAuthSession(): Promise<ApiTokenScope> {
+  const response = await mvpFetch("/api/auth/session", { cache: "no-store" });
+  const body = await response.json().catch(() => ({})) as { ok?: boolean; scope?: string; exactBlocker?: string };
+  if (!response.ok || body.ok !== true) throw new Error(body.exactBlocker || `auth_session_http_${response.status}`);
+  if (body.scope === "read" || body.scope === "write" || body.scope === "unrestricted") return body.scope;
+  return "unknown";
+}
+
 async function readApiTokenCapability(): Promise<ApiTokenScope> {
   const response = await mvpFetch("/api/auth/capability", { cache: "no-store" });
   const body = await response.json().catch(() => ({})) as { ok?: boolean; scope?: string; exactBlocker?: string };
@@ -1719,7 +1691,6 @@ function IconButton({ children, onClick, label, controlId, disabled = false }: {
 function App() {
   const route = useRoute();
   const [receipt, setReceipt] = useState("Local Agent は待機中です。");
-  const [writeToken, setWriteToken] = useState(readWriteToken());
   const [automationRows, setAutomationRows] = useState<AutomationRow[]>([]);
   const [createdTemplates, setCreatedTemplates] = useState<string[]>([]);
   const [mvpState, setMvpState] = useState<MvpState>({});
@@ -1729,9 +1700,10 @@ function App() {
   const [apiTokenScope, setApiTokenScope] = useState<ApiTokenScope>("unknown");
   const [accessChecking, setAccessChecking] = useState(false);
   React.useEffect(() => {
-    readMvpState()
-      .then(async (state) => {
-        setApiTokenScope(await readApiTokenCapability().catch((): ApiTokenScope => "unknown"));
+    bootstrapAuthSession()
+      .then(async (scope) => {
+        const state = await readMvpState();
+        setApiTokenScope(scope || await readApiTokenCapability().catch((): ApiTokenScope => "unknown"));
         setMvpState(state);
         setMvpLoadStatus("ready");
         setAutomationRows(toAutomationRows(state.automations ?? []));
@@ -1742,9 +1714,9 @@ function App() {
       .catch((error) => {
         setMvpLoadStatus("error");
         const message = error instanceof Error ? error.message : "";
-        if (/mvp_state_http_(?:401|423)/.test(message)) {
+        if (/^(?:auth_session|mvp_state)_http_(?:401|423)$/.test(message) || /private_ingress_or_sso_required|server_auth_session_secret_missing/.test(message)) {
           setApiAccessRequired(true);
-          setReceipt("管理者用の利用キーが必要です。");
+          setReceipt("安全な管理セッションを確立できません。private ingressまたはSSOの設定を確認してください。");
           return;
         }
         setReceipt("Local Agent は待機中です。MVP API未接続のためローカル表示です。");
@@ -1754,8 +1726,8 @@ function App() {
     mvpFetch("/api/mvp/feedback", { cache: "no-store" })
       .then(async (response) => {
         const json = await response.json().catch(() => ({}));
-        // The operator gate owns the unauthenticated/locked state. Do not let
-        // this secondary readback replace its actionable token guidance.
+        // The authentication gate owns the unauthenticated/locked state. Do not
+        // let this secondary readback replace its actionable guidance.
         if (response.status === 401 || response.status === 423) return;
         if (!response.ok || json.ok === false) throw new Error("feedback_readback_failed");
         setFeedbackReadback(Array.isArray(json.feedbacks) ? json.feedbacks : []);
@@ -1766,8 +1738,6 @@ function App() {
   }, []);
   const page = useMemo(() => renderPage(route, {
     setReceipt,
-    writeToken,
-    setWriteToken,
     automationRows,
     setAutomationRows,
     createdTemplates,
@@ -1777,18 +1747,13 @@ function App() {
     mvpLoadStatus,
     feedbackReadback,
     setFeedbackReadback
-  }), [route, writeToken, automationRows, createdTemplates, mvpState, mvpLoadStatus, feedbackReadback]);
+  }), [route, automationRows, createdTemplates, mvpState, mvpLoadStatus, feedbackReadback]);
 
-  const unlockOperatorAccess = async () => {
-    if (!writeToken.trim()) {
-      setReceipt("管理者用の利用キーを入力してください。");
-      return;
-    }
+  const retryAuthSession = async () => {
     setAccessChecking(true);
-    persistWriteToken(writeToken);
     try {
+      const scope = await bootstrapAuthSession();
       const state = await readMvpState();
-      const scope = await readApiTokenCapability().catch(() => "unknown" as const);
       setApiTokenScope(scope);
       setMvpState(state);
       setMvpLoadStatus("ready");
@@ -1796,17 +1761,14 @@ function App() {
       setFeedbackReadback(state.feedbacks ?? []);
       setApiAccessRequired(false);
       setReceipt(scope === "read"
-        ? "読み取り専用キーを確認しました。閲覧とreadbackを利用できます。作成・更新・実行・承認には書き込みキーが必要です。"
-        : scope === "write"
-          ? "書き込みキーを確認しました。このタブでAutomation OSを利用できます。"
-          : "APIキーを確認しました。このタブでAutomation OSを利用できます。");
+        ? "読み取り専用の安全な管理セッションを確認しました。"
+        : "安全な管理セッションを確認しました。Automation OSを利用できます。");
     } catch (error) {
-      clearWriteToken();
       const message = error instanceof Error ? error.message : "";
-      if (message === "mvp_state_http_401" || message === "mvp_state_http_423") {
-        setReceipt("管理者用の利用キーを確認できませんでした。ZeaburのVariablesにあるAUTOMATION_OS_WRITE_TOKENを確認してください。入力値は表示・保存しません。");
+      if (/auth_session_http_(?:401|423)|mvp_state_http_(?:401|423)|private_ingress_or_sso_required|server_auth_session_secret_missing/.test(message)) {
+        setReceipt("安全な管理セッションを確立できません。private ingressまたはSSOの設定後に再確認してください。");
       } else {
-        setReceipt("管理者用の利用キーを確認できませんでした。値と公開先を確認してください。");
+        setReceipt("認証状態のreadbackに失敗しました。表示中の値は最新と断定できません。");
       }
     } finally {
       setAccessChecking(false);
@@ -1839,15 +1801,11 @@ function App() {
     return (
       <main className="main">
         <section>
-          <PageTitle title="Automation OS" desc="この画面は管理者専用です。" />
-          <Panel title="管理者アクセス" controlId="shell.operator.panel">
-            <form className="access-form" onSubmit={(event) => { event.preventDefault(); void unlockOperatorAccess(); }}>
-              <label className="operator-token-label" htmlFor="shell.operator.token-input">Automation OS APIキー</label>
-              <p id="operator-token-help" className="muted">通常のログインパスワードではありません。閲覧とreadbackだけなら <code>AUTOMATION_OS_READ_TOKEN</code>、作成・更新・実行・承認まで行うなら <code>AUTOMATION_OS_WRITE_TOKEN</code> を、ZeaburのVariablesからコピーしてください。確認時だけAPIの認証ヘッダーとして使い、チャット本文には入りません。このタブのsessionStorageにだけ保存し、タブを閉じると破棄します。Variablesを見られない場合は、管理者に確認してください。</p>
-              <input id="shell.operator.token-input" data-control-id="shell.operator.token-input" type="password" value={writeToken} onChange={(event) => setWriteToken(event.target.value)} autoComplete="off" autoFocus aria-describedby="operator-token-help operator-token-status" />
-              <div className="button-row"><Button controlId="shell.operator.open" type="submit" variant="primary" disabled={accessChecking}>{accessChecking ? "確認中" : "確認して開く"}</Button></div>
-              <div id="operator-token-status" className="action-note" role="status">{receipt}</div>
-            </form>
+          <PageTitle title="Automation OS" desc="この画面はprivate ingress / SSOで保護されています。" />
+          <Panel title="安全な管理セッション" controlId="shell.auth-session.panel">
+            <p className="muted">管理者用APIキーの入力は不要です。サーバーがSecret StoreまたはKeychainから認証情報を取得し、private ingress / SSOで確認できた場合だけHttpOnly・Secure cookieを発行します。cookieやtokenはブラウザ保存領域・URL・録画・artifactへ入りません。</p>
+            <div className="button-row"><Button controlId="shell.auth-session.retry" variant="primary" disabled={accessChecking} onClick={() => void retryAuthSession()}>{accessChecking ? "確認中" : "認証状態を再確認"}</Button></div>
+            <div id="auth-session-status" className="action-note" role="status">{receipt}</div>
           </Panel>
         </section>
       </main>
@@ -1970,8 +1928,8 @@ function TopHeader({ receipt, setReceipt, onSync, isOwner, mvpState, mvpLoadStat
           <button data-control-id="shell.top-header.search-submit" type="submit">移動</button>
         </form>
         <div className="top-receipt" role="status" title={receipt}>{receipt}</div>
-        <div className="muted" data-control-id="shell.operator.scope" aria-label="APIキーの権限範囲">
-          {apiTokenScope === "read" ? "API: 読み取り専用" : apiTokenScope === "write" ? "API: 書き込み許可" : apiTokenScope === "unrestricted" ? "API: ローカル保護なし" : "API: 権限範囲未確認"}
+        <div className="muted" data-control-id="shell.auth.scope" aria-label="管理セッションの権限範囲">
+          {apiTokenScope === "read" ? "認証: 読み取り専用" : apiTokenScope === "write" ? "認証: 書き込み許可" : apiTokenScope === "unrestricted" ? "認証: ローカル保護なし" : "認証: 権限範囲未確認"}
         </div>
       </div>
       <div className="top-actions">
@@ -2339,8 +2297,6 @@ function WebOperationAdmissionPanel({ model, projectId }: { model: AppModel; pro
 
 type AppModel = {
   setReceipt: (value: string) => void;
-  writeToken: string;
-  setWriteToken: React.Dispatch<React.SetStateAction<string>>;
   automationRows: AutomationRow[];
   setAutomationRows: React.Dispatch<React.SetStateAction<AutomationRow[]>>;
   createdTemplates: string[];
@@ -4403,6 +4359,196 @@ function ChatPage({ model }: { model: AppModel }) {
   );
 }
 
+function JobApplicationTargetAdmissionPanel({ model, companyId }: { model: AppModel; companyId: string }) {
+  const { setReceipt } = model;
+  const [form, setForm] = useState<Record<string, string>>({
+    workflow_id: "job-application-manager",
+    registered_automation_id: "automation-3",
+    job_url: "",
+    job_id: "",
+    application_url: "",
+    company_name: "",
+    role: "",
+    account_ref: "",
+    audience_company: "",
+    audience_job: "",
+    resume_locale: "ja-JP",
+    resume_sha256: "",
+    payload_ref: "",
+    payload_sha256: "",
+    input_bundle_ref: "",
+    input_bundle_sha256: "",
+    owner_ref: "owner:automation-os",
+    authority_ref: "authority:job-application-manager",
+    source_snapshot_id: "",
+    source_snapshot_expires_at: "",
+    bucket: "japan_targeted",
+    sequence: "1",
+    attempt: "1",
+    supply_run_id: ""
+  });
+  const [readback, setReadback] = useState<any>({ status: "loading", admissions: [] });
+  const [busy, setBusy] = useState<"register" | "trigger" | "approve" | null>(null);
+  const admissionKeyRef = useRef<{ fingerprint: string; key: string } | null>(null);
+  const triggerKeyRef = useRef<{ fingerprint: string; key: string } | null>(null);
+  const update = (key: string, value: string) => setForm((previous) => ({ ...previous, [key]: value }));
+  const loadReadback = async () => {
+    setReadback((previous: any) => ({ ...previous, status: "loading" }));
+    try {
+      const response = await mvpFetch(`/api/v1/companies/${encodeURIComponent(companyId)}/job-application-target-admissions`, { cache: "no-store" });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || body.ok === false) throw new Error(body.exactBlocker || body.error || `target_admission_readback_http_${response.status}`);
+      setReadback({ ...body, status: "ready" });
+    } catch (error) {
+      const exact = error instanceof Error ? error.message : "target_admission_readback_unavailable";
+      setReadback({ status: "error", exactBlocker: exact, admissions: [] });
+    }
+  };
+  React.useEffect(() => { void loadReadback(); }, [companyId]);
+  const activeAdmission = (readback.admissions ?? []).find((item: any) => ["registered", "approval_pending", "approved", "running", "submitted", "reconciled"].includes(item.status)) ?? null;
+  const register = async () => {
+    if (busy) return;
+    const fingerprint = JSON.stringify(form);
+    const idempotencyKey = stableIdempotencyKey(admissionKeyRef, "job-application-target-admission", fingerprint);
+    setBusy("register");
+    try {
+      const response = await mvpFetch(`/api/v1/companies/${encodeURIComponent(companyId)}/job-application-target-admissions`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "idempotency-key": idempotencyKey },
+        body: JSON.stringify({
+          workflow_id: "job-application-manager",
+          registered_automation_id: form.registered_automation_id || undefined,
+          job_url: form.job_url || undefined,
+          job_id: form.job_id || undefined,
+          application_url: form.application_url || undefined,
+          company_name: form.company_name,
+          role: form.role,
+          account_ref: form.account_ref,
+          audience: { company: form.audience_company, job: form.audience_job },
+          resume_locale: form.resume_locale,
+          resume_sha256: form.resume_sha256,
+          payload_ref: form.payload_ref || undefined,
+          payload_sha256: form.payload_sha256 || undefined,
+          input_bundle_ref: form.input_bundle_ref || undefined,
+          input_bundle_sha256: form.input_bundle_sha256 || undefined,
+          owner_ref: form.owner_ref,
+          authority_ref: form.authority_ref,
+          effect_specific_approval: { action_kind: "one_candidate_submit", policy_version: "automation_os_portable_external_approval_binding.v1" },
+          source_snapshot_id: form.source_snapshot_id,
+          source_snapshot_expires_at: form.source_snapshot_expires_at,
+          bucket: form.bucket,
+          sequence: Number(form.sequence),
+          attempt: Number(form.attempt),
+          supply_run_id: form.supply_run_id
+        })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || body.ok === false) throw new Error(body.exactBlocker || body.error || `target_admission_create_http_${response.status}`);
+      setReceipt(`応募対象を本番AOSへ登録しました。candidate=${body.admission?.candidate_key ?? "保存済み"} / approval=未開始 / external_action=false`);
+      await loadReadback();
+    } catch (error) {
+      const exact = error instanceof Error ? error.message : "target_admission_create_failed";
+      setReceipt(`応募対象は登録されていません。exact blocker=${exact}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+  const trigger = async () => {
+    if (!activeAdmission || busy) return;
+    const automationId = form.registered_automation_id || activeAdmission.registered_automation_id || "";
+    const fingerprint = `${activeAdmission.id}:${automationId}:${activeAdmission.status}`;
+    const idempotencyKey = stableIdempotencyKey(triggerKeyRef, "job-application-target-trigger", fingerprint);
+    setBusy("trigger");
+    try {
+      const response = await mvpFetch(`/api/v1/companies/${encodeURIComponent(companyId)}/job-application-target-admissions/${encodeURIComponent(activeAdmission.id)}/trigger`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "idempotency-key": idempotencyKey },
+        body: JSON.stringify({ automation_id: automationId })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.exactBlocker || body.error || `target_admission_trigger_http_${response.status}`);
+      setReceipt(`同一Runへ束縛しました。run=${body.run?.id ?? "保存済み"} / approval=${body.approval?.status ?? "未確認"} / external_action=false`);
+      await loadReadback();
+    } catch (error) {
+      const exact = error instanceof Error ? error.message : "target_admission_trigger_failed";
+      setReceipt(`応募Runは開始されていません。exact blocker=${exact}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+  const approve = async () => {
+    if (!activeAdmission?.approval_id || busy) return;
+    const approval = (readback.approvals ?? []).find((item: any) => item.id === activeAdmission.approval_id) ?? null;
+    const revision = Number(approval?.decision_revision ?? 1);
+    setBusy("approve");
+    try {
+      const response = await mvpFetch(`/api/v1/companies/${encodeURIComponent(companyId)}/approvals/${encodeURIComponent(activeAdmission.approval_id)}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json", "if-match": String(revision) },
+        body: JSON.stringify({ decision: "approved", expected_revision: revision, note: "Target-bound one-candidate application approval" })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || body.ok === false) throw new Error(body.exactBlocker || body.error || `target_admission_approval_http_${response.status}`);
+      setReceipt(`target-bound approvalを保存しました。approval=${activeAdmission.approval_id} / worker receipt/readback待ち / external_action=false`);
+      await loadReadback();
+    } catch (error) {
+      const exact = error instanceof Error ? error.message : "target_admission_approval_failed";
+      setReceipt(`approvalは確定していません。exact blocker=${exact}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+  const field = (key: string, label: string, placeholder = "") => <label key={key}>{label}<input data-control-id={`job-target-admission.${key}`} value={form[key] ?? ""} placeholder={placeholder} onChange={(event) => update(key, event.target.value)} /></label>;
+  return (
+    <Panel title="応募対象を登録（本番AOS target-bound admission）" controlId="job-target-admission.panel">
+      <p className="muted">登録先は現在のproduction AOS databaseです。Resume／payloadの中身、パスワード、OTP、token、個人情報は入力・保存・表示しません。Resumeとpayloadは参照先とSHA-256だけを指定します。</p>
+      <div className="action-note" role="status" data-control-id="job-target-admission.readback">source={readback.status === "ready" ? "production_aos_database" : readback.status} / workflow=job-application-manager / candidate={readback.candidate_count ?? 0} / approval={readback.approval_count ?? 0} / external_action=false</div>
+      {readback.exactBlocker && <p className="muted">readback blocker: {readback.exactBlocker}</p>}
+      <div className="form-grid">
+        {field("registered_automation_id", "automation-3 registered ID")}
+        <label>workflow_id<input data-control-id="job-target-admission.workflow_id" value="job-application-manager" readOnly /></label>
+        {field("job_url", "求人URL（URLまたは求人ID）")}
+        {field("job_id", "求人ID（URLがない場合）")}
+        {field("application_url", "応募URL（省略時は求人URL）")}
+        {field("company_name", "会社名")}
+        {field("role", "職種")}
+        {field("account_ref", "account_ref")}
+        {field("audience_company", "audience 対象会社")}
+        {field("audience_job", "audience 対象求人")}
+        {field("resume_locale", "Resume locale", "ja-JP")}
+        {field("resume_sha256", "Resume SHA-256")}
+        {field("payload_ref", "payload immutable ref")}
+        {field("payload_sha256", "payload SHA-256")}
+        {field("input_bundle_ref", "immutable input_bundle ref")}
+        {field("input_bundle_sha256", "input_bundle SHA-256")}
+        {field("owner_ref", "owner reference")}
+        {field("authority_ref", "authority reference")}
+        {field("source_snapshot_id", "source_snapshot_id")}
+        {field("source_snapshot_expires_at", "source snapshot expiry", "2026-08-13T12:00:00.000Z")}
+        {field("supply_run_id", "supply_run_id")}
+        <label>bucket<select data-control-id="job-target-admission.bucket" value={form.bucket} onChange={(event) => update("bucket", event.target.value)}><option value="japan_targeted">japan_targeted</option><option value="overseas_global">overseas_global</option></select></label>
+        {field("sequence", "sequence")}
+        {field("attempt", "attempt")}
+      </div>
+      <div className="preview-box" data-control-id="job-target-admission.approval-contract">
+        <strong>effect-specific approval</strong>
+        <p className="muted">action_kind=one_candidate_submit / policy=automation_os_portable_external_approval_binding.v1 / target digest・同一Run idempotency・provider receipt・source sync・reconciliation・cleanupを維持します。</p>
+      </div>
+      <div className="button-row">
+        <Button controlId="job-target-admission.register" variant="primary" disabled={Boolean(busy) || Boolean(activeAdmission)} onClick={() => { void register(); }}>{busy === "register" ? "登録確認中" : activeAdmission ? "登録済み（1件制限）" : "応募対象を登録"}</Button>
+        <Button controlId="job-target-admission.trigger" disabled={Boolean(busy) || !activeAdmission || Boolean(activeAdmission?.run_id)} onClick={() => { void trigger(); }}>{busy === "trigger" ? "同一Runへ束縛中" : "automation-3の同一Runを開始"}</Button>
+        <Button controlId="job-target-admission.approve" variant="primary" disabled={Boolean(busy) || activeAdmission?.approval_status !== "pending"} onClick={() => { void approve(); }}>{busy === "approve" ? "承認保存中" : "応募を承認"}</Button>
+        <Button controlId="job-target-admission.refresh" icon={<RefreshCw size={14} />} onClick={() => { void loadReadback(); }}>fresh readback</Button>
+      </div>
+      {activeAdmission && <div className="preview-box" data-control-id="job-target-admission.candidate-readback">
+        <strong>candidate readback</strong>
+        <p>candidate={activeAdmission.candidate_key} / status={activeAdmission.status} / approval={activeAdmission.approval_status} / run={activeAdmission.run_id ?? "未開始"}</p>
+        <p className="muted">source_snapshot={activeAdmission.source_snapshot_id} / expires={activeAdmission.source_snapshot_expires_at} / target_digest={activeAdmission.target_digest} / ref/hashのみ表示</p>
+      </div>}
+    </Panel>
+  );
+}
+
 function AutomationsPage({ model }: { model: AppModel }) {
   const { setReceipt, automationRows, mvpState, setMvpState, setAutomationRows } = model;
   const route = useRoute();
@@ -4606,6 +4752,7 @@ function AutomationsPage({ model }: { model: AppModel }) {
       </PageTitle>
       <div className="action-note" role="status">{pageNote}</div>
       <ProjectScopeNotice projectId={activeProject} mvpState={mvpState} />
+      {activeProject && <JobApplicationTargetAdmissionPanel model={model} companyId={activeProject} />}
       {activeProject && (registeredReadback.automations ?? []).some((item) => item.portable?.supported) && <div className="quick-action-row" data-control-id="projects.registered.quick-run.panel">
         <div>
           <strong>AOSで手動実行</strong>

@@ -68,6 +68,7 @@ export type PortableWorkflowInputBundle = {
   product_key?: string;
   asset_manifest_id?: string;
   job_url?: string;
+  job_id?: string;
   application_url?: string;
   candidate_key?: string;
   bucket?: "japan_targeted" | "overseas_global";
@@ -79,6 +80,13 @@ export type PortableWorkflowInputBundle = {
   margin?: number;
   company?: string;
   role?: string;
+  audience?: string;
+  resume_locale?: string;
+  resume_sha256?: string;
+  owner_ref?: string;
+  authority_ref?: string;
+  source_snapshot_expires_at?: string;
+  input_bundle_ref?: string;
   target_digest?: string;
   source_state_digest?: string;
 };
@@ -181,8 +189,9 @@ function normalizedEffectStage(input: PortableWorkflowStartInput): PortableBusin
 
 const PORTABLE_INPUT_BUNDLE_KEYS = new Set<keyof PortableWorkflowInputBundle>([
   "account_ref", "target_key", "payload_hash", "content_key", "product_key", "asset_manifest_id",
-  "job_url", "application_url", "candidate_key", "bucket", "sequence", "attempt",
-  "source_snapshot_id", "supply_run_id", "remaining", "margin", "company", "role", "target_digest", "source_state_digest"
+  "job_url", "job_id", "application_url", "candidate_key", "bucket", "sequence", "attempt",
+  "source_snapshot_id", "source_snapshot_expires_at", "supply_run_id", "remaining", "margin", "company", "role",
+  "audience", "resume_locale", "resume_sha256", "owner_ref", "authority_ref", "input_bundle_ref", "target_digest", "source_state_digest"
 ]);
 const PORTABLE_INPUT_BUNDLE_SECRET_KEY = /(token|cookie|password|secret|authorization|storage[_-]?state|credential|profile[_-]?path)/iu;
 

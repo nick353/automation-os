@@ -1,0 +1,30 @@
+import { createHash } from "node:crypto";
+
+export const ADAPTIVE_WAIT_SCHEMA_V1 = "automation_os_adaptive_wait.v1" as const;
+export const REDACTED_SNAPSHOT_SCHEMA_V1 = "automation_os_redacted_browser_snapshot.v1" as const;
+export const EVENTUAL_WATCHER_SCHEMA_V1 = "automation_os_eventual_consistency_watcher.v1" as const;
+export const INCIDENT_SCHEMA_V1 = "automation_os_incident.v1" as const;
+export const HUMAN_DEMONSTRATION_SCHEMA_V1 = "automation_os_human_demonstration.v1" as const;
+export const CORRECTION_FEEDBACK_SCHEMA_V1 = "automation_os_correction_feedback.v1" as const;
+
+const HASH = /^[a-f0-9]{64}$/u;
+function digest(value: unknown): string { return createHash("sha256").update(JSON.stringify(value)).digest("hex"); }
+export type TargetConfidenceV1 = { candidate_id: string; confidence: number; evidence: readonly ("accessibility_tree" | "dom" | "visible_text" | "role" | "label" | "name" | "coordinate")[]; unique: boolean; action_allowed: boolean };
+export function targetConfidence(input: Omit<TargetConfidenceV1, "action_allowed">): TargetConfidenceV1 { const actionAllowed = input.confidence >= 0.85 && input.unique && !input.evidence.includes("coordinate"); return { ...input, action_allowed: actionAllowed }; }
+export type AdaptiveWaitV1 = { schema: typeof ADAPTIVE_WAIT_SCHEMA_V1; until: readonly ("dom_changed" | "ax_changed" | "loading_cleared" | "route_changed" | "element_visible")[]; timeout_ms: number; poll_ms: number; fixed_sleep: false };
+export function adaptiveWait(until: AdaptiveWaitV1["until"], timeoutMs = 30_000): AdaptiveWaitV1 { return { schema: ADAPTIVE_WAIT_SCHEMA_V1, until, timeout_ms: timeoutMs, poll_ms: 200, fixed_sleep: false }; }
+export type ChaosCase = "label_changed" | "button_moved" | "modal" | "delayed_render" | "duplicate_element" | "login_expired" | "screen_drift" | "double_submit";
+export function chaosCases(): readonly ChaosCase[] { return ["label_changed", "button_moved", "modal", "delayed_render", "duplicate_element", "login_expired", "screen_drift", "double_submit"]; }
+export type AdapterHealthV1 = { adapter_id: string; provider_errors: number; timeout_count: number; drift_count: number; mode: "effectful" | "read_only" | "quarantined" };
+export function downgradeAdapterOnFailures(input: AdapterHealthV1, thresholds = { providerErrors: 3, timeouts: 3, drifts: 3 }): AdapterHealthV1 { const degraded = input.provider_errors >= thresholds.providerErrors || input.timeout_count >= thresholds.timeouts || input.drift_count >= thresholds.drifts; return degraded ? { ...input, mode: "read_only" } : input; }
+export type RedactedSnapshotV1 = { schema: typeof REDACTED_SNAPSHOT_SCHEMA_V1; run_id: string; stage: string; route_digest: string; dom_digest: string; ax_digest: string; state_digest: string; error_code: string | null; redacted: true; replayable_offline: true; secrets_present: false };
+export function redactSnapshot(input: { runId: string; stage: string; route: string; dom: string; ax: string; state: string; errorCode?: string | null }): RedactedSnapshotV1 { const scrub = (value: string) => value.replace(/(?:token|secret|password|cookie|otp|authorization|email|phone|address|resume|answer)\s*[:=]\s*[^\s,;]+/giu, "[redacted]"); return { schema: REDACTED_SNAPSHOT_SCHEMA_V1, run_id: input.runId, stage: input.stage, route_digest: digest(scrub(input.route)), dom_digest: digest(scrub(input.dom)), ax_digest: digest(scrub(input.ax)), state_digest: digest(scrub(input.state)), error_code: input.errorCode ?? null, redacted: true, replayable_offline: true, secrets_present: false }; }
+export function offlineReplay(snapshot: RedactedSnapshotV1): { status: "replayable" | "blocked"; external_action_executed: false; exact_blocker: string | null } { if (snapshot.redacted !== true || snapshot.secrets_present !== false) return { status: "blocked", external_action_executed: false, exact_blocker: "offline_replay_snapshot_not_redacted" }; return { status: "replayable", external_action_executed: false, exact_blocker: null }; }
+export type EventualWatcherV1 = { schema: typeof EVENTUAL_WATCHER_SCHEMA_V1; started_at: string; deadline: string; polls: number; status: "waiting" | "confirmed" | "not_found" | "timed_out"; never_completed_while_waiting: true };
+export function observeEventualConsistency(watcher: EventualWatcherV1, input: { found: boolean; now?: string }): EventualWatcherV1 { const now = Date.parse(input.now ?? new Date().toISOString()); if (input.found) return { ...watcher, polls: watcher.polls + 1, status: "confirmed" }; if (now >= Date.parse(watcher.deadline)) return { ...watcher, polls: watcher.polls + 1, status: "timed_out" }; return { ...watcher, polls: watcher.polls + 1, status: "waiting" }; }
+export type IncidentV1 = { schema: typeof INCIDENT_SCHEMA_V1; trace_id: string; category: "timeout" | "drift" | "ambiguous_effect" | "cleanup_residue" | "auth_failure"; severity: "warning" | "blocker"; current_stage: string; exact_blocker: string; restart_point: string; proof: readonly string[] };
+export function incident(input: Omit<IncidentV1, "schema">): IncidentV1 { return { schema: INCIDENT_SCHEMA_V1, ...input }; }
+export type HumanDemonstrationV1 = { schema: typeof HUMAN_DEMONSTRATION_SCHEMA_V1; demo_id: string; semantic_steps: readonly string[]; source: "human"; reviewed: boolean; effect_quarantined: true; promoted: boolean };
+export function humanDemonstration(input: { demoId: string; semanticSteps: readonly string[] }): HumanDemonstrationV1 { return { schema: HUMAN_DEMONSTRATION_SCHEMA_V1, demo_id: input.demoId, semantic_steps: input.semanticSteps, source: "human", reviewed: false, effect_quarantined: true, promoted: false }; }
+export type CorrectionFeedbackV1 = { schema: typeof CORRECTION_FEEDBACK_SCHEMA_V1; semantic_correction: string; old_selector_reused: false; old_target_reused: false; confidence: number };
+export function correctionFeedback(semanticCorrection: string, confidence: number): CorrectionFeedbackV1 { return { schema: CORRECTION_FEEDBACK_SCHEMA_V1, semantic_correction: semanticCorrection, old_selector_reused: false, old_target_reused: false, confidence }; }

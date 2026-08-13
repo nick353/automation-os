@@ -95,7 +95,7 @@ test("keeps safe Create session handoff summary for run details", () => {
         create_session_next_action: "Mac workerが保存済み相談を読んで実行します。",
         create_session_snapshot: {
           title: "ローカルCodex worker連携",
-          command: "sk-createSession1234567890abcdefghijklmnopqrstuvwxyz を使う",
+          command: "provider-createSession1234567890abcdefghijklmnopqrstuvwxyz を使う",
           messages: [
             { role: "user", text: "API課金を増やさずに使いたい" },
             { role: "assistant", text: "Mac workerで実行します。" }
@@ -632,53 +632,45 @@ test("frontend serializes planner requests and prevents stale responses from ove
   assert.match(chatSource, /controlId="chat\.create"[\s\S]*disabled=\{!canCreatePlan \|\| creating\}/);
 });
 
-test("frontend attaches the session-only operator token to API requests", () => {
+test("frontend uses same-origin credentials and never attaches a browser token", () => {
   const source = readAppSource();
   const headerSource = appSection(source, "function withMvpApiHeaders", "async function mvpFetch");
 
-  assert.match(headerSource, /headers\.set\("x-automation-os-token", token\)/);
+  assert.match(headerSource, /credentials: "include"/);
+  assert.doesNotMatch(headerSource, /x-automation-os-token|authorization/i);
   assert.doesNotMatch(headerSource, /authorization/i);
-  assert.match(source, /window\.sessionStorage/);
-  assert.match(source, /window\.localStorage\.removeItem\(writeTokenStorageKey\)/);
-  assert.doesNotMatch(source, /window\.localStorage\.setItem\(writeTokenStorageKey/);
+  assert.doesNotMatch(source, /writeTokenStorageKey|persistWriteToken|setWriteToken/);
 });
 
-test("frontend fails closed behind an operator-token gate on protected production readbacks", () => {
+test("frontend bootstraps a server-issued session and fails closed without private ingress or SSO", () => {
   const source = readAppSource();
   const appSource = appSection(source, "function App()", "function Sidebar");
 
   assert.match(source, /throw new Error\(`mvp_state_http_\$\{response\.status\}`\)/);
   assert.match(appSource, /mvp_state_http_\(\?:401\|423\)/);
+  assert.match(appSource, /bootstrapAuthSession\(\)/);
   assert.match(appSource, /setApiAccessRequired\(true\)/);
-  assert.match(appSource, /const unlockOperatorAccess = async \(\) =>/);
-  assert.match(appSource, /persistWriteToken\(writeToken\);[\s\S]*const state = await readMvpState\(\)/);
+  assert.match(appSource, /const retryAuthSession = async \(\) =>/);
   assert.match(appSource, /setApiAccessRequired\(false\)/);
-  assert.match(appSource, /readApiTokenCapability/);
-  assert.match(appSource, /AUTOMATION_OS_READ_TOKEN/);
-  assert.match(appSource, /title="管理者アクセス"/);
-  assert.match(appSource, /Automation OS APIキー/);
-  assert.match(appSource, /AUTOMATION_OS_WRITE_TOKEN/);
-  assert.match(appSource, /認証ヘッダー/);
-  assert.match(appSource, /通常のログインパスワードではありません/);
-  assert.match(appSource, /確認して開く/);
-  assert.match(appSource, /読み取り専用キーを確認しました/);
-  assert.doesNotMatch(appSource, /管理者だけが使う確認キーです/);
-  assert.match(appSource, /type="password"/);
-  assert.match(appSource, /autoComplete="off"/);
+  assert.match(appSource, /title="安全な管理セッション"/);
+  assert.match(appSource, /private ingressまたはSSO/);
+  assert.doesNotMatch(appSource, /shell\.operator\.token-input|管理者用APIキーの入力/);
 });
 
-test("first-use documentation keeps read and write token scopes truthful", () => {
+test("first-use documentation keeps server-side auth and token boundaries truthful", () => {
   const readme = readFileSync(resolve(process.cwd(), "README.md"), "utf8");
   const envExample = readFileSync(resolve(process.cwd(), ".env.example"), "utf8");
 
-  assert.match(readme, /閲覧・readbackだけなら `AUTOMATION_OS_READ_TOKEN`/);
-  assert.match(readme, /作成・更新・実行・承認まで行うなら `AUTOMATION_OS_WRITE_TOKEN`/);
+  assert.match(readme, /AUTOMATION_OS_READ_TOKEN/);
+  assert.match(readme, /HttpOnly・Secure・SameSite cookie/);
+  assert.match(readme, /Secret StoreまたはKeychain/);
   assert.match(readme, /6項目がChat入力欄へ下書きとして自動入力されます/);
   assert.match(readme, /テンプレートは操作を開始せず/);
-  assert.match(readme, /キーはこのタブのsessionStorageだけで扱い/);
+  assert.match(readme, /private ingressまたはSSO/);
   assert.doesNotMatch(readme, /All `\/api\/\*` routes except `\/api\/health` require `AUTOMATION_OS_WRITE_TOKEN`/);
-  assert.match(envExample, /GET\/HEAD readbacks accept a read-only token/);
-  assert.match(envExample, /state-changing calls require the write token/);
+  assert.match(envExample, /AUTOMATION_OS_SERVICE_IDENTITY_SECRET_ID/);
+  assert.match(envExample, /AUTOMATION_OS_SESSION_SECRET_ID/);
+  assert.match(envExample, /AUTOMATION_OS_PRIVATE_INGRESS_SECRET_ID/);
 });
 
 test("frontend selects actionable runs and repairs stale selections on refresh and polling", () => {

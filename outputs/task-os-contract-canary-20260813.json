@@ -1,0 +1,144 @@
+{
+  "schema": "automation_os_task_os_contract_canary.v1",
+  "run_id": "fresh-canary-1786609513937",
+  "fresh": true,
+  "browser_kernel": "automation_os_browser_kernel.v1",
+  "browser_surface": "browser_use_cli",
+  "session_binding": {
+    "run_id": "fresh-canary-1786609513937",
+    "session_id": "fresh-canary-1786609513937-session"
+  },
+  "capability_manifest": {
+    "upload": false,
+    "submit": false,
+    "decision": {
+      "status": "ready",
+      "missing": [],
+      "exact_blocker": null,
+      "alternative_stage": null
+    }
+  },
+  "target_resolution": {
+    "status": "resolved",
+    "candidate": {
+      "candidate_id": "example",
+      "source": "accessibility_tree",
+      "semantic_role": "link",
+      "accessible_name": "Example",
+      "visible": true,
+      "enabled": true,
+      "target_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "source_state_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  },
+  "observe_receipt": {
+    "schema": "automation_os_browser_command_receipt.v1",
+    "same_run": true,
+    "external_action_executed": false,
+    "cleanup_verified": true
+  },
+  "task_categories": [
+    {
+      "verb": "read",
+      "task_class": "read_only",
+      "omitted": [
+        "gmail_stage",
+        "G0",
+        "G1",
+        "approval_stage",
+        "effect_preview",
+        "release_stage"
+      ],
+      "next_stage": "capability_check"
+    },
+    {
+      "verb": "draft",
+      "task_class": "reversible_update",
+      "omitted": [
+        "gmail_stage",
+        "G0",
+        "G1",
+        "release_stage"
+      ],
+      "next_stage": "capability_check"
+    },
+    {
+      "verb": "submit",
+      "task_class": "external_effect",
+      "omitted": [
+        "gmail_stage",
+        "G0",
+        "G1",
+        "release_stage"
+      ],
+      "next_stage": "capability_check"
+    }
+  ],
+  "surface_routes": {
+    "read": {
+      "schema": "automation_os_surface_router.v1",
+      "selected": "api",
+      "attempted": [
+        "api"
+      ],
+      "ui_required": false,
+      "exact_blocker": null,
+      "next_action": "execute via api"
+    },
+    "submit": {
+      "schema": "automation_os_surface_router.v1",
+      "selected": "browser_use_cli",
+      "attempted": [
+        "browser_use_cli"
+      ],
+      "ui_required": true,
+      "exact_blocker": null,
+      "next_action": "execute via browser_use_cli"
+    }
+  },
+  "risk_budget": {
+    "schema": "automation_os_risk_budget.v1",
+    "task_id": "fresh-canary-1786609513937",
+    "max_effects": 1,
+    "max_minutes": 1,
+    "max_amount_cents": 0,
+    "allowed_domains": [
+      "example.com"
+    ],
+    "allowed_accounts": [
+      "account:canary"
+    ],
+    "used_effects": 0,
+    "used_minutes": 0,
+    "used_amount_cents": 0,
+    "status": "within_budget",
+    "exact_blocker": null
+  },
+  "backpressure": {
+    "schema": "automation_os_backpressure.v1",
+    "provider_rate_limit_ok": true,
+    "worker_load_ok": true,
+    "profile_lease_ok": true,
+    "port_lease_ok": true,
+    "concurrency_ok": true,
+    "status": "admitted",
+    "exact_blocker": null
+  },
+  "shadow": {
+    "external_action_executed": false,
+    "provider_receipt": "no_effect",
+    "source_sync": "no_effect",
+    "reconciliation": "no_effect",
+    "cleanup": "verified",
+    "promotion": "eligible"
+  },
+  "source_of_truth": "contract_fixture_not_production",
+  "exact_blocker": "production_protected_readback_and_business_target_missing",
+  "next_action": "run fresh protected production readback; do not claim business completion",
+  "restart_point": "same-run target-bound admission",
+  "proof": [
+    "automation_os_browser_command_receipt.v1",
+    "automation_os_shadow_mode.v1"
+  ],
+  "cleanup": "verified"
+}

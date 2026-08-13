@@ -8,6 +8,8 @@
  * same boundary.
  */
 
+import { getBrowserKernelContract, type BrowserKernelContractV1 } from "../browser/browserKernel.js";
+
 export const WEB_OPERATION_CONTRACT_SCHEMA_V1 = "automation_os_web_operation_contract.v1" as const;
 
 export const WEB_OPERATION_INTENT_SCHEMA_V1 = "automation_os_web_operation_intent.v1" as const;
@@ -84,6 +86,7 @@ export type WebOperationContractV1 = {
   browser_surface: "browser_use_cli";
   llm_provider_neutral: true;
   app_dependency: false;
+  browser_kernel: BrowserKernelContractV1;
   fixed_kernel: {
     workflow_owned_persistent_profile: true;
     reserved_port: true;
@@ -222,6 +225,7 @@ export const commonWebOperationContract: WebOperationContractV1 = Object.freeze(
   browser_surface: "browser_use_cli",
   llm_provider_neutral: true,
   app_dependency: false,
+  browser_kernel: getBrowserKernelContract(),
   fixed_kernel: Object.freeze(fixedKernel),
   adaptive_layer: Object.freeze(adaptiveLayer),
   operation_model: Object.freeze(operationModel),
@@ -255,6 +259,11 @@ export function validateWebOperationContract(contract: unknown): WebOperationCon
   }
   if (value.llm_provider_neutral !== true || value.app_dependency !== false) {
     throw new Error("web_operation_contract_dependency_invalid");
+  }
+  if (!value.browser_kernel || typeof value.browser_kernel !== "object" || Array.isArray(value.browser_kernel)
+    || (value.browser_kernel as Record<string, unknown>).schema !== "automation_os_browser_kernel.v1"
+    || JSON.stringify((value.browser_kernel as Record<string, unknown>).supported_surfaces) !== JSON.stringify(["browser_use_cli", "codex_app_browser"])) {
+    throw new Error("web_operation_contract_browser_kernel_invalid");
   }
   const expected = commonWebOperationContract as unknown as Record<string, unknown>;
   for (const section of ["fixed_kernel", "adaptive_layer"] as const) {

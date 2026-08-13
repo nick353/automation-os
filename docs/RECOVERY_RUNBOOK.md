@@ -45,8 +45,12 @@ AUTOMATION_OS_ENV_ROLE=production
 DATABASE_URL=<same production PostgreSQL URL>
 AUTOMATION_OS_REQUIRE_API_TOKEN=1
 AUTOMATION_OS_REQUIRE_WRITE_TOKEN=1
+# Inject through the host Secret Store; values never enter Git, chat, or UI.
 AUTOMATION_OS_READ_TOKEN=<read-only host secret>
 AUTOMATION_OS_WRITE_TOKEN=<write host secret>
+AUTOMATION_OS_SERVICE_IDENTITY_SECRET_ID=<dedicated automation-3 Secret Store record>
+AUTOMATION_OS_SESSION_SECRET_ID=<HttpOnly session signing Secret Store record>
+AUTOMATION_OS_PRIVATE_INGRESS_SECRET_ID=<private ingress proof Secret Store record>
 AUTOMATION_OS_RUNTIME_ROLE=control_plane
 AUTOMATION_OS_BROWSER_USE_RUNTIME_VERIFIED=0
 ```
