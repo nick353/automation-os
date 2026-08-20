@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,7 +24,7 @@ const postgresWorkerTimeoutMs = Number(process.env.AUTOMATION_OS_POSTGRES_WORKER
 const postgresSchemaAssumedCurrent = process.env.AUTOMATION_OS_POSTGRES_SCHEMA_ASSUMED_CURRENT === "1";
 // Bump when an idempotent migration adds a durable schema object that must be
 // applied to already-bootstrapped PostgreSQL databases.
-export const postgresSchemaBootstrapVersion = 8;
+export const postgresSchemaBootstrapVersion = 11;
 
 export const dbPath = process.env.AUTOMATION_OS_DB ?? defaultDbPath;
 export const dbBackend = postgresUrl ? "postgres" : "sqlite";
@@ -40,6 +40,8 @@ let dbInitializing = false;
 let dbInitRunCount = 0;
 let dbConnection: Database.Database | undefined;
 let postgresAsyncPool: pg.Pool | undefined;
+let postgresAsyncPoolErrorCount = 0;
+let postgresAsyncPoolLastErrorCode: string | null = null;
 
 export function sqlValue(value: SqlValue): string {
   if (value === null || value === undefined) return "NULL";
@@ -109,7 +111,7 @@ export function runSqlTransaction(steps: readonly SqlTransactionStep[]): void {
 function getPostgresAsyncPool(): pg.Pool {
   if (postgresAsyncPool) return postgresAsyncPool;
   if (!postgresUrl) throw new Error("PostgreSQL backend selected but DATABASE_URL/AUTOMATION_OS_DATABASE_URL is missing");
-  postgresAsyncPool = new pg.Pool({
+  const pool = new pg.Pool({
     connectionString: postgresUrl,
     max: 4,
     idleTimeoutMillis: 300_000,
@@ -118,7 +120,40 @@ function getPostgresAsyncPool(): pg.Pool {
     statement_timeout: 15_000,
     allowExitOnIdle: true
   });
+  // pg emits idle-client network failures on the Pool itself. Without a
+  // listener Node treats that event as uncaught and can terminate the AOS
+  // server, even though the next request could still fail closed cleanly.
+  // Keep only a redacted diagnostic code; never retain connection details.
+  pool.on("error", (error: unknown) => {
+    postgresAsyncPoolErrorCount += 1;
+    const candidate = error && typeof error === "object" && "code" in error
+      ? (error as { code?: unknown }).code
+      : null;
+    postgresAsyncPoolLastErrorCode = typeof candidate === "string" && candidate.trim()
+      ? candidate.trim().slice(0, 64)
+      : error instanceof Error && error.name
+        ? error.name.slice(0, 64)
+        : "postgres_pool_error";
+  });
+  postgresAsyncPool = pool;
   return postgresAsyncPool;
+}
+
+export function postgresAsyncPoolReadback(): { error_count: number; last_error_code: string | null } {
+  return {
+    error_count: postgresAsyncPoolErrorCount,
+    last_error_code: postgresAsyncPoolLastErrorCode
+  };
+}
+
+/**
+ * An idempotent async DDL statement can invalidate the in-process schema
+ * marker even though the same request has just completed the migration.
+ * Callers that own a bounded lazy schema ensure may restore the marker
+ * without rerunning the synchronous PostgreSQL bootstrap probe.
+ */
+export function markAsyncSchemaReady(): void {
+  if (dbBackend === "postgres") dbInitialized = true;
 }
 
 /**
@@ -148,6 +183,19 @@ export async function querySqlAsync<T = Record<string, unknown>>(sql: string): P
   }
   const result = await getPostgresAsyncPool().query(translateSqlForPostgres(sql));
   return result.rows as T[];
+}
+
+/**
+ * Async batch read for HTTP projections.  Keep the synchronous batch helper
+ * for CLI/worker callers, but never use it from a PostgreSQL request handler:
+ * querySqlBatch() spawns the legacy child synchronously and can block the
+ * server event loop while the remote database is slow.
+ */
+export async function querySqlBatchAsync(sqls: string[]): Promise<Array<Array<Record<string, unknown>>>> {
+  assertAsyncDatabaseReady();
+  if (dbBackend !== "postgres") return querySqlBatch(sqls);
+  const results = await Promise.all(sqls.map((sql) => querySqlAsync(sql)));
+  return results as Array<Array<Record<string, unknown>>>;
 }
 
 export async function execSqlAsync(sql: string): Promise<void> {
@@ -242,6 +290,55 @@ export function initDb(): void {
     return;
   }
   initializeDatabaseSchema();
+}
+
+/**
+ * Async startup boundary for the PostgreSQL server. The old startup path
+ * used initDb(), which performs a spawnSync schema probe and can freeze the
+ * Node event loop while the remote worker starts. Keep schema readiness
+ * before HTTP listen, but perform the probe/bootstrap without blocking the
+ * event loop.
+ */
+export async function initializePostgresSchemaAsync(): Promise<void> {
+  if (dbBackend !== "postgres" || dbInitialized) return;
+  if (postgresSchemaAssumedCurrent || process.env.AUTOMATION_OS_ASSUME_EXISTING_POSTGRES_SCHEMA === "1") {
+    dbInitialized = true;
+    dbInitRunCount += 1;
+    return;
+  }
+  if (dbInitializing) throw new Error("postgres_schema_initialization_reentrant");
+  dbInitializing = true;
+  try {
+    const marker = (await queryPostgresAsyncRaw(`
+      SELECT EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema=current_schema() AND table_name='automation_os_schema_bootstrap'
+      ) AS present;
+    `))[0];
+    let databaseVersion: number | null = null;
+    if (marker?.present === true) {
+      const version = (await queryPostgresAsyncRaw(
+        "SELECT version FROM automation_os_schema_bootstrap WHERE id='primary' LIMIT 1;"
+      ))[0];
+      if (version?.version !== undefined) databaseVersion = Number(version.version);
+    }
+    if (databaseVersion !== null && Number.isFinite(databaseVersion) && databaseVersion > postgresSchemaBootstrapVersion) {
+      throw new Error(`postgres_schema_version_newer_than_binary:${databaseVersion}:${postgresSchemaBootstrapVersion}`);
+    }
+    if (databaseVersion !== postgresSchemaBootstrapVersion) {
+      await runPostgresWorkerInitializeAsync();
+      const verified = (await queryPostgresAsyncRaw(
+        "SELECT version FROM automation_os_schema_bootstrap WHERE id='primary' LIMIT 1;"
+      ))[0];
+      if (Number(verified?.version) !== postgresSchemaBootstrapVersion) {
+        throw new Error("postgres_schema_bootstrap_verification_failed");
+      }
+    }
+    dbInitialized = true;
+    dbInitRunCount += 1;
+  } finally {
+    dbInitializing = false;
+  }
 }
 
 export function initializePostgresSchemaUnderLock(): void {
@@ -468,6 +565,18 @@ function runIdempotentMigrations(): void {
     CREATE INDEX IF NOT EXISTS company_memberships_user_idx ON company_memberships(user_id, status);
     CREATE INDEX IF NOT EXISTS company_memberships_company_idx ON company_memberships(company_id, status);
     CREATE INDEX IF NOT EXISTS company_audit_events_company_idx ON company_audit_events(company_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS web_operation_settings (
+      id TEXT PRIMARY KEY,
+      backend TEXT NOT NULL,
+      revision INTEGER NOT NULL DEFAULT 1,
+      chrome_profile_id TEXT NOT NULL DEFAULT 'profile2',
+      chrome_profile_name TEXT NOT NULL DEFAULT 'Profile 2',
+      chrome_profile_directory TEXT NOT NULL DEFAULT 'Profile 2',
+      chrome_surface TEXT NOT NULL DEFAULT 'signed_chrome_extension_profile2',
+      updated_at TEXT NOT NULL,
+      updated_by TEXT
+    );
   `);
   ensureColumn("users", "auth_provider", "TEXT NOT NULL DEFAULT 'legacy_operator_token'");
   ensureColumn("users", "auth_subject", "TEXT NOT NULL DEFAULT ''");
@@ -857,6 +966,21 @@ function runIdempotentMigrations(): void {
     );
 
     CREATE INDEX IF NOT EXISTS company_connection_account_refs_company_idx ON company_connection_account_refs(company_id, status, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS codex_app_server_registry_readbacks (
+      id TEXT PRIMARY KEY,
+      company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+      source TEXT NOT NULL,
+      captured_at TEXT NOT NULL,
+      registry_json TEXT NOT NULL,
+      revision INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(company_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS codex_app_server_registry_readbacks_company_idx
+      ON codex_app_server_registry_readbacks(company_id, captured_at DESC);
   `);
   ensureColumn("durable_jobs", "execution_mode", "TEXT NOT NULL DEFAULT 'dry_run'");
   ensureColumn("durable_jobs", "external_intent_json", "TEXT NOT NULL DEFAULT '{}'");
@@ -1031,6 +1155,70 @@ function runIdempotentMigrations(): void {
       ON job_application_target_admissions(company_id, workflow_id)
       WHERE status IN ('registered', 'approval_pending', 'approved', 'running', 'submitted', 'reconciled');
   `);
+  execSql(`
+    CREATE TABLE IF NOT EXISTS job_application_candidate_supply (
+      id TEXT PRIMARY KEY,
+      company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+      candidate_key TEXT NOT NULL,
+      source_snapshot_id TEXT NOT NULL,
+      source_snapshot_expires_at TEXT NOT NULL,
+      supply_run_id TEXT NOT NULL,
+      job_url TEXT,
+      job_id TEXT,
+      application_url TEXT,
+      company_name TEXT NOT NULL,
+      role TEXT NOT NULL,
+      language TEXT NOT NULL,
+      resume_locale TEXT NOT NULL,
+      salary_original_min REAL,
+      salary_original_max REAL,
+      salary_currency TEXT NOT NULL,
+      salary_period TEXT NOT NULL DEFAULT 'annual',
+      fx_to_jpy REAL,
+      salary_jpy REAL,
+      salary_source_url TEXT,
+      fx_source_url TEXT,
+      salary_source_time TEXT,
+      work_location TEXT NOT NULL,
+      work_authorization TEXT NOT NULL,
+      remote_mode TEXT NOT NULL,
+      status TEXT NOT NULL,
+      blocker TEXT,
+      next_action TEXT NOT NULL,
+      dedupe_key TEXT NOT NULL,
+      target_digest TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(company_id, candidate_key)
+    );
+    CREATE INDEX IF NOT EXISTS job_application_candidate_supply_company_idx
+      ON job_application_candidate_supply(company_id, status, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS job_application_candidate_supply_dedupe_idx
+      ON job_application_candidate_supply(company_id, dedupe_key, created_at DESC);
+    CREATE TABLE IF NOT EXISTS job_application_sheet_mirrors (
+      id TEXT PRIMARY KEY,
+      company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+      candidate_key TEXT NOT NULL,
+      date_jst TEXT NOT NULL,
+      row_json TEXT NOT NULL,
+      row_fingerprint TEXT NOT NULL,
+      sync_status TEXT NOT NULL,
+      blocker TEXT,
+      updated_at TEXT NOT NULL,
+      UNIQUE(company_id, candidate_key)
+    );
+    CREATE INDEX IF NOT EXISTS job_application_sheet_mirrors_company_idx
+      ON job_application_sheet_mirrors(company_id, sync_status, updated_at DESC);
+  `);
+  ensureColumn("job_application_candidate_supply", "salary_period", "TEXT NOT NULL DEFAULT 'annual'");
+  execSql(`
+    UPDATE job_application_candidate_supply
+    SET salary_period='hourly', salary_jpy=NULL, status='blocked',
+        blocker='annual_salary_threshold_not_proven_from_hourly_contract_range',
+        next_action='時給を年収へ換算する契約時間根拠がないため、年収根拠を確認してから進む'
+    WHERE salary_period='annual'
+      AND (lower(role) LIKE '%/hr%' OR lower(role) LIKE '%per hour%' OR lower(role) LIKE '%hourly%');
+  `);
   normalizeLaneDefaults();
 }
 
@@ -1184,6 +1372,15 @@ export function insert(table: string, row: Record<string, SqlValue>): void {
   execSql(`INSERT INTO ${table} (${columns.join(", ")}) VALUES (${values.join(", ")});`);
 }
 
+export async function insertAsync(table: string, row: Record<string, SqlValue>): Promise<void> {
+  const normalizedRow = table === "runs" && row.execution_source === undefined
+    ? { ...row, execution_source: "automation-os", quarantined: row.quarantined ?? 0 }
+    : row;
+  const columns = Object.keys(normalizedRow);
+  const values = columns.map((column) => sqlValue(normalizedRow[column]));
+  await execSqlAsync(`INSERT INTO ${table} (${columns.join(", ")}) VALUES (${values.join(", ")});`);
+}
+
 export function upsert(table: string, row: Record<string, SqlValue>, conflictColumn = "id"): void {
   const normalizedRow = table === "runs" && row.execution_source === undefined
     ? { ...row, execution_source: "automation-os", quarantined: row.quarantined ?? 0 }
@@ -1210,6 +1407,9 @@ export function resetDemoData(): void {
     DELETE FROM durable_jobs;
     DELETE FROM durable_schedule_occurrences;
     DELETE FROM durable_concurrency_slots;
+    DELETE FROM job_application_sheet_mirrors;
+    DELETE FROM job_application_candidate_supply;
+    DELETE FROM job_application_target_admissions;
     DELETE FROM run_artifacts;
     DELETE FROM feedback_artifacts;
     DELETE FROM proofs;
@@ -1290,6 +1490,11 @@ function queryPostgresSql(sql: string): Array<Record<string, unknown>> {
 
 function queryPostgresSqlBatch(sqls: string[]): Array<Array<Record<string, unknown>>> {
   return runPostgresWorkerBatch(sqls.map((sql) => translateSqlForPostgres(sql)));
+}
+
+async function queryPostgresAsyncRaw(sql: string): Promise<Array<Record<string, unknown>>> {
+  const result = await getPostgresAsyncPool().query(translateSqlForPostgres(sql));
+  return result.rows as Array<Record<string, unknown>>;
 }
 
 function runPostgresWorker(operation: "exec" | "query", sql: string): Array<Record<string, unknown>> {
@@ -1393,6 +1598,58 @@ function runPostgresWorkerInitialize(): void {
     if (detail) throw new Error(detail);
     throw error;
   }
+}
+
+async function runPostgresWorkerInitializeAsync(): Promise<void> {
+  if (!postgresUrl) throw new Error("PostgreSQL backend selected but DATABASE_URL/AUTOMATION_OS_DATABASE_URL is missing");
+  const command = resolvePostgresWorkerCommand();
+  const timeoutMs = Math.max(postgresWorkerTimeoutMs, 120_000);
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    const child = spawn(command.bin, command.args, {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        AUTOMATION_OS_POSTGRES_URL: postgresUrl,
+        AUTOMATION_OS_POSTGRES_WORKER_TIMEOUT_MS: String(timeoutMs)
+      },
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.kill("SIGTERM");
+      rejectPromise(new Error("postgres_schema_bootstrap_timeout"));
+    }, timeoutMs + 1000);
+    child.stdout.on("data", (chunk) => { stdout += String(chunk); });
+    child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+    child.once("error", (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      rejectPromise(error);
+    });
+    child.once("exit", (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (code !== 0) {
+        const detail = [stdout.trim(), stderr.trim()].filter(Boolean).join("\n");
+        rejectPromise(new Error(detail || `postgres_schema_bootstrap_exit:${code ?? "unknown"}`));
+        return;
+      }
+      try {
+        const parsed = JSON.parse(stdout) as { ok?: boolean; error?: string };
+        if (parsed.ok !== true) throw new Error(parsed.error ?? "postgres_schema_bootstrap_failed");
+        resolvePromise();
+      } catch (error) {
+        rejectPromise(error);
+      }
+    });
+    child.stdin.end(`${JSON.stringify({ operation: "initialize", bootstrapVersion: postgresSchemaBootstrapVersion })}\n`);
+  });
 }
 
 function resolvePostgresWorkerCommand(): { bin: string; args: string[] } {
