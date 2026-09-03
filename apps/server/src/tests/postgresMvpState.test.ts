@@ -500,6 +500,46 @@ test("Postgres MVP readback never claims a stale portable worker heartbeat is fr
   assert.equal(worker.external_action_executed, false);
 });
 
+test("Postgres MVP readback selects a portable worker heartbeat from any visible company", async () => {
+  const liveHeartbeat = new Date(Date.now() - 1_000).toISOString();
+  const client: PostgresMvpStateQueryClient = {
+    async query(text) {
+      if (text.includes("FROM company_memberships")) {
+        return {
+          rows: [
+            { id: "company_alpha", slug: "alpha", name: "Alpha", status: "active", role: "owner" },
+            { id: "company_live_worker", slug: "live-worker", name: "Live Worker", status: "active", role: "owner" }
+          ]
+        };
+      }
+      if (text.includes("FROM system_checks")) {
+        return {
+          rows: [{
+            id: "portable-worker-heartbeat-second-company",
+            kind: "portable_mac_worker",
+            status: "running",
+            created_at: liveHeartbeat,
+            metadata_json: JSON.stringify({ company_id: "company_live_worker", heartbeat_at: liveHeartbeat })
+          }]
+        };
+      }
+      return { rows: [] };
+    }
+  };
+
+  const state = await readPostgresMvpState({
+    actorUserId: "actor_multi_company_worker",
+    queryClient: client,
+    forceFresh: true
+  });
+  const worker = state.worker as Record<string, unknown>;
+  assert.deepEqual((state.company_scope as Record<string, unknown>).company_ids, ["company_alpha", "company_live_worker"]);
+  assert.equal(worker.heartbeat_fresh, true);
+  assert.equal(worker.heartbeat_at, liveHeartbeat);
+  assert.equal(worker.exact_blocker, null);
+  assert.equal(worker.readback_status, "fresh_portable_worker_heartbeat");
+});
+
 test("Postgres MVP readback clears a stale heartbeat blocker after fresh live transport readback", async () => {
   const statusPath = join(isolatedPortableArtifactRoot, "worker-status.v1.json");
   const liveHeartbeat = new Date(Date.now() - 1_000).toISOString();

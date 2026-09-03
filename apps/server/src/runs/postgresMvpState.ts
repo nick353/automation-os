@@ -361,7 +361,7 @@ async function readPostgresMvpStateUncached(options: PostgresMvpStateOptions = {
     const portableHeartbeat = checks
       .filter((row) => row.kind === "portable_mac_worker")
       .map((row) => ({ row, metadata: parseObject(row.metadata_json) }))
-      .filter(({ metadata }) => metadata.company_id === undefined || metadata.company_id === companyIds[0])
+      .filter(({ metadata }) => metadata.company_id === undefined || companyIds.includes(String(metadata.company_id)))
       .sort((left, right) => String(right.row.created_at ?? "").localeCompare(String(left.row.created_at ?? "")))
       .at(0);
     const portableMetadata = portableHeartbeat?.metadata ?? {};
@@ -622,7 +622,7 @@ async function readPostgresMvpStateSummary({
   const portableHeartbeat = checks
     .filter((row) => row.kind === "portable_mac_worker")
     .map((row) => ({ row, metadata: parseObject(row.metadata_json) }))
-    .filter(({ metadata }) => metadata.company_id === undefined || metadata.company_id === companyIds[0])
+    .filter(({ metadata }) => metadata.company_id === undefined || companyIds.includes(String(metadata.company_id)))
     .sort((left, right) => String(right.row.created_at ?? "").localeCompare(String(left.row.created_at ?? "")))
     .at(0);
   const portableMetadata = portableHeartbeat?.metadata ?? {};
