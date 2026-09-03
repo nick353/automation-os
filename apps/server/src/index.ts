@@ -67,7 +67,7 @@ import {
 } from "./codex/automationMigrationLedger.js";
 import { refreshKnowledgeNotes } from "./knowledge/refresh.js";
 import { createPlannerResponse, buildLocalPlanner, type CreatePlannerMessage } from "./planner/createPlanner.js";
-import { cancelCreatePlannerJob, enqueueCreatePlannerJob, enqueueCreatePlannerJobAsync, getCreatePlannerJob, listCreateChatThreads, type CreatePlannerJob } from "./planner/createPlannerJobs.js";
+import { cancelCreatePlannerJob, closeSharedAppServerClient, enqueueCreatePlannerJob, enqueueCreatePlannerJobAsync, getCreatePlannerJob, listCreateChatThreads, processQueuedCreatePlannerJobs, type CreatePlannerJob } from "./planner/createPlannerJobs.js";
 import { createSkillDraft } from "./planner/skillFactory.js";
 import {
   createResearchPlan,
@@ -2511,6 +2511,8 @@ const researchPlanSchedulerInFlightDueKeys = new Set<string>();
 let durableAutomationSchedulerTimer: ReturnType<typeof setInterval> | undefined;
 let durableAutomationSchedulerInFlight = false;
 let durableAutomationSchedulerInFlightPromise: ReturnType<typeof runDurableAutomationSchedulerOnce> | undefined;
+let createPlannerWorkerTimer: ReturnType<typeof setInterval> | undefined;
+let createPlannerWorkerInFlight = false;
 
 /** Serialize manual and resident scheduler ticks over the same Postgres pool. */
 function runDurableAutomationSchedulerOnceSerialized() {
@@ -5968,6 +5970,7 @@ export async function startServer() {
         startObsidianAutonomyLoops();
         startDurableAutomationScheduler();
         startResearchPlanScheduler();
+        startCreatePlannerWorker();
       }, 100);
       backgroundStartup.unref?.();
     }
@@ -5978,6 +5981,8 @@ export async function startServer() {
     stopObsidianAutonomyLoops();
     stopDurableAutomationScheduler();
     stopResearchPlanScheduler();
+    stopCreatePlannerWorker();
+    closeSharedAppServerClient();
   });
   return server;
 }
@@ -9742,6 +9747,55 @@ function stopDurableAutomationScheduler() {
   clearInterval(durableAutomationSchedulerTimer);
   durableAutomationSchedulerTimer = undefined;
   durableAutomationSchedulerInFlight = false;
+}
+
+/**
+ * Pick up the company-scoped Chat planner queue in the same production
+ * control-plane process.  The database lease in createPlannerJobs remains the
+ * authority, so a Mac worker can coexist without double-processing a job.
+ * This is deliberately opt-in through the server start command: local tests
+ * and development servers do not unexpectedly consume a planner queue.
+ */
+function startCreatePlannerWorker() {
+  const intervalMs = createPlannerWorkerIntervalMs();
+  if (intervalMs <= 0 || createPlannerWorkerTimer) return;
+  const tick = () => {
+    if (createPlannerWorkerInFlight) return;
+    createPlannerWorkerInFlight = true;
+    void processQueuedCreatePlannerJobs(1, {
+      workerId: `server-planner-${hostname()}`
+    })
+      .then((jobs) => {
+        const job = jobs[0];
+        if (job?.status === "blocked" && job.exactBlocker) {
+          console.error(`Create planner worker blocked: ${job.exactBlocker}`);
+        }
+      })
+      .catch(() => {
+        console.error("Create planner worker tick failed");
+      })
+      .finally(() => {
+        createPlannerWorkerInFlight = false;
+      });
+  };
+  createPlannerWorkerTimer = setInterval(tick, intervalMs);
+  createPlannerWorkerTimer.unref?.();
+  tick();
+}
+
+function stopCreatePlannerWorker() {
+  if (!createPlannerWorkerTimer) return;
+  clearInterval(createPlannerWorkerTimer);
+  createPlannerWorkerTimer = undefined;
+  createPlannerWorkerInFlight = false;
+}
+
+function createPlannerWorkerIntervalMs(): number {
+  const raw = process.env.AUTOMATION_OS_CREATE_PLANNER_WORKER_INTERVAL_MS?.trim() ?? "";
+  if (!raw) return 0;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return Math.max(5_000, Math.min(10 * 60_000, Math.floor(value)));
 }
 
 function durableAutomationSchedulerIntervalMs(): number {
