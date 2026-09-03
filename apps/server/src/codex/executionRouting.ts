@@ -7,7 +7,7 @@ export type ExecutionRoutingSource = "manual" | "scheduler" | "create_view" | "r
 export type ExecutionRoutingController = "automation_os_api";
 export type ExecutionRoutingSurface = "browser_lane" | "codex_cli" | "registered_runner" | "worker_loop";
 export type ExecutionRoutingPhase = "route_decision" | "route_readback";
-export type ExecutionRoutingExactBlocker = "chrome_extension_required" | "in_app_browser_required" | "route_readback_mismatch" | "route_decision_missing" | "browser_use_cli_required" | "browser_use_cli_workflow_adapter_missing" | "browser_use_cli_external_effects_disabled" | "browser_use_cli_stale_reconciliation_required" | "registered_browser_workflow_common_boundary_required" | null;
+export type ExecutionRoutingExactBlocker = "chrome_extension_required" | "in_app_browser_required" | "route_readback_mismatch" | "route_decision_missing" | "browser_use_cli_required" | "browser_use_cli_workflow_adapter_missing" | "browser_use_cli_external_effects_disabled" | "browser_use_cli_stale_reconciliation_required" | "registered_browser_workflow_common_boundary_required" | "web_operation_backend_adapter_not_bound" | "chrome_plugin_backend_snapshot_missing" | null;
 
 export type ExecutionRoutingSnapshot = {
   generatedAt: string;
@@ -155,7 +155,7 @@ export function buildPortableWorkerExecutionRoutingSnapshot(input: {
       "route=automation_os_portable_worker",
       "authority=runtime",
       "proof=read_only",
-      "planned_adapters=browser_use_cli",
+      `planned_adapters=${plannedAdapters.join(",")}`,
       `workflow_id=${input.workflowId}`,
       "codex_app_run_now_required=false",
       "codex_not_execution_authority=true",
@@ -503,5 +503,6 @@ function isExecutionRoutingExactBlocker(value: unknown): value is ExecutionRouti
     || value === "browser_use_cli_required"
     || value === "browser_use_cli_workflow_adapter_missing"
     || value === "browser_use_cli_external_effects_disabled"
-    || value === "browser_use_cli_stale_reconciliation_required";
+    || value === "browser_use_cli_stale_reconciliation_required"
+    || value === "chrome_plugin_backend_snapshot_missing";
 }

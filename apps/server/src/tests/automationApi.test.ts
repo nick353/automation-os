@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
+import { createServer } from "node:http";
+import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -7,6 +10,48 @@ import test from "node:test";
 
 const tempRoot = mkdtempSync(join(tmpdir(), "automation-os-api-"));
 process.env.AUTOMATION_OS_DB = join(tempRoot, "automation-os.sqlite");
+const chromeReadbackPath = join(tempRoot, "chrome-plugin-readback.json");
+process.env.AOS_CHROME_PLUGIN_READBACK_PATH = chromeReadbackPath;
+const bridgeServer = createServer((req, res) => {
+  if (req.url !== "/health") {
+    res.statusCode = 404;
+    res.end();
+    return;
+  }
+  try {
+    const browserReadback = JSON.parse(readFileSync(chromeReadbackPath, "utf8"));
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({
+      bridge_instance_id: browserReadback.bridge_instance_id,
+      url: browserReadback.bridge_url,
+      browser_readback: browserReadback,
+    }));
+  } catch {
+    res.statusCode = 503;
+    res.end(JSON.stringify({ exact_blocker: "test_bridge_readback_unavailable" }));
+  }
+});
+bridgeServer.listen(0, "127.0.0.1");
+await once(bridgeServer, "listening");
+const bridgeAddress = bridgeServer.address();
+if (!bridgeAddress || typeof bridgeAddress === "string") throw new Error("test_bridge_address_unavailable");
+const testBridgeUrl = `http://127.0.0.1:${bridgeAddress.port}`;
+writeFileSync(process.env.AOS_CHROME_PLUGIN_READBACK_PATH, JSON.stringify({
+  schema: "aos.chrome_plugin_bridge_readback.v2",
+  status: "ready",
+  bridge_instance_id: "api-test-bridge",
+  bridge_owner: { schema: "aos.chrome_plugin_bridge_owner.v1", owner_id: "api-test-owner", pid: 1234, bridge_instance_id: "api-test-bridge", session_id: "api-session", thread_id: "api-thread", turn_id: "api-turn", status: "foreground_ready", foreground_executor_ready: true, updated_at: new Date().toISOString() },
+  bridge_url: testBridgeUrl,
+  browser_execution_disabled: false,
+  browser: { id: "api-test-browser", type: "extension", metadata: { profileOrdering: "2" } },
+  operation_ready: true,
+  operation_status: "ready",
+  operation_exact_blocker: null,
+  selected_tab: { id: "api-selected-tab", url: "https://example.test/" },
+  visibility: { capability_id: "visibility", advertised: true, state: true },
+  last_seen_at: new Date().toISOString()
+}), { mode: 0o600 });
+chmodSync(process.env.AOS_CHROME_PLUGIN_READBACK_PATH, 0o600);
 process.env.NODE_TEST_CONTEXT = "1";
 process.env.AUTOMATION_OS_OWNER_USER_ID = "api_bootstrap_owner";
 
@@ -14,6 +59,10 @@ const { app } = await import("../index.js");
 const { execSql, initDb, querySql, sqlValue } = await import("../db/client.js");
 
 initDb();
+
+test.after(async () => {
+  if (bridgeServer.listening) await new Promise<void>((resolve) => bridgeServer.close(() => resolve()));
+});
 
 test("v1 automation reads are company-isolated and viewer/operator/admin permissions are enforced", async () => {
   seedMembership("api_company_a", "api_owner_a", "owner");
@@ -165,7 +214,9 @@ test("AOS control-plane readiness is a company-scoped no-effect bridge contract"
     contract: "aos.execution_provider.v1",
     owner: "automation_os_control_plane",
     source_of_truth: "aos_scheduler_durable_queue",
-    worker_boundary: "mac_browser_use_cli_worker"
+    worker_boundary: "mac_worker_chrome_plugin_profile2",
+    browser_surface: "signed_chrome_extension_profile2",
+    fallback_policy: "no_implicit_fallback"
   });
   assert.equal(response.json.routes.manual_trigger.available, true);
   assert.equal(response.json.routes.manual_trigger.execution_mode, "preflight_no_effect");
@@ -182,6 +233,43 @@ test("AOS control-plane readiness is a company-scoped no-effect bridge contract"
   assert.equal(response.json.production_guard.token_value_exposed, false);
   assert.equal(response.json.external_action_executed, false);
   assert.equal(response.json.secrets_read, false);
+  assert.equal(response.json.company_binding_readiness.schema, "company_binding_readiness.v1");
+  assert.equal(response.json.company_binding_readiness.production_ready, false);
+  assert.equal(response.json.company_binding_readiness.canonical_company_id, null);
+  assert.equal(response.json.company_binding_readiness.external_action_executed, false);
+  assert.equal(response.json.company_binding_readiness.graph_receipt.replay_allowed, false);
+  assert.equal(response.json.company_binding_reconciliation.schema, "company_binding_reconciliation.v1");
+  assert.equal(response.json.company_binding_reconciliation.canonical_company_id, null);
+  assert.equal(response.json.company_binding_reconciliation.selection.selected, false);
+  assert.equal(response.json.company_binding_reconciliation.external_action_executed, false);
+  assert.equal(response.json.canonical_company_consultation.schema, "canonical_company_consultation.v1");
+  assert.equal(response.json.canonical_company_consultation.selection_state, "unresolved");
+  assert.equal(response.json.canonical_company_consultation.canonical_company_id, null);
+  assert.equal(response.json.canonical_company_consultation.owner_decision.required, true);
+  assert.equal(response.json.canonical_company_consultation.owner_decision.recommended_candidate_company_id, null);
+  assert.equal(response.json.canonical_company_consultation.external_action_executed, false);
+  const reconciliation = await requestJson(
+    "GET",
+    "/api/v1/companies/api_control_plane_readiness/control-plane/reconciliation"
+  );
+  assert.equal(reconciliation.status, 200, reconciliation.raw);
+  assert.equal(reconciliation.json.schema, "company_binding_reconciliation.v1");
+  assert.equal(reconciliation.json.canonical_company_id, null);
+  assert.equal(reconciliation.json.mutation.schedules_materialized, false);
+  const consultation = await requestJson(
+    "GET",
+    "/api/v1/companies/api_control_plane_readiness/control-plane/consultation"
+  );
+  assert.equal(consultation.status, 200, consultation.raw);
+  assert.equal(consultation.json.schema, "canonical_company_consultation.v1");
+  assert.equal(consultation.json.selection_state, "unresolved");
+  assert.equal(consultation.json.exact_blocker, "canonical_company_unresolved");
+  assert.equal(consultation.json.downstream.provider_receipt.status, "not_attempted");
+  assert.equal(consultation.json.downstream.source_sync.status, "not_attempted");
+  assert.equal(consultation.json.downstream.reconciliation.status, "not_attempted");
+  assert.equal(consultation.json.downstream.cleanup.status, "not_attempted");
+  assert.equal(consultation.headers["cache-control"], "no-store");
+  assert.doesNotMatch(consultation.raw, /AUTOMATION_OS_(?:READ|WRITE)_TOKEN|Bearer\s+|secret_value|password|sentinel-read-token|sentinel-write-token/iu);
   assert.doesNotMatch(response.raw, /AUTOMATION_OS_(?:READ|WRITE)_TOKEN|Bearer\s+|secret_value|password|sentinel-read-token|sentinel-write-token/iu);
   assert.equal(response.headers["cache-control"], "no-store");
   assert.doesNotMatch(JSON.stringify(response.headers), /sentinel-read-token|sentinel-write-token/iu);
@@ -253,6 +341,40 @@ test("AOS control-plane readiness is a company-scoped no-effect bridge contract"
     else process.env.AUTOMATION_OS_READ_TOKEN = previousReadToken;
     if (previousWriteToken === undefined) delete process.env.AUTOMATION_OS_WRITE_TOKEN;
     else process.env.AUTOMATION_OS_WRITE_TOKEN = previousWriteToken;
+  }
+});
+
+test("trusted admin ingress admits read-only company readbacks without widening write access", async () => {
+  seedMembership("api_private_ingress_company", "api_private_ingress_owner", "owner");
+  setActor("api_private_ingress_owner");
+  const previousRequireApi = process.env.AUTOMATION_OS_REQUIRE_API_TOKEN;
+  const previousPrivateIngress = process.env.AUTOMATION_OS_PRIVATE_INGRESS_SECRET;
+  process.env.AUTOMATION_OS_REQUIRE_API_TOKEN = "1";
+  process.env.AUTOMATION_OS_PRIVATE_INGRESS_SECRET = "private-ingress-test-secret-012345678901234567890123";
+  try {
+    const readback = await requestJson(
+      "GET",
+      "/api/v1/companies/api_private_ingress_company/control-plane/readiness",
+      undefined,
+      { "x-automation-os-private-ingress": process.env.AUTOMATION_OS_PRIVATE_INGRESS_SECRET }
+    );
+    assert.equal(readback.status, 200, readback.raw);
+    assert.equal(readback.json.external_action_executed, false);
+    assert.doesNotMatch(readback.raw, /private-ingress-test-secret/iu);
+
+    const write = await requestJson(
+      "POST",
+      "/api/runs/start",
+      { company_id: "api_private_ingress_company", command: "must remain token-gated" },
+      { "x-automation-os-private-ingress": process.env.AUTOMATION_OS_PRIVATE_INGRESS_SECRET }
+    );
+    assert.equal(write.status, 401, write.raw);
+    assert.equal(write.json.exactBlocker, "production_token_required");
+  } finally {
+    if (previousRequireApi === undefined) delete process.env.AUTOMATION_OS_REQUIRE_API_TOKEN;
+    else process.env.AUTOMATION_OS_REQUIRE_API_TOKEN = previousRequireApi;
+    if (previousPrivateIngress === undefined) delete process.env.AUTOMATION_OS_PRIVATE_INGRESS_SECRET;
+    else process.env.AUTOMATION_OS_PRIVATE_INGRESS_SECRET = previousPrivateIngress;
   }
 });
 
@@ -340,13 +462,93 @@ test("registered automation readback is company-scoped and HTTP execution remain
   assert.ok(readback.json.automation_count > 0, readback.raw);
   assert.equal(readback.json.external_action_executed, false);
   assert.equal(readback.json.automations[0].can_run, false);
+  assert.equal(readback.json.automations[0].can_preflight, true);
+  assert.equal(readback.json.automations[0].preflight_stage, "reference_readback");
+  assert.equal(readback.json.automations[0].portable.read_only_preflight, true);
+  assert.equal(readback.json.automations[0].manual_trigger.available, true);
+  assert.equal(readback.json.automations[0].manual_trigger.execution_mode, "preflight_no_effect");
+  assert.equal(readback.json.automations[0].manual_trigger.provider_neutral, true);
+  assert.equal(readback.json.automations[0].manual_trigger.external_action_allowed, false);
+  const previousZeabur = process.env.ZEABUR;
+  const previousEnvironmentRole = process.env.AUTOMATION_OS_ENV_ROLE;
+  try {
+    // The hosted control plane must not inspect the Mac-only bridge path to
+    // decide whether a safe read-only stage may be handed to the worker.
+    process.env.ZEABUR = "1";
+    process.env.AUTOMATION_OS_ENV_ROLE = "production";
+    writeFileSync(process.env.AOS_CHROME_PLUGIN_READBACK_PATH!, "{}", { mode: 0o600 });
+    const hostedReadback = await requestJson("GET", "/api/mvp/registered-automations?project_id=api_registered_company");
+    assert.equal(hostedReadback.status, 200, hostedReadback.raw);
+    assert.equal(hostedReadback.json.automations[0].can_preflight, true);
+    assert.equal(hostedReadback.json.automations[0].preflight_stage, "reference_readback");
+    assert.equal(hostedReadback.json.automations[0].preflight_exact_blocker, null);
+    assert.equal(hostedReadback.json.automations[0].preflight_status, "readiness_pass");
+  } finally {
+    if (previousZeabur === undefined) delete process.env.ZEABUR;
+    else process.env.ZEABUR = previousZeabur;
+    if (previousEnvironmentRole === undefined) delete process.env.AUTOMATION_OS_ENV_ROLE;
+    else process.env.AUTOMATION_OS_ENV_ROLE = previousEnvironmentRole;
+  }
+  for (const item of readback.json.automations) {
+    if (item.latest_proof) assert.equal(item.latest_proof.same_run_receipt, false);
+  }
   assert.equal(readback.json.automations[0].toml_ref, null);
   assert.doesNotMatch(readback.raw, /\/Users\//);
+  const promptTransferLane = readback.json.automations.find((item: any) => item.id === "prompt-transfer-ukiyoe");
+  assert.equal(promptTransferLane?.can_run, false);
+  assert.equal(promptTransferLane?.can_preflight, true);
+  assert.equal(promptTransferLane?.preflight_stage, "reference_readback");
+  assert.equal(promptTransferLane?.preflight_exact_blocker, null);
+  assert.equal(promptTransferLane?.portable?.read_only_preflight, true);
+  for (const workflowId of ["sns-multi-poster-ukiyoe", "x-authenticated-browser-lane"]) {
+    const lane = readback.json.automations.find((item: any) => item.id === workflowId);
+    assert.equal(lane?.can_run, false);
+    assert.equal(lane?.can_preflight, true);
+    assert.equal(lane?.preflight_stage, "reference_readback");
+    assert.equal(lane?.preflight_exact_blocker, null);
+    assert.equal(lane?.portable?.read_only_preflight, true);
+  }
   const dailyLane = readback.json.automations.find((item: any) => item.id === "daily-ai-research-publish-run")?.browser_use_lane;
   assert.equal(dailyLane?.profileRef, "scheduled/daily-ai");
   assert.equal(dailyLane?.reservedPort, 19882);
   assert.equal(dailyLane?.liveReadbackStatus, "not_claimed");
   assert.doesNotMatch(JSON.stringify(dailyLane), /profileDir|lockPath|browserUseCdpUrl|\/Users\//);
+
+  writeFileSync(process.env.AOS_CHROME_PLUGIN_READBACK_PATH!, JSON.stringify({
+    schema: "aos.chrome_plugin_bridge_readback.v2",
+    status: "ready",
+    bridge_instance_id: "api-test-bridge",
+    bridge_owner: { schema: "aos.chrome_plugin_bridge_owner.v1", owner_id: "api-test-owner", pid: 1234, bridge_instance_id: "api-test-bridge", session_id: "api-session", thread_id: "api-thread", turn_id: "api-turn", status: "foreground_ready", foreground_executor_ready: true, updated_at: new Date().toISOString() },
+    bridge_url: testBridgeUrl,
+    browser_execution_disabled: false,
+    browser: { id: "api-test-browser", type: "extension", metadata: { profileOrdering: "2" } },
+    operation_ready: true,
+    operation_status: "ready",
+    operation_exact_blocker: null,
+    selected_tab: { id: "api-selected-tab", url: "https://example.test/" },
+    visibility: { capability_id: "visibility", advertised: true, state: true },
+    last_seen_at: "2020-01-01T00:00:00.000Z"
+  }), { mode: 0o600 });
+  const staleRegistered = await requestJson("GET", "/api/mvp/registered-automations?project_id=api_registered_company");
+  assert.equal(staleRegistered.status, 200, staleRegistered.raw);
+  assert.equal(staleRegistered.json.automations[0].can_preflight, false);
+  assert.equal(staleRegistered.json.automations[0].preflight_stage, null);
+  assert.equal(staleRegistered.json.automations[0].preflight_exact_blocker, "chrome_extension_bridge_readback_stale");
+  writeFileSync(process.env.AOS_CHROME_PLUGIN_READBACK_PATH!, JSON.stringify({
+    schema: "aos.chrome_plugin_bridge_readback.v2",
+    status: "ready",
+    bridge_instance_id: "api-test-bridge",
+    bridge_owner: { schema: "aos.chrome_plugin_bridge_owner.v1", owner_id: "api-test-owner", pid: 1234, bridge_instance_id: "api-test-bridge", session_id: "api-session", thread_id: "api-thread", turn_id: "api-turn", status: "foreground_ready", foreground_executor_ready: true, updated_at: new Date().toISOString() },
+    bridge_url: testBridgeUrl,
+    browser_execution_disabled: false,
+    browser: { id: "api-test-browser", type: "extension", metadata: { profileOrdering: "2" } },
+    operation_ready: true,
+    operation_status: "ready",
+    operation_exact_blocker: null,
+    selected_tab: { id: "api-selected-tab", url: "https://example.test/" },
+    visibility: { capability_id: "visibility", advertised: true, state: true },
+    last_seen_at: new Date().toISOString()
+  }), { mode: 0o600 });
 
   const run = await requestJson(
     "POST",
@@ -358,11 +560,26 @@ test("registered automation readback is company-scoped and HTTP execution remain
   assert.equal(run.json.external_action_executed, false);
   assert.match(run.json.exact_blocker, /registered_automation_/);
 
+  const registeredTrigger = await requestJson(
+    "POST",
+    "/api/v1/companies/api_registered_company/automations/daily-ai-research-publish-run/trigger",
+    { execution_mode: "preflight_no_effect", provider_neutral: true, external_action_allowed: false },
+    { "idempotency-key": "api-registered-workflow-trigger" }
+  );
+  assert.equal(registeredTrigger.status, 202, registeredTrigger.raw);
+  assert.equal(registeredTrigger.json.schema, "aos.portable_workflow_trigger.v1");
+  assert.equal(registeredTrigger.json.workflow_id, "daily-ai-research-publish-run");
+  assert.equal(registeredTrigger.json.run.company_id, "api_registered_company");
+  assert.equal(registeredTrigger.json.run.automation_id, "daily-ai-research-publish-run");
+  assert.equal(registeredTrigger.json.run.automation_version_id, null);
+  assert.equal(registeredTrigger.json.provider_neutral, true);
+  assert.equal(registeredTrigger.json.external_action_executed, false);
+
   const portableKey = "api-portable-manual-dedup";
   const portable = await requestJson(
     "POST",
     "/api/portable-workflows/daily-ai-research-publish-run/run?project_id=api_registered_company",
-    { project_id: "api_registered_company", idempotency_key: portableKey },
+    { project_id: "api_registered_company", idempotency_key: portableKey, read_only_stage: "reference_readback" },
     { "idempotency-key": portableKey }
   );
   assert.equal(portable.status, 202, portable.raw);
@@ -370,14 +587,85 @@ test("registered automation readback is company-scoped and HTTP execution remain
   assert.equal(portable.json.portable.app_dependency, false);
   assert.equal(portable.json.portable.source_trigger, "automation_os_ui");
   assert.equal(portable.json.portable.external_action_executed, false);
-  assert.equal(portable.json.workerProtocol, "local_worker_loop_required");
   assert.equal(portable.json.portable.execution_mode, "external");
-  assert.equal(portable.json.portable.browser_surface, "browser_use_cli");
+  assert.equal(portable.json.workerProtocol, "local_worker_loop_required");
+  // The automatic route uses Companion for normal/read-only browser work;
+  // official Chrome Plugin remains available when explicitly selected.
+  assert.equal(portable.json.portable.backend, "aos_chrome_companion");
+  assert.equal(portable.json.portable.browser_surface, "aos_chrome_companion_profile_instance");
+
+  const backendBeforeSwitch = await requestJson("GET", "/api/v1/settings/web-operation-backend");
+  assert.equal(backendBeforeSwitch.status, 200, backendBeforeSwitch.raw);
+  const playwrightSwitch = await requestJson(
+    "PUT",
+    "/api/v1/settings/web-operation-backend",
+    { backend: "playwright", expected_revision: backendBeforeSwitch.json.setting.revision }
+  );
+  assert.equal(playwrightSwitch.status, 200, playwrightSwitch.raw);
+  assert.equal(playwrightSwitch.json.setting.backend, "playwright");
+  const playwrightRegistered = await requestJson("GET", "/api/mvp/registered-automations?project_id=api_registered_company");
+  assert.equal(playwrightRegistered.status, 200, playwrightRegistered.raw);
+  assert.equal(playwrightRegistered.json.automations[0].can_run, false);
+  assert.equal(playwrightRegistered.json.automations[0].can_preflight, false);
+  assert.equal(playwrightRegistered.json.automations[0].preflight_stage, null);
+  assert.equal(playwrightRegistered.json.automations[0].preflight_exact_blocker, "portable_external_read_only_backend_not_implemented:playwright");
+  assert.equal(playwrightRegistered.json.automations[0].portable.backend, "playwright");
+  assert.equal(playwrightRegistered.json.automations[0].portable.browser_surface, "playwright");
+  const chromeRestore = await requestJson(
+    "PUT",
+    "/api/v1/settings/web-operation-backend",
+    { backend: "chrome_plugin", expected_revision: playwrightSwitch.json.setting.revision }
+  );
+  assert.equal(chromeRestore.status, 200, chromeRestore.raw);
+  assert.equal(chromeRestore.json.setting.backend, "chrome_plugin");
+
+  const browserUseSwitch = await requestJson(
+    "PUT",
+    "/api/v1/settings/web-operation-backend",
+    { backend: "browser_use_cli", expected_revision: chromeRestore.json.setting.revision }
+  );
+  assert.equal(browserUseSwitch.status, 200, browserUseSwitch.raw);
+  const browserUseRegistered = await requestJson("GET", "/api/mvp/registered-automations?project_id=api_registered_company");
+  assert.equal(browserUseRegistered.status, 200, browserUseRegistered.raw);
+  const browserUseSns = browserUseRegistered.json.automations.find((item: any) => item.id === "sns-multi-poster-ukiyoe");
+  assert.equal(browserUseSns?.can_preflight, true);
+  assert.equal(browserUseSns?.preflight_exact_blocker, null);
+  const browserUseX = browserUseRegistered.json.automations.find((item: any) => item.id === "x-authenticated-browser-lane");
+  assert.equal(browserUseX?.can_preflight, true);
+  assert.equal(browserUseX?.preflight_exact_blocker, null);
+
+  const concurrentBaseRevision = browserUseSwitch.json.setting.revision;
+  const [concurrentChrome, concurrentPlaywright] = await Promise.all([
+    requestJson(
+      "PUT",
+      "/api/v1/settings/web-operation-backend",
+      { backend: "chrome_plugin", expected_revision: concurrentBaseRevision }
+    ),
+    requestJson(
+      "PUT",
+      "/api/v1/settings/web-operation-backend",
+      { backend: "playwright", expected_revision: concurrentBaseRevision }
+    ),
+  ]);
+  const concurrentResults = [concurrentChrome, concurrentPlaywright];
+  assert.equal(concurrentResults.filter((result) => result.status === 200).length, 1);
+  assert.equal(concurrentResults.filter((result) => result.status === 409).length, 1);
+  const concurrentWinner = concurrentResults.find((result) => result.status === 200)!;
+  const concurrentLoser = concurrentResults.find((result) => result.status === 409)!;
+  assert.equal(concurrentWinner.json.setting.revision, concurrentBaseRevision + 1);
+  assert.match(concurrentLoser.json.error, /^web_operation_backend_revision_conflict:/u);
+  const browserUseRestore = await requestJson(
+    "PUT",
+    "/api/v1/settings/web-operation-backend",
+    { backend: "chrome_plugin", expected_revision: concurrentWinner.json.setting.revision }
+  );
+  assert.equal(browserUseRestore.status, 200, browserUseRestore.raw);
+  assert.equal(browserUseRestore.json.setting.backend, "chrome_plugin");
 
   const portableReplay = await requestJson(
     "POST",
     "/api/portable-workflows/daily-ai-research-publish-run/run?project_id=api_registered_company",
-    { project_id: "api_registered_company", idempotency_key: portableKey },
+    { project_id: "api_registered_company", idempotency_key: portableKey, read_only_stage: "reference_readback" },
     { "idempotency-key": portableKey }
   );
   assert.equal(portableReplay.status, 202, portableReplay.raw);
@@ -697,7 +985,7 @@ test("AOS catalog adopts all six flows and routes browser schedules through the 
   const trigger = await requestJson(
     "POST",
     `/api/v1/companies/api_company_aos/automations/${jobAutomation.id}/trigger`,
-    { requested_stage: "identity_admission" },
+    { requested_stage: "identity_admission", companion_task_id: "api-companion-task-owner" },
     { "idempotency-key": "api-aos-identity-preflight" }
   );
   assert.equal(trigger.status, 202, trigger.raw);
@@ -712,11 +1000,20 @@ test("AOS catalog adopts all six flows and routes browser schedules through the 
   assert.equal(trigger.json.registered_root_admission.owner, "automation_os_control_plane");
   assert.equal(trigger.json.registered_root_admission.run_id, trigger.json.run.id);
   assert.equal(trigger.json.registered_root_admission.external_action_executed, false);
+  const triggerMetadata = querySql<{ metadata_json: string }>(
+    `SELECT metadata_json FROM runs WHERE id=${sqlValue(trigger.json.run.id)} LIMIT 1`
+  )[0];
+  const triggerMetadataValue = JSON.parse(triggerMetadata.metadata_json) as {
+    companion_task_id?: string;
+    portable_workflow_invocation?: { companion_task_id?: string };
+  };
+  assert.equal(triggerMetadataValue.companion_task_id, "api-companion-task-owner");
+  assert.equal(triggerMetadataValue.portable_workflow_invocation?.companion_task_id, "api-companion-task-owner");
 
   const replay = await requestJson(
     "POST",
     `/api/v1/companies/api_company_aos/automations/${jobAutomation.id}/trigger`,
-    { requested_stage: "identity_admission" },
+    { requested_stage: "identity_admission", companion_task_id: "api-companion-task-owner" },
     { "idempotency-key": "api-aos-identity-preflight" }
   );
   assert.equal(replay.status, 202, replay.raw);
@@ -740,6 +1037,25 @@ test("service identity bootstrap is company-scoped and never returns secret mate
   assert.equal(first.json.secret_material_included, false);
   assert.match(first.json.service_identity.userId, /^aos_service_/u);
   assert.doesNotMatch(first.raw, /token|secret_value|password|api_key/iu);
+  const readback = await requestJson(
+    "GET",
+    "/api/v1/companies/api_company_service_identity/service-identities"
+  );
+  assert.equal(readback.status, 200, readback.raw);
+  assert.equal(readback.json.schema, "aos.service_identity_readback.v1");
+  assert.equal(readback.json.configured, true);
+  assert.equal(readback.json.exact_blocker, null);
+  assert.deepEqual(readback.json.service_identity, {
+    userId: first.json.service_identity.userId,
+    companyId: "api_company_service_identity",
+    role: "operator",
+    kind: "service",
+    status: "active",
+    membershipStatus: "active"
+  });
+  assert.equal(readback.json.secret_material_included, false);
+  assert.equal(readback.json.external_action_executed, false);
+  assert.doesNotMatch(readback.raw, /token|secret_value|password|api_key/iu);
   const second = await requestJson(
     "POST",
     "/api/v1/companies/api_company_service_identity/service-identities",

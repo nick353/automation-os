@@ -16,6 +16,7 @@ import { readPortableRemoteToken } from "../aos-portable-remote-worker.mjs";
 test("portable worker profile resolves every machine-bound path from the selected home", () => {
   const profile = defaultPortableWorkerProfile({
     AUTOMATION_OS_PORTABLE_REMOTE_COMPANY_ID: "company_test",
+    AUTOMATION_OS_PORTABLE_LOCAL_QUEUE_COMPANY_ID: "project-a",
     AUTOMATION_OS_PORTABLE_REMOTE_WORKER_ID: "worker_test",
     AUTOMATION_OS_CODEX_ACCOUNT_REF: "account-b",
     CODEX_CLI_PATH: "/machine-specific/codex"
@@ -23,9 +24,20 @@ test("portable worker profile resolves every machine-bound path from the selecte
   assert.equal(profile.repo_root, "/tmp/portable-worker-home/Documents/Codex/automation-os");
   assert.equal(profile.codex_home, "/tmp/portable-worker-home/.codex");
   assert.equal(profile.browser_use_helper, "/tmp/portable-worker-home/.local/bin/codex-browser-use");
+  assert.equal(profile.web_operation_backend, "browser_use_cli");
+  assert.equal(profile.local_company_id, "project-a");
+  assert.equal(profile.chrome_profile_id, "profile2");
+  assert.equal(profile.chrome_profile_name, "Profile 2");
+  assert.equal(profile.chrome_profile_surface, "signed_chrome_extension_profile2");
   assert.equal(profile.codex_account_ref, "account-b");
   assert.equal(profile.codex_bin, "");
   assert.doesNotMatch(JSON.stringify(profile), /token-value|cookie-value/u);
+});
+
+test("portable worker profile accepts the explicit AOS Chrome Companion backend", () => {
+  const profile = defaultPortableWorkerProfile({ AOS_WEB_OPERATION_BACKEND: "aos-chrome-companion" }, "/tmp/companion-profile-home");
+  assert.equal(profile.web_operation_backend, "aos_chrome_companion");
+  assert.equal(validatePortableWorkerProfile(profile).web_operation_backend, "aos_chrome_companion");
 });
 
 test("portable worker profile shell export is constrained to non-secret configuration", () => {
@@ -38,6 +50,9 @@ test("portable worker profile shell export is constrained to non-secret configur
   assert.ok(output.includes("export AUTOMATION_OS_CODEX_ACCOUNT_REF='codex-second'"));
   assert.ok(output.includes("export BROWSER_USE_CLI_HELPER='/tmp/profile-home/.local/bin/codex-browser-use'"));
   assert.ok(output.includes("export BROWSER_USE_RUNTIME_CONFIG='/tmp/profile-home/.browser-use-cli/browser-use-runtime.toml'"));
+  assert.ok(output.includes("export AOS_WEB_OPERATION_BACKEND='browser_use_cli'"));
+  assert.ok(output.includes("export AUTOMATION_OS_PORTABLE_LOCAL_QUEUE_COMPANY_ID='project-a'") === false);
+  assert.ok(output.includes("export AOS_CHROME_PROFILE_DIRECTORY='Profile 2'"));
   assert.doesNotMatch(output, /AUTOMATION_OS_PORTABLE_REMOTE_TOKEN=/u);
   assert.doesNotMatch(output, /secret|cookie|password/u);
 });

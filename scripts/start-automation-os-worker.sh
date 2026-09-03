@@ -3,6 +3,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export HOME="${HOME:-/Users/nichikatanaka}"
+export CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
+mkdir -p "$CODEX_HOME"
+chmod 700 "$CODEX_HOME"
 
 # The profile is deliberately non-secret.  It carries only paths, company
 # scope, and a worker label; AOS credentials remain in Keychain or a
@@ -31,19 +35,43 @@ export AUTOMATION_OS_DAILY_AI_VISIBLE_BROWSER="${AUTOMATION_OS_DAILY_AI_VISIBLE_
 # Keep the server default unchanged so a server-owned deployment remains
 # possible, but make the worker launch path explicit and fail-closed against
 # an accidental scheduler gap when the API server is stopped.
-export AUTOMATION_OS_DURABLE_SCHEDULER_OWNER="${AUTOMATION_OS_DURABLE_SCHEDULER_OWNER:-worker}"
+export AUTOMATION_OS_DURABLE_SCHEDULER_OWNER="${AUTOMATION_OS_DURABLE_SCHEDULER_OWNER:-server}"
 # The service identity is provisioned per AOS company and must come from the
 # LaunchAgent/environment.  Never invent a fallback identity: an unset value
 # must reach the worker's explicit fail-closed admission check.
 export AUTOMATION_OS_DURABLE_SERVICE_USER_ID="${AUTOMATION_OS_DURABLE_SERVICE_USER_ID:-}"
 export AUTOMATION_OS_PORTABLE_WORKER_MODE="${AUTOMATION_OS_PORTABLE_WORKER_MODE:-external}"
-# Keep the AOS runner resolver in control.  Do not pin the read-only adapter
-# here: effects-enabled, approved runs must be able to select the
-# provider-neutral business boundary instead.
+# Company 1 Remote AOS is the business control plane. Keep the resident
+# worker on that durable queue by default; a local UI queue may be added only
+# through the explicit AUTOMATION_OS_PORTABLE_QUEUE_AUTHORITY override. Each
+# target keeps its own auth boundary and the remote token is never sent to
+# loopback.
+export AUTOMATION_OS_PORTABLE_QUEUE_AUTHORITY="${AUTOMATION_OS_PORTABLE_QUEUE_AUTHORITY:-remote}"
+export AUTOMATION_OS_PORTABLE_LOCAL_QUEUE_URL="${AUTOMATION_OS_PORTABLE_LOCAL_QUEUE_URL:-http://127.0.0.1:8787}"
+export AUTOMATION_OS_PORTABLE_LOCAL_QUEUE_COMPANY_ID="${AUTOMATION_OS_PORTABLE_LOCAL_QUEUE_COMPANY_ID:-${AUTOMATION_OS_PORTABLE_REMOTE_COMPANY_ID:-}}"
+# Keep the AOS runner resolver in control. Browser Use CLI is the canonical
+# unattended registered-workflow lane. A legacy claim may still explicitly
+# select Chrome Plugin/Profile 2; no implicit cross-surface fallback is used.
 unset AUTOMATION_OS_PORTABLE_EXTERNAL_RUNNER AUTOMATION_OS_PORTABLE_EXTERNAL_DEFAULT_RUNNER
 export AUTOMATION_OS_PORTABLE_EXTERNAL_WORKDIR="${AUTOMATION_OS_PORTABLE_EXTERNAL_WORKDIR:-$REPO_ROOT}"
 export AUTOMATION_OS_PORTABLE_EXTERNAL_TIMEOUT_MS="${AUTOMATION_OS_PORTABLE_EXTERNAL_TIMEOUT_MS:-3600000}"
-export AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS="${AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS:-read_only}"
+export AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS="${AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS:-enabled}"
+export AOS_WEB_OPERATION_BACKEND="${AOS_WEB_OPERATION_BACKEND:-browser_use_cli}"
+export AUTOMATION_OS_CHROME_PLUGIN_PROJECT_ROOT="${AUTOMATION_OS_CHROME_PLUGIN_PROJECT_ROOT:-$HOME/Documents/New project}"
+export AOS_CHROME_PROFILE_ID="${AOS_CHROME_PROFILE_ID:-profile2}"
+export AOS_CHROME_PROFILE_NAME="${AOS_CHROME_PROFILE_NAME:-Profile 2}"
+export AOS_CHROME_PROFILE_DIRECTORY="${AOS_CHROME_PROFILE_DIRECTORY:-Profile 2}"
+export AOS_CHROME_PROFILE_SURFACE="${AOS_CHROME_PROFILE_SURFACE:-signed_chrome_extension_profile2}"
+# Keep the AOS worker's owned bridge endpoint separate from another Codex
+# thread's legacy/default bridge.  The runner validates this as a loopback
+# endpoint and binds the fresh port to the same readback instance; no external
+# host or implicit browser fallback is accepted.
+export AOS_CHROME_PLUGIN_BRIDGE_PORT="${AOS_CHROME_PLUGIN_BRIDGE_PORT:-58744}"
+export AOS_CHROME_PLUGIN_READBACK_PATH="${AOS_CHROME_PLUGIN_READBACK_PATH:-$HOME/.social-flow/aos-company1-profile2-bridge-readback-v2.json}"
+# The trusted bridge and the portable runner publish/read the private
+# capability under CODEX_HOME. Keep the worker on that canonical path; the
+# old .social-flow v2 path could be absent while the bridge was healthy.
+export AOS_CHROME_PLUGIN_BACKGROUND_READ_ONLY_CAPABILITY_PATH="${AOS_CHROME_PLUGIN_BACKGROUND_READ_ONLY_CAPABILITY_PATH:-$CODEX_HOME/runtime/aos-chrome-plugin-background-read-only-capability.v1.json}"
 # Workflow-specific business bindings are explicit startup configuration, not
 # a hidden fallback in the generic runner.  They are still fail-closed unless
 # external effects, approval, fresh authority, input bundle, and same-run
@@ -80,8 +108,8 @@ rotate_log "$REPO_ROOT/data/logs/automation-os-worker-launchd.out.log"
 rotate_log "$REPO_ROOT/data/logs/automation-os-worker-launchd.err.log"
 
 # Zeabur owns the durable queue when the remote URL is configured.  The Mac
-# remains the Browser Use CLI worker and must use the AOS API boundary instead
-# of assuming that its local stored PostgreSQL is the Zeabur database.
+# worker uses the AOS API boundary instead of assuming that its local stored
+# PostgreSQL is the Zeabur database.
 if [[ -n "${AUTOMATION_OS_PORTABLE_REMOTE_URL:-}" ]]; then
   exec "$(command -v node)" "$REPO_ROOT/scripts/aos-portable-remote-worker.mjs"
 fi

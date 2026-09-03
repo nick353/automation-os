@@ -163,6 +163,10 @@ function baseEnvironment(root, routePath) {
   return {
     AUTOMATION_OS_ARTIFACT_ROOT: root,
     AUTOMATION_OS_WEB_OPERATION_ROUTES_PATH: routePath,
+    // This fixture exercises the canonical Browser Use CLI entrypoint. Keep
+    // the test lane explicit so a developer's or LaunchAgent's Chrome Plugin
+    // default cannot change the admission surface under test.
+    AOS_WEB_OPERATION_BACKEND: "browser_use_cli",
     AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS: "enabled",
     AUTOMATION_OS_PORTABLE_EXTERNAL_APPROVAL: "approved",
     AUTOMATION_OS_BROWSER_SURFACE: "browser_use_cli",

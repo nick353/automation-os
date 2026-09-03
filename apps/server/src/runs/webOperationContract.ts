@@ -14,6 +14,7 @@ export const WEB_OPERATION_CONTRACT_SCHEMA_V1 = "automation_os_web_operation_con
 
 export const WEB_OPERATION_INTENT_SCHEMA_V1 = "automation_os_web_operation_intent.v1" as const;
 export type WebOperationIntentKind = "read" | "create" | "update" | "publish" | "submit" | "delete";
+export type WebOperationBrowserSurface = "browser_use_cli" | "signed_chrome_extension_profile2" | "aos_chrome_companion_profile_instance";
 
 export type WebOperationTargetCandidateV1 = {
   schema: "automation_os_semantic_target_candidate.v1";
@@ -83,7 +84,7 @@ export type WebOperationIntentV1 = {
 
 export type WebOperationContractV1 = {
   schema: typeof WEB_OPERATION_CONTRACT_SCHEMA_V1;
-  browser_surface: "browser_use_cli";
+  browser_surface: WebOperationBrowserSurface;
   llm_provider_neutral: true;
   app_dependency: false;
   browser_kernel: BrowserKernelContractV1;
@@ -102,7 +103,7 @@ export type WebOperationContractV1 = {
     source_of_truth_sync: true;
     terminal_cleanup: true;
     screenshot_scope: "run_recording_dir";
-    forbidden_surfaces: readonly ["playwright", "iab", "extension", "direct_cdp", "raw_browser"];
+    forbidden_surfaces: readonly string[];
     fail_close_on: readonly [
       "captcha",
       "otp",
@@ -186,6 +187,21 @@ const fixedKernel = {
   secrets_policy: "never_log_or_artifact_secrets_cookies_passwords_tokens_raw_page_body" as const,
 } as const;
 
+const chromePluginFixedKernel = {
+  ...fixedKernel,
+  // The signed Chrome extension is the selected surface for this contract;
+  // it must not be listed as forbidden while alternate/raw surfaces remain
+  // explicitly rejected.
+  forbidden_surfaces: ["playwright", "iab", "direct_cdp", "raw_browser"] as const,
+} as const;
+
+const companionFixedKernel = {
+  ...fixedKernel,
+  // Companion is the explicitly selected trusted extension surface for this
+  // contract. Other alternate/raw browser surfaces remain forbidden.
+  forbidden_surfaces: ["playwright", "iab", "direct_cdp", "raw_browser"] as const,
+} as const;
+
 const adaptiveLayer = {
   live_semantic_state: true,
   live_target_inspect: true,
@@ -225,16 +241,33 @@ export const commonWebOperationContract: WebOperationContractV1 = Object.freeze(
   browser_surface: "browser_use_cli",
   llm_provider_neutral: true,
   app_dependency: false,
-  browser_kernel: getBrowserKernelContract(),
+  browser_kernel: {
+    ...getBrowserKernelContract(),
+    supported_surfaces: ["browser_use_cli"] as const,
+  },
   fixed_kernel: Object.freeze(fixedKernel),
   adaptive_layer: Object.freeze(adaptiveLayer),
   operation_model: Object.freeze(operationModel),
 });
 
 export function getWebOperationContract(): WebOperationContractV1 {
+  return getWebOperationContractForSurface("browser_use_cli");
+}
+
+export function getWebOperationContractForSurface(browserSurface: WebOperationBrowserSurface): WebOperationContractV1 {
+  const chromePlugin = browserSurface === "signed_chrome_extension_profile2";
+  const browserKernel = getBrowserKernelContract();
+  const surfaceBrowserKernel = { ...browserKernel, supported_surfaces: [browserSurface] as const };
+  const surfaceFixedKernel = chromePlugin
+    ? chromePluginFixedKernel
+    : browserSurface === "aos_chrome_companion_profile_instance"
+      ? companionFixedKernel
+      : fixedKernel;
   return {
     ...commonWebOperationContract,
-    fixed_kernel: { ...commonWebOperationContract.fixed_kernel },
+    browser_surface: browserSurface,
+    browser_kernel: surfaceBrowserKernel,
+    fixed_kernel: { ...surfaceFixedKernel },
     adaptive_layer: { ...commonWebOperationContract.adaptive_layer },
     operation_model: {
       ...commonWebOperationContract.operation_model,
@@ -254,18 +287,21 @@ export function validateWebOperationContract(contract: unknown): WebOperationCon
     throw new Error("web_operation_contract_missing");
   }
   const value = contract as Record<string, unknown>;
-  if (value.schema !== WEB_OPERATION_CONTRACT_SCHEMA_V1 || value.browser_surface !== "browser_use_cli") {
+  const browserSurface = value.browser_surface;
+  if (value.schema !== WEB_OPERATION_CONTRACT_SCHEMA_V1
+    || (browserSurface !== "browser_use_cli" && browserSurface !== "signed_chrome_extension_profile2" && browserSurface !== "aos_chrome_companion_profile_instance")) {
     throw new Error("web_operation_contract_schema_invalid");
   }
   if (value.llm_provider_neutral !== true || value.app_dependency !== false) {
     throw new Error("web_operation_contract_dependency_invalid");
   }
+  const expectedContract = getWebOperationContractForSurface(browserSurface);
   if (!value.browser_kernel || typeof value.browser_kernel !== "object" || Array.isArray(value.browser_kernel)
     || (value.browser_kernel as Record<string, unknown>).schema !== "automation_os_browser_kernel.v1"
-    || JSON.stringify((value.browser_kernel as Record<string, unknown>).supported_surfaces) !== JSON.stringify(["browser_use_cli", "codex_app_browser"])) {
+    || JSON.stringify((value.browser_kernel as Record<string, unknown>).supported_surfaces) !== JSON.stringify(expectedContract.browser_kernel.supported_surfaces)) {
     throw new Error("web_operation_contract_browser_kernel_invalid");
   }
-  const expected = commonWebOperationContract as unknown as Record<string, unknown>;
+  const expected = expectedContract as unknown as Record<string, unknown>;
   for (const section of ["fixed_kernel", "adaptive_layer"] as const) {
     const actual = value[section];
     const required = expected[section];
@@ -309,7 +345,7 @@ export function validateWebOperationContract(contract: unknown): WebOperationCon
   ) {
     throw new Error("web_operation_contract_operation_model_exploration_limits_invalid");
   }
-  return getWebOperationContract();
+  return expectedContract;
 }
 
 const OPERATION_KINDS = new Set<WebOperationIntentKind>(["read", "create", "update", "publish", "submit", "delete"]);

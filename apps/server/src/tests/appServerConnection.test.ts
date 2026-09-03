@@ -74,6 +74,22 @@ test("Zeabur AOS may use the dedicated Codex service over private networking onl
   assert.doesNotMatch(JSON.stringify(readback), /unit-test-token/u);
 });
 
+test("production Zeabur AOS infers the dedicated private Codex endpoint when auth is already configured", () => {
+  const env = {
+    ZEABUR: "1",
+    AUTOMATION_OS_ENV_ROLE: "production",
+    AUTOMATION_OS_CODEX_APP_SERVER_REMOTE_TOKEN: "unit-test-token"
+  };
+  const connection = resolveCodexAppServerConnection({}, env);
+  assert.equal(connection.mode, "remote_websocket");
+  assert.equal(connection.endpoint, "ws://codex-app-server.zeabur.internal:8080/");
+  const readback = getCodexAppServerConnectionReadback({}, env);
+  assert.equal(readback.network_boundary, "zeabur_private_service");
+  assert.equal(readback.exact_blocker, null);
+  assert.equal(readback.auth_configured, true);
+  assert.doesNotMatch(JSON.stringify(readback), /unit-test-token/u);
+});
+
 test("Zeabur internal websocket opt-in is limited to the dedicated Codex service hostname", () => {
   const env = {
     AUTOMATION_OS_CODEX_APP_SERVER_REMOTE_URL: "ws://other-service.zeabur.internal:8080/",
@@ -116,7 +132,21 @@ test("remote connection fails closed when auth or remote cwd is missing/invalid"
   );
 });
 
-test("remote connection fails closed when Zeabur leaves a secret reference unresolved", () => {
+test("remote auth resolves the approved Zeabur service reference from the injected source value", () => {
+  const env = {
+    AUTOMATION_OS_CODEX_APP_SERVER_REMOTE_URL: "ws://codex-app-server.zeabur.internal:8080/",
+    AUTOMATION_OS_CODEX_APP_SERVER_ALLOW_INTERNAL_WS: "1",
+    AUTOMATION_OS_CODEX_APP_SERVER_REMOTE_TOKEN: "${CODEX_APP_SERVER_REMOTE_TOKEN}",
+    CODEX_APP_SERVER_REMOTE_TOKEN: "unit-test-token"
+  };
+  const readback = getCodexAppServerConnectionReadback({}, env);
+  assert.equal(readback.auth_configured, true);
+  assert.equal(readback.exact_blocker, null);
+  assert.equal(resolveCodexAppServerConnection({}, env).token, "unit-test-token");
+  assert.doesNotMatch(JSON.stringify(readback), /unit-test-token/u);
+});
+
+test("remote connection fails closed when the approved Zeabur reference has no injected source", () => {
   const env = {
     AUTOMATION_OS_CODEX_APP_SERVER_REMOTE_URL: "ws://codex-app-server.zeabur.internal:8080/",
     AUTOMATION_OS_CODEX_APP_SERVER_ALLOW_INTERNAL_WS: "1",
@@ -126,10 +156,7 @@ test("remote connection fails closed when Zeabur leaves a secret reference unres
   assert.equal(readback.auth_configured, false);
   assert.equal(readback.exact_blocker, "codex_app_server_remote_auth_unresolved_reference");
   assert.equal(readback.production_promotion_blocker, "codex_app_server_remote_auth_unresolved_reference");
-  assert.throws(
-    () => resolveCodexAppServerConnection({}, env),
-    /codex_app_server_remote_auth_unresolved_reference/u
-  );
+  assert.throws(() => resolveCodexAppServerConnection({}, env), /codex_app_server_remote_auth_unresolved_reference/u);
 });
 
 test("remote auth can be resolved from a 0400 secret file without exposing its value in readback", () => {

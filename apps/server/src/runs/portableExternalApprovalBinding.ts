@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 export const PORTABLE_EXTERNAL_APPROVAL_BINDING_SCHEMA_V1 = "automation_os_portable_external_approval_binding.v1" as const;
 export const PORTABLE_TARGET_BOUND_APPROVAL_RECEIPT_SCHEMA_V1 = "automation_os_portable_target_bound_approval_receipt.v1" as const;
+export type PortableBrowserSurface = "browser_use_cli" | "signed_chrome_extension_profile2" | "aos_chrome_companion_profile_instance";
 
 const IDENTIFIER = /^[A-Za-z0-9][-_A-Za-z0-9.:]{0,179}$/u;
 const HASH = /^[a-f0-9]{64}$/u;
@@ -46,7 +47,7 @@ export type PortableExternalApprovalBindingV1 = {
   input_bundle_sha256: string;
   target_digest: string;
   target: PortableApprovalTarget;
-  browser_surface: "browser_use_cli";
+  browser_surface: PortableBrowserSurface;
   fresh_browser_use_authority_required: true;
   authority_scope: "current_run_company_target";
   first_class_root_required: false;
@@ -150,6 +151,7 @@ export function buildPortableExternalApprovalBinding(input: {
   idempotencyKey: string;
   inputBundleSha256: string;
   inputBundle: Record<string, unknown>;
+  browserSurface?: PortableBrowserSurface;
 }): PortableExternalApprovalBindingV1 {
   const companyId = requiredIdentifier(input.companyId, "company_id");
   const workflowId = requiredIdentifier(input.workflowId, "workflow_id");
@@ -171,7 +173,7 @@ export function buildPortableExternalApprovalBinding(input: {
     input_bundle_sha256: inputBundleSha256,
     target_digest: portableBusinessTargetDigest(input.inputBundle),
     target,
-    browser_surface: "browser_use_cli",
+    browser_surface: input.browserSurface ?? "browser_use_cli",
     fresh_browser_use_authority_required: true,
     authority_scope: "current_run_company_target",
     first_class_root_required: false,
@@ -206,7 +208,7 @@ export function buildPortableTargetBoundApprovalReceipt(input: {
 
 export function validatePortableTargetBoundApprovalReceipt(
   value: unknown,
-  expected: Partial<Pick<PortableExternalApprovalBindingV1, "company_id" | "workflow_id" | "run_id" | "step_id" | "effect_stage" | "idempotency_key" | "input_bundle_sha256" | "target_digest">> = {}
+  expected: Partial<Pick<PortableExternalApprovalBindingV1, "company_id" | "workflow_id" | "run_id" | "step_id" | "effect_stage" | "idempotency_key" | "input_bundle_sha256" | "target_digest" | "browser_surface">> = {}
 ): PortableTargetBoundApprovalReceiptV1 {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("portable_external_approval_receipt_invalid");
   const receipt = value as Record<string, unknown>;
@@ -221,7 +223,7 @@ export function validatePortableTargetBoundApprovalReceipt(
   const binding = receipt.binding as Record<string, unknown>;
   if (binding.schema !== PORTABLE_EXTERNAL_APPROVAL_BINDING_SCHEMA_V1
     || binding.issued_by !== "automation_os_portable_controller"
-    || binding.browser_surface !== "browser_use_cli"
+    || (binding.browser_surface !== "browser_use_cli" && binding.browser_surface !== "signed_chrome_extension_profile2")
     || binding.fresh_browser_use_authority_required !== true
     || binding.authority_scope !== "current_run_company_target"
     || binding.first_class_root_required !== false
@@ -232,6 +234,9 @@ export function validatePortableTargetBoundApprovalReceipt(
   for (const field of ["company_id", "workflow_id", "run_id", "step_id", "effect_stage", "idempotency_key"] as const) {
     const actual = requiredIdentifier(binding[field], field);
     if (expected[field] !== undefined && actual !== expected[field]) throw new Error(`portable_external_approval_binding_mismatch:${field}`);
+  }
+  if (expected.browser_surface !== undefined && binding.browser_surface !== expected.browser_surface) {
+    throw new Error("portable_external_approval_binding_mismatch:browser_surface");
   }
   const inputBundleSha256 = requiredHash(binding.input_bundle_sha256, "input_bundle_sha256");
   const targetDigest = requiredHash(binding.target_digest, "target_digest");

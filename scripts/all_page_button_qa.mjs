@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import vm from "node:vm";
 import ts from "typescript";
@@ -14,6 +15,52 @@ const outputPath = outputArgIndex >= 0 && process.argv[outputArgIndex + 1]
   : path.join(repoRoot, "work/qa/all-page-button-static-preflight.json");
 
 const VALID_DISPOSITIONS = new Set(["real_read", "real_action", "justified_human_gate", "remove"]);
+
+function configuredBrowserSurface() {
+  const configPath = process.env.AOS_WEB_OPERATION_BACKEND_CONFIG
+    || process.env.AUTOMATION_OS_WEB_OPERATION_BACKEND_CONFIG
+    || path.join(os.homedir(), ".social-flow", "web-operation-backend.json");
+  try {
+    const value = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    const backend = String(value?.backend || "").trim();
+    const profile = value?.chrome_profile && typeof value.chrome_profile === "object" ? value.chrome_profile : {};
+    return {
+      backend: backend || "unknown",
+      revision: Number.isSafeInteger(Number(value?.revision)) ? Number(value.revision) : null,
+      browser_surface: String(value?.browser_surface || "unknown"),
+      preferred_backend: String(value?.preferred_backend || backend || "unknown"),
+      preferred_browser_surface: String(value?.preferred_browser_surface || value?.browser_surface || "unknown"),
+      routing_mode: String(value?.routing_mode || "unknown"),
+      route_authority: String(value?.route_authority || "unknown"),
+      routing_policy: value?.routing_policy && typeof value.routing_policy === "object"
+        ? {
+          normal_default: String(value.routing_policy.normal_default || "unknown"),
+          no_post_dispatch_fallback: value.routing_policy.no_post_dispatch_fallback === true,
+          reroute_after_terminal_no_effect_only: value.routing_policy.reroute_after_terminal_no_effect_only === true
+        }
+        : null,
+      profile: backend === "chrome_plugin" ? {
+        id: String(profile.id || "profile2"),
+        name: String(profile.name || "Profile 2"),
+        surface: String(profile.surface || "signed_chrome_extension_profile2")
+      } : null,
+      source: configPath
+    };
+  } catch {
+    return {
+      backend: "unknown",
+      revision: null,
+      browser_surface: "unknown",
+      preferred_backend: "unknown",
+      preferred_browser_surface: "unknown",
+      routing_mode: "unknown",
+      route_authority: "unknown",
+      routing_policy: null,
+      profile: null,
+      source: configPath
+    };
+  }
+}
 
 function loadControlManifest() {
   const source = fs.readFileSync(manifestSourcePath, "utf8");
@@ -43,6 +90,64 @@ function collectControlIdsFromSource(sourceText) {
   };
   visit(sourceFile);
   return ids;
+}
+
+function collectNativeInteractiveControls(sourceText) {
+  const sourceFile = ts.createSourceFile(appSourcePath, sourceText, ts.ScriptTarget.ES2020, true, ts.ScriptKind.TSX);
+  const nativeTags = new Set(["a", "button", "input", "select", "textarea"]);
+  const controls = [];
+  const inspect = (node) => {
+    const opening = ts.isJsxElement(node)
+      ? node.openingElement
+      : ts.isJsxSelfClosingElement(node)
+        ? node
+        : null;
+    if (opening) {
+      const tagName = opening.tagName.getText(sourceFile);
+      if (nativeTags.has(tagName)) {
+        const hasControlId = opening.attributes.properties.some((property) => ts.isJsxAttribute(property)
+          && property.name.getText(sourceFile) === "data-control-id");
+        const location = sourceFile.getLineAndCharacterOfPosition(opening.getStart(sourceFile));
+        controls.push({
+          tag: tagName,
+          line: location.line + 1,
+          has_control_id: hasControlId
+        });
+      }
+    }
+    ts.forEachChild(node, inspect);
+  };
+  inspect(sourceFile);
+  return controls;
+}
+
+function collectCustomInteractiveControls(sourceText) {
+  const sourceFile = ts.createSourceFile(appSourcePath, sourceText, ts.ScriptTarget.ES2020, true, ts.ScriptKind.TSX);
+  const customTags = new Set(["Button", "IconButton"]);
+  const controls = [];
+  const inspect = (node) => {
+    const opening = ts.isJsxElement(node)
+      ? node.openingElement
+      : ts.isJsxSelfClosingElement(node)
+        ? node
+        : null;
+    if (opening) {
+      const tagName = opening.tagName.getText(sourceFile);
+      if (customTags.has(tagName)) {
+        const hasControlId = opening.attributes.properties.some((property) => ts.isJsxAttribute(property)
+          && property.name.getText(sourceFile) === "controlId");
+        const location = sourceFile.getLineAndCharacterOfPosition(opening.getStart(sourceFile));
+        controls.push({
+          tag: tagName,
+          line: location.line + 1,
+          has_control_id: hasControlId
+        });
+      }
+    }
+    ts.forEachChild(node, inspect);
+  };
+  inspect(sourceFile);
+  return controls;
 }
 
 function collectAttributeValues(initializer) {
@@ -121,7 +226,10 @@ const SCREEN_CASE_DEFINITIONS = [
   { case_id: "production-status", route_patterns: ["#/production/status"], route_markers: ["#/production/status"], components: ["TruthfulProductionStatusPage", "ProjectUnavailablePage"] },
   { case_id: "pc-status", route_patterns: ["#/system/pc-status"], route_markers: ["#/system/pc-status"], components: ["PcStatusPage"] },
   { case_id: "project-directory", route_patterns: ["#/projects", "#/projects/"], route_markers: ["#/projects", "#/projects/"], components: ["ProjectDirectoryPage"] },
-  { case_id: "project-home", route_patterns: ["/projects/:projectSlug"], route_markers: ["/projects/"], components: ["HomePage"] },
+  // renderPage intentionally keeps a validated company root on the
+  // company-scoped automation view; keep the static route contract aligned
+  // with that runtime behavior instead of labeling it as global HomePage.
+  { case_id: "project-home", route_patterns: ["/projects/:projectSlug"], route_markers: ["/projects/"], components: ["AutomationsPage"] },
   { case_id: "project-unavailable", route_patterns: ["/projects/:projectSlug/*"], route_markers: ["/projects/"], components: ["ProjectUnavailablePage"] },
   { case_id: "project-performance", route_patterns: ["/projects/:projectSlug/performance"], route_markers: ["/projects/", "/performance"], components: ["TruthfulPerformancePage"] },
   { case_id: "project-builder", route_patterns: ["/projects/:projectSlug/automations/:automationId/edit"], route_markers: ["/projects/", "/automations/", "/edit"], components: ["BuilderPage"] },
@@ -158,7 +266,7 @@ function buildScreenCases(routeContract, manifest) {
       control_count: controlIds.length,
       runtime_qa: {
         status: "unverified",
-        exact_blocker: "fresh_browser_use_authority_required_for_runtime_screen_qa",
+        exact_blocker: "fresh_selected_browser_authority_required_for_runtime_screen_qa",
         recording_required: true,
         lifecycle: ["record-start", "open route", "record-command per control", "same-session readback", "record-finalize"],
         external_effects: "none"
@@ -172,6 +280,10 @@ function audit() {
   const manifestSource = fs.readFileSync(manifestSourcePath, "utf8");
   const manifest = loadControlManifest();
   const rendered = collectControlIdsFromSource(appSource);
+  const nativeInteractiveControls = collectNativeInteractiveControls(appSource);
+  const nativeControlsMissingIds = nativeInteractiveControls.filter((control) => !control.has_control_id);
+  const customInteractiveControls = collectCustomInteractiveControls(appSource);
+  const customControlsMissingIds = customInteractiveControls.filter((control) => !control.has_control_id);
   const manifestIds = manifest.map((entry) => entry.id);
   const duplicateManifestIds = unique(manifestIds.filter((id, index) => manifestIds.indexOf(id) !== index));
   const duplicateRenderedIds = unique(rendered.filter((id, index) => rendered.indexOf(id) !== index));
@@ -185,12 +297,15 @@ function audit() {
   const unclassifiedRendered = unique(rendered).filter((id) => !manifest.some((entry) => compatiblePattern(entry.id, id)));
   const orphanManifest = unique(manifestIds).filter((id) => !rendered.some((renderedId) => compatiblePattern(id, renderedId)));
   const routeContract = collectRouteContract(appSource);
+  const browserConfiguration = configuredBrowserSurface();
   const screenCases = buildScreenCases(routeContract, manifest);
   const manifestSources = unique(manifest.map((entry) => entry.source));
   const issues = [
     ...duplicateManifestIds.map((id) => `duplicate_manifest_id:${id}`),
     ...duplicateRenderedIds.map((id) => `duplicate_rendered_control_id:${id}`),
     ...invalidEntries.map((id) => `invalid_manifest_entry:${id}`),
+    ...nativeControlsMissingIds.map((control) => `native_control_missing_id:${control.tag}:${control.line}`),
+    ...customControlsMissingIds.map((control) => `custom_control_missing_id:${control.tag}:${control.line}`),
     ...unclassifiedRendered.map((id) => `unclassified_rendered_control:${id}`),
     ...orphanManifest.map((id) => `orphan_manifest_entry:${id}`),
     ...screenCases.flatMap((screen) => [
@@ -212,11 +327,12 @@ function audit() {
       entrypoint_is_tracked: true,
       worktree_runtime_dependency: false
     },
-    browser_surface: "browser_use_cli",
+    browser_surface: browserConfiguration.browser_surface,
+    browser_configuration: browserConfiguration,
     runtime_qa: {
       attempted: false,
       status: "unverified",
-      exact_blocker: "fresh_browser_use_authority_required_for_runtime_screen_qa",
+      exact_blocker: "fresh_selected_browser_authority_required_for_runtime_screen_qa",
       recording_required: true,
       external_effects: "none",
       note: "This preflight classifies source ownership only; it does not claim that runtime controls were clicked."
@@ -224,6 +340,16 @@ function audit() {
     control_manifest: {
       entries: manifest.length,
       rendered_patterns: unique(rendered).length,
+      native_interactive_controls: {
+        total: nativeInteractiveControls.length,
+        missing_control_id: nativeControlsMissingIds.length,
+        missing: nativeControlsMissingIds
+      },
+      custom_interactive_controls: {
+        total: customInteractiveControls.length,
+        missing_control_id: customControlsMissingIds.length,
+        missing: customControlsMissingIds
+      },
       dispositions: Object.fromEntries([...VALID_DISPOSITIONS].map((disposition) => [disposition, manifest.filter((entry) => entry.disposition === disposition).length])),
       sources: manifestSources,
       duplicate_ids: duplicateManifestIds,

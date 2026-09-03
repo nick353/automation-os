@@ -10,15 +10,27 @@ export type PortableScheduleDispatch = {
   worker_protocol: "mac_worker_polling_required";
   execution_backend: "automation_os_worker";
   browser_surface: "none" | "browser_use_cli";
+  browser_runtime: "none" | "browser_use_cli";
+  connector_execution_owner: "none" | "zeabur_codex_app_server" | "mac_worker_explicit_connector_fallback";
   operation_surface: "mac_local_worker" | "browser_use_cli";
   app_dependency: false;
   codex_is_not_authority: true;
   external_action_default: false;
 };
 
+export type PortableConnectorExecutionOwner = "zeabur_codex_app_server" | "mac_worker_explicit_connector_fallback";
+export type PortableBrowserSurfaceRequirement = "automatic" | "official_extension" | "companion_extension" | "browser_use_cli";
+
 type RegisteredAutomationLike = {
   workerCommandKind?: string | null;
   builderSpec?: Record<string, unknown> | null;
+  browserSurfaceRequirement?: PortableBrowserSurfaceRequirement | null;
+};
+
+const PORTABLE_WORKFLOW_BY_WORKER_COMMAND: Record<string, PortableWorkflowId> = {
+  job_submit_registered: "job-application-manager",
+  daily_ai_registered: "daily-ai-research-publish-run",
+  nisenprints_registered: "nisenprints-daily-product-canva-printify-etsy-pinterest"
 };
 
 function workflowIdFromBuilderSpec(builderSpec: Record<string, unknown> | null | undefined): string {
@@ -31,15 +43,56 @@ function workflowIdFromBuilderSpec(builderSpec: Record<string, unknown> | null |
   return typeof canonical === "string" ? canonical.trim() : "";
 }
 
+function workflowIdFromRegisteredAutomation(input: RegisteredAutomationLike): string {
+  const fromBuilderSpec = workflowIdFromBuilderSpec(input.builderSpec);
+  if (fromBuilderSpec) return fromBuilderSpec;
+  const workerCommandKind = typeof input.workerCommandKind === "string" ? input.workerCommandKind.trim() : "";
+  return PORTABLE_WORKFLOW_BY_WORKER_COMMAND[workerCommandKind] ?? "";
+}
+
+export function connectorExecutionOwnerForRegisteredAutomation(input: RegisteredAutomationLike): PortableConnectorExecutionOwner {
+  const routing = input.builderSpec?.connectorExecution;
+  if (routing && typeof routing === "object" && !Array.isArray(routing)) {
+    const owner = (routing as Record<string, unknown>).owner;
+    if (owner === "mac_worker_explicit_connector_fallback") return owner;
+  }
+  return "zeabur_codex_app_server";
+}
+
+/**
+ * Preserve an explicitly registered extension requirement across the scheduler
+ * boundary. An omitted requirement remains omitted so the run entrypoint can
+ * apply its own normal-route policy; the scheduler must not invent a default
+ * or silently translate one extension into the other.
+ */
+export function browserSurfaceRequirementForRegisteredAutomation(
+  input: RegisteredAutomationLike,
+): PortableBrowserSurfaceRequirement | undefined {
+  const direct = normalizedBrowserSurfaceRequirement(input.browserSurfaceRequirement);
+  if (direct !== undefined) return direct;
+  const fromBuilderSpec = normalizedBrowserSurfaceRequirement(input.builderSpec?.browserSurfaceRequirement);
+  if (fromBuilderSpec !== undefined) return fromBuilderSpec;
+  const browserSurface = input.builderSpec?.browserSurface;
+  if (browserSurface === undefined || browserSurface === null || browserSurface === "none") return undefined;
+  if (browserSurface === "browser_use_cli") return browserSurface;
+  throw new Error("portable_registered_browser_surface_invalid");
+}
+
+function normalizedBrowserSurfaceRequirement(value: unknown): PortableBrowserSurfaceRequirement | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (value === "automatic" || value === "official_extension" || value === "companion_extension" || value === "browser_use_cli") return value;
+  throw new Error("portable_registered_browser_surface_requirement_invalid");
+}
+
 /**
  * Resolve only the AOS catalog's already-known portable browser workflows.
  * Caller-supplied workflow ids are never accepted as a schedule authority.
  */
 export function portableWorkflowIdForRegisteredAutomation(input: RegisteredAutomationLike): PortableWorkflowId | null {
-  const workflowId = workflowIdFromBuilderSpec(input.builderSpec);
+  const workflowId = workflowIdFromRegisteredAutomation(input);
   if (!workflowId || !Object.prototype.hasOwnProperty.call(portableWorkflowManifests, workflowId)) return null;
   const manifest = portableWorkflowManifests[workflowId as PortableWorkflowId];
-  if (manifest.execution.browser_surface !== "browser_use_cli" || manifest.execution.app_dependency !== false) return null;
+  if (manifest.execution.browser_surface !== "browser_use_cli" || manifest.execution.browser_runtime !== "browser_use_cli" || manifest.execution.app_dependency !== false) return null;
   return workflowId as PortableWorkflowId;
 }
 
@@ -50,14 +103,18 @@ export function portableLocalWorkflowIdForRegisteredAutomation(input: Registered
 export function portableScheduleDispatchForRegisteredAutomation(input: RegisteredAutomationLike): PortableScheduleDispatch | null {
   const workflowId = portableWorkflowIdForRegisteredAutomation(input);
   if (workflowId) {
+    const manifest = portableWorkflowManifests[workflowId];
+    const connectorOwner = connectorExecutionOwnerForRegisteredAutomation(input);
     return {
       schema: PORTABLE_SCHEDULE_DISPATCH_SCHEMA,
       workflow_id: workflowId,
       queue: "aos_portable_workflow_run_queue",
       worker_protocol: "mac_worker_polling_required",
       execution_backend: "automation_os_worker",
-      browser_surface: "browser_use_cli",
-      operation_surface: "browser_use_cli",
+      browser_surface: manifest.execution.browser_surface,
+      browser_runtime: manifest.execution.browser_runtime,
+      connector_execution_owner: connectorOwner,
+      operation_surface: manifest.execution.browser_surface,
       app_dependency: false,
       codex_is_not_authority: true,
       external_action_default: false
@@ -72,6 +129,8 @@ export function portableScheduleDispatchForRegisteredAutomation(input: Registere
     worker_protocol: "mac_worker_polling_required",
     execution_backend: "automation_os_worker",
     browser_surface: "none",
+    browser_runtime: "none",
+    connector_execution_owner: "none",
     operation_surface: "mac_local_worker",
     app_dependency: false,
     codex_is_not_authority: true,

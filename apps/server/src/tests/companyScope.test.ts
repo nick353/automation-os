@@ -115,6 +115,19 @@ test("companies and automation APIs derive tenant scope from membership", async 
   assert.equal(explicitBRead.status, 403);
   assert.equal(JSON.parse(explicitBRead.body).error, "company_scope_forbidden");
 
+  const fixedWorkflowBeforeExplicitForeignScope = querySql<{ provenance_json: string }>(
+    "SELECT provenance_json FROM registered_workflows WHERE id='daily-ai-research-publish-run'"
+  )[0];
+  const explicitForeignWorkflowScope = await request("POST", "/api/registered-workflows/daily-ai-research-publish-run/pause", {
+    project_id: companyB.id
+  });
+  assert.equal(explicitForeignWorkflowScope.status, 404, explicitForeignWorkflowScope.body);
+  assert.equal(explicitForeignWorkflowScope.body, '{"error":"registered_workflow_not_found"}');
+  assert.deepEqual(
+    querySql<{ provenance_json: string }>("SELECT provenance_json FROM registered_workflows WHERE id='daily-ai-research-publish-run'")[0],
+    fixedWorkflowBeforeExplicitForeignScope
+  );
+
   const before = querySql<{ name: string; builder_spec_json: string }>(
     `SELECT name, builder_spec_json FROM mvp_automations WHERE id='${automationB.id}'`
   )[0];

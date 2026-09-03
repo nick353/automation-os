@@ -1,4 +1,4 @@
-import { execSql, insert, makeId, nowIso, querySql, sqlValue, type SqlValue } from "../db/client.js";
+import { execSql, insert, makeId, nowIso, querySql, querySqlAsync, sqlValue, type SqlValue } from "../db/client.js";
 import { scopedCompanyPredicate } from "../companies/scopedResources.js";
 
 export type ResearchSourceKey = "web" | "x" | "reddit" | "youtube" | "mcp" | "api";
@@ -147,6 +147,13 @@ export function getResearchPlan(planId: string, companyIds?: readonly string[]):
   const row = querySql<ResearchPlanRow>(companyIds
     ? `SELECT * FROM research_plans WHERE id=${sqlValue(planId)} AND ${scopedCompanyPredicate("company_id", companyIds)} LIMIT 1`
     : `SELECT * FROM research_plans WHERE id=${sqlValue(planId)} LIMIT 1`)[0];
+  return row ? researchPlanFromRow(row) : undefined;
+}
+
+export async function getResearchPlanAsync(planId: string, companyIds?: readonly string[]): Promise<ResearchPlanSnapshot | undefined> {
+  const row = (await querySqlAsync<ResearchPlanRow>(companyIds
+    ? `SELECT * FROM research_plans WHERE id=${sqlValue(planId)} AND ${scopedCompanyPredicate("company_id", companyIds)} LIMIT 1`
+    : `SELECT * FROM research_plans WHERE id=${sqlValue(planId)} LIMIT 1`))[0];
   return row ? researchPlanFromRow(row) : undefined;
 }
 

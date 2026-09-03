@@ -174,7 +174,7 @@ function processIsAlive(pid: number): boolean {
 }
 
 function runCollector(input: { collectorPath?: string; registryPath: string; vaultPath: string }): NonNullable<ObsidianMaintenanceResult["collector"]> {
-  const collectorPath = resolve(input.collectorPath ?? process.env.AUTOMATION_OS_PROJECT_HANDOFF_COLLECTOR ?? join(homedir(), ".codex", "hooks", "project-handoff-collector.mjs"));
+  const collectorPath = resolve(input.collectorPath ?? process.env.AUTOMATION_OS_PROJECT_HANDOFF_COLLECTOR ?? "/Users/nichikatanaka/Documents/Codex/automation-os/scripts/project-handoff-collector.mjs");
   if (!existsSync(collectorPath)) return { ok: false, projects: 0, generatedFiles: 0, removedStaleContextPacks: 0, error: "project_handoff_collector_missing" };
   const result = spawnSync(process.execPath, [collectorPath], {
     cwd: process.cwd(),

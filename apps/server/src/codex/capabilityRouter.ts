@@ -1,10 +1,58 @@
 import type { CodexCapabilitiesSummary } from "./capabilities.js";
+import {
+  buildConnectorExecutionPlacement,
+  missingZeaburConnectorRegistryReadback,
+  readZeaburConnectorRegistryReadback,
+  type ConnectorExecutionPlacement,
+  type ZeaburConnectorRegistryReadback
+} from "./zeaburConnectorRouting.js";
 import type { TrustedBridgeAction } from "../bridge/trustedBridge.js";
 import { getBrowserHealth } from "../browser/health.js";
 
 export type CapabilityRouteStatus = "ready" | "partial" | "missing";
 export type CapabilityRouteAuthority = "catalog" | "runtime" | "connected";
 export type CapabilityRouteProof = "none" | "read_only" | "receipt";
+export type ToolPreferenceKind = "plugin" | "mcp" | "cli" | "api";
+export type ToolPreferenceStatus = "ready" | "needs_company_auth" | "catalog_only" | "unavailable";
+
+export type ToolPreferenceCandidate = {
+  id: string;
+  label: string;
+  kind: ToolPreferenceKind;
+  rank: number;
+  status: ToolPreferenceStatus;
+  commandMatch: boolean;
+  companyBound: boolean;
+  verified: boolean;
+  reason: string;
+  executionOwner?: ConnectorExecutionPlacement["owner"];
+};
+
+export type OfficialToolDiscoveryCandidate = {
+  id: string;
+  label: string;
+  kind: "mcp" | "cli" | "api";
+  endpoint?: string;
+  sourceUrl: string;
+  status: "catalog_only";
+  commandMatch: boolean;
+};
+
+export type ToolPreferenceSnapshot = {
+  schema: "automation_os_tool_preference.v1";
+  order: ToolPreferenceKind[];
+  priorityPolicy: "plugin_first_others_tied_second";
+  selected: ToolPreferenceCandidate | null;
+  candidates: ToolPreferenceCandidate[];
+  officialCandidates: OfficialToolDiscoveryCandidate[];
+  companyIds: string[];
+  fallbackPolicy: "no_implicit_fallback";
+  discovery: {
+    source: "local_codex_inventory";
+    officialCatalogResearch: "captured_in_repo";
+  };
+  connectorExecution?: ConnectorExecutionPlacement;
+};
 export type CapabilityRoute = {
   id: string;
   label: string;
@@ -39,6 +87,7 @@ export type CapabilityRouterSnapshot = {
   primaryAction: string;
   recommendedRoutes: CapabilityRoute[];
   gapBacklog: CapabilityGap[];
+  toolPreference: ToolPreferenceSnapshot;
   counts: {
     ready: number;
     partial: number;
@@ -51,6 +100,20 @@ type RouterInput = {
   command?: string;
   capabilities: CodexCapabilitiesSummary;
   bridgeActions: TrustedBridgeAction[];
+  companyIds?: readonly string[];
+  companyConnectionRefs?: readonly CompanyConnectionRefLike[];
+  zeaburConnectorRegistry?: ZeaburConnectorRegistryReadback;
+};
+
+export type CompanyConnectionRefLike = {
+  platform?: string;
+  accountRef?: string;
+  account_ref?: string;
+  status?: string;
+  oauthState?: string;
+  oauth_state?: string;
+  verificationStatus?: string;
+  verification_status?: string;
 };
 
 export function buildCapabilityRouterSnapshot(input: RouterInput): CapabilityRouterSnapshot {
@@ -59,12 +122,20 @@ export function buildCapabilityRouterSnapshot(input: RouterInput): CapabilityRou
   const routes = buildRoutes(input, context);
   const gaps = buildGapBacklog(input, context);
   const sortedRoutes = routes.sort(routeRank).slice(0, 8);
+  const toolPreference = buildToolPreferenceSnapshot({
+    command,
+    capabilities: input.capabilities,
+    companyIds: input.companyIds,
+    companyConnectionRefs: input.companyConnectionRefs,
+    zeaburConnectorRegistry: input.zeaburConnectorRegistry
+  });
   return {
     generatedAt: new Date().toISOString(),
     command,
     primaryAction: choosePrimaryAction(sortedRoutes, gaps),
     recommendedRoutes: sortedRoutes,
     gapBacklog: gaps.sort(gapRank).slice(0, 14),
+    toolPreference,
     counts: {
       ready: routes.filter((route) => route.status === "ready").length,
       partial: routes.filter((route) => route.status === "partial").length,
@@ -72,6 +143,195 @@ export function buildCapabilityRouterSnapshot(input: RouterInput): CapabilityRou
       gaps: gaps.length
     }
   };
+}
+
+/**
+ * Chat-created automations use this explicit order.  It is a planning and
+ * admission hint, not proof that a provider is authenticated.  A candidate
+ * that needs company authentication stays visible as a stop condition rather
+ * than being silently replaced by a lower-priority surface.
+ */
+export function buildToolPreferenceSnapshot(input: {
+  command?: string;
+  capabilities: CodexCapabilitiesSummary;
+  companyIds?: readonly string[];
+  companyConnectionRefs?: readonly CompanyConnectionRefLike[];
+  zeaburConnectorRegistry?: ZeaburConnectorRegistryReadback;
+}): ToolPreferenceSnapshot {
+  const command = normalizeCommand(input.command);
+  const lowerCommand = command.toLowerCase();
+  const companyIds = [...new Set((input.companyIds ?? []).map((value) => value.trim()).filter(Boolean))];
+  const refs = input.companyConnectionRefs ?? [];
+  const connector = connectorForCommand(lowerCommand);
+  const zeaburConnectorRegistry = input.zeaburConnectorRegistry
+    ?? (connector ? readZeaburConnectorRegistryReadback() : missingZeaburConnectorRegistryReadback());
+  const connectorExecution = connector
+    ? buildConnectorExecutionPlacement({
+      connector,
+      zeabur: zeaburConnectorRegistry,
+      companyConnectionVerified: refs.some((ref) => isVerifiedConnection(ref) && toolMatchesConnection(connector, ref))
+    })
+    : undefined;
+  const candidates: ToolPreferenceCandidate[] = [];
+  const plugins = input.capabilities.capabilities.plugins.filter((plugin) => !plugin.hiddenFromSuggestions);
+
+  for (const plugin of plugins) {
+    const commandMatch = toolMatchesCommand(plugin.name, lowerCommand);
+    if (command && !commandMatch && hasSpecificToolIntent(lowerCommand)) continue;
+    const matchingRef = refs.find((ref) => toolMatchesConnection(plugin.name, ref));
+    const verified = isVerifiedConnection(matchingRef);
+    const companyBound = Boolean(matchingRef);
+    const remoteConnectorBlocked = Boolean(connector && commandMatch && connectorExecution?.owner !== "zeabur_codex_app_server");
+    candidates.push({
+      id: plugin.id,
+      label: plugin.name,
+      kind: "plugin",
+      rank: 0,
+      status: remoteConnectorBlocked ? "catalog_only" : verified ? "ready" : companyBound ? "needs_company_auth" : "catalog_only",
+      commandMatch,
+      companyBound,
+      verified,
+      executionOwner: connector && commandMatch ? connectorExecution?.owner : undefined,
+      reason: remoteConnectorBlocked
+        ? `Zeabur Codex App Server配置待ち: ${connectorExecution?.exactBlocker ?? "zeabur_connector_execution_not_ready"}`
+        : verified
+        ? "会社scopeで検証済みのPlugin"
+        : companyBound
+          ? "会社scopeの接続参照はあるが、認証・検証が未完了"
+          : "Codex Plugin inventoryで発見済み。会社scopeの認証が必要"
+    });
+  }
+
+  const mcp = input.capabilities.capabilities.mcp;
+  candidates.push(surfaceCandidate(mcp, "mcp", 1, "Plugin以外の同率2位候補"));
+  const cli = input.capabilities.capabilities.cli;
+  candidates.push(surfaceCandidate(cli, "cli", 1, "Plugin以外の同率2位候補"));
+  const api = input.capabilities.capabilities.automationOsApi;
+  candidates.push(surfaceCandidate(api, "api", 1, "Plugin以外の同率2位候補"));
+
+  candidates.sort((a, b) => a.rank - b.rank || Number(b.commandMatch) - Number(a.commandMatch) || Number(b.verified) - Number(a.verified) || a.label.localeCompare(b.label));
+  // Preserve Plugin-first even when the selected Plugin still needs company
+  // authentication.  The planner must surface that gate instead of silently
+  // dropping to a lower-priority MCP/CLI/API candidate.
+  const selected = candidates.find((candidate) => candidate.status !== "unavailable") ?? null;
+  const officialCandidates = officialToolDiscoveryCandidates(lowerCommand);
+  return {
+    schema: "automation_os_tool_preference.v1",
+    order: ["plugin", "mcp", "cli", "api"],
+    priorityPolicy: "plugin_first_others_tied_second",
+    selected,
+    candidates: candidates.slice(0, 24),
+    officialCandidates,
+    companyIds,
+    fallbackPolicy: "no_implicit_fallback",
+    discovery: { source: "local_codex_inventory", officialCatalogResearch: "captured_in_repo" },
+    ...(connectorExecution ? { connectorExecution } : {})
+  };
+}
+
+function connectorForCommand(command: string): string | null {
+  if (/supabase|supabase/u.test(command)) return "supabase";
+  if (/gmail|mail|メール/u.test(command)) return "gmail";
+  return null;
+}
+
+function officialToolDiscoveryCandidates(command: string): OfficialToolDiscoveryCandidate[] {
+  const candidates: OfficialToolDiscoveryCandidate[] = [
+    {
+      id: "official:mcp:google-gmail",
+      label: "Google Workspace MCP / Gmail",
+      kind: "mcp",
+      endpoint: "https://gmailmcp.googleapis.com/mcp/v1",
+      sourceUrl: "https://developers.google.com/workspace/guides/configure-mcp-servers",
+      status: "catalog_only",
+      commandMatch: /gmail|mail|google|メール/u.test(command)
+    },
+    {
+      id: "official:mcp:google-drive",
+      label: "Google Workspace MCP / Drive",
+      kind: "mcp",
+      endpoint: "https://drivemcp.googleapis.com/mcp/v1",
+      sourceUrl: "https://developers.google.com/workspace/guides/configure-mcp-servers",
+      status: "catalog_only",
+      commandMatch: /drive|google|ドライブ|資料/u.test(command)
+    },
+    {
+      id: "official:mcp:google-calendar",
+      label: "Google Workspace MCP / Calendar",
+      kind: "mcp",
+      endpoint: "https://calendarmcp.googleapis.com/mcp/v1",
+      sourceUrl: "https://developers.google.com/workspace/guides/configure-mcp-servers",
+      status: "catalog_only",
+      commandMatch: /calendar|google|カレンダー|予定|面接/u.test(command)
+    },
+    {
+      id: "official:mcp:supabase",
+      label: "Supabase Remote MCP",
+      kind: "mcp",
+      endpoint: "https://mcp.supabase.com/mcp",
+      sourceUrl: "https://supabase.com/changelog/39434-supabase-remote-mcp-server",
+      status: "catalog_only",
+      commandMatch: /supabase|database|db|データベース/u.test(command)
+    }
+  ];
+  return candidates.filter((candidate) => !command || candidate.commandMatch || !hasSpecificToolIntent(command));
+}
+
+function surfaceCandidate(
+  surface: CodexCapabilitiesSummary["capabilities"]["mcp"],
+  kind: "mcp" | "cli" | "api",
+  rank: number,
+  reason: string
+): ToolPreferenceCandidate {
+  const state = surface?.state;
+  const verified = state?.verified === true && (state.connected === true || kind === "api");
+  const configured = state?.configured === true || state?.enabled === true;
+  return {
+    id: surface?.id ?? `surface:${kind}`,
+    label: surface?.name ?? kind.toUpperCase(),
+    kind,
+    rank,
+    status: verified ? "ready" : configured ? "catalog_only" : "unavailable",
+    commandMatch: true,
+    companyBound: false,
+    verified,
+    reason
+  };
+}
+
+function toolMatchesCommand(name: string, command: string): boolean {
+  const normalized = cleanName(name);
+  if (!command) return true;
+  const tokens = normalized.split(/[^a-z0-9]+/u).filter(Boolean);
+  const aliases = new Set(tokens);
+  if (normalized.includes("google-drive")) aliases.add("drive");
+  if (normalized.includes("google-calendar")) aliases.add("calendar");
+  if (normalized.includes("google")) aliases.add("google");
+  if (normalized.includes("gmail")) aliases.add("mail");
+  return [...aliases].some((token) => token.length >= 3 && command.includes(token))
+    || (normalized.includes("aos-automation") && /自動化|automation|会社|run|承認/u.test(command));
+}
+
+function toolMatchesConnection(name: string, ref: CompanyConnectionRefLike): boolean {
+  const platform = cleanName(ref.platform ?? "");
+  const tool = cleanName(name);
+  if (!platform) return false;
+  return tool === platform
+    || tool.includes(platform)
+    || (platform === "drive" && tool.includes("google-drive"))
+    || (platform === "calendar" && tool.includes("google-calendar"))
+    || (platform === "mail" && tool.includes("gmail"));
+}
+
+function isVerifiedConnection(ref: CompanyConnectionRefLike | undefined): boolean {
+  if (!ref) return false;
+  const verification = ref.verificationStatus ?? ref.verification_status;
+  const oauth = ref.oauthState ?? ref.oauth_state;
+  return ref.status === "verified" && verification === "verified" && (oauth === "connected" || oauth === "not_applicable");
+}
+
+function hasSpecificToolIntent(command: string): boolean {
+  return /gmail|mail|drive|calendar|supabase|canva|shopify|github|slack|notion|google|メール|ドライブ|カレンダー|会社/u.test(command);
 }
 
 function buildRoutes(input: RouterInput, context: CommandContext): CapabilityRoute[] {

@@ -1,16 +1,23 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { buildBrowserOperationalReadback, buildBrowserUseRuntimeSnapshot, buildBrowserUseRuntimeSnapshotAsync } from "../browser/runtimeSnapshot.js";
 import { buildBrowserRuntimeProcessReadback, buildBrowserRuntimeProcessReadbackAsync } from "../browser/liveResourceReadback.js";
 
 const originalRole = process.env.AUTOMATION_OS_RUNTIME_ROLE;
 const originalVerified = process.env.AUTOMATION_OS_BROWSER_USE_RUNTIME_VERIFIED;
+const originalChromeReadbackPath = process.env.AOS_CHROME_PLUGIN_READBACK_PATH;
 
 function restoreEnvironment() {
   if (originalRole === undefined) delete process.env.AUTOMATION_OS_RUNTIME_ROLE;
   else process.env.AUTOMATION_OS_RUNTIME_ROLE = originalRole;
   if (originalVerified === undefined) delete process.env.AUTOMATION_OS_BROWSER_USE_RUNTIME_VERIFIED;
   else process.env.AUTOMATION_OS_BROWSER_USE_RUNTIME_VERIFIED = originalVerified;
+  if (originalChromeReadbackPath === undefined) delete process.env.AOS_CHROME_PLUGIN_READBACK_PATH;
+  else process.env.AOS_CHROME_PLUGIN_READBACK_PATH = originalChromeReadbackPath;
 }
 
 test.afterEach(restoreEnvironment);
@@ -96,6 +103,196 @@ test("Mac worker Browser Use projection blocks without explicit verification", (
   assert.equal(snapshot.status, "blocked");
   assert.equal(snapshot.exactBlocker, "browser_use_runtime_not_verified");
   assert.equal(snapshot.readbackStatus, "pending");
+});
+
+test("selected Chrome Plugin backend projects its fresh Profile 2 bridge readback", () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), "aos-runtime-chrome-plugin-"));
+  const readbackPath = join(tempRoot, "bridge.json");
+  process.env.AOS_CHROME_PLUGIN_READBACK_PATH = readbackPath;
+  writeFileSync(readbackPath, JSON.stringify({
+    schema: "aos.chrome_plugin_bridge_readback.v2",
+    status: "ready",
+    bridge_instance_id: "bridge-runtime-test",
+    bridge_owner: { schema: "aos.chrome_plugin_bridge_owner.v1", owner_id: "owner-runtime-test", pid: 1234, bridge_instance_id: "bridge-runtime-test", session_id: "runtime-session", thread_id: "runtime-thread", turn_id: "runtime-turn", status: "foreground_ready", foreground_executor_ready: true, updated_at: new Date().toISOString() },
+    bridge_url: "http://127.0.0.1:58737",
+    browser_execution_authority: "general",
+    browser_execution_disabled: false,
+    browser: {
+      id: "chrome-runtime-test",
+      type: "extension",
+      metadata: { profileOrdering: "2", profileName: "Nicky", profileIsLastUsed: "true" }
+    },
+    operation_ready: true,
+    operation_status: "ready",
+    operation_exact_blocker: null,
+    selected_tab: { id: "runtime-selected-tab", url: "https://example.test/" },
+    visibility: { capability_id: "visibility", advertised: true, state: true },
+    last_seen_at: new Date().toISOString()
+  }) + "\n", { mode: 0o600 });
+  chmodSync(readbackPath, 0o600);
+  try {
+    const snapshot = buildBrowserUseRuntimeSnapshot({ selectedBackend: "chrome_plugin" });
+    assert.equal(snapshot.backend, "chrome_plugin");
+    assert.equal(snapshot.surface, "signed_chrome_extension_profile2");
+    assert.equal(snapshot.helper, "chrome_extension_trusted_bridge");
+    assert.equal(snapshot.status, "verified");
+    assert.equal(snapshot.exactBlocker, null);
+    assert.equal(snapshot.chromePluginReadback?.browser?.metadata.profileOrdering, "2");
+    assert.equal(snapshot.chromePluginLane?.blockingScope, null);
+    assert.equal(snapshot.chromePluginLane?.independentLanesAllowed, true);
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("AOS Chrome Companion backend projects its concrete Companion surface", () => {
+  const snapshot = buildBrowserUseRuntimeSnapshot({ selectedBackend: "aos_chrome_companion" });
+
+  assert.equal(snapshot.backend, "aos_chrome_companion");
+  assert.equal(snapshot.surface, "aos_chrome_companion_profile_instance");
+  assert.equal(snapshot.status, "readback_pending");
+  assert.equal(snapshot.fallbackPolicy, "no_implicit_surface_switch");
+});
+
+test("target-scoped Chrome Plugin snapshot stays usable when selected tab is unavailable", () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), "aos-runtime-chrome-plugin-target-scoped-"));
+  const readbackPath = join(tempRoot, "bridge.json");
+  process.env.AOS_CHROME_PLUGIN_READBACK_PATH = readbackPath;
+  writeFileSync(readbackPath, JSON.stringify({
+    schema: "aos.chrome_plugin_bridge_readback.v2",
+    status: "blocked",
+    bridge_instance_id: "bridge-target-scoped-runtime",
+    bridge_url: "http://127.0.0.1:58744",
+    browser_execution_authority: "read_only_admission",
+    browser_execution_disabled: false,
+    browser: { id: "chrome-target-scoped-runtime", type: "extension", metadata: { profileOrdering: "2" } },
+    bridge_owner: { schema: "aos.chrome_plugin_bridge_owner.v1", owner_id: "owner-target-scoped-runtime", pid: null, bridge_instance_id: "bridge-target-scoped-runtime", session_id: "runtime-session", thread_id: "runtime-thread", turn_id: "runtime-turn", status: "bridge_only", foreground_executor_ready: false, exact_blocker: "chrome_selected_tab_readback_invalid", updated_at: new Date().toISOString() },
+    operation_ready: false,
+    operation_status: "blocked",
+    operation_exact_blocker: "chrome_selected_tab_readback_invalid",
+    selected_tab: null,
+    exact_blocker: "chrome_selected_tab_readback_invalid",
+    last_seen_at: new Date().toISOString()
+  }) + "\n", { mode: 0o600 });
+  chmodSync(readbackPath, 0o600);
+  try {
+    const snapshot = buildBrowserUseRuntimeSnapshot({ selectedBackend: "chrome_plugin", targetScopedReadback: true });
+    assert.equal(snapshot.status, "verified");
+    assert.equal(snapshot.exactBlocker, null);
+    assert.equal(snapshot.operationReady, true);
+    assert.equal(snapshot.chromePluginReadback?.readbackScope, "target_scoped");
+    assert.equal(snapshot.chromePluginReadback?.selectedTab, null);
+    assert.equal(snapshot.chromePluginLane?.independentLanesAllowed, true);
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Chrome Plugin runtime snapshot uses worker heartbeat projection instead of hosted loopback", () => {
+  const snapshot = buildBrowserUseRuntimeSnapshot({
+    selectedBackend: "chrome_plugin",
+    targetScopedReadback: true,
+    remoteChromePluginReadback: {
+      schema: "aos.portable_worker_chrome_plugin_readback.v1",
+      status: "blocked",
+      exact_blocker: "chrome_plugin_foreground_executor_lease_expired",
+      target_scoped_ready: true,
+      target_scoped_exact_blocker: null,
+      operation_ready: true,
+      operation_status: "ready",
+      operation_exact_blocker: null,
+      bridge_instance_id: "-7424-4c88-b483-91644aa4ea4d",
+      last_seen_at: new Date().toISOString(),
+      browser: { id: "-7424-4c88-b483-91644aa4ea4d", type: "extension", profile_name: "Nicky", profile_ordering: "2" },
+      bridge_owner: {
+        schema: "aos.chrome_plugin_bridge_owner.v1",
+        owner_id: "chrome-plugin-owner-test",
+        bridge_instance_id: "-7424-4c88-b483-91644aa4ea4d",
+        session_id: "session-test",
+        thread_id: "thread-test",
+        turn_id: "turn-test",
+        status: "bridge_only",
+        foreground_executor_ready: false,
+        exact_blocker: "chrome_plugin_foreground_executor_lease_expired",
+        updated_at: new Date().toISOString()
+      }
+    }
+  });
+  assert.equal(snapshot.status, "verified");
+  assert.equal(snapshot.exactBlocker, null);
+  assert.equal(snapshot.chromePluginReadback?.readbackScope, "target_scoped");
+  assert.equal(snapshot.chromePluginReadback?.operationReady, true);
+  assert.equal(snapshot.chromePluginReadback?.bridgeUrl, null);
+});
+
+test("async selected Chrome Plugin snapshot refreshes the same bridge before freshness evaluation", async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), "aos-runtime-chrome-plugin-async-"));
+  const readbackPath = join(tempRoot, "bridge.json");
+  process.env.AOS_CHROME_PLUGIN_READBACK_PATH = readbackPath;
+  const server = createServer((_request, response) => {
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    const bridgeUrl = `http://127.0.0.1:${address.port}`;
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({
+      ok: true,
+      url: bridgeUrl,
+      bridge_instance_id: "bridge-async-refresh",
+      browser_readback: {
+        schema: "aos.chrome_plugin_bridge_readback.v2",
+        status: "ready",
+        bridge_instance_id: "bridge-async-refresh",
+        bridge_owner: { schema: "aos.chrome_plugin_bridge_owner.v1", owner_id: "owner-async-refresh", pid: 1234, bridge_instance_id: "bridge-async-refresh", session_id: "runtime-session", thread_id: "runtime-thread", turn_id: "runtime-turn", status: "foreground_ready", foreground_executor_ready: true, updated_at: new Date().toISOString() },
+        bridge_url: bridgeUrl,
+        browser_execution_authority: "general",
+        browser_execution_disabled: false,
+        browser: { id: "chrome-async-refresh", type: "extension", metadata: { profileOrdering: "2" } },
+        operation_ready: true,
+        operation_status: "ready",
+        operation_exact_blocker: null,
+        selected_tab: { id: "async-selected-tab", url: "https://example.test/" },
+        visibility: { capability_id: "visibility", advertised: true, state: true },
+        refresh_status: "ready",
+        refresh_exact_blocker: null,
+        last_seen_at: new Date().toISOString()
+      }
+    }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  const bridgeUrl = `http://127.0.0.1:${address.port}`;
+  writeFileSync(readbackPath, JSON.stringify({
+    schema: "aos.chrome_plugin_bridge_readback.v2",
+    status: "ready",
+    bridge_instance_id: "bridge-async-refresh",
+    bridge_owner: { schema: "aos.chrome_plugin_bridge_owner.v1", owner_id: "owner-async-refresh", pid: 1234, bridge_instance_id: "bridge-async-refresh", session_id: "runtime-session", thread_id: "runtime-thread", turn_id: "runtime-turn", status: "foreground_ready", foreground_executor_ready: true, updated_at: new Date().toISOString() },
+    bridge_url: bridgeUrl,
+    browser_execution_authority: "general",
+    browser_execution_disabled: false,
+    browser: { id: "chrome-async-refresh", type: "extension", metadata: { profileOrdering: "2" } },
+    operation_ready: true,
+    operation_status: "ready",
+    operation_exact_blocker: null,
+    selected_tab: { id: "async-selected-tab", url: "https://example.test/" },
+    visibility: { capability_id: "visibility", advertised: true, state: true },
+    last_seen_at: "2026-08-14T00:00:00.000Z"
+  }) + "\n", { mode: 0o600 });
+  chmodSync(readbackPath, 0o600);
+  try {
+    const snapshot = await buildBrowserUseRuntimeSnapshotAsync({ selectedBackend: "chrome_plugin" });
+    assert.equal(snapshot.backend, "chrome_plugin");
+    assert.equal(snapshot.status, "verified");
+    assert.equal(snapshot.exactBlocker, null);
+    assert.equal(snapshot.chromePluginReadback?.status, "ready");
+    assert.equal(snapshot.chromePluginReadback?.bridgeInstanceId, "bridge-async-refresh");
+    assert.equal(snapshot.chromePluginReadback?.refreshStatus, "ready");
+    assert.equal(snapshot.chromePluginReadback?.refreshExactBlocker, null);
+    assert.notEqual(snapshot.chromePluginReadback?.capturedAt, "2026-08-14T00:00:00.000Z");
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
 });
 
 test("operational readback never promotes healthy worker transport or foreign process presence", () => {

@@ -83,7 +83,7 @@ function readEffectClaim(claimPath, input, intent) {
   return claim;
 }
 
-function claimEffectAttempt(input, intent, authority, environment = process.env) {
+export function claimEffectAttempt(input, intent, authority, environment = process.env) {
   const runRoot = safeRunRoot(input.run_id, environment);
   const claimPath = path.join(runRoot, "web-operation-effect-claim.v1.json");
   if (fs.existsSync(claimPath)) return { path: claimPath, existing: readEffectClaim(claimPath, input, intent) };
@@ -114,7 +114,7 @@ function claimEffectAttempt(input, intent, authority, environment = process.env)
   }
 }
 
-function duplicateAttemptReceipt(input, intent, route, authority, claim) {
+export function duplicateAttemptReceipt(input, intent, route, authority, claim) {
   const externalActionExecuted = claim.external_action_executed === true;
   const lifecycle = {
     schema: "automation_os_web_operation_lifecycle.v1",
@@ -161,7 +161,7 @@ function duplicateAttemptReceipt(input, intent, route, authority, claim) {
   };
 }
 
-function persistEffectClaim(claim, result) {
+export function persistEffectClaim(claim, result) {
   const lifecycle = result.web_operation_lifecycle || {};
   const body = {
     ...claim.body,
@@ -178,7 +178,7 @@ function persistEffectClaim(claim, result) {
   return body;
 }
 
-function readEffectAuthority(input, intent, environment = process.env) {
+export function readEffectAuthority(input, intent, environment = process.env) {
   const runRoot = safeRunRoot(input.run_id, environment);
   const configuredPath = path.resolve(String(environment.AUTOMATION_OS_PORTABLE_EFFECT_AUTHORITY_PATH || ""));
   const expectedPath = path.join(runRoot, "portable-effect-authority.v1.json");
@@ -288,11 +288,11 @@ function sourceStateDigest(flow) {
   return before && typeof before === "object" ? String(before.state_sha256 || "") : "";
 }
 
-function errorCode(error) {
+export function errorCode(error) {
   return String(error?.exact_blocker || error?.message || error || "portable_external_web_operation_effect_failed").slice(0, 240);
 }
 
-function preDispatchBlocker(code) {
+export function preDispatchBlocker(code) {
   return /target_(?:not_found|ambiguous|inspect_failed)|target_coordinate_fallback_requires_explicit_opt_in|authority|origin_mismatch|navigation_readback_required|action_plan/iu.test(code);
 }
 

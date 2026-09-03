@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import test from "node:test";
 import {
   runResearchPlanSchedulerInChild,
@@ -44,6 +46,8 @@ test("scheduler child passes bounded scope and timestamp without echoing payload
   assert.equal(options?.env.AUTOMATION_OS_SCHEDULER_ALLOWED_COMPANY_IDS, '["company_a"]');
   assert.equal(options?.env.AUTOMATION_OS_SCHEDULER_SCOPE_ROLES, "owner,admin");
   assert.equal(options?.env.AUTOMATION_OS_POSTGRES_SCHEMA_ASSUMED_CURRENT, "1");
+  assert.equal(options?.env.AUTOMATION_OS_SCHEDULER_READ_REGISTERED_ONLY, "1");
+  assert.equal(options?.timeout, 30_000);
   assert.equal("OPENAI_API_KEY" in outcome, false);
 });
 
@@ -85,4 +89,24 @@ test("scheduler child preserves a safe child scope blocker", async () => {
   });
 
   assert.deepEqual(outcome, { status: "blocked", exactBlocker: "company_scope_forbidden" });
+});
+
+test("Postgres scheduler child keeps its company and lineage path async", () => {
+  const cliSource = readFileSync(resolve(process.cwd(), "apps/server/src/cli/researchPlanSchedulerOnce.ts"), "utf8");
+  assert.match(cliSource, /listActorCompaniesAsync\(\)/u);
+  assert.doesNotMatch(cliSource, /\blistActorCompanies\(/u);
+
+  const serverSource = readFileSync(resolve(process.cwd(), "apps/server/src/index.ts"), "utf8");
+  const schedulerStart = serverSource.indexOf("export async function runResearchPlanSchedulerOnce(");
+  const schedulerEnd = serverSource.indexOf("function isPortableSchedulerAdmission", schedulerStart);
+  assert.ok(schedulerStart >= 0 && schedulerEnd > schedulerStart);
+  const schedulerSource = serverSource.slice(schedulerStart, schedulerEnd);
+  assert.match(schedulerSource, /requireExistingServiceIdentityAsync\(/u);
+  assert.match(schedulerSource, /requireExistingCompanyAccessAsync\(/u);
+  assert.match(schedulerSource, /getResearchPlanAsync\(/u);
+  assert.match(schedulerSource, /commitResearchPlanStartedAsync\(/u);
+  assert.doesNotMatch(schedulerSource, /requireExistingServiceIdentity\(/u);
+  assert.doesNotMatch(schedulerSource, /requireExistingCompanyAccess\(/u);
+  assert.doesNotMatch(schedulerSource, /getResearchPlan\(/u);
+  assert.doesNotMatch(schedulerSource, /commitResearchPlanStarted\(/u);
 });

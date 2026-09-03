@@ -9,6 +9,7 @@ import {
   resolveLastSuccessfulExecutionAt,
   runObsidianGitSync,
   scanFilesForSecrets,
+  shouldSkipGitSync,
   type ObsidianGitSyncResult
 } from "../obsidian/vaultGitSync.js";
 import { acquireVaultWriteLock } from "../obsidian/vaultWriteLock.js";
@@ -51,6 +52,29 @@ test("Obsidian Git sync dry-runs preserve the last successful execution clock", 
   } satisfies ObsidianGitSyncResult;
   assert.equal(resolveLastSuccessfulExecutionAt(laterDryRun), successfulExecution.completedAt);
   assert.equal(resolveLastSuccessfulExecutionAt({ ...laterDryRun, lastExecutedAt: undefined }), undefined);
+});
+
+test("Obsidian Git sync does not throttle away pending Vault changes", () => {
+  const previous = {
+    ok: true,
+    skipped: false,
+    execute: true,
+    exactBlocker: null,
+    startedAt: "2026-07-15T00:00:00.000Z",
+    completedAt: "2026-07-15T00:00:05.000Z",
+    vaultPath: "/tmp/vault",
+    statusFile: "/tmp/status.json",
+    lastExecutedAt: "2026-09-02T00:00:00.000Z"
+  } satisfies ObsidianGitSyncResult;
+  const common = {
+    force: false,
+    previous,
+    lastExecutedAt: previous.lastExecutedAt,
+    nowMs: Date.parse("2026-09-02T01:00:00.000Z"),
+    intervalMs: 6 * 60 * 60 * 1000
+  };
+  assert.equal(shouldSkipGitSync({ ...common, pendingChanges: true }), false);
+  assert.equal(shouldSkipGitSync({ ...common, pendingChanges: false }), true);
 });
 
 test("Obsidian Git sync finds Homebrew commands when LaunchAgent PATH is restricted", () => {

@@ -541,13 +541,16 @@ function newestEntry(
         continue;
       }
       if (stats.isSymbolicLink()) continue;
-      if (stats.isFile() && includeFile(path) && pathIsInsideProject(path, realRoot)) {
-        found.push({ path: realpathSync(path), mtime: stats.mtime.toISOString(), mtimeMs: stats.mtimeMs });
+      if (stats.isFile() && includeFile(path)) {
+        found.push({ path, mtime: stats.mtime.toISOString(), mtimeMs: stats.mtimeMs });
       }
       if (entry.isDirectory()) walk(path, remainingDepth - 1);
     }
   }
-  walk(root, depth);
+  // Walk the canonical, non-symlink root. Every accepted descendant is then
+  // already inside the project boundary, so avoid a realpathSync() call for
+  // every file in large artifact trees.
+  walk(realRoot, depth);
   found.sort((left, right) => right.mtimeMs - left.mtimeMs);
   return found[0] ?? null;
 }

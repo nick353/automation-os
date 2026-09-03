@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 export const PORTABLE_EXTERNAL_EFFECT_AUTHORITY_SCHEMA_V1 = "automation_os_portable_external_effect_authority.v1" as const;
 export const PORTABLE_EXTERNAL_EFFECT_AUTHORITY_ISSUER_V1 = "automation_os_portable_controller" as const;
+export type PortableBrowserSurface = "browser_use_cli" | "signed_chrome_extension_profile2" | "aos_chrome_companion_profile_instance";
 
 const IDENTIFIER = /^[A-Za-z0-9][-_A-Za-z0-9.:]{0,179}$/u;
 const HASH = /^[a-f0-9]{64}$/u;
@@ -16,7 +17,7 @@ export type PortableExternalEffectAuthorityV1 = {
   step_id: string;
   effect_stage: string;
   effect_class: "external_non_idempotent";
-  browser_surface: "browser_use_cli";
+  browser_surface: PortableBrowserSurface;
   approval_id: string;
   approval_status: "approved";
   idempotency_key: string;
@@ -47,6 +48,7 @@ export type IssuePortableExternalEffectAuthorityInputV1 = {
   inputBundleSha256: string;
   payloadHash: string;
   leaseExpiresAt: string;
+  browserSurface?: PortableBrowserSurface;
   nowMs?: number;
 };
 
@@ -110,7 +112,7 @@ export function issuePortableExternalEffectAuthorityV1(
     step_id: stepId,
     effect_stage: effectStage,
     effect_class: "external_non_idempotent",
-    browser_surface: "browser_use_cli",
+    browser_surface: input.browserSurface ?? "browser_use_cli",
     approval_id: approvalId,
     approval_status: "approved",
     idempotency_key: idempotencyKey,
@@ -132,7 +134,7 @@ export function issuePortableExternalEffectAuthorityV1(
 
 export function validatePortableExternalEffectAuthorityV1(
   value: unknown,
-  expected?: Partial<Pick<PortableExternalEffectAuthorityV1, "company_id" | "workflow_id" | "run_id" | "step_id" | "effect_stage" | "approval_id" | "idempotency_key" | "target_digest" | "input_bundle_sha256">>,
+  expected?: Partial<Pick<PortableExternalEffectAuthorityV1, "company_id" | "workflow_id" | "run_id" | "step_id" | "effect_stage" | "approval_id" | "idempotency_key" | "target_digest" | "input_bundle_sha256" | "browser_surface">>,
   nowMs = Date.now()
 ): PortableExternalEffectAuthorityV1 {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("portable_effect_authority_invalid");
@@ -140,7 +142,7 @@ export function validatePortableExternalEffectAuthorityV1(
   if (body.schema !== PORTABLE_EXTERNAL_EFFECT_AUTHORITY_SCHEMA_V1
     || body.issued_by !== PORTABLE_EXTERNAL_EFFECT_AUTHORITY_ISSUER_V1
     || body.effect_class !== "external_non_idempotent"
-    || body.browser_surface !== "browser_use_cli"
+    || (body.browser_surface !== "browser_use_cli" && body.browser_surface !== "signed_chrome_extension_profile2")
     || body.approval_status !== "approved"
     || body.timeout_controller !== "automation_os_portable_controller"
     || body.reconciliation_required !== true

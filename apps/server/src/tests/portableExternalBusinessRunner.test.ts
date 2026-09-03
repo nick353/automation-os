@@ -18,7 +18,7 @@ const baseArgs = [
 
 function run(env: NodeJS.ProcessEnv) {
   try {
-    const output = execFileSync(process.execPath, [runner, ...baseArgs], { env: { ...process.env, ...env }, encoding: "utf8" });
+    const output = execFileSync(process.execPath, [runner, ...baseArgs], { env: { ...process.env, AOS_WEB_OPERATION_BACKEND: "browser_use_cli", ...env }, encoding: "utf8" });
     return JSON.parse(output.trim()) as Record<string, unknown>;
   } catch (error) {
     const output = String((error as { stdout?: string }).stdout || "").trim();

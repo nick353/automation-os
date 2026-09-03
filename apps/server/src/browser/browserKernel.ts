@@ -5,7 +5,7 @@ export const BROWSER_COMMAND_SCHEMA_V1 = "automation_os_browser_command.v1" as c
 export const BROWSER_RECEIPT_SCHEMA_V1 = "automation_os_browser_command_receipt.v1" as const;
 export const BROWSER_SESSION_SCHEMA_V1 = "automation_os_browser_session.v1" as const;
 
-export type BrowserSurface = "browser_use_cli" | "codex_app_browser";
+export type BrowserSurface = "browser_use_cli" | "codex_app_browser" | "signed_chrome_extension_profile2" | "aos_chrome_companion_profile_instance";
 export type BrowserCommandKind = "observe" | "locate" | "scroll" | "click" | "fill" | "select" | "upload" | "wait" | "extract" | "submit" | "verify";
 export type BrowserErrorCode = "target_not_found" | "target_ambiguous" | "stale_element" | "navigation_timeout" | "modal_blocked" | "infinite_scroll_exhausted" | "delayed_render_timeout" | "precondition_mismatch" | "postcondition_mismatch" | "captcha_detected" | "otp_required" | "identity_verification_required" | "unknown_required_fact" | "ambiguous_submit" | "approval_missing" | "same_run_binding_mismatch" | "provider_error" | "cleanup_failed";
 
@@ -87,7 +87,7 @@ export type BrowserKernelContractV1 = {
 
 export const browserKernelContract: BrowserKernelContractV1 = Object.freeze({
   schema: BROWSER_KERNEL_SCHEMA_V1,
-  supported_surfaces: ["browser_use_cli", "codex_app_browser"] as const,
+  supported_surfaces: ["browser_use_cli", "codex_app_browser", "signed_chrome_extension_profile2", "aos_chrome_companion_profile_instance"] as const,
   pipeline: ["observe", "locate", "scroll", "act", "verify"] as const,
   target_resolution_priority: ["accessibility_tree", "dom", "visible_text", "coordinate_fallback"] as const,
   common_recovery: ["scroll_before_action", "readback_after_action", "stale_element_recovery", "spa_route_recovery", "modal_recovery", "infinite_scroll_recovery", "delayed_render_wait"] as const,

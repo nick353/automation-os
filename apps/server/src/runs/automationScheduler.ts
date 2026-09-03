@@ -1,6 +1,6 @@
-import { nowIso, querySql, runSqlTransaction, sqlValue } from "../db/client.js";
-import { requireExistingCompanyAccess, requireExistingServiceIdentity } from "../companies/repository.js";
-import { materializeDurableScheduleOccurrence, type DurableScheduleOccurrence } from "./durableQueue.js";
+import { nowIso, querySql, querySqlAsync, runSqlTransaction, runSqlTransactionAsync, sqlValue } from "../db/client.js";
+import { requireExistingCompanyAccess, requireExistingCompanyAccessAsync, requireExistingServiceIdentity, requireExistingServiceIdentityAsync } from "../companies/repository.js";
+import { materializeDurableScheduleOccurrence, materializeDurableScheduleOccurrenceAsync, type DurableScheduleOccurrence } from "./durableQueue.js";
 
 type ScheduleRow = {
   id: string;
@@ -11,6 +11,7 @@ type ScheduleRow = {
   revision: number;
   next_run_at: string | null;
   updated_at: string;
+  catch_up_policy?: "skip" | "coalesce_one" | "explicit_occurrence" | null;
 };
 
 export class AutomationSchedulerError extends Error {
@@ -26,7 +27,7 @@ export function materializeDueAutomationOccurrences(input: {
   now?: string;
   limit?: number;
   excludeScheduleIds?: readonly string[];
-}): { initializedScheduleIds: string[]; occurrences: DurableScheduleOccurrence[] } {
+}): { initializedScheduleIds: string[]; occurrences: DurableScheduleOccurrence[]; blocked: Array<{ scheduleId: string; exactBlocker: string }> } {
   const companyId = required(input.companyId, "company_id_required");
   const serviceUserId = required(input.serviceUserId, "service_user_id_required");
   requireExistingServiceIdentity(serviceUserId);
@@ -35,11 +36,12 @@ export function materializeDueAutomationOccurrences(input: {
   const limit = boundedLimit(input.limit ?? 100);
   const initializedScheduleIds: string[] = [];
   const occurrences: DurableScheduleOccurrence[] = [];
+  const blocked: Array<{ scheduleId: string; exactBlocker: string }> = [];
   const excludedScheduleIds = new Set(input.excludeScheduleIds ?? []);
 
   const schedules = querySql<ScheduleRow>(`
     SELECT schedule.id, schedule.company_id, schedule.kind, schedule.expression, schedule.timezone, schedule.revision,
-           schedule.next_run_at, schedule.updated_at
+           schedule.next_run_at, schedule.updated_at, schedule.catch_up_policy
     FROM mvp_automation_schedules schedule
     JOIN mvp_automations automation
       ON automation.id=schedule.automation_id AND automation.company_id=schedule.company_id
@@ -68,6 +70,24 @@ export function materializeDueAutomationOccurrences(input: {
     }
     const dueAt = normalizedTime(schedule.next_run_at, "scheduler_next_run_time_invalid");
     if (Date.parse(dueAt) > Date.parse(now)) continue;
+    if (scheduleIsOverdue(dueAt, now) && schedule.catch_up_policy === "skip") {
+      const nextRunAt = computeNextAutomationOccurrence(schedule, now);
+      try {
+        runSqlTransaction([{
+          sql: `UPDATE mvp_automation_schedules SET next_run_at=${sqlValue(nextRunAt)}, updated_at=${sqlValue(now)}
+                WHERE id=${sqlValue(schedule.id)} AND company_id=${sqlValue(companyId)}
+                  AND enabled=1 AND status='active' AND revision=${schedule.revision} AND next_run_at=${sqlValue(dueAt)}`,
+          expectChanges: 1
+        }]);
+      } catch (error) {
+        if (!(error instanceof Error && error.message.includes("sql_transaction_expected_changes"))) throw error;
+      }
+      continue;
+    }
+    if (scheduleRequiresOverduePolicy(schedule, dueAt, now)) {
+      blocked.push({ scheduleId: schedule.id, exactBlocker: "scheduler_overdue_occurrence_policy_required" });
+      continue;
+    }
     const nextRunAt = computeNextAutomationOccurrence(schedule, dueAt);
     const materialized = materializeDurableScheduleOccurrence({
       companyId,
@@ -80,7 +100,112 @@ export function materializeDueAutomationOccurrences(input: {
     });
     occurrences.push(materialized.occurrence);
   }
-  return { initializedScheduleIds, occurrences };
+  return { initializedScheduleIds, occurrences, blocked };
+}
+
+/** Async PostgreSQL-safe scheduler materialization for the resident server. */
+export async function materializeDueAutomationOccurrencesAsync(input: {
+  companyId: string;
+  serviceUserId: string;
+  now?: string;
+  limit?: number;
+  excludeScheduleIds?: readonly string[];
+}): Promise<{ initializedScheduleIds: string[]; occurrences: DurableScheduleOccurrence[]; blocked: Array<{ scheduleId: string; exactBlocker: string }> }> {
+  const companyId = required(input.companyId, "company_id_required");
+  const serviceUserId = required(input.serviceUserId, "service_user_id_required");
+  await requireExistingServiceIdentityAsync(serviceUserId);
+  await requireExistingCompanyAccessAsync(companyId, ["operator"], serviceUserId);
+  const now = normalizedTime(input.now ?? nowIso(), "scheduler_time_invalid");
+  const limit = boundedLimit(input.limit ?? 100);
+  const initializedScheduleIds: string[] = [];
+  const occurrences: DurableScheduleOccurrence[] = [];
+  const blocked: Array<{ scheduleId: string; exactBlocker: string }> = [];
+  const excludedScheduleIds = new Set(input.excludeScheduleIds ?? []);
+  const schedules = await querySqlAsync<ScheduleRow>(`
+    SELECT schedule.id, schedule.company_id, schedule.kind, schedule.expression, schedule.timezone, schedule.revision,
+           schedule.next_run_at, schedule.updated_at, schedule.catch_up_policy
+    FROM mvp_automation_schedules schedule
+    JOIN mvp_automations automation
+      ON automation.id=schedule.automation_id AND automation.company_id=schedule.company_id
+    WHERE schedule.company_id=${sqlValue(companyId)} AND schedule.enabled=1 AND schedule.status='active'
+      AND automation.status='active' AND schedule.kind!='manual'
+    ORDER BY COALESCE(schedule.next_run_at, schedule.updated_at) ASC, schedule.id ASC
+    LIMIT ${limit}
+  `);
+
+  for (const schedule of schedules) {
+    if (excludedScheduleIds.has(schedule.id)) continue;
+    if (!schedule.next_run_at) {
+      const nextRunAt = computeNextAutomationOccurrence(schedule, now);
+      try {
+        await runSqlTransactionAsync([{
+          sql: `UPDATE mvp_automation_schedules SET next_run_at=${sqlValue(nextRunAt)}, updated_at=${sqlValue(now)}
+                WHERE id=${sqlValue(schedule.id)} AND company_id=${sqlValue(companyId)}
+                  AND enabled=1 AND status='active' AND revision=${schedule.revision} AND next_run_at IS NULL`,
+          expectChanges: 1
+        }]);
+        initializedScheduleIds.push(schedule.id);
+      } catch (error) {
+        if (!(error instanceof Error && error.message.includes("sql_transaction_expected_changes"))) throw error;
+      }
+      continue;
+    }
+    const dueAt = normalizedTime(schedule.next_run_at, "scheduler_next_run_time_invalid");
+    if (Date.parse(dueAt) > Date.parse(now)) continue;
+    if (scheduleIsOverdue(dueAt, now) && schedule.catch_up_policy === "skip") {
+      const nextRunAt = computeNextAutomationOccurrence(schedule, now);
+      try {
+        await runSqlTransactionAsync([{
+          sql: `UPDATE mvp_automation_schedules SET next_run_at=${sqlValue(nextRunAt)}, updated_at=${sqlValue(now)}
+                WHERE id=${sqlValue(schedule.id)} AND company_id=${sqlValue(companyId)}
+                  AND enabled=1 AND status='active' AND revision=${schedule.revision} AND next_run_at=${sqlValue(dueAt)}`,
+          expectChanges: 1
+        }]);
+      } catch (error) {
+        if (!(error instanceof Error && error.message.includes("sql_transaction_expected_changes"))) throw error;
+      }
+      continue;
+    }
+    if (scheduleRequiresOverduePolicy(schedule, dueAt, now)) {
+      blocked.push({ scheduleId: schedule.id, exactBlocker: "scheduler_overdue_occurrence_policy_required" });
+      continue;
+    }
+    const nextRunAt = computeNextAutomationOccurrence(schedule, dueAt);
+    const materialized = await materializeDurableScheduleOccurrenceAsync({
+      companyId,
+      serviceUserId,
+      scheduleId: schedule.id,
+      scheduledFor: dueAt,
+      expectedScheduleRevision: schedule.revision,
+      nextRunAt,
+      payload: { scheduler_source: "durable_scheduler" }
+    });
+    occurrences.push(materialized.occurrence);
+  }
+  return { initializedScheduleIds, occurrences, blocked };
+}
+
+/**
+ * A stale schedule may represent one or more missed occurrences. Do not
+ * silently replay or coalesce those occurrences: an Owner-selected catch-up
+ * policy must be supplied before a production scheduler can dispatch them.
+ * The currently due occurrence remains eligible when its following occurrence
+ * is still in the future, so ordinary on-time ticks are unaffected.
+ */
+export function scheduleRequiresOverduePolicy(
+  schedule: Pick<ScheduleRow, "kind" | "expression" | "timezone"> & { catch_up_policy?: string | null },
+  scheduledFor: string,
+  now: string,
+): boolean {
+  if (!scheduleIsOverdue(scheduledFor, now)) return false;
+  if (schedule.catch_up_policy) return false;
+  const followingOccurrence = computeNextAutomationOccurrence(schedule, scheduledFor);
+  return Date.parse(followingOccurrence) <= Date.parse(normalizedTime(now, "scheduler_now_time_invalid"));
+}
+
+export function scheduleIsOverdue(scheduledFor: string, now: string): boolean {
+  return Date.parse(normalizedTime(scheduledFor, "scheduler_scheduled_time_invalid"))
+    < Date.parse(normalizedTime(now, "scheduler_now_time_invalid"));
 }
 
 export function computeNextAutomationOccurrence(

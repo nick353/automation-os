@@ -4,7 +4,11 @@ import { dbBackend, dbPath, initDb, insert, nowIso, querySql, resetDemoData, sql
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { refreshRegisteredWorkflows } from "../registeredWorkflows.js";
+import {
+  refreshRegisteredWorkflows,
+  registeredWorkflowDefinitionFingerprint,
+  registeredWorkflowScheduleFingerprint
+} from "../registeredWorkflows.js";
 import { resolveWorkerAdapterPolicy, runWorkerOnce, startCommandRun, type WorkerAdapter } from "./workerEngine.js";
 import { BROWSER_USE_CLI_REQUIRED_BLOCKER } from "./workerEngine.js";
 import {
@@ -135,15 +139,12 @@ export async function runReferenceWorkflowCanary(): Promise<ReferenceWorkflowCan
     const registration = registered.find((row) => row.id === reference.id);
     const registeredCommand = parseRecord(parseJson(registration?.start_command_json)).command;
     const registeredSchedule = parseRecord(parseJson(registration?.schedule_json));
-    const definitionFingerprint = sha256Json({
-      id: registration?.id ?? null,
-      status: registration?.status ?? null,
-      runner_kind: registration?.runner_kind ?? null,
-      start_command_json: registration?.start_command_json ?? null,
-      source_refs_json: registration?.source_refs_json ?? null,
-      provenance_json: registration?.provenance_json ?? null
-    });
-    const scheduleFingerprint = sha256Json({ schedule_json: registration?.schedule_json ?? null });
+    const definitionFingerprint = registration
+      ? registeredWorkflowDefinitionFingerprint(registration)
+      : "";
+    const scheduleFingerprint = registration
+      ? registeredWorkflowScheduleFingerprint(registration)
+      : "";
     const dueKey = `reference-canary:${reference.id}:${scheduleFingerprint.slice(0, 16)}`;
     const startLineage = {
       workflow_id: reference.id,
@@ -631,10 +632,6 @@ function hasTrueExternalActionFlag(value: unknown): boolean {
     if ((normalized === "externalactionexecuted" || normalized === "externalactionexecutedbyrehearsal") && nested === true) return true;
     return hasTrueExternalActionFlag(nested);
   });
-}
-
-function sha256Json(value: unknown): string {
-  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
 function parseObject(value: string | undefined): Record<string, unknown> {

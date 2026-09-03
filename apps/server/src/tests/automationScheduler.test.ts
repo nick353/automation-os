@@ -6,12 +6,18 @@ import test from "node:test";
 
 const tempRoot = mkdtempSync(join(tmpdir(), "automation-os-scheduler-"));
 process.env.AUTOMATION_OS_DB = join(tempRoot, "automation-os.sqlite");
+process.env.AOS_WEB_OPERATION_BACKEND_CONFIG = join(tempRoot, "web-operation-backend.json");
 
 const db = await import("../db/client.js");
 const scheduler = await import("../runs/automationScheduler.js");
 const queue = await import("../runs/durableQueue.js");
 const durableScheduler = await import("../runs/durableAutomationScheduler.js");
-const { portableReadOnlyStageForScheduledWorkflow } = await import("../runs/portableScheduleDispatch.js");
+const {
+  portableReadOnlyStageForScheduledWorkflow,
+  portableScheduleDispatchForRegisteredAutomation,
+  browserSurfaceRequirementForRegisteredAutomation
+} = await import("../runs/portableScheduleDispatch.js");
+const { routeCompanionFirstWebOperationBackend } = await import("../runs/webOperationBackendSettings.js");
 const { adoptRegisteredAutomationCatalog } = await import("../automations/registeredCatalog.js");
 const { initRegisteredWorkflows } = await import("../registeredWorkflows.js");
 
@@ -34,6 +40,79 @@ test("job no-effect dispatch uses reference readback unless a run-bound input bu
     portableReadOnlyStageForScheduledWorkflow("daily-ai-research-publish-run"),
     "reference_readback"
   );
+});
+
+test("portable browser dispatch keeps Zeabur connector ownership unless an explicit Mac fallback is configured", () => {
+  const base = { builderSpec: { workflowAdapter: { workflow_id: "job-application-manager" } } };
+  assert.equal(
+    portableScheduleDispatchForRegisteredAutomation({ workerCommandKind: "job_submit_registered", builderSpec: {} })?.workflow_id,
+    "job-application-manager"
+  );
+  assert.equal(
+    portableScheduleDispatchForRegisteredAutomation({ workerCommandKind: "job_submit_registered", builderSpec: {} })?.browser_surface,
+    "browser_use_cli"
+  );
+  assert.equal(
+    portableScheduleDispatchForRegisteredAutomation({ workerCommandKind: "job_submit_registered", builderSpec: {} })?.operation_surface,
+    "browser_use_cli"
+  );
+  assert.equal(
+    portableScheduleDispatchForRegisteredAutomation(base)?.connector_execution_owner,
+    "zeabur_codex_app_server"
+  );
+  assert.equal(
+    portableScheduleDispatchForRegisteredAutomation({
+      builderSpec: {
+        ...base.builderSpec,
+        connectorExecution: { owner: "mac_worker_explicit_connector_fallback" }
+      }
+    })?.connector_execution_owner,
+    "mac_worker_explicit_connector_fallback"
+  );
+});
+
+test("registered browser surface requirements pass through unchanged and omitted values stay absent", () => {
+  assert.equal(
+    browserSurfaceRequirementForRegisteredAutomation({
+      builderSpec: { browserSurfaceRequirement: "official_extension" }
+    }),
+    "official_extension"
+  );
+  assert.equal(
+    browserSurfaceRequirementForRegisteredAutomation({
+      builderSpec: { browserSurfaceRequirement: "companion_extension" }
+    }),
+    "companion_extension"
+  );
+  assert.equal(
+    browserSurfaceRequirementForRegisteredAutomation({
+      builderSpec: { browserSurfaceRequirement: "browser_use_cli" }
+    }),
+    "browser_use_cli"
+  );
+  assert.equal(
+    browserSurfaceRequirementForRegisteredAutomation({
+      builderSpec: { browserSurface: "browser_use_cli" }
+    }),
+    "browser_use_cli"
+  );
+  assert.equal(browserSurfaceRequirementForRegisteredAutomation({ builderSpec: {} }), undefined);
+  assert.throws(
+    () => browserSurfaceRequirementForRegisteredAutomation({ builderSpec: { browserSurfaceRequirement: "unsupported_surface" } }),
+    /portable_registered_browser_surface_requirement_invalid/
+  );
+  assert.throws(
+    () => browserSurfaceRequirementForRegisteredAutomation({ builderSpec: { browserSurface: "unsupported_surface" } }),
+    /portable_registered_browser_surface_invalid/
+  );
+  const browserUseDecision = routeCompanionFirstWebOperationBackend({
+    configuredBackend: "aos_chrome_companion",
+    operationClass: "read_only",
+    extensionRequirement: "browser_use_cli"
+  });
+  assert.equal(browserUseDecision.selected_backend, "browser_use_cli");
+  assert.equal(browserUseDecision.extension_requirement, "browser_use_cli");
+  assert.equal(browserUseDecision.route_reason, "explicit_non_chrome_backend");
 });
 
 test("scheduler initializes next run, materializes one durable occurrence, and keeps the pinned version", () => {
@@ -59,6 +138,40 @@ test("scheduler initializes next run, materializes one durable occurrence, and k
   const paused = scheduler.materializeDueAutomationOccurrences({ companyId: fixture.companyId, serviceUserId: fixture.serviceUserId, now: "2026-07-16T09:00:00.000Z" });
   assert.equal(paused.occurrences.length, 0);
   assert.equal(db.querySql<{ count: number }>("SELECT count(*) AS count FROM durable_schedule_occurrences")[0].count, 1);
+});
+
+test("scheduler blocks a missed recurrence until an overdue catch-up policy is explicit", () => {
+  const fixture = seedScheduleVariant("overdue_policy");
+  const staleDueAt = "2026-07-14T09:00:00.000Z";
+  db.execSql(`UPDATE mvp_automation_schedules SET next_run_at=${db.sqlValue(staleDueAt)} WHERE id=${db.sqlValue(fixture.scheduleId)}`);
+
+  const result = scheduler.materializeDueAutomationOccurrences({
+    companyId: fixture.companyId,
+    serviceUserId: fixture.serviceUserId,
+    now: "2026-07-15T09:00:00.000Z"
+  });
+
+  assert.deepEqual(result.occurrences, []);
+  assert.deepEqual(result.blocked, [{ scheduleId: fixture.scheduleId, exactBlocker: "scheduler_overdue_occurrence_policy_required" }]);
+  assert.equal(db.querySql<{ count: number }>(`SELECT count(*) AS count FROM durable_schedule_occurrences WHERE schedule_id=${db.sqlValue(fixture.scheduleId)}`)[0].count, 0);
+  assert.equal(db.querySql<{ next_run_at: string }>(`SELECT next_run_at FROM mvp_automation_schedules WHERE id=${db.sqlValue(fixture.scheduleId)}`)[0].next_run_at, staleDueAt);
+});
+
+test("scheduler skips an overdue recurrence when the owner selected skip", () => {
+  const fixture = seedScheduleVariant("skip_overdue");
+  const staleDueAt = "2026-07-14T09:00:00.000Z";
+  db.execSql(`UPDATE mvp_automation_schedules SET next_run_at=${db.sqlValue(staleDueAt)}, catch_up_policy='skip' WHERE id=${db.sqlValue(fixture.scheduleId)}`);
+
+  const result = scheduler.materializeDueAutomationOccurrences({
+    companyId: fixture.companyId,
+    serviceUserId: fixture.serviceUserId,
+    now: "2026-07-15T09:00:00.000Z"
+  });
+
+  assert.deepEqual(result.occurrences, []);
+  assert.deepEqual(result.blocked, []);
+  assert.equal(db.querySql<{ count: number }>(`SELECT count(*) AS count FROM durable_schedule_occurrences WHERE schedule_id=${db.sqlValue(fixture.scheduleId)}`)[0].count, 0);
+  assert.equal(db.querySql<{ next_run_at: string }>(`SELECT next_run_at FROM mvp_automation_schedules WHERE id=${db.sqlValue(fixture.scheduleId)}`)[0].next_run_at, "2026-07-16T09:00:00.000Z");
 });
 
 test("stale scheduler snapshots cannot enqueue after a schedule revision or due-time edit", () => {
@@ -222,7 +335,7 @@ function seedScheduleVariant(suffix: string) {
   const common = { company_id: companyId, project_id: companyId, automation_type: "scheduled", name: "Scheduled automation", description: "desc", goal: "goal", schedule: "09:00", cadence: "daily", lane: "local", risk_level: "low", approval_policy: "required_before_external_action", worker_command_kind: "safe_local_demo", create_approval: 0, status: "active", builder_spec_json: {}, created_at: createdAt, updated_at: createdAt };
   db.insert("mvp_automations", { id: automationId, ...common, current_version_id: versionId, revision: 1, archived_at: null });
   db.insert("mvp_automation_versions", { id: versionId, ...common, automation_id: automationId, revision: 1 });
-  db.insert("mvp_automation_schedules", { id: scheduleId, company_id: companyId, project_id: companyId, automation_id: automationId, automation_version_id: versionId, kind: "daily", expression: "09:00", timezone: "UTC", enabled: 1, status: "active", revision: 1, next_run_at: null, last_run_at: null, paused_at: null, created_at: createdAt, updated_at: createdAt });
+  db.insert("mvp_automation_schedules", { id: scheduleId, company_id: companyId, project_id: companyId, automation_id: automationId, automation_version_id: versionId, kind: "daily", expression: "09:00", timezone: "UTC", enabled: 1, status: "active", revision: 1, next_run_at: null, last_run_at: null, catch_up_policy: null, paused_at: null, created_at: createdAt, updated_at: createdAt });
   return { companyId, serviceUserId, automationId, versionId, scheduleId };
 }
 

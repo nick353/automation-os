@@ -55,6 +55,56 @@ function readAdmission(input) {
   if (Date.parse(String(value.expires_at || "")) <= Date.now()) throw new Error("nisenprints_business_admission_expired");
 }
 
+function targetDigestForBundle(bundle) {
+  const keys = [
+    "account_ref", "target_key", "payload_hash", "content_key", "product_key", "asset_manifest_id",
+    "job_url", "application_url", "candidate_key", "bucket", "sequence", "attempt",
+    "source_snapshot_id", "supply_run_id", "company", "role", "audience", "target_digest", "source_state_digest",
+  ];
+  return digest(Buffer.from(JSON.stringify(Object.fromEntries(
+    keys.filter((key) => Object.hasOwn(bundle, key)).map((key) => [key, bundle[key]]),
+  ))));
+}
+
+function readInputBundle(input, authority) {
+  const rawPath = String(
+    process.env.AUTOMATION_OS_PORTABLE_BUSINESS_INPUT_BUNDLE_PATH
+      || process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_INPUT_BUNDLE_PATH
+      || "",
+  ).trim();
+  if (!rawPath || !path.isAbsolute(rawPath) || !fs.existsSync(rawPath)) {
+    throw new Error("nisenprints_business_input_bundle_missing");
+  }
+  const file = path.resolve(rawPath);
+  const stat = fs.lstatSync(file);
+  const currentUid = typeof process.getuid === "function" ? process.getuid() : stat.uid;
+  if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1 || stat.uid !== currentUid || (stat.mode & 0o777) !== 0o600) {
+    throw new Error("nisenprints_business_input_bundle_permissions_invalid");
+  }
+  const bytes = fs.readFileSync(file);
+  let document;
+  try { document = JSON.parse(bytes.toString("utf8")); } catch { throw new Error("nisenprints_business_input_bundle_json_invalid"); }
+  const bundle = document && typeof document === "object" && !Array.isArray(document) ? document.input : null;
+  if (document?.schema !== "automation_os_portable_workflow_input_bundle.v1"
+    || document.workflow_id !== WORKFLOW_ID
+    || document.run_id !== input.run_id
+    || !bundle || typeof bundle !== "object" || Array.isArray(bundle)) {
+    throw new Error("nisenprints_business_input_bundle_binding_invalid");
+  }
+  for (const key of ["account_ref", "target_key", "product_key", "asset_manifest_id", "payload_hash", "source_snapshot_id"]) {
+    if (!String(bundle[key] || "").trim()) throw new Error(`nisenprints_business_input_${key}_missing`);
+  }
+  if (!/^[a-f0-9]{64}$/u.test(String(bundle.payload_hash))) {
+    throw new Error("nisenprints_business_input_payload_hash_invalid");
+  }
+  if (digest(bytes) !== authority.input_bundle_sha256
+    || String(bundle.payload_hash) !== authority.payload_hash
+    || targetDigestForBundle(bundle) !== authority.target_digest) {
+    throw new Error("nisenprints_business_target_binding_digest_mismatch");
+  }
+  return { path: file, sha256: digest(bytes), bundle };
+}
+
 function rootRunnerPath() {
   const configured = String(
     process.env.AUTOMATION_OS_NISENPRINTS_BROWSER_USE_RUNNER
@@ -144,6 +194,7 @@ async function runReferenceReadback({ input, runner }) {
 async function runApprovedBusiness(input, runner, actionPlan) {
   const artifactDir = artifactDirForRun(input.run_id);
   const authority = readPortableBusinessEffectAuthority(input);
+  const inputBundle = readInputBundle(input, authority);
   process.env.NISENPRINTS_BROWSER_USE_CLI_PORT = String(AOS_NISENPRINTS_PORT);
   process.env.NISENPRINTS_ARTIFACT_ROOT = path.dirname(artifactDir);
   process.env.AUTOMATION_OS_WEB_OPERATION_CONTRACT_SCHEMA = WEB_OPERATION_CONTRACT.schema;
@@ -209,6 +260,9 @@ async function runApprovedBusiness(input, runner, actionPlan) {
       root_result_path: String(rootResult?.result_path || ""),
       cleanup_proof: cleanupPath,
       action_plan_sha256: actionPlan.sha256,
+      input_bundle_sha256: inputBundle.sha256,
+      target_digest: authority.target_digest,
+      payload_hash: authority.payload_hash,
       reserved_profile: AOS_NISENPRINTS_PROFILE,
       reserved_port: AOS_NISENPRINTS_PORT,
       ...(businessProofs ? { business_proofs: businessProofs } : {}),
@@ -236,6 +290,10 @@ async function main(argv = process.argv.slice(2)) {
       stepId: input.step_id,
       sourceTrigger: input.source_trigger,
       idempotencyKey: input.idempotency_key,
+      // This entrypoint is the workflow-owned Browser Use CLI runner. Validate
+      // its action plan against that explicit lane instead of inheriting the
+      // control-plane default for unrelated workflows.
+      environment: { ...process.env, AOS_WEB_OPERATION_BACKEND: "browser_use_cli" },
     });
     return await runApprovedBusiness(input, runner, actionPlan);
   } catch (error) {

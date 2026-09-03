@@ -47,6 +47,8 @@ test("POST /api/create/chat queues a project-scoped Codex App Server turn withou
   assert.equal(body.job.status, "queued");
   assert.equal(body.job.metadata.transport, "codex_app_server");
   assert.equal(body.job.metadata.route, "mac_worker_codex_app_server");
+  assert.equal((body.job.metadata.toolPreference as { priorityPolicy?: string }).priorityPolicy, "plugin_first_others_tied_second");
+  assert.deepEqual((body.job.metadata.toolPreference as { companyIds?: string[] }).companyIds, ["project-a"]);
   assert.equal("streamText" in body.job.metadata, false);
   assert.equal(body.job.metadata.streamTextLength, 0);
   assert.equal(body.worker_readback?.status, "blocked");
@@ -154,6 +156,28 @@ test("chat planner cancellation fences a queued job and preserves actor scope", 
   } finally {
     if (previousActor === undefined) delete process.env.AUTOMATION_OS_OWNER_USER_ID;
     else process.env.AUTOMATION_OS_OWNER_USER_ID = previousActor;
+  }
+});
+
+test("explicit local planner selection completes the async chat job without App Server fallback", async () => {
+  db.initDb();
+  db.execSql("UPDATE create_planner_jobs SET status='blocked' WHERE status='queued'");
+  const { enqueueCreatePlannerJob, processQueuedCreatePlannerJobs } = await import("../planner/createPlannerJobs.js");
+  const previousProvider = process.env.AUTOMATION_OS_CREATE_PLANNER_PROVIDER;
+  process.env.AUTOMATION_OS_CREATE_PLANNER_PROVIDER = "local";
+  try {
+    const job = enqueueCreatePlannerJob({
+      messages: [{ role: "user", text: "毎日9時にローカル状態を確認し、失敗時は1回だけ再試行する自動化を作る" }],
+      metadata: { transport: "codex_app_server", actorUserId: "user_local_owner", companyIds: ["project-a"] }
+    });
+    const processed = await processQueuedCreatePlannerJobs(1, { workerId: "local-planner-test" });
+    assert.equal(processed[0]?.id, job.id);
+    assert.equal(processed[0]?.status, "completed");
+    assert.equal(processed[0]?.result?.source, "local_fallback");
+    assert.equal(processed[0]?.result?.exactBlocker, "local_planner_selected");
+  } finally {
+    if (previousProvider === undefined) delete process.env.AUTOMATION_OS_CREATE_PLANNER_PROVIDER;
+    else process.env.AUTOMATION_OS_CREATE_PLANNER_PROVIDER = previousProvider;
   }
 });
 

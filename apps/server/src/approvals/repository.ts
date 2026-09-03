@@ -1,4 +1,4 @@
-import { makeId, nowIso, querySql, runSqlTransaction, sqlValue } from "../db/client.js";
+import { makeId, nowIso, querySql, querySqlAsync, runSqlTransaction, sqlValue } from "../db/client.js";
 import { requireCompanyAccess, requireExistingCompanyAccess, requireExistingServiceIdentity } from "../companies/repository.js";
 
 export class BoundApprovalError extends Error {
@@ -12,7 +12,7 @@ export type BoundApproval = {
   id: string;
   companyId: string;
   runId: string;
-  jobId: string;
+  jobId: string | null;
   stepId: string | null;
   title: string;
   requestedBy: string;
@@ -52,6 +52,50 @@ export function listBoundApprovals(companyId: string, limit = 200): BoundApprova
     ORDER BY created_at DESC, id DESC
     LIMIT ${boundedLimit}
   `).map(toBoundApproval);
+}
+
+export async function listBoundApprovalsAsync(companyId: string, limit = 200): Promise<BoundApproval[]> {
+  const boundedLimit = Math.max(1, Math.min(500, Math.floor(limit)));
+  const rows = await querySqlAsync<any>(`
+    SELECT * FROM approvals
+    WHERE company_id=${sqlValue(required(companyId, "company_id_required"))}
+      AND job_id IS NOT NULL AND action_kind IS NOT NULL AND payload_hash IS NOT NULL
+    ORDER BY created_at DESC, id DESC
+    LIMIT ${boundedLimit}
+  `);
+  return rows.map(toBoundApproval);
+}
+
+/**
+ * Read-only company approval inbox projection. Portable external-effect
+ * approvals intentionally have no durable_job row (`job_id IS NULL`) but are
+ * still bound by run/action/account/payload/policy fields. Keep the legacy
+ * bound list and its consume/decision gates unchanged; this projection only
+ * makes both persisted approval shapes visible to the company-scoped inbox.
+ */
+export function listCompanyApprovals(companyId: string, limit = 200): BoundApproval[] {
+  const boundedLimit = Math.max(1, Math.min(500, Math.floor(limit)));
+  return querySql<any>(`
+    SELECT * FROM approvals
+    WHERE company_id=${sqlValue(required(companyId, "company_id_required"))}
+      AND action_kind IS NOT NULL AND payload_hash IS NOT NULL
+      AND (job_id IS NOT NULL OR policy_version IS NOT NULL)
+    ORDER BY created_at DESC, id DESC
+    LIMIT ${boundedLimit}
+  `).map(toBoundApproval);
+}
+
+export async function listCompanyApprovalsAsync(companyId: string, limit = 200): Promise<BoundApproval[]> {
+  const boundedLimit = Math.max(1, Math.min(500, Math.floor(limit)));
+  const rows = await querySqlAsync<any>(`
+    SELECT * FROM approvals
+    WHERE company_id=${sqlValue(required(companyId, "company_id_required"))}
+      AND action_kind IS NOT NULL AND payload_hash IS NOT NULL
+      AND (job_id IS NOT NULL OR policy_version IS NOT NULL)
+    ORDER BY created_at DESC, id DESC
+    LIMIT ${boundedLimit}
+  `);
+  return rows.map(toBoundApproval);
 }
 
 export function createBoundApproval(input: {

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { buildCapabilityRouterSnapshot } from "../codex/capabilityRouter.js";
 import { getCodexCapabilities, type CodexCapabilitiesSummary } from "../codex/capabilities.js";
+import type { ZeaburConnectorRegistryReadback } from "../codex/zeaburConnectorRouting.js";
 import { listTrustedBridgeActions } from "../bridge/trustedBridge.js";
 
 test("capability router recommends existing capture routes and records missing discovery gaps", () => {
@@ -66,6 +67,55 @@ test("capability router does not recommend routes without command context", () =
   assert.equal(snapshot.primaryAction, "このRouterの結果をCreate、Run開始、Goal resumeの入口で必ず表示・保存する");
 });
 
+test("tool preference keeps Plugin first and binds a verified company connection", () => {
+  const capabilities = fixtureCapabilities();
+  capabilities.capabilities.plugins.push({
+    id: "plugin:gmail",
+    name: "Gmail",
+    path: "~/plugins/gmail",
+    status: "available_with_codex_runtime",
+    kind: "plugin",
+    state: { configured: true, enabled: true, verified: true, connected: false }
+  });
+  const snapshot = buildCapabilityRouterSnapshot({
+    command: "Gmailの返信を会社別に確認して",
+    capabilities,
+    bridgeActions: listTrustedBridgeActions(),
+    companyIds: ["company-a"],
+    companyConnectionRefs: [{ platform: "gmail", status: "verified", oauth_state: "connected", verification_status: "verified" }],
+    zeaburConnectorRegistry: verifiedZeaburRegistry()
+  });
+
+  assert.equal(snapshot.toolPreference.priorityPolicy, "plugin_first_others_tied_second");
+  assert.equal(snapshot.toolPreference.selected?.kind, "plugin");
+  assert.equal(snapshot.toolPreference.selected?.status, "ready");
+  assert.deepEqual(snapshot.toolPreference.order, ["plugin", "mcp", "cli", "api"]);
+  assert.equal(new Set(snapshot.toolPreference.candidates.filter((item) => item.kind !== "plugin").map((item) => item.rank)).size, 1);
+});
+
+test("tool preference exposes an unauthenticated Plugin gate instead of silently falling back", () => {
+  const capabilities = fixtureCapabilities();
+  capabilities.capabilities.plugins.push({
+    id: "plugin:gmail",
+    name: "Gmail",
+    path: "~/plugins/gmail",
+    status: "available_with_codex_runtime",
+    kind: "plugin",
+    state: { configured: true, enabled: true, verified: true, connected: false }
+  });
+  capabilities.capabilities.mcp.state.connected = true;
+  const snapshot = buildCapabilityRouterSnapshot({
+    command: "Gmailを確認して",
+    capabilities,
+    bridgeActions: listTrustedBridgeActions(),
+    companyIds: ["company-a"]
+  });
+
+  assert.equal(snapshot.toolPreference.selected?.kind, "plugin");
+  assert.equal(snapshot.toolPreference.selected?.status, "catalog_only");
+  assert.equal(snapshot.toolPreference.fallbackPolicy, "no_implicit_fallback");
+});
+
 test("capability inventory keeps supervisor helpers for audit but hides them from suggestions", () => {
   const root = mkdtempSync(join(tmpdir(), "automation-os-capability-router-"));
   const automationsRoot = join(root, "automations");
@@ -97,6 +147,27 @@ test("capability inventory keeps supervisor helpers for audit but hides them fro
   } finally {
     if (previousRoot === undefined) delete process.env.AUTOMATION_OS_CODEX_AUTOMATIONS_ROOT;
     else process.env.AUTOMATION_OS_CODEX_AUTOMATIONS_ROOT = previousRoot;
+  }
+});
+
+test("capability inventory exposes recommended Plugins that are not installed", () => {
+  const root = mkdtempSync(join(tmpdir(), "automation-os-plugin-catalog-"));
+  const previousPluginRoots = process.env.AUTOMATION_OS_CODEX_PLUGIN_ROOTS;
+  process.env.AUTOMATION_OS_CODEX_PLUGIN_ROOTS = root;
+  try {
+    const capabilities = getCodexCapabilities();
+    const gmail = capabilities.capabilities.availablePlugins?.find((plugin) => plugin.name === "Gmail");
+    assert.ok(gmail);
+    assert.equal(gmail.status, "catalog_available");
+    assert.equal(gmail.catalogSource, "recommended");
+    assert.equal(gmail.state.connected, false);
+    assert.match(gmail.installHint ?? "", /Codex App/u);
+    assert.equal(capabilities.capabilities.availablePlugins?.length, 40);
+    assert.ok(capabilities.capabilities.availablePlugins?.some((plugin) => plugin.name === "Apollo.io"));
+    assert.ok(capabilities.capabilities.availablePlugins?.some((plugin) => plugin.name === "Zotero"));
+  } finally {
+    if (previousPluginRoots === undefined) delete process.env.AUTOMATION_OS_CODEX_PLUGIN_ROOTS;
+    else process.env.AUTOMATION_OS_CODEX_PLUGIN_ROOTS = previousPluginRoots;
   }
 });
 
@@ -134,5 +205,20 @@ function fixtureCapabilities(): CodexCapabilitiesSummary {
       automations: []
     },
     notes: []
+  };
+}
+
+function verifiedZeaburRegistry(): ZeaburConnectorRegistryReadback {
+  return {
+    schema: "aos_zeabur_codex_app_server_connector_registry.v1",
+    capturedAt: "2026-06-20T00:00:00.000Z",
+    source: "zeabur_service_exec",
+    target: { projectId: "project", serviceId: "service", serviceName: "codex-app-server", environmentId: "environment" },
+    appServer: { servicePresent: true, runtimeStatus: "running", codexLogin: "logged_in" },
+    pluginRegistry: { installed: [{ id: "gmail@openai-curated", name: "gmail", installed: true, authStatus: "verified" }], available: [] },
+    mcpRegistry: { configuredCount: 0, verified: false, names: [] },
+    connectorAuth: { gmail: "verified" },
+    exactBlocker: null,
+    secretMaterialIncluded: false
   };
 }

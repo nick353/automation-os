@@ -22,7 +22,9 @@ test("portable workflow manifests are App-independent and use the canonical work
     assert.equal(validatePortableWorkflowManifestV1(manifest), manifest);
     assert.equal(manifest.execution.backend, "automation_os_worker");
     assert.equal(manifest.execution.browser_surface, "browser_use_cli");
+    assert.equal(manifest.execution.browser_runtime, "browser_use_cli");
     assert.equal(manifest.execution.connector_gateway, "mcp");
+    assert.equal(manifest.execution.connector_execution_owner, "zeabur_codex_app_server");
     assert.equal(manifest.execution.app_dependency, false);
   }
 });

@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   runMvpStateInChild,
   type MvpStateExecFile,
@@ -69,4 +71,12 @@ test("mvp state child preserves loader flag values when running the source CLI",
     if (index >= 0) assert.ok(childArgs[index + 1], `${flag} must retain its value`);
   }
   assert.ok(childArgs.at(-1)?.endsWith("mvpStateReadOnce.ts"));
+});
+
+test("mvp state read-once CLI uses the async PostgreSQL source-of-truth path", () => {
+  const source = readFileSync(resolve(process.cwd(), "apps/server/src/cli/mvpStateReadOnce.ts"), "utf8");
+  assert.match(source, /if \(dbBackend === "postgres"\)/u);
+  assert.match(source, /readPostgresMvpState\(\{ companyId: requestedCompanyId \|\| undefined \}\)/u);
+  const postgresBranch = source.slice(source.indexOf('if (dbBackend === "postgres")'), source.indexOf("} else {"));
+  assert.doesNotMatch(postgresBranch, /listActorCompanies\(\)|getMvpStateReadbackAsync\(/u);
 });

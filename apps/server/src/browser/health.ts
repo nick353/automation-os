@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { basename } from "node:path";
 import { resolveBuiltInBrowserUseScript } from "./browserUseBuiltIns.js";
 import { readStoredSecretByKind } from "../secrets/secretStore.js";
+import { publicChromePluginReadback, readChromePluginReadback } from "./chromePluginReadback.js";
 
 type BrowserUseRecordingQaBlocker =
   | "browser_use_callable_surface_missing"
@@ -45,10 +46,15 @@ export type BrowserHealth = {
   chromeExtension: {
     status: "ready" | "blocked";
     exactBlocker: string | null;
+    targetScopedAvailable: boolean;
+    targetScopedExactBlocker: string | null;
+    targetScopedOperationStatus: string;
     summary: string;
     nextAction: string;
     chromeBinary: string | null;
     cdpLaneConfigured: boolean;
+    readback: ReturnType<typeof publicChromePluginReadback>;
+    targetScopedReadback: ReturnType<typeof publicChromePluginReadback>;
   };
   localApp: {
     canReportHealth: boolean;
@@ -56,10 +62,16 @@ export type BrowserHealth = {
   };
 };
 
-export function getBrowserHealth(): BrowserHealth {
+export type BrowserHealthOptions = {
+  /** Read-only diagnostics should not synchronously query secret storage. */
+  allowStoredSecretRead?: boolean;
+};
+
+export function getBrowserHealth(options: BrowserHealthOptions = {}): BrowserHealth {
+  const allowStoredSecretRead = options.allowStoredSecretRead !== false;
   const command = null;
   const browserUseCommand = resolveCanonicalBrowserUseCli();
-  const browserUseRecordingQa = getBrowserUseRecordingQaHealth(Boolean(browserUseCommand));
+  const browserUseRecordingQa = getBrowserUseRecordingQaHealth(Boolean(browserUseCommand), allowStoredSecretRead);
   const chromeBinary = resolveChromeBinary();
   const cdpLaneConfigured = Boolean(
     firstNonEmpty(process.env.AUTOMATION_OS_BROWSER_USE_CDP_URL) ||
@@ -67,6 +79,8 @@ export function getBrowserHealth(): BrowserHealth {
       firstNonEmpty(process.env.BROWSER_USE_CDP_URL) ||
       autoCdpLaunchConfigured()
   );
+  const chromePluginReadback = readChromePluginReadback();
+  const chromePluginTargetScopedReadback = readChromePluginReadback(Date.now(), { targetScopedReadback: true });
   return {
     generatedAt: new Date().toISOString(),
     playwrightCli: {
@@ -87,12 +101,22 @@ export function getBrowserHealth(): BrowserHealth {
       summary: "In-App Browser plugin actions require the Codex runtime bridge; this local API can only report readiness."
     },
     chromeExtension: {
-      status: "blocked",
-      exactBlocker: "chrome_extension_requires_codex_bridge",
-      summary: "Chrome Extension lane は local app から直呼びできず、Codex bridge が必要です。",
-      nextAction: "Codex bridge の接続状態と Chrome profile/CDP lane を bridge 側 readback で確認してください。",
+      status: chromePluginReadback.status === "ready" ? "ready" : "blocked",
+      exactBlocker: chromePluginReadback.status === "ready" ? null : chromePluginReadback.exactBlocker,
+      targetScopedAvailable: chromePluginTargetScopedReadback.status === "ready"
+        && chromePluginTargetScopedReadback.operationReady,
+      targetScopedExactBlocker: chromePluginTargetScopedReadback.exactBlocker,
+      targetScopedOperationStatus: chromePluginTargetScopedReadback.operationStatus,
+      summary: chromePluginReadback.status === "ready"
+        ? `Chrome Plugin / Profile 2 bridge readback verified (${chromePluginReadback.ageSeconds?.toFixed(1) ?? "?"}s old).`
+        : "Chrome Extension lane は trusted bridge の fresh Profile 2 readback待ちです。",
+      nextAction: chromePluginReadback.status === "ready"
+        ? "同一runのtarget admission・receipt・source syncを確認してください。"
+        : "Codex Chrome laneでtrusted bridgeを起動し、Profile 2 identity/heartbeat readbackを確認してください。",
       chromeBinary,
-      cdpLaneConfigured
+      cdpLaneConfigured,
+      readback: publicChromePluginReadback(chromePluginReadback),
+      targetScopedReadback: publicChromePluginReadback(chromePluginTargetScopedReadback)
     },
     localApp: {
       canReportHealth: true,
@@ -101,12 +125,12 @@ export function getBrowserHealth(): BrowserHealth {
   };
 }
 
-function getBrowserUseRecordingQaHealth(browserUseCliAvailable: boolean): BrowserUseRecordingQaHealth {
+function getBrowserUseRecordingQaHealth(browserUseCliAvailable: boolean, allowStoredSecretRead: boolean): BrowserUseRecordingQaHealth {
   const builtinSidecarAvailable = recordingSidecarAvailable();
   const ffmpegAvailable = commandExists("ffmpeg");
   const envGeminiRunner = firstNonEmpty(process.env.AUTOMATION_OS_BROWSER_USE_GEMINI_QA_RUNNER);
   const geminiQaRunnerConfigured = envGeminiRunner ? executableExists(envGeminiRunner) : builtInGeminiRunnerAvailable();
-  const geminiApiKeyConfigured = Boolean(resolveGeminiApiKey());
+  const geminiApiKeyConfigured = allowStoredSecretRead && Boolean(resolveGeminiApiKey());
   const cdpLaneConfigured = Boolean(
     firstNonEmpty(process.env.AUTOMATION_OS_BROWSER_USE_CDP_URL) ||
       cdpUrlFromPort(process.env.AUTOMATION_OS_BROWSER_USE_CDP_PORT) ||

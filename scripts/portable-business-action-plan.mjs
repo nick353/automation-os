@@ -6,63 +6,115 @@ export const PORTABLE_EXTERNAL_ACTION_PLAN_SCHEMA_V1 = "automation_os_portable_e
 
 // Data-only mirror of AOS's common Web contract. A worker implemented by a
 // different LLM can validate this without importing Codex or AOS runtime code.
-export const WEB_OPERATION_CONTRACT = Object.freeze({
-  schema: "automation_os_web_operation_contract.v1",
-  browser_surface: "browser_use_cli",
-  llm_provider_neutral: true,
-  app_dependency: false,
-  fixed_kernel: Object.freeze({
-    workflow_owned_persistent_profile: true,
-    reserved_port: true,
-    process_identity: true,
-    profile_flow_lease: true,
-    fresh_authority: true,
-    company_scope: true,
-    allowed_origins: true,
-    same_run_idempotency: true,
-    same_run_provenance: true,
-    external_effect_approval: true,
-    semantic_business_readback: true,
-    source_of_truth_sync: true,
-    terminal_cleanup: true,
-    screenshot_scope: "run_recording_dir",
-    forbidden_surfaces: ["playwright", "iab", "extension", "direct_cdp", "raw_browser"],
-    fail_close_on: ["captcha", "otp", "secret_input", "human_input_required", "identity_verification", "assessment", "unknown_high_impact_question", "payment", "tax", "banking", "foreign_owner_resource", "ambiguous_external_effect"],
-    secrets_policy: "never_log_or_artifact_secrets_cookies_passwords_tokens_raw_page_body",
-  }),
-  adaptive_layer: Object.freeze({
-    live_semantic_state: true,
-    live_target_inspect: true,
-    bounded_exploration: true,
-    route_and_state_detection: true,
-    modal_scroll_pagination_navigation: true,
-    known_fact_autofill: true,
-    unknown_safe_question_policy: "clarification_then_store_for_similar_questions",
-    site_playbook_role: "hint_only",
-    no_fixed_css_selector_authority: true,
-    no_fixed_dom_order_authority: true,
-    no_single_site_click_sequence_authority: true,
-    no_fixed_screenshot_name_authority: true,
-    reevaluate_after_readback: true,
-  }),
-  operation_model: Object.freeze({
-    intent_kinds: Object.freeze(["read", "create", "update", "publish", "submit", "delete"]),
-    target_resolution: "live_semantic_candidate_unique_match",
-    target_candidate_schema: "automation_os_semantic_target_candidate.v1",
-    action_strategy: "bounded_semantic_primitives",
-    exploration_limits: Object.freeze({
-      max_steps: 32,
-      max_candidates: 32,
-      max_tabs: 16,
-      max_same_state_retries: 1,
-    }),
-    reevaluate_after: Object.freeze(["navigation", "modal", "pagination", "state_readback", "authentication_change", "effect_readback"]),
-    fixed_playbook_policy: "hint_only",
-    unresolved_target_policy: "stop_or_clarify",
-    effect_sequence: Object.freeze(["target_resolve", "approval_admit", "action", "source_of_truth_readback", "reconcile_or_cleanup"]),
-    unknown_effect_policy: "fail_close_reconcile_no_replay",
-  }),
+const BROWSER_KERNEL_CONTRACT = Object.freeze({
+  schema: "automation_os_browser_kernel.v1",
+  pipeline: ["observe", "locate", "scroll", "act", "verify"],
+  target_resolution_priority: ["accessibility_tree", "dom", "visible_text", "coordinate_fallback"],
+  common_recovery: ["scroll_before_action", "readback_after_action", "stale_element_recovery", "spa_route_recovery", "modal_recovery", "infinite_scroll_recovery", "delayed_render_wait"],
+  command_kinds: ["observe", "locate", "scroll", "click", "fill", "select", "upload", "wait", "extract", "submit", "verify"],
+  timeout_error_taxonomy: ["target_not_found", "target_ambiguous", "stale_element", "navigation_timeout", "modal_blocked", "infinite_scroll_exhausted", "delayed_render_timeout", "precondition_mismatch", "postcondition_mismatch", "captcha_detected", "otp_required", "identity_verification_required", "unknown_required_fact", "ambiguous_submit", "approval_missing", "same_run_binding_mismatch", "provider_error", "cleanup_failed"],
+  effect_admission: "target_payload_audience_preview_then_one_item_approval",
+  completion_proof: ["provider_receipt", "source_sync", "reconciliation", "cleanup"],
+  fail_closed_on: ["captcha_detected", "otp_required", "identity_verification_required", "unknown_required_fact", "ambiguous_submit"],
+  secret_policy: "never_log_or_artifact_raw_secret_cookie_token_password_page_body",
+  selector_policy: "route_adapter_only_semantic_resolution_no_site_selector_in_kernel",
 });
+
+const FIXED_KERNEL = Object.freeze({
+  workflow_owned_persistent_profile: true,
+  reserved_port: true,
+  process_identity: true,
+  profile_flow_lease: true,
+  fresh_authority: true,
+  company_scope: true,
+  allowed_origins: true,
+  same_run_idempotency: true,
+  same_run_provenance: true,
+  external_effect_approval: true,
+  semantic_business_readback: true,
+  source_of_truth_sync: true,
+  terminal_cleanup: true,
+  screenshot_scope: "run_recording_dir",
+  forbidden_surfaces: ["playwright", "iab", "extension", "direct_cdp", "raw_browser"],
+  fail_close_on: ["captcha", "otp", "secret_input", "human_input_required", "identity_verification", "assessment", "unknown_high_impact_question", "payment", "tax", "banking", "foreign_owner_resource", "ambiguous_external_effect"],
+  secrets_policy: "never_log_or_artifact_secrets_cookies_passwords_tokens_raw_page_body",
+});
+
+const CHROME_PLUGIN_FIXED_KERNEL = Object.freeze({
+  ...FIXED_KERNEL,
+  forbidden_surfaces: ["playwright", "iab", "direct_cdp", "raw_browser"],
+});
+
+const COMPANION_FIXED_KERNEL = Object.freeze({
+  ...FIXED_KERNEL,
+  forbidden_surfaces: ["playwright", "iab", "direct_cdp", "raw_browser"],
+});
+
+const ADAPTIVE_LAYER = Object.freeze({
+  live_semantic_state: true,
+  live_target_inspect: true,
+  bounded_exploration: true,
+  route_and_state_detection: true,
+  modal_scroll_pagination_navigation: true,
+  known_fact_autofill: true,
+  unknown_safe_question_policy: "clarification_then_store_for_similar_questions",
+  site_playbook_role: "hint_only",
+  no_fixed_css_selector_authority: true,
+  no_fixed_dom_order_authority: true,
+  no_single_site_click_sequence_authority: true,
+  no_fixed_screenshot_name_authority: true,
+  reevaluate_after_readback: true,
+});
+
+const OPERATION_MODEL = Object.freeze({
+  intent_kinds: ["read", "create", "update", "publish", "submit", "delete"],
+  target_resolution: "live_semantic_candidate_unique_match",
+  target_candidate_schema: "automation_os_semantic_target_candidate.v1",
+  action_strategy: "bounded_semantic_primitives",
+  exploration_limits: Object.freeze({
+    max_steps: 32,
+    max_candidates: 32,
+    max_tabs: 16,
+    max_same_state_retries: 1,
+  }),
+  reevaluate_after: ["navigation", "modal", "pagination", "state_readback", "authentication_change", "effect_readback"],
+  fixed_playbook_policy: "hint_only",
+  unresolved_target_policy: "stop_or_clarify",
+  effect_sequence: ["target_resolve", "approval_admit", "action", "source_of_truth_readback", "reconcile_or_cleanup"],
+  unknown_effect_policy: "fail_close_reconcile_no_replay",
+});
+
+export function getWebOperationContractForSurface(browserSurface = "browser_use_cli") {
+  const surface = String(browserSurface || "").trim();
+  if (surface !== "browser_use_cli" && surface !== "signed_chrome_extension_profile2" && surface !== "aos_chrome_companion_profile_instance") {
+    fail("web_operation_contract_schema_invalid");
+  }
+  return Object.freeze({
+    schema: "automation_os_web_operation_contract.v1",
+    browser_surface: surface,
+    llm_provider_neutral: true,
+    app_dependency: false,
+    browser_kernel: Object.freeze({
+      ...BROWSER_KERNEL_CONTRACT,
+      supported_surfaces: [surface],
+    }),
+    fixed_kernel: surface === "signed_chrome_extension_profile2"
+      ? CHROME_PLUGIN_FIXED_KERNEL
+      : surface === "aos_chrome_companion_profile_instance"
+        ? COMPANION_FIXED_KERNEL
+        : FIXED_KERNEL,
+    adaptive_layer: ADAPTIVE_LAYER,
+    operation_model: OPERATION_MODEL,
+  });
+}
+
+export const WEB_OPERATION_CONTRACT = getWebOperationContractForSurface("browser_use_cli");
+
+/*
+ * The portable worker receives the same surface-specific contract that AOS
+ * issued. Keep validation data-only so a remote worker can verify it without
+ * importing the server runtime, while preserving the Chrome Plugin boundary.
+ */
 
 // AOS makeId() emits run_<time>_<random>; underscore is part of the
 // provider-neutral run/step identity and must remain accepted at the worker
@@ -102,6 +154,24 @@ const PLANS = Object.freeze({
     required_business_proofs: ["generation_manifest", "etsy_listing", "pinterest_pin_url", "etsy_visit_site_match", "cleanup_receipt"],
     web_operation_contract: WEB_OPERATION_CONTRACT,
   }),
+  "prompt-transfer-ukiyoe": Object.freeze({
+    runner_key: "prompt_transfer",
+    stages: ["source_readback", "browser_preflight", "sheet_target_resolve", "transfer", "same_run_sync_readback", "cleanup"],
+    required_business_proofs: ["sheet_target_readback", "same_run_source_of_truth_readback", "cleanup_receipt"],
+    web_operation_contract: WEB_OPERATION_CONTRACT,
+  }),
+  "sns-multi-poster-ukiyoe": Object.freeze({
+    runner_key: "sns_multi_poster",
+    stages: ["source_readback", "account_preflight", "browser_preflight", "one_candidate_publish", "same_run_sync_readback", "cleanup"],
+    required_business_proofs: ["published_url_or_exact_blocker", "same_run_source_of_truth_readback", "cleanup_receipt"],
+    web_operation_contract: WEB_OPERATION_CONTRACT,
+  }),
+  "x-authenticated-browser-lane": Object.freeze({
+    runner_key: "x_authenticated_browser_lane",
+    stages: ["source_readback", "account_preflight", "browser_preflight", "one_candidate_publish", "same_run_sync_readback", "cleanup"],
+    required_business_proofs: ["published_url_or_exact_blocker", "same_run_source_of_truth_readback", "cleanup_receipt"],
+    web_operation_contract: WEB_OPERATION_CONTRACT,
+  }),
 });
 
 function sha256(value) {
@@ -112,26 +182,33 @@ function fail(code) {
   throw new Error(code);
 }
 
-function contractSectionMatches(section, actual) {
-  const expected = WEB_OPERATION_CONTRACT[section];
+function contractSectionMatchesExpected(section, actual, expectedContract) {
+  const expected = expectedContract[section];
   if (JSON.stringify(actual) === JSON.stringify(expected)) return true;
-  if (section !== "fixed_kernel") return false;
+  if (expectedContract.browser_surface !== "browser_use_cli" || section !== "fixed_kernel") return false;
   const legacy = { ...expected, fail_close_on: LEGACY_REMOTE_FAIL_CLOSE_ON };
   return JSON.stringify(actual) === JSON.stringify(legacy);
 }
 
 export function validateWebOperationContract(contract) {
   if (!contract || typeof contract !== "object" || Array.isArray(contract)
-    || contract.schema !== WEB_OPERATION_CONTRACT.schema
-    || contract.browser_surface !== WEB_OPERATION_CONTRACT.browser_surface
+    || contract.schema !== "automation_os_web_operation_contract.v1"
+    || (contract.browser_surface !== "browser_use_cli" && contract.browser_surface !== "signed_chrome_extension_profile2" && contract.browser_surface !== "aos_chrome_companion_profile_instance")
     || contract.llm_provider_neutral !== true
     || contract.app_dependency !== false) fail("web_operation_contract_schema_invalid");
+  const expectedContract = getWebOperationContractForSurface(contract.browser_surface);
+  if (!contract.browser_kernel || typeof contract.browser_kernel !== "object" || Array.isArray(contract.browser_kernel)
+    || contract.browser_kernel.schema !== BROWSER_KERNEL_CONTRACT.schema
+    || JSON.stringify(contract.browser_kernel.supported_surfaces) !== JSON.stringify(expectedContract.browser_kernel.supported_surfaces)
+    || JSON.stringify({ ...contract.browser_kernel, supported_surfaces: undefined }) !== JSON.stringify({ ...expectedContract.browser_kernel, supported_surfaces: undefined })) {
+    fail("web_operation_contract_browser_kernel_invalid");
+  }
   for (const section of ["fixed_kernel", "adaptive_layer", "operation_model"]) {
-    if (!contractSectionMatches(section, contract[section])) {
+    if (!contractSectionMatchesExpected(section, contract[section], expectedContract)) {
       fail(`web_operation_contract_${section}_invalid`);
     }
   }
-  return WEB_OPERATION_CONTRACT;
+  return expectedContract;
 }
 
 function expectedPlan(workflowId) {
@@ -163,6 +240,21 @@ function readPrivatePlan(file, expectedSha256) {
 
 export function readPortableBusinessActionPlan({ workflowId, runId, stepId, sourceTrigger, idempotencyKey, environment = process.env, inputBundlePath = "" } = {}) {
   const plan = expectedPlan(workflowId);
+  const backend = String(environment.AOS_WEB_OPERATION_BACKEND || "browser_use_cli").trim();
+  const browserSurface = backend === "chrome_plugin"
+    ? String(environment.AOS_CHROME_PROFILE_SURFACE || "signed_chrome_extension_profile2").trim()
+    : backend === "aos_chrome_companion"
+      ? "aos_chrome_companion_profile_instance"
+      : backend;
+  // The common Web contract currently has two browser contract surfaces. The
+  // explicit Playwright entrypoint still uses the provider-neutral contract
+  // for its admission boundary and then fail-closes before effect stages.
+  const contractSurface = browserSurface === "signed_chrome_extension_profile2"
+    ? browserSurface
+    : browserSurface === "aos_chrome_companion_profile_instance"
+      ? browserSurface
+    : "browser_use_cli";
+  const expectedContract = getWebOperationContractForSurface(contractSurface);
   for (const [key, value] of Object.entries({ workflowId, runId, stepId, sourceTrigger, idempotencyKey })) {
     if (!IDENTIFIER.test(String(value || ""))) fail(`portable_external_action_plan_${key}_invalid`);
   }
@@ -177,14 +269,16 @@ export function readPortableBusinessActionPlan({ workflowId, runId, stepId, sour
     || value.step_id !== stepId
     || value.source_trigger !== sourceTrigger
     || value.idempotency_key !== idempotencyKey
-    || value.browser_surface !== "browser_use_cli"
+    || String(value.web_operation_backend || backend) !== backend
+    || Number(value.web_operation_backend_revision || 1) !== Number(environment.AOS_WEB_OPERATION_BACKEND_REVISION || 1)
+    || String(value.browser_surface || browserSurface) !== browserSurface
     || value.external_effect_policy !== "approved"
     || value.approval_status !== "approved"
     || !Array.isArray(value.allowed_stages)
     || JSON.stringify(value.allowed_stages) !== JSON.stringify(plan.stages)
     || !Array.isArray(value.required_business_proofs)
     || JSON.stringify(value.required_business_proofs) !== JSON.stringify(plan.required_business_proofs)
-    || JSON.stringify(validateWebOperationContract(value.web_operation_contract)) !== JSON.stringify(WEB_OPERATION_CONTRACT)) {
+    || JSON.stringify(validateWebOperationContract(value.web_operation_contract)) !== JSON.stringify(expectedContract)) {
     fail("portable_external_action_plan_binding_invalid");
   }
   if (Date.parse(String(value.expires_at || "")) <= Date.now()) fail("portable_external_action_plan_expired");
@@ -209,6 +303,40 @@ const WEB_OPERATION_SHA256 = /^[a-f0-9]{64}$/u;
 const WEB_OPERATION_ACTION_KEY = /^[A-Za-z0-9][-_A-Za-z0-9.:-]{0,127}$/u;
 const WEB_OPERATION_ACTION_KEY_VALUE = /^[A-Za-z0-9][A-Za-z0-9 _+.:/-]{0,63}$/u;
 const WEB_OPERATION_ACTION_SECRET_KEY = /(token|cookie|password|secret|authorization|storage[_-]?state|credential|profile[_-]?path|header|body|html)/iu;
+const WEB_OPERATION_FRAME_ID = /^\d{1,8}$/u;
+
+function normalizeActionTarget(value, errorCode = "web_operation_action_target_invalid") {
+  const stepTarget = value;
+  if (!stepTarget || typeof stepTarget !== "object" || Array.isArray(stepTarget)) fail(errorCode);
+  const semanticQuery = String(stepTarget.semantic_query || "").trim();
+  if (!semanticQuery || semanticQuery.length > 240
+    || Object.hasOwn(stepTarget, "css_selector") || Object.hasOwn(stepTarget, "xpath") || Object.hasOwn(stepTarget, "dom_order")) {
+    fail(errorCode);
+  }
+  const frameId = stepTarget.frame_id ?? stepTarget.frameId;
+  if (frameId !== undefined && (!Number.isInteger(frameId) || frameId < 0 || !WEB_OPERATION_FRAME_ID.test(String(frameId)))) fail(errorCode);
+  return {
+    semantic_query: semanticQuery,
+    ...(stepTarget.target_key ? { target_key: String(stepTarget.target_key) } : {}),
+    ...(frameId !== undefined ? { frame_id: Number(frameId) } : {}),
+  };
+}
+
+function normalizeDropdownOption(value) {
+  if (typeof value === "string" && value.trim()) return { label: value.trim().slice(0, 300) };
+  if (!value || typeof value !== "object" || Array.isArray(value)) fail("web_operation_action_option_invalid");
+  const option = {
+    ...(value.label !== undefined ? { label: String(value.label).trim().slice(0, 300) } : {}),
+    ...(value.value !== undefined ? { value: String(value.value).trim().slice(0, 300) } : {}),
+    ...(value.index !== undefined ? { index: Number(value.index) } : {}),
+  };
+  const keys = Object.keys(option);
+  if (keys.length === 0 || keys.some((key) => key === "index" ? (!Number.isInteger(option[key]) || option[key] < 0) : !option[key])) {
+    fail("web_operation_action_option_invalid");
+  }
+  if (keys.length > 1 && option.index !== undefined) fail("web_operation_action_option_invalid");
+  return option;
+}
 
 function unsafeWebHostname(value) {
   const hostname = String(value).replace(/^\[|\]$/gu, "").toLocaleLowerCase().replace(/\.$/u, "");
@@ -332,17 +460,21 @@ export function validateWebOperationIntent(intent) {
         const url = safeHttpUrl(step.url, "web_operation_action_url_invalid");
         if (!origins.includes(url.origin)) fail("web_operation_action_url_origin_invalid");
         steps.push({ action, url: url.href });
-      } else if (action === "click_target" || action === "fill_target") {
-        const stepTarget = step.target;
-        if (!stepTarget || typeof stepTarget !== "object" || Array.isArray(stepTarget)) fail("web_operation_action_target_invalid");
-        const semanticQuery = String(stepTarget.semantic_query || "").trim();
-        if (!semanticQuery || semanticQuery.length > 240 || Object.hasOwn(stepTarget, "css_selector") || Object.hasOwn(stepTarget, "xpath") || Object.hasOwn(stepTarget, "dom_order")) fail("web_operation_action_target_invalid");
-        const normalizedTarget = { semantic_query: semanticQuery, ...(stepTarget.target_key ? { target_key: String(stepTarget.target_key) } : {}) };
-        if (action === "fill_target") {
+      } else if (["click_target", "fill_target", "select", "select_text", "upload", "submit"].includes(action)) {
+        const normalizedTarget = normalizeActionTarget(step.target);
+        if (action === "click_target") {
+          steps.push({ action, target: normalizedTarget, ...(step.visual_fallback === true ? { visual_fallback: true } : {}) });
+        } else if (["fill_target", "select_text", "upload"].includes(action)) {
           const payloadKey = String(step.payload_key || "");
           if (!WEB_OPERATION_ACTION_KEY.test(payloadKey) || payload[payloadKey] === undefined) fail("web_operation_action_payload_key_invalid");
+          if (action === "select_text" && payload[payloadKey].length > 10_000) fail("web_operation_action_payload_invalid");
+          if (action === "upload" && !payload[payloadKey].startsWith("/")) fail("web_operation_action_upload_path_invalid");
           steps.push({ action, target: normalizedTarget, payload_key: payloadKey });
-        } else steps.push({ action, target: normalizedTarget });
+        } else if (action === "select") {
+          steps.push({ action, target: normalizedTarget, option: normalizeDropdownOption(step.option) });
+        } else {
+          steps.push({ action, target: normalizedTarget });
+        }
       } else if (action === "type") {
         const payloadKey = String(step.payload_key || "");
         if (!WEB_OPERATION_ACTION_KEY.test(payloadKey) || payload[payloadKey] === undefined) fail("web_operation_action_payload_key_invalid");
@@ -358,7 +490,8 @@ export function validateWebOperationIntent(intent) {
       } else if (action === "scroll") {
         const direction = String(step.direction || "");
         if (!["up", "down", "left", "right"].includes(direction)) fail("web_operation_action_scroll_invalid");
-        steps.push({ action, direction });
+        const scrollTarget = step.target === undefined ? null : normalizeActionTarget(step.target, "web_operation_action_scroll_target_invalid");
+        steps.push({ action, direction, ...(scrollTarget ? { target: scrollTarget } : {}) });
       } else fail("web_operation_action_invalid");
     }
     const readback = plan.readback;
@@ -366,7 +499,28 @@ export function validateWebOperationIntent(intent) {
     const semanticQuery = String(readback.semantic_query || "").trim();
     const expected = String(readback.expected || "");
     if (!semanticQuery || semanticQuery.length > 240 || !["present", "absent", "unchanged"].includes(expected)) fail("web_operation_action_readback_invalid");
-    actionPlan = { schema: WEB_OPERATION_ACTION_PLAN_SCHEMA_V1, steps, payload, payload_hash: String(plan.payload_hash), readback: { semantic_query: semanticQuery, ...(readback.target_key ? { target_key: String(readback.target_key) } : {}), expected } };
+    const readbackKind = String(readback.kind || "semantic_query");
+    if (!["semantic_query", "control_state", "selection", "upload", "visual"].includes(readbackKind)) fail("web_operation_action_readback_kind_invalid");
+    const readbackTarget = readback.target === undefined ? null : normalizeActionTarget(readback.target, "web_operation_action_readback_target_invalid");
+    const expectedValue = readback.expected_value === undefined ? null : String(readback.expected_value).slice(0, 300);
+    const expectedText = readback.expected_text === undefined ? null : String(readback.expected_text).slice(0, 300);
+    const expectedFileName = readback.expected_file_name === undefined ? null : String(readback.expected_file_name).slice(0, 300);
+    actionPlan = {
+      schema: WEB_OPERATION_ACTION_PLAN_SCHEMA_V1,
+      steps,
+      payload,
+      payload_hash: String(plan.payload_hash),
+      readback: {
+        semantic_query: semanticQuery,
+        ...(readback.target_key ? { target_key: String(readback.target_key) } : {}),
+        ...(readbackTarget ? { target: readbackTarget } : {}),
+        kind: readbackKind,
+        expected,
+        ...(expectedValue !== null ? { expected_value: expectedValue } : {}),
+        ...(expectedText !== null ? { expected_text: expectedText } : {}),
+        ...(expectedFileName !== null ? { expected_file_name: expectedFileName } : {}),
+      },
+    };
   }
   return Object.freeze({
     schema: WEB_OPERATION_INTENT_SCHEMA_V1,

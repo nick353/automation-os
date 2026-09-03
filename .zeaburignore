@@ -8,10 +8,13 @@ apps/**/dist/
 data/
 artifacts/
 output/
+outputs/
 logs/
 test-results/
 work/
+tmp/
 .playwright-mcp/
+.playwright-cli/
 .playwright-cli/
 
 # Secrets and local environment

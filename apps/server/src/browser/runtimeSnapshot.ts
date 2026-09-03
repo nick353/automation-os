@@ -2,6 +2,9 @@ import { existsSync, lstatSync } from "node:fs";
 import { registeredBrowserLanes, type RegisteredBrowserLane } from "../runs/laneManager.js";
 import { buildRegisteredWorkflowInventoryReadback } from "../workflowInventory.js";
 import { buildBrowserRuntimeProcessReadback, buildBrowserRuntimeProcessReadbackAsync } from "./liveResourceReadback.js";
+import { chromePluginReadbackFromPortableWorkerHeartbeat, chromePluginRemoteWorkerReadbackPending, publicChromePluginReadback, readChromePluginReadback, refreshChromePluginReadback, type ChromePluginReadback } from "./chromePluginReadback.js";
+import { browserSurfaceForWebOperationBackend, type WebOperationBackend } from "../runs/webOperationBackendSettings.js";
+import type { PortableWorkerChromePluginReadback } from "../runs/portableWorkerHeartbeat.js";
 
 export const BROWSER_OPERATIONAL_READBACK_SCHEMA = "aos.browser_operational_readback.v1" as const;
 
@@ -68,6 +71,13 @@ export type PublicBrowserUseLaneBinding = {
   processReadbackCapturedAt: string | null;
 };
 
+type BrowserUseRuntimeSnapshotOptions = {
+  controlPlaneCompanyIds?: string[];
+  selectedBackend?: WebOperationBackend;
+  targetScopedReadback?: boolean;
+  remoteChromePluginReadback?: PortableWorkerChromePluginReadback | null;
+};
+
 /**
  * Public, non-sensitive lane binding. The worker-local absolute profile path,
  * lock path, cookies, and CDP URL remain private. `profileRef` is relative to
@@ -107,7 +117,7 @@ export function publicBrowserUseLaneBinding(lane: RegisteredBrowserLane | undefi
  * local to the worker. Stable logical profile references and reserved ports
  * are returned so the control plane can explain the active lane contract.
  */
-export function buildBrowserUseRuntimeSnapshot(options: { controlPlaneCompanyIds?: string[] } = {}) {
+export function buildBrowserUseRuntimeSnapshot(options: BrowserUseRuntimeSnapshotOptions = {}) {
   const processReadback = buildBrowserRuntimeProcessReadback({
     controlPlaneCompanyIds: options.controlPlaneCompanyIds,
     readLiveProcessTable: shouldReadLiveProcessTable()
@@ -115,18 +125,32 @@ export function buildBrowserUseRuntimeSnapshot(options: { controlPlaneCompanyIds
   return buildBrowserUseRuntimeSnapshotFromReadback(options, processReadback);
 }
 
-export async function buildBrowserUseRuntimeSnapshotAsync(options: { controlPlaneCompanyIds?: string[] } = {}) {
+export async function buildBrowserUseRuntimeSnapshotAsync(options: BrowserUseRuntimeSnapshotOptions = {}) {
   const processReadback = await buildBrowserRuntimeProcessReadbackAsync({
     controlPlaneCompanyIds: options.controlPlaneCompanyIds,
     readLiveProcessTable: shouldReadLiveProcessTable()
   });
-  return buildBrowserUseRuntimeSnapshotFromReadback(options, processReadback);
+  const chromePluginReadback = options.selectedBackend === "chrome_plugin"
+    ? options.remoteChromePluginReadback
+      ? chromePluginReadbackFromPortableWorkerHeartbeat(options.remoteChromePluginReadback)
+      : isHostedControlPlane()
+        ? chromePluginRemoteWorkerReadbackPending(options.targetScopedReadback === true)
+        : await refreshChromePluginReadback({ targetScopedReadback: options.targetScopedReadback === true })
+    : null;
+  return buildBrowserUseRuntimeSnapshotFromReadback(options, processReadback, chromePluginReadback);
 }
 
 function buildBrowserUseRuntimeSnapshotFromReadback(
-  options: { controlPlaneCompanyIds?: string[] },
-  processReadback: ReturnType<typeof buildBrowserRuntimeProcessReadback>
+  options: BrowserUseRuntimeSnapshotOptions,
+  processReadback: ReturnType<typeof buildBrowserRuntimeProcessReadback>,
+  chromePluginReadbackOverride: ChromePluginReadback | null = null
 ) {
+  const selectedBackend = options.selectedBackend ?? "browser_use_cli";
+  const chromePluginReadback = selectedBackend === "chrome_plugin"
+    ? chromePluginReadbackOverride
+      ?? (options.remoteChromePluginReadback ? chromePluginReadbackFromPortableWorkerHeartbeat(options.remoteChromePluginReadback) : null)
+      ?? readChromePluginReadback(Date.now(), { targetScopedReadback: options.targetScopedReadback === true })
+    : null;
   const runtimeRole = process.env.AUTOMATION_OS_RUNTIME_ROLE === "mac_worker" ? "mac_worker" : "control_plane";
   const helperPath = "/Users/nichikatanaka/.local/bin/codex-browser-use";
   const helperStat = tryLstat(helperPath);
@@ -143,20 +167,42 @@ function buildBrowserUseRuntimeSnapshotFromReadback(
         : !verified
           ? "browser_use_runtime_not_verified"
           : null;
-  const exactBlocker = runtimeRole === "mac_worker" ? workerBlocker : "browser_use_worker_readback_pending";
-  const status = runtimeRole === "mac_worker"
-    ? workerBlocker ? "blocked" : "verified"
-    : "readback_pending";
-  const summary = runtimeRole === "mac_worker"
+  const exactBlocker = selectedBackend === "chrome_plugin"
+    ? chromePluginReadback ? chromePluginReadback.exactBlocker : "chrome_extension_bridge_readback_missing"
+    : selectedBackend === "playwright"
+      ? "playwright_effect_stages_not_implemented"
+      : runtimeRole === "mac_worker" ? workerBlocker : "browser_use_worker_readback_pending";
+  const status = selectedBackend === "chrome_plugin"
+    ? chromePluginReadback?.status === "ready" ? "verified" : "blocked"
+    : selectedBackend === "playwright"
+      ? "blocked"
+      : runtimeRole === "mac_worker"
+        ? workerBlocker ? "blocked" : "verified"
+        : "readback_pending";
+  const summary = selectedBackend === "chrome_plugin"
     ? status === "verified"
-      ? "Mac workerのcanonical Browser Use helperとadapterを確認済みです。"
-      : "Mac workerのBrowser Use runtime確認が完了していません。"
-    : "Zeabur control planeではBrowser Useを起動せず、Mac workerのruntime readbackを待ちます。";
-  const nextAction = runtimeRole === "mac_worker"
+      ? "Chrome Plugin trusted bridgeとProfile 2のreadbackを確認済みです。"
+      : chromePluginReadback?.independentLanesAllowed === true
+        ? "Chrome Plugin laneのreadback確認が完了していません。Chrome以外の独立laneはこの状態の影響を受けません。"
+        : "Chrome Plugin trusted bridgeのreadback確認が完了していません。"
+    : selectedBackend === "playwright"
+      ? "Playwrightのworkflow-owned entrypointは接続済みですが、provider effect stagesと同一Run proofが未実装です。"
+      : runtimeRole === "mac_worker"
+        ? status === "verified"
+          ? "Mac workerのcanonical Browser Use helperとadapterを確認済みです。"
+          : "Mac workerのBrowser Use runtime確認が完了していません。"
+        : "Zeabur control planeではBrowser Useを起動せず、Mac workerのruntime readbackを待ちます。";
+  const nextAction = selectedBackend === "chrome_plugin"
     ? status === "verified"
-      ? "同一runのauthority・session・readbackを確認してから実行します。"
-      : "Mac workerでcanonical helper/adapterのreadbackを完了してください。"
-    : "Mac worker heartbeatと同一runのBrowser Use readbackを確認してください。";
+      ? "同一RunのProfile 2 authority・provider receipt・source sync・cleanupを確認してから実行します。"
+      : "Chrome Plugin trusted bridgeとProfile 2のfresh readbackを確認してください。"
+    : selectedBackend === "playwright"
+      ? "workflow-specific Playwright provider stagesとreceipt/source sync/reconciliation/group-only cleanupを実装してください。"
+      : runtimeRole === "mac_worker"
+        ? status === "verified"
+          ? "同一runのauthority・session・readbackを確認してから実行します。"
+          : "Mac workerでcanonical helper/adapterのreadbackを完了してください。"
+        : "Mac worker heartbeatと同一runのBrowser Use readbackを確認してください。";
   const operationalReadback = buildBrowserOperationalReadback(processReadback);
   const lanes = registeredBrowserLanes.map((lane) => {
     const binding = publicBrowserUseLaneBinding(lane);
@@ -172,14 +218,23 @@ function buildBrowserUseRuntimeSnapshotFromReadback(
     } as const;
   });
   return {
-    surface: "browser_use_cli",
-    helper: "canonical_codex_browser_use",
+    backend: selectedBackend,
+    surface: browserSurfaceForWebOperationBackend(selectedBackend),
+    helper: selectedBackend === "chrome_plugin" ? "chrome_extension_trusted_bridge" : selectedBackend === "playwright" ? "playwright_workflow_owned_entrypoint" : "canonical_codex_browser_use",
     runtimeRole,
     status,
+    operationReady: selectedBackend === "chrome_plugin" ? chromePluginReadback?.operationReady === true : null,
     exactBlocker,
-    readbackStatus: runtimeRole === "mac_worker" && status === "verified" ? "verified" : "pending",
+    readbackStatus: status === "verified" ? "verified" : "pending",
     summary,
     nextAction,
+    chromePluginLane: chromePluginReadback ? {
+      status: chromePluginReadback.status,
+      exactBlocker: chromePluginReadback.exactBlocker,
+      failurePlane: chromePluginReadback.failurePlane,
+      blockingScope: chromePluginReadback.blockingScope,
+      independentLanesAllowed: chromePluginReadback.independentLanesAllowed,
+    } : null,
     fallbackPolicy: "no_implicit_surface_switch",
     contract: [
       "workflow_owned_session",
@@ -191,7 +246,8 @@ function buildBrowserUseRuntimeSnapshotFromReadback(
     lanes,
     processReadback,
     operationalReadback,
-    workflowInventory: buildRegisteredWorkflowInventoryReadback()
+    workflowInventory: buildRegisteredWorkflowInventoryReadback(),
+    chromePluginReadback: chromePluginReadback ? publicChromePluginReadback(chromePluginReadback) : null
   } as const;
 }
 
@@ -201,6 +257,10 @@ function shouldReadLiveProcessTable(): boolean {
     : process.env.AUTOMATION_OS_READ_LIVE_PROCESS_TABLE === "0"
       ? false
       : process.env.NODE_TEST_CONTEXT !== "1" && !process.argv.some((argument) => argument === "--test" || argument.startsWith("--test-"));
+}
+
+function isHostedControlPlane(): boolean {
+  return process.env.ZEABUR === "1" && process.env.AUTOMATION_OS_ENV_ROLE === "production";
 }
 
 export function buildBrowserOperationalReadback(processReadback: ReturnType<typeof buildBrowserRuntimeProcessReadback>): BrowserOperationalReadback {

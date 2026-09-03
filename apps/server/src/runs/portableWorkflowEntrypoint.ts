@@ -1,17 +1,26 @@
 import { chmodSync, closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve, sep } from "node:path";
-import { dbBackend, initDb, makeId, nowIso, querySqlAsync, runSqlTransactionAsync, sqlValue } from "../db/client.js";
+import { dbBackend, execSqlAsync, initDb, makeId, nowIso, querySqlAsync, runSqlScriptAsync, runSqlTransactionAsync, sqlValue } from "../db/client.js";
 import { createHash } from "node:crypto";
 import { hashIdempotencyRequest } from "../automations/idempotency.js";
 import {
   fixedRegisteredWorkflows,
   getRegisteredWorkflowAsync,
-  getRegisteredWorkflowStartCommand,
+  getRegisteredWorkflowStartCommandAsync,
+  initRegisteredWorkflowsAsync,
   initRegisteredWorkflows,
   type RegisteredWorkflowRow
 } from "../registeredWorkflows.js";
 import { runWorkerOnce, startCommandRun } from "./workerEngine.js";
 import { buildPortableWorkerExecutionRoutingSnapshot } from "../codex/executionRouting.js";
+import {
+  browserAuthRefForBackendSnapshot,
+  buildCompanionFirstWebOperationBackendRunSnapshot,
+  buildWebOperationBackendRunSnapshot,
+  WEB_OPERATION_BACKEND_SNAPSHOT_SCHEMA,
+  WEB_OPERATION_BACKENDS
+} from "./webOperationBackendSettings.js";
+import { isWebOperationAdapter } from "./webOperationBackendAdapters.js";
 import { PORTABLE_EXECUTION_SOURCE } from "./portableWorkerIsolation.js";
 import {
   PORTABLE_WORKER_CANARY_MODE,
@@ -20,7 +29,8 @@ import {
 } from "./portableWorkflowWorker.js";
 import {
   type PortableTrigger,
-  type PortableWorkflowId
+  type PortableWorkflowId,
+  type PortableConnectorExecutionOwner
 } from "./portableWorkflowContract.js";
 import {
   createRegisteredRootAdmissionV1,
@@ -29,6 +39,13 @@ import {
 import { portableExternalRunnerConfigured } from "./portableExternalRunnerConfig.js";
 import { validatePortableBusinessInputBundle } from "./portableExternalBusinessPlan.js";
 import { validateWebOperationIntent } from "./webOperationContract.js";
+import { createApprovalRequest } from "./approvalGate.js";
+import {
+  buildPortableExternalApprovalBinding,
+  buildPortableTargetBoundApprovalReceipt,
+  portableExternalApprovalResourceLocks,
+  type PortableBrowserSurface
+} from "./portableExternalApprovalBinding.js";
 
 export type PortableWorkflowStartInput = {
   workflowId: PortableWorkflowId;
@@ -36,6 +53,8 @@ export type PortableWorkflowStartInput = {
   idempotencyKey: string;
   /** The company-scoped registered automation that owns this run. */
   registeredAutomationId?: string;
+  /** The schedule-pinned automation version that owns this run. */
+  registeredAutomationVersionId?: string | null;
   dueKey?: string;
   /** A workflow-owned, strictly read-only stage admission. */
   readOnlyStage?: "candidate_supply" | "reference_readback" | null;
@@ -58,9 +77,16 @@ export type PortableWorkflowStartInput = {
   inputBundle?: PortableWorkflowInputBundle | null;
   /** A run-bound, provider-neutral Web intent. Effectful intents require a target-bound approval. */
   webOperationIntent?: Record<string, unknown> | null;
+  /** Zeabur is the default connector owner; Mac connector use is explicit only. */
+  connectorExecutionOwner?: PortableConnectorExecutionOwner;
+  /** Explicit browser-surface constraints win over the adaptive default and fail closed when their adapter is unavailable. */
+  browserSurfaceRequirement?: "automatic" | "official_extension" | "companion_extension" | "browser_use_cli";
+  /** Explicit current Codex task owner for a Companion read-only worker claim. */
+  companionTaskId?: string;
 };
 
 export type PortableWorkflowInputBundle = {
+  phone?: string;
   account_ref?: string;
   target_key?: string;
   payload_hash?: string;
@@ -78,6 +104,9 @@ export type PortableWorkflowInputBundle = {
   supply_run_id?: string;
   remaining?: number;
   margin?: number;
+  industry?: string;
+  salary_min_jpy?: number;
+  salary_max_jpy?: number;
   company?: string;
   role?: string;
   audience?: string;
@@ -105,16 +134,163 @@ export type PortableWorkflowStartResult = {
   idempotencyKey: string;
   executionMode: typeof PORTABLE_WORKER_CANARY_MODE | typeof PORTABLE_WORKER_EXTERNAL_MODE;
   status?: string;
+  webOperationBackendRunSnapshot: PortableBackendSnapshot;
   registeredRoot?: RegisteredRootAdmissionV1;
 };
 
+/**
+ * PostgreSQL HTTP requests must not enter the legacy synchronous worker cycle.
+ * The generic fast start creates a pending approval row, then this narrow
+ * async boundary upgrades that row with the target-bound binding required by
+ * the Mac worker.  The SQLite/CLI path remains on runWorkerOnce for backward
+ * compatibility and existing local tests.
+ */
+export async function preparePortableExternalApprovalPostgres(input: {
+  runId: string;
+  workflowId: string;
+  companyId: string;
+  effectStage: PortableBusinessEffectStage;
+  idempotencyKey: string;
+  inputBundle: Record<string, unknown>;
+  inputBundleSha256: string;
+  browserSurface: PortableBrowserSurface;
+  approvalMode?: "explicit" | "registered_unattended_local";
+}): Promise<void> {
+  const step = (await querySqlAsync<{ id: string; lane_id: string | null; metadata_json: string }>(
+    `SELECT id, lane_id, metadata_json FROM run_steps WHERE run_id=${sqlValue(input.runId)} ORDER BY id ASC LIMIT 1`
+  ))[0];
+  if (!step) throw new Error("portable_external_approval_step_missing");
+  let approval = (await querySqlAsync<{ id: string; status: string }>(
+    `SELECT id, status FROM approvals WHERE run_id=${sqlValue(input.runId)} ORDER BY created_at ASC LIMIT 1`
+  ))[0];
+  const binding = buildPortableExternalApprovalBinding({
+    companyId: input.companyId,
+    workflowId: input.workflowId,
+    runId: input.runId,
+    stepId: step.id,
+    effectStage: input.effectStage,
+    idempotencyKey: input.idempotencyKey,
+    inputBundleSha256: input.inputBundleSha256,
+    inputBundle: input.inputBundle,
+    browserSurface: input.browserSurface
+  });
+  const resourceLocks = portableExternalApprovalResourceLocks({
+    workflowId: input.workflowId,
+    inputBundleSha256: binding.input_bundle_sha256,
+    targetDigest: binding.target_digest,
+    idempotencyKey: input.idempotencyKey
+  });
+  const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
+  const payloadHash = typeof input.inputBundle.payload_hash === "string" && /^[a-f0-9]{64}$/u.test(input.inputBundle.payload_hash)
+    ? input.inputBundle.payload_hash
+    : null;
+  if (!approval) {
+    const createdApproval = createApprovalRequest({
+      runId: input.runId,
+      title: `Approve ${input.workflowId} external action: ${input.effectStage}`,
+      requestedBy: input.approvalMode === "registered_unattended_local" ? "registered-automation-policy" : "control-panel",
+      approvalGroupId: `${input.runId}_approval_group`,
+      resourceLocks,
+      priority: "high"
+    });
+    await runSqlTransactionAsync([{
+      sql: `INSERT INTO approvals
+        (id, run_id, title, requested_by, status, priority, company_id, step_id, action_kind, target_account_ref_id, payload_hash, policy_version, expires_at, approval_group_id, resource_locks_json, created_at, decided_at, decision_note)
+        VALUES (${sqlValue(createdApproval.id)}, ${sqlValue(input.runId)}, ${sqlValue(createdApproval.title)}, ${sqlValue(createdApproval.requestedBy)},
+                ${sqlValue(createdApproval.status)}, ${sqlValue(createdApproval.priority)}, ${sqlValue(input.companyId)},
+                ${sqlValue(step.id)}, ${sqlValue(input.effectStage)}, ${sqlValue(typeof input.inputBundle.account_ref === "string" ? input.inputBundle.account_ref : `company:${input.companyId}`)},
+                ${sqlValue(payloadHash)}, ${sqlValue("automation_os_portable_external_approval_binding.v1")}, ${sqlValue(expiresAt)},
+                ${sqlValue(createdApproval.approvalGroupId)}, ${sqlValue(createdApproval.resourceLocks)}, ${sqlValue(createdApproval.createdAt)}, NULL, NULL)`,
+      expectChanges: 1
+    }]);
+    approval = { id: createdApproval.id, status: createdApproval.status };
+  }
+  await execSqlAsync(
+    `UPDATE approvals SET step_id=${sqlValue(step.id)}, action_kind=${sqlValue(input.effectStage)},
+            target_account_ref_id=${sqlValue(typeof input.inputBundle.account_ref === "string" ? input.inputBundle.account_ref : `company:${input.companyId}`)},
+            payload_hash=${sqlValue(payloadHash)}, policy_version=${sqlValue("automation_os_portable_external_approval_binding.v1")},
+            expires_at=${sqlValue(expiresAt)}, resource_locks_json=${sqlValue(resourceLocks)}
+       WHERE id=${sqlValue(approval.id)} AND run_id=${sqlValue(input.runId)} AND company_id=${sqlValue(input.companyId)} AND status='pending'`
+  );
+  const receipt = buildPortableTargetBoundApprovalReceipt({
+    approvalId: approval.id,
+    approvalStatus: "pending",
+    binding
+  });
+  const run = (await querySqlAsync<{ metadata_json: string }>(
+    `SELECT metadata_json FROM runs WHERE id=${sqlValue(input.runId)} LIMIT 1`
+  ))[0];
+  const stepMetadata = parseMetadata(step.metadata_json);
+  const runMetadata = run ? parseMetadata(run.metadata_json) : {};
+  const nextStepMetadata = {
+    ...stepMetadata,
+    portable_target_bound_approval_binding: binding,
+    portable_target_bound_approval_receipt: receipt,
+    requires_approval: true,
+    approval_required_reason: "portable_external_effect_policy_approval_required",
+    external_effect_policy: input.approvalMode === "registered_unattended_local"
+      ? "registered_unattended_local_pending_authorization"
+      : "approval_required",
+    exact_blocker: "portable_external_approval_required",
+    external_action_executed: false
+  };
+  const nextRunMetadata = {
+    ...runMetadata,
+    portable_target_bound_approval_binding: binding,
+    portable_target_bound_approval_receipt: receipt,
+    approval_id: approval.id,
+    approval_status: "pending",
+    requires_approval: true,
+    approval_required_reason: "portable_external_effect_policy_approval_required",
+    external_effect_policy: input.approvalMode === "registered_unattended_local"
+      ? "registered_unattended_local_pending_authorization"
+      : "approval_required",
+    exact_blocker: "portable_external_approval_required",
+    external_action_executed: false
+  };
+  const now = nowIso();
+  const laneUpdate = step.lane_id
+    ? `\nUPDATE lanes SET status='blocked', progress=0, health='approval_required', updated_at=${sqlValue(now)} WHERE id=${sqlValue(step.lane_id)};`
+    : "";
+  await runSqlScriptAsync([
+    `UPDATE approvals SET step_id=${sqlValue(step.id)}, action_kind=${sqlValue(input.effectStage)}, target_account_ref_id=${sqlValue(typeof input.inputBundle.account_ref === "string" ? input.inputBundle.account_ref : `company:${input.companyId}`)}, payload_hash=${sqlValue(payloadHash)}, policy_version=${sqlValue("automation_os_portable_external_approval_binding.v1")}, expires_at=${sqlValue(expiresAt)}, resource_locks_json=${sqlValue(resourceLocks)} WHERE id=${sqlValue(approval.id)} AND run_id=${sqlValue(input.runId)};`,
+    `UPDATE runs SET status='waiting_approval', metadata_json=${sqlValue(nextRunMetadata)}, updated_at=${sqlValue(now)} WHERE id=${sqlValue(input.runId)};`,
+    `UPDATE run_steps SET status='waiting_approval', started_at=NULL, completed_at=NULL, metadata_json=${sqlValue(nextStepMetadata)} WHERE id=${sqlValue(step.id)} AND run_id=${sqlValue(input.runId)};${laneUpdate}`,
+    `INSERT INTO worker_events (id, company_id, run_id, step_id, lane_id, event_type, message, created_at, metadata_json) VALUES (${sqlValue(makeId("evt"))}, ${sqlValue(input.companyId)}, ${sqlValue(input.runId)}, ${sqlValue(step.id)}, ${sqlValue(step.lane_id)}, 'worker_blocked', 'portable external effects require explicit approval', ${sqlValue(now)}, ${sqlValue({ workflow_id: input.workflowId, exact_blocker: "portable_external_approval_required", external_action_executed: false })});`
+  ]);
+}
+
 const portableTriggers = new Set<PortableTrigger>(["automation_os_scheduler", "automation_os_ui", "codex_app_bridge", "launchd", "github_actions"]);
+const COMPANION_TASK_ID_PATTERN = /^[A-Za-z0-9][-_A-Za-z0-9.:]{0,179}$/u;
+const unattendedPortableTriggers = new Set<PortableTrigger>(["automation_os_scheduler", "launchd", "github_actions"]);
+
+/**
+ * Scheduled/worker-owned runs have no Codex task to own a Companion session.
+ * Keep the interactive UI/App bridge on the Companion-first route, but bind
+ * unattended admission to the already registered Browser Use CLI lane.
+ * This is an explicit route selection, not an implicit fallback after a
+ * failed Companion or Chrome attempt.
+ */
+export function browserSurfaceRequirementForPortableTrigger(
+  sourceTrigger: PortableTrigger,
+): "automatic" | "browser_use_cli" {
+  return unattendedPortableTriggers.has(sourceTrigger) ? "browser_use_cli" : "automatic";
+}
 
 export function isPortableWorkflowTrigger(value: string): value is PortableTrigger {
   return portableTriggers.has(value as PortableTrigger);
 }
 
-function parseMetadata(value: string): Record<string, unknown> {
+function normalizedCompanionTaskId(input: PortableWorkflowStartInput): string | null {
+  const value = typeof input.companionTaskId === "string" ? input.companionTaskId.trim() : "";
+  if (!value) return null;
+  if (!COMPANION_TASK_ID_PATTERN.test(value)) throw new Error("portable_companion_task_id_invalid");
+  return value;
+}
+
+function parseMetadata(value: unknown): Record<string, unknown> {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
+  if (typeof value !== "string") return {};
   try {
     const parsed = JSON.parse(value) as unknown;
     return parsed && typeof parsed === "object" && !Array.isArray(parsed)
@@ -165,7 +341,10 @@ function normalizedReadOnlyStage(input: PortableWorkflowStartInput): "candidate_
   }
   if ((input.workflowId === "daily-ai-research-publish-run"
     || input.workflowId === "nisenprints-daily-product-canva-printify-etsy-pinterest"
-    || input.workflowId === "job-application-manager") && stage === "reference_readback") {
+    || input.workflowId === "job-application-manager"
+    || input.workflowId === "prompt-transfer-ukiyoe"
+    || input.workflowId === "sns-multi-poster-ukiyoe"
+    || input.workflowId === "x-authenticated-browser-lane") && stage === "reference_readback") {
     return stage;
   }
   throw new Error("portable_read_only_stage_unsupported");
@@ -184,13 +363,14 @@ function normalizedEffectStage(input: PortableWorkflowStartInput): PortableBusin
   if (input.workflowId === "job-application-manager" && stage === "one_candidate_submit") return stage;
   if (input.workflowId === "daily-ai-research-publish-run" && stage === "publish") return stage;
   if (input.workflowId === "nisenprints-daily-product-canva-printify-etsy-pinterest" && stage === "business_execute") return stage;
+  if ((input.workflowId === "sns-multi-poster-ukiyoe" || input.workflowId === "x-authenticated-browser-lane") && stage === "publish") return stage;
   throw new Error("portable_business_effect_stage_unsupported");
 }
 
 const PORTABLE_INPUT_BUNDLE_KEYS = new Set<keyof PortableWorkflowInputBundle>([
-  "account_ref", "target_key", "payload_hash", "content_key", "product_key", "asset_manifest_id",
+  "phone", "account_ref", "target_key", "payload_hash", "content_key", "product_key", "asset_manifest_id",
   "job_url", "job_id", "application_url", "candidate_key", "bucket", "sequence", "attempt",
-  "source_snapshot_id", "source_snapshot_expires_at", "supply_run_id", "remaining", "margin", "company", "role",
+  "source_snapshot_id", "source_snapshot_expires_at", "supply_run_id", "remaining", "margin", "industry", "salary_min_jpy", "salary_max_jpy", "company", "role",
   "audience", "resume_locale", "resume_sha256", "owner_ref", "authority_ref", "input_bundle_ref", "target_digest", "source_state_digest"
 ]);
 const PORTABLE_INPUT_BUNDLE_SECRET_KEY = /(token|cookie|password|secret|authorization|storage[_-]?state|credential|profile[_-]?path)/iu;
@@ -226,12 +406,43 @@ function normalizedInputBundle(input: PortableWorkflowStartInput): PortableWorkf
       throw new Error("portable_workflow_input_bundle_count_invalid");
     }
   }
+  if (output.industry !== undefined && (!output.industry || output.industry.length > 120 || /[\u0000-\u001f]/u.test(output.industry))) {
+    throw new Error("portable_workflow_input_bundle_industry_invalid");
+  }
+  for (const key of ["salary_min_jpy", "salary_max_jpy"] as const) {
+    if (output[key] !== undefined && (!Number.isSafeInteger(output[key]) || output[key] <= 0 || output[key] > 100_000_000)) {
+      throw new Error("portable_workflow_input_bundle_salary_range_invalid");
+    }
+  }
+  if (output.salary_min_jpy !== undefined && output.salary_max_jpy !== undefined && output.salary_max_jpy < output.salary_min_jpy) {
+    throw new Error("portable_workflow_input_bundle_salary_range_invalid");
+  }
   return output;
+}
+
+function applyBrowserAuthProfileDefault(
+  input: PortableWorkflowStartInput,
+  backendSnapshot: PortableBackendSnapshot,
+): PortableWorkflowStartInput {
+  const authRef = browserAuthRefForBackendSnapshot(backendSnapshot.web_operation_backend);
+  if (!authRef) return input;
+  const inputBundle = input.inputBundle && typeof input.inputBundle === "object" && !Array.isArray(input.inputBundle)
+    ? { ...input.inputBundle, account_ref: input.inputBundle.account_ref || authRef }
+    : input.inputBundle;
+  const rawIntent = input.webOperationIntent && typeof input.webOperationIntent === "object" && !Array.isArray(input.webOperationIntent)
+    ? { ...input.webOperationIntent, account_ref: input.webOperationIntent.account_ref || authRef }
+    : input.webOperationIntent;
+  return { ...input, inputBundle, webOperationIntent: rawIntent };
 }
 
 const PORTABLE_WEB_INTENT_SECRET_KEY = /(token|cookie|password|secret|authorization|storage[_-]?state|credential|profile[_-]?path|header|body|html)/iu;
 
-function normalizedWebOperationIntent(input: PortableWorkflowStartInput): Record<string, unknown> | null {
+type PortableBackendSnapshot = ReturnType<typeof buildWebOperationBackendRunSnapshot>;
+
+function normalizedWebOperationIntent(
+  input: PortableWorkflowStartInput,
+  backendSnapshot: PortableBackendSnapshot = buildWebOperationBackendRunSnapshot()
+): Record<string, unknown> | null {
   const raw = input.webOperationIntent;
   if (raw === undefined || raw === null) return null;
   if (typeof raw !== "object" || Array.isArray(raw)) throw new Error("portable_web_operation_intent_invalid");
@@ -259,7 +470,7 @@ function normalizedWebOperationIntent(input: PortableWorkflowStartInput): Record
   const validated = validateWebOperationIntent(candidate);
   return Object.freeze({
     schema: "automation_os_web_operation_intent.v1",
-    browser_surface: "browser_use_cli",
+    browser_surface: backendSnapshot.web_operation_backend.browser_surface,
     operation: validated.operation,
     account_ref: validated.account_ref,
     allowed_origins: [...validated.allowed_origins],
@@ -319,7 +530,10 @@ function browserGoalStatePathFor(runId: string): string {
   return resolve(artifactRoot, runId, "browser-use-goal-kernel.v1.json");
 }
 
-function portableInvocationRequestHash(input: PortableWorkflowStartInput): string {
+function portableInvocationRequestHash(
+  input: PortableWorkflowStartInput,
+  backendSnapshot: PortableBackendSnapshot = buildWebOperationBackendRunSnapshot()
+): string {
   const payload = {
     workflow_id: input.workflowId,
     source_trigger: input.sourceTrigger,
@@ -331,37 +545,55 @@ function portableInvocationRequestHash(input: PortableWorkflowStartInput): strin
   if (readOnlyStage) payload.read_only_stage = readOnlyStage;
   const effectStage = normalizedEffectStage(input);
   if (effectStage) payload.effect_stage = effectStage;
+  // `automatic` is the historical default and must not change the identity
+  // of an existing interactive invocation. Unattended triggers resolve to an
+  // explicit official-extension requirement, which is intentionally part of
+  // the request hash so a route change cannot replay across surfaces.
+  if (input.browserSurfaceRequirement && input.browserSurfaceRequirement !== "automatic") {
+    payload.browser_surface_requirement = input.browserSurfaceRequirement;
+  }
+  const companionTaskId = normalizedCompanionTaskId(input);
+  if (companionTaskId) payload.companion_task_id = companionTaskId;
   const bundle = normalizedInputBundle(input);
   if (bundle) payload.input_bundle = bundle;
-  const webOperationIntent = normalizedWebOperationIntent(input);
+  const webOperationIntent = normalizedWebOperationIntent(input, backendSnapshot);
   if (webOperationIntent) payload.web_operation_intent = webOperationIntent;
   return hashIdempotencyRequest(payload);
 }
 
-function writePortableInputBundle(runId: string, workflowId: PortableWorkflowId, inputBundle: PortableWorkflowInputBundle | null): { path: string; sha256: string } | null {
+function writePortableInputBundle(runId: string, workflowId: PortableWorkflowId, inputBundle: PortableWorkflowInputBundle | null): { path: string; sha256: string; createdAt: string } | null {
   if (!inputBundle) return null;
   const artifactRoot = resolve(process.env.AUTOMATION_OS_ARTIFACT_ROOT?.trim() || resolve(process.cwd(), "data", "artifacts"));
   const runRoot = resolve(artifactRoot, runId);
   if (runRoot === artifactRoot || !runRoot.startsWith(`${artifactRoot}${sep}`)) throw new Error("portable_workflow_input_bundle_run_path_invalid");
   mkdirSync(runRoot, { recursive: true, mode: 0o700 });
   chmodSync(runRoot, 0o700);
+  const createdAt = nowIso();
   const payload = {
     schema: "automation_os_portable_workflow_input_bundle.v1",
     workflow_id: workflowId,
     run_id: runId,
     input: inputBundle,
-    created_at: nowIso()
+    created_at: createdAt
   };
   const bytes = `${JSON.stringify(payload, null, 2)}\n`;
   const sha256 = createHash("sha256").update(bytes).digest("hex");
   const bundlePath = resolve(runRoot, "portable-input-bundle.v1.json");
   if (existsSync(bundlePath)) {
     const stat = lstatSync(bundlePath);
-    if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1 || readFileSync(bundlePath, "utf8") !== bytes) {
+    const existingBytes = readFileSync(bundlePath, "utf8");
+    if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1 || existingBytes !== bytes) {
       throw new Error("portable_workflow_input_bundle_immutable_collision");
     }
     chmodSync(bundlePath, 0o600);
-    return { path: bundlePath, sha256 };
+    let existingCreatedAt = createdAt;
+    try {
+      const existing = JSON.parse(existingBytes) as { created_at?: unknown };
+      if (typeof existing.created_at === "string" && existing.created_at.trim()) existingCreatedAt = existing.created_at;
+    } catch {
+      throw new Error("portable_workflow_input_bundle_immutable_collision");
+    }
+    return { path: bundlePath, sha256, createdAt: existingCreatedAt };
   }
   const fd = openSync(bundlePath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | (constants.O_NOFOLLOW || 0), 0o600);
   try {
@@ -370,12 +602,12 @@ function writePortableInputBundle(runId: string, workflowId: PortableWorkflowId,
     closeSync(fd);
   }
   chmodSync(bundlePath, 0o600);
-  return { path: bundlePath, sha256 };
+  return { path: bundlePath, sha256, createdAt };
 }
 
-async function readPortableInvocation(input: PortableWorkflowStartInput, requestHash: string): Promise<PortableInvocationRow | undefined> {
+async function readPortableInvocationByIdentity(input: PortableWorkflowStartInput): Promise<PortableInvocationRow | undefined> {
   const companyId = normalizedCompanyId(input);
-  const row = (await querySqlAsync<PortableInvocationRow>(`
+  return (await querySqlAsync<PortableInvocationRow>(`
     SELECT id, workflow_id, source_trigger, company_scope, company_id, idempotency_key,
            request_hash, status, run_id
     FROM portable_workflow_invocations
@@ -385,6 +617,10 @@ async function readPortableInvocation(input: PortableWorkflowStartInput, request
       AND idempotency_key=${sqlValue(input.idempotencyKey)}
     LIMIT 1
   `))[0];
+}
+
+async function readPortableInvocation(input: PortableWorkflowStartInput, requestHash: string): Promise<PortableInvocationRow | undefined> {
+  const row = await readPortableInvocationByIdentity(input);
   if (row && row.request_hash !== requestHash) {
     throw new Error("portable_workflow_invocation_payload_conflict");
   }
@@ -402,6 +638,7 @@ function resultFromRun(
   idempotencyKey: string,
   run: { id: string; status: string },
   replayed: boolean,
+  backendSnapshot: PortableBackendSnapshot,
   registeredRoot?: RegisteredRootAdmissionV1
 ): PortableWorkflowStartResult {
   return {
@@ -412,17 +649,56 @@ function resultFromRun(
     idempotencyKey,
     executionMode: portableWorkerExecutionMode(),
     status: run.status,
+    webOperationBackendRunSnapshot: backendSnapshot,
     ...(registeredRoot ? { registeredRoot } : {})
   };
 }
 
+function persistedBackendSnapshotFromMetadata(metadata: Record<string, unknown>): PortableBackendSnapshot {
+  const raw = metadata.web_operation_backend;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("portable_workflow_backend_snapshot_missing");
+  }
+  const snapshot = raw as Record<string, unknown>;
+  const requestedBackend = String(snapshot.requested_backend ?? "");
+  const resolvedBackend = String(snapshot.resolved_backend ?? "");
+  if (snapshot.schema !== WEB_OPERATION_BACKEND_SNAPSHOT_SCHEMA
+    || !WEB_OPERATION_BACKENDS.some((backend) => backend === requestedBackend)
+    || !WEB_OPERATION_BACKENDS.some((backend) => backend === resolvedBackend)
+    || snapshot.fallback_allowed !== false
+    || typeof snapshot.browser_surface !== "string"
+    || !snapshot.browser_surface.trim()) {
+    throw new Error("portable_workflow_backend_snapshot_invalid");
+  }
+  return { web_operation_backend: snapshot as PortableBackendSnapshot["web_operation_backend"] };
+}
+
+async function persistedBackendSnapshotForRun(runId: string, metadataJson?: unknown): Promise<PortableBackendSnapshot> {
+  if (metadataJson !== undefined) return persistedBackendSnapshotFromMetadata(parseMetadata(metadataJson));
+  const row = (await querySqlAsync<{ metadata_json: unknown }>(
+    `SELECT metadata_json FROM runs WHERE id=${sqlValue(runId)} LIMIT 1`
+  ))[0];
+  if (!row) throw new Error("portable_workflow_invocation_run_missing");
+  return persistedBackendSnapshotFromMetadata(parseMetadata(row.metadata_json));
+}
+
 async function resultFromCompletedInvocation(input: PortableWorkflowStartInput, idempotencyKey: string, row: PortableInvocationRow): Promise<PortableWorkflowStartResult> {
   if (!row.run_id) throw new Error("portable_workflow_invocation_run_missing");
-  const run = (await querySqlAsync<{ id: string; status: string }>(
-    `SELECT id, status FROM runs WHERE id=${sqlValue(row.run_id)} LIMIT 1`
+  const run = (await querySqlAsync<{ id: string; status: string; metadata_json: unknown }>(
+    `SELECT id, status, metadata_json FROM runs WHERE id=${sqlValue(row.run_id)} LIMIT 1`
   ))[0];
   if (!run) throw new Error("portable_workflow_invocation_run_missing");
-  return resultFromRun(input, idempotencyKey, run, true);
+  const backendSnapshot = await persistedBackendSnapshotForRun(run.id, run.metadata_json);
+  const replayInput = applyBrowserAuthProfileDefault(input, backendSnapshot);
+  const requestHash = portableInvocationRequestHash(replayInput, backendSnapshot);
+  if (row.request_hash !== requestHash) throw new Error("portable_workflow_invocation_payload_conflict");
+  return resultFromRun(replayInput, idempotencyKey, run, true, backendSnapshot);
+}
+
+async function resultFromExistingRun(input: PortableWorkflowStartInput, idempotencyKey: string, run: { id: string; status: string }): Promise<PortableWorkflowStartResult> {
+  const backendSnapshot = await persistedBackendSnapshotForRun(run.id);
+  const replayInput = applyBrowserAuthProfileDefault(input, backendSnapshot);
+  return resultFromRun(replayInput, idempotencyKey, run, true, backendSnapshot);
 }
 
 async function findExistingPortableRun(input: PortableWorkflowStartInput): Promise<{ id: string; status: string } | undefined> {
@@ -556,7 +832,8 @@ async function getPortableRegisteredWorkflow(workflowId: PortableWorkflowId): Pr
   // instead of treating a missing derived row as a missing adapter.
   let workflow = await getRegisteredWorkflowAsync(workflowId);
   if (!workflow) {
-    initRegisteredWorkflows();
+    if (dbBackend === "postgres") await initRegisteredWorkflowsAsync();
+    else initRegisteredWorkflows();
     workflow = await getRegisteredWorkflowAsync(workflowId);
   }
   if (!workflow) throw new Error("portable_registered_workflow_missing");
@@ -574,16 +851,52 @@ export async function startPortableWorkflowRun(input: PortableWorkflowStartInput
   const idempotencyKey = input.idempotencyKey.trim();
   if (!idempotencyKey) throw new Error("portable_idempotency_key_required");
   if (!isPortableWorkflowTrigger(input.sourceTrigger)) throw new Error("portable_source_trigger_invalid");
-  initDb();
+  // The Postgres schema boundary is owned by server startup. Re-entering the
+  // synchronous child-process probe for every HTTP-triggered Run stalls the
+  // event loop and delays the 202 queue receipt when the connection is cold.
+  if (dbBackend !== "postgres") initDb();
   const workflow = await getPortableRegisteredWorkflow(input.workflowId);
-  const normalizedInput = {
+  const requestedReadOnlyStage = normalizedReadOnlyStage(input);
+  const requestedEffectStage = normalizedEffectStage(input);
+  // Resolve the unattended default before any idempotency lookup. The same
+  // normalized request must hash identically on the initial admission and on
+  // a later completed-invocation readback.
+  const browserSurfaceRequirement = input.browserSurfaceRequirement
+    ?? browserSurfaceRequirementForPortableTrigger(input.sourceTrigger);
+  const baseInput: PortableWorkflowStartInput = {
     ...input,
     idempotencyKey,
-    readOnlyStage: normalizedReadOnlyStage(input),
-    effectStage: normalizedEffectStage(input),
+    readOnlyStage: requestedReadOnlyStage,
+    effectStage: requestedEffectStage,
+    browserSurfaceRequirement
   };
+  const existingInvocation = await readPortableInvocationByIdentity(baseInput);
+  if (existingInvocation?.status === "completed") {
+    return await resultFromCompletedInvocation(baseInput, idempotencyKey, existingInvocation);
+  }
+  const existing = dbBackend === "postgres" ? undefined : await findExistingPortableRun(baseInput);
+  if (existing) {
+    return await resultFromExistingRun(baseInput, idempotencyKey, existing);
+  }
+  // Capture the selected backend exactly once for this run. The same
+  // immutable snapshot must drive intent, idempotency, admission, and receipt
+  // metadata; otherwise a UI backend switch can leave a stale Browser Use
+  // surface inside an otherwise Chrome Plugin/Playwright run.
+  const selectedBackendSnapshot = buildCompanionFirstWebOperationBackendRunSnapshot({
+    adapter: isWebOperationAdapter(workflow.runner_kind) ? workflow.runner_kind : null,
+    operationClass: requestedEffectStage ? "effect" : requestedReadOnlyStage ? "read_only" : "normal",
+    extensionRequirement: browserSurfaceRequirement,
+  });
+  const connectorExecutionOwner: PortableConnectorExecutionOwner = input.connectorExecutionOwner === "mac_worker_explicit_connector_fallback"
+    ? input.connectorExecutionOwner
+    : "zeabur_codex_app_server";
+  const normalizedInput = applyBrowserAuthProfileDefault({
+    ...baseInput,
+    browserSurfaceRequirement,
+  }, selectedBackendSnapshot);
+  const companionTaskId = normalizedCompanionTaskId(normalizedInput);
   const inputBundle = normalizedInputBundle(normalizedInput);
-  const webOperationIntent = normalizedWebOperationIntent(normalizedInput);
+  const webOperationIntent = normalizedWebOperationIntent(normalizedInput, selectedBackendSnapshot);
   if (normalizedInput.effectStage) {
     if (normalizedInput.effectStage === "web_operation_effect") {
       validatePortableWebEffectInput({ intent: webOperationIntent, inputBundle, companyId: normalizedCompanyId(normalizedInput) });
@@ -592,18 +905,17 @@ export async function startPortableWorkflowRun(input: PortableWorkflowStartInput
       if (!validation.ok) throw new Error(validation.exact_blocker);
     }
   }
-  const requestHash = portableInvocationRequestHash(normalizedInput);
-  const stored = await readPortableInvocation(normalizedInput, requestHash);
-  if (stored?.status === "completed") return await resultFromCompletedInvocation(normalizedInput, idempotencyKey, stored);
-  const existing = dbBackend === "postgres" ? undefined : await findExistingPortableRun(normalizedInput);
-  if (existing) {
-    return resultFromRun(normalizedInput, idempotencyKey, existing, true);
+  if (selectedBackendSnapshot.web_operation_backend.exact_blocker) {
+    throw new Error(selectedBackendSnapshot.web_operation_backend.exact_blocker);
   }
+  const requestHash = portableInvocationRequestHash(normalizedInput, selectedBackendSnapshot);
+  const stored = await readPortableInvocation(normalizedInput, requestHash);
+  if (stored?.status === "completed") return await resultFromCompletedInvocation(baseInput, idempotencyKey, stored);
   const command = normalizedInput.readOnlyStage === "candidate_supply"
     ? "Job Application Manager candidate supply read-only"
     : normalizedInput.readOnlyStage === "reference_readback"
       ? `${workflow.id} Browser Use CLI reference read-only preflight`
-      : getRegisteredWorkflowStartCommand(workflow.id);
+      : await getRegisteredWorkflowStartCommandAsync(workflow.id);
   if (!command) throw new Error("portable_registered_start_command_missing");
   const source = input.sourceTrigger === "automation_os_scheduler" ? "scheduler" as const : "manual" as const;
   // Fixed workflows are always handed to the portable external worker unless
@@ -613,7 +925,7 @@ export async function startPortableWorkflowRun(input: PortableWorkflowStartInput
   const portableWorkerMode = portableWorkerExecutionMode();
   const queuedAt = nowIso();
   const reservation = await reservePortableInvocation(normalizedInput, requestHash);
-  if (reservation.kind === "completed") return resultFromCompletedInvocation(normalizedInput, idempotencyKey, reservation.row);
+  if (reservation.kind === "completed") return resultFromCompletedInvocation(baseInput, idempotencyKey, reservation.row);
   const preassignedRunId = makeId("run");
   const registeredRoot = createRegisteredRootAdmissionV1({
     registeredAutomationId: input.registeredAutomationId ?? workflow.id,
@@ -625,17 +937,29 @@ export async function startPortableWorkflowRun(input: PortableWorkflowStartInput
   const browserGoalId = browserGoalIdFor(normalizedInput);
   const browserGoalStatePath = browserGoalStatePathFor(preassignedRunId);
   const persistedInputBundle = writePortableInputBundle(preassignedRunId, input.workflowId, inputBundle);
+  const selectedBackend = selectedBackendSnapshot.web_operation_backend.resolved_backend;
   let runCreated = false;
   try {
     const result = await startCommandRun(command, {
       runId: preassignedRunId,
       deferWorker: true,
+      automationId: input.registeredAutomationId ?? null,
+      automationVersionId: input.registeredAutomationVersionId ?? null,
+      // PostgreSQL workers poll durable runs independently of this request.
+      // Keep an effectful run in the non-claimable `preparing` state until the
+      // target-bound input bundle and approval binding are durably written;
+      // otherwise the generic worker can win the race and erase the portable
+      // admission handoff before preparePortableExternalApprovalPostgres()
+      // finishes.
+      prepareOnly: dbBackend === "postgres" && Boolean(normalizedInput.effectStage),
       ...(input.companyId !== undefined ? { companyId: input.companyId } : {}),
       executionRouting: buildPortableWorkerExecutionRoutingSnapshot({
         command,
         source,
-        workflowId: input.workflowId
+        workflowId: input.workflowId,
+        plannedAdapters: [selectedBackend]
       }),
+      webOperationBackendSnapshot: selectedBackendSnapshot,
       metadata: {
       ...(normalizedInput.readOnlyStage ? { read_only_stage: normalizedInput.readOnlyStage } : {}),
       registeredWorkflowId: workflow.id,
@@ -661,12 +985,22 @@ export async function startPortableWorkflowRun(input: PortableWorkflowStartInput
         browser_goal_state_path: browserGoalStatePath,
         ...(normalizedInput.readOnlyStage ? { read_only_stage: normalizedInput.readOnlyStage } : {}),
         ...(normalizedInput.effectStage ? { effect_stage: normalizedInput.effectStage } : {}),
+        connector_execution_owner: connectorExecutionOwner,
+        ...(companionTaskId ? { companion_task_id: companionTaskId } : {}),
+        browser_surface_requirement: normalizedInput.browserSurfaceRequirement ?? "automatic",
         ...(webOperationIntent ? { web_operation_intent: webOperationIntent } : {}),
         ...(persistedInputBundle ? { input_bundle_path: persistedInputBundle.path } : {}),
         app_dependency: false,
         external_action_executed: false
       },
       registered_root_admission: registeredRoot,
+      connector_execution_owner: connectorExecutionOwner,
+      ...(companionTaskId ? { companion_task_id: companionTaskId } : {}),
+      // Persist the immutable selected-backend snapshot on the run itself.
+      // The portable Mac worker validates this binding before admission or
+      // runner resolution; keeping only the derived adapter name would make a
+      // Chrome Plugin run fail closed as a legacy/missing-snapshot run.
+      ...selectedBackendSnapshot,
       ...(persistedInputBundle
         ? {
             portable_input_bundle: {
@@ -674,6 +1008,7 @@ export async function startPortableWorkflowRun(input: PortableWorkflowStartInput
               run_id: preassignedRunId,
               path: persistedInputBundle.path,
               sha256: persistedInputBundle.sha256,
+              created_at: persistedInputBundle.createdAt,
               fields: Object.keys(inputBundle ?? {}),
               ...(inputBundle ? { input: inputBundle } : {})
             }
@@ -684,6 +1019,7 @@ export async function startPortableWorkflowRun(input: PortableWorkflowStartInput
         workflow_id: workflow.id,
         ...(normalizedInput.readOnlyStage ? { read_only_stage: normalizedInput.readOnlyStage } : {}),
         ...(normalizedInput.effectStage ? { effect_stage: normalizedInput.effectStage } : {}),
+        connector_execution_owner: connectorExecutionOwner,
         ...(webOperationIntent ? { web_operation_intent: webOperationIntent } : {}),
         browser_goal_id: browserGoalId,
         browser_goal_state_path: browserGoalStatePath,
@@ -709,11 +1045,25 @@ export async function startPortableWorkflowRun(input: PortableWorkflowStartInput
     runCreated = true;
     if (normalizedInput.effectStage) {
       // Business runs need an AOS-owned, target-bound approval before the Mac
-      // worker can claim them.  The worker engine is deliberately invoked only
-      // for admission preparation here; portableRemoteBusinessMacWorkerRequired
-      // keeps Browser Use execution on the Mac and leaves the run waiting for
-      // the approved claim/receipt boundary.
-      await runWorkerOnce(result.runId);
+      // worker can claim them.  PostgreSQL HTTP requests must stay entirely on
+      // the async boundary; the legacy worker cycle uses synchronous child
+      // processes and can stall the server before the trigger receipt returns.
+      if (dbBackend === "postgres") {
+        const companyId = normalizedCompanyId(normalizedInput);
+        if (!companyId || !persistedInputBundle) throw new Error("portable_external_approval_company_or_bundle_missing");
+        await preparePortableExternalApprovalPostgres({
+          runId: result.runId,
+          workflowId: input.workflowId,
+          companyId,
+          effectStage: normalizedInput.effectStage,
+          idempotencyKey,
+          inputBundle: (inputBundle ?? {}) as Record<string, unknown>,
+          inputBundleSha256: persistedInputBundle.sha256,
+          browserSurface: selectedBackendSnapshot.web_operation_backend.browser_surface as PortableBrowserSurface
+        });
+      } else {
+        await runWorkerOnce(result.runId);
+      }
     }
     await completePortableInvocation(reservation.reservationId, result.runId, requestHash);
     const currentRun = dbBackend === "postgres"
@@ -724,7 +1074,7 @@ export async function startPortableWorkflowRun(input: PortableWorkflowStartInput
     return resultFromRun(normalizedInput, idempotencyKey, {
       id: currentRun.id,
       status: currentRun.status
-    }, false, registeredRoot);
+    }, false, selectedBackendSnapshot, registeredRoot);
   } catch (error) {
     if (!runCreated && persistedInputBundle) {
       try {

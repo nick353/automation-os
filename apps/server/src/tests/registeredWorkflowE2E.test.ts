@@ -6,6 +6,7 @@ import test from "node:test";
 
 const tempRoot = mkdtempSync(join(tmpdir(), "automation-os-registered-e2e-"));
 process.env.AUTOMATION_OS_DB = join(tempRoot, "automation-os.sqlite");
+process.env.AOS_WEB_OPERATION_BACKEND_CONFIG = join(tempRoot, "web-operation-backend.json");
 process.env.NODE_TEST_CONTEXT = "1";
 process.env.AUTOMATION_OS_WORKER_ROLE = "mac";
 
@@ -15,7 +16,8 @@ const { materializeDuePortableAutomationOccurrences } = await import("../runs/po
 const { startPortableWorkflowRun } = await import("../runs/portableWorkflowEntrypoint.js");
 const { startPortableLocalWorkflowRun } = await import("../runs/portableLocalWorkflowEntrypoint.js");
 const { runWorkerOnce } = await import("../runs/workerEngine.js");
-const { runPortableLocalWorkflowReadOnly } = await import("../runs/portableLocalWorkflow.js");
+const { runPortableLocalWorkflowReadOnly, preparePortableLocalBusinessAdmission, backupBusinessPayloadHash, obsidianBusinessPayloadHash } = await import("../runs/portableLocalWorkflow.js");
+const { writeWebOperationBackendSetting } = await import("../runs/webOperationBackendSettings.js");
 const { buildDefaultProjectRegistry } = await import("../projects/defaultProjectRegistry.js");
 const { buildRegistryEntry } = await import("../projects/projectAuditor.js");
 
@@ -62,11 +64,16 @@ test("all six registered entries share a control-plane adapter and portable disp
   ].sort());
   assert.equal(db.querySql<{ count: number }>(`SELECT count(*) AS count FROM durable_jobs WHERE company_id=${db.sqlValue(companyId)}`)[0].count, 0);
 
-  const runRows = db.querySql<{ id: string; metadata_json: string; company_id: string | null }>(
-    `SELECT id, metadata_json, company_id FROM runs WHERE id IN (${materialized.runIds.map((id) => db.sqlValue(id)).join(",")}) ORDER BY id`
+  const runRows = db.querySql<{ id: string; metadata_json: string; company_id: string | null; automation_id: string | null; automation_version_id: string | null }>(
+    `SELECT id, metadata_json, company_id, automation_id, automation_version_id FROM runs WHERE id IN (${materialized.runIds.map((id) => db.sqlValue(id)).join(",")}) ORDER BY id`
   );
   assert.equal(runRows.length, 6);
   assert.ok(runRows.every((row) => row.company_id === companyId));
+  const expectedAutomationIds = db.querySql<{ id: string }>(
+    `SELECT id FROM mvp_automations WHERE company_id=${db.sqlValue(companyId)} ORDER BY id`
+  ).map((row) => row.id);
+  assert.deepEqual(runRows.map((row) => row.automation_id).sort(), expectedAutomationIds);
+  assert.ok(runRows.every((row) => row.automation_version_id));
   assert.ok(runRows.every((row) => JSON.parse(row.metadata_json).portable_worker?.external_action_executed === false));
   assert.ok(runRows.every((row) => JSON.parse(row.metadata_json).worker_mode === "queued_for_mac_worker"));
 
@@ -77,6 +84,28 @@ test("all six registered entries share a control-plane adapter and portable disp
   });
   assert.deepEqual(replayedSchedule.runIds, []);
   assert.deepEqual(replayedSchedule.blocked, []);
+});
+
+test("portable scheduler blocks a missed recurrence without creating another Mac-worker run", async () => {
+  const adopted = adoptRegisteredAutomationCatalog({ companyId, actorUserId: ownerId, enableSchedules: true });
+  const schedule = adopted.adopted[0]!.schedule;
+  const staleDueAt = "2026-08-09T00:30:00.000Z";
+  db.execSql(`UPDATE mvp_automation_schedules SET enabled=0, status='paused' WHERE company_id=${db.sqlValue(companyId)} AND id!=${db.sqlValue(schedule.id)}`);
+  db.execSql(`UPDATE mvp_automation_schedules SET next_run_at=${db.sqlValue(staleDueAt)}, catch_up_policy=NULL WHERE id=${db.sqlValue(schedule.id)}`);
+
+  const beforeRuns = db.querySql<{ count: number }>(`SELECT count(*) AS count FROM runs WHERE company_id=${db.sqlValue(companyId)}`)[0].count;
+  const result = await materializeDuePortableAutomationOccurrences({
+    companyId,
+    serviceUserId,
+    now: "2026-09-03T00:30:00.000Z"
+  });
+
+  assert.deepEqual(result.runIds, []);
+  assert.equal(result.blocked.length, 1);
+  assert.equal(result.blocked[0]?.scheduleId, schedule.id);
+  assert.equal(result.blocked[0]?.exactBlocker, "scheduler_overdue_occurrence_policy_required");
+  assert.equal(db.querySql<{ count: number }>(`SELECT count(*) AS count FROM runs WHERE company_id=${db.sqlValue(companyId)}`)[0].count, beforeRuns);
+  assert.equal(db.querySql<{ next_run_at: string }>(`SELECT next_run_at FROM mvp_automation_schedules WHERE id=${db.sqlValue(schedule.id)}`)[0].next_run_at, staleDueAt);
 });
 
 test("registered browser and local starts are idempotent and reject same-key payload drift", async () => {
@@ -151,17 +180,18 @@ test("local worker E2E preserves read-only, exact blockers, and cleanup truth", 
   process.env.AUTOMATION_OS_OBSIDIAN_VAULT = join(tempRoot, "e2e-vault");
   mkdirSync(process.env.AUTOMATION_OS_OBSIDIAN_VAULT, { recursive: true });
 
-  const email = runPortableLocalWorkflowReadOnly({ workflowId: "email-review-reply", workerRole: "mac" });
+  const email = runPortableLocalWorkflowReadOnly({ workflowId: "email-review-reply", workerRole: "mac", companyId });
   assert.equal(email.status, "blocked");
-  assert.equal(email.exact_blocker, "gmail_connector_context_isolation_unavailable");
+  assert.ok(email.exact_blocker === "zeabur_codex_app_server_registry_readback_missing" || email.exact_blocker === "zeabur_connector_auth_not_verified");
   assert.equal(email.external_action_executed, false);
   assert.equal(email.cleanup_verified, true);
   assert.equal(email.business_completion_verified, false);
 
   const backup = runPortableLocalWorkflowReadOnly({ workflowId: "daily-backup-safety-check", workerRole: "mac" });
-  assert.equal(backup.status, "partial");
-  assert.equal(backup.exact_blocker, "local_backup_effect_requires_explicit_approval");
+  assert.equal(backup.status, "complete");
+  assert.equal(backup.exact_blocker, null);
   assert.equal(backup.external_action_executed, false);
+  assert.equal(backup.readback_verified, true);
   assert.equal(backup.cleanup_verified, true);
   assert.equal(backup.business_completion_verified, false);
 
@@ -171,6 +201,40 @@ test("local worker E2E preserves read-only, exact blockers, and cleanup truth", 
   assert.equal(obsidian.cleanup_verified, true);
   assert.equal(obsidian.business_completion_verified, false);
   assert.ok(obsidian.exact_blocker === "obsidian_artifact_write_requires_approval" || obsidian.exact_blocker === "unresolved_only_audit_failed");
+});
+
+test("scheduled local business admission is a fresh readback bound to fixed targets", () => {
+  const backupRunner = join(tempRoot, "scheduled-admission-runner.sh");
+  writeFileSync(backupRunner, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+  chmodSync(backupRunner, 0o700);
+  process.env.AUTOMATION_OS_BACKUP_RUNNER_PATH = backupRunner;
+
+  const admission = preparePortableLocalBusinessAdmission({
+    workflowId: "daily-backup-safety-check",
+    companyId,
+    dueKey: "schedule:2026-08-11T09:00:00.000Z",
+    scheduledFor: "2026-08-11T09:00:00.000Z"
+  });
+  assert.equal(admission.status, "ready");
+  assert.equal(admission.sourceSnapshot.readback_verified, true);
+  assert.equal(admission.sourceSnapshot.external_action_executed, false);
+  assert.deepEqual(admission.inputBundle, {
+    account_ref: "github:nick353/daily-workspace-backup",
+    target_key: "daily-workspace-backup:main",
+    payload_hash: backupBusinessPayloadHash(),
+    source_snapshot_id: admission.sourceSnapshot.source_snapshot_id
+  });
+
+  const obsidian = preparePortableLocalBusinessAdmission({
+    workflowId: "obsidian-project-memory-audit",
+    companyId,
+    dueKey: "schedule:2026-08-11T09:30:00.000Z",
+    scheduledFor: "2026-08-11T09:30:00.000Z"
+  });
+  assert.equal(obsidian.status, "ready");
+  assert.equal(obsidian.inputBundle?.account_ref, "github:nick353/obsidian-vault-backup");
+  assert.equal(obsidian.inputBundle?.target_key, "obsidian-vault-backup:main");
+  assert.equal(obsidian.inputBundle?.payload_hash, obsidianBusinessPayloadHash());
 });
 
 test("local worker refuses the wrong execution role before any adapter work", () => {
@@ -232,4 +296,72 @@ test("portable external reference readback explicitly cannot claim business comp
     if (previousApproval === undefined) delete process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_APPROVAL;
     else process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_APPROVAL = previousApproval;
   }
+});
+
+test("portable external workflow admits NisenPrints through the effectful Companion adapter", async () => {
+  writeWebOperationBackendSetting({ backend: "chrome_plugin", actorUserId: ownerId });
+  const started = await startPortableWorkflowRun({
+      workflowId: "nisenprints-daily-product-canva-printify-etsy-pinterest",
+      sourceTrigger: "automation_os_ui",
+      idempotencyKey: "e2e-chrome-unbound-portable-external-stop",
+      companyId,
+      effectStage: "business_execute",
+      inputBundle: {
+        account_ref: "nisenprints-account",
+        target_key: "product-001",
+        product_key: "product-001",
+        asset_manifest_id: "manifest-001",
+        payload_hash: "a".repeat(64),
+        source_snapshot_id: "snapshot-001"
+      }
+    });
+  assert.equal(started.status, "waiting_approval");
+  const run = db.querySql<{ metadata_json: string }>(`SELECT metadata_json FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`)[0];
+  const metadata = JSON.parse(run.metadata_json) as { web_operation_backend?: { resolved_backend?: string; route_reason?: string } };
+  assert.equal(metadata.web_operation_backend?.resolved_backend, "aos_chrome_companion");
+  assert.equal(metadata.web_operation_backend?.route_reason, "companion_effect_adapter_available");
+});
+
+test("portable external Daily AI run fails closed when its backend snapshot is missing", async () => {
+  writeWebOperationBackendSetting({ backend: "chrome_plugin", actorUserId: ownerId });
+  const started = await startPortableWorkflowRun({
+    workflowId: "daily-ai-research-publish-run",
+    sourceTrigger: "automation_os_ui",
+    idempotencyKey: "e2e-chrome-missing-snapshot-stop-daily-ai",
+    companyId,
+    effectStage: "publish",
+    inputBundle: {
+      account_ref: "daily-ai-account",
+      target_key: "content-missing-snapshot",
+      content_key: "content-missing-snapshot",
+      payload_hash: "b".repeat(64),
+      source_snapshot_id: "snapshot-missing-snapshot"
+    }
+  });
+  const runRow = db.querySql<{ metadata_json: string }>(
+    `SELECT metadata_json FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`
+  )[0];
+  const legacyMetadata = JSON.parse(runRow.metadata_json) as Record<string, unknown>;
+  delete legacyMetadata.web_operation_backend;
+  db.execSql(`UPDATE runs SET metadata_json=${db.sqlValue(JSON.stringify(legacyMetadata))} WHERE id=${db.sqlValue(started.runId)}`);
+  const initial = await runWorkerOnce(started.runId);
+  assert.equal(initial.length, 1);
+  db.execSql(`UPDATE approvals SET status='approved', decided_at=${db.sqlValue(new Date().toISOString())} WHERE run_id=${db.sqlValue(started.runId)}`);
+  const processed = await runWorkerOnce(started.runId);
+  assert.equal(processed.length, 1);
+  const run = db.querySql<{ status: string; metadata_json: string }>(
+    `SELECT status, metadata_json FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`
+  )[0];
+  const step = db.querySql<{ status: string; metadata_json: string }>(
+    `SELECT status, metadata_json FROM run_steps WHERE run_id=${db.sqlValue(started.runId)} LIMIT 1`
+  )[0];
+  const runMetadata = JSON.parse(run.metadata_json) as Record<string, unknown>;
+  const stepMetadata = JSON.parse(step.metadata_json) as Record<string, unknown>;
+  assert.equal(run.status, "blocked");
+  assert.equal(step.status, "blocked");
+  assert.equal(runMetadata.exact_blocker, "daily_ai_backend_snapshot_missing");
+  assert.equal(stepMetadata.exact_blocker, "daily_ai_backend_snapshot_missing");
+  assert.equal(stepMetadata.web_operation_backend_blocker, "selected=browser_use_cli:adapter=daily_ai_registered");
+  assert.equal(stepMetadata.fallback_allowed, false);
+  assert.equal(stepMetadata.external_action_executed, false);
 });

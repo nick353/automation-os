@@ -9,6 +9,7 @@ export const PORTABLE_WORKER_PROFILE_SCHEMA = "aos.portable_worker_profile.v1";
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/u;
 const SAFE_LABEL = /^[A-Za-z0-9][A-Za-z0-9._:@+/ -]{0,159}$/u;
 const SECRET_KEY = /(^|_)(access[_-]?token|api[_-]?token|auth[_-]?token|token|cookie|password|secret|authorization|credential|storage[_-]?state)($|_)/iu;
+const WEB_OPERATION_BACKENDS = new Set(["chrome_plugin", "browser_use_cli", "playwright", "aos_chrome_companion"]);
 
 function valueOr(value, fallback) {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
@@ -30,6 +31,10 @@ export function defaultPortableWorkerProfile(env = process.env, platformHome = h
     profile_id: valueOr(env.AUTOMATION_OS_WORKER_PROFILE_ID, "default"),
     remote_url: valueOr(env.AUTOMATION_OS_PORTABLE_REMOTE_URL, "https://automation-os.zeabur.app"),
     company_id: valueOr(env.AUTOMATION_OS_PORTABLE_REMOTE_COMPANY_ID, "company_2560580981cedfd106b66245"),
+    // Local 8787 may use a different database and tenant than the remote
+    // control plane. Keep that binding explicit; the worker must never infer
+    // the local tenant from the remote tenant.
+    local_company_id: valueOr(env.AUTOMATION_OS_PORTABLE_LOCAL_QUEUE_COMPANY_ID, ""),
     worker_id: valueOr(env.AUTOMATION_OS_PORTABLE_REMOTE_WORKER_ID, `mac-${hostname()}`.replace(/[^A-Za-z0-9._:-]/gu, "-")),
     repo_root: repoRoot,
     artifact_root: absolutePath(env.AUTOMATION_OS_PORTABLE_REMOTE_ARTIFACT_ROOT, join(repoRoot, "data", "artifacts", "portable-remote-worker")),
@@ -40,6 +45,12 @@ export function defaultPortableWorkerProfile(env = process.env, platformHome = h
     // explicitly sets AUTOMATION_OS_CODEX_BIN or --codex-bin.
     codex_bin: valueOr(env.AUTOMATION_OS_CODEX_BIN, ""),
     codex_account_ref: valueOr(env.AUTOMATION_OS_CODEX_ACCOUNT_REF, ""),
+    web_operation_backend: valueOr(env.AOS_WEB_OPERATION_BACKEND, "browser_use_cli").toLowerCase().replaceAll("-", "_"),
+    chrome_plugin_project_root: absolutePath(env.AUTOMATION_OS_CHROME_PLUGIN_PROJECT_ROOT, browserProjectRoot),
+    chrome_profile_id: valueOr(env.AOS_CHROME_PROFILE_ID, "profile2"),
+    chrome_profile_name: valueOr(env.AOS_CHROME_PROFILE_NAME, "Profile 2"),
+    chrome_profile_directory: valueOr(env.AOS_CHROME_PROFILE_DIRECTORY, "Profile 2"),
+    chrome_profile_surface: valueOr(env.AOS_CHROME_PROFILE_SURFACE, "signed_chrome_extension_profile2"),
     browser_use_project_root: browserProjectRoot,
     nisenprints_project_root: nisenprintsProjectRoot,
     browser_use_home: absolutePath(env.AUTOMATION_OS_BROWSER_USE_HOME || env.BROWSER_USE_HOME, join(home, ".browser-use-cli")),
@@ -77,13 +88,23 @@ export function validatePortableWorkerProfile(input) {
     if (typeof profile[key] !== "string" || !SAFE_ID.test(profile[key].trim())) throw new Error(`portable_worker_profile_${key}_invalid`);
     profile[key] = profile[key].trim();
   }
+  if (profile.local_company_id === undefined || profile.local_company_id === null) profile.local_company_id = "";
+  if (typeof profile.local_company_id !== "string" || (profile.local_company_id.trim() && !SAFE_ID.test(profile.local_company_id.trim()))) throw new Error("portable_worker_profile_local_company_id_invalid");
+  profile.local_company_id = profile.local_company_id.trim();
   if (typeof profile.remote_url !== "string") throw new Error("portable_worker_profile_remote_url_invalid");
   let url;
   try { url = new URL(profile.remote_url); } catch { throw new Error("portable_worker_profile_remote_url_invalid"); }
   if (!/^https?:$/u.test(url.protocol) || !url.hostname) throw new Error("portable_worker_profile_remote_url_invalid");
   profile.remote_url = profile.remote_url.replace(/\/+$/u, "");
+  profile.web_operation_backend = valueOr(profile.web_operation_backend, "chrome_plugin").toLowerCase().replaceAll("-", "_");
+  if (!WEB_OPERATION_BACKENDS.has(profile.web_operation_backend)) throw new Error("portable_worker_profile_web_operation_backend_invalid");
+  profile.chrome_plugin_project_root = absolutePath(profile.chrome_plugin_project_root, profile.browser_use_project_root);
+  profile.chrome_profile_id = valueOr(profile.chrome_profile_id, "profile2");
+  profile.chrome_profile_name = valueOr(profile.chrome_profile_name, "Profile 2");
+  profile.chrome_profile_directory = valueOr(profile.chrome_profile_directory, "Profile 2");
+  profile.chrome_profile_surface = valueOr(profile.chrome_profile_surface, "signed_chrome_extension_profile2");
   for (const key of [
-    "repo_root", "artifact_root", "codex_home", "agents_home", "browser_use_project_root", "browser_use_home",
+    "repo_root", "artifact_root", "codex_home", "agents_home", "browser_use_project_root", "chrome_plugin_project_root", "browser_use_home",
     "nisenprints_project_root", "browser_use_helper", "browser_use_stage_adapter", "browser_use_runtime_config",
     "business_runner_job_application", "business_runner_daily_ai", "business_runner_nisenprints"
   ]) {
@@ -96,7 +117,7 @@ export function validatePortableWorkerProfile(input) {
     if (profile[key].trim() && !isAbsolute(profile[key].trim())) throw new Error(`portable_worker_profile_${key}_invalid`);
     profile[key] = profile[key].trim() ? resolve(profile[key]) : "";
   }
-  for (const key of ["token_service", "codex_account_ref"]) {
+  for (const key of ["token_service", "codex_account_ref", "chrome_profile_id", "chrome_profile_name", "chrome_profile_directory", "chrome_profile_surface"]) {
     if (profile[key] === undefined || profile[key] === null) profile[key] = "";
     if (typeof profile[key] !== "string" || (profile[key].trim() && !SAFE_LABEL.test(profile[key].trim()))) throw new Error(`portable_worker_profile_${key}_invalid`);
     profile[key] = profile[key].trim();
@@ -119,11 +140,18 @@ const ENV_MAP = {
   artifact_root: "AUTOMATION_OS_PORTABLE_REMOTE_ARTIFACT_ROOT",
   remote_url: "AUTOMATION_OS_PORTABLE_REMOTE_URL",
   company_id: "AUTOMATION_OS_PORTABLE_REMOTE_COMPANY_ID",
+  local_company_id: "AUTOMATION_OS_PORTABLE_LOCAL_QUEUE_COMPANY_ID",
   worker_id: "AUTOMATION_OS_PORTABLE_REMOTE_WORKER_ID",
   codex_home: "CODEX_HOME",
   agents_home: "AUTOMATION_OS_AGENTS_HOME",
   codex_bin: "AUTOMATION_OS_CODEX_BIN",
   codex_account_ref: "AUTOMATION_OS_CODEX_ACCOUNT_REF",
+  web_operation_backend: "AOS_WEB_OPERATION_BACKEND",
+  chrome_plugin_project_root: "AUTOMATION_OS_CHROME_PLUGIN_PROJECT_ROOT",
+  chrome_profile_id: "AOS_CHROME_PROFILE_ID",
+  chrome_profile_name: "AOS_CHROME_PROFILE_NAME",
+  chrome_profile_directory: "AOS_CHROME_PROFILE_DIRECTORY",
+  chrome_profile_surface: "AOS_CHROME_PROFILE_SURFACE",
   browser_use_project_root: "AUTOMATION_OS_BROWSER_USE_PROJECT_ROOT",
   nisenprints_project_root: "AUTOMATION_OS_NISENPRINTS_PROJECT_ROOT",
   browser_use_home: "BROWSER_USE_HOME",
@@ -200,6 +228,12 @@ function main() {
       ["AUTOMATION_OS_AGENTS_HOME", args.agents_home],
       ["AUTOMATION_OS_CODEX_BIN", args.codex_bin],
       ["AUTOMATION_OS_CODEX_ACCOUNT_REF", args.codex_account_ref],
+      ["AOS_WEB_OPERATION_BACKEND", args.web_operation_backend],
+      ["AUTOMATION_OS_CHROME_PLUGIN_PROJECT_ROOT", args.chrome_plugin_project_root],
+      ["AOS_CHROME_PROFILE_ID", args.chrome_profile_id],
+      ["AOS_CHROME_PROFILE_NAME", args.chrome_profile_name],
+      ["AOS_CHROME_PROFILE_DIRECTORY", args.chrome_profile_directory],
+      ["AOS_CHROME_PROFILE_SURFACE", args.chrome_profile_surface],
       ["AUTOMATION_OS_PORTABLE_REMOTE_TOKEN_SERVICE", args.token_service],
       ["AUTOMATION_OS_PORTABLE_REMOTE_TOKEN_FILE", args.token_file]
     ].filter(([, value]) => value !== undefined && value !== ""))});
@@ -219,7 +253,7 @@ function main() {
   throw new Error("portable_worker_profile_command_invalid");
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (typeof process !== "undefined" && process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   try { main(); } catch (error) {
     process.stdout.write(`${JSON.stringify({ ok: false, exact_blocker: error instanceof Error ? error.message : "portable_worker_profile_failed" })}\n`);
     process.exitCode = 1;

@@ -1,4 +1,4 @@
-import { querySql, sqlValue } from "../db/client.js";
+import { querySql, querySqlAsync, sqlValue } from "../db/client.js";
 
 export class CompanyAnalyticsError extends Error {
   constructor(public readonly code: string) {
@@ -37,14 +37,8 @@ export type CompanyAnalyticsQuery = {
 const terminalStatuses = new Set(["completed", "failed", "cancelled", "timed_out", "reconciliation_required"]);
 
 export function buildCompanyAnalytics(input: CompanyAnalyticsQuery) {
-  const companyId = required(input.companyId, "company_id_required");
-  const from = normalizedTimestamp(input.from, "analytics_from_invalid");
-  const to = normalizedTimestamp(input.to, "analytics_to_invalid");
-  const fromMs = Date.parse(from);
-  const toMs = Date.parse(to);
-  if (fromMs > toMs) throw new CompanyAnalyticsError("analytics_range_invalid");
-  if (toMs - fromMs > 366 * 24 * 60 * 60 * 1000) throw new CompanyAnalyticsError("analytics_range_too_large");
-  const automationId = input.automationId ? required(input.automationId, "analytics_automation_id_invalid") : null;
+  const normalized = normalizeAnalyticsQuery(input);
+  const { companyId, from, to, automationId } = normalized;
   const automationPredicate = automationId ? ` AND automation_id=${sqlValue(automationId)}` : "";
 
   const jobs = querySql<JobRow>(`
@@ -66,7 +60,6 @@ export function buildCompanyAnalytics(input: CompanyAnalyticsQuery) {
     SELECT id, name FROM mvp_automations
     WHERE company_id=${sqlValue(companyId)} AND id IN (${automationIds.map(sqlValue).join(", ")})
   `) : [];
-  const automationNames = new Map(automations.map((item) => [item.id, item.name]));
   const legacyAutomationPredicate = automationId ? ` AND legacy_run.automation_id=${sqlValue(automationId)}` : "";
   const excludedLegacyRuns = Number(querySql<{ count: number }>(`
     SELECT COUNT(*) AS count FROM runs legacy_run
@@ -78,6 +71,80 @@ export function buildCompanyAnalytics(input: CompanyAnalyticsQuery) {
       )
   `)[0]?.count ?? 0);
 
+  return buildCompanyAnalyticsFromRows({ companyId, from, to, automationId, jobs, approvals, automations, excludedLegacyRuns });
+}
+
+export async function buildCompanyAnalyticsAsync(input: CompanyAnalyticsQuery) {
+  const normalized = normalizeAnalyticsQuery(input);
+  const { companyId, from, to, automationId } = normalized;
+  const automationPredicate = automationId ? ` AND automation_id=${sqlValue(automationId)}` : "";
+  const legacyAutomationPredicate = automationId ? ` AND legacy_run.automation_id=${sqlValue(automationId)}` : "";
+  const jobs = await querySqlAsync<JobRow>(`
+    SELECT id, automation_id, status, last_error, created_at, updated_at
+    FROM durable_jobs
+    WHERE company_id=${sqlValue(companyId)}
+      AND created_at>=${sqlValue(from)} AND created_at<=${sqlValue(to)}${automationPredicate}
+    ORDER BY created_at ASC, id ASC
+  `);
+  const jobIds = jobs.map((job) => sqlValue(job.id));
+  const automationIds = [...new Set(jobs.map((job) => job.automation_id))];
+  const [approvals, automations, excludedLegacyRows] = await Promise.all([
+    jobIds.length > 0 ? querySqlAsync<ApprovalRow>(`
+      SELECT id, job_id, status, created_at, decided_at
+      FROM approvals
+      WHERE company_id=${sqlValue(companyId)} AND job_id IN (${jobIds.join(", ")})
+      ORDER BY created_at ASC, id ASC
+    `) : Promise.resolve([] as ApprovalRow[]),
+    automationIds.length > 0 ? querySqlAsync<AutomationRow>(`
+      SELECT id, name FROM mvp_automations
+      WHERE company_id=${sqlValue(companyId)} AND id IN (${automationIds.map(sqlValue).join(", ")})
+    `) : Promise.resolve([] as AutomationRow[]),
+    querySqlAsync<{ count: number }>(`
+      SELECT COUNT(*) AS count FROM runs legacy_run
+      WHERE legacy_run.company_id=${sqlValue(companyId)}
+        AND legacy_run.created_at>=${sqlValue(from)} AND legacy_run.created_at<=${sqlValue(to)}${legacyAutomationPredicate}
+        AND NOT EXISTS (
+          SELECT 1 FROM durable_jobs durable_job
+          WHERE durable_job.company_id=legacy_run.company_id AND durable_job.run_id=legacy_run.id
+        )
+    `)
+  ]);
+  return buildCompanyAnalyticsFromRows({
+    companyId,
+    from,
+    to,
+    automationId,
+    jobs,
+    approvals,
+    automations,
+    excludedLegacyRuns: Number(excludedLegacyRows[0]?.count ?? 0)
+  });
+}
+
+function normalizeAnalyticsQuery(input: CompanyAnalyticsQuery) {
+  const companyId = required(input.companyId, "company_id_required");
+  const from = normalizedTimestamp(input.from, "analytics_from_invalid");
+  const to = normalizedTimestamp(input.to, "analytics_to_invalid");
+  const fromMs = Date.parse(from);
+  const toMs = Date.parse(to);
+  if (fromMs > toMs) throw new CompanyAnalyticsError("analytics_range_invalid");
+  if (toMs - fromMs > 366 * 24 * 60 * 60 * 1000) throw new CompanyAnalyticsError("analytics_range_too_large");
+  const automationId = input.automationId ? required(input.automationId, "analytics_automation_id_invalid") : null;
+  return { companyId, from, to, automationId };
+}
+
+function buildCompanyAnalyticsFromRows(input: {
+  companyId: string;
+  from: string;
+  to: string;
+  automationId: string | null;
+  jobs: JobRow[];
+  approvals: ApprovalRow[];
+  automations: AutomationRow[];
+  excludedLegacyRuns: number;
+}) {
+  const { companyId, from, to, automationId, jobs, approvals, automations, excludedLegacyRuns } = input;
+  const automationNames = new Map(automations.map((item) => [item.id, item.name]));
   const outcomes = countOutcomes(jobs);
   const completionRate = jobs.length > 0 ? round(outcomes.completed / jobs.length, 4) : null;
   const durations = jobs

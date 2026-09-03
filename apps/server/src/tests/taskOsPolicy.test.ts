@@ -8,6 +8,8 @@ test("surface router keeps UI-free tasks off Browser Use and uses only allowed c
   assert.equal(api.selected, "api");
   const browser = routeSurface({ uiRequired: true, available: ["browser_use_cli"], allowed: ["browser_use_cli", "codex_app_browser"] });
   assert.equal(browser.selected, "browser_use_cli");
+  const companion = routeSurface({ uiRequired: true, available: ["aos_chrome_companion_profile_instance", "codex_app_browser"], allowed: ["aos_chrome_companion_profile_instance", "codex_app_browser"] });
+  assert.equal(companion.selected, "aos_chrome_companion_profile_instance");
 });
 
 test("risk budget stops at one effect, scope, time, or amount boundary", () => {

@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   WEB_OPERATION_CONTRACT,
   admitWebOperationEffect,
+  getWebOperationContractForSurface,
   resolveLiveSemanticTarget,
   validateWebOperationContract,
   validateWebOperationIntent,
@@ -97,8 +98,47 @@ test("effectful intents distinguish approval-pending from admitted", () => {
   assert.equal(WEB_OPERATION_CONTRACT.operation_model.unresolved_target_policy, "stop_or_clarify");
 });
 
+test("portable intent accepts bounded Companion control actions and frame-scoped targets", () => {
+  const payload = { selected: "Tokyo", upload_path: "/tmp/resume.pdf" };
+  const payloadHash = "c".repeat(64);
+  const operation = intent({
+    operation: "update",
+    payload_hash: payloadHash,
+    authority_sha256: digest,
+    approval_status: "approved",
+    target_binding: { target_digest: digest, source_state_digest: "b".repeat(64) },
+    action_plan: {
+      schema: "automation_os_web_operation_action_plan.v1",
+      steps: [
+        { action: "select", target: { semantic_query: "Location", frame_id: 2 }, option: { label: "Tokyo" } },
+        { action: "select_text", target: { semantic_query: "Cover letter" }, payload_key: "selected" },
+        { action: "upload", target: { semantic_query: "Resume" }, payload_key: "upload_path" },
+        { action: "submit", target: { semantic_query: "Submit" } },
+        { action: "scroll", target: { semantic_query: "Details" }, direction: "down" },
+      ],
+      payload,
+      payload_hash: payloadHash,
+      readback: { semantic_query: "Saved", expected: "present", kind: "control_state", expected_value: "Tokyo" },
+    },
+  });
+  assert.deepEqual(operation.action_plan.steps[0].target, { semantic_query: "Location", frame_id: 2 });
+  assert.equal(operation.action_plan.steps[2].action, "upload");
+  assert.deepEqual(operation.action_plan.steps[4].target, { semantic_query: "Details" });
+  assert.equal(operation.action_plan.readback.kind, "control_state");
+});
+
 test("portable contract mirror validates the complete operation model", () => {
   assert.doesNotThrow(() => validateWebOperationContract(WEB_OPERATION_CONTRACT));
+  const chromePluginContract = getWebOperationContractForSurface("signed_chrome_extension_profile2");
+  assert.equal(chromePluginContract.browser_surface, "signed_chrome_extension_profile2");
+  assert.deepEqual(chromePluginContract.browser_kernel.supported_surfaces, ["signed_chrome_extension_profile2"]);
+  assert.ok(!chromePluginContract.fixed_kernel.forbidden_surfaces.includes("extension"));
+  assert.doesNotThrow(() => validateWebOperationContract(chromePluginContract));
+  const companionContract = getWebOperationContractForSurface("aos_chrome_companion_profile_instance");
+  assert.deepEqual(companionContract.browser_kernel.supported_surfaces, ["aos_chrome_companion_profile_instance"]);
+  assert.ok(!companionContract.fixed_kernel.forbidden_surfaces.includes("extension"));
+  assert.ok(companionContract.fixed_kernel.forbidden_surfaces.includes("direct_cdp"));
+  assert.doesNotThrow(() => validateWebOperationContract(companionContract));
   assert.doesNotThrow(() => validateWebOperationContract({
     ...WEB_OPERATION_CONTRACT,
     fixed_kernel: {

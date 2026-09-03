@@ -5,14 +5,26 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${AUTOMATION_OS_REPO_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+# LaunchAgents do not reliably inherit an interactive shell's HOME. Keep the
+# local Codex auth root explicit so every AOS child reads the same account
+# cache instead of silently creating a second profile.
+export HOME="${HOME:-/Users/nichikatanaka}"
+export CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
+mkdir -p "$CODEX_HOME"
+chmod 700 "$CODEX_HOME"
 export AUTOMATION_OS_PORT="${AUTOMATION_OS_PORT:-8787}"
-export AUTOMATION_OS_REQUIRE_API_TOKEN="${AUTOMATION_OS_REQUIRE_API_TOKEN:-0}"
+export AOS_CHROME_PLUGIN_READBACK_PATH="${AOS_CHROME_PLUGIN_READBACK_PATH:-$HOME/.social-flow/aos-company1-profile2-bridge-readback-v2.json}"
+# Manual starts must keep the same fail-closed boundary as the owned launchd
+# service. Recovery launchd explicitly opts into loopback session bootstrap;
+# other callers need a server-side token/private-ingress path instead of
+# silently exposing an unrestricted control plane.
+export AUTOMATION_OS_REQUIRE_API_TOKEN="${AUTOMATION_OS_REQUIRE_API_TOKEN:-1}"
 export AUTOMATION_OS_DATABASE_MODE="${AUTOMATION_OS_DATABASE_MODE:-auto}"
 # Browser work is admitted only through the canonical Browser Use CLI.  Keep
 # the old auto-CDP toggle out of the server environment so a stale shell
 # setting cannot re-enable a retired launch path.
 export AUTOMATION_OS_BROWSER_NO_FALLBACK="1"
-export AUTOMATION_OS_RESEARCH_PLAN_SCHEDULER_MS="${AUTOMATION_OS_RESEARCH_PLAN_SCHEDULER_MS:-60000}"
+export AUTOMATION_OS_RESEARCH_PLAN_SCHEDULER_MS="${AUTOMATION_OS_RESEARCH_PLAN_SCHEDULER_MS:-0}"
 export AUTOMATION_OS_PORTABLE_WORKER_MODE="${AUTOMATION_OS_PORTABLE_WORKER_MODE:-external}"
 # Leave runner selection to the AOS-owned resolver.  It selects the
 # read-only Browser Use CLI adapter by default and switches to the business
@@ -25,6 +37,7 @@ export AUTOMATION_OS_OBSIDIAN_AUTO_EXPORT="${AUTOMATION_OS_OBSIDIAN_AUTO_EXPORT:
 export AUTOMATION_OS_OBSIDIAN_PERIODIC_EXPORT_MS="${AUTOMATION_OS_OBSIDIAN_PERIODIC_EXPORT_MS:-1800000}"
 export AUTOMATION_OS_ALLOW_SQLITE_FALLBACK="${AUTOMATION_OS_ALLOW_SQLITE_FALLBACK:-0}"
 export AUTOMATION_OS_DAILY_AI_VISIBLE_BROWSER="${AUTOMATION_OS_DAILY_AI_VISIBLE_BROWSER:-1}"
+export AUTOMATION_OS_REFERENCE_CANARY_RECEIPT="${AUTOMATION_OS_REFERENCE_CANARY_RECEIPT:-$REPO_ROOT/data/state/reference-workflow-canary.json}"
 
 case "${AUTOMATION_OS_ENV_ROLE:-}" in
   ""|production|recovery) ;;
@@ -65,9 +78,20 @@ if [[ "$needs_build" == "1" ]]; then
   npm run build:server
 fi
 
+# Generate a fresh, isolated proof-backed safe-stop receipt before the control
+# plane starts. This never touches a provider or queues a business workflow;
+# it only binds the current registered definitions/schedules to trusted launch
+# readback so rehearsal cannot depend on a manually copied receipt.
+node "$REPO_ROOT/scripts/prepare_reference_workflow_canary.mjs"
+
 if [[ "$AUTOMATION_OS_DATABASE_MODE" == "sqlite" ]]; then
   unset AUTOMATION_OS_DATABASE_URL DATABASE_URL
 elif [[ "$AUTOMATION_OS_DATABASE_MODE" == "postgres" ]]; then
+  # The production Postgres schema is provisioned out-of-band.  Keep direct
+  # DATABASE_URL launches on the same non-recursive bootstrap path as the
+  # stored-secret path; otherwise the startup probe can enter the initialize
+  # worker while that worker tries to spawn another PostgreSQL worker.
+  export AUTOMATION_OS_ASSUME_EXISTING_POSTGRES_SCHEMA="${AUTOMATION_OS_ASSUME_EXISTING_POSTGRES_SCHEMA:-1}"
   if [[ -z "${AUTOMATION_OS_DATABASE_URL:-}" && -z "${DATABASE_URL:-}" ]]; then
     if [[ ! -f "$REPO_ROOT/apps/server/dist/cli/readStoredPostgresSecret.js" ]]; then
       printf 'missing built secret reader: %s\n' "$REPO_ROOT/apps/server/dist/cli/readStoredPostgresSecret.js" >&2
@@ -76,7 +100,6 @@ elif [[ "$AUTOMATION_OS_DATABASE_MODE" == "postgres" ]]; then
     stored_database_url="$(node apps/server/dist/cli/readStoredPostgresSecret.js 2>/dev/null || true)"
     if [[ -n "$stored_database_url" ]]; then
       export AUTOMATION_OS_DATABASE_URL="$stored_database_url"
-      export AUTOMATION_OS_ASSUME_EXISTING_POSTGRES_SCHEMA="${AUTOMATION_OS_ASSUME_EXISTING_POSTGRES_SCHEMA:-1}"
     else
       printf 'automation_os_startup_blocked:postgres_database_configuration_missing\n' >&2
       exit 2

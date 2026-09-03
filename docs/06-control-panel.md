@@ -28,7 +28,7 @@ Primary commands:
 
 `npm run dev`
 
-Then open `http://127.0.0.1:5173`.
+For normal use, open the stable AOS control-plane screen at `http://127.0.0.1:8787/`. Port `5173` is the Vite development/HMR surface for source editing and is not the first-use performance target.
 
 Maintenance commands:
 
@@ -39,3 +39,16 @@ Real cleanup is guarded:
 `AUTOMATION_OS_ALLOW_CLEAN_DEV_DATA=1 npm run clean:dev-data -- --force`
 
 `npm run obsidian:export`
+
+## Company binding readback
+
+The company-scoped control-plane readbacks expose the same non-mutating reconciliation contract:
+
+- `GET /api/v1/companies/:companyId/control-plane/readiness` includes `company_binding_readiness` and `company_binding_reconciliation`.
+- `GET /api/v1/companies/:companyId/control-plane/reconciliation` returns `company_binding_reconciliation.v1` directly.
+- `GET /api/v1/companies/:companyId/control-plane/consultation` returns the read-only `canonical_company_consultation.v1` projection for Chat consultation/demo.
+- `npm run aos:company-binding-readiness` emits the same reconciliation schema alongside the local SQLite readiness diagnostic.
+
+The readback may identify `canonical_candidate` only from a fresh explicit Owner authority. Trigger-only and local-only observations remain `requires_user_decision`; they never rewire triggers or materialize overdue schedules. Brief generation and Chat consultation/demo/approval preview are separate from Brief delivery, company-scoped registration, provider receipt, and business completion.
+
+The consultation projection preserves all observed company candidates and their safe counts/provenance, but never recommends or applies one. Until the Owner explicitly resolves the protected company mapping, schedule activation and Brief delivery are blocked; provider receipt, source sync, business reconciliation, and cleanup remain `not_attempted`.

@@ -73,6 +73,8 @@ test("browser kernel resolves semantic targets by AX/DOM/text before coordinate 
 
 test("browser kernel command and receipt bind one run/session and require submit confirmation", () => {
   const session = bindBrowserSession({ runId: "run-browser", sessionId: "session-browser", surface: "codex_app_browser", authorityDigest: hash, allowedOrigins: ["https://jobs.example"], expiresAt: future });
+  const companionSession = bindBrowserSession({ runId: "run-companion", sessionId: "session-companion", surface: "aos_chrome_companion_profile_instance", authorityDigest: hash, allowedOrigins: ["http://127.0.0.1:8787"], expiresAt: future });
+  assert.equal(companionSession.surface, "aos_chrome_companion_profile_instance");
   const command = { schema: "automation_os_browser_command.v1" as const, command_id: "cmd-observe", sequence: 0, kind: "observe" as const, session: { run_id: session.run_id, session_id: session.session_id, surface: session.surface, authority_digest: session.authority_digest }, timeout_ms: 1000, precondition: {}, postcondition: { expected: "changed" as const, receipt_required: true } };
   assert.doesNotThrow(() => validateBrowserCommand(command, session));
   assert.throws(() => validateBrowserCommand({ ...command, session: { ...command.session, run_id: "other" } }, session), /same_run_binding/);
@@ -91,8 +93,9 @@ test("drift forces re-observe and never reuses old selector/coordinate", () => {
 });
 
 test("CLI and Codex App surfaces share the same kernel and route SDK", () => {
-  assert.deepEqual(getBrowserKernelContract().supported_surfaces, ["browser_use_cli", "codex_app_browser"]);
-  assert.equal(browserSurfaceAdapters.length, 2);
+  assert.deepEqual(getBrowserKernelContract().supported_surfaces, ["browser_use_cli", "codex_app_browser", "signed_chrome_extension_profile2", "aos_chrome_companion_profile_instance"]);
+  assert.equal(browserSurfaceAdapters.length, 3);
+  assert.ok(browserSurfaceAdapters.some((adapter) => adapter.id === "aos_chrome_companion_bridge" && adapter.surface === "aos_chrome_companion_profile_instance"));
   for (const adapter of browserRouteAdapters) assert.equal(adapter.selector_authority, "semantic_only");
   assert.equal(resolveBrowserRouteAdapter({ origin: "https://jobs.ashbyhq.com/acme", title: "Careers" })?.id, "ashby");
   assert.equal(resolveBrowserRouteAdapter({ surface: "codex_app_browser" })?.id, "codex_app_surface");

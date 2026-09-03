@@ -1,4 +1,4 @@
-import { nowIso, querySql, runSqlTransaction, sqlValue } from "../db/client.js";
+import { nowIso, querySql, querySqlAsync, runSqlTransaction, runSqlTransactionAsync, sqlValue } from "../db/client.js";
 import { operationKey, transitionEffect, type EffectEvent, type EffectRecordV1 } from "./taskOsAdvanced.js";
 
 export type DurableTaskEffectRow = EffectRecordV1 & {
@@ -80,6 +80,56 @@ export function reserveDurableTaskEffect(input: { companyId: string; traceId: st
   return { operationKey: key, replay: false, effect };
 }
 
+/** Async HTTP-safe counterpart to reserveDurableTaskEffect. */
+export async function reserveDurableTaskEffectAsync(input: { companyId: string; traceId: string; taskId: string; workflowId: string; targetHash: string; payloadHash: string; audienceHash: string; idempotencyKey: string }): Promise<{ operationKey: string; replay: boolean; effect: DurableTaskEffectRow }> {
+  const companyId = safe(input.companyId, "task_effect_company_required");
+  const traceId = safe(input.traceId, "task_effect_trace_required");
+  const taskId = safe(input.taskId, "task_effect_task_required");
+  const workflowId = safe(input.workflowId, "task_effect_workflow_required");
+  const targetHash = hash(input.targetHash, "task_effect_target_hash_invalid");
+  const payloadHash = hash(input.payloadHash, "task_effect_payload_hash_invalid");
+  const audienceHash = hash(input.audienceHash, "task_effect_audience_hash_invalid");
+  const key = operationKey({ taskId, targetHash, payloadHash, audienceHash, idempotencyKey: safe(input.idempotencyKey, "task_effect_idempotency_required") });
+  const existing = (await querySqlAsync<DurableTaskEffectRow>(`SELECT * FROM task_effect_ledger WHERE company_id=${sqlValue(companyId)} AND operation_key=${sqlValue(key)} LIMIT 1`))[0];
+  if (existing) return { operationKey: key, replay: true, effect: row(existing) };
+  const now = nowIso();
+  const effect: DurableTaskEffectRow = {
+    schema: "automation_os_effect_state.v1",
+    operation_key: key,
+    company_id: companyId,
+    trace_id: traceId,
+    task_id: taskId,
+    workflow_id: workflowId,
+    target_hash: targetHash,
+    payload_hash: payloadHash,
+    audience_hash: audienceHash,
+    state: "planned",
+    external_action_executed: false,
+    ambiguous: false,
+    retry_forbidden: false,
+    provider_receipt_hash: null,
+    source_sync_hash: null,
+    reconciliation_hash: null,
+    cleanup_hash: null,
+    exact_blocker: null,
+    restart_point: "effect_planned",
+    created_at: now,
+    updated_at: now,
+    closed_at: null
+  };
+  await runSqlTransactionAsync([{
+    sql: `INSERT INTO task_effect_ledger
+      (operation_key, company_id, trace_id, task_id, workflow_id, target_hash, payload_hash, audience_hash, state,
+       external_action_executed, ambiguous, retry_forbidden, provider_receipt_hash, source_sync_hash,
+       reconciliation_hash, cleanup_hash, exact_blocker, restart_point, created_at, updated_at, closed_at)
+      VALUES (${sqlValue(key)}, ${sqlValue(companyId)}, ${sqlValue(traceId)}, ${sqlValue(taskId)}, ${sqlValue(workflowId)},
+        ${sqlValue(targetHash)}, ${sqlValue(payloadHash)}, ${sqlValue(audienceHash)}, 'planned', 0, 0, 0, NULL, NULL, NULL, NULL, NULL,
+        ${sqlValue("effect_planned")}, ${sqlValue(now)}, ${sqlValue(now)}, NULL)`,
+    expectChanges: 1
+  }]);
+  return { operationKey: key, replay: false, effect };
+}
+
 export function transitionDurableTaskEffect(input: { companyId: string; operationKey: string; event: EffectEvent; providerReceiptHash?: string | null; sourceSyncHash?: string | null; reconciliationHash?: string | null; cleanupHash?: string | null; restartPoint?: string }): DurableTaskEffectRow {
   const companyId = safe(input.companyId, "task_effect_company_required");
   const operation = safe(input.operationKey, "task_effect_operation_required");
@@ -110,6 +160,59 @@ export function transitionDurableTaskEffect(input: { companyId: string; operatio
 export function getDurableTaskEffect(companyId: string, operationKeyValue: string): DurableTaskEffectRow | null {
   const current = querySql<DurableTaskEffectRow>(`SELECT * FROM task_effect_ledger WHERE company_id=${sqlValue(safe(companyId, "task_effect_company_required"))} AND operation_key=${sqlValue(safe(operationKeyValue, "task_effect_operation_required"))} LIMIT 1`)[0];
   return current ? row(current) : null;
+}
+
+export async function getDurableTaskEffectAsync(companyId: string, operationKeyValue: string): Promise<DurableTaskEffectRow | null> {
+  const current = (await querySqlAsync<DurableTaskEffectRow>(`SELECT * FROM task_effect_ledger WHERE company_id=${sqlValue(safe(companyId, "task_effect_company_required"))} AND operation_key=${sqlValue(safe(operationKeyValue, "task_effect_operation_required"))} LIMIT 1`))[0];
+  return current ? row(current) : null;
+}
+
+async function transitionDurableTaskEffectAsync(input: { companyId: string; operationKey: string; event: EffectEvent; providerReceiptHash?: string | null; sourceSyncHash?: string | null; reconciliationHash?: string | null; cleanupHash?: string | null; restartPoint?: string }): Promise<DurableTaskEffectRow> {
+  const companyId = safe(input.companyId, "task_effect_company_required");
+  const operation = safe(input.operationKey, "task_effect_operation_required");
+  const current = await getDurableTaskEffectAsync(companyId, operation);
+  if (!current) throw new Error("task_effect_operation_missing");
+  const next = transitionEffect(current, input.event);
+  const now = nowIso();
+  const external = ["intent", "confirmed", "reconciled", "closed"].includes(next.state);
+  const closedAt = next.state === "closed" ? now : current.closed_at;
+  await runSqlTransactionAsync([{
+    sql: `UPDATE task_effect_ledger SET state=${sqlValue(next.state)}, external_action_executed=${external ? 1 : 0}, ambiguous=${next.ambiguous ? 1 : 0}, retry_forbidden=${next.retry_forbidden ? 1 : 0},
+      provider_receipt_hash=${sqlValue(input.providerReceiptHash === undefined ? current.provider_receipt_hash : input.providerReceiptHash)},
+      source_sync_hash=${sqlValue(input.sourceSyncHash === undefined ? current.source_sync_hash : input.sourceSyncHash)},
+      reconciliation_hash=${sqlValue(input.reconciliationHash === undefined ? current.reconciliation_hash : input.reconciliationHash)},
+      cleanup_hash=${sqlValue(input.cleanupHash === undefined ? current.cleanup_hash : input.cleanupHash)},
+      exact_blocker=${sqlValue(next.exact_blocker)}, restart_point=${sqlValue(input.restartPoint ?? (next.ambiguous ? "reconciliation_without_replay" : next.state))}, updated_at=${sqlValue(now)}, closed_at=${sqlValue(closedAt)}
+      WHERE company_id=${sqlValue(companyId)} AND operation_key=${sqlValue(operation)}`,
+    expectChanges: 1
+  }]);
+  const updated = await getDurableTaskEffectAsync(companyId, operation);
+  if (!updated) throw new Error("task_effect_readback_missing");
+  return updated;
+}
+
+async function admitAndStartDurableTaskEffectAsync(companyId: string, operationKeyValue: string): Promise<DurableTaskEffectRow> {
+  let effect = await getDurableTaskEffectAsync(companyId, operationKeyValue);
+  if (!effect) throw new Error("task_effect_operation_missing");
+  if (effect.state === "planned") effect = await transitionDurableTaskEffectAsync({ companyId, operationKey: operationKeyValue, event: "admit" });
+  if (effect.state === "admitted") effect = await transitionDurableTaskEffectAsync({ companyId, operationKey: operationKeyValue, event: "start" });
+  return effect;
+}
+
+export async function syncDurableTaskEffectFromWorkerAsync(input: { companyId: string; operationKey: string; status: "complete" | "partial" | "blocked"; externalActionExecuted: boolean; sameRunSourceSync: boolean; readbackVerified: boolean; cleanupVerified: boolean; providerReceiptHash?: string | null; sourceSyncHash?: string | null; reconciliationHash?: string | null; cleanupHash?: string | null }): Promise<DurableTaskEffectRow | null> {
+  let effect = await getDurableTaskEffectAsync(input.companyId, input.operationKey);
+  if (!effect) return null;
+  if (!input.externalActionExecuted) return effect;
+  if (effect.state === "planned" || effect.state === "admitted") effect = await admitAndStartDurableTaskEffectAsync(input.companyId, input.operationKey);
+  if (effect.state === "executing") effect = await transitionDurableTaskEffectAsync({ companyId: input.companyId, operationKey: input.operationKey, event: "intent_sent", providerReceiptHash: input.providerReceiptHash });
+  if (input.status === "complete" && input.sameRunSourceSync && input.readbackVerified && input.cleanupVerified) {
+    if (effect.state === "intent") effect = await transitionDurableTaskEffectAsync({ companyId: input.companyId, operationKey: input.operationKey, event: "confirmed", providerReceiptHash: input.providerReceiptHash });
+    if (effect.state === "confirmed") effect = await transitionDurableTaskEffectAsync({ companyId: input.companyId, operationKey: input.operationKey, event: "reconciled", sourceSyncHash: input.sourceSyncHash, reconciliationHash: input.reconciliationHash });
+    if (effect.state === "reconciled") effect = await transitionDurableTaskEffectAsync({ companyId: input.companyId, operationKey: input.operationKey, event: "closed", cleanupHash: input.cleanupHash, restartPoint: "closed" });
+    return effect;
+  }
+  if (effect.state === "intent") return transitionDurableTaskEffectAsync({ companyId: input.companyId, operationKey: input.operationKey, event: input.status === "blocked" ? "ambiguous" : "timeout", restartPoint: "reconciliation_without_replay" });
+  return effect;
 }
 
 export function completeDurableTaskEffect(input: { companyId: string; operationKey: string; providerReceiptHash: string; sourceSyncHash: string; reconciliationHash: string; cleanupHash: string }): DurableTaskEffectRow {

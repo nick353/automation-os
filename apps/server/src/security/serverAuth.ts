@@ -6,7 +6,9 @@ import { readStoredSecret } from "../secrets/secretStore.js";
 import { secureTokenEqual } from "./tokenComparison.js";
 
 export const AUTH_SESSION_COOKIE_NAME = "aos_session";
-export const AUTH_SESSION_MAX_AGE_SECONDS = 8 * 60 * 60;
+export const AUTH_SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
+const MIN_AUTH_SESSION_MAX_AGE_SECONDS = 10 * 60;
+const MAX_AUTH_SESSION_MAX_AGE_SECONDS = 90 * 24 * 60 * 60;
 
 export type AuthScope = "read" | "write" | "unrestricted" | "unknown";
 export type AuthMethod = "session_cookie" | "service_identity" | "header_token" | "unrestricted" | "none";
@@ -98,6 +100,14 @@ const SECRET_CONFIG: Record<AuthSecretKind, {
 
 function textValue(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function authSessionMaxAgeSeconds(env: NodeJS.ProcessEnv = process.env): number {
+  const parsed = Number(textValue(env.AUTOMATION_OS_AUTH_SESSION_TTL_SECONDS));
+  if (!Number.isSafeInteger(parsed) || parsed < MIN_AUTH_SESSION_MAX_AGE_SECONDS || parsed > MAX_AUTH_SESSION_MAX_AGE_SECONDS) {
+    return AUTH_SESSION_MAX_AGE_SECONDS;
+  }
+  return parsed;
 }
 
 function currentUid(): number | null {
@@ -218,8 +228,8 @@ function hmac(secret: string, value: string): Buffer {
   return createHmac("sha256", secret).update(value, "utf8").digest();
 }
 
-function signedSessionPayload(scope: Exclude<AuthScope, "unknown" | "unrestricted">, secret: string, nowMs = Date.now()): string {
-  const expiresAt = Math.floor(nowMs / 1000) + AUTH_SESSION_MAX_AGE_SECONDS;
+function signedSessionPayload(scope: Exclude<AuthScope, "unknown" | "unrestricted">, secret: string, nowMs = Date.now(), maxAgeSeconds = AUTH_SESSION_MAX_AGE_SECONDS): string {
+  const expiresAt = Math.floor(nowMs / 1000) + maxAgeSeconds;
   const nonce = randomBytes(18).toString("base64url");
   const body = `v1.${scope}.${expiresAt}.${nonce}`;
   return `${body}.${hmac(secret, body).toString("base64url")}`;
@@ -243,6 +253,22 @@ export function readSessionScope(headers: IncomingHttpHeaders, env: NodeJS.Proce
   const sessionSecret = readServerSecret("session", env) || readServerSecret("service_identity", env);
   if (!sessionSecret) return null;
   return sessionScopeFromCookie(cookie, sessionSecret);
+}
+
+/**
+ * The admin ingress has already completed the owner SSO check before it
+ * proxies a request.  Keep this separate from the loopback bootstrap helper
+ * so production API guards can admit only the read-only proxy path without
+ * widening the normal browser/session or write-token boundary.
+ */
+export function isTrustedPrivateIngressRequest(
+  request: { headers: IncomingHttpHeaders },
+  env: NodeJS.ProcessEnv = process.env
+): boolean {
+  const expected = readServerSecret("private_ingress", env);
+  const provided = request.headers["x-automation-os-private-ingress"];
+  const header = Array.isArray(provided) ? provided[0] : provided;
+  return Boolean(expected && header && secureTokenEqual(textValue(header), expected));
 }
 
 function isAutomationTriggerPath(method: string | undefined, path: string | undefined): boolean {
@@ -281,21 +307,69 @@ function isLoopbackAddress(value: string | undefined): boolean {
   return normalized === "127.0.0.1" || normalized === "::1" || normalized === "localhost";
 }
 
+/**
+ * The local portable worker is a same-host transport, not a browser session.
+ * Keep its exception narrower than the normal loopback session bootstrap:
+ * only the three worker claim/heartbeat/receipt POST endpoints may use it,
+ * and only when the server has explicitly enabled loopback sessions.
+ */
+export function isLoopbackPortableWorkerRequest(
+  request: { method?: string; path?: string; headers: IncomingHttpHeaders; socket?: { remoteAddress?: string } },
+  env: NodeJS.ProcessEnv = process.env
+): boolean {
+  const header = request.headers["x-automation-os-local-worker"];
+  const marker = Array.isArray(header) ? header[0] : header;
+  const path = textValue(request.path).toLowerCase();
+  const workerEndpoint = /^\/api\/portable-worker\/(?:claim|heartbeat|[^/]+\/receipt)$/u.test(path);
+  return env.AUTOMATION_OS_LOOPBACK_SESSION === "1"
+    && request.method === "POST"
+    && workerEndpoint
+    && textValue(marker) === "1"
+    && isLoopbackAddress(request.socket?.remoteAddress);
+}
+
+/**
+ * The local manual trigger is intentionally limited to the provider-neutral
+ * no-effect admission. The request is still required to pass the normal
+ * company-scope and idempotency checks in the route; this exception only
+ * avoids requiring a production token for the same-host AOS control-plane
+ * preflight. Effectful or differently shaped trigger bodies are rejected by
+ * the write guard after JSON parsing.
+ */
+export function isLoopbackNoEffectTriggerRequest(
+  request: { method?: string; path?: string; headers: IncomingHttpHeaders; socket?: { remoteAddress?: string }; body?: unknown },
+  env: NodeJS.ProcessEnv = process.env
+): boolean {
+  const header = request.headers["x-automation-os-local-no-effect"];
+  const marker = Array.isArray(header) ? header[0] : header;
+  const path = textValue(request.path).toLowerCase();
+  const triggerPath = /^\/api\/v1\/companies\/[^/]+\/automations\/[^/]+\/trigger$/u.test(path);
+  const body = request.body;
+  const bodySafe = body === undefined
+    || (body && typeof body === "object" && !Array.isArray(body)
+      && (body as Record<string, unknown>).execution_mode === "preflight_no_effect"
+      && (body as Record<string, unknown>).external_action_allowed === false);
+  return env.AUTOMATION_OS_LOOPBACK_SESSION === "1"
+    && request.method === "POST"
+    && triggerPath
+    && textValue(marker) === "1"
+    && Boolean(bodySafe)
+    && isLoopbackAddress(request.socket?.remoteAddress);
+}
+
 export function canBootstrapSession(request: { headers: IncomingHttpHeaders; socket?: { remoteAddress?: string } }, env: NodeJS.ProcessEnv = process.env): boolean {
   if (env.AUTOMATION_OS_LOOPBACK_SESSION === "1" && isLoopbackAddress(request.socket?.remoteAddress)) return true;
-  const expected = readServerSecret("private_ingress", env);
-  const provided = request.headers["x-automation-os-private-ingress"];
-  const header = Array.isArray(provided) ? provided[0] : provided;
-  return Boolean(expected && header && secureTokenEqual(textValue(header), expected));
+  return isTrustedPrivateIngressRequest(request, env);
 }
 
 export function issueSessionCookie(scope: Exclude<AuthScope, "unknown" | "unrestricted">, env: NodeJS.ProcessEnv = process.env): string | null {
   const secret = readServerSecret("session", env) || readServerSecret("service_identity", env);
   if (!secret) return null;
+  const maxAgeSeconds = authSessionMaxAgeSeconds(env);
   const secure = env.AUTOMATION_OS_AUTH_COOKIE_SECURE !== "0";
   return [
-    `${AUTH_SESSION_COOKIE_NAME}=${signedSessionPayload(scope, secret)}`,
-    `Max-Age=${AUTH_SESSION_MAX_AGE_SECONDS}`,
+    `${AUTH_SESSION_COOKIE_NAME}=${signedSessionPayload(scope, secret, Date.now(), maxAgeSeconds)}`,
+    `Max-Age=${maxAgeSeconds}`,
     "Path=/",
     "HttpOnly",
     "SameSite=Strict",

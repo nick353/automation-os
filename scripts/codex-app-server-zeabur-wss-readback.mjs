@@ -149,7 +149,7 @@ function handleMessage(text) {
     const account = message.result?.account;
     const accountPresent = Boolean(account && typeof account === "object");
     const requiresOpenaiAuth = message.result?.requiresOpenaiAuth === true;
-    if (!accountPresent) {
+    if (!accountPresent || requiresOpenaiAuth) {
       finish({ status: "blocked", stage: "account/read", authenticated_wss: true, account_present: false, requires_openai_auth: requiresOpenaiAuth, exact_blocker: "zeabur_codex_app_server_chatgpt_login_required" }, 2);
       return;
     }
@@ -164,7 +164,7 @@ function handleMessage(text) {
       return;
     }
     stage = "turn/start";
-    send({ id: 4, method: "turn/start", params: { threadId, input: [{ type: "text", text: "Return READY only. Do not use tools or modify files.", text_elements: [] }], approvalPolicy: "never", permissionProfile: ":read-only", cwd: "/app" } });
+    send({ id: 4, method: "turn/start", params: { threadId, input: [{ type: "text", text: "Return READY only. Do not use tools or modify files.", text_elements: [] }], approvalPolicy: "never", cwd: "/app" } });
     return;
   }
   if (message.id === 4) {

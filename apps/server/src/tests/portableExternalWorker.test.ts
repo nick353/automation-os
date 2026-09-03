@@ -8,7 +8,8 @@ import {
   runPortableExternalWorker,
   PORTABLE_EXTERNAL_ADAPTER_NOT_CONFIGURED,
   PORTABLE_EXTERNAL_APPROVAL_REQUIRED,
-  PORTABLE_EXTERNAL_LEGACY_RUNNER_FORBIDDEN
+  PORTABLE_EXTERNAL_LEGACY_RUNNER_FORBIDDEN,
+  PORTABLE_EXTERNAL_CHROME_PLUGIN_BACKEND_SNAPSHOT_MISSING
 } from "../runs/portableExternalWorker.js";
 import { portableExternalRunnerConfigured, resolvePortableExternalRunner } from "../runs/portableExternalRunnerConfig.js";
 import { issuePortableExternalEffectAuthorityV1, validatePortableExternalEffectAuthorityV1 } from "../runs/portableExternalEffectAuthority.js";
@@ -187,6 +188,124 @@ console.log(JSON.stringify({status:'blocked', exact_blocker:'fixture_effect_mode
     else process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_APPROVAL = previous.approval;
     if (previous.artifactRoot === undefined) delete process.env.AUTOMATION_OS_ARTIFACT_ROOT;
     else process.env.AUTOMATION_OS_ARTIFACT_ROOT = previous.artifactRoot;
+  }
+});
+
+test("portable worker keeps the selected backend surface consistent across run artifacts", async () => {
+  const previous = {
+    runner: process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_RUNNER,
+    effects: process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS,
+    approval: process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_APPROVAL,
+    artifactRoot: process.env.AUTOMATION_OS_ARTIFACT_ROOT,
+  };
+  const root = mkdtempSync(join(tmpdir(), "automation-os-backend-surface-binding-"));
+  const runner = join(root, "surface-fixture-runner.mjs");
+  const runnerSource = [
+    "#!/usr/bin/env node",
+    "console.log(JSON.stringify({status:'blocked',exact_blocker:'fixture_surface_readback',external_action_executed:false,browser_surface:process.env.AOS_WEB_OPERATION_BACKEND === 'chrome_plugin' ? process.env.AOS_CHROME_PROFILE_SURFACE : process.env.AOS_WEB_OPERATION_BACKEND}));",
+    "",
+  ].join("\n");
+  writeFileSync(runner, runnerSource, { mode: 0o700 });
+  chmodSync(runner, 0o700);
+  process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_RUNNER = runner;
+  process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS = "read_only";
+  process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_APPROVAL = "approved";
+  process.env.AUTOMATION_OS_ARTIFACT_ROOT = root;
+  try {
+    for (const backend of ["chrome_plugin", "playwright"] as const) {
+      const runId = `run_backend_surface_${backend}`;
+      const stepId = `step_${backend}`;
+      const result = await runPortableExternalWorker({
+        workflowId: "daily-ai-research-publish-run",
+        runId,
+        stepId,
+        sourceTrigger: "automation_os_ui",
+        idempotencyKey: `backend-surface-${backend}`,
+        approvalGranted: true,
+        readOnlyStage: "web_operation_read",
+        webOperationBackend: {
+          requested_backend: backend,
+          resolved_backend: backend,
+          revision: 7,
+          chrome_profile: { id: "profile2", name: "Profile 2", directory: "Profile 2", surface: "signed_chrome_extension_profile2" },
+        },
+        webOperationIntent: {
+          schema: "automation_os_web_operation_intent.v1",
+          operation: "read",
+          run_id: runId,
+          step_id: stepId,
+          idempotency_key: `backend-surface-${backend}`,
+          account_ref: "backend-surface-test",
+          allowed_origins: ["https://example.com"],
+          entry_url: "https://example.com/",
+          target: { semantic_query: "Example Domain" },
+          payload_hash: null,
+          approval_status: "not_required",
+          authority_sha256: null,
+          readback_required: true,
+          no_replay: true,
+        },
+      });
+      assert.equal(result.exactBlocker, "fixture_surface_readback");
+      assert.equal(result.externalActionExecuted, false);
+      const expectedSurface = backend === "chrome_plugin" ? "signed_chrome_extension_profile2" : backend;
+      const admission = JSON.parse(readFileSync(result.admissionPath!, "utf8")) as Record<string, unknown>;
+      const actionPlan = JSON.parse(readFileSync(result.actionPlanPath!, "utf8")) as Record<string, unknown>;
+      const intent = JSON.parse(readFileSync(result.webOperationIntentPath!, "utf8")) as Record<string, unknown>;
+      assert.equal(admission.browser_surface, expectedSurface);
+      assert.equal(actionPlan.browser_surface, expectedSurface);
+      assert.equal(intent.browser_surface, expectedSurface);
+      assert.equal(result.response?.browser_surface, expectedSurface);
+    }
+  } finally {
+    if (previous.runner === undefined) delete process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_RUNNER;
+    else process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_RUNNER = previous.runner;
+    if (previous.effects === undefined) delete process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS;
+    else process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS = previous.effects;
+    if (previous.approval === undefined) delete process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_APPROVAL;
+    else process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_APPROVAL = previous.approval;
+    if (previous.artifactRoot === undefined) delete process.env.AUTOMATION_OS_ARTIFACT_ROOT;
+    else process.env.AUTOMATION_OS_ARTIFACT_ROOT = previous.artifactRoot;
+  }
+});
+
+test("portable worker fails closed before adapter admission when Chrome binding is missing or malformed", async () => {
+  const previousRunner = process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_RUNNER;
+  const root = mkdtempSync(join(tmpdir(), "automation-os-chrome-binding-missing-"));
+  // If the guard were after adapter resolution this deliberately invalid path
+  // would produce a different blocker, proving the zero-downstream-call order.
+  process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_RUNNER = join(root, "runner-that-must-not-start.mjs");
+  const cases: Array<[string, Record<string, unknown> | null]> = [
+    ["missing", null],
+    ["malformed", { requested_backend: "chrome_plugin", resolved_backend: "chrome_plugin", revision: 7 }],
+    ["mismatched", {
+      requested_backend: "chrome_plugin",
+      resolved_backend: "playwright",
+      revision: 7,
+      chrome_profile: { id: "profile2", name: "Profile 2", directory: "Profile 2", surface: "signed_chrome_extension_profile2" }
+    }]
+  ];
+  try {
+    for (const [label, webOperationBackend] of cases) {
+      const result = await runPortableExternalWorker({
+        workflowId: "daily-ai-research-publish-run",
+        runId: `run_chrome_binding_${label}`,
+        stepId: `step_chrome_binding_${label}`,
+        sourceTrigger: "automation_os_ui",
+        idempotencyKey: `chrome-binding-${label}`,
+        approvalGranted: true,
+        requestedWebOperationBackend: "chrome_plugin",
+        webOperationBackend
+      });
+      assert.equal(result.status, "blocked");
+      assert.equal(result.exactBlocker, PORTABLE_EXTERNAL_CHROME_PLUGIN_BACKEND_SNAPSHOT_MISSING);
+      assert.equal(result.externalActionExecuted, false);
+      assert.equal(result.admissionPath, undefined);
+      assert.equal(result.actionPlanPath, undefined);
+    }
+  } finally {
+    if (previousRunner === undefined) delete process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_RUNNER;
+    else process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_RUNNER = previousRunner;
   }
 });
 
@@ -444,6 +563,20 @@ test("portable external worker requires approval before spawning the adapter", a
     assert.equal(blocked.externalActionExecuted, false);
     assert.throws(() => readFileSync(marker, "utf8"));
 
+    const mixedReadOnlyLabel = await runPortableExternalWorker({
+      workflowId: "job-application-manager",
+      runId: "run_external_worker_effectful_intent_with_read_only_label",
+      stepId: "run_external_worker_effectful_intent_with_read_only_label_step_1",
+      sourceTrigger: "automation_os_scheduler",
+      idempotencyKey: "external-worker-effectful-intent-with-read-only-label",
+      approvalGranted: false,
+      readOnlyStage: "reference_readback",
+      webOperationIntent: { operation: "publish" }
+    });
+    assert.equal(mixedReadOnlyLabel.status, "blocked");
+    assert.equal(mixedReadOnlyLabel.exactBlocker, PORTABLE_EXTERNAL_APPROVAL_REQUIRED);
+    assert.equal(mixedReadOnlyLabel.externalActionExecuted, false);
+
     const approved = await runPortableExternalWorker({
       workflowId: "job-application-manager",
       runId: "run_external_worker_approval_granted",
@@ -455,6 +588,53 @@ test("portable external worker requires approval before spawning the adapter", a
     assert.equal(approved.status, "complete");
     assert.equal(approved.externalActionExecuted, true);
     assert.equal(readFileSync(marker, "utf8"), "spawned");
+  } finally {
+    if (previousRunner === undefined) delete process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_RUNNER;
+    else process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_RUNNER = previousRunner;
+    if (previousEffects === undefined) delete process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS;
+    else process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS = previousEffects;
+    if (previousArtifactRoot === undefined) delete process.env.AUTOMATION_OS_ARTIFACT_ROOT;
+    else process.env.AUTOMATION_OS_ARTIFACT_ROOT = previousArtifactRoot;
+  }
+});
+
+test("read-only portable stages run without user approval and force the child into read-only mode", async () => {
+  const previousRunner = process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_RUNNER;
+  const previousEffects = process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS;
+  const previousArtifactRoot = process.env.AUTOMATION_OS_ARTIFACT_ROOT;
+  const root = mkdtempSync(join(tmpdir(), "automation-os-external-read-only-no-approval-"));
+  const artifactRoot = join(root, "artifacts");
+  const marker = join(root, "read-only.marker");
+  const runner = join(root, "runner.mjs");
+  writeFileSync(runner, [
+    "#!/usr/bin/env node",
+    "import { writeFileSync } from 'node:fs';",
+    `writeFileSync(${JSON.stringify(marker)}, process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS || '');`,
+    "console.log(JSON.stringify({status:'complete',exact_blocker:null,external_action_executed:false,effects_mode:process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS}));",
+    "",
+  ].join("\n"));
+  chmodSync(runner, 0o700);
+  process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_RUNNER = runner;
+  // Simulate a stale parent environment. The worker must override it for a
+  // read-only stage before spawning the child.
+  process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS = "enabled";
+  process.env.AUTOMATION_OS_ARTIFACT_ROOT = artifactRoot;
+  try {
+    const result = await runPortableExternalWorker({
+      workflowId: "daily-ai-research-publish-run",
+      runId: "run_external_worker_read_only_no_approval",
+      stepId: "run_external_worker_read_only_no_approval_step_1",
+      sourceTrigger: "automation_os_scheduler",
+      idempotencyKey: "external-worker-read-only-no-approval",
+      approvalGranted: false,
+      readOnlyStage: "reference_readback"
+    });
+    assert.equal(result.status, "complete");
+    assert.equal(result.externalActionExecuted, false);
+    assert.equal(result.response?.effects_mode, "read_only");
+    assert.equal(readFileSync(marker, "utf8"), "read_only");
+    const admission = JSON.parse(readFileSync(result.admissionPath!, "utf8")) as Record<string, unknown>;
+    assert.equal(admission.approval_status, "not_required");
   } finally {
     if (previousRunner === undefined) delete process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_RUNNER;
     else process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_RUNNER = previousRunner;

@@ -19,10 +19,11 @@ export const BROWSER_USE_GOAL_KERNEL_SCHEMA = "automation_os_browser_use_goal_ke
 export const BROWSER_USE_GOAL_LEASE_SCHEMA = "browser-use-flow-lease.v2";
 const DEFAULT_BROWSER_USE_HOME = path.join(homedir(), ".browser-use-cli");
 const DEFAULT_CODEX_HOME = path.join(homedir(), ".codex");
-export const CANONICAL_BROWSER_USE_HELPER = process.env.BROWSER_USE_CLI_HELPER || path.join(homedir(), ".local", "bin", "codex-browser-use");
-export const CANONICAL_BROWSER_USE_RUNTIME = process.env.BROWSER_USE_RUNTIME_CONFIG || path.join(DEFAULT_BROWSER_USE_HOME, "browser-use-runtime.toml");
-export const CANONICAL_BROWSER_USE_ADAPTER = process.env.AUTOMATION_OS_BROWSER_USE_CLI_STAGE_ADAPTER || path.join(DEFAULT_CODEX_HOME, "skills", "automation-kernel-run", "scripts", "browser-use-cli-stage-adapter.mjs");
-export const CANONICAL_BROWSER_USE_HOME = process.env.BROWSER_USE_HOME || DEFAULT_BROWSER_USE_HOME;
+const runtimeEnvironment = typeof process !== "undefined" && process?.env ? process.env : {};
+export const CANONICAL_BROWSER_USE_HELPER = runtimeEnvironment.BROWSER_USE_CLI_HELPER || path.join(homedir(), ".local", "bin", "codex-browser-use");
+export const CANONICAL_BROWSER_USE_RUNTIME = runtimeEnvironment.BROWSER_USE_RUNTIME_CONFIG || path.join(DEFAULT_BROWSER_USE_HOME, "browser-use-runtime.toml");
+export const CANONICAL_BROWSER_USE_ADAPTER = runtimeEnvironment.AUTOMATION_OS_BROWSER_USE_CLI_STAGE_ADAPTER || path.join(DEFAULT_CODEX_HOME, "skills", "automation-kernel-run", "scripts", "browser-use-cli-stage-adapter.mjs");
+export const CANONICAL_BROWSER_USE_HOME = runtimeEnvironment.BROWSER_USE_HOME || DEFAULT_BROWSER_USE_HOME;
 
 const IDENTIFIER = /^[A-Za-z0-9][-_A-Za-z0-9.:]{0,179}$/u;
 const DIGEST = /^[a-f0-9]{64}$/u;
@@ -49,7 +50,8 @@ function fileDigest(filePath) {
 }
 
 function currentUid() {
-  return typeof process.getuid === "function" ? process.getuid() : null;
+  const runtimeProcess = typeof process !== "undefined" ? process : null;
+  return typeof runtimeProcess?.getuid === "function" ? runtimeProcess.getuid() : null;
 }
 
 function assertOwnedPrivateFile(filePath, code = "browser_use_goal_state_invalid") {

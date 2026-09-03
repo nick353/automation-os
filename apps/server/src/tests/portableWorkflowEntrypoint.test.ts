@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,12 +10,16 @@ import test from "node:test";
 const tempRoot = mkdtempSync(join(tmpdir(), "automation-os-portable-entrypoint-"));
 process.env.AUTOMATION_OS_DB = join(tempRoot, "automation-os.sqlite");
 process.env.AUTOMATION_OS_ARTIFACT_ROOT = join(tempRoot, "artifacts");
+process.env.AOS_WEB_OPERATION_BACKEND_CONFIG = join(tempRoot, "web-operation-backend.json");
 process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE = "canary";
 
 const db = await import("../db/client.js");
 const { hashIdempotencyRequest } = await import("../automations/idempotency.js");
 const { initRegisteredWorkflows } = await import("../registeredWorkflows.js");
 const { startPortableWorkflowRun } = await import("../runs/portableWorkflowEntrypoint.js");
+const { browserSurfaceRequirementForPortableTrigger } = await import("../runs/portableWorkflowEntrypoint.js");
+const { startPortableLocalWorkflowRun } = await import("../runs/portableLocalWorkflowEntrypoint.js");
+const { readWebOperationBackendSetting, writeWebOperationBackendSetting } = await import("../runs/webOperationBackendSettings.js");
 const {
   getRunContractForProofEvaluation,
   materializePortableInputBundleForMacWorker,
@@ -52,10 +57,24 @@ test("portable entrypoint is shared by AOS UI, App bridge, and other schedulers,
     )[0];
     assert.equal(run.company_id, companyId ?? null);
     const metadata = JSON.parse(run.metadata_json) as {
-      portable_workflow_invocation?: { app_dependency?: boolean; source_trigger?: string };
+      portable_workflow_invocation?: { app_dependency?: boolean; source_trigger?: string; browser_surface_requirement?: string };
       exact_blocker?: string;
       external_action_executed?: boolean;
       execution_routing?: { executionSurface?: string; selectedRouteId?: string; plannedAdapters?: string[] };
+      web_operation_backend?: {
+        requested_backend?: string;
+        resolved_backend?: string;
+        revision?: number;
+        browser_surface?: string;
+        fallback_allowed?: boolean;
+        route_decision_schema?: string;
+        routing_mode?: string;
+        route_reason?: string;
+        route_admission_status?: string;
+        route_frozen_after_dispatch?: boolean;
+        reroute_after_terminal_no_effect_only?: boolean;
+        chrome_profile?: { id?: string; name?: string; directory?: string; surface?: string };
+      };
     };
     const proof = db.querySql<{ metadata_json: string }>(
       `SELECT metadata_json FROM proofs WHERE run_id=${db.sqlValue(first.runId)} AND proof_type='worker_receipt' ORDER BY created_at DESC LIMIT 1`
@@ -64,14 +83,116 @@ test("portable entrypoint is shared by AOS UI, App bridge, and other schedulers,
     assert.equal(run.status, "blocked");
     assert.equal(metadata.portable_workflow_invocation?.app_dependency, false);
     assert.equal(metadata.portable_workflow_invocation?.source_trigger, item.sourceTrigger);
+    const unattended = ["automation_os_scheduler", "launchd", "github_actions"].includes(item.sourceTrigger);
+    const expectedRequirement = unattended ? "browser_use_cli" : "automatic";
+    const expectedBackend = unattended ? "browser_use_cli" : "aos_chrome_companion";
+    const expectedSurface = unattended ? "browser_use_cli" : "aos_chrome_companion_profile_instance";
+    const expectedRouteReason = unattended ? "explicit_non_chrome_backend" : "companion_primary_for_normal_work";
+    assert.equal(metadata.portable_workflow_invocation?.browser_surface_requirement, expectedRequirement);
     assert.equal(proofMetadata.source_trigger, item.sourceTrigger);
     assert.equal(proofMetadata.idempotency_key, idempotencyKey);
     assert.equal(metadata.exact_blocker, "portable_external_effects_disabled");
     assert.equal(metadata.external_action_executed, false);
     assert.equal(metadata.execution_routing?.executionSurface, "worker_loop");
     assert.equal(metadata.execution_routing?.selectedRouteId, "automation_os_portable_worker");
-    assert.deepEqual(metadata.execution_routing?.plannedAdapters, ["browser_use_cli"]);
+    assert.deepEqual(metadata.execution_routing?.plannedAdapters, [expectedBackend]);
+    assert.equal(metadata.web_operation_backend?.requested_backend, expectedBackend);
+    assert.equal(metadata.web_operation_backend?.resolved_backend, expectedBackend);
+    assert.ok(Number.isSafeInteger(metadata.web_operation_backend?.revision));
+    assert.ok(Number(metadata.web_operation_backend?.revision) >= 1);
+    assert.equal(metadata.web_operation_backend?.browser_surface, expectedSurface);
+    assert.equal(metadata.web_operation_backend?.fallback_allowed, false);
+    assert.equal(metadata.web_operation_backend?.route_decision_schema, "browser_route_decision.v2");
+    assert.equal(metadata.web_operation_backend?.routing_mode, "adaptive_two_extension");
+    assert.equal(metadata.web_operation_backend?.route_reason, expectedRouteReason);
+    assert.equal(metadata.web_operation_backend?.route_admission_status, "ready");
+    assert.equal(metadata.web_operation_backend?.route_frozen_after_dispatch, true);
+    assert.equal(metadata.web_operation_backend?.reroute_after_terminal_no_effect_only, true);
+    assert.deepEqual(metadata.web_operation_backend?.chrome_profile, {
+      id: "profile2",
+      name: "Profile 2",
+      directory: "Profile 2",
+      surface: "signed_chrome_extension_profile2",
+    });
   }
+});
+
+test("unattended portable triggers explicitly use the canonical Browser Use CLI lane", () => {
+  assert.equal(browserSurfaceRequirementForPortableTrigger("automation_os_scheduler"), "browser_use_cli");
+  assert.equal(browserSurfaceRequirementForPortableTrigger("launchd"), "browser_use_cli");
+  assert.equal(browserSurfaceRequirementForPortableTrigger("github_actions"), "browser_use_cli");
+  assert.equal(browserSurfaceRequirementForPortableTrigger("automation_os_ui"), "automatic");
+  assert.equal(browserSurfaceRequirementForPortableTrigger("codex_app_bridge"), "automatic");
+});
+
+test("portable Web intent uses the same selected backend snapshot as the Run", async () => {
+  const previous = readWebOperationBackendSetting();
+  try {
+    const selected = writeWebOperationBackendSetting({
+      backend: "browser_use_cli",
+      actorUserId: "portable-intent-surface-test",
+      expectedRevision: previous.revision,
+    });
+    const started = await startPortableWorkflowRun({
+      workflowId: "x-authenticated-browser-lane",
+      sourceTrigger: "automation_os_ui",
+      idempotencyKey: "portable-web-intent-selected-surface",
+      webOperationIntent: {
+        operation: "read",
+        account_ref: "x_readonly_account",
+        allowed_origins: ["https://example.com"],
+        entry_url: "https://example.com/",
+        target: { semantic_query: "home" },
+      },
+    });
+    const run = db.querySql<{ metadata_json: string }>(
+      `SELECT metadata_json FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`
+    )[0];
+    const metadata = JSON.parse(run.metadata_json) as {
+      web_operation_backend?: { browser_surface?: string; revision?: number };
+      portable_workflow_invocation?: { web_operation_intent?: { browser_surface?: string } };
+    };
+    assert.equal(metadata.web_operation_backend?.browser_surface, "browser_use_cli");
+    assert.equal(metadata.web_operation_backend?.revision, selected.revision);
+    assert.equal(metadata.portable_workflow_invocation?.web_operation_intent?.browser_surface, "browser_use_cli");
+    const processed = await runWorkerOnce(started.runId);
+    assert.equal(processed.length, 1);
+  } finally {
+    writeWebOperationBackendSetting({
+      backend: previous.backend,
+      actorUserId: "portable-intent-surface-test-restore",
+      expectedRevision: readWebOperationBackendSetting().revision,
+    });
+  }
+});
+
+test("portable Companion task ownership is persisted and included in the invocation binding", async () => {
+  const started = await startPortableWorkflowRun({
+    workflowId: "daily-ai-research-publish-run",
+    sourceTrigger: "automation_os_ui",
+    idempotencyKey: "portable-companion-task-binding",
+    companyId: "portable_companion_scope",
+    companionTaskId: "01a03a2e-7239-7663-b84a-81a023d46592"
+  });
+  const run = db.querySql<{ metadata_json: string }>(
+    `SELECT metadata_json FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`
+  )[0];
+  const metadata = JSON.parse(run.metadata_json) as {
+    companion_task_id?: string;
+    portable_workflow_invocation?: { companion_task_id?: string };
+  };
+  assert.equal(metadata.companion_task_id, "01a03a2e-7239-7663-b84a-81a023d46592");
+  assert.equal(metadata.portable_workflow_invocation?.companion_task_id, "01a03a2e-7239-7663-b84a-81a023d46592");
+  await runWorkerOnce(started.runId);
+  await assert.rejects(
+    () => startPortableWorkflowRun({
+      workflowId: "daily-ai-research-publish-run",
+      sourceTrigger: "automation_os_ui",
+      idempotencyKey: "portable-companion-task-binding-invalid",
+      companionTaskId: "../foreign-task"
+    }),
+    /portable_companion_task_id_invalid/
+  );
 });
 
 test("Daily AI and NisenPrints accept only their workflow-owned reference readback stage", async () => {
@@ -254,6 +375,111 @@ test("Mac worker uses the async boundary for a portable local read-only receipt"
   }
 });
 
+test("portable local worker preserves the Run company scope for adapter readback", async () => {
+  const previousRole = process.env.AUTOMATION_OS_WORKER_ROLE;
+  const previousRegistryPath = process.env.AUTOMATION_OS_CODEX_APP_SERVER_REGISTRY_READBACK_PATH;
+  process.env.AUTOMATION_OS_WORKER_ROLE = "mac";
+  process.env.AUTOMATION_OS_CODEX_APP_SERVER_REGISTRY_READBACK_PATH = join(mkdtempSync(join(tmpdir(), "automation-os-missing-registry-")), "missing.json");
+  const runId = "portable-local-company-scope-regression";
+  const stepId = `${runId}_step_1`;
+  const laneId = `${runId}_lane-1`;
+  const companyId = "portable-local-company-scope";
+  const now = new Date().toISOString();
+  try {
+    db.insert("runs", {
+      id: runId,
+      company_id: companyId,
+      name: "Email local company scope regression",
+      status: "queued",
+      objective: "Email review reply registered workflow read-only",
+      created_at: now,
+      updated_at: now,
+      metadata_json: {
+        worker_protocol: "mac_worker_polling_required",
+        worker_mode: "queued_for_mac_worker",
+        portable_workflow_invocation: { workflow_id: "email-review-reply" },
+        plan: { tasks: [{ adapter: "email_review_registered" }] }
+      }
+    });
+    db.insert("lanes", {
+      id: laneId,
+      run_id: runId,
+      role: "Local Worker",
+      cdp_port: 19984,
+      profile_dir: "portable-local-company-scope",
+      workdir: process.cwd(),
+      status: "active",
+      current_task: "Email review",
+      progress: 10,
+      health: "good",
+      updated_at: now
+    });
+    db.insert("run_steps", {
+      id: stepId,
+      run_id: runId,
+      company_id: companyId,
+      name: "Email local company scope regression",
+      status: "queued",
+      lane_id: laneId,
+      started_at: null,
+      completed_at: null,
+      metadata_json: { adapter: "email_review_registered" }
+    });
+
+    const picked = await runPortableMacWorkerOnce(runId);
+    assert.equal(picked.length, 1);
+    const step = db.querySql<{ metadata_json: string }>(
+      `SELECT metadata_json FROM run_steps WHERE id=${db.sqlValue(stepId)} LIMIT 1`
+    )[0];
+    const receipt = JSON.parse(step.metadata_json).portable_local_receipt as {
+      exact_blocker?: string;
+      adapter_result?: { company_id?: string };
+    };
+    assert.notEqual(receipt.exact_blocker, "company_scope_required");
+    assert.equal(receipt.adapter_result?.company_id, companyId);
+  } finally {
+    if (previousRole === undefined) delete process.env.AUTOMATION_OS_WORKER_ROLE;
+    else process.env.AUTOMATION_OS_WORKER_ROLE = previousRole;
+    if (previousRegistryPath === undefined) delete process.env.AUTOMATION_OS_CODEX_APP_SERVER_REGISTRY_READBACK_PATH;
+    else process.env.AUTOMATION_OS_CODEX_APP_SERVER_REGISTRY_READBACK_PATH = previousRegistryPath;
+  }
+});
+
+test("synchronous runWorkerOnce preserves the Run company scope for local adapters", async () => {
+  const previousRole = process.env.AUTOMATION_OS_WORKER_ROLE;
+  const previousRegistryPath = process.env.AUTOMATION_OS_CODEX_APP_SERVER_REGISTRY_READBACK_PATH;
+  process.env.AUTOMATION_OS_WORKER_ROLE = "mac";
+  process.env.AUTOMATION_OS_CODEX_APP_SERVER_REGISTRY_READBACK_PATH = join(mkdtempSync(join(tmpdir(), "automation-os-missing-sync-registry-")), "missing.json");
+  try {
+    const companyId = "portable-local-sync-company-scope";
+    const started = await startPortableLocalWorkflowRun({
+      workflowId: "email-review-reply",
+      sourceTrigger: "automation_os_scheduler",
+      idempotencyKey: "portable-local-sync-company-scope",
+      companyId,
+      readOnlyStage: "reference_readback"
+    });
+    const processed = await runWorkerOnce(started.runId);
+    assert.equal(processed.length, 1);
+    const run = db.querySql<{ status: string; metadata_json: string }>(
+      `SELECT status, metadata_json FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`
+    )[0];
+    const metadata = JSON.parse(run.metadata_json) as {
+      portable_local_worker?: {
+        receipt?: { exact_blocker?: string; adapter_result?: { company_id?: string } };
+      };
+    };
+    assert.equal(run.status, "blocked");
+    assert.notEqual(metadata.portable_local_worker?.receipt?.exact_blocker, "company_scope_required");
+    assert.equal(metadata.portable_local_worker?.receipt?.adapter_result?.company_id, companyId);
+  } finally {
+    if (previousRole === undefined) delete process.env.AUTOMATION_OS_WORKER_ROLE;
+    else process.env.AUTOMATION_OS_WORKER_ROLE = previousRole;
+    if (previousRegistryPath === undefined) delete process.env.AUTOMATION_OS_CODEX_APP_SERVER_REGISTRY_READBACK_PATH;
+    else process.env.AUTOMATION_OS_CODEX_APP_SERVER_REGISTRY_READBACK_PATH = previousRegistryPath;
+  }
+});
+
 test("portable invocation binding rejects payload drift and does not cross company scope", async () => {
   const first = await startPortableWorkflowRun({
     workflowId: "daily-ai-research-publish-run",
@@ -295,6 +521,7 @@ test("portable workflow persists a non-secret input bundle inside the current ru
     company: "Example Company",
     role: "Marketing",
   };
+  const expectedInputBundle = inputBundle;
   const started = await startPortableWorkflowRun({
     workflowId: "job-application-manager",
     sourceTrigger: "automation_os_ui",
@@ -309,13 +536,14 @@ test("portable workflow persists a non-secret input bundle inside the current ru
   assert.equal(bundle.schema, "automation_os_portable_workflow_input_bundle.v1");
   assert.equal(bundle.workflow_id, "job-application-manager");
   assert.equal(bundle.run_id, started.runId);
-  assert.deepEqual(bundle.input, inputBundle);
+  assert.deepEqual(bundle.input, expectedInputBundle);
   const run = db.querySql<{ metadata_json: string }>(`SELECT metadata_json FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`)[0];
-  const metadata = JSON.parse(run.metadata_json) as { portable_input_bundle?: { path?: string; sha256?: string; input?: typeof inputBundle }; portable_workflow_invocation?: { input_bundle_path?: string } };
+  const metadata = JSON.parse(run.metadata_json) as { portable_input_bundle?: { path?: string; sha256?: string; created_at?: string; input?: typeof inputBundle }; portable_workflow_invocation?: { input_bundle_path?: string } };
   assert.equal(metadata.portable_input_bundle?.path, bundlePath);
   assert.equal(metadata.portable_workflow_invocation?.input_bundle_path, bundlePath);
-  assert.deepEqual(metadata.portable_input_bundle?.input, inputBundle);
+  assert.deepEqual(metadata.portable_input_bundle?.input, expectedInputBundle);
   assert.match(String(metadata.portable_input_bundle?.sha256 || ""), /^[a-f0-9]{64}$/u);
+  assert.match(String(metadata.portable_input_bundle?.created_at || ""), /^202\d-/u);
   await assert.rejects(
     () => startPortableWorkflowRun({
       workflowId: "job-application-manager",
@@ -354,6 +582,40 @@ test("Mac worker reuses the canonical run input bundle when its metadata include
     input,
   }), bundlePath);
   assert.match(readFileSync(bundlePath, "utf8"), /created_at/);
+});
+
+test("Mac worker copies the canonical input bundle bytes when the worker artifact root differs", () => {
+  const runId = "run_portable_input_bundle_cross_root_binding";
+  const sourcePath = join(tempRoot, "canonical-input-bundle.json");
+  const input = {
+    source_snapshot_id: "snapshot-cross-root-binding",
+    supply_run_id: "supply-cross-root-binding",
+    bucket: "overseas_global",
+    sequence: 1,
+    attempt: 1,
+    company: "Example",
+    role: "Example role",
+    payload_hash: "a".repeat(64),
+  };
+  const sourceBytes = `${JSON.stringify({
+    schema: "automation_os_portable_workflow_input_bundle.v1",
+    workflow_id: "job-application-manager",
+    run_id: runId,
+    input,
+    created_at: "2026-08-17T00:00:00.000Z",
+  }, null, 2)}\n`;
+  writeFileSync(sourcePath, sourceBytes, { mode: 0o600 });
+  chmodSync(sourcePath, 0o600);
+  const sourceSha256 = createHash("sha256").update(sourceBytes).digest("hex");
+  const copiedPath = materializePortableInputBundleForMacWorker({
+    runId,
+    workflowId: "job-application-manager",
+    input,
+    sourceBundlePath: sourcePath,
+    sourceBundleSha256: sourceSha256,
+  });
+  assert.equal(readFileSync(copiedPath, "utf8"), sourceBytes);
+  assert.equal(createHash("sha256").update(readFileSync(copiedPath)).digest("hex"), sourceSha256);
 });
 
 test("portable invocation stays fail-closed while another owner has a pending reservation", async () => {
@@ -501,7 +763,26 @@ test("business portable starts create the target-bound AOS approval before Mac c
     assert.match(approval.resource_locks_json, /portable_external:job-application-manager:[a-f0-9]{64}/u);
     assert.match(approval.resource_locks_json, /portable_external_target:job-application-manager:[a-f0-9]{64}:portable-business-admission-preparation/u);
     const run = db.querySql<{ metadata_json: string }>(`SELECT metadata_json FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`)[0];
-    const metadata = JSON.parse(run.metadata_json) as { portable_target_bound_approval_binding?: Record<string, unknown>; portable_target_bound_approval_receipt?: Record<string, unknown> };
+    const metadata = JSON.parse(run.metadata_json) as {
+      portable_target_bound_approval_binding?: Record<string, unknown>;
+      portable_target_bound_approval_receipt?: Record<string, unknown>;
+      worker_protocol?: string;
+      worker_mode?: string;
+      web_operation_backend?: {
+        route_decision_schema?: string;
+        resolved_backend?: string;
+        route_reason?: string;
+        route_admission_status?: string;
+        route_frozen_after_dispatch?: boolean;
+      };
+    };
+    assert.equal(metadata.worker_protocol, "mac_worker_polling_required");
+    assert.equal(metadata.worker_mode, "queued_for_mac_worker");
+    assert.equal(metadata.web_operation_backend?.route_decision_schema, "browser_route_decision.v2");
+    assert.equal(metadata.web_operation_backend?.resolved_backend, "aos_chrome_companion");
+    assert.equal(metadata.web_operation_backend?.route_reason, "companion_effect_adapter_available");
+    assert.equal(metadata.web_operation_backend?.route_admission_status, "ready");
+    assert.equal(metadata.web_operation_backend?.route_frozen_after_dispatch, true);
     assert.equal(metadata.portable_target_bound_approval_binding?.company_id, "portable_business_admission_scope");
     assert.equal(metadata.portable_target_bound_approval_binding?.idempotency_key, "portable-business-admission-preparation");
     assert.equal(metadata.portable_target_bound_approval_binding?.fresh_browser_use_authority_required, true);
@@ -513,6 +794,33 @@ test("business portable starts create the target-bound AOS approval before Mac c
       requestedRunId: started.runId,
     });
     assert.equal(claim, null);
+    const companionStarted = await startPortableWorkflowRun({
+        workflowId: "job-application-manager",
+        sourceTrigger: "automation_os_ui",
+        idempotencyKey: "portable-business-companion-effect-blocked",
+        companyId: "portable_business_admission_scope",
+        effectStage: "one_candidate_submit",
+        browserSurfaceRequirement: "companion_extension",
+        inputBundle: {
+          account_ref: "linkedin_authenticated_job_manager",
+          job_url: "https://example.com/jobs/companion-effect-blocked",
+          application_url: "https://example.com/jobs/companion-effect-blocked",
+          candidate_key: "candidate-companion-effect-blocked",
+          bucket: "japan_targeted",
+          sequence: 2,
+          attempt: 1,
+          source_snapshot_id: "snapshot-companion-effect-blocked",
+          supply_run_id: "supply-companion-effect-blocked",
+          company: "Example Company",
+          role: "Marketing Manager",
+          payload_hash: "b".repeat(64),
+        },
+      });
+    assert.equal(companionStarted.status, "waiting_approval");
+    const companionRun = db.querySql<{ metadata_json: string }>(`SELECT metadata_json FROM runs WHERE id=${db.sqlValue(companionStarted.runId)} LIMIT 1`)[0];
+    const companionMetadata = JSON.parse(companionRun.metadata_json) as { web_operation_backend?: { resolved_backend?: string; route_reason?: string } };
+    assert.equal(companionMetadata.web_operation_backend?.resolved_backend, "aos_chrome_companion");
+    assert.equal(companionMetadata.web_operation_backend?.route_reason, "companion_extension_explicitly_required");
   } finally {
     if (previous === undefined) delete process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE;
     else process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE = previous;

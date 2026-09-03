@@ -1,12 +1,30 @@
-import { initDb, makeId, nowIso, querySql, runSqlTransaction, sqlValue } from "../db/client.js";
+import {
+  dbBackend,
+  initDb,
+  initializePostgresSchemaAsync,
+  makeId,
+  nowIso,
+  querySql,
+  querySqlAsync,
+  runSqlTransaction,
+  runSqlTransactionAsync,
+  sqlValue
+} from "../db/client.js";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { resolve, sep } from "node:path";
+import { createHash } from "node:crypto";
 import { hashIdempotencyRequest } from "../automations/idempotency.js";
 import { buildPortableWorkerExecutionRoutingSnapshot } from "../codex/executionRouting.js";
 import { startCommandRun } from "./workerEngine.js";
 import {
   PORTABLE_LOCAL_WORKFLOW_SCHEMA,
   localWorkflowManifest,
-  type PortableLocalWorkflowId
+  type PortableLocalWorkflowId,
+  type PortableLocalSourceSnapshot,
+  UNATTENDED_FIXED_LOCAL_EFFECT_POLICY
 } from "./portableLocalWorkflow.js";
+import { backupBusinessPayloadHash, obsidianBusinessPayloadHash } from "./portableLocalWorkflow.js";
+import { preparePortableExternalApprovalPostgres } from "./portableWorkflowEntrypoint.js";
 import {
   createRegisteredRootAdmissionV1,
   type RegisteredRootAdmissionV1
@@ -17,9 +35,14 @@ export type PortableLocalWorkflowStartInput = {
   sourceTrigger: "automation_os_scheduler" | "automation_os_ui" | "codex_app_bridge" | "launchd" | "github_actions";
   idempotencyKey: string;
   registeredAutomationId?: string;
+  registeredAutomationVersionId?: string | null;
   companyId: string;
   dueKey?: string;
   readOnlyStage?: "reference_readback";
+  effectStage?: "business_execute";
+  inputBundle?: Record<string, unknown> | null;
+  unattendedEffectPolicy?: typeof UNATTENDED_FIXED_LOCAL_EFFECT_POLICY;
+  sourceSnapshot?: PortableLocalSourceSnapshot;
 };
 
 export type PortableLocalWorkflowStartResult = {
@@ -28,7 +51,7 @@ export type PortableLocalWorkflowStartResult = {
   workflowId: PortableLocalWorkflowId;
   sourceTrigger: PortableLocalWorkflowStartInput["sourceTrigger"];
   idempotencyKey: string;
-  executionMode: "read_only";
+  executionMode: "read_only" | "business_effect";
   status: string;
   registeredRoot?: RegisteredRootAdmissionV1;
 };
@@ -41,17 +64,27 @@ export async function startPortableLocalWorkflowRun(input: PortableLocalWorkflow
   if (input.readOnlyStage !== undefined && input.readOnlyStage !== "reference_readback") {
     throw new Error("portable_local_read_only_stage_unsupported");
   }
-  initDb();
+  if (input.effectStage !== undefined && input.effectStage !== "business_execute") {
+    throw new Error("portable_local_business_effect_stage_unsupported");
+  }
+  const inputBundle = normalizeLocalBusinessInput(input);
+  const postgres = dbBackend === "postgres";
+  if (postgres) await initializePostgresSchemaAsync();
+  else initDb();
   const requestHash = hashIdempotencyRequest({
     schema: PORTABLE_LOCAL_WORKFLOW_SCHEMA,
     workflow_id: input.workflowId,
     source_trigger: input.sourceTrigger,
     company_id: companyId,
     due_key: input.dueKey ?? null,
-    read_only_stage: input.readOnlyStage ?? "reference_readback",
+    read_only_stage: input.effectStage ? null : (input.readOnlyStage ?? "reference_readback"),
+    effect_stage: input.effectStage ?? null,
+    input_bundle: inputBundle,
+    unattended_effect_policy: input.unattendedEffectPolicy ?? null,
+    source_snapshot: input.sourceSnapshot ?? null,
     idempotency_key: idempotencyKey
   });
-  const existing = querySql<{ request_hash: string; status: string; run_id: string | null }>(`
+  const existingQuery = `
     SELECT request_hash, status, run_id
     FROM portable_workflow_invocations
     WHERE workflow_id=${sqlValue(input.workflowId)}
@@ -59,31 +92,45 @@ export async function startPortableLocalWorkflowRun(input: PortableLocalWorkflow
       AND company_scope=${sqlValue(companyId)}
       AND idempotency_key=${sqlValue(idempotencyKey)}
     LIMIT 1
-  `)[0];
+  `;
+  const existing = (postgres
+    ? (await querySqlAsync<{ request_hash: string; status: string; run_id: string | null }>(existingQuery))[0]
+    : querySql<{ request_hash: string; status: string; run_id: string | null }>(existingQuery)[0]);
   if (existing?.request_hash !== requestHash && existing) {
     throw new Error("portable_workflow_invocation_payload_conflict");
   }
   if (existing?.run_id) {
-    const run = querySql<{ id: string; status: string }>(`SELECT id, status FROM runs WHERE id=${sqlValue(existing.run_id)} LIMIT 1`)[0];
+    const runQuery = `SELECT id, status FROM runs WHERE id=${sqlValue(existing.run_id)} LIMIT 1`;
+    const run = (postgres
+      ? (await querySqlAsync<{ id: string; status: string }>(runQuery))[0]
+      : querySql<{ id: string; status: string }>(runQuery)[0]);
     if (run) return result(input, idempotencyKey, run.id, run.status, true);
   }
   const reservationId = makeId("portable_local_invocation");
   try {
-    runSqlTransaction([{
+    const reservationStep = {
       sql: `INSERT INTO portable_workflow_invocations
         (id, workflow_id, source_trigger, company_scope, company_id, idempotency_key, request_hash, status, run_id, created_at, updated_at)
         VALUES (${sqlValue(reservationId)}, ${sqlValue(input.workflowId)}, ${sqlValue(input.sourceTrigger)}, ${sqlValue(companyId)}, ${sqlValue(companyId)}, ${sqlValue(idempotencyKey)}, ${sqlValue(requestHash)}, 'pending', NULL, ${sqlValue(nowIso())}, ${sqlValue(nowIso())})`,
       expectChanges: 1
-    }]);
+    };
+    if (postgres) await runSqlTransactionAsync([reservationStep]);
+    else runSqlTransaction([reservationStep]);
   } catch {
-    const raced = querySql<{ run_id: string | null; status: string; request_hash: string }>(`
+    const racedQuery = `
       SELECT run_id, status, request_hash FROM portable_workflow_invocations
       WHERE workflow_id=${sqlValue(input.workflowId)} AND source_trigger=${sqlValue(input.sourceTrigger)}
         AND company_scope=${sqlValue(companyId)} AND idempotency_key=${sqlValue(idempotencyKey)} LIMIT 1
-    `)[0];
+    `;
+    const raced = (postgres
+      ? (await querySqlAsync<{ run_id: string | null; status: string; request_hash: string }>(racedQuery))[0]
+      : querySql<{ run_id: string | null; status: string; request_hash: string }>(racedQuery)[0]);
     if (raced?.request_hash !== requestHash) throw new Error("portable_workflow_invocation_payload_conflict");
     if (raced?.run_id) {
-      const run = querySql<{ id: string; status: string }>(`SELECT id, status FROM runs WHERE id=${sqlValue(raced.run_id)} LIMIT 1`)[0];
+      const runQuery = `SELECT id, status FROM runs WHERE id=${sqlValue(raced.run_id)} LIMIT 1`;
+      const run = (postgres
+        ? (await querySqlAsync<{ id: string; status: string }>(runQuery))[0]
+        : querySql<{ id: string; status: string }>(runQuery)[0]);
       if (run) return result(input, idempotencyKey, run.id, run.status, true);
     }
     throw new Error("portable_local_workflow_invocation_pending");
@@ -98,9 +145,13 @@ export async function startPortableLocalWorkflowRun(input: PortableLocalWorkflow
       sourceTrigger: input.sourceTrigger,
       definitionFingerprint: hashIdempotencyRequest(manifest)
     });
+    const persistedInputBundle = inputBundle ? writeLocalInputBundle(registeredRoot.run_id, input.workflowId, inputBundle) : null;
     const started = await startCommandRun(manifest.command, {
       runId: registeredRoot.run_id,
       deferWorker: true,
+      prepareOnly: Boolean(input.effectStage),
+      automationId: input.registeredAutomationId ?? null,
+      automationVersionId: input.registeredAutomationVersionId ?? null,
       companyId,
       executionRouting: buildPortableWorkerExecutionRoutingSnapshot({
         command: manifest.command,
@@ -110,7 +161,22 @@ export async function startPortableLocalWorkflowRun(input: PortableLocalWorkflow
         selectedLane: "portable_local_worker"
       }),
       metadata: {
-        read_only_stage: input.readOnlyStage ?? "reference_readback",
+      ...(input.effectStage ? {} : { read_only_stage: input.readOnlyStage ?? "reference_readback" }),
+      ...(input.effectStage ? { effect_stage: input.effectStage } : {}),
+      ...(persistedInputBundle ? { input_bundle_path: persistedInputBundle.path } : {}),
+      ...(persistedInputBundle
+        ? {
+            portable_input_bundle: {
+              schema: "automation_os_portable_workflow_input_bundle.v1",
+              run_id: registeredRoot.run_id,
+              path: persistedInputBundle.path,
+              sha256: persistedInputBundle.sha256,
+              created_at: persistedInputBundle.createdAt,
+              fields: Object.keys(inputBundle ?? {}),
+              ...(inputBundle ? { input: inputBundle } : {})
+            }
+          }
+        : {}),
         registeredWorkflowId: input.workflowId,
         registered_workflow_id: input.workflowId,
         workflow_id: input.workflowId,
@@ -129,14 +195,21 @@ export async function startPortableLocalWorkflowRun(input: PortableLocalWorkflow
           registered_automation_id: registeredRoot.registered_automation_id,
           idempotency_key: idempotencyKey,
           company_id: companyId,
-          read_only_stage: input.readOnlyStage ?? "reference_readback",
+          ...(input.effectStage ? {} : { read_only_stage: input.readOnlyStage ?? "reference_readback" }),
+          ...(input.effectStage ? { effect_stage: input.effectStage } : {}),
+          ...(input.unattendedEffectPolicy ? { unattended_effect_policy: input.unattendedEffectPolicy } : {}),
+          ...(persistedInputBundle ? { input_bundle_path: persistedInputBundle.path } : {}),
           app_dependency: false,
           external_action_executed: false
         },
         registered_root_admission: registeredRoot,
+        ...(input.sourceSnapshot ? { source_snapshot: input.sourceSnapshot } : {}),
+        ...(input.unattendedEffectPolicy ? { unattended_effect_policy: input.unattendedEffectPolicy } : {}),
         portable_worker: {
           workflow_id: input.workflowId,
-          mode: "read_only",
+          mode: input.effectStage ? "business_effect" : "read_only",
+          ...(input.effectStage ? { effect_stage: input.effectStage } : {}),
+          ...(persistedInputBundle ? { input_bundle_path: persistedInputBundle.path } : {}),
           local_worker: true,
           external_action_executed: false
         },
@@ -146,18 +219,86 @@ export async function startPortableLocalWorkflowRun(input: PortableLocalWorkflow
         mac_worker: { status: "waiting_for_pickup", launchReason: "portable_local_workflow_entrypoint", queuedAt: nowIso() }
       }
     });
-    runSqlTransaction([{
+    if (input.effectStage) {
+      if (dbBackend !== "postgres" || !companyId || !persistedInputBundle) throw new Error("portable_local_business_requires_postgres_bundle");
+      await preparePortableExternalApprovalPostgres({
+        runId: started.runId,
+        workflowId: input.workflowId,
+        companyId,
+        effectStage: input.effectStage,
+        idempotencyKey,
+        inputBundle: inputBundle!,
+        inputBundleSha256: persistedInputBundle.sha256,
+        browserSurface: "browser_use_cli",
+        approvalMode: input.unattendedEffectPolicy === UNATTENDED_FIXED_LOCAL_EFFECT_POLICY
+          ? "registered_unattended_local"
+          : "explicit"
+      });
+    }
+    const completionStep = {
       sql: `UPDATE portable_workflow_invocations SET status='completed', run_id=${sqlValue(started.runId)}, updated_at=${sqlValue(nowIso())}
             WHERE id=${sqlValue(reservationId)} AND request_hash=${sqlValue(requestHash)} AND status='pending'`,
       expectChanges: 1
-    }]);
-    return result(input, idempotencyKey, started.runId, String(started.run.status ?? "queued"), false, registeredRoot);
+    };
+    if (postgres) await runSqlTransactionAsync([completionStep]);
+    else runSqlTransaction([completionStep]);
+    const current = (await querySqlAsync<{ id: string; status: string }>(`SELECT id, status FROM runs WHERE id=${sqlValue(started.runId)} LIMIT 1`))[0];
+    return result(input, idempotencyKey, started.runId, current?.status ?? String(started.run.status ?? "queued"), false, registeredRoot);
   } catch (error) {
-    runSqlTransaction([{ sql: `DELETE FROM portable_workflow_invocations WHERE id=${sqlValue(reservationId)} AND status='pending'` }]);
+    const releaseStep = { sql: `DELETE FROM portable_workflow_invocations WHERE id=${sqlValue(reservationId)} AND status='pending'` };
+    if (postgres) await runSqlTransactionAsync([releaseStep]);
+    else runSqlTransaction([releaseStep]);
     throw error;
   }
 }
 
 function result(input: PortableLocalWorkflowStartInput, idempotencyKey: string, runId: string, status: string, replayed: boolean, registeredRoot?: RegisteredRootAdmissionV1): PortableLocalWorkflowStartResult {
-  return { runId, replayed, workflowId: input.workflowId, sourceTrigger: input.sourceTrigger, idempotencyKey, executionMode: "read_only", status, ...(registeredRoot ? { registeredRoot } : {}) };
+  return { runId, replayed, workflowId: input.workflowId, sourceTrigger: input.sourceTrigger, idempotencyKey, executionMode: input.effectStage ? "business_effect" : "read_only", status, ...(registeredRoot ? { registeredRoot } : {}) };
+}
+
+function normalizeLocalBusinessInput(input: PortableLocalWorkflowStartInput): Record<string, unknown> | null {
+  if (!input.effectStage) return null;
+  if (input.workflowId !== "daily-backup-safety-check" && input.workflowId !== "obsidian-project-memory-audit") {
+    throw new Error("portable_local_business_workflow_unsupported");
+  }
+  if (!input.inputBundle || typeof input.inputBundle !== "object" || Array.isArray(input.inputBundle)) {
+    throw new Error("portable_local_business_input_bundle_required");
+  }
+  const bundle = input.inputBundle;
+  const allowed = new Set(["account_ref", "target_key", "payload_hash", "source_snapshot_id"]);
+  const normalized: Record<string, unknown> = {};
+  for (const [key, raw] of Object.entries(bundle)) {
+    if (!allowed.has(key) || typeof raw !== "string" || !raw.trim() || raw.length > 1000) {
+      throw new Error("portable_local_business_input_bundle_invalid");
+    }
+    normalized[key] = raw.trim();
+  }
+  const expected = input.workflowId === "daily-backup-safety-check"
+    ? { accountRef: "github:nick353/daily-workspace-backup", targetKey: "daily-workspace-backup:main", payloadHash: backupBusinessPayloadHash() }
+    : { accountRef: "github:nick353/obsidian-vault-backup", targetKey: "obsidian-vault-backup:main", payloadHash: obsidianBusinessPayloadHash() };
+  if (normalized.account_ref !== expected.accountRef
+    || normalized.target_key !== expected.targetKey
+    || normalized.payload_hash !== expected.payloadHash) {
+    throw new Error("portable_local_business_target_invalid");
+  }
+  return normalized;
+}
+
+function writeLocalInputBundle(runId: string, workflowId: PortableLocalWorkflowId, inputBundle: Record<string, unknown>): { path: string; sha256: string; createdAt: string } {
+  const artifactRoot = resolve(process.env.AUTOMATION_OS_ARTIFACT_ROOT?.trim() || resolve(process.cwd(), "data", "artifacts"));
+  const runRoot = resolve(artifactRoot, runId);
+  if (runRoot === artifactRoot || !runRoot.startsWith(`${artifactRoot}${sep}`)) throw new Error("portable_local_input_bundle_path_invalid");
+  mkdirSync(runRoot, { recursive: true, mode: 0o700 });
+  chmodSync(runRoot, 0o700);
+  const createdAt = nowIso();
+  const bytes = `${JSON.stringify({ schema: "automation_os_portable_workflow_input_bundle.v1", workflow_id: workflowId, run_id: runId, input: inputBundle, created_at: createdAt }, null, 2)}\n`;
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  const bundlePath = resolve(runRoot, "portable-input-bundle.v1.json");
+  if (existsSync(bundlePath)) {
+    if (readFileSync(bundlePath, "utf8") !== bytes) throw new Error("portable_local_input_bundle_immutable_collision");
+  } else {
+    writeFileSync(bundlePath, bytes, { encoding: "utf8", mode: 0o600, flag: "wx" });
+  }
+  chmodSync(bundlePath, 0o600);
+  return { path: bundlePath, sha256, createdAt };
 }

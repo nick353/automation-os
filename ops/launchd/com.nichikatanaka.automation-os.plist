@@ -25,6 +25,12 @@
   <string>/Users/nichikatanaka/Documents/Codex/automation-os/data/logs/automation-os-launchd.err.log</string>
   <key>EnvironmentVariables</key>
   <dict>
+    <key>HOME</key>
+    <string>/Users/nichikatanaka</string>
+    <key>CODEX_HOME</key>
+    <string>/Users/nichikatanaka/.codex</string>
+    <key>HOST</key>
+    <string>127.0.0.1</string>
     <key>AUTOMATION_OS_OBSIDIAN_AUTO_EXPORT</key>
     <string>1</string>
     <key>AUTOMATION_OS_ALLOW_SQLITE_FALLBACK</key>
@@ -44,13 +50,29 @@
     <key>CODEX_CLI_PATH</key>
     <string>/Users/nichikatanaka/.local/bin/codex</string>
     <key>AUTOMATION_OS_REQUIRE_API_TOKEN</key>
+    <string>1</string>
+    <key>AUTOMATION_OS_LOOPBACK_SESSION</key>
+    <string>1</string>
+    <key>AUTOMATION_OS_AUTH_COOKIE_SECURE</key>
     <string>0</string>
+    <key>AUTOMATION_OS_AUTH_SESSION_SCOPE</key>
+    <string>write</string>
   <key>AUTOMATION_OS_DATABASE_MODE</key>
     <string>postgres</string>
+    <key>AOS_CANONICAL_COMPANY_ID</key>
+    <string>company_2560580981cedfd106b66245</string>
+    <key>AOS_CANONICAL_ENDPOINT</key>
+    <string>http://localhost:8787</string>
+    <key>AOS_CANONICAL_AUTHORITY_FRESH</key>
+    <string>1</string>
+    <key>AOS_CANONICAL_SELECTION_APPLIED</key>
+    <string>1</string>
+    <key>AOS_BRIEF_DELIVERY_MODE</key>
+    <string>home_only</string>
   <key>AUTOMATION_OS_DURABLE_SCHEDULER_OWNER</key>
-    <string>worker</string>
+    <string>server</string>
     <key>AUTOMATION_OS_DURABLE_SERVICE_USER_ID</key>
-    <string>aos_service_4c33e3f8454c8030b0eb</string>
+    <string>aos_service_0f4e6b6c65edf796364e</string>
     <key>AUTOMATION_OS_DURABLE_SCHEDULER_MS</key>
     <string>60000</string>
     <key>AUTOMATION_OS_REPO_ROOT</key>

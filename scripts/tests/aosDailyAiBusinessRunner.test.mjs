@@ -128,7 +128,12 @@ test("Daily AI wrapper propagates summary business proofs and same-run source sy
   writeFileSync(authority.file, authorityBytes, { mode: 0o600 });
   const boundAuthority = { file: authority.file, sha256: createHash("sha256").update(authorityBytes).digest("hex") };
   const plan = actionPlan(root, runId, stepId, bundle.sha256);
-  assert.doesNotThrow(() => readPortableBusinessActionPlan({ workflowId: "daily-ai-research-publish-run", runId, stepId, sourceTrigger: "automation_os_scheduler", idempotencyKey: `${runId}-idempotency`, inputBundlePath: bundle.file, environment: { AUTOMATION_OS_PORTABLE_BUSINESS_ACTION_PLAN_PATH: plan.file, AUTOMATION_OS_PORTABLE_BUSINESS_ACTION_PLAN_SHA256: plan.sha256 } }));
+  const runnerEnvironment = {
+    AOS_WEB_OPERATION_BACKEND: "browser_use_cli",
+    AUTOMATION_OS_PORTABLE_BUSINESS_ACTION_PLAN_PATH: plan.file,
+    AUTOMATION_OS_PORTABLE_BUSINESS_ACTION_PLAN_SHA256: plan.sha256,
+  };
+  assert.doesNotThrow(() => readPortableBusinessActionPlan({ workflowId: "daily-ai-research-publish-run", runId, stepId, sourceTrigger: "automation_os_scheduler", idempotencyKey: `${runId}-idempotency`, inputBundlePath: bundle.file, environment: runnerEnvironment }));
   const runner = stubRunner(root);
   const result = spawnSync(process.execPath, [
     runnerPath.pathname,
@@ -150,6 +155,7 @@ test("Daily AI wrapper propagates summary business proofs and same-run source sy
       AUTOMATION_OS_PORTABLE_EFFECT_AUTHORITY_PATH: boundAuthority.file,
       AUTOMATION_OS_PORTABLE_EFFECT_AUTHORITY_SHA256: boundAuthority.sha256,
       AUTOMATION_OS_PORTABLE_BUSINESS_INPUT_BUNDLE_PATH: bundle.file,
+      ...runnerEnvironment,
     },
   });
   assert.equal(result.status, 0, `${result.stderr}\n${result.stdout}`);

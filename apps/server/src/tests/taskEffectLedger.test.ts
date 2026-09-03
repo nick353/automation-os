@@ -1,8 +1,17 @@
 import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
-import { querySql } from "../db/client.js";
-import { completeDurableTaskEffect, reserveDurableTaskEffect, transitionDurableTaskEffect } from "../taskContracts/taskEffectLedger.js";
-import { declareSourceOfTruth } from "../runs/sourceOfTruth.js";
+
+const tempRoot = mkdtempSync(join(tmpdir(), "automation-os-task-effect-ledger-"));
+process.env.AUTOMATION_OS_DB = join(tempRoot, "automation-os.sqlite");
+process.env.AUTOMATION_OS_ARTIFACT_ROOT = join(tempRoot, "artifacts");
+process.env.NODE_TEST_CONTEXT = "1";
+
+const { querySql } = await import("../db/client.js");
+const { completeDurableTaskEffect, reserveDurableTaskEffect, transitionDurableTaskEffect } = await import("../taskContracts/taskEffectLedger.js");
+const { declareSourceOfTruth } = await import("../runs/sourceOfTruth.js");
 
 const hash = "a".repeat(64);
 const suffix = Date.now().toString(36);

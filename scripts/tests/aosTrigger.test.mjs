@@ -18,6 +18,8 @@ function envWithoutTokens(extra = {}) {
   delete env.AOS_TRIGGER_SERVICE_IDENTITY;
   delete env.AUTOMATION_OS_WRITE_TOKEN;
   delete env.AOS_TRIGGER_TOKEN_FILE;
+  delete env.AOS_TRIGGER_COMPANION_TASK_ID;
+  delete env.CODEX_THREAD_ID;
   return env;
 }
 
@@ -66,6 +68,7 @@ test("loopback trigger may run without a token and preserves no-effect response"
     assert.equal(result.status, 0, result.stderr);
     assert.equal(jsonStdout(result).external_action_executed, false);
     assert.equal(request?.headers.authorization, undefined);
+    assert.equal(request?.headers["x-automation-os-local-no-effect"], "1");
     assert.match(request?.headers["idempotency-key"] ?? "", /^aos-trigger-/u);
   } finally {
     await new Promise((resolve) => server.close(resolve));
@@ -106,6 +109,42 @@ test("optional input bundle is carried through the no-effect trigger without bei
     await new Promise((resolve) => server.close(resolve));
     fs.rmSync(bundleDir, { recursive: true, force: true });
   }
+});
+
+test("current Codex task id is bound to the portable no-effect trigger", async () => {
+  let requestBody = "";
+  const { server, baseUrl } = await listen((req, res) => {
+    req.setEncoding("utf8");
+    req.on("data", (chunk) => { requestBody += chunk; });
+    req.on("end", () => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ ok: true, schema: "aos.portable_workflow_trigger.v1", accepted: true, queued: true, portable: true, worker_protocol: "mac_worker_polling_required", external_action_executed: false }));
+    });
+  });
+  try {
+    const triggerEnv = envWithoutTokens();
+    triggerEnv.CODEX_THREAD_ID = "01a03cec-7585-7823-9114-d504e9161bc8";
+    const result = await runTrigger(
+      ["--company", "company-a", "--automation", "automation-a", "--base-url", baseUrl],
+      triggerEnv
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const request = JSON.parse(requestBody);
+    assert.equal(request.companion_task_id, "01a03cec-7585-7823-9114-d504e9161bc8");
+    assert.doesNotMatch(result.stdout, /01a03cec-7585-7823-9114-d504e9161bc8/u);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("invalid companion task id stops before dispatch", async () => {
+  const result = await runTrigger(
+    ["--company", "company-a", "--automation", "automation-a", "--companion-task-id", "../foreign-task"],
+    envWithoutTokens()
+  );
+  assert.equal(result.status, 2);
+  assert.equal(jsonStdout(result).exact_blocker, "aos_trigger_companion_task_id_invalid");
+  assert.equal(jsonStdout(result).external_action_executed, false);
 });
 
 test("input bundle files fail closed when they are not private regular files", async () => {

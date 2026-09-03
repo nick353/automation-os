@@ -21,7 +21,12 @@ import { sanitizeDashboardRows } from "../dashboardSanitizer.js";
 import { dbBackend, execSql, insert, makeId, nowIso, querySql, querySqlAsync, runSqlScriptAsync, sqlValue, type SqlValue } from "../db/client.js";
 import { decomposeGoal, PlannedTask } from "../planner/decompose.js";
 import { createApprovalRequest, requiresApproval } from "./approvalGate.js";
-import { runDailyAiRegisteredRunner } from "./dailyAiRegisteredRunner.js";
+import {
+  DAILY_AI_BACKEND_SNAPSHOT_MISMATCH_BLOCKER,
+  inspectDailyAiBackendSnapshot,
+  runDailyAiRegisteredRunner
+} from "./dailyAiRegisteredRunner.js";
+import { isWebOperationBackendAdapterBound, type WebOperationAdapter } from "./webOperationBackendAdapters.js";
 import { allocateParallelLanes, LaneAllocation } from "./laneManager.js";
 import { browserUseLaneFor, profileLockPathFor } from "../serviceReadiness/browserUseLifecycle.js";
 import { runNisenPrintsRegisteredRunner } from "./nisenPrintsRegisteredRunner.js";
@@ -31,6 +36,10 @@ import {
   jobManagerBrowserUseCliArtifactSize,
   runJobManagerBrowserUseCliRegisteredRunner
 } from "./jobManagerBrowserUseCliRegisteredRunner.js";
+import {
+  jobManagerChromePluginArtifactSize,
+  runJobManagerChromePluginRegisteredRunner
+} from "./jobManagerChromePluginRegisteredRunner.js";
 import { resolveRunContract, RUN_CONTRACT_VERSION, RunContract } from "./runContracts.js";
 import { runSnsMultiPosterRegisteredRunner, snsMultiPosterArtifactSize } from "./snsMultiPosterRegisteredRunner.js";
 import { registeredBrowserWorkflowCommonBoundaryBlocker } from "./registeredBrowserBoundary.js";
@@ -47,6 +56,12 @@ import {
 import { BROWSER_USE_HELPER_PATH, BROWSER_USE_RUNTIME_CONFIG_PATH } from "../serviceReadiness/browserUseCanonical.js";
 import { redactWorkerOutput, resolveWorkerWorkspacePath, safeWorkerEnvironment } from "../security/processEnvironment.js";
 import { PORTABLE_EXECUTION_SOURCE } from "./portableWorkerIsolation.js";
+import {
+  buildWebOperationBackendRunSnapshot,
+  WEB_OPERATION_BACKENDS,
+  type WebOperationBackend
+} from "./webOperationBackendSettings.js";
+import { buildAosExecutionContext } from "./executionContext.js";
 import { runPortableExternalWorker } from "./portableExternalWorker.js";
 import {
   PORTABLE_EXTERNAL_EFFECTS_DISABLED_BLOCKER,
@@ -63,6 +78,7 @@ import {
   buildPortableTargetBoundApprovalReceipt,
   portableBusinessTargetDigest,
   portableExternalApprovalResourceLocks,
+  type PortableBrowserSurface,
   type PortableExternalApprovalBindingV1
 } from "./portableExternalApprovalBinding.js";
 import {
@@ -134,6 +150,7 @@ export type CommandRunPlan = {
 type StepRow = {
   id: string;
   run_id: string;
+  company_id: string | null;
   name: string;
   status: string;
   lane_id: string | null;
@@ -738,6 +755,8 @@ export type StartCommandRunOptions = {
   metadata?: Record<string, unknown>;
   /** Internal AOS-owned routing snapshot for fixed portable workflows. */
   executionRouting?: ExecutionRoutingSnapshot;
+  /** Internal immutable browser backend snapshot selected before run creation. */
+  webOperationBackendSnapshot?: ReturnType<typeof buildWebOperationBackendRunSnapshot>;
   deferWorker?: boolean;
   companyId?: string | null;
   prepareOnly?: boolean;
@@ -745,6 +764,10 @@ export type StartCommandRunOptions = {
   referenceWorkflowCanary?: boolean;
   /** Internal preallocated run id used to bind artifacts before queue admission. */
   runId?: string;
+  /** Company-scoped registered automation that owns this run. */
+  automationId?: string | null;
+  /** Pinned version selected by the schedule, when available. */
+  automationVersionId?: string | null;
 };
 
 function resolveAuthorizedCompanyId(options: StartCommandRunOptions): string | null {
@@ -754,6 +777,12 @@ function resolveAuthorizedCompanyId(options: StartCommandRunOptions): string | n
     throw new Error("company_id_required");
   }
   return companyId;
+}
+
+function resolveOptionalBindingId(value: string | null | undefined): string | null {
+  if (value === undefined || value === null) return null;
+  const normalized = value.trim();
+  return normalized || null;
 }
 
 function getRunCompanyId(runId: string): string | null {
@@ -779,14 +808,30 @@ async function startCommandRunPostgresFast(input: {
   metadata: Record<string, unknown>;
   referenceWorkflowCanary: boolean;
   companyId: string | null;
+  automationId: string | null;
+  automationVersionId: string | null;
   runId: string;
   now: string;
   serviceReadinessWorkflowId: string | null;
   serviceReadinessRootId: string | null;
+  backendSnapshot: ReturnType<typeof buildWebOperationBackendRunSnapshot>;
 }): Promise<CommandRunSummary> {
-  const { command, options, plan, routeDecision, metadata, referenceWorkflowCanary, companyId, runId, now, serviceReadinessWorkflowId, serviceReadinessRootId } = input;
+  const { command, options, plan, routeDecision, metadata, referenceWorkflowCanary, companyId, automationId, automationVersionId, runId, now, serviceReadinessWorkflowId, serviceReadinessRootId, backendSnapshot } = input;
+  const selectedWebBackend = backendSnapshot.web_operation_backend.resolved_backend;
+  const selectedBrowserSurface = backendSnapshot.web_operation_backend.browser_surface;
+  const laneBindings = plan.lanes.map((lane) => ({
+    lifecycle: lane.lifecycle,
+    reserved_port: lane.cdpPort,
+    profile_dir: lane.profileDir,
+    session: lane.browserUseSession,
+    surface: selectedBrowserSurface,
+    backend: selectedWebBackend,
+    allocation: lane.lifecycle === "scheduled" ? "workflow_reserved" : "run_derived",
+    cleanup: "owner_process_port_profile_flow_lease"
+  }));
   const runMetadata = {
     ...metadata,
+    ...backendSnapshot,
     command,
     ...(referenceWorkflowCanary ? { reference_workflow_canary: true } : {}),
     plan,
@@ -796,23 +841,16 @@ async function startCommandRunPostgresFast(input: {
       ? {
           service_readiness_root_id: serviceReadinessRootId,
           service_readiness_workflow_id: serviceReadinessWorkflowId,
-          service_readiness_surface: "browser_use_cli",
+          service_readiness_surface: selectedBrowserSurface,
           service_readiness_capability_mode: "read_only",
           service_readiness_external_action_executed: false,
           service_readiness_legacy_surfaces_forbidden: true,
           service_readiness_prior_receipt_reuse: false
         }
       : {}),
-    ai_adapters: ["codex_cli", "chatgpt_subscription", "browser_use_cli"],
-    browser_use_lane_bindings: plan.lanes.map((lane) => ({
-      lifecycle: lane.lifecycle,
-      reserved_port: lane.cdpPort,
-      profile_dir: lane.profileDir,
-      session: lane.browserUseSession,
-      surface: "browser_use_cli",
-      allocation: lane.lifecycle === "scheduled" ? "workflow_reserved" : "run_derived",
-      cleanup: "owner_process_port_profile_flow_lease"
-    })),
+    ai_adapters: ["codex_cli", "chatgpt_subscription", selectedWebBackend],
+    web_operation_lane_bindings: laneBindings,
+    ...(selectedWebBackend === "browser_use_cli" ? { browser_use_lane_bindings: laneBindings } : {}),
     openai_api: "not_required"
   };
   const stepRows = plan.tasks.map((task, index) => {
@@ -828,9 +866,10 @@ async function startCommandRunPostgresFast(input: {
       adapter: task.adapter,
       parallel_safe: task.parallelSafe,
       ...(typeof metadata.read_only_stage === "string" ? { read_only_stage: metadata.read_only_stage } : {}),
+      ...(metadata.execution_context ? { execution_context: metadata.execution_context } : {}),
       routing_source: routeDecision.source,
       routing_controller: routeDecision.controller.name,
-      ...(serviceReadinessWorkflowId
+      ...(serviceReadinessWorkflowId && (selectedWebBackend === "browser_use_cli" || referenceWorkflowCanary)
         ? {
             service_readiness_runtime_binding: buildBrowserUseRuntimeBindingForLane({
               runId,
@@ -863,7 +902,7 @@ async function startCommandRunPostgresFast(input: {
   const statements: string[] = [
     `INSERT INTO runs
      (id, company_id, automation_id, automation_version_id, name, status, objective, created_at, updated_at, metadata_json, execution_source, quarantined)
-     VALUES (${sqlValue(runId)}, ${sqlValue(companyId)}, ${sqlValue(referenceWorkflowCanary ? "reference_workflow_canary" : null)}, NULL,
+     VALUES (${sqlValue(runId)}, ${sqlValue(companyId)}, ${sqlValue(referenceWorkflowCanary ? "reference_workflow_canary" : automationId)}, ${sqlValue(referenceWorkflowCanary ? null : automationVersionId)},
              ${sqlValue(command.slice(0, 72) || "Automation OS command")}, ${sqlValue(runStatus)}, ${sqlValue(command)},
              ${sqlValue(now)}, ${sqlValue(now)}, ${sqlValue(runMetadata)}, ${sqlValue(PORTABLE_EXECUTION_SOURCE)}, 0)`
   ];
@@ -1049,10 +1088,42 @@ export async function startCommandRun(command: string, options: StartCommandRunO
       source: inferExecutionRoutingSource(options.metadata),
       phase: "route_decision"
     });
-  const metadata = sanitizeRunMetadata(options.metadata);
+  const baseMetadata = sanitizeRunMetadata(options.metadata);
   const referenceWorkflowCanary = options.referenceWorkflowCanary === true;
+  const backendSnapshot = options.webOperationBackendSnapshot
+    ?? buildWebOperationBackendRunSnapshot(referenceWorkflowCanary ? "browser_use_cli" : undefined);
+  const selectedWebBackend = backendSnapshot.web_operation_backend.resolved_backend;
+  const selectedBrowserSurface = backendSnapshot.web_operation_backend.browser_surface;
+  const laneBindings = plan.lanes.map((lane) => ({
+    lifecycle: lane.lifecycle,
+    reserved_port: lane.cdpPort,
+    profile_dir: lane.profileDir,
+    session: lane.browserUseSession,
+    surface: selectedBrowserSurface,
+    backend: selectedWebBackend,
+    allocation: lane.lifecycle === "scheduled" ? "workflow_reserved" : "run_derived",
+    cleanup: "owner_process_port_profile_flow_lease"
+  }));
   const companyId = resolveAuthorizedCompanyId(options);
+  const automationId = resolveOptionalBindingId(options.automationId);
+  const automationVersionId = resolveOptionalBindingId(options.automationVersionId);
   const runId = options.runId ?? makeId("run");
+  const metadata = {
+    ...baseMetadata,
+    execution_context: buildAosExecutionContext({
+      runId,
+      taskId: typeof baseMetadata.task_id === "string" && baseMetadata.task_id.trim() ? baseMetadata.task_id : runId,
+      ownerId: typeof baseMetadata.owner_id === "string" && baseMetadata.owner_id.trim() ? baseMetadata.owner_id : undefined,
+      generation: typeof baseMetadata.generation === "string" ? baseMetadata.generation : null,
+      route: {
+        backend: selectedWebBackend,
+        surface: selectedBrowserSurface,
+      },
+      effectState: plan.approvalRequired ? "planned" : "none",
+      reconciliationState: "not_required",
+      handoffState: "none",
+    }),
+  };
   const serviceReadinessWorkflowId = referenceWorkflowIdFromMetadata(metadata);
   const serviceReadinessRootId = serviceReadinessWorkflowId ? deriveServiceReadinessRootId(runId) : null;
   const now = nowIso();
@@ -1068,7 +1139,10 @@ export async function startCommandRun(command: string, options: StartCommandRunO
       runId,
       now,
       serviceReadinessWorkflowId,
-      serviceReadinessRootId
+      serviceReadinessRootId,
+      automationId,
+      automationVersionId,
+      backendSnapshot
     });
     if (options.deferWorker) return fastResult;
     await runWorkerCycle(runId);
@@ -1076,7 +1150,8 @@ export async function startCommandRun(command: string, options: StartCommandRunO
   }
   insert("runs", {
     id: runId,
-    ...(referenceWorkflowCanary ? { automation_id: "reference_workflow_canary" } : {}),
+    automation_id: referenceWorkflowCanary ? "reference_workflow_canary" : automationId,
+    automation_version_id: referenceWorkflowCanary ? null : automationVersionId,
     company_id: companyId,
     name: command.slice(0, 72) || "Automation OS command",
     status: options.prepareOnly ? "preparing" : plan.approvalRequired ? "waiting_approval" : "queued",
@@ -1085,6 +1160,7 @@ export async function startCommandRun(command: string, options: StartCommandRunO
     updated_at: now,
     metadata_json: {
       ...metadata,
+      ...backendSnapshot,
       command,
       ...(referenceWorkflowCanary ? { reference_workflow_canary: true } : {}),
       plan,
@@ -1094,23 +1170,16 @@ export async function startCommandRun(command: string, options: StartCommandRunO
         ? {
             service_readiness_root_id: serviceReadinessRootId,
             service_readiness_workflow_id: serviceReadinessWorkflowId,
-            service_readiness_surface: "browser_use_cli",
+            service_readiness_surface: selectedBrowserSurface,
             service_readiness_capability_mode: "read_only",
             service_readiness_external_action_executed: false,
             service_readiness_legacy_surfaces_forbidden: true,
             service_readiness_prior_receipt_reuse: false
           }
         : {}),
-      ai_adapters: ["codex_cli", "chatgpt_subscription", "browser_use_cli"],
-      browser_use_lane_bindings: plan.lanes.map((lane) => ({
-        lifecycle: lane.lifecycle,
-        reserved_port: lane.cdpPort,
-        profile_dir: lane.profileDir,
-        session: lane.browserUseSession,
-        surface: "browser_use_cli",
-        allocation: lane.lifecycle === "scheduled" ? "workflow_reserved" : "run_derived",
-        cleanup: "owner_process_port_profile_flow_lease"
-      })),
+      ai_adapters: ["codex_cli", "chatgpt_subscription", selectedWebBackend],
+      web_operation_lane_bindings: laneBindings,
+      ...(selectedWebBackend === "browser_use_cli" ? { browser_use_lane_bindings: laneBindings } : {}),
       openai_api: "not_required"
     }
   });
@@ -1158,10 +1227,11 @@ export async function startCommandRun(command: string, options: StartCommandRunO
         collision_override_required: task.collisionWith.length > 0,
         adapter: task.adapter,
         parallel_safe: task.parallelSafe,
-        ...(typeof metadata.read_only_stage === "string" ? { read_only_stage: metadata.read_only_stage } : {}),
+        ...(typeof (metadata as Record<string, unknown>).read_only_stage === "string" ? { read_only_stage: (metadata as Record<string, unknown>).read_only_stage } : {}),
+        ...(metadata.execution_context ? { execution_context: metadata.execution_context } : {}),
         routing_source: routeDecision.source,
         routing_controller: routeDecision.controller.name,
-        ...(serviceReadinessWorkflowId
+        ...(serviceReadinessWorkflowId && (selectedWebBackend === "browser_use_cli" || referenceWorkflowCanary)
           ? {
                 service_readiness_runtime_binding: buildBrowserUseRuntimeBindingForLane({
                   runId,
@@ -1223,7 +1293,7 @@ export async function resumeRunAfterApproval(runId: string) {
 export async function runWorkerOnce(runId?: string) {
   const runIds = runId
     ? querySql<{ id: string }>(`SELECT id FROM runs WHERE id=${sqlValue(runId)} AND execution_source=${sqlValue(PORTABLE_EXECUTION_SOURCE)} AND quarantined=0 AND NOT EXISTS (SELECT 1 FROM durable_jobs WHERE durable_jobs.run_id=runs.id)`).map((row) => row.id)
-    : querySql<{ id: string }>(`SELECT id FROM runs WHERE status IN ('queued', 'running', 'waiting_approval') AND execution_source=${sqlValue(PORTABLE_EXECUTION_SOURCE)} AND quarantined=0 AND NOT EXISTS (SELECT 1 FROM durable_jobs WHERE durable_jobs.run_id=runs.id) ORDER BY created_at ASC`).map(
+    : querySql<{ id: string }>(`SELECT id FROM runs WHERE (status IN ('queued', 'running', 'waiting_approval') OR (status='blocked' AND EXISTS (SELECT 1 FROM approvals WHERE approvals.run_id=runs.id AND approvals.status='rejected'))) AND execution_source=${sqlValue(PORTABLE_EXECUTION_SOURCE)} AND quarantined=0 AND NOT EXISTS (SELECT 1 FROM durable_jobs WHERE durable_jobs.run_id=runs.id) ORDER BY created_at ASC`).map(
       (row) => row.id
     );
   const summaries = [];
@@ -1327,7 +1397,8 @@ async function runPortableLocalWorkerCycle(runId: string) {
 
   const receipt = runPortableLocalWorkflowReadOnly({
     workflowId,
-    workerRole: process.env.AUTOMATION_OS_WORKER_ROLE?.trim()
+    workerRole: process.env.AUTOMATION_OS_WORKER_ROLE?.trim(),
+    companyId: run.company_id ?? undefined
   });
   const artifact = writeNamedWorkerArtifact(runId, `${step.id}-portable-local-worker.json`, {
     schema: "aos.portable_local_worker_receipt.v1",
@@ -1440,7 +1511,7 @@ export async function runWorkerCycle(runId: string) {
   const hasPendingApproval = approvals.some((approval) => approval.status === "pending");
   const protectedStepsAllowed = approvalsAllowProtectedSteps(approvals);
   if (hasRejectedApproval) {
-    updateRunStatus(runId, "blocked", { stop_reason: "approval_rejected" });
+    blockRunAfterApprovalRejectInWorker(runId);
     return summarizeRun(runId);
   }
   if (hasCancelledApproval) {
@@ -1487,6 +1558,39 @@ export async function runWorkerCycle(runId: string) {
       }
     }
     const readOnlyStage = portableExternalReadOnlyStage(runId, metadata);
+    const portableSelectedAdapter = String(metadata.adapter ?? "local_worker") as WorkerAdapter;
+    const portableSelectedWebBackendSnapshot = selectedWebOperationBackendSnapshotForRun(runId);
+    const portableSelectedWebBackend = selectedWebOperationBackendForRun(runId);
+    const portableBackendSnapshotBlocker = WEB_OPERATION_ADAPTERS.has(portableSelectedAdapter)
+      && readOnlyStage === null
+      && !isPortableWorkerCanaryRun(runId)
+      ? dailyAiBackendSnapshotBlocker(portableSelectedAdapter, portableSelectedWebBackendSnapshot, readOnlyStage, false, metadata)
+      : null;
+    if (portableBackendSnapshotBlocker) {
+      blockUnboundWebOperationBackend({
+        step,
+        metadata,
+        selectedAdapter: portableSelectedAdapter,
+        selectedWebBackend: portableSelectedWebBackend,
+        exactBlocker: portableBackendSnapshotBlocker,
+        now: nowIso()
+      });
+      break;
+    }
+    const portableWebOperationBackendUnbound = WEB_OPERATION_ADAPTERS.has(portableSelectedAdapter)
+      && readOnlyStage === null
+      && !isPortableWorkerCanaryRun(runId)
+      && !isWebOperationBackendAdapterBound(portableSelectedWebBackend, portableSelectedAdapter as WebOperationAdapter);
+    if (portableWebOperationBackendUnbound) {
+      blockUnboundWebOperationBackend({
+        step,
+        metadata,
+        selectedAdapter: portableSelectedAdapter,
+        selectedWebBackend: portableSelectedWebBackend,
+        now: nowIso()
+      });
+      break;
+    }
     if (portableRemoteBusinessMacWorkerRequired(runId, metadata)) {
       // The Zeabur control plane may create the approval, but it must never
       // execute Browser Use. The approved business run is delivered through
@@ -2517,7 +2621,13 @@ function portableExternalReadOnlyStage(runId: string, metadata: Record<string, u
   const stage = invocationRecord.read_only_stage ?? workerRecord.read_only_stage ?? metadata.read_only_stage;
   const workflowId = invocationRecord.workflow_id ?? workerRecord.workflow_id;
   if (stage === "candidate_supply" && workflowId === "job-application-manager") return "candidate_supply";
-  if (stage === "reference_readback" && (workflowId === "daily-ai-research-publish-run" || workflowId === "nisenprints-daily-product-canva-printify-etsy-pinterest")) {
+  if (stage === "reference_readback" && (
+    workflowId === "daily-ai-research-publish-run"
+    || workflowId === "nisenprints-daily-product-canva-printify-etsy-pinterest"
+    || workflowId === "prompt-transfer-ukiyoe"
+    || workflowId === "sns-multi-poster-ukiyoe"
+    || workflowId === "x-authenticated-browser-lane"
+  )) {
     return "reference_readback";
   }
   return null;
@@ -2611,46 +2721,80 @@ function ensurePortableExternalApproval(input: {
   const approvalStatus = approvalStatusForPortableBinding(approvals, input, binding, resourceLocks[1]);
   if (approvalStatus) return approvalStatus;
 
-  const approval = createApprovalRequest({
-    runId: input.runId,
-    title: `Approve external effects: ${input.workflowId}`,
-    requestedBy: "automation-os-portable-worker",
-    approvalGroupId: `${input.runId}_portable_external_approval_group`,
-    resourceLocks,
-    priority: "high"
-  });
   const inputBundle = portableApprovalInputBundle(input.metadata);
   const payloadHash = typeof inputBundle.payload_hash === "string" && /^[a-f0-9]{64}$/u.test(inputBundle.payload_hash)
     ? inputBundle.payload_hash
     : null;
   const approvalExpiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
-  insert("approvals", {
-    id: approval.id,
-    run_id: approval.runId,
-    title: approval.title,
-    requested_by: approval.requestedBy,
-    status: approval.status,
-    priority: approval.priority,
-    company_id: getRunCompanyId(input.runId),
-    step_id: input.step.id,
-    approval_group_id: approval.approvalGroupId,
-    action_kind: binding.effect_stage,
-    target_account_ref_id: typeof inputBundle.account_ref === "string" ? inputBundle.account_ref : `company:${binding.company_id}`,
-    payload_hash: payloadHash,
-    policy_version: "automation_os_portable_external_approval_binding.v1",
-    expires_at: approvalExpiresAt,
-    resource_locks_json: approval.resourceLocks,
-    created_at: approval.createdAt,
-    decided_at: null,
-    decision_note: null
+  // A fast worker can enter the effect gate before the target bundle has been
+  // materialized.  The no-target path creates one broad pending row in that
+  // case.  Upgrade that exact pending row in place once the target is
+  // available, instead of creating a second approval.  Keeping one row and
+  // one id preserves the user's single decision and prevents the global
+  // "all approvals must be approved" check from leaving the run pending
+  // forever on an obsolete broad row.  Approved/rejected/foreign rows are
+  // deliberately never upgraded.
+  const broadResourceLock = `portable_external:${input.workflowId}`;
+  const pendingBroadApproval = approvals.find((approval) => {
+    if (approval.status !== "pending"
+      || approval.company_id !== binding.company_id
+      || approval.run_id !== input.runId
+      || approval.step_id !== null
+      || approval.action_kind !== null
+      || approval.policy_version !== null) return false;
+    const locks = parseJson<unknown>(approval.resource_locks_json, []);
+    return Array.isArray(locks) && locks.length === 1 && locks[0] === broadResourceLock;
   });
+  const approval = pendingBroadApproval
+    ? null
+    : createApprovalRequest({
+        runId: input.runId,
+        title: `Approve external effects: ${input.workflowId}`,
+        requestedBy: "automation-os-portable-worker",
+        approvalGroupId: `${input.runId}_portable_external_approval_group`,
+        resourceLocks,
+        priority: "high"
+      });
+  if (pendingBroadApproval) {
+    execSql(
+      `UPDATE approvals SET step_id=${sqlValue(input.step.id)}, action_kind=${sqlValue(binding.effect_stage)},
+              target_account_ref_id=${sqlValue(typeof inputBundle.account_ref === "string" ? inputBundle.account_ref : `company:${binding.company_id}`)},
+              payload_hash=${sqlValue(payloadHash)}, policy_version=${sqlValue("automation_os_portable_external_approval_binding.v1")},
+              expires_at=${sqlValue(approvalExpiresAt)}, resource_locks_json=${sqlValue(resourceLocks)}
+         WHERE id=${sqlValue(pendingBroadApproval.id)} AND run_id=${sqlValue(input.runId)} AND company_id=${sqlValue(binding.company_id)} AND status='pending'`
+    );
+  } else {
+    if (!approval) throw new Error("portable_external_approval_create_failed");
+    insert("approvals", {
+      id: approval.id,
+      run_id: approval.runId,
+      title: approval.title,
+      requested_by: approval.requestedBy,
+      status: approval.status,
+      priority: approval.priority,
+      company_id: getRunCompanyId(input.runId),
+      step_id: input.step.id,
+      approval_group_id: approval.approvalGroupId,
+      action_kind: binding.effect_stage,
+      target_account_ref_id: typeof inputBundle.account_ref === "string" ? inputBundle.account_ref : `company:${binding.company_id}`,
+      payload_hash: payloadHash,
+      policy_version: "automation_os_portable_external_approval_binding.v1",
+      expires_at: approvalExpiresAt,
+      resource_locks_json: approval.resourceLocks,
+      created_at: approval.createdAt,
+      decided_at: null,
+      decision_note: null
+    });
+  }
+  const approvalId = pendingBroadApproval?.id ?? approval?.id;
+  if (!approvalId) throw new Error("portable_external_approval_id_missing");
   const metadata = {
     ...input.metadata,
     portable_workflow_invocation: runMetadata.portable_workflow_invocation,
     portable_input_bundle: runMetadata.portable_input_bundle,
     portable_target_bound_approval_binding: binding,
     portable_target_bound_approval_receipt: buildPortableTargetBoundApprovalReceipt({
-      approvalId: approval.id,
+      approvalId,
       approvalStatus: "pending",
       binding
     }),
@@ -2664,7 +2808,7 @@ function ensurePortableExternalApproval(input: {
     ...runMetadata,
     portable_target_bound_approval_binding: binding,
     portable_target_bound_approval_receipt: metadata.portable_target_bound_approval_receipt,
-    approval_id: approval.id,
+    approval_id: approvalId,
     approval_status: "pending",
     requires_approval: true,
     approval_required_reason: "portable_external_effect_policy_approval_required",
@@ -2791,6 +2935,11 @@ function localPortableExternalEffectAuthority(input: {
     : "";
   if (!payloadHash) return null;
   try {
+    const backend = isRecord(input.runMetadata.web_operation_backend) ? input.runMetadata.web_operation_backend : null;
+    const browserSurface = String(backend?.resolved_backend || backend?.requested_backend || "browser_use_cli") === "chrome_plugin"
+      ? String(isRecord(backend?.chrome_profile) ? backend?.chrome_profile.surface : "signed_chrome_extension_profile2")
+      : "browser_use_cli";
+    if (browserSurface !== "browser_use_cli" && browserSurface !== "signed_chrome_extension_profile2") return null;
     return issuePortableExternalEffectAuthorityV1({
       companyId: input.companyId,
       workflowId: input.workflowId,
@@ -2802,6 +2951,7 @@ function localPortableExternalEffectAuthority(input: {
       targetDigest,
       inputBundleSha256,
       payloadHash,
+      browserSurface: browserSurface as PortableBrowserSurface,
       leaseExpiresAt: new Date(Date.now() + 10 * 60_000).toISOString()
     });
   } catch {
@@ -2838,6 +2988,13 @@ function portableExternalApprovalBindingForRun(
   const bundleSha = typeof bundleRecord.sha256 === "string" ? bundleRecord.sha256 : "";
   const effectStage = typeof invocationRecord.effect_stage === "string" ? invocationRecord.effect_stage : "";
   const idempotencyKey = typeof invocationRecord.idempotency_key === "string" ? invocationRecord.idempotency_key : "";
+  const backend = isRecord(metadata.web_operation_backend) ? metadata.web_operation_backend : null;
+  const browserSurface = String(backend?.resolved_backend || backend?.requested_backend || "browser_use_cli") === "chrome_plugin"
+    ? String(isRecord(backend?.chrome_profile) ? backend?.chrome_profile.surface : "signed_chrome_extension_profile2")
+    : "browser_use_cli";
+  if (browserSurface !== "browser_use_cli" && browserSurface !== "signed_chrome_extension_profile2") {
+    throw new Error("portable_external_approval_browser_surface_invalid");
+  }
   return buildPortableExternalApprovalBinding({
     companyId: getRunCompanyId(runId) || "",
     workflowId,
@@ -2846,7 +3003,8 @@ function portableExternalApprovalBindingForRun(
     effectStage,
     idempotencyKey,
     inputBundleSha256: bundleSha,
-    inputBundle
+    inputBundle,
+    browserSurface: browserSurface as PortableBrowserSurface
   });
 }
 
@@ -2960,10 +3118,14 @@ export function materializePortableInputBundleForMacWorker(input: {
   runId: string;
   workflowId: PortableWorkflowId;
   input: Record<string, unknown>;
+  sourceBundlePath?: string | null;
+  sourceBundleSha256?: string | null;
 }): string {
   const allowedKeys = new Set([
-    "job_url", "application_url", "candidate_key", "bucket", "sequence", "attempt",
-    "source_snapshot_id", "supply_run_id", "remaining", "margin", "company", "role"
+    "phone", "account_ref", "target_key", "payload_hash", "content_key", "product_key", "asset_manifest_id",
+    "job_url", "job_id", "application_url", "candidate_key", "bucket", "sequence", "attempt",
+    "source_snapshot_id", "source_snapshot_expires_at", "supply_run_id", "remaining", "margin", "company", "role",
+    "audience", "resume_locale", "resume_sha256", "owner_ref", "authority_ref", "input_bundle_ref", "target_digest", "source_state_digest"
   ]);
   const safeInput: Record<string, unknown> = {};
   for (const [key, raw] of Object.entries(input.input)) {
@@ -2994,12 +3156,46 @@ export function materializePortableInputBundleForMacWorker(input: {
   }
   mkdirSync(runRoot, { recursive: true, mode: 0o700 });
   chmodSync(runRoot, 0o700);
-  const bytes = `${JSON.stringify({
-    schema: "automation_os_portable_workflow_input_bundle.v1",
-    workflow_id: input.workflowId,
-    run_id: input.runId,
-    input: safeInput
-  }, null, 2)}\n`;
+  let bytes: string;
+  const sourceBundlePath = typeof input.sourceBundlePath === "string" && input.sourceBundlePath.trim()
+    ? resolve(input.sourceBundlePath)
+    : null;
+  if (sourceBundlePath) {
+    const sourceStat = lstatSync(sourceBundlePath);
+    if (sourceStat.isSymbolicLink() || !sourceStat.isFile() || sourceStat.nlink !== 1 || (sourceStat.mode & 0o777) !== 0o600) {
+      throw new Error("portable_external_input_bundle_source_invalid");
+    }
+    bytes = readFileSync(sourceBundlePath, "utf8");
+    const sourceSha256 = createHash("sha256").update(bytes).digest("hex");
+    if (input.sourceBundleSha256 && sourceSha256 !== input.sourceBundleSha256) {
+      throw new Error("portable_external_input_bundle_source_digest_invalid");
+    }
+    let sourceValue: unknown;
+    try {
+      sourceValue = JSON.parse(bytes);
+    } catch {
+      throw new Error("portable_external_input_bundle_source_invalid");
+    }
+    const sourceRecord = sourceValue && typeof sourceValue === "object" && !Array.isArray(sourceValue)
+      ? sourceValue as Record<string, unknown>
+      : null;
+    const sourceInput = sourceRecord?.input;
+    if (!sourceRecord
+      || sourceRecord.schema !== "automation_os_portable_workflow_input_bundle.v1"
+      || sourceRecord.workflow_id !== input.workflowId
+      || sourceRecord.run_id !== input.runId
+      || !sourceInput || typeof sourceInput !== "object" || Array.isArray(sourceInput)
+      || !isDeepStrictEqual(sourceInput, safeInput)) {
+      throw new Error("portable_external_input_bundle_source_binding_invalid");
+    }
+  } else {
+    bytes = `${JSON.stringify({
+      schema: "automation_os_portable_workflow_input_bundle.v1",
+      workflow_id: input.workflowId,
+      run_id: input.runId,
+      input: safeInput
+    }, null, 2)}\n`;
+  }
   const bundlePath = resolve(runRoot, "portable-input-bundle.v1.json");
   if (existsSync(bundlePath)) {
     const stat = lstatSync(bundlePath);
@@ -3018,7 +3214,7 @@ export function materializePortableInputBundleForMacWorker(input: {
         ? existing as Record<string, unknown>
         : null;
       const existingInput = existingRecord?.input;
-      if (!existingRecord
+      if (sourceBundlePath || !existingRecord
         || existingRecord.schema !== "automation_os_portable_workflow_input_bundle.v1"
         || existingRecord.workflow_id !== input.workflowId
         || existingRecord.run_id !== input.runId
@@ -3035,11 +3231,39 @@ export function materializePortableInputBundleForMacWorker(input: {
   return bundlePath;
 }
 
+function canonicalPortableInputBundleSourcePath(inputBundlePath: string | undefined, runId: string, expectedSha256: string | null): string | null {
+  const artifactRoot = resolve(process.env.AUTOMATION_OS_ARTIFACT_ROOT?.trim() || resolve(process.cwd(), "data", "artifacts"));
+  const candidates = [
+    inputBundlePath,
+    resolve(process.cwd(), "data", "artifacts", runId, "portable-input-bundle.v1.json"),
+    resolve(artifactRoot, "..", runId, "portable-input-bundle.v1.json"),
+    resolve(artifactRoot, runId, "portable-input-bundle.v1.json")
+  ].filter((candidate): candidate is string => typeof candidate === "string" && candidate.trim().length > 0);
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    const resolvedCandidate = resolve(candidate);
+    if (seen.has(resolvedCandidate)) continue;
+    seen.add(resolvedCandidate);
+    try {
+      const stat = lstatSync(resolvedCandidate);
+      if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1 || (stat.mode & 0o777) !== 0o600) continue;
+      const bytes = readFileSync(resolvedCandidate);
+      const sha256 = createHash("sha256").update(bytes).digest("hex");
+      if (!expectedSha256 || sha256 === expectedSha256) return resolvedCandidate;
+    } catch {
+      // A missing or mismatched candidate is not a source fallback; keep searching
+      // only the explicitly bounded AOS artifact roots.
+    }
+  }
+  return null;
+}
+
 async function completePortableExternalWorkerStep(input: {
   step: StepRow;
   metadata: Record<string, unknown>;
   selectedAdapter: WorkerAdapter;
   workflowId: PortableWorkflowId;
+  selectedWebBackend: WebOperationBackend;
   now: string;
   approvalGranted: boolean;
 }): Promise<RegisteredExecutionResult> {
@@ -3080,9 +3304,30 @@ async function completePortableExternalWorkerStep(input: {
   const inlineInput = inputBundle.input && typeof inputBundle.input === "object" && !Array.isArray(inputBundle.input)
     ? inputBundle.input as Record<string, unknown>
     : null;
+  const canonicalInputBundlePath = inlineInput
+    ? canonicalPortableInputBundleSourcePath(
+      inputBundlePath,
+      input.step.run_id,
+      typeof inputBundle.sha256 === "string" ? inputBundle.sha256 : null,
+    )
+    : null;
+  if (inlineInput && typeof inputBundle.sha256 === "string" && /^[a-f0-9]{64}$/u.test(inputBundle.sha256) && !canonicalInputBundlePath) {
+    throw new Error("portable_external_input_bundle_canonical_source_missing");
+  }
   const localInputBundlePath = inlineInput
-    ? materializePortableInputBundleForMacWorker({ runId: input.step.run_id, workflowId: input.workflowId, input: inlineInput })
+    ? materializePortableInputBundleForMacWorker({
+      runId: input.step.run_id,
+      workflowId: input.workflowId,
+      input: inlineInput,
+      sourceBundlePath: canonicalInputBundlePath,
+      sourceBundleSha256: typeof inputBundle.sha256 === "string" ? inputBundle.sha256 : null,
+    })
     : undefined;
+  const webOperationBackend = runMetadata.web_operation_backend
+    && typeof runMetadata.web_operation_backend === "object"
+    && !Array.isArray(runMetadata.web_operation_backend)
+    ? runMetadata.web_operation_backend as Record<string, unknown>
+    : null;
   const readOnlyStage = portableExternalReadOnlyStage(input.step.run_id, input.metadata);
   const effectAuthority = readOnlyStage === null && input.approvalGranted
     ? localPortableExternalEffectAuthority({
@@ -3106,7 +3351,9 @@ async function completePortableExternalWorkerStep(input: {
     webOperationIntent,
     browserGoalId,
     browserGoalStatePath,
-    browserGoalTerminal: true
+    browserGoalTerminal: true,
+    webOperationBackend,
+    requestedWebOperationBackend: input.selectedWebBackend
   });
   const businessCompletionVerified = readOnlyStage === null
     && result.response?.business_completion_verified === true;
@@ -3416,7 +3663,8 @@ function completePortableLocalWorkerStep(input: {
 }): RegisteredExecutionResult {
   const receipt = runPortableLocalWorkflowReadOnly({
     workflowId: input.workflowId,
-    workerRole: process.env.AUTOMATION_OS_WORKER_ROLE?.trim()
+    workerRole: process.env.AUTOMATION_OS_WORKER_ROLE?.trim(),
+    companyId: input.step.company_id ?? undefined
   });
   const artifact = writeNamedWorkerArtifact(input.step.run_id, `${input.step.id}-portable-local-worker.json`, {
     schema: "aos.portable_local_worker_receipt.v1",
@@ -3501,6 +3749,90 @@ function completePortableLocalWorkerStep(input: {
   };
 }
 
+const WEB_OPERATION_ADAPTERS = new Set<WorkerAdapter>([
+  "daily_ai_registered",
+  "nisenprints_registered",
+  "job_submit_registered",
+  "job_followup_registered",
+  "prompt_transfer_registered",
+  "sns_multi_poster_registered",
+  "x_authenticated_browser_lane_registered"
+]);
+
+function isWebOperationBackend(value: unknown): value is WebOperationBackend {
+  return typeof value === "string" && (WEB_OPERATION_BACKENDS as readonly string[]).includes(value);
+}
+
+function dailyAiBackendSnapshotBlocker(
+  adapter: WorkerAdapter,
+  snapshot: Record<string, unknown>,
+  readOnlyStage: string | null,
+  canary: boolean,
+  metadata?: Record<string, unknown>,
+): string | null {
+  if (
+    adapter !== "daily_ai_registered"
+    || readOnlyStage !== null
+    || canary
+    || metadata?.reconciled_from_stale_registered_summary === true
+  ) return null;
+  return inspectDailyAiBackendSnapshot(snapshot).blocker;
+}
+
+function selectedWebOperationBackendSnapshotForRun(runId: string): Record<string, unknown> {
+  const runMetadata = getRunMetadata(runId);
+  const snapshot = runMetadata.web_operation_backend;
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) {
+    return {
+      backend_snapshot_missing: true,
+      exact_blocker: "legacy_run_backend_snapshot_missing"
+    };
+  }
+  return snapshot as Record<string, unknown>;
+}
+
+function selectedWebOperationBackendForRun(runId: string): WebOperationBackend {
+  const snapshot = selectedWebOperationBackendSnapshotForRun(runId);
+  const resolved = snapshot.resolved_backend ?? snapshot.requested_backend;
+  return isWebOperationBackend(resolved) ? resolved : "browser_use_cli";
+}
+
+function blockUnboundWebOperationBackend(input: {
+  step: StepRow;
+  metadata: Record<string, unknown>;
+  selectedAdapter: WorkerAdapter;
+  selectedWebBackend: WebOperationBackend;
+  exactBlocker?: string;
+  now: string;
+}): void {
+  const exactBlocker = input.exactBlocker || "web_operation_backend_adapter_not_bound";
+  const routeContext = buildCanonicalRouteBlockContext({
+    step: input.step,
+    metadata: input.metadata,
+    adapter: input.selectedAdapter
+  });
+  blockStepForRouting(
+    input.step,
+    {
+      ...input.metadata,
+      adapter: input.selectedAdapter,
+      exact_blocker: exactBlocker,
+      web_operation_backend_blocker: `selected=${input.selectedWebBackend}:adapter=${input.selectedAdapter}`,
+      stop_reason: exactBlocker,
+      external_action_executed: false,
+      fallback_allowed: false
+    },
+    input.now,
+    exactBlocker,
+    routeContext.routeDecision ?? undefined,
+    routeContext.effectiveRouteReadback,
+    routeContext.adapterPolicy,
+    routeContext.workerMode,
+    routeContext.command,
+    routeContext.runnerSafety
+  );
+}
+
 async function completeWorkerStep(
   step: StepRow,
   metadata: Record<string, unknown>,
@@ -3516,11 +3848,46 @@ async function completeWorkerStep(
     return completePortableLocalWorkerStep({ step, metadata, selectedAdapter, workflowId: localWorkflowId, now });
   }
   const portableWorkflowId = portableWorkflowIdForWorkerAdapter(selectedAdapter);
+  const selectedWebBackendSnapshot = selectedWebOperationBackendSnapshotForRun(step.run_id);
+  const selectedWebBackend = selectedWebOperationBackendForRun(step.run_id);
+  const portableReadOnlyStage = portableWorkflowId
+    ? portableExternalReadOnlyStage(step.run_id, metadata)
+    : null;
+  const backendSnapshotBlocker = WEB_OPERATION_ADAPTERS.has(selectedAdapter)
+    && portableReadOnlyStage === null
+    && !isPortableWorkerCanaryRun(step.run_id)
+    ? dailyAiBackendSnapshotBlocker(selectedAdapter, selectedWebBackendSnapshot, portableReadOnlyStage, false, metadata)
+    : null;
+  const webOperationBackendUnbound = WEB_OPERATION_ADAPTERS.has(selectedAdapter)
+    // Reference/candidate readback is a no-effect Browser Use CLI contract;
+    // it is not an external business operation and must remain usable while
+    // the selected Chrome adapter is still being implemented.
+    && portableReadOnlyStage === null
+    && !isWebOperationBackendAdapterBound(selectedWebBackend, selectedAdapter as WebOperationAdapter);
+  if (backendSnapshotBlocker) {
+    blockUnboundWebOperationBackend({
+      step,
+      metadata,
+      selectedAdapter,
+      selectedWebBackend,
+      exactBlocker: backendSnapshotBlocker,
+      now
+    });
+    return undefined;
+  }
   if (portableWorkflowId && isPortableWorkerCanaryRun(step.run_id)) {
     return completePortableWorkerCanaryStep({ step, metadata, selectedAdapter, workflowId: portableWorkflowId, now });
   }
   if (portableWorkflowId && isPortableWorkerExternalRun(step.run_id)) {
-    return completePortableExternalWorkerStep({ step, metadata, selectedAdapter, workflowId: portableWorkflowId, now, approvalGranted });
+    // Portable external runs bypass the canonical command route below. Keep
+    // the backend selection gate in front of that bypass as well, otherwise a
+    // Chrome-selected run could silently reach the generic worker and lose
+    // the UI-selected adapter boundary.
+    if (webOperationBackendUnbound) {
+      blockUnboundWebOperationBackend({ step, metadata, selectedAdapter, selectedWebBackend, now });
+      return undefined;
+    }
+    return completePortableExternalWorkerStep({ step, metadata, selectedAdapter, workflowId: portableWorkflowId, selectedWebBackend, now, approvalGranted });
   }
   const routeContext = buildCanonicalRouteBlockContext({ step, metadata, adapter: selectedAdapter });
   if (!routeContext.routeDecision) {
@@ -3603,6 +3970,10 @@ async function completeWorkerStep(
     );
     return undefined;
   }
+  if (webOperationBackendUnbound) {
+    blockUnboundWebOperationBackend({ step, metadata, selectedAdapter, selectedWebBackend, now });
+    return undefined;
+  }
   execSql(
     `UPDATE run_steps SET status='running', started_at=COALESCE(started_at, ${sqlValue(now)}) WHERE id=${sqlValue(step.id)};
      UPDATE lanes SET status='active', progress=50, updated_at=${sqlValue(now)} WHERE id=${sqlValue(step.lane_id)};`
@@ -3636,7 +4007,7 @@ async function completeWorkerStep(
 
   if (selectedAdapter === "daily_ai_registered") {
     const runner_safety = runnerSafetyMetadata("billing_only");
-    const result = runDailyAiRegisteredRunner({ runId: step.run_id, startedAtMs: Date.now() });
+    const result = runDailyAiRegisteredRunner({ runId: step.run_id, startedAtMs: Date.now(), backendSnapshot: selectedWebBackendSnapshot });
     const summarySize = result.summaryPath && existsSync(result.summaryPath) ? statSync(result.summaryPath).size : 0;
     for (const proof of result.proofs) {
       insertRunProof(step.run_id, {
@@ -3797,7 +4168,12 @@ async function completeWorkerStep(
     const runner_safety = runnerSafetyMetadata("billing_only");
     const workflowId = selectedAdapter;
     const registeredWorkerMode = selectedAdapter === "job_submit_registered" ? "execute_job_submit_registered" : "execute_job_followup_registered";
-    const result = runJobManagerBrowserUseCliRegisteredRunner({ runId: step.run_id, workflowId });
+    const result = selectedWebBackend === "chrome_plugin"
+      ? runJobManagerChromePluginRegisteredRunner({ runId: step.run_id, workflowId })
+      : runJobManagerBrowserUseCliRegisteredRunner({ runId: step.run_id, workflowId });
+    const resultArtifactSize = selectedWebBackend === "chrome_plugin"
+      ? jobManagerChromePluginArtifactSize(result.artifactPath)
+      : jobManagerBrowserUseCliArtifactSize(result.artifactPath);
     for (const proof of result.proofs) {
       insertRunProof(step.run_id, {
         id: makeId("proof"),
@@ -3806,7 +4182,7 @@ async function completeWorkerStep(
         proof_type: proof.proofType,
         label: proof.label,
         uri: proof.uri,
-        size_bytes: jobManagerBrowserUseCliArtifactSize(result.artifactPath),
+        size_bytes: resultArtifactSize,
         created_at: nowIso(),
         metadata_json: proof.metadata ?? {}
       });
@@ -3830,6 +4206,7 @@ async function completeWorkerStep(
         route_readback_fingerprint: routeContext.routeReadback.fingerprint,
         adapter_policy: routeContext.adapterPolicy,
         registered_browser_use_cli_status: result.status,
+        web_operation_backend: selectedWebBackend,
         registered_browser_use_cli_artifact: pathToFileUri(result.artifactPath),
         registered_browser_use_cli_exit_status: result.exitStatus,
         registered_browser_use_cli_signal: result.signal,
@@ -3888,7 +4265,8 @@ async function completeWorkerStep(
           exit_status: result.exitStatus,
           signal: result.signal,
           stdout_tail: result.stdoutTail,
-          stderr_tail: result.stderrTail
+          stderr_tail: result.stderrTail,
+          web_operation_backend: selectedWebBackend
         }
       }
     };
@@ -5733,6 +6111,44 @@ function updateRunStatus(runId: string, status: string, metadata: Record<string,
   execSql(`UPDATE runs SET status=${sqlValue(status)}, updated_at=${sqlValue(nowIso())}, metadata_json=${sqlValue(merged)} WHERE id=${sqlValue(runId)};`);
 }
 
+function blockRunAfterApprovalRejectInWorker(runId: string) {
+  const current = querySql<{ company_id: string; metadata_json: string; status: string }>(
+    `SELECT company_id, metadata_json, status FROM runs WHERE id=${sqlValue(runId)} LIMIT 1`
+  )[0];
+  const currentMetadata = parseJson<Record<string, unknown>>(current?.metadata_json, {});
+  const canRepairBlockedRun = current?.status === "blocked" && currentMetadata.stop_reason === "approval_rejected";
+  if (!current || (!["waiting_approval", "queued", "running"].includes(current.status) && !canRepairBlockedRun)) return;
+  const now = nowIso();
+  const metadata = {
+    ...currentMetadata,
+    stop_reason: "approval_rejected",
+    exact_blocker: "approval_rejected",
+    external_action_executed: false
+  };
+  execSql(
+    `UPDATE runs
+     SET status='blocked', updated_at=${sqlValue(now)}, metadata_json=${sqlValue(metadata)}
+     WHERE id=${sqlValue(runId)};
+     UPDATE run_steps
+     SET status='blocked', completed_at=COALESCE(completed_at, ${sqlValue(now)})
+     WHERE run_id=${sqlValue(runId)} AND status IN ('waiting_approval', 'queued', 'running') AND completed_at IS NULL;
+     UPDATE lanes
+     SET status='blocked', health='blocked', current_task='blocked by rejected approval', updated_at=${sqlValue(now)}
+     WHERE run_id=${sqlValue(runId)};`
+  );
+  const existingBlockedEvent = querySql<{ count: number }>(
+    `SELECT COUNT(*) AS count FROM worker_events WHERE run_id=${sqlValue(runId)} AND event_type='run_blocked'`
+  )[0]?.count ?? 0;
+  if (!existingBlockedEvent) {
+    logWorkerEvent({
+      runId,
+      eventType: "run_blocked",
+      message: "Approval was rejected; the run was stopped before any external effect",
+      metadata: { stop_reason: "approval_rejected", exact_blocker: "approval_rejected", external_action_executed: false }
+    });
+  }
+}
+
 function getRunMetadata(runId: string): Record<string, unknown> {
   const current = querySql<{ metadata_json: string }>(`SELECT metadata_json FROM runs WHERE id=${sqlValue(runId)} LIMIT 1`)[0];
   return parseJson<Record<string, unknown>>(current?.metadata_json, {});
@@ -5912,7 +6328,7 @@ function blockStepForRouting(
   step: StepRow,
   metadata: Record<string, unknown>,
   now: string,
-  exactBlocker: NonNullable<ExecutionRoutingSnapshot["exactBlocker"]>,
+  exactBlocker: string,
   routeDecision?: ExecutionRoutingSnapshot,
   routeReadback?: ExecutionRoutingSnapshot,
   adapterPolicy?: WorkerAdapterPolicySnapshot,

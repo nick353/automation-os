@@ -1,6 +1,6 @@
-import { nowIso, querySql, sqlValue } from "../db/client.js";
-import { requireExistingServiceIdentity } from "../companies/repository.js";
-import { materializeDueAutomationOccurrences } from "./automationScheduler.js";
+import { nowIso, querySqlAsync, sqlValue } from "../db/client.js";
+import { requireExistingServiceIdentityAsync } from "../companies/repository.js";
+import { materializeDueAutomationOccurrencesAsync } from "./automationScheduler.js";
 import { materializeDuePortableAutomationOccurrences } from "./portableAutomationScheduler.js";
 import type { DurableScheduleOccurrence } from "./durableQueue.js";
 
@@ -41,7 +41,7 @@ type SchedulerInput = {
  */
 export async function runDurableAutomationSchedulerOnce(input: SchedulerInput = {}): Promise<DurableAutomationSchedulerOnceResult> {
   const checkedAt = normalizedTime(input.now ?? nowIso());
-  const companyIds = listActiveScheduledCompanyIds();
+  const companyIds = await listActiveScheduledCompanyIds();
   const configuredServiceUserId = (input.serviceUserId ?? process.env.AUTOMATION_OS_DURABLE_SERVICE_USER_ID ?? "").trim();
   const base = {
     schema: "aos.durable_scheduler_tick.v1" as const,
@@ -75,7 +75,7 @@ export async function runDurableAutomationSchedulerOnce(input: SchedulerInput = 
     };
   }
   try {
-    requireExistingServiceIdentity(configuredServiceUserId);
+    await requireExistingServiceIdentityAsync(configuredServiceUserId);
   } catch {
     return {
       ...base,
@@ -84,7 +84,7 @@ export async function runDurableAutomationSchedulerOnce(input: SchedulerInput = 
       nextAction: "設定したservice userのactive service identityを確認してください。"
     };
   }
-  const authorizedCompanyIds = new Set(listServiceUserCompanyIds(configuredServiceUserId));
+  const authorizedCompanyIds = new Set(await listServiceUserCompanyIds(configuredServiceUserId));
   const unscopedCompany = companyIds.find((companyId) => !authorizedCompanyIds.has(companyId));
   if (unscopedCompany) {
     return {
@@ -111,7 +111,7 @@ export async function runDurableAutomationSchedulerOnce(input: SchedulerInput = 
       base.portableWorkflowIds.push(...portable.workflowIds);
       base.localWorkflowIds.push(...portable.localWorkflowIds);
       blockers.push(...portable.blocked.map((item) => item.exactBlocker));
-      const result = materializeDueAutomationOccurrences({
+      const result = await materializeDueAutomationOccurrencesAsync({
         companyId,
         serviceUserId: configuredServiceUserId,
         now: checkedAt,
@@ -120,6 +120,7 @@ export async function runDurableAutomationSchedulerOnce(input: SchedulerInput = 
       });
       base.initializedScheduleIds.push(...result.initializedScheduleIds);
       base.occurrences.push(...result.occurrences);
+      blockers.push(...result.blocked.map((item) => item.exactBlocker));
     } catch (error) {
       const exactBlocker = error instanceof Error ? error.message : "durable_scheduler_company_tick_failed";
       // Another AOS scheduler or worker may win the schedule CAS. That is a
@@ -147,8 +148,8 @@ export async function runDurableAutomationSchedulerOnce(input: SchedulerInput = 
   };
 }
 
-function listActiveScheduledCompanyIds(): string[] {
-  return querySql<{ company_id: string }>(`
+async function listActiveScheduledCompanyIds(): Promise<string[]> {
+  return (await querySqlAsync<{ company_id: string }>(`
     SELECT DISTINCT schedule.company_id
     FROM mvp_automation_schedules schedule
     JOIN mvp_automations automation
@@ -156,11 +157,11 @@ function listActiveScheduledCompanyIds(): string[] {
     WHERE schedule.enabled=1 AND schedule.status='active' AND schedule.kind!='manual'
       AND automation.status='active'
     ORDER BY schedule.company_id
-  `).map((row) => row.company_id);
+  `)).map((row) => row.company_id);
 }
 
-function listServiceUserCompanyIds(serviceUserId: string): string[] {
-  return querySql<{ company_id: string }>(`
+async function listServiceUserCompanyIds(serviceUserId: string): Promise<string[]> {
+  return (await querySqlAsync<{ company_id: string }>(`
     SELECT membership.company_id
     FROM company_memberships membership
     JOIN users ON users.id=membership.user_id
@@ -169,7 +170,7 @@ function listServiceUserCompanyIds(serviceUserId: string): string[] {
       AND membership.role='operator' AND membership.status='active'
       AND users.status='active' AND users.kind='service' AND companies.status!='archived'
     ORDER BY membership.company_id
-  `).map((row) => row.company_id);
+  `)).map((row) => row.company_id);
 }
 
 function normalizedTime(value: string): string {

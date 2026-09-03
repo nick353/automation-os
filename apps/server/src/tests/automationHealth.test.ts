@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { parseAutomationToml, runAutomationHealth } from "../automationHealth.js";
 
@@ -295,6 +295,20 @@ test("read-only canary wording does not require video QA when effects are explic
   assert.equal(report.automations[0]?.video_qa.status, "not_required");
 });
 
+test("post-readback verification wording does not count as a publish effect", () => {
+  const fixture = tempFixture();
+  const id = "demo-post-readback-audit";
+  const prompt = "Run a read-only stability audit. Keep post-readback verification and cleanup only; never post, publish, send, or submit.";
+  const body = toml({ id, cwd: fixture.cwd, prompt });
+  writeAutomation(fixture.automationRoot, id, body);
+  createDb(fixture.dbPath, [{ id, prompt, status: "ACTIVE", rrule: "FREQ=HOURLY", cwds: [fixture.cwd] }]);
+
+  const report = runAutomationHealth({ automationRoot: fixture.automationRoot, dbPath: fixture.dbPath, outputRoot: fixture.outputRoot, psText: "" });
+
+  assert.equal(report.summary.video_qa_issues, 0);
+  assert.equal(report.automations[0]?.video_qa.status, "not_required");
+});
+
 test("AOS no-effect bridge prose does not trigger the publish video QA classifier", () => {
   const fixture = tempFixture();
   const id = "daily-ai-research-publish-run";
@@ -310,6 +324,46 @@ test("AOS no-effect bridge prose does not trigger the publish video QA classifie
   const body = toml({ id, cwd: fixture.cwd, prompt });
   writeAutomation(fixture.automationRoot, id, body);
   createDb(fixture.dbPath, [{ id, prompt, status: "ACTIVE", rrule: "FREQ=DAILY;BYHOUR=9;BYMINUTE=0;BYSECOND=0", cwds: [fixture.cwd] }]);
+
+  const report = runAutomationHealth({ automationRoot: fixture.automationRoot, dbPath: fixture.dbPath, outputRoot: fixture.outputRoot, psText: "" });
+
+  assert.equal(report.summary.video_qa_issues, 0);
+  assert.equal(report.automations[0]?.video_qa.likely_required, false);
+  assert.equal(report.automations[0]?.video_qa.status, "not_required");
+});
+
+test("AOS no-effect bridge accepts the registered no-comma prose variant", () => {
+  const fixture = tempFixture();
+  const id = "nisenprints-daily-product-canva-printify-etsy-pinterest";
+  const prompt = [
+    "AOS_TRIGGER_BRIDGE_V1",
+    "Run this provider-neutral no-effect trigger only.",
+    "Do not use Browser Use or perform publish, upload, write, send, or any external action.",
+    "Return external_action_executed and exactBlocker."
+  ].join("\n");
+  const body = toml({ id, cwd: fixture.cwd, prompt });
+  writeAutomation(fixture.automationRoot, id, body);
+  createDb(fixture.dbPath, [{ id, prompt, status: "ACTIVE", rrule: "FREQ=DAILY;BYHOUR=9;BYMINUTE=0", cwds: [fixture.cwd] }]);
+
+  const report = runAutomationHealth({ automationRoot: fixture.automationRoot, dbPath: fixture.dbPath, outputRoot: fixture.outputRoot, psText: "" });
+
+  assert.equal(report.summary.video_qa_issues, 0);
+  assert.equal(report.automations[0]?.video_qa.likely_required, false);
+  assert.equal(report.automations[0]?.video_qa.status, "not_required");
+});
+
+test("AOS no-effect bridge accepts the registered Never-use-Browser-Use wording", () => {
+  const fixture = tempFixture();
+  const id = "daily-ai-research-publish-run";
+  const prompt = [
+    "AOS_TRIGGER_BRIDGE_V1",
+    "Run this provider-neutral no-effect trigger only.",
+    "Never use Browser Use CLI or perform publish, upload, write, send, or any external action.",
+    "Return external_action_executed and exactBlocker."
+  ].join("\n");
+  const body = toml({ id, cwd: fixture.cwd, prompt });
+  writeAutomation(fixture.automationRoot, id, body);
+  createDb(fixture.dbPath, [{ id, prompt, status: "ACTIVE", rrule: "FREQ=DAILY;BYHOUR=9;BYMINUTE=0", cwds: [fixture.cwd] }]);
 
   const report = runAutomationHealth({ automationRoot: fixture.automationRoot, dbPath: fixture.dbPath, outputRoot: fixture.outputRoot, psText: "" });
 
@@ -447,6 +501,51 @@ test("absolute authority paths with spaces resolve from the registered cwd", () 
   const entry = report.automations[0];
 
   assert.equal(entry?.authority_files.some((authority) => authority.path === authorityPath && authority.exists), true);
+  assert.equal(entry?.issues.some((issue) => issue.code === "authority_file_missing"), false);
+});
+
+test("cwd-prefixed authority paths stop at Japanese sentence boundaries", () => {
+  const fixture = tempFixture();
+  const id = "demo-japanese-path-boundary";
+  const firstAuthority = join(fixture.cwd, "references", "current-run-contract.md");
+  const secondAuthority = join(fixture.cwd, "sources.json");
+  mkdirSync(dirname(firstAuthority), { recursive: true });
+  writeFileSync(firstAuthority, "# Contract\n");
+  writeFileSync(secondAuthority, "{}\n");
+  const prompt = `${firstAuthority}、${secondAuthority}をfresh-readする。`;
+  const body = toml({ id, cwd: fixture.cwd, prompt });
+  writeAutomation(fixture.automationRoot, id, body);
+  createDb(fixture.dbPath, [{ id, prompt, status: "ACTIVE", rrule: "FREQ=DAILY;BYHOUR=9;BYMINUTE=0", cwds: [fixture.cwd] }]);
+
+  const report = runAutomationHealth({ automationRoot: fixture.automationRoot, dbPath: fixture.dbPath, outputRoot: fixture.outputRoot, psText: "" });
+  const entry = report.automations[0];
+
+  assert.equal(entry?.authority_files.some((authority) => authority.path === firstAuthority && authority.exists), true);
+  assert.equal(entry?.authority_files.some((authority) => authority.path === secondAuthority && authority.exists), true);
+  assert.equal(entry?.issues.some((issue) => issue.code === "authority_file_missing"), false);
+});
+
+test("angle-bracket run placeholders are not treated as missing authority files", () => {
+  const fixture = tempFixture();
+  const id = "demo-run-placeholder-path";
+  const prompt = [
+    `Inspect ${fixture.cwd}/artifacts/<fresh run.id>/portable-protected-readback.v1.json after the run.`,
+    `Inspect ${fixture.cwd}/artifacts/\${rootResult.run_id}/portable-protected-readback.v1.json after the run.`,
+    "The placeholder is replaced by the run-owned artifact directory at execution time."
+  ].join("\n");
+  const body = toml({ id, cwd: fixture.cwd, prompt });
+  writeAutomation(fixture.automationRoot, id, body);
+  createDb(fixture.dbPath, [{ id, prompt, status: "ACTIVE", rrule: "FREQ=DAILY;BYHOUR=9;BYMINUTE=0;BYSECOND=0", cwds: [fixture.cwd] }]);
+
+  const report = runAutomationHealth({
+    automationRoot: fixture.automationRoot,
+    dbPath: fixture.dbPath,
+    outputRoot: fixture.outputRoot,
+    psText: ""
+  });
+  const entry = report.automations[0];
+
+  assert.equal(entry?.authority_files.some((authority) => authority.path.includes("<")), false);
   assert.equal(entry?.issues.some((issue) => issue.code === "authority_file_missing"), false);
 });
 

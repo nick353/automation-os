@@ -3,11 +3,24 @@
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
+import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { portableBrowserUsePaths } from "./portable-worker-profile.mjs";
 import { validateWebOperationIntent } from "./portable-business-action-plan.mjs";
+import {
+  AOS_CHROME_COMPANION_BROWSER_SURFACE,
+  CHROME_PLUGIN_BROWSER_SURFACE,
+  normalizeWebOperationBackend,
+  webOperationBrowserSurface,
+} from "./lib/web-operation-route.mjs";
 import { runAdaptiveWebOperationEffect } from "./web-operation-effect-executor.mjs";
+import { runAosChromeCompanionWebOperationEffect } from "./aos-chrome-companion-effect-executor.mjs";
+import {
+  completeSafeExtensionSurfaceHandoff,
+  evaluateSafeExtensionSurfaceHandoff,
+  officialExtensionEnvironmentForHandoff,
+} from "./safe-extension-surface-handoff.mjs";
 import {
   checkpointBrowserUseGoal,
   createBrowserUseGoalKernel,
@@ -25,18 +38,316 @@ const PORTABLE_INPUT_BUNDLE_SCHEMA = "automation_os_portable_workflow_input_bund
 const WEB_OPERATION_INTENT_SCHEMA = "automation_os_web_operation_intent.v1";
 const ADAPTIVE_WEB_READBACK_STAGE = "adaptive_web_readback";
 const ADAPTIVE_PUBLIC_WEB_AUTOMATION = "aos-adaptive-public-web";
+const CANDIDATE_SUPPLY_INDUSTRY = "Technology, Information and Internet";
+const CANDIDATE_SUPPLY_SALARY_MIN_JPY = 6_000_000;
+const CANDIDATE_SUPPLY_SALARY_MAX_JPY = 7_000_000;
 const ADAPTIVE_PUBLIC_PORT_START = 19981;
 const ADAPTIVE_PUBLIC_PORT_END = 19999;
 const WEB_OPERATION_ROUTE_REGISTRY_SCHEMA = "automation_os_web_operation_route_registry.v1";
 const WEB_OPERATION_ROUTE_REGISTRY_ID = /^[A-Za-z0-9][-_A-Za-z0-9.:]{0,127}$/u;
+const AOS_CHROME_COMPANION_TASK_ID_ENV = "AOS_CHROME_COMPANION_TASK_ID";
+// These failures belong to the foreground plane only.  They must remain
+// visible in the proof, but they must not make an otherwise healthy
+// openTabs()->target readback lane unavailable.
+const CHROME_PLUGIN_FOREGROUND_ONLY_BLOCKERS = new Set([
+  "chrome_selected_tab_readback_invalid",
+  "chrome_plugin_foreground_executor_lease_expired",
+  "chrome_foreground_activation_capability_unavailable",
+]);
+const CHROME_PLUGIN_BACKEND_SNAPSHOT_SCHEMA = "aos_web_operation_backend_snapshot.v1";
+const CHROME_PLUGIN_BACKEND_SNAPSHOT_MISSING = "chrome_plugin_backend_snapshot_missing";
+const CHROME_PLUGIN_BACKGROUND_READ_ONLY_CAPABILITY_SCHEMA = "aos.chrome_plugin_background_read_only_capability.v1";
+const CHROME_PLUGIN_DIRECT_BRIDGE_TIMEOUT_ENV = "SOCIAL_FLOW_CHROME_EXTENSION_BRIDGE_IN_PROCESS_TIMEOUT_MS";
+const CHROME_PLUGIN_DIRECT_BRIDGE_TIMEOUT_DEFAULT_MS = 20_000;
+const CHROME_PLUGIN_DIRECT_BRIDGE_TIMEOUT_MAX_MS = 25_000;
+const runtimeHomeDir = typeof process !== "undefined" && process?.env
+  ? String(process.env.HOME || "")
+  : String(globalThis?.nodeRepl?.homeDir || "");
+const CHROME_PLUGIN_READBACK_PATH = path.join(runtimeHomeDir, ".social-flow", "aos-company1-profile2-bridge-readback-v2.json");
+const CHROME_PLUGIN_BACKGROUND_READ_ONLY_CAPABILITY_PATH = path.join(
+  runtimeHomeDir,
+  ".codex",
+  "runtime",
+  "aos-chrome-plugin-background-read-only-capability.v1.json",
+);
+
+function currentRuntimeUid(fallbackStat) {
+  const runtimeProcess = typeof process !== "undefined" ? process : null;
+  return typeof runtimeProcess?.getuid === "function" ? runtimeProcess.getuid() : fallbackStat.uid;
+}
+
+function chromePluginDirectBridgeTimeoutMs(environment = process.env) {
+  const requested = Number(String(environment?.[CHROME_PLUGIN_DIRECT_BRIDGE_TIMEOUT_ENV] || "").trim());
+  if (!Number.isFinite(requested) || requested <= 0) return CHROME_PLUGIN_DIRECT_BRIDGE_TIMEOUT_DEFAULT_MS;
+  return Math.max(100, Math.min(CHROME_PLUGIN_DIRECT_BRIDGE_TIMEOUT_MAX_MS, Math.floor(requested)));
+}
+
+async function executeChromePluginDirectBridgeBounded(directBridge, payload, environment = process.env) {
+  const timeoutMs = chromePluginDirectBridgeTimeoutMs(environment);
+  let timer;
+  try {
+    return await Promise.race([
+      directBridge.executeAosPortableReadOnlyHandoff(payload),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("chrome_plugin_direct_bridge_timeout")), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function selectedBrowserSurface(environment = process.env) {
+  return webOperationBrowserSurface(environment, { defaultBackend: "browser_use_cli" });
+}
+
+function chromePluginSelected(environment = process.env) {
+  return normalizeWebOperationBackend(environment, { defaultBackend: "browser_use_cli" }) === "chrome_plugin";
+}
+
+function chromePluginBackendSnapshotFromEnvironment(environment = process.env) {
+  if (!chromePluginSelected(environment)) return { snapshot: null, exact_blocker: null };
+  const revision = Number(String(environment.AOS_WEB_OPERATION_BACKEND_REVISION || "").trim());
+  const profile = {
+    id: String(environment.AOS_CHROME_PROFILE_ID || "").trim(),
+    name: String(environment.AOS_CHROME_PROFILE_NAME || "").trim(),
+    directory: String(environment.AOS_CHROME_PROFILE_DIRECTORY || "").trim(),
+    surface: String(environment.AOS_CHROME_PROFILE_SURFACE || "").trim(),
+  };
+  const source = String(environment.AOS_WEB_OPERATION_BACKEND_SOURCE || "").trim();
+  const fallbackAllowed = String(environment.AOS_WEB_OPERATION_BACKEND_FALLBACK_ALLOWED || "").trim();
+  if (!Number.isSafeInteger(revision) || revision < 1
+    || source !== "aos_global_setting"
+    || fallbackAllowed !== "false"
+    || profile.id !== "profile2"
+    || profile.name !== "Profile 2"
+    || profile.directory !== "Profile 2"
+    || profile.surface !== CHROME_PLUGIN_BROWSER_SURFACE) {
+    return { snapshot: null, exact_blocker: CHROME_PLUGIN_BACKEND_SNAPSHOT_MISSING };
+  }
+  return {
+    snapshot: {
+      schema: CHROME_PLUGIN_BACKEND_SNAPSHOT_SCHEMA,
+      requested_backend: "chrome_plugin",
+      resolved_backend: "chrome_plugin",
+      revision,
+      source,
+      fallback_allowed: false,
+      chrome_profile: profile,
+      browser_surface: CHROME_PLUGIN_BROWSER_SURFACE,
+      exact_blocker: null,
+    },
+    exact_blocker: null,
+  };
+}
+
+export function readChromePluginBackgroundReadOnlyCapability(environment = process.env, { now = Date.now() } = {}) {
+  const configuredPath = String(
+    environment.AOS_CHROME_PLUGIN_BACKGROUND_READ_ONLY_CAPABILITY_PATH
+      || CHROME_PLUGIN_BACKGROUND_READ_ONLY_CAPABILITY_PATH,
+  ).trim();
+  if (!path.isAbsolute(configuredPath)) throw new Error("chrome_plugin_background_read_only_capability_path_invalid");
+  let stat;
+  let value;
+  try {
+    stat = fs.lstatSync(configuredPath);
+    if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1 || (stat.mode & 0o077) !== 0
+      || (typeof process.getuid === "function" && stat.uid !== process.getuid())) {
+      throw new Error("invalid_capability_permissions");
+    }
+    value = JSON.parse(fs.readFileSync(configuredPath, "utf8"));
+  } catch {
+    throw new Error("chrome_plugin_background_read_only_capability_missing");
+  }
+  const token = String(value?.token || "").trim();
+  const expiresAt = Date.parse(String(value?.expires_at || ""));
+  const capabilityId = createHash("sha256").update(token).digest("hex");
+  if (value?.schema !== CHROME_PLUGIN_BACKGROUND_READ_ONLY_CAPABILITY_SCHEMA
+    || value?.audience !== "aos_portable_remote_worker"
+    || value?.browser_backend !== "chrome_plugin"
+    || value?.browser_surface !== CHROME_PLUGIN_BROWSER_SURFACE
+    || value?.read_only !== true
+    || value?.external_action_allowed !== false
+    || !token
+    || capabilityId !== String(value.capability_id || "")
+    || !Number.isFinite(expiresAt)
+    || expiresAt <= Number(now)) {
+    throw new Error("chrome_plugin_background_read_only_capability_invalid");
+  }
+  return Object.freeze({
+    path: configuredPath,
+    token,
+    capability_id: capabilityId,
+    bridge_instance_id: String(value.bridge_instance_id || ""),
+    expires_at: String(value.expires_at),
+  });
+}
+
+function selectedReadOnlyBackend(environment = process.env) {
+  return normalizeWebOperationBackend(environment, { defaultBackend: "browser_use_cli" });
+}
+
+function readOnlyBackendBlocker(environment = process.env) {
+  const backend = selectedReadOnlyBackend(environment);
+  if (backend === "playwright") return "portable_external_read_only_backend_not_implemented:playwright";
+  if (backend !== "chrome_plugin" && backend !== "browser_use_cli" && backend !== "aos_chrome_companion") {
+    return `portable_external_read_only_backend_unknown:${backend || "empty"}`;
+  }
+  return null;
+}
 
 function browserUsePaths(environment = process.env) {
   const configured = portableBrowserUsePaths(environment);
   return {
     stageAdapter: configured.stageAdapter,
     helper: path.resolve(String(environment.BROWSER_USE_CLI_HELPER || environment.AUTOMATION_OS_BROWSER_USE_CLI_HELPER || configured.helper)),
-    candidateSupplyAdapter: path.resolve(String(environment.AUTOMATION_OS_PORTABLE_CANDIDATE_SUPPLY_ADAPTER || path.join(environment.AUTOMATION_OS_BROWSER_USE_PROJECT_ROOT || path.join(process.env.HOME || "", "Documents", "New project"), "scripts", "browser_use", "job_manager_browser_use_cli_candidate_supply_adapter.mjs"))),
+    candidateSupplyAdapter: path.resolve(String(environment.AUTOMATION_OS_PORTABLE_CANDIDATE_SUPPLY_ADAPTER || path.join(environment.AUTOMATION_OS_BROWSER_USE_PROJECT_ROOT || path.join(runtimeHomeDir, "Documents", "New project"), "scripts", "browser_use", "job_manager_browser_use_cli_candidate_supply_adapter.mjs"))),
   };
+}
+
+function companionTaskIdFor(input, environment = process.env) {
+  const candidate = String(
+    input?.task_id
+      || environment?.[AOS_CHROME_COMPANION_TASK_ID_ENV]
+      || "",
+  ).trim();
+  return IDENTIFIER.test(candidate) ? candidate : "";
+}
+
+function companionReceiptBlocker(receipt) {
+  const blocker = receipt?.exact_blocker;
+  if (typeof blocker === "string" && blocker.trim()) return blocker.trim().slice(0, 240);
+  if (blocker && typeof blocker === "object" && typeof blocker.code === "string" && blocker.code.trim()) {
+    return blocker.code.trim().slice(0, 240);
+  }
+  return "aos_chrome_companion_read_only_receipt_invalid";
+}
+
+/**
+ * Companion is a normal/read-only surface, but it is intentionally not an
+ * effectful business adapter. Keep this lane independent from Browser Use
+ * CLI and require the exact task owner ID before opening a Companion session.
+ * The adapter owns session/lease cleanup; this wrapper only normalizes the
+ * runner receipt and closes the broker client it created.
+ */
+export async function runAosChromeCompanionReadOnlyWorkflow(
+  input,
+  environment = process.env,
+  { adapterModule = null, client = null } = {},
+) {
+  const route = routeForWorkflow(input.workflow_id);
+  const taskId = companionTaskIdFor(input, environment);
+  if (!taskId) {
+    return {
+      status: "blocked",
+      exact_blocker: "aos_chrome_companion_task_id_missing",
+      external_action_executed: false,
+      browser_backend: "aos_chrome_companion",
+      browser_surface: AOS_CHROME_COMPANION_BROWSER_SURFACE,
+      workflow_id: input.workflow_id,
+      run_id: input.run_id,
+    };
+  }
+  if (!route) {
+    return {
+      status: "blocked",
+      exact_blocker: `${PORTABLE_EXTERNAL_READ_ONLY_ROUTE_NOT_CONFIGURED}:${input.workflow_id}`,
+      external_action_executed: false,
+      browser_backend: "aos_chrome_companion",
+      browser_surface: AOS_CHROME_COMPANION_BROWSER_SURFACE,
+      workflow_id: input.workflow_id,
+      run_id: input.run_id,
+      task_id: taskId,
+    };
+  }
+
+  let module = adapterModule;
+  let brokerClient = client;
+  let ownsClient = false;
+  try {
+    module ||= await import("./aos-chrome-companion-adapter.mjs");
+    if (!brokerClient) {
+      brokerClient = await module.loadCompanionBrokerClient(environment);
+      ownsClient = true;
+    }
+    const receipt = await module.executeAosChromeCompanionReadOnly({
+      runId: input.run_id,
+      taskId,
+      mode: "read_only",
+      target: { url: route.target_url },
+      allowedOrigins: route.allowed_origins,
+      profileInstanceId: environment.AOS_CHROME_COMPANION_PROFILE_INSTANCE_ID || undefined,
+      maxTextChars: 30_000,
+    }, { client: brokerClient });
+    const cleanupVerified = receipt?.cleanup?.session_closed === true
+      && receipt?.cleanup?.lease_released_by_session_close === true;
+    const targetOwnershipVerified = receipt?.target?.task_owned === true;
+    const readbackVerified = receipt?.result === "verified"
+      && Boolean(receipt?.readback)
+      && targetOwnershipVerified;
+    const visualReadbackVerified = receipt?.visual_readback_verified === true
+      && receipt?.visual_readback?.captured === true
+      && Boolean(receipt?.visual_readback?.sha256);
+    const exactBlocker = readbackVerified && visualReadbackVerified && cleanupVerified
+      ? null
+      : receipt?.result === "verified" && !targetOwnershipVerified
+        ? "aos_chrome_companion_target_not_task_owned"
+      : readbackVerified && !visualReadbackVerified
+        ? "aos_chrome_companion_visual_readback_unverified"
+        : receipt?.result === "verified" && !cleanupVerified
+        ? "aos_chrome_companion_cleanup_unverified"
+        : companionReceiptBlocker(receipt);
+    const completeReadOnlyProof = exactBlocker === null;
+    return {
+      status: exactBlocker === null ? "complete" : "blocked",
+      exact_blocker: exactBlocker,
+      external_action_executed: false,
+      browser_backend: "aos_chrome_companion",
+      browser_surface: AOS_CHROME_COMPANION_BROWSER_SURFACE,
+      workflow_id: input.workflow_id,
+      run_id: input.run_id,
+      step_id: input.step_id,
+      task_id: taskId,
+      requested_origin: new URL(route.target_url).origin,
+      observed_origin: receipt?.readback?.url ? new URL(receipt.readback.url).origin : "",
+      readback_verified: readbackVerified,
+      visual_readback_required: true,
+      visual_readback_verified: visualReadbackVerified,
+      visual_readback: receipt?.visual_readback || null,
+      cleanup_verified: cleanupVerified,
+      mutation_dispatch_attempted: false,
+      mutation_dispatch_count: 0,
+      operation_effect_state: "none",
+      reconciliation_required: false,
+      same_run_receipt: completeReadOnlyProof,
+      read_only_proof_verified: completeReadOnlyProof,
+      effects_mode: "read_only",
+      read_only_stage_bound: true,
+      external_executor_status: readbackVerified && visualReadbackVerified && cleanupVerified
+        ? "aos_chrome_companion_read_only_completed"
+        : "aos_chrome_companion_read_only_blocked",
+      adapter_result: receipt,
+    };
+  } catch (error) {
+    return {
+      status: "blocked",
+      exact_blocker: normalizedBlocker(error),
+      external_action_executed: false,
+      browser_backend: "aos_chrome_companion",
+      browser_surface: AOS_CHROME_COMPANION_BROWSER_SURFACE,
+      workflow_id: input.workflow_id,
+      run_id: input.run_id,
+      step_id: input.step_id,
+      task_id: taskId,
+      effects_mode: "read_only",
+      read_only_stage_bound: true,
+      external_executor_status: "aos_chrome_companion_read_only_blocked",
+    };
+  } finally {
+    if (ownsClient && brokerClient && typeof brokerClient.close === "function") {
+      try { await brokerClient.close(); } catch { /* preserve the primary receipt */ }
+    }
+  }
 }
 
 // These are read-only provider adapters.  They deliberately do not accept a
@@ -74,6 +385,38 @@ const READ_ONLY_ROUTES = Object.freeze({
     account_identity: "nisenprints_authenticated_workflow",
     data_exposure: "authenticated_canva_readback",
   }),
+  "prompt-transfer-ukiyoe": Object.freeze({
+    automation_id: "prompt-transfer-ukiyoe",
+    stage_id: "aos_prompt_transfer_read_only_preflight",
+    // This is the canonical source root used by the workflow-owned Chrome
+    // adapter. The later Sheets B:D write remains a separate approval-gated
+    // effect stage; this route only verifies authenticated Docs readback.
+    target_url: "https://docs.google.com/document/d/1j2lsvr1zJs9k9cCkLGeGF-soZZSGuY2p0tQ6wJp8S0s/edit?tab=t.0",
+    allowed_origins: ["https://docs.google.com"],
+    port: 19981,
+    account_identity: "prompt_transfer_authenticated_google_workspace",
+    data_exposure: "authenticated_google_docs_readback",
+  }),
+  "sns-multi-poster-ukiyoe": Object.freeze({
+    automation_id: "sns-multi-poster-ukiyoe",
+    stage_id: "aos_sns_multi_poster_read_only_preflight",
+    // The existing Chrome social runner uses X home as its canonical
+    // authenticated social root. No composer or publish URL is opened here.
+    target_url: "https://x.com/home",
+    allowed_origins: ["https://x.com"],
+    port: 20081,
+    account_identity: "sns_multi_poster_authenticated_social_readback",
+    data_exposure: "authenticated_social_readback",
+  }),
+  "x-authenticated-browser-lane": Object.freeze({
+    automation_id: "x-authenticated-browser-lane",
+    stage_id: "aos_x_authenticated_read_only_preflight",
+    target_url: "https://x.com/home",
+    allowed_origins: ["https://x.com"],
+    port: 19885,
+    account_identity: "x_authenticated_browser_lane_readback",
+    data_exposure: "authenticated_x_readback",
+  }),
 });
 
 export const PORTABLE_EXTERNAL_ACTION_PLAN_REQUIRED = "portable_external_action_plan_required";
@@ -100,6 +443,9 @@ export function parsePortableRunnerArgs(argv) {
   }
   for (const key of ["workflow_id", "run_id", "step_id", "source_trigger", "idempotency_key"]) {
     if (!IDENTIFIER.test(String(values[key] || ""))) throw new Error(`portable_external_${key}_invalid`);
+  }
+  if (values.task_id !== undefined && !IDENTIFIER.test(String(values.task_id || ""))) {
+    throw new Error("portable_external_task_id_invalid");
   }
   return values;
 }
@@ -137,7 +483,7 @@ function readAdaptiveWebOperationIntent(input, environment = process.env) {
   } catch {
     throw new Error("portable_external_web_operation_intent_missing");
   }
-  const currentUid = typeof process.getuid === "function" ? process.getuid() : stat.uid;
+  const currentUid = currentRuntimeUid(stat);
   if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1 || stat.uid !== currentUid || (stat.mode & 0o777) !== 0o600) {
     throw new Error("portable_external_web_operation_intent_permissions_invalid");
   }
@@ -147,7 +493,7 @@ function readAdaptiveWebOperationIntent(input, environment = process.env) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw) || raw.schema !== WEB_OPERATION_INTENT_SCHEMA
     || raw.workflow_id !== input.workflow_id || raw.run_id !== input.run_id || raw.step_id !== input.step_id
     || raw.source_trigger !== input.source_trigger || raw.idempotency_key !== input.idempotency_key
-    || raw.browser_surface !== "browser_use_cli" || !raw.entry_url) {
+    || raw.browser_surface !== selectedBrowserSurface(environment) || !raw.entry_url) {
     throw new Error("portable_external_web_operation_intent_binding_invalid");
   }
   const intent = validateWebOperationIntent(raw);
@@ -174,19 +520,43 @@ function readAdmission(input, environment = process.env) {
   if (value.workflow_id !== input.workflow_id || value.run_id !== input.run_id || value.step_id !== input.step_id
     || value.source_trigger !== input.source_trigger || value.idempotency_key !== input.idempotency_key
     || value.approval_status !== "approved" || value.effect_class !== "external_non_idempotent"
-    || value.browser_surface !== "browser_use_cli") throw new Error(PORTABLE_EXTERNAL_ADMISSION_INVALID);
+    || value.browser_surface !== selectedBrowserSurface(environment)) throw new Error(PORTABLE_EXTERNAL_ADMISSION_INVALID);
   if (Date.parse(String(value.expires_at || "")) <= Date.now()) throw new Error(PORTABLE_EXTERNAL_ADMISSION_EXPIRED);
   return Object.freeze({ path: admissionPath, sha256: expectedSha256, value });
 }
 
-function writePrivateImmutableJson(filePath, value) {
+function authorityImmutableProjection(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "";
+  const projection = { ...value };
+  delete projection.not_before;
+  delete projection.expires_at;
+  return JSON.stringify(projection);
+}
+
+function writePrivateImmutableJson(filePath, value, { reusableReadOnlyAuthority = false } = {}) {
   const resolved = path.resolve(filePath);
   fs.mkdirSync(path.dirname(resolved), { recursive: true, mode: 0o700 });
   fs.chmodSync(path.dirname(resolved), 0o700);
   const bytes = `${JSON.stringify(value, null, 2)}\n`;
   if (fs.existsSync(resolved)) {
     const stat = fs.lstatSync(resolved);
-    if (!stat.isFile() || stat.nlink !== 1 || fs.readFileSync(resolved, "utf8") !== bytes) throw new Error("portable_external_authority_immutable_collision");
+    if (!stat.isFile() || stat.nlink !== 1) throw new Error("portable_external_authority_immutable_collision");
+    const existingBytes = fs.readFileSync(resolved, "utf8");
+    if (reusableReadOnlyAuthority) {
+      let existing;
+      try { existing = JSON.parse(existingBytes); } catch { throw new Error("portable_external_authority_immutable_collision"); }
+      if (value?.schema !== "authority.v1"
+        || existing?.schema !== "authority.v1"
+        || authorityImmutableProjection(existing) !== authorityImmutableProjection(value)) {
+        throw new Error("portable_external_authority_immutable_collision");
+      }
+      if (Date.parse(String(existing.expires_at || "")) <= Date.now()) {
+        throw new Error("portable_external_authority_expired");
+      }
+      fs.chmodSync(resolved, 0o600);
+      return { path: resolved, sha256: sha256Bytes(existingBytes), reused: true };
+    }
+    if (existingBytes !== bytes) throw new Error("portable_external_authority_immutable_collision");
     fs.chmodSync(resolved, 0o600);
     return { path: resolved, sha256: sha256Bytes(bytes) };
   }
@@ -196,7 +566,7 @@ function writePrivateImmutableJson(filePath, value) {
   return { path: resolved, sha256: sha256Bytes(bytes) };
 }
 
-function issueReadOnlyAuthority({ route, input, runRoot }) {
+export function issueReadOnlyAuthority({ route, input, runRoot, environment = process.env }) {
   const now = Date.now();
   const authority = {
     schema: "authority.v1",
@@ -204,7 +574,7 @@ function issueReadOnlyAuthority({ route, input, runRoot }) {
     automation_id: route.automation_id,
     stage_id: route.stage_id,
     mode: "authorized",
-    browser_surface: "browser_use_cli",
+    browser_surface: selectedBrowserSurface(environment),
     run_id: input.run_id,
     // The authority and Goal kernel must carry the exact same session. A
     // preflight-only suffix creates a fresh-session mismatch before Browser
@@ -225,6 +595,7 @@ function issueReadOnlyAuthority({ route, input, runRoot }) {
   return writePrivateImmutableJson(
     path.join(runRoot, "browser-use-cli-authority", `${route.stage_id}.v1.json`),
     authority,
+    { reusableReadOnlyAuthority: true },
   );
 }
 
@@ -303,7 +674,7 @@ function readCandidateSupplyInput(input, runRoot, environment = process.env) {
     throw new Error("portable_external_candidate_supply_input_bundle_missing");
   }
   const stat = fs.lstatSync(requestedPath);
-  const currentUid = typeof process.getuid === "function" ? process.getuid() : stat.uid;
+  const currentUid = currentRuntimeUid(stat);
   if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1 || stat.uid !== currentUid || (stat.mode & 0o777) !== 0o600) {
     throw new Error("portable_external_candidate_supply_input_bundle_invalid");
   }
@@ -331,6 +702,16 @@ function readCandidateSupplyInput(input, runRoot, environment = process.env) {
   if (Number(bundle.remaining) + Number(bundle.margin) < 1) {
     throw new Error("portable_external_candidate_supply_input_bundle_empty_request");
   }
+  const industry = String(bundle.industry || CANDIDATE_SUPPLY_INDUSTRY).trim();
+  if (!industry || industry.length > 120 || /[\u0000-\u001f]/u.test(industry)) {
+    throw new Error("portable_external_candidate_supply_input_bundle_industry_invalid");
+  }
+  const salaryMinJpy = Number(bundle.salary_min_jpy ?? CANDIDATE_SUPPLY_SALARY_MIN_JPY);
+  const salaryMaxJpy = Number(bundle.salary_max_jpy ?? CANDIDATE_SUPPLY_SALARY_MAX_JPY);
+  if (!Number.isSafeInteger(salaryMinJpy) || !Number.isSafeInteger(salaryMaxJpy)
+    || salaryMinJpy <= 0 || salaryMaxJpy < salaryMinJpy || salaryMaxJpy > 100_000_000) {
+    throw new Error("portable_external_candidate_supply_input_bundle_salary_range_invalid");
+  }
   return {
     path: requestedPath,
     sha256: sha256Bytes(bytes),
@@ -340,6 +721,596 @@ function readCandidateSupplyInput(input, runRoot, environment = process.env) {
       bucket: String(bundle.bucket),
       remaining: Number(bundle.remaining),
       margin: Number(bundle.margin),
+      industry,
+      salaryMinJpy,
+      salaryMaxJpy,
+    },
+  };
+}
+
+export function chromePluginReadbackPathForEnvironment(environment = process.env) {
+  const homeDir = String(environment.HOME || runtimeHomeDir || "").trim();
+  return String(
+    environment.AOS_CHROME_PLUGIN_READBACK_PATH
+      || environment.SOCIAL_FLOW_CHROME_PLUGIN_READBACK_PATH
+      || (homeDir ? path.join(homeDir, ".social-flow", "aos-company1-profile2-bridge-readback-v2.json") : CHROME_PLUGIN_READBACK_PATH),
+  ).trim();
+}
+
+function readChromePluginBridgeRaw(environment = process.env) {
+  const configuredPath = chromePluginReadbackPathForEnvironment(environment);
+  if (!path.isAbsolute(configuredPath)) throw new Error("chrome_plugin_bridge_readback_path_invalid");
+  let stat;
+  let value;
+  try {
+    stat = fs.lstatSync(configuredPath);
+    value = JSON.parse(fs.readFileSync(configuredPath, "utf8"));
+  } catch {
+    throw new Error("chrome_plugin_bridge_readback_missing");
+  }
+  const currentUid = currentRuntimeUid(stat);
+  if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1 || stat.uid !== currentUid || (stat.mode & 0o077) !== 0) {
+    throw new Error("chrome_plugin_bridge_readback_permissions_invalid");
+  }
+  return Object.freeze({ path: configuredPath, value });
+}
+
+function writeChromePluginBridgeReadbackAtomically(readbackPath, value) {
+  const resolvedPath = path.resolve(String(readbackPath || ""));
+  if (!resolvedPath || resolvedPath === path.parse(resolvedPath).root) {
+    throw new Error("chrome_plugin_bridge_readback_path_invalid");
+  }
+  const parent = path.dirname(resolvedPath);
+  fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
+  const temporaryPath = `${resolvedPath}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    fs.chmodSync(temporaryPath, 0o600);
+    fs.renameSync(temporaryPath, resolvedPath);
+  } catch (error) {
+    try { fs.rmSync(temporaryPath, { force: true }); } catch { /* best effort */ }
+    throw new Error(`chrome_plugin_bridge_readback_rebind_write_failed:${String(error?.message || error)}`);
+  }
+  return resolvedPath;
+}
+
+export function readChromePluginProfile2LastUsedFromLocalState(environment = process.env) {
+  const configuredPath = String(
+    environment.AOS_CHROME_PLUGIN_LOCAL_STATE_PATH
+      || environment.AOS_CHROME_LOCAL_STATE_PATH
+      || path.join(String(environment.HOME || "/Users/nichikatanaka"), "Library", "Application Support", "Google", "Chrome", "Local State")
+  ).trim();
+  const expectedDirectory = String(environment.AOS_CHROME_PROFILE_DIRECTORY || "Profile 2").trim();
+  if (!path.isAbsolute(configuredPath) || !expectedDirectory) return false;
+  try {
+    const localState = JSON.parse(fs.readFileSync(configuredPath, "utf8"));
+    const profile = localState?.profile;
+    return profile?.last_used === expectedDirectory
+      && Array.isArray(profile?.profiles_order)
+      && profile.profiles_order.includes(expectedDirectory)
+      && profile?.info_cache?.[expectedDirectory]
+      && typeof profile.info_cache[expectedDirectory] === "object";
+  } catch {
+    return false;
+  }
+}
+
+export function chromePluginBridgeUrlFromReadback(value, environment = process.env) {
+  const rawUrl = String(value?.bridge_url || "").trim().replace(/\/$/u, "");
+  let parsed;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error("chrome_plugin_bridge_url_invalid");
+  }
+  if (parsed.protocol !== "http:" || parsed.hostname !== "127.0.0.1" || !/^\d+$/u.test(parsed.port)) {
+    throw new Error("chrome_plugin_bridge_url_not_loopback");
+  }
+  const port = Number(parsed.port);
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) {
+    throw new Error("chrome_plugin_bridge_port_invalid");
+  }
+  const configuredPort = String(environment.AOS_CHROME_PLUGIN_BRIDGE_PORT || "").trim();
+  if (configuredPort && configuredPort !== String(port)) {
+    throw new Error("chrome_plugin_bridge_port_binding_invalid");
+  }
+  return `http://127.0.0.1:${port}`;
+}
+
+export function assertChromePluginBridgeReadbackValue(value, environment = process.env, { targetScopedReadback = false } = {}) {
+  const seenAt = Date.parse(String(value?.last_seen_at || ""));
+  const browser = value?.browser && typeof value.browser === "object" ? value.browser : {};
+  const metadata = browser.metadata && typeof browser.metadata === "object" ? browser.metadata : {};
+  const owner = value?.bridge_owner && typeof value.bridge_owner === "object" ? value.bridge_owner : {};
+  const ownerUpdatedAt = Date.parse(String(owner.updated_at || ""));
+  const expectedBridgeUrl = chromePluginBridgeUrlFromReadback(value, environment);
+  const selectedTab = value?.selected_tab && typeof value.selected_tab === "object" ? value.selected_tab : null;
+  const visibility = value?.visibility && typeof value.visibility === "object" ? value.visibility : null;
+  const authority = String(value?.browser_execution_authority || "");
+  const targetScopedBusiness = authority === "target_scoped_business";
+  const transportAdmission = authority === "general" || authority === "read_only_admission" || targetScopedBusiness;
+  const readOnlyAdmission = authority === "read_only_admission" || targetScopedBusiness;
+  const exactBlocker = String(value?.exact_blocker || value?.operation_exact_blocker || value?.refresh_exact_blocker || "").trim();
+  const targetScopedBlockerAllowed = exactBlocker === ""
+    || CHROME_PLUGIN_FOREGROUND_ONLY_BLOCKERS.has(exactBlocker);
+  // Target-scoped read-only does not need selected()/focus/visibility.  A
+  // fresh bridge may therefore truthfully report a terminal selected-tab
+  // or foreground-capability blocker while still admitting the separate
+  // openTabs()->target readback contract. Keep the exception narrow: only
+  // known foreground-plane blockers, blocked operation state, and an absent
+  // selected tab qualify.
+  const targetScopedForegroundBlockerAdmission = targetScopedReadback
+    && selectedTab === null
+    && value?.operation_ready === false
+    && value?.operation_status === "blocked"
+    && CHROME_PLUGIN_FOREGROUND_ONLY_BLOCKERS.has(exactBlocker);
+  const targetScopedReadOnlyStatusValid = targetScopedReadback
+    && readOnlyAdmission
+    && ["read_only_ready", "target_scoped_ready"].includes(String(value?.operation_status || ""));
+  const operationAdmissionValid = targetScopedForegroundBlockerAdmission || (transportAdmission
+    ? value?.operation_ready === true
+      && (targetScopedReadOnlyStatusValid || value?.operation_status === (readOnlyAdmission ? "read_only_ready" : "ready"))
+      && (targetScopedReadback || String(selectedTab?.id || "").trim().length > 0)
+    : value?.operation_ready === true
+      && value?.operation_status === "ready"
+      && (targetScopedReadback || String(selectedTab?.id || "").trim().length > 0)
+      && visibility?.capability_id === "visibility"
+      && visibility?.advertised === true
+      && visibility?.state === true);
+  const profile2LastUsed = String(metadata.profileIsLastUsed || "") === "true"
+    || (String(metadata.profileIsLastUsed || "") === "false" && readChromePluginProfile2LastUsedFromLocalState(environment));
+  if (value?.schema !== "aos.chrome_plugin_bridge_readback.v2"
+    || (targetScopedReadback
+      ? !["ready", "blocked"].includes(String(value.status || "")) || !targetScopedBlockerAllowed
+      : value.status !== "ready")
+    || value.backend !== "chrome_extension_trusted_bridge"
+    || value.browser_execution_disabled === true
+    || String(value.bridge_url || "").replace(/\/$/u, "") !== expectedBridgeUrl
+    || !String(value.bridge_instance_id || "").trim()
+    || browser.type !== "extension"
+    || String(metadata.profileOrdering || "") !== "2"
+    || !profile2LastUsed
+    || owner.schema !== "aos.chrome_plugin_bridge_owner.v1"
+    || !String(owner.owner_id || "").trim()
+    || String(owner.bridge_instance_id || "") !== String(value.bridge_instance_id || "")
+    || !String(owner.session_id || "").trim()
+    || !String(owner.thread_id || "").trim()
+    || !String(owner.turn_id || "").trim()
+    || (targetScopedReadback
+      ? !["bridge_only", "foreground_ready"].includes(String(owner.status || ""))
+      : owner.status !== "foreground_ready")
+    || (!targetScopedReadback && owner.foreground_executor_ready !== true)
+    || !operationAdmissionValid
+    || (!targetScopedReadback && (
+      !Number.isFinite(ownerUpdatedAt)
+      || Date.now() - ownerUpdatedAt > 30_000
+      || ownerUpdatedAt - Date.now() > 5_000
+      || !Number.isFinite(seenAt)
+      || Date.now() - seenAt > 30_000
+      || seenAt - Date.now() > 5_000
+    ))) {
+    throw new Error(String(
+      value?.exact_blocker
+        || value?.operation_exact_blocker
+        || owner.exact_blocker
+        || (value?.schema !== "aos.chrome_plugin_bridge_readback.v2"
+          ? "chrome_plugin_bridge_readback_schema_invalid"
+          : "chrome_plugin_operation_admission_readback_invalid")
+    ));
+  }
+}
+
+function readChromePluginBridgeReadback(environment = process.env) {
+  const raw = readChromePluginBridgeRaw(environment);
+  assertChromePluginBridgeReadbackValue(raw.value, environment);
+  return raw;
+}
+
+export async function refreshChromePluginBridgeReadback(environment = process.env, { targetScopedReadback = false } = {}) {
+  const raw = readChromePluginBridgeRaw(environment);
+  const bridgeUrl = chromePluginBridgeUrlFromReadback(raw.value, environment);
+  const bridgeInstanceId = String(raw.value?.bridge_instance_id || "").trim();
+  if (!bridgeInstanceId) {
+    throw new Error("chrome_plugin_bridge_readback_missing");
+  }
+  let response;
+  try {
+    response = await fetch(`${bridgeUrl}/health`);
+  } catch {
+    throw new Error("chrome_plugin_bridge_health_unavailable");
+  }
+  if (!response.ok) throw new Error("chrome_plugin_bridge_health_blocked");
+  const health = await response.json().catch(() => ({}));
+  const healthBridgeInstanceId = String(health.bridge_instance_id || "").trim();
+  const healthUrl = String(health.url || "").replace(/\/$/u, "");
+  if (health?.ok !== true
+    || health?.backend !== "chrome_extension_trusted_bridge"
+    || !healthBridgeInstanceId
+    || healthUrl !== bridgeUrl) {
+    throw new Error("chrome_plugin_bridge_health_binding_invalid");
+  }
+  const freshReadback = health?.browser_readback && typeof health.browser_readback === "object"
+    ? health.browser_readback
+    : null;
+  if (!freshReadback) throw new Error("chrome_plugin_bridge_health_readback_missing");
+  if (String(freshReadback.bridge_instance_id || "").trim() !== healthBridgeInstanceId
+    || String(freshReadback.bridge_url || "").replace(/\/$/u, "") !== bridgeUrl) {
+    throw new Error("chrome_plugin_bridge_health_readback_binding_invalid");
+  }
+  assertChromePluginBridgeReadbackValue(freshReadback, environment, { targetScopedReadback });
+  // The worker-owned path is a durable handoff boundary, not just a cached
+  // observation. A bridge can be restarted by another official foreground
+  // owner while this file still contains a stopped predecessor. Publish the
+  // already-validated same-owner health readback through the official runner
+  // writer so the next worker iteration can bind the current instance. Never
+  // overwrite a different live foreground owner: that is an ownership
+  // conflict, not a rebind opportunity.
+  const currentLastSeen = Date.parse(String(raw.value?.last_seen_at || ""));
+  const currentOwner = raw.value?.bridge_owner && typeof raw.value.bridge_owner === "object"
+    ? raw.value.bridge_owner
+    : {};
+  const currentOwnerUpdated = Date.parse(String(currentOwner.updated_at || ""));
+  const currentLooksLive = raw.value?.status === "ready"
+    && String(currentOwner.status || "") === "foreground_ready"
+    && currentOwner.foreground_executor_ready === true
+    && String(currentOwner.bridge_instance_id || "") === bridgeInstanceId
+    && Number.isFinite(currentLastSeen)
+    && Number.isFinite(currentOwnerUpdated)
+    && Date.now() - currentLastSeen <= 30_000
+    && Date.now() - currentOwnerUpdated <= 30_000;
+  if (bridgeInstanceId !== healthBridgeInstanceId && currentLooksLive) {
+    throw new Error("chrome_plugin_bridge_rebind_conflict");
+  }
+  const writtenPath = writeChromePluginBridgeReadbackAtomically(raw.path, freshReadback);
+  return {
+    path: writtenPath,
+    value: freshReadback,
+    rebound: bridgeInstanceId !== healthBridgeInstanceId,
+    previous_bridge_instance_id: bridgeInstanceId,
+    bridge_instance_id: healthBridgeInstanceId,
+  };
+}
+
+export async function runChromePluginBridgeClient({ payload, environment = process.env, bridgeReadback = null }) {
+  const directBridge = globalThis?.__socialFlowChromeExtensionBridge;
+  const hostMetadata = globalThis?.nodeRepl?.requestMeta?.["x-codex-turn-metadata"] || null;
+  if (globalThis?.nodeRepl && typeof directBridge?.executeAosPortableReadOnlyHandoff === "function") {
+    const boundPayload = hostMetadata
+      ? {
+          ...payload,
+          codexSessionId: String(hostMetadata.session_id || ""),
+          codexThreadId: String(hostMetadata.thread_id || hostMetadata.session_id || ""),
+          codexTurnId: String(hostMetadata.turn_id || ""),
+          thread_source: String(hostMetadata.thread_source || "user"),
+        }
+      : payload;
+    try {
+      const result = await executeChromePluginDirectBridgeBounded(directBridge, boundPayload, environment);
+      return { result, code: 0, signal: null, stderr: "", direct: true };
+    } catch (error) {
+      return { result: null, code: 2, signal: null, error: String(error?.message || error), stderr: "", direct: true };
+    }
+  }
+  const projectRoot = path.resolve(String(environment.AUTOMATION_OS_CHROME_PLUGIN_PROJECT_ROOT || "/Users/nichikatanaka/Documents/New project"));
+  const clientPath = path.join(projectRoot, "scripts", "browser_use", "chrome_extension_trusted_bridge_client.mjs");
+  if (!fs.existsSync(clientPath)) throw new Error("chrome_plugin_trusted_bridge_client_missing");
+  const bridge = bridgeReadback?.value || readChromePluginBridgeReadback(environment).value;
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [clientPath, "aos-read-only-handoff"], {
+      cwd: projectRoot,
+      env: {
+        ...environment,
+        SOCIAL_FLOW_CHROME_EXTENSION_BRIDGE_URL: String(bridge.bridge_url),
+        SOCIAL_FLOW_TRUSTED_BRIDGE_INSTANCE_ID: String(bridge.bridge_instance_id),
+        SOCIAL_FLOW_CHROME_EXTENSION_BRIDGE_TIMEOUT_MS: String(environment.SOCIAL_FLOW_CHROME_EXTENSION_BRIDGE_TIMEOUT_MS || "240000"),
+        SOCIAL_FLOW_CHROME_EXTENSION_BRIDGE_POLL_SECONDS: String(environment.SOCIAL_FLOW_CHROME_EXTENSION_BRIDGE_POLL_SECONDS || "220"),
+        SOCIAL_FLOW_CHROME_EXTENSION_BRIDGE_POLL_INTERVAL_MS: String(environment.SOCIAL_FLOW_CHROME_EXTENSION_BRIDGE_POLL_INTERVAL_MS || "2000"),
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout = `${stdout}${chunk}`.slice(-200_000); });
+    child.stderr.on("data", (chunk) => { stderr = `${stderr}${chunk}`.slice(-20_000); });
+    child.once("error", (error) => resolve({ result: null, code: null, error: String(error?.message || error), stderr }));
+    child.once("close", (code, signal) => {
+      let result = null;
+      for (const line of stdout.split(/\r?\n/u).map((value) => value.trim()).filter(Boolean).reverse()) {
+        try {
+          const parsed = JSON.parse(line);
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) { result = parsed; break; }
+        } catch { /* keep the last structured line only */ }
+      }
+      resolve({ result, code, signal, stderr });
+    });
+    child.stdin.end(`${JSON.stringify(payload)}\n`);
+  });
+}
+
+async function issueChromePluginReadOnlyActiveCallNonce({ targetScopedReadback = false } = {}) {
+  const bridge = globalThis?.__socialFlowChromeExtensionBridge;
+  if (typeof bridge?.issueAosPortableReadOnlyHandoffNonce !== "function") return "";
+  return String(await bridge.issueAosPortableReadOnlyHandoffNonce({ targetScopedReadback }) || "").trim();
+}
+
+function chromePluginTargetScopedReadbackEligible(value) {
+  const exactBlocker = String(
+    value?.exact_blocker
+      || value?.operation_exact_blocker
+      || value?.refresh_exact_blocker
+      || "",
+  ).trim();
+  const owner = value?.bridge_owner;
+  return CHROME_PLUGIN_FOREGROUND_ONLY_BLOCKERS.has(exactBlocker)
+    && String(value?.bridge_instance_id || "").trim()
+    && owner
+    && String(owner.session_id || "").trim()
+    && String(owner.thread_id || "").trim()
+    && String(owner.turn_id || "").trim();
+}
+
+function chromePluginReadOnlyRequest({ input, runRoot, bundle = null, route = null, environment = process.env, bridgeReadback = null, activeCallNonce = "", backgroundCapabilityId = "", webOperationBackendSnapshot = null, targetScopedReadback = false }) {
+  const handoffDir = path.join(runRoot, "chrome-plugin-foreground-handoff");
+  const requestPath = path.join(handoffDir, "request.v1.json");
+  fs.mkdirSync(handoffDir, { recursive: true, mode: 0o700 });
+  const bridge = bridgeReadback?.value || readChromePluginBridgeReadback(environment).value;
+  const request = {
+    schema: "aos.chrome_plugin_read_only_handoff_request.v1",
+    workflow_id: input.workflow_id,
+    run_id: input.run_id,
+    step_id: input.step_id,
+    source_trigger: input.source_trigger,
+    idempotency_key: input.idempotency_key,
+    scheduler_run_dir: runRoot,
+    request_path: requestPath,
+    control_run_id: `aos-${input.run_id}-control`,
+    control_request_id: `aos-${input.run_id}-${input.step_id}-handoff`,
+    receipt_id: `${input.run_id}:${input.step_id}:chrome-plugin-read-only`,
+    handoff_authority: activeCallNonce ? "active_call" : "background_read_only",
+    active_call_nonce: String(activeCallNonce || ""),
+    background_capability_id: String(backgroundCapabilityId || ""),
+    bridge_instance_id: String(bridge.bridge_instance_id),
+    bridge_owner_id: String(bridge.bridge_owner?.owner_id || ""),
+    bridge_owner_pid: Number(bridge.bridge_owner?.pid || 0),
+    bridge_owner_started_at: String(bridge.bridge_owner?.started_at || ""),
+    bridge_owner_session_id: String(bridge.bridge_owner?.session_id || ""),
+    bridge_owner_thread_id: String(bridge.bridge_owner?.thread_id || ""),
+    bridge_owner_turn_id: String(bridge.bridge_owner?.turn_id || ""),
+    browser_backend: "chrome_plugin",
+    browser_surface: CHROME_PLUGIN_BROWSER_SURFACE,
+    web_operation_backend_snapshot: webOperationBackendSnapshot,
+    web_operation_backend_snapshot_sha256: webOperationBackendSnapshot
+      ? sha256Bytes(`${JSON.stringify(webOperationBackendSnapshot, null, 2)}\n`)
+      : "",
+    operation: bundle ? "candidate_supply" : "readback",
+    target_scoped_readback: targetScopedReadback === true,
+    visual_readback_required: true,
+    visual_readback_policy: "always_before_completion",
+    // The target-scoped lane owns only its allowlisted read-only route. When
+    // the exact route is absent from this fresh browser inventory, the
+    // common Chrome Plugin layer may create one task-owned tab, verify it,
+    // and close only that tab. Foreground/selected-tab recovery remains a
+    // separate gate and is never inferred from this flag.
+    provision_target_if_missing: targetScopedReadback === true,
+    target_tab: input?.target_tab && typeof input.target_tab === "object" ? input.target_tab : null,
+    source_snapshot_id: bundle?.input.sourceSnapshotId || "",
+    supply_run_id: bundle?.input.supplyRunId || "",
+    bucket: bundle?.input.bucket || "",
+    remaining: bundle?.input.remaining || 0,
+    margin: bundle?.input.margin || 0,
+    industry: bundle?.input.industry || "",
+    salary_min_jpy: bundle?.input.salaryMinJpy || 0,
+    salary_max_jpy: bundle?.input.salaryMaxJpy || 0,
+    salary_filter_mode: bundle ? "visible_job_text_strict" : "none",
+    existing_keys: [],
+    target_url: String(route?.target_url || ""),
+    artifact_dir: path.join(runRoot, "candidate-supply"),
+    created_at: new Date().toISOString(),
+  };
+  const encoded = `${JSON.stringify(request, null, 2)}\n`;
+  const requestSha256 = sha256Bytes(encoded);
+  const requestArtifact = writePrivateImmutableJson(requestPath, request);
+  if (requestArtifact.sha256 !== requestSha256) throw new Error("chrome_plugin_read_only_handoff_request_digest_invalid");
+  return { request, requestPath, requestSha256, bridge };
+}
+
+async function runChromePluginReadOnlyWorkflow(input, environment = process.env, { bundle = null } = {}) {
+  const { runRoot } = safeRunRoot(input.run_id, environment);
+  const route = routeForWorkflow(input.workflow_id);
+  if (!route) {
+    return {
+      status: "blocked",
+      exact_blocker: `${PORTABLE_EXTERNAL_READ_ONLY_ROUTE_NOT_CONFIGURED}:${input.workflow_id}`,
+      external_action_executed: false,
+      browser_backend: "chrome_plugin",
+      browser_surface: CHROME_PLUGIN_BROWSER_SURFACE,
+    };
+  }
+  const backendBinding = chromePluginBackendSnapshotFromEnvironment(environment);
+  if (backendBinding.exact_blocker) {
+    return {
+      status: "blocked",
+      exact_blocker: backendBinding.exact_blocker,
+      external_action_executed: false,
+      browser_backend: "chrome_plugin",
+      browser_surface: CHROME_PLUGIN_BROWSER_SURFACE,
+    };
+  }
+  let bridgeReadback;
+  // Every Chrome Plugin invocation in this function is a read-only workflow.
+  // Keep it on the target-scoped plane even when the foreground bridge is
+  // healthy: a healthy bridge is transport admission, not a reason to queue
+  // the worker behind selected()/focus/foreground execution.
+  let targetScopedReadback = true;
+  try {
+    // The foreground Chrome Plugin call owns the browser-client context. Use
+    // its direct bridge refresh first; an HTTP /health callback is detached
+    // from that context and can only report cached transport state. Background
+    // workers retain the loopback refresh path and queue for a later foreground
+    // drain instead of attempting browser work from the worker.
+    const directBridge = globalThis?.__socialFlowChromeExtensionBridge;
+    if (globalThis?.nodeRepl && typeof directBridge?.refreshReadback === "function") {
+      try {
+        const fresh = await directBridge.refreshReadback();
+        bridgeReadback = { path: String(directBridge?.readback_path || fresh?.path || ""), value: fresh };
+      } catch (error) {
+        const exactBlocker = String(error?.exact_blocker || error?.message || error);
+        const currentReadback = directBridge?.readback;
+        const targetScopedEligible = chromePluginTargetScopedReadbackEligible({
+          ...(currentReadback || {}),
+          exact_blocker: exactBlocker,
+        });
+        if (!targetScopedEligible) throw error;
+        // The foreground readback is intentionally not repaired or retried.
+        // The worker may continue only through the separate target-scoped
+        // contract, which reads one exact descriptor from fresh openTabs().
+        targetScopedReadback = true;
+        bridgeReadback = { path: String(directBridge?.readback_path || ""), value: currentReadback };
+      }
+    } else {
+      bridgeReadback = await refreshChromePluginBridgeReadback(environment, { targetScopedReadback: true });
+      // Background workers receive the same fresh health readback over the
+      // official loopback bridge. A selected-tab blocker is not a reason to
+      // stop a read-only worker: the bridge handoff can use the separate
+      // target-scoped contract, which performs fresh openTabs() and reads one
+      // allowlisted descriptor without selected()/claimTab()/focus. Keep the
+      // owner-lineage requirement so a stale or foreign bridge still fails
+      // closed.
+      // A valid fresh bridge readback admits the target-scoped read-only
+      // operation regardless of whether selected-tab state is available.
+      targetScopedReadback = true;
+    }
+  } catch (error) {
+    throw new Error(`chrome_plugin_bridge_refresh_failed:${String(error?.message || error)}`);
+  }
+  const activeCallNonce = await issueChromePluginReadOnlyActiveCallNonce({ targetScopedReadback });
+  const backgroundCapability = activeCallNonce
+    ? null
+    : readChromePluginBackgroundReadOnlyCapability(environment);
+  if (!activeCallNonce && String(backgroundCapability?.bridge_instance_id || "") !== String(bridgeReadback.value.bridge_instance_id || "")) {
+    throw new Error("chrome_plugin_background_read_only_capability_bridge_instance_mismatch");
+  }
+  const handoff = chromePluginReadOnlyRequest({
+    input,
+    runRoot,
+    bundle,
+    route,
+    environment,
+    bridgeReadback,
+    activeCallNonce,
+    backgroundCapabilityId: backgroundCapability?.capability_id || "",
+    webOperationBackendSnapshot: backendBinding.snapshot,
+    targetScopedReadback,
+  });
+  const response = await runChromePluginBridgeClient({
+    payload: {
+      ...handoff.request,
+      requestSha256: handoff.requestSha256,
+      schedulerRunDir: runRoot,
+      runDir: runRoot,
+      runId: input.run_id,
+      bridgeRunId: `${input.run_id}:chrome-plugin-bridge`,
+      receiptDir: path.join(runRoot, "chrome-plugin-foreground-handoff", "bridge-receipts"),
+      artifactDir: path.join(runRoot, "candidate-supply"),
+      sourceSnapshotId: bundle?.input.sourceSnapshotId || "",
+      supplyRunId: bundle?.input.supplyRunId || "",
+      bucket: bundle?.input.bucket || "",
+      remaining: bundle?.input.remaining || 0,
+      margin: bundle?.input.margin || 0,
+      controlRunId: handoff.request.control_run_id,
+      controlRequestId: handoff.request.control_request_id,
+      requestPath: handoff.requestPath,
+      receiptId: handoff.request.receipt_id,
+      activeCallNonce,
+      backgroundReadOnlyCapabilityToken: backgroundCapability?.token || "",
+      backgroundReadOnlyCapabilityId: backgroundCapability?.capability_id || "",
+      bridgeInstanceId: handoff.bridge.bridge_instance_id,
+      browserBackend: "chrome_plugin",
+      browserSurface: CHROME_PLUGIN_BROWSER_SURFACE,
+      webOperationBackendSnapshot: backendBinding.snapshot,
+      webOperationBackendSnapshotSha256: handoff.request.web_operation_backend_snapshot_sha256,
+    },
+    environment,
+    bridgeReadback,
+  });
+  if (!response.result) {
+    const bridgeFailure = String(response.error || response.stderr || "").trim();
+    throw new Error(response.code === 2
+      ? (bridgeFailure || "chrome_plugin_bridge_handoff_endpoint_unavailable")
+      : (bridgeFailure || "chrome_plugin_bridge_handoff_client_failed"));
+  }
+  const result = response.result || {};
+  const candidateCount = Number(result.candidate_count || result.adapter_result?.candidate_count || 0);
+  const requestedCount = Number(result.requested_count || result.adapter_result?.requested_count || bundle?.input.remaining + bundle?.input.margin || 0);
+  const cleanupVerified = result.cleanup_verified === true || result.tab_cleanup?.ok === true;
+  const readbackVerified = bundle ? candidateCount > 0 || result.status === "ready" : result.readback_verified === true;
+  const visualReadbackVerified = result.visual_readback_verified === true
+    && Boolean(result.screenshot_path)
+    && Boolean(result.screenshot_sha256);
+  const ready = bundle
+    ? result.status === "ready" && cleanupVerified && visualReadbackVerified && candidateCount >= requestedCount
+    : result.status === "complete" && cleanupVerified && readbackVerified && visualReadbackVerified;
+  const exactBlocker = result.exact_blocker
+    ? String(result.exact_blocker)
+    : ready
+      ? null
+      : bundle
+        ? PORTABLE_EXTERNAL_READ_ONLY_BUSINESS_PROOF_PENDING
+        : "chrome_plugin_read_only_cleanup_or_readback_unverified";
+  const bridgeReceiptPath = String(
+    result.bridge_receipt_path
+      || result.receipt_path
+      || response.result?.bridge_receipt_path
+      || response.result?.receipt_path
+      || response.result?.handoff_receipt_path
+      || result.handoff_receipt_path
+      || "",
+  );
+  return {
+    status: ready ? "complete" : (bundle && String(exactBlocker).startsWith("candidate_supply_buffer_short:") ? "partial" : "blocked"),
+    exact_blocker: exactBlocker,
+    external_action_executed: false,
+    browser_backend: "chrome_plugin",
+    browser_surface: CHROME_PLUGIN_BROWSER_SURFACE,
+    web_operation_backend_snapshot: backendBinding.snapshot,
+    web_operation_backend_snapshot_sha256: handoff.request.web_operation_backend_snapshot_sha256,
+    workflow_id: input.workflow_id,
+    run_id: input.run_id,
+    step_id: input.step_id,
+    operation: bundle ? "candidate_supply" : "read",
+    input_bundle_sha256: bundle?.sha256 || "",
+    readback_verified: readbackVerified,
+    visual_readback_required: true,
+    visual_readback_verified: visualReadbackVerified,
+    cleanup_verified: cleanupVerified,
+    effects_mode: "read_only",
+    read_only_stage_bound: true,
+    same_run_receipt: ready,
+    read_only_proof_verified: ready,
+    external_executor_status: bundle ? "chrome_plugin_candidate_supply_completed" : "chrome_plugin_read_only_readback_completed",
+    handoff_request_path: handoff.requestPath,
+    handoff_request_sha256: handoff.requestSha256,
+    bridge_instance_id: handoff.bridge.bridge_instance_id,
+    // The Chrome Plugin bridge owns the terminal receipt and returns it as
+    // handoff_receipt_path. Normalize that same-run path at the runner
+    // boundary so the AOS receipt verifier does not mistake a completed
+    // read-only handoff for missing provider evidence.
+    bridge_receipt_path: bridgeReceiptPath,
+    screenshot_path: String(result.screenshot_path || ""),
+    tab_cleanup: result.tab_cleanup || null,
+    adapter_result: {
+      ...result,
+      web_operation_backend_snapshot: backendBinding.snapshot,
+      web_operation_backend_snapshot_sha256: handoff.request.web_operation_backend_snapshot_sha256,
+      candidate_count: candidateCount,
+      requested_count: requestedCount,
+      cleanup_verified: cleanupVerified,
+      readback_verified: readbackVerified,
+      // Keep the receipt verifier's required same-run provider path inside
+      // adapter_result as well as at the normalized runner boundary.
+      bridge_receipt_path: bridgeReceiptPath,
+      handoff_receipt_path: String(result.handoff_receipt_path || ""),
+      cleanup_failed: result.tab_cleanup?.cleanup_failed === true,
     },
   };
 }
@@ -411,6 +1382,7 @@ async function runJobCandidateSupply(input, environment = process.env) {
     effects_mode: "read_only",
     read_only_stage_bound: true,
     same_run_receipt: ready,
+    read_only_proof_verified: ready,
     external_executor_status: "candidate_supply_read_only_completed",
     business_runner_entrypoint: "job_manager_browser_use_cli_candidate_supply_adapter.mjs",
     adapter_result: {
@@ -475,7 +1447,7 @@ function readWebOperationRouteRegistry(environment = process.env) {
   } catch {
     throw new Error("portable_external_web_operation_route_registry_missing");
   }
-  const currentUid = typeof process.getuid === "function" ? process.getuid() : stat.uid;
+  const currentUid = currentRuntimeUid(stat);
   if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1 || stat.uid !== currentUid || (stat.mode & 0o777) !== 0o600) {
     throw new Error("portable_external_web_operation_route_registry_permissions_invalid");
   }
@@ -804,7 +1776,76 @@ async function runAdaptiveWebOperationReadback(input, baseRoute, intent, environ
   };
 }
 
-export async function runReadOnlyWorkflow(input, environment = process.env) {
+export async function runReadOnlyWorkflow(
+  input,
+  environment = process.env,
+  {
+    companionWorkflow = runAosChromeCompanionReadOnlyWorkflow,
+    officialWorkflow = runChromePluginReadOnlyWorkflow,
+  } = {},
+) {
+  const backendBlocker = readOnlyBackendBlocker(environment);
+  if (backendBlocker) {
+    return {
+      status: "blocked",
+      exact_blocker: backendBlocker,
+      external_action_executed: false,
+      browser_backend: selectedReadOnlyBackend(environment),
+      browser_surface: selectedBrowserSurface(environment),
+    };
+  }
+  const backendBinding = chromePluginBackendSnapshotFromEnvironment(environment);
+  if (backendBinding.exact_blocker) {
+    return {
+      status: "blocked",
+      exact_blocker: backendBinding.exact_blocker,
+      external_action_executed: false,
+      browser_backend: "chrome_plugin",
+      browser_surface: CHROME_PLUGIN_BROWSER_SURFACE,
+    };
+  }
+  if (selectedReadOnlyBackend(environment) === "aos_chrome_companion") {
+    const companionResult = await companionWorkflow(input, environment);
+    if (companionResult?.status === "complete") return companionResult;
+    const handoff = evaluateSafeExtensionSurfaceHandoff({ sourceResult: companionResult, input });
+    if (handoff.status !== "ready_for_official_visual_preflight") {
+      return { ...companionResult, safe_surface_handoff: handoff };
+    }
+    const officialEnvironment = officialExtensionEnvironmentForHandoff(environment);
+    const destinationResult = await officialWorkflow(input, officialEnvironment);
+    const completedHandoff = completeSafeExtensionSurfaceHandoff(handoff, destinationResult);
+    return {
+      ...destinationResult,
+      status: completedHandoff.status === "completed" ? "complete" : "blocked",
+      exact_blocker: completedHandoff.exact_blocker,
+      external_action_executed: false,
+      safe_surface_handoff: completedHandoff,
+      source_surface_receipt: companionResult,
+      external_executor_status: completedHandoff.status === "completed"
+        ? "companion_to_official_visual_handoff_completed"
+        : "companion_to_official_visual_handoff_blocked",
+    };
+  }
+  if (chromePluginSelected(environment)) {
+    const route = routeForWorkflow(input.workflow_id);
+    if (!route) {
+      return {
+        status: "blocked",
+        exact_blocker: `${PORTABLE_EXTERNAL_READ_ONLY_ROUTE_NOT_CONFIGURED}:${input.workflow_id}`,
+        external_action_executed: false,
+        browser_backend: "chrome_plugin",
+        browser_surface: CHROME_PLUGIN_BROWSER_SURFACE,
+      };
+    }
+    if (input.workflow_id === "job-application-manager"
+      && (input.step_id === JOB_CANDIDATE_SUPPLY_STEP
+        || environment.AUTOMATION_OS_PORTABLE_EXTERNAL_READ_ONLY_STAGE === JOB_CANDIDATE_SUPPLY_STAGE)) {
+      const { runRoot } = safeRunRoot(input.run_id, environment);
+      const bundle = readCandidateSupplyInput(input, runRoot, environment);
+      return runChromePluginReadOnlyWorkflow(input, environment, { bundle });
+    }
+    return runChromePluginReadOnlyWorkflow(input, environment);
+  }
   const adaptiveIntent = readAdaptiveWebOperationIntent(input, environment);
   const route = routeForWorkflow(input.workflow_id);
   if (adaptiveIntent) return runAdaptiveWebOperationReadback(input, route, adaptiveIntent.intent, environment);
@@ -1023,7 +2064,7 @@ function safeReceipt(value) {
     status: value.status,
     exact_blocker: value.exact_blocker ?? null,
     external_action_executed: value.external_action_executed === true,
-    browser_surface: value.browser_surface || "browser_use_cli",
+    browser_surface: value.browser_surface || selectedBrowserSurface(),
     workflow_id: value.workflow_id,
     run_id: value.run_id,
     step_id: value.step_id,
@@ -1037,6 +2078,8 @@ function safeReceipt(value) {
     state_length: value.state_length || 0,
     title_length: value.title_length || 0,
     screenshot_path: value.screenshot_path || "",
+    visual_readback_required: value.visual_readback_required === true,
+    visual_readback_verified: value.visual_readback_verified === true,
     receipt_path: value.receipt_path || "",
     manifest_path: value.manifest_path || "",
     cleanup_verified: value.cleanup_verified === true,
@@ -1048,6 +2091,8 @@ function safeReceipt(value) {
     ...(value.dispatch_state ? { dispatch_state: value.dispatch_state } : {}),
     ...(value.effect_claim_path ? { effect_claim_path: value.effect_claim_path } : {}),
     ...(value.web_operation_lifecycle ? { web_operation_lifecycle: value.web_operation_lifecycle } : {}),
+    ...(value.safe_surface_handoff ? { safe_surface_handoff: value.safe_surface_handoff } : {}),
+    ...(value.source_surface_receipt ? { source_surface_receipt: value.source_surface_receipt } : {}),
     ...(value.semantic_target_readback_verified !== undefined ? { semantic_target_readback_verified: value.semantic_target_readback_verified === true } : {}),
     ...(value.semantic_target_sha256 ? { semantic_target_sha256: value.semantic_target_sha256 } : {}),
     ...(value.semantic_target_candidate_present !== undefined ? { semantic_target_candidate_present: value.semantic_target_candidate_present === true } : {}),
@@ -1066,12 +2111,25 @@ export async function main(argv = process.argv.slice(2), environment = process.e
   try {
     input = parsePortableRunnerArgs(argv);
     if (effectsEnabled(environment)) {
+      if (chromePluginSelected(environment)) {
+        const blocked = {
+          status: "blocked",
+          exact_blocker: "chrome_plugin_effect_requires_workflow_owned_runner",
+          external_action_executed: false,
+          browser_backend: "chrome_plugin",
+          browser_surface: CHROME_PLUGIN_BROWSER_SURFACE,
+        };
+        process.stdout.write(`${safeReceipt(blocked)}\n`);
+        return 1;
+      }
       const intentFile = readAdaptiveWebOperationIntent(input, environment);
       if (intentFile?.intent?.operation && intentFile.intent.operation !== "read") {
         const admission = readAdmission(input, environment);
         const route = adaptiveRouteForIntent(routeForWorkflow(input.workflow_id), intentFile.intent, input, environment);
         if (route.public_lane === true) throw new Error("portable_external_web_operation_effect_public_forbidden");
-        const result = await runAdaptiveWebOperationEffect({ ...input, admission }, route, intentFile.intent, environment);
+        const result = selectedReadOnlyBackend(environment) === "aos_chrome_companion"
+          ? await runAosChromeCompanionWebOperationEffect({ ...input, admission }, route, intentFile.intent, environment)
+          : await runAdaptiveWebOperationEffect({ ...input, admission }, route, intentFile.intent, environment);
         process.stdout.write(`${safeReceipt(result)}\n`);
         return result.status === "complete" && !result.exact_blocker ? 0 : 1;
       }
@@ -1080,7 +2138,7 @@ export async function main(argv = process.argv.slice(2), environment = process.e
         status: "blocked",
         exact_blocker: approval === "approved" ? PORTABLE_EXTERNAL_ACTION_PLAN_REQUIRED : "portable_external_approval_required",
         external_action_executed: false,
-        browser_surface: "browser_use_cli",
+        browser_surface: selectedBrowserSurface(environment),
       };
       process.stdout.write(`${safeReceipt(blocked)}\n`);
       return 1;
@@ -1094,7 +2152,7 @@ export async function main(argv = process.argv.slice(2), environment = process.e
       status: "blocked",
       exact_blocker: normalizedBlocker(error),
       external_action_executed: false,
-      browser_surface: "browser_use_cli",
+      browser_surface: selectedBrowserSurface(environment),
       workflow_id: input?.workflow_id || "",
       run_id: input?.run_id || "",
       step_id: input?.step_id || "",
@@ -1104,6 +2162,6 @@ export async function main(argv = process.argv.slice(2), environment = process.e
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+if (typeof process !== "undefined" && process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   main().then((code) => { process.exitCode = code; });
 }

@@ -79,6 +79,7 @@ test("Job business wrapper accepts AOS underscore run identities before its no-l
     workflow_id: "job-application-manager",
     run_id: runId,
     input: {
+      account_ref: "linkedin_authenticated_job_manager",
       job_url: "https://www.linkedin.com/jobs/view/123/",
       application_url: "https://www.linkedin.com/jobs/view/123/",
       candidate_key: "opp-test-underscore",
@@ -87,6 +88,7 @@ test("Job business wrapper accepts AOS underscore run identities before its no-l
       attempt: 1,
       source_snapshot_id: "snapshot-test",
       supply_run_id: "run_supply_underscore",
+      payload_hash: "a".repeat(64),
       company: "Example Co",
       role: "Marketing Manager",
     },

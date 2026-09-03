@@ -1,4 +1,4 @@
-import { listActorCompanies } from "../companies/repository.js";
+import { listActorCompaniesAsync } from "../companies/repository.js";
 import { runResearchPlanSchedulerOnce } from "../index.js";
 
 const now = parseSchedulerNow(process.env.AUTOMATION_OS_SCHEDULER_NOW);
@@ -6,7 +6,7 @@ const allowedCompanyIds = parseAllowedCompanyIds(process.env.AUTOMATION_OS_SCHED
 const scopeRoles = parseScopeRoles(process.env.AUTOMATION_OS_SCHEDULER_SCOPE_ROLES);
 
 try {
-  const scopedCompanyIds = allowedCompanyIds ?? (scopeRoles ? listActorCompanies()
+  const scopedCompanyIds = allowedCompanyIds ?? (scopeRoles ? (await listActorCompaniesAsync())
     .filter((company) => scopeRoles.includes(company.role))
     .map((company) => company.id) : undefined);
   if (scopeRoles && (!scopedCompanyIds || scopedCompanyIds.length === 0)) {

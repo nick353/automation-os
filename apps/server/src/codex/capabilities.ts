@@ -11,11 +11,13 @@ type CapabilityItem = {
   id: string;
   name: string;
   path: string;
-  status: "available" | "available_with_codex_runtime" | "requires_bridge" | "read_only_indexed" | "missing";
+  status: "available" | "available_with_codex_runtime" | "requires_bridge" | "read_only_indexed" | "catalog_available" | "missing";
   kind: string;
   state: CapabilityAxisState;
   role?: "primary" | "helper";
   hiddenFromSuggestions?: boolean;
+  catalogSource?: "installed" | "recommended" | "official";
+  installHint?: string;
 };
 
 export type CodexCapabilitiesSummary = {
@@ -37,6 +39,7 @@ export type CodexCapabilitiesSummary = {
     cli: CapabilityItem;
     skills: CapabilityItem[];
     plugins: CapabilityItem[];
+    availablePlugins?: CapabilityItem[];
     automations: CapabilityItem[];
   };
   notes: string[];
@@ -45,6 +48,7 @@ export type CodexCapabilitiesSummary = {
 export function getCodexCapabilities(options: {
   mcpProbe?: McpProbeResult | null;
   appServerProbe?: CodexAppServerProbeResult | null;
+  allowStoredSecretRead?: boolean;
 } = {}): CodexCapabilitiesSummary {
   const home = process.env.AUTOMATION_OS_CAPABILITIES_HOME ?? homedir();
   const codexRoot = process.env.AUTOMATION_OS_CODEX_ROOT ?? join(home, ".codex");
@@ -62,8 +66,9 @@ export function getCodexCapabilities(options: {
   const agentSkills = agentSkillRoots.flatMap((root) => scanSkillDir(root, "agent_skill"));
   const skills = [...codexSkills, ...agentSkills];
   const plugins = pluginRoots.flatMap(scanPlugins);
+  const availablePlugins = recommendedPluginCatalog(plugins);
   const automations = scanAutomations(roots.automations);
-  const browserHealth = getBrowserHealth();
+  const browserHealth = getBrowserHealth({ allowStoredSecretRead: options.allowStoredSecretRead });
   const mcpProbe = options.mcpProbe ?? null;
   const appServerProbe = options.appServerProbe ?? null;
   const appServerConnection = getCodexAppServerConnectionReadback();
@@ -151,6 +156,7 @@ export function getCodexCapabilities(options: {
       },
       skills,
       plugins,
+      availablePlugins,
       automations
     },
     notes: [
@@ -199,9 +205,72 @@ function scanPlugins(root: string): CapabilityItem[] {
       path: relativeToHome(path),
       status: "available_with_codex_runtime" as const,
       kind: "plugin",
-      state: localInventoryState()
+      state: localInventoryState(),
+      catalogSource: "installed" as const
     }))
     .sort(byName);
+}
+
+function recommendedPluginCatalog(installed: CapabilityItem[]): CapabilityItem[] {
+  const installedNames = new Set(installed.map((item) => cleanCatalogName(item.name)));
+  const recommended = [
+    ["gmail", "Gmail", "Read and manage Gmail"],
+    ["google-drive", "Google Drive", "Work across Drive, Docs, Sheets, and Slides"],
+    ["google-calendar", "Google Calendar", "Read and manage calendar events"],
+    ["github", "GitHub", "Repository, issue, and pull request workflows"],
+    ["slack", "Slack", "Read and manage Slack conversations"],
+    ["notion", "Notion", "Search and manage Notion workspace content"],
+    ["supabase", "Supabase", "Database, Auth, Storage, and project workflows"],
+    ["canva", "Canva", "Create and edit visual designs"],
+    ["airtable", "Airtable", "Read and manage Airtable bases"],
+    ["asana", "Asana", "Read and manage project tasks"],
+    ["linear", "Linear", "Read and manage engineering issues"],
+    ["hubspot", "HubSpot", "CRM and customer workflows"],
+    ["apollo", "Apollo.io", "Sales intelligence and prospect workflows"],
+    ["atlassian-rovo", "Atlassian Rovo", "Search and work across Atlassian knowledge"],
+    ["base44", "Base44", "Build and operate app workflows"],
+    ["box", "Box", "Search and manage Box content"],
+    ["cloudflare", "Cloudflare", "Manage Cloudflare projects and infrastructure"],
+    ["codex-security", "Codex Security", "Security review and code-risk workflows"],
+    ["figma", "Figma", "Inspect and manage Figma design files"],
+    ["granola", "Granola", "Meeting notes and knowledge workflows"],
+    ["heygen", "HeyGen", "Create and manage AI video workflows"],
+    ["hyperframes", "HyperFrames by HeyGen", "Create and manage HyperFrames workflows"],
+    ["lovable", "Lovable", "Build and manage Lovable projects"],
+    ["monday-com", "Monday.com", "Read and manage Monday.com work items"],
+    ["neon-postgres", "Neon Postgres", "Database and Postgres project workflows"],
+    ["openai-developers", "OpenAI Developers", "OpenAI developer documentation and workflows"],
+    ["outlook-calendar", "Outlook Calendar", "Read and manage Outlook calendar events"],
+    ["outlook-email", "Outlook Email", "Read and manage Outlook email"],
+    ["posthog", "PostHog", "Product analytics and event workflows"],
+    ["remotion", "Remotion", "Create programmatic video workflows"],
+    ["replit", "Replit", "Build and manage Replit projects"],
+    ["semrush", "Semrush", "SEO and marketing research workflows"],
+    ["sentry", "Sentry", "Error monitoring and incident workflows"],
+    ["sharepoint", "SharePoint", "Search and manage SharePoint content"],
+    ["stripe", "Stripe", "Payments and billing workflows"],
+    ["superpowers", "Superpowers", "Reusable productivity workflows"],
+    ["teams", "Teams", "Read and manage Microsoft Teams conversations"],
+    ["vercel", "Vercel", "Deploy and manage Vercel projects"],
+    ["wix", "Wix", "Build and manage Wix sites"],
+    ["zotero", "Zotero", "Search and manage research libraries"]
+  ] as const;
+  return recommended
+    .filter(([id, name]) => !installedNames.has(cleanCatalogName(id)) && !installedNames.has(cleanCatalogName(name)))
+    .map(([id, name]) => ({
+      id: `catalog:plugin:${id}`,
+      name,
+      path: `catalog://recommended/${id}`,
+      status: "catalog_available" as const,
+      kind: "plugin",
+      state: { configured: false, enabled: false, verified: false, connected: false },
+      catalogSource: "recommended" as const,
+      installHint: "Codex AppのPlugin管理から追加後、AOS inventoryを再同期"
+    }));
+}
+
+function cleanCatalogName(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-");
 }
 
 function scanAutomations(root: string): CapabilityItem[] {

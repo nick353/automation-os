@@ -51,6 +51,18 @@ CREATE TABLE IF NOT EXISTS company_audit_events (
 
 CREATE INDEX IF NOT EXISTS company_audit_events_company_idx ON company_audit_events(company_id, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS web_operation_settings (
+  id TEXT PRIMARY KEY,
+  backend TEXT NOT NULL,
+  revision INTEGER NOT NULL DEFAULT 1,
+  chrome_profile_id TEXT NOT NULL DEFAULT 'profile2',
+  chrome_profile_name TEXT NOT NULL DEFAULT 'Profile 2',
+  chrome_profile_directory TEXT NOT NULL DEFAULT 'Profile 2',
+  chrome_surface TEXT NOT NULL DEFAULT 'signed_chrome_extension_profile2',
+  updated_at TEXT NOT NULL,
+  updated_by TEXT
+);
+
 CREATE TABLE IF NOT EXISTS runs (
   id TEXT PRIMARY KEY,
   company_id TEXT,
@@ -184,6 +196,63 @@ CREATE INDEX IF NOT EXISTS job_application_target_admissions_run_idx
 CREATE UNIQUE INDEX IF NOT EXISTS job_application_target_admissions_one_active_idx
   ON job_application_target_admissions(company_id, workflow_id)
   WHERE status IN ('registered', 'approval_pending', 'approved', 'running', 'submitted', 'reconciled');
+
+-- Read-only candidate supply and redacted Sheets mirror. These tables never
+-- contain resume bodies, credentials, cookies, OTPs, or provider secrets.
+CREATE TABLE IF NOT EXISTS job_application_candidate_supply (
+  id TEXT PRIMARY KEY,
+  company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  candidate_key TEXT NOT NULL,
+  source_snapshot_id TEXT NOT NULL,
+  source_snapshot_expires_at TEXT NOT NULL,
+  supply_run_id TEXT NOT NULL,
+  job_url TEXT,
+  job_id TEXT,
+  application_url TEXT,
+  company_name TEXT NOT NULL,
+  role TEXT NOT NULL,
+  language TEXT NOT NULL CHECK (language IN ('ja', 'en')),
+  resume_locale TEXT NOT NULL CHECK (resume_locale IN ('ja-JP', 'en-US')),
+  salary_original_min REAL,
+  salary_original_max REAL,
+  salary_currency TEXT NOT NULL,
+  salary_period TEXT NOT NULL DEFAULT 'annual',
+  fx_to_jpy REAL,
+  salary_jpy REAL,
+  salary_source_url TEXT,
+  fx_source_url TEXT,
+  salary_source_time TEXT,
+  work_location TEXT NOT NULL,
+  work_authorization TEXT NOT NULL,
+  remote_mode TEXT NOT NULL,
+  status TEXT NOT NULL,
+  blocker TEXT,
+  next_action TEXT NOT NULL,
+  dedupe_key TEXT NOT NULL,
+  target_digest TEXT NOT NULL CHECK (length(target_digest) = 64),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(company_id, candidate_key)
+);
+CREATE INDEX IF NOT EXISTS job_application_candidate_supply_company_idx
+  ON job_application_candidate_supply(company_id, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS job_application_candidate_supply_dedupe_idx
+  ON job_application_candidate_supply(company_id, dedupe_key, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS job_application_sheet_mirrors (
+  id TEXT PRIMARY KEY,
+  company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  candidate_key TEXT NOT NULL,
+  date_jst TEXT NOT NULL,
+  row_json TEXT NOT NULL,
+  row_fingerprint TEXT NOT NULL CHECK (length(row_fingerprint) = 64),
+  sync_status TEXT NOT NULL CHECK (sync_status IN ('prepared', 'synced', 'failed')),
+  blocker TEXT,
+  updated_at TEXT NOT NULL,
+  UNIQUE(company_id, candidate_key)
+);
+CREATE INDEX IF NOT EXISTS job_application_sheet_mirrors_company_idx
+  ON job_application_sheet_mirrors(company_id, sync_status, updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS proofs (
   id TEXT PRIMARY KEY,
@@ -426,6 +495,7 @@ CREATE TABLE IF NOT EXISTS mvp_automation_schedules (
   revision INTEGER NOT NULL DEFAULT 1,
   next_run_at TEXT,
   last_run_at TEXT,
+  catch_up_policy TEXT DEFAULT 'skip',
   paused_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -622,7 +692,22 @@ CREATE TABLE IF NOT EXISTS company_connection_account_refs (
   UNIQUE(company_id, platform, account_ref)
 );
 
-CREATE INDEX IF NOT EXISTS company_connection_account_refs_company_idx ON company_connection_account_refs(company_id, status, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS company_connection_account_refs_company_idx ON company_connection_account_refs(company_id, status, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS codex_app_server_registry_readbacks (
+      id TEXT PRIMARY KEY,
+      company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+      source TEXT NOT NULL,
+      captured_at TEXT NOT NULL,
+      registry_json TEXT NOT NULL,
+      revision INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(company_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS codex_app_server_registry_readbacks_company_idx
+      ON codex_app_server_registry_readbacks(company_id, captured_at DESC);
 
 CREATE TABLE IF NOT EXISTS knowledge_notes (
   id TEXT PRIMARY KEY,

@@ -41,7 +41,7 @@ class FakeChild extends EventEmitter {
 class FakeProbeWebSocket implements AppServerWebSocketLike {
   private readonly listeners = new Map<string, Set<(event: { data?: unknown; code?: number; reason?: string }) => void>>();
 
-  constructor(readonly url: string, readonly init: { headers: Record<string, string> }, readonly emitErrorNotification = false, readonly accountPresent = true) {
+  constructor(readonly url: string, readonly init: { headers: Record<string, string> }, readonly emitErrorNotification = false, readonly accountPresent = true, readonly requiresOpenaiAuth = false) {
     queueMicrotask(() => this.emit("open", {}));
   }
 
@@ -64,7 +64,7 @@ class FakeProbeWebSocket implements AppServerWebSocketLike {
         data: JSON.stringify({
           id: message.id,
           result: this.accountPresent
-            ? { account: { type: "chatgpt", planType: "pro" }, requiresOpenaiAuth: false }
+            ? { account: { type: "chatgpt", planType: "pro" }, requiresOpenaiAuth: this.requiresOpenaiAuth }
             : { requiresOpenaiAuth: true }
         })
       }));
@@ -227,6 +227,26 @@ test("remote thread-turn canary stops after account/read when the dedicated serv
   assert.equal(result.accountPresent, false);
   assert.equal(result.threadStarted, false);
   assert.equal(result.turnStarted, false);
+  assert.equal(result.externalActionExecuted, false);
+});
+
+test("remote thread-turn canary continues when an authenticated account reports the OpenAI auth mode", async () => {
+  clearAppServerProbeCache();
+  const result = await runCodexAppServerThreadTurnCanary({
+    remoteUrl: "wss://codex.example.test:4500/",
+    remoteToken: "unit-test-token",
+    timeoutMs: 100,
+    webSocketFactory: (url, init) => new FakeProbeWebSocket(url, init, false, true, true)
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.status, "ok");
+  assert.equal(result.accountPresent, true);
+  assert.equal(result.requiresOpenaiAuth, true);
+  assert.equal(result.threadStarted, true);
+  assert.equal(result.turnStarted, true);
+  assert.equal(result.turnCompletionObserved, true);
+  assert.equal(result.exactBlocker, null);
   assert.equal(result.externalActionExecuted, false);
 });
 

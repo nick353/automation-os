@@ -483,15 +483,16 @@ test("Browser Use CLI is a strict manifest surface with no IAB or Chrome fallbac
     "utf8"
   )) as Record<string, unknown> & { stages: Array<Record<string, unknown>>; chrome_lease_contract: Record<string, unknown> };
   const manifest = manifestCompiler.parseAutomationKernelManifestTextV1(JSON.stringify(source));
-  assert.equal(manifest.stages[0]?.browser_surface, "browser_use_cli");
-  assert.equal(manifest.stages[0]?.lane, "browser_use_cli");
+  const rootControllerStage = manifest.stages.find((stage) => stage.id === "root_controller_bootstrap");
+  assert.equal(rootControllerStage?.browser_surface, "browser_use_cli");
+  assert.equal(rootControllerStage?.lane, "browser_use_cli");
   assert.equal(manifest.chrome_lease_contract.surface, "browser_use_cli");
   assert.equal(manifest.chrome_lease_contract.schema, "automation_kernel_browser_use_stage_lease.v1");
   const compiled = manifestCompiler.compileAutomationKernelManifestV1(manifest, "browser-use-surface-run");
-  assert.equal(compiled.definition.effects[0]?.payload.browser_surface, "browser_use_cli");
+  assert.equal(compiled.definition.effects.find((effect) => effect.effect_id === "root_controller_bootstrap")?.payload.browser_surface, "browser_use_cli");
 
   const wrongLane = structuredClone(source);
-  wrongLane.stages[0]!.lane = "in_app_browser";
+  wrongLane.stages.find((stage) => stage.id === "root_controller_bootstrap")!.lane = "in_app_browser";
   assert.throws(
     () => manifestCompiler.parseAutomationKernelManifestTextV1(JSON.stringify(wrongLane)),
     /automation_kernel_manifest_browser_use_cli_stage_invalid:root_controller_bootstrap/
@@ -570,7 +571,7 @@ test("IAB stage receipts fail closed without capability evidence", () => {
   control.runAutomationKernelControl({ ...base, action: "compile" });
   // Consume the current manifest's required local stages before the
   // readiness stage whose IAB admission contract this test exercises.
-  for (const stageId of ["research_queue_refresh", "pre_entry_readiness", "pre_browser_readiness"]) {
+  for (const stageId of ["workflow", "research_queue_refresh", "pre_entry_readiness", "pre_browser_readiness"]) {
     control.runAutomationKernelControl({ ...base, action: "claim", effectId: stageId });
     control.runAutomationKernelControl({
       ...base,

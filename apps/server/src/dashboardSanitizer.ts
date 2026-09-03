@@ -12,11 +12,15 @@ type PublicRunContract = {
   visibleSteps?: string[];
 };
 
-export function sanitizeDashboardRows<T extends DashboardRow>(rows: T[]): T[] {
+export type DashboardSanitizationOptions = {
+  compactMetadata?: boolean;
+};
+
+export function sanitizeDashboardRows<T extends DashboardRow>(rows: T[], options: DashboardSanitizationOptions = {}): T[] {
   return rows.map((row) => {
     const sanitized: JsonObject = { ...row };
     if ("metadata_json" in sanitized) {
-      sanitized.metadata_json = JSON.stringify(sanitizeDashboardMetadata(sanitized.metadata_json));
+      sanitized.metadata_json = JSON.stringify(sanitizeDashboardMetadata(sanitized.metadata_json, options));
     }
     addPublicProofViewerFields(sanitized);
     addPublicConnectionFlags(sanitized);
@@ -25,7 +29,7 @@ export function sanitizeDashboardRows<T extends DashboardRow>(rows: T[]): T[] {
   });
 }
 
-export function sanitizeDashboardMetadata(value: unknown): JsonObject {
+export function sanitizeDashboardMetadata(value: unknown, options: DashboardSanitizationOptions = {}): JsonObject {
   const metadata = parseJson<JsonObject>(value, {});
   const summary = buildRunContractSummary(metadata);
   const sanitized: JsonObject = { ...metadata };
@@ -58,7 +62,45 @@ export function sanitizeDashboardMetadata(value: unknown): JsonObject {
   if (publicBrowserUseResult) {
     sanitized.browser_use_result = publicBrowserUseResult;
   }
-  return sanitized;
+  return options.compactMetadata ? compactDashboardMetadata(sanitized) : sanitized;
+}
+
+/**
+ * Dashboard state is a list readback, not the authority for a run's full
+ * receipt. Keep fields needed for status/blocker/proof progress and fetch the
+ * complete record from /api/runs/:id when a user opens a run.
+ */
+function compactDashboardMetadata(metadata: JsonObject): JsonObject {
+  const compactKeys = [
+    "adapter",
+    "approval_required_reason",
+    "browser_surface",
+    "business_completion_verified",
+    "cleanup_verified",
+    "dry_run",
+    "effect_stage",
+    "exact_blocker",
+    "execution_mode",
+    "external_action_executed",
+    "fallback_allowed",
+    "proof_gate",
+    "read_only_stage",
+    "readback_verified",
+    "requires_approval",
+    "run_contract_summary",
+    "same_run_receipt",
+    "status",
+    "stop_reason",
+    "web_operation_backend",
+    "worker_mode",
+    "workflow_id",
+    "workflowId"
+  ] as const;
+  const compact: JsonObject = {};
+  for (const key of compactKeys) {
+    if (key in metadata) compact[key] = metadata[key];
+  }
+  return compact;
 }
 
 function sanitizePlan(plan: JsonObject): JsonObject {
@@ -220,6 +262,17 @@ function addPublicProofViewerFields(row: JsonObject): void {
   if (typeof row.id !== "string" || typeof row.proof_type !== "string") return;
   row.can_open = true;
   row.viewer_url = `/api/proofs/${encodeURIComponent(row.id)}/view`;
+  const metadata = parseJson<JsonObject>(row.metadata_json, {});
+  const receipt = isObject(metadata.receipt) ? metadata.receipt : {};
+  const externalActionExecuted = [
+    metadata.external_action_executed,
+    metadata.externalActionExecuted,
+    receipt.external_action_executed,
+    receipt.externalActionExecuted
+  ].find((value): value is boolean => typeof value === "boolean");
+  // Keep the safe effect boundary available to the UI while still removing
+  // the raw proof metadata and artifact paths below.
+  if (typeof externalActionExecuted === "boolean") row.external_action_executed = externalActionExecuted;
   delete row.metadata_json;
   delete row.metadata;
 }

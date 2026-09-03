@@ -1,8 +1,11 @@
 import type { PortableWorkflowId } from "./portableWorkflowContract.js";
-import { getWebOperationContract, validateWebOperationContract, type WebOperationContractV1 } from "./webOperationContract.js";
+import { getWebOperationContractForSurface, validateWebOperationContract, type WebOperationContractV1 } from "./webOperationContract.js";
 
 export const PORTABLE_EXTERNAL_BUSINESS_PLAN_SCHEMA_V1 = "automation_os_portable_external_business_plan.v1" as const;
 export const PORTABLE_ACCOUNT_TARGET_PAYLOAD_RECEIPT_CONTRACT_SCHEMA_V1 = "automation_os_account_target_payload_receipt_contract.v1" as const;
+export const PORTABLE_CONNECTOR_PRIORITY_V1 = ["plugin", "mcp", "cli", "api"] as const;
+
+export type PortableConnectorKind = typeof PORTABLE_CONNECTOR_PRIORITY_V1[number];
 
 export type PortableAccountTargetPayloadReceiptContractV1 = {
   schema: typeof PORTABLE_ACCOUNT_TARGET_PAYLOAD_RECEIPT_CONTRACT_SCHEMA_V1;
@@ -16,9 +19,12 @@ export type PortableAccountTargetPayloadReceiptContractV1 = {
 
 export type PortableExternalBusinessPlanV1 = {
   schema: typeof PORTABLE_EXTERNAL_BUSINESS_PLAN_SCHEMA_V1;
-  workflow_id: Extract<PortableWorkflowId, "job-application-manager" | "daily-ai-research-publish-run" | "nisenprints-daily-product-canva-printify-etsy-pinterest">;
-  runner_key: "job_application" | "daily_ai" | "nisenprints";
+  workflow_id: PortableWorkflowId;
+  runner_key: "job_application" | "daily_ai" | "nisenprints" | "prompt_transfer" | "sns_multi_poster" | "x_authenticated_browser_lane";
   browser_surface: "browser_use_cli";
+  browser_runtime: "browser_use_cli";
+  connector_priority: readonly PortableConnectorKind[];
+  connector_fallback_policy: "no_implicit_fallback";
   llm_provider_neutral: true;
   app_dependency: false;
   external_effect_policy: "approval_required";
@@ -50,7 +56,7 @@ const commonRunnerContract = Object.freeze({
   same_run_idempotency: true as const,
   same_run_receipt: true as const,
   cleanup_readback: true as const,
-  web_operation_contract: getWebOperationContract(),
+  web_operation_contract: getWebOperationContractForSurface("browser_use_cli"),
 });
 
 const commonAccountTargetPayloadReceiptContract = Object.freeze({
@@ -68,6 +74,9 @@ export const portableExternalBusinessPlans: Record<PortableExternalBusinessPlanV
     workflow_id: "job-application-manager",
     runner_key: "job_application",
     browser_surface: "browser_use_cli",
+    browser_runtime: "browser_use_cli",
+    connector_priority: PORTABLE_CONNECTOR_PRIORITY_V1,
+    connector_fallback_policy: "no_implicit_fallback",
     llm_provider_neutral: true,
     app_dependency: false,
     external_effect_policy: "approval_required",
@@ -85,6 +94,9 @@ export const portableExternalBusinessPlans: Record<PortableExternalBusinessPlanV
     workflow_id: "daily-ai-research-publish-run",
     runner_key: "daily_ai",
     browser_surface: "browser_use_cli",
+    browser_runtime: "browser_use_cli",
+    connector_priority: PORTABLE_CONNECTOR_PRIORITY_V1,
+    connector_fallback_policy: "no_implicit_fallback",
     llm_provider_neutral: true,
     app_dependency: false,
     external_effect_policy: "approval_required",
@@ -102,6 +114,9 @@ export const portableExternalBusinessPlans: Record<PortableExternalBusinessPlanV
     workflow_id: "nisenprints-daily-product-canva-printify-etsy-pinterest",
     runner_key: "nisenprints",
     browser_surface: "browser_use_cli",
+    browser_runtime: "browser_use_cli",
+    connector_priority: PORTABLE_CONNECTOR_PRIORITY_V1,
+    connector_fallback_policy: "no_implicit_fallback",
     llm_provider_neutral: true,
     app_dependency: false,
     external_effect_policy: "approval_required",
@@ -111,6 +126,66 @@ export const portableExternalBusinessPlans: Record<PortableExternalBusinessPlanV
     account_target_payload_receipt_contract: {
       ...commonAccountTargetPayloadReceiptContract,
       required_input_fields: ["account_ref", "target_key", "product_key", "asset_manifest_id", "payload_hash", "source_snapshot_id"],
+    },
+    required_runner_contract: commonRunnerContract,
+  },
+  "prompt-transfer-ukiyoe": {
+    schema: PORTABLE_EXTERNAL_BUSINESS_PLAN_SCHEMA_V1,
+    workflow_id: "prompt-transfer-ukiyoe",
+    runner_key: "prompt_transfer",
+    browser_surface: "browser_use_cli",
+    browser_runtime: "browser_use_cli",
+    connector_priority: PORTABLE_CONNECTOR_PRIORITY_V1,
+    connector_fallback_policy: "no_implicit_fallback",
+    llm_provider_neutral: true,
+    app_dependency: false,
+    external_effect_policy: "approval_required",
+    stages: ["source_readback", "browser_preflight", "sheet_target_resolve", "transfer", "same_run_sync_readback", "cleanup"],
+    required_business_proofs: ["sheet_target_readback", "same_run_source_of_truth_readback", "cleanup_receipt"],
+    hard_stops: [...commonHardStops, "provider_auth_required", "target_range_ambiguous", "sheet_write_readback_missing"],
+    account_target_payload_receipt_contract: {
+      ...commonAccountTargetPayloadReceiptContract,
+      required_input_fields: ["account_ref", "target_key", "content_key", "payload_hash", "source_snapshot_id"],
+    },
+    required_runner_contract: commonRunnerContract,
+  },
+  "sns-multi-poster-ukiyoe": {
+    schema: PORTABLE_EXTERNAL_BUSINESS_PLAN_SCHEMA_V1,
+    workflow_id: "sns-multi-poster-ukiyoe",
+    runner_key: "sns_multi_poster",
+    browser_surface: "browser_use_cli",
+    browser_runtime: "browser_use_cli",
+    connector_priority: PORTABLE_CONNECTOR_PRIORITY_V1,
+    connector_fallback_policy: "no_implicit_fallback",
+    llm_provider_neutral: true,
+    app_dependency: false,
+    external_effect_policy: "approval_required",
+    stages: ["source_readback", "account_preflight", "browser_preflight", "one_candidate_publish", "same_run_sync_readback", "cleanup"],
+    required_business_proofs: ["published_url_or_exact_blocker", "same_run_source_of_truth_readback", "cleanup_receipt"],
+    hard_stops: [...commonHardStops, "language_mismatch", "account_mismatch", "publish_readback_missing"],
+    account_target_payload_receipt_contract: {
+      ...commonAccountTargetPayloadReceiptContract,
+      required_input_fields: ["account_ref", "target_key", "content_key", "payload_hash", "source_snapshot_id"],
+    },
+    required_runner_contract: commonRunnerContract,
+  },
+  "x-authenticated-browser-lane": {
+    schema: PORTABLE_EXTERNAL_BUSINESS_PLAN_SCHEMA_V1,
+    workflow_id: "x-authenticated-browser-lane",
+    runner_key: "x_authenticated_browser_lane",
+    browser_surface: "browser_use_cli",
+    browser_runtime: "browser_use_cli",
+    connector_priority: PORTABLE_CONNECTOR_PRIORITY_V1,
+    connector_fallback_policy: "no_implicit_fallback",
+    llm_provider_neutral: true,
+    app_dependency: false,
+    external_effect_policy: "approval_required",
+    stages: ["source_readback", "account_preflight", "browser_preflight", "one_candidate_publish", "same_run_sync_readback", "cleanup"],
+    required_business_proofs: ["published_url_or_exact_blocker", "same_run_source_of_truth_readback", "cleanup_receipt"],
+    hard_stops: [...commonHardStops, "language_mismatch", "account_mismatch", "publish_readback_missing", "human_input_required"],
+    account_target_payload_receipt_contract: {
+      ...commonAccountTargetPayloadReceiptContract,
+      required_input_fields: ["account_ref", "target_key", "content_key", "payload_hash", "source_snapshot_id"],
     },
     required_runner_contract: commonRunnerContract,
   },
@@ -125,7 +200,7 @@ export function getPortableExternalBusinessPlan(workflowId: string): PortableExt
     hard_stops: [...plan.hard_stops],
     required_runner_contract: {
       ...plan.required_runner_contract,
-      web_operation_contract: getWebOperationContract(),
+      web_operation_contract: getWebOperationContractForSurface("browser_use_cli"),
     },
   } : null;
 }
@@ -133,6 +208,9 @@ export function getPortableExternalBusinessPlan(workflowId: string): PortableExt
 export function validatePortableExternalBusinessPlan(plan: PortableExternalBusinessPlanV1): PortableExternalBusinessPlanV1 {
   if (plan.schema !== PORTABLE_EXTERNAL_BUSINESS_PLAN_SCHEMA_V1) throw new Error("portable_external_business_plan_schema_invalid");
   if (plan.browser_surface !== "browser_use_cli") throw new Error("portable_external_business_plan_browser_surface_invalid");
+  if (plan.browser_runtime !== "browser_use_cli") throw new Error("portable_external_business_plan_browser_runtime_invalid");
+  if (JSON.stringify(plan.connector_priority) !== JSON.stringify(PORTABLE_CONNECTOR_PRIORITY_V1)) throw new Error("portable_external_business_plan_connector_priority_invalid");
+  if (plan.connector_fallback_policy !== "no_implicit_fallback") throw new Error("portable_external_business_plan_connector_fallback_invalid");
   if (plan.llm_provider_neutral !== true || plan.app_dependency !== false) throw new Error("portable_external_business_plan_dependency_invalid");
   if (plan.external_effect_policy !== "approval_required") throw new Error("portable_external_business_plan_effect_policy_invalid");
   if (!plan.runner_key || !plan.stages.length || !plan.required_business_proofs.length) throw new Error("portable_external_business_plan_incomplete");
@@ -149,6 +227,12 @@ export function validatePortableExternalBusinessPlan(plan: PortableExternalBusin
   }
   if (plan.required_runner_contract.current_run_bound !== true || plan.required_runner_contract.fresh_authority !== true || plan.required_runner_contract.same_run_idempotency !== true || plan.required_runner_contract.same_run_receipt !== true || plan.required_runner_contract.cleanup_readback !== true) {
     throw new Error("portable_external_business_plan_runner_contract_invalid");
+  }
+  const webContract = plan.required_runner_contract.web_operation_contract;
+  if (webContract.browser_surface !== plan.browser_surface
+    || JSON.stringify(webContract.browser_kernel.supported_surfaces) !== JSON.stringify([plan.browser_surface])
+    || (plan.browser_surface === "browser_use_cli" && !webContract.fixed_kernel.forbidden_surfaces.includes("extension"))) {
+    throw new Error("browser_use_cli_web_operation_contract_mismatch");
   }
   validateWebOperationContract(plan.required_runner_contract.web_operation_contract);
   return plan;

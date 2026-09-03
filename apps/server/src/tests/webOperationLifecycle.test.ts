@@ -10,7 +10,7 @@ import {
   reconcileWebOperationLifecycle,
   webOperationLifecycleReceipt
 } from "../runs/webOperationLifecycle.js";
-import { getWebOperationContract, resolveLiveSemanticTarget, validateWebOperationContract, validateWebOperationIntent } from "../runs/webOperationContract.js";
+import { getWebOperationContract, getWebOperationContractForSurface, resolveLiveSemanticTarget, validateWebOperationContract, validateWebOperationIntent } from "../runs/webOperationContract.js";
 
 const digest = "a".repeat(64);
 
@@ -162,6 +162,18 @@ test("web operation contract validates the complete operation model", () => {
   assert.throws(() => validateWebOperationContract({ ...contract, operation_model: { ...contract.operation_model, target_resolution: "fixed_css_selector" } }), /web_operation_contract_operation_model_target_resolution_invalid/);
   assert.throws(() => validateWebOperationContract({ ...contract, fixed_kernel: { ...contract.fixed_kernel, unexpected_runtime_flag: true } }), /web_operation_contract_fixed_kernel_invalid/);
   assert.throws(() => validateWebOperationContract({ ...contract, operation_model: { ...contract.operation_model, exploration_limits: { ...contract.operation_model.exploration_limits, unexpected_limit: 1 } } }), /web_operation_contract_operation_model_exploration_limits_invalid/);
+});
+
+test("Chrome Plugin business contracts do not advertise Browser Use CLI or forbid the selected extension surface", () => {
+  const contract = getWebOperationContractForSurface("signed_chrome_extension_profile2");
+  assert.equal(contract.browser_surface, "signed_chrome_extension_profile2");
+  assert.deepEqual(contract.browser_kernel.supported_surfaces, ["signed_chrome_extension_profile2"]);
+  assert.equal(contract.fixed_kernel.forbidden_surfaces.includes("extension"), false);
+  assert.doesNotThrow(() => validateWebOperationContract(contract));
+  assert.throws(
+    () => validateWebOperationContract({ ...contract, browser_surface: "browser_use_cli" }),
+    /web_operation_contract_browser_kernel_invalid/,
+  );
 });
 
 test("delete requires absent source state and duplicate reconciliation does not replay", () => {

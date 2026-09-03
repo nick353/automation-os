@@ -244,6 +244,9 @@ async function runCodexAppServerThreadTurnCanaryInternal(options: {
     accountRead = true;
     accountPresent = account.accountPresent;
     requiresOpenaiAuth = account.requiresOpenaiAuth;
+    // requiresOpenaiAuth is an auth-mode capability flag. An account/read
+    // response containing an account is not evidence of missing login; the
+    // same-connection read-only thread/turn canary is the authoritative test.
     if (!account.accountPresent) {
       return {
         ...buildThreadTurnCanaryBlocked({

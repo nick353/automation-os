@@ -1,4 +1,4 @@
-import { insert, makeId, nowIso, querySql, sqlValue } from "../db/client.js";
+import { insert, insertAsync, makeId, nowIso, querySql, querySqlAsync, sqlValue } from "../db/client.js";
 import { CodexAppServerClient } from "../codex/appServerClient.js";
 import { redactSensitiveText } from "../obsidian/redaction.js";
 import { createCodexAppServerPlannerResponse, createPlannerResponse, type CreatePlannerMessage, type CreatePlannerResult } from "./createPlanner.js";
@@ -35,15 +35,15 @@ export type CreateChatThreadReadback = {
 type CreatePlannerJobRow = {
   id: string;
   status: string;
-  messages_json: string;
+  messages_json: unknown;
   current_draft: string;
-  result_json: string;
+  result_json: unknown;
   exact_blocker?: string | null;
   created_at: string;
   updated_at: string;
   started_at?: string | null;
   completed_at?: string | null;
-  metadata_json: string;
+  metadata_json: unknown;
   lease_owner?: string | null;
   lease_expires_at?: string | null;
   attempt_count?: number | null;
@@ -92,11 +92,51 @@ export function enqueueCreatePlannerJob(input: {
   return getCreatePlannerJob(id) as CreatePlannerJob;
 }
 
+/**
+ * PostgreSQL HTTP routes must not spawn the legacy synchronous worker for a
+ * chat enqueue. Keep the payload contract identical to the sync helper while
+ * using the request pool and an async readback.
+ */
+export async function enqueueCreatePlannerJobAsync(input: {
+  messages: CreatePlannerMessage[];
+  currentDraft?: string;
+  metadata?: Record<string, unknown>;
+}): Promise<CreatePlannerJob> {
+  const now = nowIso();
+  const id = makeId("create_planner_job");
+  const messages = input.messages.map((message) => ({
+    role: message.role,
+    text: redactSensitiveText(message.text).slice(0, 12_000)
+  }));
+  await insertAsync("create_planner_jobs", {
+    id,
+    status: "queued",
+    messages_json: messages,
+    current_draft: redactSensitiveText(input.currentDraft ?? "").slice(0, 12_000),
+    result_json: {},
+    exact_blocker: null,
+    created_at: now,
+    updated_at: now,
+    started_at: null,
+    completed_at: null,
+    metadata_json: input.metadata ?? {}
+  });
+  return (await getCreatePlannerJobAsync(id)) as CreatePlannerJob;
+}
+
 export function getCreatePlannerJob(id: string): CreatePlannerJob | undefined {
   if (!id.trim()) return undefined;
   const row = querySql<CreatePlannerJobRow>(
     `SELECT * FROM create_planner_jobs WHERE id=${sqlValue(id)} LIMIT 1`
   )[0];
+  return row ? mapCreatePlannerJob(row) : undefined;
+}
+
+export async function getCreatePlannerJobAsync(id: string): Promise<CreatePlannerJob | undefined> {
+  if (!id.trim()) return undefined;
+  const row = (await querySqlAsync<CreatePlannerJobRow>(
+    `SELECT * FROM create_planner_jobs WHERE id=${sqlValue(id)} LIMIT 1`
+  ))[0];
   return row ? mapCreatePlannerJob(row) : undefined;
 }
 
@@ -188,6 +228,33 @@ export async function processQueuedCreatePlannerJobs(limit = 1, options: CreateP
   return processed;
 }
 
+/**
+ * Process one explicitly selected planner job. This is used by bounded
+ * recovery/demo entrypoints so an old queued conversation can never be
+ * claimed merely because it happens to be first in the global queue.
+ */
+export async function processCreatePlannerJobById(id: string, options: CreatePlannerJobProcessOptions = {}): Promise<CreatePlannerJob | undefined> {
+  const normalizedId = id.trim();
+  if (!normalizedId) return undefined;
+  const workerId = normalizeWorkerId(options.workerId);
+  const leaseMs = boundedLeaseMs(options.leaseMs);
+  const startedAt = nowIso();
+  const leaseExpiresAt = new Date(Date.now() + leaseMs).toISOString();
+  const claimed = querySql<CreatePlannerJobRow>(
+    `UPDATE create_planner_jobs
+     SET status='running',
+         started_at=COALESCE(started_at, ${sqlValue(startedAt)}),
+         updated_at=${sqlValue(startedAt)},
+         lease_owner=${sqlValue(workerId)},
+         lease_expires_at=${sqlValue(leaseExpiresAt)},
+         attempt_count=COALESCE(attempt_count, 0) + 1
+     WHERE id=${sqlValue(normalizedId)} AND status='queued'
+     RETURNING *`
+  )[0];
+  if (!claimed) return getCreatePlannerJob(normalizedId);
+  return processCreatePlannerJob(claimed, { ...options, workerId, leaseMs });
+}
+
 function recoverExpiredCreatePlannerLeases(): void {
   const now = nowIso();
   querySql(
@@ -256,17 +323,22 @@ async function processCreatePlannerJob(row: CreatePlannerJobRow, options: Create
     );
   };
   try {
-    const resultWithMetadata = transport === "codex_app_server"
+    const localPlannerSelected = (process.env.AUTOMATION_OS_CREATE_PLANNER_PROVIDER ?? "").trim().toLowerCase() === "local";
+    const resultWithMetadata = transport === "codex_app_server" && !localPlannerSelected
       ? await createCodexAppServerPlannerResponse({
           messages,
           currentDraft,
           threadId: typeof metadata.codexThreadId === "string" ? metadata.codexThreadId : undefined,
           context: typeof metadata.contextSnapshot === "string" ? metadata.contextSnapshot : undefined,
           client: options.appServerClient ?? getSharedAppServerClient(),
-          onEvent: persistProgress
+        onEvent: persistProgress
         })
       : null;
-    const result = resultWithMetadata?.result ?? await createPlannerResponse({ messages, currentDraft, providerOverride: "codex" });
+    const result = resultWithMetadata?.result ?? await createPlannerResponse({
+      messages,
+      currentDraft,
+      providerOverride: localPlannerSelected ? "local" : "codex"
+    });
     const safeMetadata = { ...metadata };
     delete safeMetadata.streamText;
     const nextMetadata: Record<string, unknown> = resultWithMetadata
@@ -302,7 +374,7 @@ async function processCreatePlannerJob(row: CreatePlannerJobRow, options: Create
     );
     if (metadataUpdated.length === 0) return getCreatePlannerJob(row.id) as CreatePlannerJob;
     const completedAt = nowIso();
-    const status: CreatePlannerJobStatus = result.source === "local_codex" || result.source === "codex_app_server" ? "completed" : "blocked";
+    const status: CreatePlannerJobStatus = localPlannerSelected || result.source === "local_codex" || result.source === "codex_app_server" ? "completed" : "blocked";
     const blocker = status === "completed" ? "" : result.exactBlocker || "codex_planner_failed";
     const terminal = querySql(
       `UPDATE create_planner_jobs
@@ -394,8 +466,9 @@ function normalizeStatus(value: string): CreatePlannerJobStatus {
   return value === "running" || value === "completed" || value === "blocked" ? value : "queued";
 }
 
-function parseJson<T>(value: string | undefined | null, fallback: T): T {
-  if (!value) return fallback;
+function parseJson<T>(value: unknown, fallback: T): T {
+  if (value && typeof value === "object") return value as T;
+  if (typeof value !== "string" || !value) return fallback;
   try {
     return JSON.parse(value) as T;
   } catch {

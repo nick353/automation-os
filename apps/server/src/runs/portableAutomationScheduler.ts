@@ -1,17 +1,25 @@
-import { nowIso, querySql, runSqlTransaction, sqlValue } from "../db/client.js";
-import { requireExistingCompanyAccess, requireExistingServiceIdentity } from "../companies/repository.js";
+import { dbBackend, nowIso, querySqlAsync, runSqlTransactionAsync, sqlValue } from "../db/client.js";
+import { requireExistingCompanyAccessAsync, requireExistingServiceIdentityAsync } from "../companies/repository.js";
 import { startPortableWorkflowRun } from "./portableWorkflowEntrypoint.js";
-import { computeNextAutomationOccurrence } from "./automationScheduler.js";
+import { computeNextAutomationOccurrence, scheduleIsOverdue, scheduleRequiresOverduePolicy } from "./automationScheduler.js";
 import {
   portableReadOnlyStageForScheduledWorkflow,
   portableScheduleDueKey,
   portableScheduleIdempotencyKey,
   portableWorkflowIdForRegisteredAutomation,
-  portableLocalWorkflowIdForRegisteredAutomation
+  portableLocalWorkflowIdForRegisteredAutomation,
+  connectorExecutionOwnerForRegisteredAutomation,
+  browserSurfaceRequirementForRegisteredAutomation
 } from "./portableScheduleDispatch.js";
 import type { PortableWorkflowId } from "./portableWorkflowContract.js";
-import { portableLocalReadOnlyStageForScheduledWorkflow, type PortableLocalWorkflowId } from "./portableLocalWorkflow.js";
+import {
+  portableLocalReadOnlyStageForScheduledWorkflow,
+  preparePortableLocalBusinessAdmission,
+  UNATTENDED_FIXED_LOCAL_EFFECT_POLICY,
+  type PortableLocalWorkflowId
+} from "./portableLocalWorkflow.js";
 import { startPortableLocalWorkflowRun } from "./portableLocalWorkflowEntrypoint.js";
+import { authorizeScheduledLocalBusinessRun } from "./portableScheduledLocalEffect.js";
 
 type PortableScheduleRow = {
   id: string;
@@ -24,6 +32,7 @@ type PortableScheduleRow = {
   revision: number;
   next_run_at: string | null;
   updated_at: string;
+  catch_up_policy?: "skip" | "coalesce_one" | "explicit_occurrence" | null;
   worker_command_kind: string;
   builder_spec_json: string;
 };
@@ -52,8 +61,8 @@ export async function materializeDuePortableAutomationOccurrences(input: {
 }): Promise<PortableAutomationSchedulerResult> {
   const companyId = required(input.companyId, "company_id_required");
   const serviceUserId = required(input.serviceUserId, "service_user_id_required");
-  requireExistingServiceIdentity(serviceUserId);
-  requireExistingCompanyAccess(companyId, ["operator"], serviceUserId);
+  await requireExistingServiceIdentityAsync(serviceUserId);
+  await requireExistingCompanyAccessAsync(companyId, ["operator"], serviceUserId);
   const now = normalizedTime(input.now ?? nowIso(), "scheduler_time_invalid");
   const limit = boundedLimit(input.limit ?? 100);
   const result: PortableAutomationSchedulerResult = {
@@ -65,10 +74,10 @@ export async function materializeDuePortableAutomationOccurrences(input: {
     localWorkflowIds: [],
     blocked: []
   };
-  const rows = querySql<PortableScheduleRow>(`
+  const rows = await querySqlAsync<PortableScheduleRow>(`
     SELECT schedule.id, schedule.company_id, schedule.automation_id, schedule.automation_version_id,
            schedule.kind, schedule.expression, schedule.timezone, schedule.revision,
-           schedule.next_run_at, schedule.updated_at,
+           schedule.next_run_at, schedule.updated_at, schedule.catch_up_policy,
            automation.worker_command_kind, automation.builder_spec_json
     FROM mvp_automation_schedules schedule
     JOIN mvp_automations automation
@@ -81,6 +90,7 @@ export async function materializeDuePortableAutomationOccurrences(input: {
 
   for (const row of rows) {
     const builderSpec = parseObject(row.builder_spec_json);
+    const browserSurfaceRequirement = browserSurfaceRequirementForRegisteredAutomation({ builderSpec });
     const workflowId = portableWorkflowIdForRegisteredAutomation({
       workerCommandKind: row.worker_command_kind,
       builderSpec
@@ -90,12 +100,31 @@ export async function materializeDuePortableAutomationOccurrences(input: {
       builderSpec
     });
     const isRegisteredAdoption = builderSpec.schema === "aos.registered_automation_adoption.v1";
+    if (row.next_run_at) {
+      const scheduledFor = normalizedTime(row.next_run_at, "scheduler_next_run_time_invalid");
+      if (scheduleIsOverdue(scheduledFor, now) && row.catch_up_policy === "skip") {
+        const nextRunAt = computeNextAutomationOccurrence(row, now);
+        try {
+          await runSqlTransactionAsync([{
+            sql: `UPDATE mvp_automation_schedules SET next_run_at=${sqlValue(nextRunAt)}, updated_at=${sqlValue(now)}
+                  WHERE id=${sqlValue(row.id)} AND company_id=${sqlValue(companyId)}
+                    AND enabled=1 AND status='active' AND revision=${row.revision} AND next_run_at=${sqlValue(scheduledFor)}`,
+            expectChanges: 1
+          }]);
+        } catch (error) {
+          if (!(error instanceof Error && error.message.includes("sql_transaction_expected_changes"))) throw error;
+        }
+        result.handledScheduleIds.push(row.id);
+        if (workflowId || localWorkflowId) result.portableScheduleIds.push(row.id);
+        continue;
+      }
+    }
     if (!workflowId && !localWorkflowId) {
       if (isRegisteredAdoption) {
         if (!row.next_run_at) {
           const nextRunAt = computeNextAutomationOccurrence(row, now);
           try {
-            runSqlTransaction([{
+            await runSqlTransactionAsync([{
               sql: `UPDATE mvp_automation_schedules SET next_run_at=${sqlValue(nextRunAt)}, updated_at=${sqlValue(now)}
                     WHERE id=${sqlValue(row.id)} AND company_id=${sqlValue(companyId)}
                       AND enabled=1 AND status='active' AND revision=${row.revision} AND next_run_at IS NULL`,
@@ -118,12 +147,10 @@ export async function materializeDuePortableAutomationOccurrences(input: {
       }
       continue;
     }
-    result.handledScheduleIds.push(row.id);
-    result.portableScheduleIds.push(row.id);
     if (!row.next_run_at) {
       const nextRunAt = computeNextAutomationOccurrence(row, now);
       try {
-        runSqlTransaction([{
+        await runSqlTransactionAsync([{
           sql: `UPDATE mvp_automation_schedules SET next_run_at=${sqlValue(nextRunAt)}, updated_at=${sqlValue(now)}
                 WHERE id=${sqlValue(row.id)} AND company_id=${sqlValue(companyId)}
                   AND enabled=1 AND status='active' AND revision=${row.revision} AND next_run_at IS NULL`,
@@ -137,28 +164,90 @@ export async function materializeDuePortableAutomationOccurrences(input: {
     }
     const scheduledFor = normalizedTime(row.next_run_at, "scheduler_next_run_time_invalid");
     if (Date.parse(scheduledFor) > Date.parse(now)) continue;
+    result.handledScheduleIds.push(row.id);
+    result.portableScheduleIds.push(row.id);
+    if (scheduleRequiresOverduePolicy(row, scheduledFor, now)) {
+      result.handledScheduleIds.push(row.id);
+      result.blocked.push({
+        scheduleId: row.id,
+        workflowId: workflowId ?? localWorkflowId,
+        exactBlocker: "scheduler_overdue_occurrence_policy_required"
+      });
+      continue;
+    }
     const nextRunAt = computeNextAutomationOccurrence(row, scheduledFor);
     const dueKey = portableScheduleDueKey(row.id, scheduledFor);
     const idempotencyKey = portableScheduleIdempotencyKey(companyId, row.id, scheduledFor);
     try {
+      const unattendedLocalPolicy = localWorkflowId
+        && dbBackend === "postgres"
+        && isRegisteredAdoption
+        && builderSpec.unattendedEffectPolicy === UNATTENDED_FIXED_LOCAL_EFFECT_POLICY
+        ? UNATTENDED_FIXED_LOCAL_EFFECT_POLICY
+        : null;
+      const localBusinessAdmission = unattendedLocalPolicy && localWorkflowId
+        ? preparePortableLocalBusinessAdmission({
+            workflowId: localWorkflowId,
+            companyId,
+            dueKey,
+            scheduledFor
+          })
+        : null;
       const started = workflowId
         ? await startPortableWorkflowRun({
             workflowId,
             sourceTrigger: "automation_os_scheduler",
             idempotencyKey,
+            registeredAutomationId: row.automation_id,
+            registeredAutomationVersionId: row.automation_version_id,
             companyId,
             dueKey,
-            readOnlyStage: portableReadOnlyStageForScheduledWorkflow(workflowId)
+            readOnlyStage: portableReadOnlyStageForScheduledWorkflow(workflowId),
+            connectorExecutionOwner: connectorExecutionOwnerForRegisteredAutomation({ builderSpec }),
+            ...(browserSurfaceRequirement !== undefined ? { browserSurfaceRequirement } : {})
           })
         : await startPortableLocalWorkflowRun({
             workflowId: localWorkflowId!,
             sourceTrigger: "automation_os_scheduler",
             idempotencyKey,
+            registeredAutomationId: row.automation_id,
+            registeredAutomationVersionId: row.automation_version_id,
             companyId,
             dueKey,
-            readOnlyStage: portableLocalReadOnlyStageForScheduledWorkflow(localWorkflowId!)
+            ...(localBusinessAdmission?.status === "ready" && localBusinessAdmission.inputBundle
+              ? {
+                  effectStage: "business_execute" as const,
+                  inputBundle: localBusinessAdmission.inputBundle,
+                  unattendedEffectPolicy: unattendedLocalPolicy!,
+                  sourceSnapshot: localBusinessAdmission.sourceSnapshot
+                }
+              : {
+                  readOnlyStage: portableLocalReadOnlyStageForScheduledWorkflow(localWorkflowId!),
+                  ...(localBusinessAdmission?.sourceSnapshot ? { sourceSnapshot: localBusinessAdmission.sourceSnapshot } : {})
+                })
           });
-      runSqlTransaction([{
+      if (localBusinessAdmission?.status === "blocked" && localBusinessAdmission.exact_blocker) {
+        result.blocked.push({
+          scheduleId: row.id,
+          workflowId: localWorkflowId,
+          exactBlocker: localBusinessAdmission.exact_blocker
+        });
+      }
+      if (localBusinessAdmission?.status === "ready" && started.executionMode === "business_effect") {
+        const authorization = await authorizeScheduledLocalBusinessRun({
+          runId: started.runId,
+          companyId,
+          workflowId: localWorkflowId!
+        });
+        if (!authorization.authorized) {
+          result.blocked.push({
+            scheduleId: row.id,
+            workflowId: localWorkflowId,
+            exactBlocker: authorization.exactBlocker ?? "scheduled_local_effect_authorization_failed"
+          });
+        }
+      }
+      await runSqlTransactionAsync([{
         sql: `UPDATE mvp_automation_schedules SET last_run_at=${sqlValue(scheduledFor)}, next_run_at=${sqlValue(nextRunAt)}, updated_at=${sqlValue(now)}
               WHERE id=${sqlValue(row.id)} AND company_id=${sqlValue(companyId)}
                 AND enabled=1 AND status='active' AND revision=${row.revision} AND next_run_at=${sqlValue(scheduledFor)}`,

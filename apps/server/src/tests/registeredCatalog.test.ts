@@ -86,3 +86,14 @@ test("registered catalog adoption is company-scoped, schedule-backed, active, an
   assert.equal(db.querySql("SELECT id FROM mvp_automation_schedules WHERE company_id='company_a'").length, 6);
   assert.equal(db.querySql("SELECT id FROM mvp_automations WHERE company_id='company_b'").length, 0);
 });
+
+test("async registered catalog adoption keeps the same company-scoped records", async () => {
+  const result = await catalog.adoptRegisteredAutomationCatalogAsync({ companyId: "company_a", actorUserId: "catalog_owner", enableSchedules: true });
+  assert.equal(result.adopted.length, 6);
+  assert.ok(result.adopted.every((item) => item.automation.companyId === "company_a"));
+  assert.ok(result.adopted.every((item) => item.schedule.status === "active"));
+  assert.equal(result.adopted.find((item) => item.sourceAutomationId === "daily-backup-safety-check")?.adoption.unattendedEffectPolicy, "user_authorized_fixed_local_target.v1");
+  assert.equal(result.adopted.find((item) => item.sourceAutomationId === "obsidian")?.adoption.unattendedEffectPolicy, "user_authorized_fixed_local_target.v1");
+  assert.equal(db.querySql("SELECT id FROM mvp_automations WHERE company_id='company_a'").length, 6);
+  assert.equal(db.querySql("SELECT id FROM mvp_automation_schedules WHERE company_id='company_a'").length, 6);
+});

@@ -52,15 +52,17 @@ const remoteTokenFileEnv = "AUTOMATION_OS_CODEX_APP_SERVER_REMOTE_TOKEN_FILE";
 const remoteCwdEnv = "AUTOMATION_OS_CODEX_APP_SERVER_REMOTE_CWD";
 const internalWsAllowedEnv = "AUTOMATION_OS_CODEX_APP_SERVER_ALLOW_INTERNAL_WS";
 const codexAppServerInternalHost = "codex-app-server.zeabur.internal";
+const zeaburPrivateCodexServiceUrl = `ws://${codexAppServerInternalHost}:8080/`;
 
 export function resolveCodexAppServerConnection(
   options: CodexAppServerConnectionOptions = {},
   env: NodeJS.ProcessEnv = process.env
 ): ResolvedCodexAppServerConnection {
-  const rawUrl = options.remoteUrl?.trim() || env[remoteUrlEnv]?.trim() || "";
+  const explicitUrl = options.remoteUrl?.trim() || env[remoteUrlEnv]?.trim() || "";
+  const rawUrl = explicitUrl || inferredZeaburPrivateCodexUrl(env);
   if (!rawUrl) return { mode: "local_stdio", endpoint: "stdio://" };
 
-  const parsed = parseRemoteUrl(rawUrl, allowInternalServiceWs(options, env));
+  const parsed = parseRemoteUrl(rawUrl, allowInternalServiceWs(options, env) || (!explicitUrl && isZeaburProduction(env)));
   const token = resolveRemoteToken(options, env);
   if (!token) throw new Error("codex_app_server_remote_auth_missing");
 
@@ -79,7 +81,8 @@ export function getCodexAppServerConnectionReadback(
   options: CodexAppServerConnectionOptions = {},
   env: NodeJS.ProcessEnv = process.env
 ): CodexAppServerConnectionReadback {
-  const rawUrl = options.remoteUrl?.trim() || env[remoteUrlEnv]?.trim() || "";
+  const explicitUrl = options.remoteUrl?.trim() || env[remoteUrlEnv]?.trim() || "";
+  const rawUrl = explicitUrl || inferredZeaburPrivateCodexUrl(env);
   if (!rawUrl) {
     return {
       schema: "codex_app_server_connection_readback.v1",
@@ -99,7 +102,7 @@ export function getCodexAppServerConnectionReadback(
 
   let parsed: URL;
   try {
-    parsed = parseRemoteUrl(rawUrl, allowInternalServiceWs(options, env));
+    parsed = parseRemoteUrl(rawUrl, allowInternalServiceWs(options, env) || (!explicitUrl && isZeaburProduction(env)));
   } catch (error) {
     const blocker = blockerFromError(error, "codex_app_server_remote_url_invalid");
     return remoteReadback(
@@ -178,10 +181,7 @@ function resolveRemoteToken(
   env: NodeJS.ProcessEnv
 ): string {
   const direct = options.remoteToken?.trim() || env[remoteTokenEnv]?.trim() || "";
-  if (direct) {
-    if (isUnresolvedSecretReference(direct)) throw new Error("codex_app_server_remote_auth_unresolved_reference");
-    return direct;
-  }
+  if (direct) return resolveConfiguredRemoteToken(direct, env);
 
   const tokenFile = env[remoteTokenFileEnv]?.trim() || "";
   if (!tokenFile) return "";
@@ -204,8 +204,23 @@ function resolveRemoteToken(
     throw new Error("codex_app_server_remote_auth_missing");
   }
   if (!value) throw new Error("codex_app_server_remote_auth_missing");
-  if (isUnresolvedSecretReference(value)) throw new Error("codex_app_server_remote_auth_unresolved_reference");
-  return value;
+  return resolveConfiguredRemoteToken(value, env);
+}
+
+function resolveConfiguredRemoteToken(value: string, env: NodeJS.ProcessEnv): string {
+  const reference = value.match(/^\$\{([A-Z][A-Z0-9_]*)\}$/u);
+  if (!reference) return value;
+  // Zeabur may leave a service-to-service reference literal in the injected
+  // environment. Resolve only the one explicitly approved Codex token source;
+  // never turn arbitrary environment-variable references into bearer tokens.
+  if (reference[1] !== "CODEX_APP_SERVER_REMOTE_TOKEN") {
+    throw new Error("codex_app_server_remote_auth_unresolved_reference");
+  }
+  const resolved = env[reference[1]]?.trim() || "";
+  if (!resolved || isUnresolvedSecretReference(resolved)) {
+    throw new Error("codex_app_server_remote_auth_unresolved_reference");
+  }
+  return resolved;
 }
 
 function isUnresolvedSecretReference(value: string): boolean {
@@ -236,6 +251,18 @@ function allowInternalServiceWs(
   env: NodeJS.ProcessEnv
 ): boolean {
   return options.allowInternalServiceWs ?? env[internalWsAllowedEnv]?.trim() === "1";
+}
+
+function isZeaburProduction(env: NodeJS.ProcessEnv): boolean {
+  return env.ZEABUR === "1" && env.AUTOMATION_OS_ENV_ROLE === "production";
+}
+
+function inferredZeaburPrivateCodexUrl(env: NodeJS.ProcessEnv): string {
+  if (!isZeaburProduction(env)) return "";
+  const hasConfiguredAuth = Boolean(
+    env[remoteTokenEnv]?.trim() || env[remoteTokenFileEnv]?.trim()
+  );
+  return hasConfiguredAuth ? zeaburPrivateCodexServiceUrl : "";
 }
 
 function isCodexAppServerInternalUrl(parsed: URL): boolean {

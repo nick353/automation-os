@@ -41,13 +41,15 @@ export function readPortableBusinessEffectAuthority(input, environment = process
     || authority.external_action_authorized !== true
     || Date.parse(String(authority.expires_at || "")) <= Date.now()
     || !HASH.test(String(authority.target_digest || ""))
-    || !HASH.test(String(authority.payload_hash || ""))) {
+    || !HASH.test(String(authority.payload_hash || ""))
+    || !HASH.test(String(authority.input_bundle_sha256 || ""))) {
     throw new Error("portable_external_effect_authority_binding_invalid");
   }
   return {
     authority_id: String(authority.authority_id || ""),
     target_digest: String(authority.target_digest),
     payload_hash: authority.payload_hash === null || authority.payload_hash === undefined ? null : String(authority.payload_hash),
+    input_bundle_sha256: String(authority.input_bundle_sha256),
     authority_sha256: expectedSha256,
   };
 }

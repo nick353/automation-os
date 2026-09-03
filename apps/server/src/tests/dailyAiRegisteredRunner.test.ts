@@ -3,7 +3,18 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
-import { evaluateDailyAiRegisteredSummary, findDailyAiRegisteredSummary, runDailyAiRegisteredRunner } from "../runs/dailyAiRegisteredRunner.js";
+import {
+  DAILY_AI_BACKEND_SNAPSHOT_MISMATCH_BLOCKER,
+  DAILY_AI_BACKEND_SNAPSHOT_MISSING_BLOCKER,
+  DAILY_AI_COMPANION_EFFECT_ADAPTER_UNAVAILABLE_BLOCKER,
+  evaluateDailyAiRegisteredSummary,
+  findDailyAiRegisteredSummary,
+  runDailyAiRegisteredRunner
+} from "../runs/dailyAiRegisteredRunner.js";
+import {
+  DEFAULT_CHROME_PROFILE,
+  WEB_OPERATION_BACKEND_SNAPSHOT_SCHEMA
+} from "../runs/webOperationBackendSettings.js";
 
 function writeSummary(payload: Record<string, unknown>): string {
   const dir = mkdtempSync(join(tmpdir(), "automation-os-daily-ai-"));
@@ -25,6 +36,25 @@ const completeSummary = {
 };
 
 const canonicalBrowserUseCliRunnerMarker = "const BROWSER_USE_CLI_HELPER = '/Users/nichikatanaka/.local/bin/codex-browser-use'; const BROWSER_USE_CLI_ROUTE = 'browser_use_cli_registered_runner';";
+
+const browserUseBackendSnapshot = {
+  schema: WEB_OPERATION_BACKEND_SNAPSHOT_SCHEMA,
+  requested_backend: "browser_use_cli",
+  resolved_backend: "browser_use_cli",
+  revision: 1,
+  source: "aos_global_setting",
+  fallback_allowed: false,
+  chrome_profile: DEFAULT_CHROME_PROFILE,
+  browser_surface: "browser_use_cli",
+  exact_blocker: null
+} as const;
+
+const companionBackendSnapshot = {
+  ...browserUseBackendSnapshot,
+  requested_backend: "aos_chrome_companion",
+  resolved_backend: "aos_chrome_companion",
+  browser_surface: "aos_chrome_companion_profile_instance"
+} as const;
 
 function withEnv<T>(updates: Record<string, string | undefined>, fn: () => T): T {
   const previous = new Map<string, string | undefined>();
@@ -272,6 +302,100 @@ test("blocks missing, invalid, and preflight-blocked Daily AI summaries", () => 
   assert.match(preflight.proof_summary, /connectOverCDP timeout/);
 });
 
+test("blocks the Daily AI runner before dispatch when the immutable backend snapshot is missing", () => {
+  const dir = mkdtempSync(join(tmpdir(), "automation-os-daily-ai-missing-backend-snapshot-"));
+
+  const result = withEnv(
+    { AUTOMATION_OS_DAILY_AI_OUTPUT_ROOT: join(dir, "runs") },
+    () => runDailyAiRegisteredRunner({
+      runId: "daily-ai-backend-snapshot-missing",
+      backendSnapshot: undefined
+    })
+  );
+
+  assert.equal(result.status, "blocked");
+  assert.deepEqual(result.proof_gate.missing, [DAILY_AI_BACKEND_SNAPSHOT_MISSING_BLOCKER]);
+  assert.equal(result.stderrTail, DAILY_AI_BACKEND_SNAPSHOT_MISSING_BLOCKER);
+  assert.equal(result.exitStatus, null);
+  assert.equal(result.command.env.DAILY_AI_BROWSER_DRIVER, "unavailable");
+  assert.equal(existsSync(join(result.command.env.DAILY_AI_CLI_OUTPUT_DIR, "registered-browser-summary.json")), false);
+});
+
+test("blocks the Daily AI runner before dispatch when the immutable backend snapshot mismatches", () => {
+  const dir = mkdtempSync(join(tmpdir(), "automation-os-daily-ai-mismatched-backend-snapshot-"));
+  const runner = join(dir, "runner.mjs");
+  const invoked = join(dir, "invoked");
+  writeFileSync(
+    runner,
+    [
+      canonicalBrowserUseCliRunnerMarker,
+      "import { writeFileSync } from 'node:fs';",
+      `writeFileSync(${JSON.stringify(invoked)}, 'invoked');`
+    ].join("\n")
+  );
+
+  const mismatchedSnapshot = {
+    ...browserUseBackendSnapshot,
+    requested_backend: "browser_use_cli",
+    resolved_backend: "aos_chrome_companion",
+    browser_surface: "aos_chrome_companion_profile_instance"
+  } as const;
+
+  withEnv(
+    {
+      AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER: runner,
+      AUTOMATION_OS_DAILY_AI_OUTPUT_ROOT: join(dir, "runs")
+    },
+    () => {
+      const result = runDailyAiRegisteredRunner({
+        runId: "daily-ai-backend-snapshot-mismatch",
+        backendSnapshot: mismatchedSnapshot
+      });
+
+      assert.equal(result.status, "blocked");
+      assert.deepEqual(result.proof_gate.missing, [DAILY_AI_BACKEND_SNAPSHOT_MISMATCH_BLOCKER]);
+      assert.equal(result.stderrTail, DAILY_AI_BACKEND_SNAPSHOT_MISMATCH_BLOCKER);
+      assert.equal(result.command.env.DAILY_AI_BROWSER_DRIVER, "aos_chrome_companion");
+      assert.equal(existsSync(invoked), false);
+    }
+  );
+});
+
+test("does not map a Companion backend snapshot to the Browser Use CLI runner", () => {
+  const dir = mkdtempSync(join(tmpdir(), "automation-os-daily-ai-companion-backend-"));
+  const runner = join(dir, "runner.mjs");
+  const invoked = join(dir, "invoked");
+  writeFileSync(
+    runner,
+    [
+      canonicalBrowserUseCliRunnerMarker,
+      "import { writeFileSync } from 'node:fs';",
+      `writeFileSync(${JSON.stringify(invoked)}, 'invoked');`
+    ].join("\n")
+  );
+
+  withEnv(
+    {
+      AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER: runner,
+      AUTOMATION_OS_DAILY_AI_OUTPUT_ROOT: join(dir, "runs")
+    },
+    () => {
+      const result = runDailyAiRegisteredRunner({
+        runId: "daily-ai-companion-no-cli-fallback",
+        backendSnapshot: companionBackendSnapshot
+      });
+
+      assert.equal(result.status, "blocked");
+      assert.deepEqual(result.proof_gate.missing, [DAILY_AI_COMPANION_EFFECT_ADAPTER_UNAVAILABLE_BLOCKER]);
+      assert.equal(result.stderrTail, DAILY_AI_COMPANION_EFFECT_ADAPTER_UNAVAILABLE_BLOCKER);
+      assert.equal(result.command.env.DAILY_AI_BROWSER_DRIVER, "aos_chrome_companion");
+      assert.equal(result.command.env.AOS_WEB_OPERATION_BACKEND, "aos_chrome_companion");
+      assert.equal(result.command.env.AOS_CHROME_PROFILE_SURFACE, "aos_chrome_companion_profile_instance");
+      assert.equal(existsSync(invoked), false);
+    }
+  );
+});
+
 test("blocks Daily AI registered runner when process exits nonzero even with complete summary", () => {
   const dir = mkdtempSync(join(tmpdir(), "automation-os-daily-ai-runner-"));
   const runner = join(dir, "runner.mjs");
@@ -292,7 +416,7 @@ test("blocks Daily AI registered runner when process exits nonzero even with com
   process.env.AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER = runner;
   process.env.AUTOMATION_OS_DAILY_AI_OUTPUT_ROOT = join(dir, "runs");
   try {
-    const result = runDailyAiRegisteredRunner({ runId: "daily-ai-nonzero", startedAtMs: Date.now() - 1_000 });
+    const result = runDailyAiRegisteredRunner({ runId: "daily-ai-nonzero", startedAtMs: Date.now() - 1_000, backendSnapshot: browserUseBackendSnapshot });
     assert.equal(result.status, "partial");
     assert.equal(result.proof_gate.ok, false);
     assert.ok(result.proof_gate.missing.includes("daily_ai_runner_exit_0"));
@@ -330,7 +454,7 @@ test("blocks Daily AI registered runner when summary identity does not match Aut
   process.env.AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER = runner;
   process.env.AUTOMATION_OS_DAILY_AI_OUTPUT_ROOT = join(dir, "runs");
   try {
-    const result = runDailyAiRegisteredRunner({ runId: "daily-ai-identity", startedAtMs: Date.now() - 1_000 });
+    const result = runDailyAiRegisteredRunner({ runId: "daily-ai-identity", startedAtMs: Date.now() - 1_000, backendSnapshot: browserUseBackendSnapshot });
     assert.equal(result.status, "blocked");
     assert.equal(result.proof_gate.ok, false);
     assert.ok(result.proof_gate.missing.includes("daily_ai_runner_identity"));
@@ -369,7 +493,7 @@ test("Daily AI registered runner passes env run id and output dir to the Browser
   process.env.AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER = runner;
   process.env.AUTOMATION_OS_DAILY_AI_OUTPUT_ROOT = join(dir, "runs");
   try {
-    const result = runDailyAiRegisteredRunner({ runId: "daily-ai/env contract", startedAtMs: Date.now() - 1_000 });
+    const result = runDailyAiRegisteredRunner({ runId: "daily-ai/env contract", startedAtMs: Date.now() - 1_000, backendSnapshot: browserUseBackendSnapshot });
     const expectedCliRunId = "daily-ai_env_contract";
 
     assert.equal(result.status, "complete");
@@ -442,7 +566,7 @@ test("Daily AI registered runner does not pass Gemini key to child env", () => {
       GEMINI_API_KEY: "AIza-test-daily-ai-gemini-key-1234567890"
     },
     () => {
-      const result = runDailyAiRegisteredRunner({ runId: "daily-ai-no-external-ai-env", startedAtMs: Date.now() - 1_000 });
+      const result = runDailyAiRegisteredRunner({ runId: "daily-ai-no-external-ai-env", startedAtMs: Date.now() - 1_000, backendSnapshot: browserUseBackendSnapshot });
 
       assert.equal(result.status, "complete");
       assert.equal("GEMINI_API_KEY" in result.command.env, false);
@@ -475,7 +599,7 @@ test("Daily AI registered runner leaves proof-only no-post preflight disabled by
       AUTOMATION_OS_DAILY_AI_PROOF_ONLY_NO_POST_PREFLIGHT: undefined
     },
     () => {
-      const result = runDailyAiRegisteredRunner({ runId: "daily-ai-proof-only-default", startedAtMs: Date.now() - 1_000 });
+      const result = runDailyAiRegisteredRunner({ runId: "daily-ai-proof-only-default", startedAtMs: Date.now() - 1_000, backendSnapshot: browserUseBackendSnapshot });
 
       assert.equal(result.status, "complete");
       assert.equal("DAILY_AI_CLI_PROOF_ONLY_NO_POST_PREFLIGHT" in result.command.env, false);
@@ -510,7 +634,7 @@ test("Daily AI registered runner leaves proof-only no-post preflight disabled wh
       AUTOMATION_OS_DAILY_AI_PROOF_ONLY_NO_POST_PREFLIGHT: "false"
     },
     () => {
-      const result = runDailyAiRegisteredRunner({ runId: "daily-ai-proof-only-false", startedAtMs: Date.now() - 1_000 });
+      const result = runDailyAiRegisteredRunner({ runId: "daily-ai-proof-only-false", startedAtMs: Date.now() - 1_000, backendSnapshot: browserUseBackendSnapshot });
 
       assert.equal(result.status, "complete");
       assert.equal("DAILY_AI_CLI_PROOF_ONLY_NO_POST_PREFLIGHT" in result.command.env, false);
@@ -545,7 +669,7 @@ test("Daily AI registered runner includes proof-only no-post preflight only when
       AUTOMATION_OS_DAILY_AI_PROOF_ONLY_NO_POST_PREFLIGHT: "true"
     },
     () => {
-      const result = runDailyAiRegisteredRunner({ runId: "daily-ai-proof-only", startedAtMs: Date.now() - 1_000 });
+      const result = runDailyAiRegisteredRunner({ runId: "daily-ai-proof-only", startedAtMs: Date.now() - 1_000, backendSnapshot: browserUseBackendSnapshot });
 
       assert.equal(result.status, "complete");
       assert.equal(result.command.env.DAILY_AI_CLI_PROOF_ONLY_NO_POST_PREFLIGHT, "true");
@@ -567,7 +691,7 @@ test("Daily AI registered runner leaves proof-only no-post preflight disabled fo
       AUTOMATION_OS_DAILY_AI_PROOF_ONLY_NO_POST_PREFLIGHT: undefined
     },
     () => {
-      const result = runDailyAiRegisteredRunner({ runId: "daily-ai-missing-proof-only", startedAtMs: Date.now() - 1_000 });
+      const result = runDailyAiRegisteredRunner({ runId: "daily-ai-missing-proof-only", startedAtMs: Date.now() - 1_000, backendSnapshot: browserUseBackendSnapshot });
 
       assert.equal(result.status, "blocked");
       assert.equal(result.stderrTail, "browser_use_cli_registered_runner_missing");
@@ -590,7 +714,7 @@ test("Daily AI registered runner includes proof-only no-post preflight for missi
       AUTOMATION_OS_DAILY_AI_PROOF_ONLY_NO_POST_PREFLIGHT: "true"
     },
     () => {
-      const result = runDailyAiRegisteredRunner({ runId: "daily-ai-missing-proof-only-opt-in", startedAtMs: Date.now() - 1_000 });
+      const result = runDailyAiRegisteredRunner({ runId: "daily-ai-missing-proof-only-opt-in", startedAtMs: Date.now() - 1_000, backendSnapshot: browserUseBackendSnapshot });
 
       assert.equal(result.status, "blocked");
       assert.equal(result.stderrTail, "browser_use_cli_registered_runner_missing");
@@ -620,7 +744,7 @@ test("blocks the legacy Daily AI browser runner before it can execute", () => {
   process.env.AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER = runnerPath;
   process.env.AUTOMATION_OS_DAILY_AI_OUTPUT_ROOT = outputDir;
   try {
-    const result = runDailyAiRegisteredRunner({ runId: "automation-os-legacy-runner-blocked" });
+    const result = runDailyAiRegisteredRunner({ runId: "automation-os-legacy-runner-blocked", backendSnapshot: browserUseBackendSnapshot });
     assert.equal(result.status, "blocked");
     assert.equal(result.proof_gate.ok, false);
     assert.deepEqual(result.proof_gate.missing, ["browser_use_cli_workflow_adapter_missing"]);
@@ -652,7 +776,7 @@ test("blocks Daily AI registered runner when CLI run id does not match the env c
   process.env.AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER = runner;
   process.env.AUTOMATION_OS_DAILY_AI_OUTPUT_ROOT = join(dir, "runs");
   try {
-    const result = runDailyAiRegisteredRunner({ runId: "daily-ai-cli-identity", startedAtMs: Date.now() - 1_000 });
+    const result = runDailyAiRegisteredRunner({ runId: "daily-ai-cli-identity", startedAtMs: Date.now() - 1_000, backendSnapshot: browserUseBackendSnapshot });
     assert.equal(result.status, "blocked");
     assert.equal(result.proof_gate.ok, false);
     assert.ok(result.proof_gate.missing.includes("daily_ai_cli_run_identity"));

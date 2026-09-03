@@ -56,3 +56,9 @@ test("the parity checker defaults to the current registered production company, 
   assert.match(source, /company_2560580981cedfd106b66245/u);
   assert.doesNotMatch(source, /\|\|\s*["']company_9588eaafb46d7cbaead81811["']/u);
 });
+
+test("the Zeabur parity wrapper defaults to the current read-only service entry", () => {
+  const source = readFileSync(join(root, "scripts", "aos-codex-app-trigger-parity-readback-zeabur.zsh"), "utf8");
+  assert.match(source, /AUTOMATION_OS_SERVICE_IDENTITY_KEYCHAIN_SERVICE:-Automation OS Zeabur Trigger/u);
+  assert.doesNotMatch(source, /AUTOMATION_OS_SERVICE_IDENTITY_KEYCHAIN_SERVICE:-Automation OS automation-3 service identity/u);
+});

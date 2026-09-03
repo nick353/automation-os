@@ -280,7 +280,7 @@ const definitions: readonly WorkflowAdapterDefinition[] = [
       { id: "connector_readback", kind: "readback", effect_class: "internal_idempotent", provider_adapter_ids: ["gmail-connector"], required_proof: ["same_run_message_or_event_readback"], external_action_allowed: false },
       { id: "cleanup", kind: "cleanup", effect_class: "internal_idempotent", provider_adapter_ids: ["aos-control-plane"], required_proof: ["safe_capture_cleanup", "automation_kernel_result.v2"], external_action_allowed: false }
     ],
-    exact_blockers: ["gmail_connector_context_isolation_unavailable", "gmail_connector_response_capture_unavailable", "approval_expired", "recipient_or_event_hash_mismatch", "ambiguous_send_readback"]
+    exact_blockers: ["zeabur_codex_app_server_registry_readback_missing", "zeabur_codex_app_server_login_not_verified", "zeabur_plugin_not_installed", "zeabur_connector_auth_not_verified", "company_connection_not_verified", "gmail_provider_read_only_call_not_executed", "gmail_connector_response_capture_unavailable", "approval_expired", "recipient_or_event_hash_mismatch", "ambiguous_send_readback"]
   },
   {
     schema: WORKFLOW_ADAPTER_REGISTRY_SCHEMA,

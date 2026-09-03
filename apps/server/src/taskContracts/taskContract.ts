@@ -122,13 +122,18 @@ export function buildTaskContractPreview(input: {
   const audience = ref(input.audience, "task_contract_audience_invalid");
   const owner = ref(input.owner, "task_contract_owner_invalid");
   const idempotencyKey = id(input.idempotency_key, "task_contract_idempotency_key_invalid");
+  const gates = taskGatePolicy(taskClass);
   const payloadRef = input.payload_ref === null || input.payload_ref === undefined ? null : ref(input.payload_ref, "task_contract_payload_ref_invalid");
   const payloadDigest = input.payload_digest === null || input.payload_digest === undefined ? null : hash(input.payload_digest, "task_contract_payload_digest_invalid");
   if (taskClass !== "read_only" && !payloadDigest) throw new Error("task_contract_payload_digest_required");
   const authorityRef = input.authority_ref === null || input.authority_ref === undefined ? null : ref(input.authority_ref, "task_contract_authority_ref_invalid");
   const authorityDigest = input.authority_digest === null || input.authority_digest === undefined ? null : hash(input.authority_digest, "task_contract_authority_digest_invalid");
-  if (taskClass !== "read_only" && (!authorityRef || !authorityDigest)) throw new Error("task_contract_authority_required");
-  const gates = taskGatePolicy(taskClass);
+  // A reversible draft/update is still bound to its task, target, payload and
+  // idempotency key, but it does not need an external-effect authority before
+  // the user explicitly promotes it to a submit/publish/release action.
+  // Keeping this distinction prevents harmless Companion work from inheriting
+  // the external-effect gate while preserving the gate for every real effect.
+  if (gates.external_action_allowed && (!authorityRef || !authorityDigest)) throw new Error("task_contract_authority_required");
   const external = gates.external_action_allowed;
   const audienceDigest = sha256(audience);
   const intentDigest = sha256(JSON.stringify({ kind: input.intent_kind, ref: intentRef }));

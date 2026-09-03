@@ -7,11 +7,19 @@ import { spawn } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { readPortableBusinessActionPlan } from "./portable-business-action-plan.mjs";
 import { cleanupOwnedProcessGroup } from "./process-group-cleanup.mjs";
+import {
+  CHROME_PLUGIN_BROWSER_SURFACE,
+  normalizeWebOperationBackend,
+  webOperationBrowserSurface,
+} from "./lib/web-operation-route.mjs";
 
 const PLANS = Object.freeze({
   "job-application-manager": { key: "JOB_APPLICATION", proof: ["submitted_confirmed", "same_run_source_of_truth_readback", "cleanup_receipt"] },
   "daily-ai-research-publish-run": { key: "DAILY_AI", proof: ["publish_url_or_exact_blocker", "feed_study_or_exact_blocker", "engagement_or_no_candidate_proof", "queue_sync", "cleanup_receipt"] },
   "nisenprints-daily-product-canva-printify-etsy-pinterest": { key: "NISENPRINTS", proof: ["generation_manifest", "etsy_listing", "pinterest_pin_url", "etsy_visit_site_match", "cleanup_receipt"] },
+  "prompt-transfer-ukiyoe": { key: "PROMPT_TRANSFER", proof: ["sheet_target_readback", "same_run_source_of_truth_readback", "cleanup_receipt"] },
+  "sns-multi-poster-ukiyoe": { key: "SNS_MULTI_POSTER", proof: ["published_url_or_exact_blocker", "same_run_source_of_truth_readback", "cleanup_receipt"] },
+  "x-authenticated-browser-lane": { key: "X_AUTHENTICATED_BROWSER_LANE", proof: ["published_url_or_exact_blocker", "same_run_source_of_truth_readback", "cleanup_receipt"] },
 });
 const ID = /^[A-Za-z0-9][-_A-Za-z0-9.:]{0,179}$/u;
 const HASH = /^[a-f0-9]{64}$/u;
@@ -22,6 +30,7 @@ const BLOCKERS = Object.freeze({
   runner: "portable_external_business_runner_not_configured",
   invalidRunner: "portable_external_business_runner_invalid",
   forbiddenSurface: "portable_external_business_runner_forbidden_browser_surface",
+  surfaceMismatch: "portable_external_business_surface_mismatch",
   receipt: "portable_external_business_receipt_invalid",
   timeout: "portable_external_business_runner_timeout",
   actionPlan: "portable_external_action_plan_required",
@@ -32,6 +41,23 @@ const BLOCKERS = Object.freeze({
 const FORBIDDEN_BROWSER_SURFACE_RE = /(?:playwright|chrome[_-]?extension|chrome[_-]?plugin|in[_-]?app[_-]?browser|direct[_-]?cdp|\bcdp\b|codex\s+exec)/iu;
 const CANONICAL_BROWSER_USE_CLI_MARKER_RE = /browser[_-]?use[_-]?cli|stage[_-]?adapter|codex-browser-use/iu;
 const AOS_SOURCE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+export function selectedBackend(environment = process.env) {
+  const value = normalizeWebOperationBackend(environment);
+  if (value === "chrome_plugin" || value === "browser_use_cli" || value === "playwright" || value === "aos_chrome_companion") return value;
+  return value || "browser_use_cli";
+}
+
+export function selectedBrowserSurface(environment = process.env) {
+  return webOperationBrowserSurface(environment);
+}
+
+export function selectedBrowserSurfaceMismatch(environment = process.env) {
+  if (selectedBackend(environment) !== "chrome_plugin") return null;
+  return selectedBrowserSurface(environment) === CHROME_PLUGIN_BROWSER_SURFACE
+    ? null
+    : BLOCKERS.surfaceMismatch;
+}
 
 function aosRoot(environment = process.env) {
   return path.resolve(String(environment.AUTOMATION_OS_REPO_ROOT || AOS_SOURCE_ROOT));
@@ -50,7 +76,8 @@ function output(value, code = 1) {
     status: value.status || "blocked",
     exact_blocker: value.exact_blocker || null,
     external_action_executed: value.external_action_executed === true,
-    browser_surface: "browser_use_cli",
+    business_completion_verified: value.status === "complete" && !value.exact_blocker,
+    browser_surface: value.browser_surface || selectedBrowserSurface(),
     llm_provider_neutral: true,
     app_dependency: false,
     ...(value.workflow_id ? { workflow_id: value.workflow_id } : {}),
@@ -80,7 +107,7 @@ function readAdmission(input) {
   if (!file || !fs.existsSync(file) || !/^[a-f0-9]{64}$/u.test(expected)) throw new Error("portable_external_business_admission_invalid");
   const bytes = fs.readFileSync(file);
   const value = JSON.parse(bytes.toString("utf8"));
-  if (digest(bytes) !== expected || value.workflow_id !== input.workflow_id || value.run_id !== input.run_id || value.step_id !== input.step_id || value.audience !== "portable_external_runner" || value.approval_status !== "approved" || value.browser_surface !== "browser_use_cli") throw new Error("portable_external_business_admission_invalid");
+  if (digest(bytes) !== expected || value.workflow_id !== input.workflow_id || value.run_id !== input.run_id || value.step_id !== input.step_id || value.audience !== "portable_external_runner" || value.approval_status !== "approved" || value.browser_surface !== selectedBrowserSurface()) throw new Error("portable_external_business_admission_invalid");
   if (Date.parse(String(value.expires_at || "")) <= Date.now()) throw new Error("portable_external_business_admission_expired");
   // Business effects are never admitted by the generic approval envelope
   // alone.  The AOS portable controller must issue and bind the effect
@@ -122,7 +149,32 @@ function readAdmission(input) {
 export function runnerFor(workflowId, environment = process.env) {
   const plan = PLANS[workflowId];
   if (!plan) return "";
+  const backend = selectedBackend(environment);
+  if (!["chrome_plugin", "browser_use_cli", "playwright", "aos_chrome_companion"].includes(backend)) return "";
+  if (backend === "aos_chrome_companion") {
+    return path.join(aosRoot(environment), "scripts", "aos-portable-browser-use-runner.mjs");
+  }
+  if (backend === "playwright") {
+    // Keep Playwright explicit and workflow-owned while its provider effect
+    // stages are still being implemented.  Returning an entrypoint here is
+    // important: the selected backend must be admitted through the same
+    // action-plan/authority gates and then return its exact effect blocker;
+    // it must not silently look like an unconfigured runner or fall back to
+    // Browser Use/Chrome.
+    return path.join(aosRoot(environment), "scripts", "aos-playwright-business-runner.mjs");
+  }
   const configured = String(environment[`AUTOMATION_OS_PORTABLE_BUSINESS_RUNNER_${plan.key}`] || "").trim();
+  if (backend === "chrome_plugin") {
+    const projectRoot = String(environment.AUTOMATION_OS_CHROME_PLUGIN_PROJECT_ROOT || "/Users/nichikatanaka/Documents/New project").trim();
+    if (workflowId === "daily-ai-research-publish-run") return path.join(projectRoot, "scripts", "run_daily_ai_chrome_plugin_registered.mjs");
+    if (workflowId === "nisenprints-daily-product-canva-printify-etsy-pinterest") return path.join(projectRoot, "scripts", "run_nisenprints_chrome_plugin_registered.mjs");
+    if (workflowId === "sns-multi-poster-ukiyoe" || workflowId === "x-authenticated-browser-lane") {
+      return path.join(projectRoot, "scripts", "run_sns_multi_poster_chrome_plugin_registered.mjs");
+    }
+    if (workflowId === "job-application-manager") return path.join(aosRoot(environment), "scripts", "aos-job-chrome-plugin-business-runner.mjs");
+    if (workflowId === "prompt-transfer-ukiyoe") return path.join(projectRoot, "scripts", "run_prompt_transfer_chrome_plugin_registered.mjs");
+    return "";
+  }
   if (configured) return configured;
   // A LaunchAgent may preserve the explicit project root while dropping a
   // derived workflow variable during a long-lived worker refresh. Resolve
@@ -132,6 +184,14 @@ export function runnerFor(workflowId, environment = process.env) {
     const projectRoot = String(environment.AUTOMATION_OS_BROWSER_USE_PROJECT_ROOT || "").trim();
     if (projectRoot) return path.join(projectRoot, "scripts", "browser_use", "job_manager_browser_use_cli_business_runner.mjs");
   }
+  if (workflowId === "x-authenticated-browser-lane") {
+    const projectRoot = String(environment.AUTOMATION_OS_BROWSER_USE_PROJECT_ROOT || "/Users/nichikatanaka/Documents/New project").trim();
+    return path.join(projectRoot, "scripts", "run_x_authenticated_browser_lane_browser_use_cli.mjs");
+  }
+  if (workflowId === "sns-multi-poster-ukiyoe") {
+    const projectRoot = String(environment.AUTOMATION_OS_BROWSER_USE_PROJECT_ROOT || "/Users/nichikatanaka/Documents/New project").trim();
+    return path.join(projectRoot, "scripts", "run_sns_multi_poster_ukiyoe_browser_use_cli.mjs");
+  }
   const canonical = canonicalRunnerPath(workflowId, environment);
   if (canonical && fs.existsSync(canonical) && fs.statSync(canonical).isFile()) return canonical;
   return "";
@@ -139,6 +199,14 @@ export function runnerFor(workflowId, environment = process.env) {
 
 export function businessRunnerBindingEnvironment(environment = process.env) {
   const result = {};
+  const backend = selectedBackend(environment);
+  // Persist the resolved route in the child/LaunchAgent environment instead
+  // of relying on whichever one of the two legacy variable names happened to
+  // survive a worker refresh.  Both runner families read this same binding,
+  // so a Companion admission cannot accidentally launch the Browser Use lane.
+  result.AOS_WEB_OPERATION_BACKEND = backend;
+  result.AUTOMATION_OS_BROWSER_DRIVER = backend;
+  result.AUTOMATION_OS_BROWSER_SURFACE = selectedBrowserSurface(environment);
   const projectRoot = String(environment.AUTOMATION_OS_BROWSER_USE_PROJECT_ROOT || "").trim();
   const packageHelper = projectRoot
     ? path.join(projectRoot, "browser-use-cli", "bin", "codex-browser-use")
@@ -156,7 +224,16 @@ export function businessRunnerBindingEnvironment(environment = process.env) {
     // same canonical source; no alternate browser surface is introduced.
     result.BROWSER_USE_CLI_HELPER = packageHelper;
   }
-  if (job) result.AUTOMATION_OS_PORTABLE_BUSINESS_RUNNER_JOB_APPLICATION = job;
+  // A Chrome claim owns its adapter and must not inherit the old Browser Use
+  // application runner from a long-lived LaunchAgent environment.  Browser
+  // Use remains selectable through the AOS UI; its claim-time environment
+  // can still use this explicit binding or the canonical project-root path.
+  if (backend !== "chrome_plugin" && job) result.AUTOMATION_OS_PORTABLE_BUSINESS_RUNNER_JOB_APPLICATION = job;
+  if (backend === "chrome_plugin") {
+    result.AUTOMATION_OS_CHROME_PLUGIN_PROJECT_ROOT = String(
+      environment.AUTOMATION_OS_CHROME_PLUGIN_PROJECT_ROOT || projectRoot || "/Users/nichikatanaka/Documents/New project"
+    ).trim();
+  }
   for (const [workflowId, key] of [
     ["daily-ai-research-publish-run", "DAILY_AI"],
     ["nisenprints-daily-product-canva-printify-etsy-pinterest", "NISENPRINTS"],
@@ -169,7 +246,7 @@ export function businessRunnerBindingEnvironment(environment = process.env) {
   return result;
 }
 
-function validateRunnerSource(command) {
+function validateRunnerSource(command, environment = process.env) {
   let source;
   try {
     source = fs.readFileSync(command, "utf8");
@@ -180,8 +257,22 @@ function validateRunnerSource(command) {
   // retaining a forbidden browser surface.  Business bindings must visibly
   // route through the canonical Browser Use CLI/stage-adapter contract and
   // must not contain a retired surface or Codex execution fallback.
-  if (!CANONICAL_BROWSER_USE_CLI_MARKER_RE.test(source)) return BLOCKERS.forbiddenSurface;
-  if (FORBIDDEN_BROWSER_SURFACE_RE.test(source)) return BLOCKERS.forbiddenSurface;
+  if (selectedBackend(environment) === "chrome_plugin") {
+    if (!/signed_chrome_extension_profile2|chrome_extension_trusted_bridge_client/u.test(source)) return BLOCKERS.forbiddenSurface;
+  } else if (selectedBackend(environment) === "browser_use_cli") {
+    if (!CANONICAL_BROWSER_USE_CLI_MARKER_RE.test(source)) return BLOCKERS.forbiddenSurface;
+    // The canonical portable runner contains its own fail-closed backend
+    // dispatch and therefore necessarily names Chrome Plugin/Playwright in
+    // defensive branches. Do not reject that trusted source for mentioning
+    // the surfaces it refuses to use. Custom Browser Use bindings still
+    // require the stricter source scan below.
+    const canonicalRunner = path.resolve(aosRoot(environment), "scripts", "aos-portable-browser-use-runner.mjs");
+    if (path.resolve(command) !== canonicalRunner && FORBIDDEN_BROWSER_SURFACE_RE.test(source)) return BLOCKERS.forbiddenSurface;
+  } else if (selectedBackend(environment) === "aos_chrome_companion") {
+    if (!/runAosChromeCompanionWebOperationEffect|aos_chrome_companion_profile_instance/u.test(source)) return BLOCKERS.forbiddenSurface;
+  } else if (selectedBackend(environment) === "playwright") {
+    if (!/playwright_workflow_owned_adapter/u.test(source)) return BLOCKERS.forbiddenSurface;
+  } else return "web_operation_backend_adapter_not_bound:playwright";
   return null;
 }
 function parseLastJson(stdout) {
@@ -192,7 +283,9 @@ function parseLastJson(stdout) {
 }
 
 function businessOperationKind(workflowId) {
-  return workflowId === "job-application-manager" ? "submit" : "publish";
+  if (workflowId === "job-application-manager") return "submit";
+  if (workflowId === "prompt-transfer-ukiyoe") return "update";
+  return "publish";
 }
 
 function businessSourceSyncVerified(workflowId, receipt) {
@@ -286,18 +379,42 @@ function runnerInvocation(command) {
 export function runChild(command, input) {
   return new Promise((resolve) => {
     const invocation = runnerInvocation(command);
-    const child = spawn(invocation.bin, [...invocation.prefix, "--workflow-id", input.workflow_id, "--run-id", input.run_id, "--step-id", input.step_id, "--source-trigger", input.source_trigger, "--idempotency-key", input.idempotency_key], {
+    const taskIdArgs = selectedBackend() === "aos_chrome_companion"
+      ? ["--task-id", String(process.env.AOS_CHROME_COMPANION_TASK_ID || input.run_id)]
+      : [];
+    const child = spawn(invocation.bin, [...invocation.prefix, "--workflow-id", input.workflow_id, "--run-id", input.run_id, "--step-id", input.step_id, "--source-trigger", input.source_trigger, "--idempotency-key", input.idempotency_key, ...taskIdArgs], {
       cwd: process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_WORKDIR || process.cwd(),
       env: {
         ...process.env,
-        AUTOMATION_OS_BROWSER_SURFACE: "browser_use_cli",
+        // The workflow-owned adapter must receive the same immutable
+        // workflow binding as the outer portable runner.  Without this,
+        // explicit Playwright selection produced a blocker receipt with an
+        // empty workflow_id, weakening same-run reconciliation and UI
+        // diagnosis even though the action was correctly stopped.
+        AUTOMATION_OS_PORTABLE_BUSINESS_WORKFLOW_ID: input.workflow_id,
+        AUTOMATION_OS_PORTABLE_BUSINESS_IDEMPOTENCY_KEY: input.idempotency_key,
+        AUTOMATION_OS_BROWSER_SURFACE: selectedBrowserSurface(),
+        AOS_WEB_OPERATION_BACKEND: selectedBackend(),
+        AOS_CHROME_PROFILE_ID: process.env.AOS_CHROME_PROFILE_ID || "profile2",
+        AOS_CHROME_PROFILE_NAME: process.env.AOS_CHROME_PROFILE_NAME || "Profile 2",
+        AOS_CHROME_PROFILE_DIRECTORY: process.env.AOS_CHROME_PROFILE_DIRECTORY || "Profile 2",
+        AOS_CHROME_PROFILE_SURFACE: process.env.AOS_CHROME_PROFILE_SURFACE || "signed_chrome_extension_profile2",
         AUTOMATION_OS_BROWSER_NO_FALLBACK: "1",
         AUTOMATION_OS_BROWSER_REQUIRED: "1",
         AUTOMATION_OS_PORTABLE_BUSINESS_RUN_ID: input.run_id,
         AUTOMATION_OS_PORTABLE_BUSINESS_STEP_ID: input.step_id,
+        AUTOMATION_OS_RUN_ID: input.run_id,
+        DAILY_AI_CLI_RUN_ID: input.run_id,
+        DAILY_AI_CLI_OUTPUT_DIR: path.join(String(process.env.AUTOMATION_OS_CHROME_PLUGIN_PROJECT_ROOT || "/Users/nichikatanaka/Documents/New project"), "artifacts", "automation-os-daily-ai-runs", input.run_id),
         AUTOMATION_OS_PORTABLE_BUSINESS_ADMISSION_PATH: input.admission.path,
         AUTOMATION_OS_PORTABLE_BUSINESS_ADMISSION_SHA256: input.admission.sha256,
         ...(input.input_bundle_path ? { AUTOMATION_OS_PORTABLE_BUSINESS_INPUT_BUNDLE_PATH: input.input_bundle_path } : {}),
+        AOS_CHROME_PLUGIN_PROMPT_TRANSFER_WRITE: input.workflow_id === "prompt-transfer-ukiyoe"
+          && selectedBackend() === "chrome_plugin"
+          && /^(?:1|true|yes|on|enabled)$/iu.test(String(process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS || ""))
+          && String(process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_APPROVAL || "") === "approved"
+          ? "1"
+          : "0",
         AUTOMATION_OS_WEB_OPERATION_CONTRACT_SCHEMA: "automation_os_web_operation_contract.v1",
         AUTOMATION_OS_WEB_OPERATION_ADAPTIVE: "semantic_live_state_bounded_exploration",
       },
@@ -328,6 +445,20 @@ async function main(argv = process.argv.slice(2)) {
     if (inputBundlePath) input.input_bundle_path = inputBundlePath;
     const plan = PLANS[input.workflow_id];
     if (!plan) return output({ exact_blocker: BLOCKERS.plan, workflow_id: input.workflow_id, run_id: input.run_id, step_id: input.step_id });
+    const backend = selectedBackend();
+    if (!["chrome_plugin", "browser_use_cli", "playwright", "aos_chrome_companion"].includes(backend)) return output({ exact_blocker: `web_operation_backend_unknown:${backend || "empty"}`, browser_surface: backend || null, workflow_id: input.workflow_id, run_id: input.run_id, step_id: input.step_id });
+    const surfaceMismatch = selectedBrowserSurfaceMismatch();
+    if (surfaceMismatch) return output({
+      exact_blocker: surfaceMismatch,
+      browser_surface: selectedBrowserSurface(),
+      workflow_id: input.workflow_id,
+      run_id: input.run_id,
+      step_id: input.step_id,
+      binding_readback: {
+        selected_browser_surface: selectedBrowserSurface(),
+        expected_browser_surface: CHROME_PLUGIN_BROWSER_SURFACE,
+      },
+    });
     if (!/^(?:1|true|yes|on|enabled)$/iu.test(String(process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS || ""))) return output({ exact_blocker: BLOCKERS.disabled, workflow_id: input.workflow_id, run_id: input.run_id, step_id: input.step_id });
     if (String(process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_APPROVAL || "") !== "approved") return output({ exact_blocker: BLOCKERS.approval, workflow_id: input.workflow_id, run_id: input.run_id, step_id: input.step_id });
     const admission = readAdmission(input);
@@ -340,6 +471,7 @@ async function main(argv = process.argv.slice(2)) {
       inputBundlePath: input.input_bundle_path,
     });
     const genericWebOperation = Boolean(String(process.env.AUTOMATION_OS_PORTABLE_WEB_OPERATION_INTENT_PATH || "").trim());
+    if (genericWebOperation && !["browser_use_cli", "aos_chrome_companion"].includes(backend)) return output({ exact_blocker: `web_operation_backend_adapter_not_bound:${backend}:generic_web_operation`, browser_surface: selectedBrowserSurface(), workflow_id: input.workflow_id, run_id: input.run_id, step_id: input.step_id });
     const command = genericWebOperation
       ? path.join(aosRoot(), "scripts", "aos-portable-browser-use-runner.mjs")
       : runnerFor(input.workflow_id);
@@ -354,8 +486,8 @@ async function main(argv = process.argv.slice(2)) {
         resolved_default_present: Boolean(canonicalRunnerPath(input.workflow_id) && fs.existsSync(canonicalRunnerPath(input.workflow_id))),
       },
     });
-    if (!path.isAbsolute(command) || !fs.existsSync(command) || !fs.statSync(command).isFile() || /(?:playwright|chrome_extension|in_app_browser|direct_cdp)/iu.test(path.basename(command))) return output({ exact_blocker: BLOCKERS.invalidRunner, workflow_id: input.workflow_id, run_id: input.run_id, step_id: input.step_id });
-    const sourceBlocker = validateRunnerSource(command);
+    if (!path.isAbsolute(command) || !fs.existsSync(command) || !fs.statSync(command).isFile() || (selectedBackend() === "browser_use_cli" && /(?:playwright|chrome_extension|in_app_browser|direct_cdp)/iu.test(path.basename(command)))) return output({ exact_blocker: BLOCKERS.invalidRunner, browser_surface: selectedBrowserSurface(), workflow_id: input.workflow_id, run_id: input.run_id, step_id: input.step_id });
+    const sourceBlocker = validateRunnerSource(command, process.env);
     if (sourceBlocker) return output({ exact_blocker: sourceBlocker, workflow_id: input.workflow_id, run_id: input.run_id, step_id: input.step_id });
     const child = await runChild(command, { ...input, admission, web_operation_contract: actionPlan.value.web_operation_contract });
     const receipt = parseLastJson(child.stdout);
@@ -364,7 +496,7 @@ async function main(argv = process.argv.slice(2)) {
     const effectUnknownReceipt = receiptLifecycle?.state === "effect_unknown" && receiptLifecycle?.no_replay === true;
     if (child.timeout) return output({ exact_blocker: BLOCKERS.timeout, external_action_executed: externalActionExecuted, workflow_id: input.workflow_id, run_id: input.run_id, step_id: input.step_id, runner_receipt: { process_group_cleanup: child.processGroupCleanup || null } });
     if (child.processGroupCleanup?.verified !== true) return output({ exact_blocker: BLOCKERS.processGroupCleanup, external_action_executed: externalActionExecuted, workflow_id: input.workflow_id, run_id: input.run_id, step_id: input.step_id, runner_receipt: { process_group_cleanup: child.processGroupCleanup || null } });
-    if (!receipt || typeof receipt.external_action_executed !== "boolean" || receipt.browser_surface !== "browser_use_cli" || receipt.run_id !== input.run_id || (externalActionExecuted && (!receipt.same_run_receipt || receipt.cleanup_verified !== true) && !effectUnknownReceipt)) return output({ exact_blocker: BLOCKERS.receipt, external_action_executed: externalActionExecuted, workflow_id: input.workflow_id, run_id: input.run_id, step_id: input.step_id });
+    if (!receipt || typeof receipt.external_action_executed !== "boolean" || receipt.browser_surface !== selectedBrowserSurface() || receipt.run_id !== input.run_id || (externalActionExecuted && (!receipt.same_run_receipt || receipt.cleanup_verified !== true) && !effectUnknownReceipt)) return output({ exact_blocker: BLOCKERS.receipt, external_action_executed: externalActionExecuted, browser_surface: selectedBrowserSurface(), workflow_id: input.workflow_id, run_id: input.run_id, step_id: input.step_id });
     if (genericWebOperation) {
       const lifecycle = receipt.web_operation_lifecycle && typeof receipt.web_operation_lifecycle === "object" ? receipt.web_operation_lifecycle : null;
       const status = receipt.status === "complete" && lifecycle?.status === "complete" && receipt.same_run_receipt === true && receipt.cleanup_verified === true

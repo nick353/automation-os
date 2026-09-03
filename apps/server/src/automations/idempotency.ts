@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { makeId, nowIso, querySql, runSqlTransaction, sqlValue, type SqlTransactionStep } from "../db/client.js";
+import { makeId, nowIso, querySql, querySqlAsync, runSqlTransaction, runSqlTransactionAsync, sqlValue, type SqlTransactionStep } from "../db/client.js";
 
 export class IdempotencyError extends Error {
   constructor(public readonly code: string) {
@@ -108,6 +108,55 @@ export function runIdempotentSqlMutation<T extends Record<string, unknown>>(inpu
   }
 }
 
+/** PostgreSQL HTTP routes must keep idempotency reads and writes on the async
+ * database boundary. The synchronous counterpart above is retained for the
+ * local SQLite lane only. */
+export async function runIdempotentSqlMutationAsync<T extends Record<string, unknown>>(input: {
+  companyId: string;
+  scope: string;
+  key: string;
+  request: unknown;
+  resourceSteps: readonly SqlTransactionStep[];
+  response: T;
+}): Promise<IdempotentMutationResult<T>> {
+  const companyId = boundedIdentity(input.companyId, "company_id_required");
+  const scope = boundedIdentity(input.scope, "idempotency_scope_required");
+  const key = boundedIdentity(input.key, "idempotency_key_required", 200);
+  const requestHash = hashIdempotencyRequest(input.request);
+  const existing = await readStoredAsync(companyId, scope, key);
+  const replay = resolveExisting<T>(existing, requestHash);
+  if (replay) return { replayed: true, response: replay, requestHash };
+
+  const id = makeId("idempotency");
+  const now = nowIso();
+  const responseJson = canonicalJson(input.response);
+  const steps: SqlTransactionStep[] = [
+    {
+      sql: `INSERT INTO mvp_idempotency_keys
+            (id, company_id, scope, idempotency_key, request_hash, response_json, status, expires_at, created_at, updated_at)
+            VALUES (${sqlValue(id)}, ${sqlValue(companyId)}, ${sqlValue(scope)}, ${sqlValue(key)}, ${sqlValue(requestHash)}, '{}', 'pending', NULL, ${sqlValue(now)}, ${sqlValue(now)})`,
+      expectChanges: 1
+    },
+    ...input.resourceSteps,
+    {
+      sql: `UPDATE mvp_idempotency_keys
+            SET response_json=${sqlValue(responseJson)}, status='completed', updated_at=${sqlValue(now)}
+            WHERE id=${sqlValue(id)} AND company_id=${sqlValue(companyId)} AND scope=${sqlValue(scope)}
+              AND idempotency_key=${sqlValue(key)} AND request_hash=${sqlValue(requestHash)} AND status='pending'`,
+      expectChanges: 1
+    }
+  ];
+  try {
+    await runSqlTransactionAsync(steps);
+    return { replayed: false, response: input.response, requestHash };
+  } catch (error) {
+    const raced = await readStoredAsync(companyId, scope, key);
+    const racedReplay = resolveExisting<T>(raced, requestHash);
+    if (racedReplay) return { replayed: true, response: racedReplay, requestHash };
+    throw error;
+  }
+}
+
 function readStored(companyId: string, scope: string, key: string): StoredIdempotencyRow | undefined {
   return querySql<StoredIdempotencyRow>(`
     SELECT company_id, scope, idempotency_key, request_hash, response_json, status
@@ -115,6 +164,15 @@ function readStored(companyId: string, scope: string, key: string): StoredIdempo
     WHERE company_id=${sqlValue(companyId)} AND scope=${sqlValue(scope)} AND idempotency_key=${sqlValue(key)}
     LIMIT 1
   `)[0];
+}
+
+async function readStoredAsync(companyId: string, scope: string, key: string): Promise<StoredIdempotencyRow | undefined> {
+  return (await querySqlAsync<StoredIdempotencyRow>(`
+    SELECT company_id, scope, idempotency_key, request_hash, response_json, status
+    FROM mvp_idempotency_keys
+    WHERE company_id=${sqlValue(companyId)} AND scope=${sqlValue(scope)} AND idempotency_key=${sqlValue(key)}
+    LIMIT 1
+  `))[0];
 }
 
 function resolveExisting<T>(row: StoredIdempotencyRow | undefined, requestHash: string): T | null {

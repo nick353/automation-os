@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
-import { makeId, nowIso, querySql, runSqlTransaction, sqlValue, type SqlTransactionStep } from "../db/client.js";
+import { makeId, nowIso, querySql, querySqlAsync, runSqlTransaction, runSqlTransactionAsync, sqlValue, type SqlTransactionStep } from "../db/client.js";
 import { getAutomationRecord } from "../automations/repository.js";
-import { canonicalJson, hashIdempotencyRequest, readIdempotencyReplay, runIdempotentSqlMutation } from "../automations/idempotency.js";
-import { requireCompanyAccess, requireExistingCompanyAccess, requireExistingServiceIdentity } from "../companies/repository.js";
+import { canonicalJson, hashIdempotencyRequest, readIdempotencyReplay, runIdempotentSqlMutation, runIdempotentSqlMutationAsync } from "../automations/idempotency.js";
+import { requireCompanyAccess, requireExistingCompanyAccess, requireExistingCompanyAccessAsync, requireExistingServiceIdentity, requireExistingServiceIdentityAsync } from "../companies/repository.js";
 import {
   buildServiceReadinessRuntimeBindingV1,
   deriveServiceReadinessRootId,
@@ -17,11 +17,13 @@ import type {
 } from "../serviceReadiness/iabExternalExecutor.js";
 import { buildAutomationProviderMetadata } from "../providers/automationProvider.js";
 import { PORTABLE_EXECUTION_SOURCE } from "./portableWorkerIsolation.js";
+import { buildWebOperationBackendRunSnapshot } from "./webOperationBackendSettings.js";
 
 // Scheduled work must not wait behind an operator-triggered dry-run backlog.
 // Both lanes remain no-effect control-plane work, but due schedules are the
 // liveness contract for the AOS scheduler and therefore get queue precedence.
 const SCHEDULED_DRY_RUN_PRIORITY = 200;
+export const DURABLE_QUEUE_ADMISSION_SCHEMA = "aos.durable_queue_admission.v1" as const;
 
 export class DurableQueueError extends Error {
   constructor(public readonly code: string) {
@@ -114,6 +116,44 @@ type DurableJobRow = {
   created_at: string;
   updated_at: string;
 };
+
+export function buildDurableQueueAdmission(input: {
+  jobId: string;
+  kind: string;
+  idempotencyKey: string;
+  payloadHash: string;
+  issuedAt: string;
+  externalActionAllowed: boolean;
+}) {
+  return {
+    schema: DURABLE_QUEUE_ADMISSION_SCHEMA,
+    job_id: input.jobId,
+    kind: input.kind,
+    idempotency_key: input.idempotencyKey,
+    payload_hash: input.payloadHash,
+    issued_at: input.issuedAt,
+    external_action_allowed: input.externalActionAllowed,
+    external_action_executed: false,
+    prior_receipt_reuse: false
+  } as const;
+}
+
+function hasFreshDurableQueueAdmission(job: DurableJobRow, runMetadata: Record<string, unknown>): boolean {
+  const value = runMetadata.queue_admission;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const admission = value as Record<string, unknown>;
+  return admission.schema === DURABLE_QUEUE_ADMISSION_SCHEMA
+    && admission.job_id === job.id
+    && admission.kind === job.kind
+    && typeof admission.idempotency_key === "string"
+    && admission.idempotency_key.trim() !== ""
+    && admission.payload_hash === job.payload_hash
+    && admission.external_action_allowed === (job.execution_mode === "external")
+    && typeof admission.issued_at === "string"
+    && Number.isFinite(Date.parse(admission.issued_at))
+    && admission.external_action_executed === false
+    && admission.prior_receipt_reuse === false;
+}
 
 function serviceReadinessRunMetadata(runId: string, payload: Record<string, unknown>): Record<string, unknown> {
   const workflowId = referenceWorkflowIdFromMetadata(payload);
@@ -292,7 +332,7 @@ export function materializeDurableScheduleOccurrence(input: {
       },
       {
         sql: `INSERT INTO runs (id, company_id, automation_id, automation_version_id, name, status, objective, created_at, updated_at, metadata_json, execution_source, quarantined)
-              VALUES (${sqlValue(runId)}, ${sqlValue(companyId)}, ${sqlValue(schedule.automation_id)}, ${sqlValue(schedule.automation_version_id)}, ${sqlValue(`Scheduled dry run: ${schedule.automation_name}`)}, 'queued', ${sqlValue(schedule.automation_goal || schedule.automation_description || schedule.automation_name)}, ${sqlValue(timestamp)}, ${sqlValue(timestamp)}, ${sqlValue({ durable_job_id: jobId, schedule_occurrence_id: occurrenceId, external_action_allowed: false, ...serviceReadinessRunMetadata(runId, payload) })}, ${sqlValue(PORTABLE_EXECUTION_SOURCE)}, 0)`,
+              VALUES (${sqlValue(runId)}, ${sqlValue(companyId)}, ${sqlValue(schedule.automation_id)}, ${sqlValue(schedule.automation_version_id)}, ${sqlValue(`Scheduled dry run: ${schedule.automation_name}`)}, 'queued', ${sqlValue(schedule.automation_goal || schedule.automation_description || schedule.automation_name)}, ${sqlValue(timestamp)}, ${sqlValue(timestamp)}, ${sqlValue({ durable_job_id: jobId, schedule_occurrence_id: occurrenceId, external_action_allowed: false, queue_admission: buildDurableQueueAdmission({ jobId, kind: "scheduled_dry_run", idempotencyKey: key, payloadHash, issuedAt: timestamp, externalActionAllowed: false }), ...serviceReadinessRunMetadata(runId, payload), ...buildWebOperationBackendRunSnapshot() })}, ${sqlValue(PORTABLE_EXECUTION_SOURCE)}, 0)`,
         expectChanges: 1
       },
       {
@@ -327,6 +367,111 @@ export function materializeDurableScheduleOccurrence(input: {
     response: { occurrence_id: occurrenceId, job_id: jobId }
   });
   return { occurrence: requiredOccurrence(companyId, result.response.occurrence_id), job: requiredJob(companyId, result.response.job_id) };
+}
+
+/**
+ * Async counterpart used by the resident PostgreSQL server scheduler. The
+ * synchronous implementation remains for the SQLite/CLI lane, but a server
+ * tick must not spawn a PostgreSQL child synchronously on Node's event loop.
+ */
+export async function materializeDurableScheduleOccurrenceAsync(input: {
+  companyId: string;
+  serviceUserId: string;
+  scheduleId: string;
+  scheduledFor: string;
+  expectedScheduleRevision: number;
+  nextRunAt?: string | null;
+  payload?: Record<string, unknown>;
+}): Promise<{ occurrence: DurableScheduleOccurrence; job: DurableJob }> {
+  const companyId = required(input.companyId, "company_id_required");
+  const serviceUserId = required(input.serviceUserId, "service_user_id_required");
+  const scheduleId = required(input.scheduleId, "automation_schedule_id_required");
+  const scheduledFor = normalizedTime(input.scheduledFor, "automation_schedule_occurrence_time_invalid");
+  const expectedScheduleRevision = boundedInteger(input.expectedScheduleRevision, 1, Number.MAX_SAFE_INTEGER, "automation_schedule_revision_invalid");
+  const nextRunAt = input.nextRunAt === null || input.nextRunAt === undefined ? null : normalizedTime(input.nextRunAt, "automation_schedule_next_run_time_invalid");
+  await requireExistingServiceIdentityAsync(serviceUserId);
+  await requireExistingCompanyAccessAsync(companyId, ["operator"], serviceUserId);
+  const occurrenceKey = `${scheduleId}:${scheduledFor}`;
+  const key = `schedule:${occurrenceKey}`;
+  const scope = `durable_schedule:materialize:${serviceUserId}`;
+  const payload = { ...input.payload, dry_run: true, scheduled: true, external_action_allowed: false };
+  const request = { scheduleId, scheduledFor, expectedScheduleRevision, nextRunAt, payload };
+  const schedule = (await querySqlAsync<any>(`
+    SELECT schedule.*, automation.name AS automation_name, automation.goal AS automation_goal,
+           automation.description AS automation_description
+    FROM mvp_automation_schedules schedule
+    JOIN mvp_automations automation
+      ON automation.id=schedule.automation_id AND automation.company_id=schedule.company_id
+    WHERE schedule.id=${sqlValue(scheduleId)} AND schedule.company_id=${sqlValue(companyId)}
+      AND schedule.enabled=1 AND schedule.status='active' AND automation.status='active'
+      AND schedule.revision=${expectedScheduleRevision} AND schedule.next_run_at=${sqlValue(scheduledFor)}
+    LIMIT 1
+  `))[0];
+  if (!schedule) throw new DurableQueueError("automation_schedule_revision_or_due_conflict");
+  const timestamp = nowIso();
+  const occurrenceId = makeId("occurrence");
+  const jobId = makeId("job");
+  const runId = makeId("run");
+  const payloadJson = canonicalJson(payload);
+  const payloadHash = hashIdempotencyRequest(payload);
+  const concurrencyKey = `automation_version:${schedule.automation_version_id}`;
+  const maxConcurrency = Number((await querySqlAsync<{ slot_limit: number }>(`
+    SELECT slot_limit FROM durable_concurrency_slots
+    WHERE company_id=${sqlValue(companyId)} AND concurrency_key=${sqlValue(concurrencyKey)}
+    LIMIT 1
+  `))[0]?.slot_limit ?? 1);
+  const result = await runIdempotentSqlMutationAsync({
+    companyId,
+    scope,
+    key,
+    request,
+    resourceSteps: [
+      {
+        sql: `INSERT INTO durable_schedule_occurrences
+              (id, company_id, schedule_id, occurrence_key, scheduled_for, status, job_id, created_at, updated_at)
+              VALUES (${sqlValue(occurrenceId)}, ${sqlValue(companyId)}, ${sqlValue(scheduleId)}, ${sqlValue(occurrenceKey)}, ${sqlValue(scheduledFor)}, 'queued', ${sqlValue(jobId)}, ${sqlValue(timestamp)}, ${sqlValue(timestamp)})`,
+        expectChanges: 1
+      },
+      {
+        sql: `INSERT INTO runs (id, company_id, automation_id, automation_version_id, name, status, objective, created_at, updated_at, metadata_json, execution_source, quarantined)
+              VALUES (${sqlValue(runId)}, ${sqlValue(companyId)}, ${sqlValue(schedule.automation_id)}, ${sqlValue(schedule.automation_version_id)}, ${sqlValue(`Scheduled dry run: ${schedule.automation_name}`)}, 'queued', ${sqlValue(schedule.automation_goal || schedule.automation_description || schedule.automation_name)}, ${sqlValue(timestamp)}, ${sqlValue(timestamp)}, ${sqlValue({ durable_job_id: jobId, schedule_occurrence_id: occurrenceId, external_action_allowed: false, queue_admission: buildDurableQueueAdmission({ jobId, kind: "scheduled_dry_run", idempotencyKey: key, payloadHash, issuedAt: timestamp, externalActionAllowed: false }), ...serviceReadinessRunMetadata(runId, payload), ...buildWebOperationBackendRunSnapshot() })}, ${sqlValue(PORTABLE_EXECUTION_SOURCE)}, 0)`,
+        expectChanges: 1
+      },
+      {
+        sql: `INSERT INTO durable_jobs
+              (id, company_id, run_id, automation_id, automation_version_id, schedule_occurrence_id, kind, status,
+               payload_json, payload_hash, idempotency_key, priority, max_attempts, attempt_count, available_at,
+               concurrency_key, max_concurrency, lease_owner, lease_expires_at, fencing_token, heartbeat_at,
+               last_error, created_at, updated_at)
+              VALUES (${sqlValue(jobId)}, ${sqlValue(companyId)}, ${sqlValue(runId)}, ${sqlValue(schedule.automation_id)}, ${sqlValue(schedule.automation_version_id)}, ${sqlValue(occurrenceId)}, 'scheduled_dry_run', 'queued',
+                      ${sqlValue(payloadJson)}, ${sqlValue(payloadHash)}, ${sqlValue(key)}, ${SCHEDULED_DRY_RUN_PRIORITY}, 3, 0, ${sqlValue(scheduledFor)},
+                      ${sqlValue(concurrencyKey)}, ${maxConcurrency}, NULL, NULL, 0, NULL, NULL, ${sqlValue(timestamp)}, ${sqlValue(timestamp)})`,
+        expectChanges: 1
+      },
+      {
+        sql: `INSERT INTO durable_concurrency_slots
+              (id, company_id, concurrency_key, slot_limit, active_count, revision, created_at, updated_at)
+              VALUES (${sqlValue(makeId("concurrency"))}, ${sqlValue(companyId)}, ${sqlValue(concurrencyKey)}, ${maxConcurrency}, 0, 1, ${sqlValue(timestamp)}, ${sqlValue(timestamp)})
+              ON CONFLICT(company_id, concurrency_key) DO UPDATE SET slot_limit=excluded.slot_limit
+              WHERE durable_concurrency_slots.slot_limit=excluded.slot_limit`,
+        expectChanges: 1
+      },
+      {
+        sql: `UPDATE mvp_automation_schedules SET last_run_at=${sqlValue(scheduledFor)},
+                    next_run_at=${nextRunAt ? sqlValue(nextRunAt) : "next_run_at"}, updated_at=${sqlValue(timestamp)}
+              WHERE id=${sqlValue(scheduleId)} AND company_id=${sqlValue(companyId)} AND enabled=1 AND status='active'
+                AND revision=${expectedScheduleRevision} AND next_run_at=${sqlValue(scheduledFor)}`,
+        expectChanges: 1
+      },
+      workerEventStep(companyId, runId, "durable_schedule_occurrence_materialized", "Scheduled occurrence queued", { occurrence_id: occurrenceId, job_id: jobId, automation_version_id: schedule.automation_version_id }, timestamp),
+      auditStep(companyId, serviceUserId, "durable_schedule.occurrence_materialized", "durable_schedule_occurrence", occurrenceId, {}, { job_id: jobId, scheduled_for: scheduledFor, automation_version_id: schedule.automation_version_id }, timestamp)
+    ],
+    response: { occurrence_id: occurrenceId, job_id: jobId }
+  });
+  return {
+    occurrence: await requiredOccurrenceAsync(companyId, result.response.occurrence_id),
+    job: await requiredJobAsync(companyId, result.response.job_id)
+  };
 }
 
 export function enqueueAutomationDryRun(input: {
@@ -376,7 +521,7 @@ export function enqueueAutomationDryRun(input: {
   const steps: SqlTransactionStep[] = [
     {
       sql: `INSERT INTO runs (id, company_id, automation_id, automation_version_id, name, status, objective, created_at, updated_at, metadata_json, execution_source, quarantined)
-            VALUES (${sqlValue(runId)}, ${sqlValue(companyId)}, ${sqlValue(automation.id)}, ${sqlValue(automation.currentVersionId)}, ${sqlValue(`Dry run: ${automation.name}`)}, 'queued', ${sqlValue(automation.goal || automation.description || automation.name)}, ${sqlValue(timestamp)}, ${sqlValue(timestamp)}, ${sqlValue({ durable_job_id: jobId, job_kind: "dry_run", external_action_allowed: false, ...serviceReadinessRunMetadata(runId, payload) })}, ${sqlValue(PORTABLE_EXECUTION_SOURCE)}, 0)`,
+      VALUES (${sqlValue(runId)}, ${sqlValue(companyId)}, ${sqlValue(automation.id)}, ${sqlValue(automation.currentVersionId)}, ${sqlValue(`Dry run: ${automation.name}`)}, 'queued', ${sqlValue(automation.goal || automation.description || automation.name)}, ${sqlValue(timestamp)}, ${sqlValue(timestamp)}, ${sqlValue({ durable_job_id: jobId, job_kind: "dry_run", external_action_allowed: false, queue_admission: buildDurableQueueAdmission({ jobId, kind: "dry_run", idempotencyKey: key, payloadHash, issuedAt: timestamp, externalActionAllowed: false }), ...serviceReadinessRunMetadata(runId, payload), ...buildWebOperationBackendRunSnapshot() })}, ${sqlValue(PORTABLE_EXECUTION_SOURCE)}, 0)`,
       expectChanges: 1
     },
     {
@@ -513,7 +658,7 @@ export function enqueueAutomationExternalEffect(input: {
     resourceSteps: [
       {
         sql: `INSERT INTO runs (id, company_id, automation_id, automation_version_id, name, status, objective, created_at, updated_at, metadata_json, execution_source, quarantined)
-              VALUES (${sqlValue(runId)}, ${sqlValue(companyId)}, ${sqlValue(automation.id)}, ${sqlValue(automation.currentVersionId)}, ${sqlValue(`External IAB intent: ${automation.name}`)}, 'queued', ${sqlValue(automation.goal || automation.description || automation.name)}, ${sqlValue(timestamp)}, ${sqlValue(timestamp)}, ${sqlValue({ durable_job_id: jobId, job_kind: "external_iab", execution_mode: "external", external_action_allowed: true, external_intent: externalIntent })}, ${sqlValue(PORTABLE_EXECUTION_SOURCE)}, 0)`,
+              VALUES (${sqlValue(runId)}, ${sqlValue(companyId)}, ${sqlValue(automation.id)}, ${sqlValue(automation.currentVersionId)}, ${sqlValue(`External IAB intent: ${automation.name}`)}, 'queued', ${sqlValue(automation.goal || automation.description || automation.name)}, ${sqlValue(timestamp)}, ${sqlValue(timestamp)}, ${sqlValue({ durable_job_id: jobId, job_kind: "external_iab", execution_mode: "external", external_action_allowed: true, external_intent: externalIntent, queue_admission: buildDurableQueueAdmission({ jobId, kind: "external_iab", idempotencyKey: key, payloadHash, issuedAt: timestamp, externalActionAllowed: true }), ...buildWebOperationBackendRunSnapshot() })}, ${sqlValue(PORTABLE_EXECUTION_SOURCE)}, 0)`,
         expectChanges: 1
       },
       {
@@ -575,6 +720,7 @@ export function claimNextDurableJob(input: {
     const leaseExpiresAt = new Date(Date.parse(now) + leaseMs).toISOString();
     const runMetadataRow = querySql<{ metadata_json: string }>(`SELECT metadata_json FROM runs WHERE id=${sqlValue(candidate.run_id)} AND company_id=${sqlValue(companyId)} LIMIT 1`)[0];
     const runMetadata = runMetadataRow?.metadata_json ? JSON.parse(runMetadataRow.metadata_json) as Record<string, unknown> : {};
+    if (!hasFreshDurableQueueAdmission(candidate, runMetadata)) continue;
     const serviceReadinessWorkflowId = referenceWorkflowIdFromMetadata(runMetadata);
     const serviceReadinessBinding = serviceReadinessWorkflowId && candidate.execution_mode !== "external"
       ? serviceReadinessBindingForDurableAttempt({ runId: candidate.run_id, workflowId: serviceReadinessWorkflowId, attemptId, fencingToken })
@@ -1165,6 +1311,7 @@ export function cancelDurableJob(input: { companyId: string; actorUserId: string
   requireCompanyAccess(required(input.companyId, "company_id_required"), ["owner", "admin", "operator"], required(input.actorUserId, "actor_user_id_required"));
   const current = requiredJob(input.companyId, input.jobId);
   if (["completed", "failed", "cancelled"].includes(current.status)) throw new DurableQueueError("durable_job_terminal");
+  if (current.status === "reconciliation_required") throw new DurableQueueError("durable_external_reconciliation_pending");
   const now = normalizedTime(input.now ?? nowIso(), "durable_job_cancel_time_invalid");
   const steps: SqlTransactionStep[] = [
     {
@@ -1354,12 +1501,42 @@ function requiredJob(companyId: string, jobId: string): DurableJob {
   return job;
 }
 
+async function requiredJobAsync(companyId: string, jobId: string): Promise<DurableJob> {
+  const row = (await querySqlAsync<DurableJobRow>(`
+    SELECT * FROM durable_jobs
+    WHERE company_id=${sqlValue(companyId)} AND id=${sqlValue(jobId)}
+    LIMIT 1
+  `))[0];
+  if (!row) throw new DurableQueueError("durable_job_not_found");
+  return toDurableJob(row);
+}
+
 function requiredOccurrence(companyId: string, occurrenceId: string): DurableScheduleOccurrence {
   const row = querySql<any>(`
     SELECT * FROM durable_schedule_occurrences
     WHERE company_id=${sqlValue(companyId)} AND id=${sqlValue(occurrenceId)}
     LIMIT 1
   `)[0];
+  if (!row) throw new DurableQueueError("durable_schedule_occurrence_not_found");
+  return {
+    id: row.id,
+    companyId: row.company_id,
+    scheduleId: row.schedule_id,
+    occurrenceKey: row.occurrence_key,
+    scheduledFor: row.scheduled_for,
+    status: row.status,
+    jobId: row.job_id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+async function requiredOccurrenceAsync(companyId: string, occurrenceId: string): Promise<DurableScheduleOccurrence> {
+  const row = (await querySqlAsync<any>(`
+    SELECT * FROM durable_schedule_occurrences
+    WHERE company_id=${sqlValue(companyId)} AND id=${sqlValue(occurrenceId)}
+    LIMIT 1
+  `))[0];
   if (!row) throw new DurableQueueError("durable_schedule_occurrence_not_found");
   return {
     id: row.id,

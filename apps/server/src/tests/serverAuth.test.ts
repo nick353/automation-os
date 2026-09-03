@@ -6,6 +6,8 @@ import test from "node:test";
 import {
   canBootstrapSession,
   issueSessionCookie,
+  isLoopbackNoEffectTriggerRequest,
+  isLoopbackPortableWorkerRequest,
   readRequestAuth,
   readServerAuthStatus,
   readServerSecret,
@@ -66,6 +68,78 @@ test("session bootstrap requires private ingress and issues a signed HttpOnly Se
     tokenPresented: false
   });
   assert.equal(canBootstrapSession({ headers: {}, socket: { remoteAddress: "10.0.0.5" } }, env), false);
+});
+
+test("session cookie defaults to a rolling 30-day lifetime and accepts a bounded override", () => {
+  const baseEnv = {
+    ...keychainDisabled,
+    AUTOMATION_OS_REQUIRE_API_TOKEN: "1",
+    AUTOMATION_OS_SESSION_SECRET: "session-signing-sentinel",
+    AUTOMATION_OS_AUTH_COOKIE_SECURE: "1"
+  } as NodeJS.ProcessEnv;
+  const cookie = issueSessionCookie("write", baseEnv);
+  assert.ok(cookie);
+  assert.match(cookie!, /Max-Age=2592000/u);
+  const override = issueSessionCookie("write", { ...baseEnv, AUTOMATION_OS_AUTH_SESSION_TTL_SECONDS: "3600" });
+  assert.ok(override);
+  assert.match(override!, /Max-Age=3600/u);
+  const invalid = issueSessionCookie("write", { ...baseEnv, AUTOMATION_OS_AUTH_SESSION_TTL_SECONDS: "1" });
+  assert.ok(invalid);
+  assert.match(invalid!, /Max-Age=2592000/u);
+});
+
+test("loopback recovery session bootstrap is scoped to localhost and does not expose the secret", () => {
+  const env = {
+    ...keychainDisabled,
+    AUTOMATION_OS_REQUIRE_API_TOKEN: "1",
+    AUTOMATION_OS_LOOPBACK_SESSION: "1",
+    AUTOMATION_OS_AUTH_COOKIE_SECURE: "0",
+    AUTOMATION_OS_SESSION_SECRET: "loopback-session-sentinel",
+    AUTOMATION_OS_AUTH_SESSION_SCOPE: "write"
+  } as NodeJS.ProcessEnv;
+  assert.equal(canBootstrapSession({ headers: {}, socket: { remoteAddress: "127.0.0.1" } }, env), true);
+  assert.equal(canBootstrapSession({ headers: {}, socket: { remoteAddress: "10.0.0.5" } }, env), false);
+  const cookie = issueSessionCookie("write", env);
+  assert.ok(cookie);
+  assert.doesNotMatch(cookie!, /loopback-session-sentinel/iu);
+  assert.doesNotMatch(cookie!, /Secure/iu);
+  assert.equal(readSessionScope({ cookie: cookie!.split(";", 1)[0] }, env), "write");
+});
+
+test("loopback portable worker auth is limited to claim heartbeat and receipt", () => {
+  const env = {
+    ...keychainDisabled,
+    AUTOMATION_OS_LOOPBACK_SESSION: "1"
+  } as NodeJS.ProcessEnv;
+  const headers = { "x-automation-os-local-worker": "1" };
+  const request = { method: "POST", path: "/api/portable-worker/claim", headers, socket: { remoteAddress: "127.0.0.1" } };
+  assert.equal(isLoopbackPortableWorkerRequest(request, env), true);
+  assert.equal(isLoopbackPortableWorkerRequest({ ...request, path: "/api/portable-worker/run-a/receipt" }, env), true);
+  assert.equal(isLoopbackPortableWorkerRequest({ ...request, path: "/api/portable-worker/heartbeat" }, env), true);
+  assert.equal(isLoopbackPortableWorkerRequest({ ...request, path: "/api/mvp/state" }, env), false);
+  assert.equal(isLoopbackPortableWorkerRequest({ ...request, headers: {} }, env), false);
+  assert.equal(isLoopbackPortableWorkerRequest({ ...request, socket: { remoteAddress: "10.0.0.5" } }, env), false);
+  assert.equal(isLoopbackPortableWorkerRequest({ ...request, method: "GET" }, env), false);
+});
+
+test("loopback no-effect trigger exception is limited to the official trigger shape", () => {
+  const env = {
+    ...keychainDisabled,
+    AUTOMATION_OS_LOOPBACK_SESSION: "1"
+  } as NodeJS.ProcessEnv;
+  const request = {
+    method: "POST",
+    path: "/api/v1/companies/company-a/automations/automation-a/trigger",
+    headers: { "x-automation-os-local-no-effect": "1" },
+    socket: { remoteAddress: "127.0.0.1" },
+    body: { execution_mode: "preflight_no_effect", external_action_allowed: false }
+  };
+  assert.equal(isLoopbackNoEffectTriggerRequest({ ...request, body: undefined }, env), true);
+  assert.equal(isLoopbackNoEffectTriggerRequest(request, env), true);
+  assert.equal(isLoopbackNoEffectTriggerRequest({ ...request, body: { execution_mode: "live", external_action_allowed: true } }, env), false);
+  assert.equal(isLoopbackNoEffectTriggerRequest({ ...request, headers: {} }, env), false);
+  assert.equal(isLoopbackNoEffectTriggerRequest({ ...request, path: "/api/mvp/approvals" }, env), false);
+  assert.equal(isLoopbackNoEffectTriggerRequest({ ...request, socket: { remoteAddress: "10.0.0.5" } }, env), false);
 });
 
 test("automation-3 service identity is accepted only by the trigger route", () => {

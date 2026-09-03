@@ -178,6 +178,24 @@ test("claiming is atomic: the first job leases and the second call returns null 
   assert.equal(db.querySql<{ count: number }>(`SELECT count(*) AS count FROM durable_job_attempts WHERE company_id=${db.sqlValue(seed.companyId)}`)[0].count, 1);
 });
 
+test("claim fails closed for a queued run without a fresh queue admission", () => {
+  resetDurableState();
+  const seed = seedDurableCompany("company_legacy_queue", "service_legacy_queue", "automation_legacy_queue", "version_legacy_queue");
+  const job = enqueueAutomationDryRun({
+    companyId: seed.companyId,
+    actorUserId: seed.serviceUserId,
+    automationId: seed.automationId,
+    idempotencyKey: "legacy-queue-admission",
+    payload: { legacy: true }
+  });
+  db.execSql(`UPDATE runs SET metadata_json='{}' WHERE id=${db.sqlValue(job.runId)};`);
+
+  const claim = claimNextDurableJob({ companyId: seed.companyId, serviceUserId: seed.serviceUserId, now: claimNow });
+  assert.equal(claim, null);
+  assert.equal(getJob(seed.companyId, job.id)?.status, "queued");
+  assert.equal(db.querySql<{ count: number }>(`SELECT count(*) AS count FROM durable_job_attempts WHERE job_id=${db.sqlValue(job.id)}`)[0].count, 0);
+});
+
 test("heartbeat rejects a stale fence without mutating the lease", () => {
   resetDurableState();
   const seed = seedDurableCompany("company_heartbeat", "service_heartbeat", "automation_heartbeat", "version_heartbeat");
@@ -356,6 +374,28 @@ test("cancelling a leased job releases the slot once and stale finalizers are fe
   );
 
   assert.equal(activeSlotCount(seed.companyId, job.concurrencyKey), 0);
+});
+
+test("reconciliation-required jobs cannot be cancelled before external readback", () => {
+  resetDurableState();
+  const seed = seedDurableCompany("company_reconciliation_cancel", "service_reconciliation_cancel", "automation_reconciliation_cancel", "version_reconciliation_cancel");
+  const job = enqueueAutomationDryRun({
+    companyId: seed.companyId,
+    actorUserId: seed.serviceUserId,
+    automationId: seed.automationId,
+    idempotencyKey: "reconciliation-cancel-job",
+    payload: { job: "reconciliation" }
+  });
+  db.execSql(`UPDATE durable_jobs SET status='reconciliation_required', last_error='provider_timeout_ambiguous' WHERE id=${db.sqlValue(job.id)} AND company_id=${db.sqlValue(seed.companyId)}`);
+
+  assert.throws(
+    () => cancelDurableJob({ companyId: seed.companyId, actorUserId: seed.serviceUserId, jobId: job.id, now: laterNow }),
+    (error: unknown) => {
+      assert.equal((error as Error).message, "durable_external_reconciliation_pending");
+      return true;
+    }
+  );
+  assert.equal(getJob(seed.companyId, job.id)?.status, "reconciliation_required");
 });
 
 test("expired leases can be recovered back to queued state", () => {

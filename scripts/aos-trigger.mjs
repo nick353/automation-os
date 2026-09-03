@@ -7,6 +7,7 @@ const MAX_INPUT_BUNDLE_BYTES = 64 * 1024;
 const DEFAULT_TIMEOUT_MS = 15_000;
 const MAX_TIMEOUT_MS = 120_000;
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
+const COMPANION_TASK_ID_PATTERN = /^[A-Za-z0-9][-_A-Za-z0-9.:]{0,179}$/u;
 const TOP_LEVEL_KEYS = new Set([
   "ok", "schema", "queued", "dry_run", "status", "error", "exactBlocker", "exact_blocker",
   "source_trigger", "execution_authority", "provider_neutral", "external_action_executed",
@@ -215,9 +216,17 @@ async function main() {
   const idempotencyKey = valueFor("--idempotency-key") || `aos-trigger-${randomUUID()}`;
   const tokenFile = valueFor("--token-file") || process.env.AOS_TRIGGER_TOKEN_FILE?.trim() || "";
   const inputBundleFile = valueFor("--input-bundle-file") || process.env.AOS_TRIGGER_INPUT_BUNDLE_FILE?.trim() || "";
+  const companionTaskId = valueFor("--companion-task-id")
+    || process.env.AOS_TRIGGER_COMPANION_TASK_ID?.trim()
+    || process.env.CODEX_THREAD_ID?.trim()
+    || "";
 
   if (!companyId || !automationId) {
     safeFailure("aos_trigger_arguments_missing");
+    return;
+  }
+  if (companionTaskId && !COMPANION_TASK_ID_PATTERN.test(companionTaskId)) {
+    safeFailure("aos_trigger_companion_task_id_invalid");
     return;
   }
 
@@ -266,6 +275,7 @@ async function main() {
   }
 
   const headers = { "content-type": "application/json", "idempotency-key": idempotencyKey };
+  if (base.loopback) headers["x-automation-os-local-no-effect"] = "1";
   if (token) headers.authorization = `Bearer ${token}`;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), requestTimeoutMs());
@@ -279,6 +289,7 @@ async function main() {
       body: JSON.stringify({
         execution_mode: "preflight_no_effect",
         external_action_allowed: false,
+        ...(companionTaskId ? { companion_task_id: companionTaskId } : {}),
         ...(inputBundle ? { input_bundle: inputBundle } : {}),
       })
     });

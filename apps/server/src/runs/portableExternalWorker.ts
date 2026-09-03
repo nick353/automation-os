@@ -4,10 +4,19 @@ import { isAbsolute } from "node:path";
 import { createHash } from "node:crypto";
 import { dirname, resolve, sep } from "node:path";
 import { redactWorkerOutput, safeWorkerEnvironment } from "../security/processEnvironment.js";
-import { resolvePortableExternalRunner } from "./portableExternalRunnerConfig.js";
+import {
+  DEFAULT_PORTABLE_EXTERNAL_BUSINESS_RUNNER_RELATIVE_PATH,
+  DEFAULT_PORTABLE_EXTERNAL_RUNNER_RELATIVE_PATH,
+  resolvePortableExternalRunner,
+} from "./portableExternalRunnerConfig.js";
 import { issuePortableExternalActionPlan } from "./portableExternalActionPlan.js";
 import type { PortableExternalEffectAuthorityV1 } from "./portableExternalEffectAuthority.js";
 import { validateWebOperationIntent } from "./webOperationContract.js";
+import {
+  browserSurfaceForWebOperationBackend,
+  resolveWebOperationBackend,
+  type WebOperationBackend,
+} from "./webOperationBackendSettings.js";
 import { cleanupOwnedProcessGroup, type OwnedProcessGroupCleanup } from "./processGroupCleanup.js";
 
 export const PORTABLE_EXTERNAL_ADAPTER_NOT_CONFIGURED = "portable_external_adapter_not_configured" as const;
@@ -19,6 +28,12 @@ export const PORTABLE_EXTERNAL_LEGACY_RUNNER_FORBIDDEN = "portable_external_lega
 export const PORTABLE_EXTERNAL_EFFECT_AUTHORITY_WRITE_FAILED = "portable_external_effect_authority_write_failed" as const;
 export const PORTABLE_EXTERNAL_WEB_OPERATION_INTENT_WRITE_FAILED = "portable_external_web_operation_intent_write_failed" as const;
 export const PORTABLE_EXTERNAL_PROCESS_GROUP_CLEANUP_UNVERIFIED = "portable_external_process_group_cleanup_unverified" as const;
+export const PORTABLE_EXTERNAL_CHROME_PLUGIN_BACKEND_SNAPSHOT_MISSING = "chrome_plugin_backend_snapshot_missing" as const;
+export const PORTABLE_EXTERNAL_COMPANION_BACKEND_SNAPSHOT_MISSING = "aos_chrome_companion_backend_snapshot_missing" as const;
+// Retained for compatibility with older receipts.  New runs use the
+// AOS-owned Companion runner by default; this blocker is emitted only when a
+// caller tries to replace that default with an unbound custom command.
+export const PORTABLE_EXTERNAL_COMPANION_RUNNER_EXPLICIT_REQUIRED = "aos_chrome_companion_runner_explicit_opt_in_required" as const;
 
 export type PortableExternalWorkerResult = {
   status: "complete" | "partial" | "blocked";
@@ -62,6 +77,46 @@ function portableExternalEffectsEnabled(): boolean {
   );
 }
 
+function chromePluginBackendSnapshotIsValid(snapshot: Record<string, unknown> | null | undefined): boolean {
+  if (!snapshot) return false;
+  if (snapshot.requested_backend !== "chrome_plugin" || snapshot.resolved_backend !== "chrome_plugin") return false;
+  const revision = Number(snapshot.revision);
+  if (!Number.isSafeInteger(revision) || revision < 1) return false;
+  const profile = snapshot.chrome_profile;
+  if (!profile || typeof profile !== "object" || Array.isArray(profile)) return false;
+  const chromeProfile = profile as Record<string, unknown>;
+  if (String(chromeProfile.id || "") !== "profile2") return false;
+  if (String(chromeProfile.name || "") !== "Profile 2") return false;
+  if (String(chromeProfile.directory || "") !== "Profile 2") return false;
+  if (String(chromeProfile.surface || "") !== "signed_chrome_extension_profile2") return false;
+  if (snapshot.browser_surface !== undefined && snapshot.browser_surface !== "signed_chrome_extension_profile2") return false;
+  if (snapshot.fallback_allowed !== undefined && snapshot.fallback_allowed !== false) return false;
+  return true;
+}
+
+function companionBackendSnapshotIsValid(snapshot: Record<string, unknown> | null | undefined): boolean {
+  if (!snapshot || snapshot.requested_backend !== "aos_chrome_companion" || snapshot.resolved_backend !== "aos_chrome_companion") return false;
+  const revision = Number(snapshot.revision);
+  return Number.isSafeInteger(revision) && revision >= 1
+    && snapshot.browser_surface === "aos_chrome_companion_profile_instance"
+    && snapshot.fallback_allowed === false;
+}
+
+function selectedBrowserSurface(
+  webOperationBackend: Record<string, unknown> | null | undefined,
+  requestedWebOperationBackend?: WebOperationBackend | null,
+): string {
+  const value = webOperationBackend && typeof webOperationBackend === "object" ? webOperationBackend : {};
+  // A caller-selected backend is authoritative. A missing snapshot remains a
+  // legacy Browser Use CLI path only when the caller did not select Chrome.
+  const requested = requestedWebOperationBackend || value.resolved_backend || value.requested_backend;
+  const backend = (requested ? resolveWebOperationBackend(requested) : "browser_use_cli") as WebOperationBackend;
+  const profile = value.chrome_profile && typeof value.chrome_profile === "object" && !Array.isArray(value.chrome_profile)
+    ? value.chrome_profile as Record<string, unknown>
+    : {};
+  return browserSurfaceForWebOperationBackend(backend, String(profile.surface || "signed_chrome_extension_profile2"));
+}
+
 function issuePortableExternalAdmission(input: {
   workflowId: string;
   runId: string;
@@ -69,6 +124,8 @@ function issuePortableExternalAdmission(input: {
   sourceTrigger: string;
   idempotencyKey: string;
   approvalGranted: boolean;
+  approvalStatus?: "approved" | "not_required" | "missing";
+  browserSurface?: string;
 }): { path: string; sha256: string } {
   const artifactRoot = resolve(
     process.env.AUTOMATION_OS_ARTIFACT_ROOT?.trim() || resolve(process.cwd(), "data", "artifacts"),
@@ -90,9 +147,9 @@ function issuePortableExternalAdmission(input: {
     source_trigger: input.sourceTrigger,
     idempotency_key: input.idempotencyKey,
     effect_class: "external_non_idempotent",
-    browser_surface: "browser_use_cli",
+    browser_surface: input.browserSurface || "browser_use_cli",
     external_effects: portableExternalEffectsEnabled() ? "enabled" : "read_only",
-    approval_status: input.approvalGranted ? "approved" : "missing",
+    approval_status: input.approvalStatus ?? (input.approvalGranted ? "approved" : "missing"),
     issued_at: issuedAt,
     expires_at: expiresAt,
   };
@@ -167,6 +224,7 @@ function materializePortableWebOperationIntent(input: {
   idempotencyKey: string;
   intent: Record<string, unknown>;
   authoritySha256?: string | null;
+  browserSurface: string;
 }): { path: string; sha256: string } {
   const operation = String(input.intent.operation || "");
   const authoritySha256 = input.authoritySha256 || input.intent.authority_sha256 || null;
@@ -191,7 +249,7 @@ function materializePortableWebOperationIntent(input: {
   });
   const value = {
     schema: "automation_os_web_operation_intent.v1",
-    browser_surface: "browser_use_cli",
+    browser_surface: input.browserSurface,
     workflow_id: input.workflowId,
     run_id: validated.run_id,
     step_id: validated.step_id,
@@ -257,8 +315,23 @@ export async function runPortableExternalWorker(input: {
   browserGoalId?: string | null;
   browserGoalStatePath?: string | null;
   browserGoalTerminal?: boolean;
+  webOperationBackend?: Record<string, unknown> | null;
+  requestedWebOperationBackend?: WebOperationBackend | null;
 }): Promise<PortableExternalWorkerResult> {
-  if (!input.approvalGranted) {
+  // Read-only stages never produce an external effect and therefore must not
+  // inherit the effect approval gate.  This keeps reference/candidate
+  // inspection useful even when a separate submit/publish step is waiting for
+  // a decision.  The child is explicitly forced into read-only mode below so
+  // a stale process environment cannot turn this exception into a mutation.
+  const readOnlyWebIntent = Boolean(input.webOperationIntent
+    && typeof input.webOperationIntent === "object"
+    && String(input.webOperationIntent.operation || "") === "read");
+  const effectfulWebIntent = Boolean(input.webOperationIntent
+    && typeof input.webOperationIntent === "object"
+    && String(input.webOperationIntent.operation || "") !== "read");
+  const readOnlyInvocation = !effectfulWebIntent && (Boolean(input.readOnlyStage) || readOnlyWebIntent);
+  const effectiveApprovalGranted = input.approvalGranted || readOnlyInvocation;
+  if (!effectiveApprovalGranted) {
     return {
       status: "blocked",
       exactBlocker: PORTABLE_EXTERNAL_APPROVAL_REQUIRED,
@@ -270,7 +343,90 @@ export async function runPortableExternalWorker(input: {
       response: null
     };
   }
+  let requestedWebOperationBackend = input.requestedWebOperationBackend || null;
+  if (!requestedWebOperationBackend && input.webOperationBackend && typeof input.webOperationBackend === "object" && !Array.isArray(input.webOperationBackend)) {
+    try {
+      // requested_backend is the caller's lane; resolved_backend is only a
+      // snapshot value and must not silently replace that selection.
+      requestedWebOperationBackend = resolveWebOperationBackend(input.webOperationBackend.requested_backend || input.webOperationBackend.resolved_backend);
+    } catch {
+      requestedWebOperationBackend = null;
+    }
+  }
+  // Do this before resolving the runner or issuing any admission/action-plan
+  // artifact. A Chrome-selected run must never be reinterpreted as a
+  // Browser Use CLI run because its immutable per-run binding disappeared.
+  if (requestedWebOperationBackend === "chrome_plugin"
+    && !chromePluginBackendSnapshotIsValid(input.webOperationBackend && typeof input.webOperationBackend === "object" && !Array.isArray(input.webOperationBackend)
+      ? input.webOperationBackend
+      : null)) {
+    return {
+      status: "blocked",
+      exactBlocker: PORTABLE_EXTERNAL_CHROME_PLUGIN_BACKEND_SNAPSHOT_MISSING,
+      externalActionExecuted: false,
+      stdoutTail: "",
+      stderrTail: "",
+      exitStatus: null,
+      signal: null,
+      response: null
+    };
+  }
+  if (requestedWebOperationBackend === "aos_chrome_companion"
+    && !companionBackendSnapshotIsValid(input.webOperationBackend && typeof input.webOperationBackend === "object" && !Array.isArray(input.webOperationBackend)
+      ? input.webOperationBackend
+      : null)) {
+    return {
+      status: "blocked",
+      exactBlocker: PORTABLE_EXTERNAL_COMPANION_BACKEND_SNAPSHOT_MISSING,
+      externalActionExecuted: false,
+      stdoutTail: "",
+      stderrTail: "",
+      exitStatus: null,
+      signal: null,
+      response: null
+    };
+  }
+  // Admission must reject an effects-enabled run before action-plan or
+  // runner materialization when its target-bound portable authority is absent.
+  // This preserves the effect boundary even if the business input bundle is
+  // also incomplete.
+  if (portableExternalEffectsEnabled()
+    && !input.effectAuthority
+    && !Object.prototype.hasOwnProperty.call(process.env, "AUTOMATION_OS_PORTABLE_EXTERNAL_RUNNER")) {
+    return {
+      status: "blocked",
+      exactBlocker: "portable_external_effect_authority_missing",
+      externalActionExecuted: false,
+      stdoutTail: "",
+      stderrTail: "",
+      exitStatus: null,
+      signal: null,
+      response: { browser_surface: "browser_use_cli" }
+    };
+  }
   const command = resolvePortableExternalRunner();
+  // The AOS-owned runner is the canonical Companion adapter and is safe to
+  // use without an environment override.  A custom default remains blocked
+  // unless the caller explicitly binds it, preventing a hidden Browser Use
+  // or legacy executable from becoming a Companion fallback.
+  if (requestedWebOperationBackend === "aos_chrome_companion"
+    && !Object.prototype.hasOwnProperty.call(process.env, "AUTOMATION_OS_PORTABLE_EXTERNAL_RUNNER")) {
+    const expectedDefault = resolve(process.cwd(), portableExternalEffectsEnabled()
+      ? DEFAULT_PORTABLE_EXTERNAL_BUSINESS_RUNNER_RELATIVE_PATH
+      : DEFAULT_PORTABLE_EXTERNAL_RUNNER_RELATIVE_PATH);
+    if (resolve(command) !== expectedDefault) {
+      return {
+        status: "blocked",
+        exactBlocker: PORTABLE_EXTERNAL_COMPANION_RUNNER_EXPLICIT_REQUIRED,
+        externalActionExecuted: false,
+        stdoutTail: "",
+        stderrTail: "",
+        exitStatus: null,
+        signal: null,
+        response: null
+      };
+    }
+  }
   if (!command) {
     return {
       status: "blocked",
@@ -309,8 +465,15 @@ export async function runPortableExternalWorker(input: {
   }
 
   let admission: { path: string; sha256: string };
+  let browserSurface = "browser_use_cli";
   try {
-    admission = issuePortableExternalAdmission(input);
+    browserSurface = selectedBrowserSurface(input.webOperationBackend, requestedWebOperationBackend);
+    admission = issuePortableExternalAdmission({
+      ...input,
+      approvalGranted: effectiveApprovalGranted,
+      approvalStatus: readOnlyInvocation ? "not_required" : effectiveApprovalGranted ? "approved" : "missing",
+      browserSurface
+    });
   } catch {
     return {
       status: "blocked",
@@ -333,6 +496,7 @@ export async function runPortableExternalWorker(input: {
       sourceTrigger: input.sourceTrigger,
       idempotencyKey: input.idempotencyKey,
       inputBundlePath: input.inputBundlePath,
+      webOperationBackend: input.webOperationBackend,
     });
   } catch {
     return {
@@ -372,7 +536,7 @@ export async function runPortableExternalWorker(input: {
   }
 
   let webOperationIntentFile: { path: string; sha256: string } | null = null;
-  const webOperationEffect = Boolean(input.webOperationIntent && String(input.webOperationIntent.operation || "") !== "read");
+  const webOperationEffect = effectfulWebIntent;
   if (input.webOperationIntent) {
     try {
       webOperationIntentFile = materializePortableWebOperationIntent({
@@ -383,6 +547,7 @@ export async function runPortableExternalWorker(input: {
         idempotencyKey: input.idempotencyKey,
         intent: input.webOperationIntent,
         authoritySha256: effectAuthorityFile?.sha256 || null,
+        browserSurface,
       });
     } catch (error) {
       return {
@@ -423,7 +588,7 @@ export async function runPortableExternalWorker(input: {
         AUTOMATION_OS_PORTABLE_EXTERNAL_ADMISSION_SHA256: admission.sha256,
         AUTOMATION_OS_PORTABLE_BUSINESS_ACTION_PLAN_PATH: actionPlan.path,
         AUTOMATION_OS_PORTABLE_BUSINESS_ACTION_PLAN_SHA256: actionPlan.sha256,
-        AUTOMATION_OS_PORTABLE_EXTERNAL_APPROVAL: "approved",
+        AUTOMATION_OS_PORTABLE_EXTERNAL_APPROVAL: readOnlyInvocation ? "not_required" : "approved",
         ...(input.browserGoalId ? { AUTOMATION_OS_BROWSER_GOAL_ID: input.browserGoalId } : {}),
         ...(input.browserGoalStatePath ? { AUTOMATION_OS_BROWSER_GOAL_STATE_PATH: input.browserGoalStatePath } : {}),
         ...(input.browserGoalTerminal === false ? { AUTOMATION_OS_BROWSER_GOAL_TERMINAL: "0" } : { AUTOMATION_OS_BROWSER_GOAL_TERMINAL: "1" }),
@@ -434,6 +599,7 @@ export async function runPortableExternalWorker(input: {
           AUTOMATION_OS_PORTABLE_EFFECT_AUTHORITY_ID: input.effectAuthority?.authority_id || "",
         } : {}),
         ...(input.readOnlyStage ? { AUTOMATION_OS_PORTABLE_EXTERNAL_READ_ONLY_STAGE: input.readOnlyStage } : {}),
+        ...(readOnlyInvocation && !webOperationEffect ? { AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS: "read_only" } : {}),
         ...(input.inputBundlePath ? { AUTOMATION_OS_PORTABLE_EXTERNAL_INPUT_BUNDLE_PATH: input.inputBundlePath } : {}),
         ...(webOperationIntentFile ? {
           AUTOMATION_OS_PORTABLE_WEB_OPERATION_INTENT_PATH: webOperationIntentFile.path,
@@ -441,6 +607,22 @@ export async function runPortableExternalWorker(input: {
           AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS: webOperationEffect ? "enabled" : "read_only",
           ...(!webOperationEffect ? { AUTOMATION_OS_PORTABLE_EXTERNAL_READ_ONLY_STAGE: input.readOnlyStage || "web_operation_read" } : {}),
         } : {}),
+        ...(input.webOperationBackend || requestedWebOperationBackend ? {
+          AOS_WEB_OPERATION_BACKEND: String(requestedWebOperationBackend || input.webOperationBackend?.resolved_backend || input.webOperationBackend?.requested_backend || "browser_use_cli"),
+          AOS_WEB_OPERATION_BACKEND_REVISION: String(input.webOperationBackend?.revision || "1"),
+          AOS_WEB_OPERATION_BACKEND_SOURCE: String(input.webOperationBackend?.source || ""),
+          AOS_WEB_OPERATION_BACKEND_FALLBACK_ALLOWED: String(input.webOperationBackend?.fallback_allowed ?? ""),
+          AOS_CHROME_PROFILE_ID: String((input.webOperationBackend?.chrome_profile as Record<string, unknown> | undefined)?.id || "profile2"),
+          AOS_CHROME_PROFILE_NAME: String((input.webOperationBackend?.chrome_profile as Record<string, unknown> | undefined)?.name || "Profile 2"),
+          AOS_CHROME_PROFILE_DIRECTORY: String((input.webOperationBackend?.chrome_profile as Record<string, unknown> | undefined)?.directory || "Profile 2"),
+          AOS_CHROME_PROFILE_SURFACE: String((input.webOperationBackend?.chrome_profile as Record<string, unknown> | undefined)?.surface || "signed_chrome_extension_profile2"),
+        } : {}),
+        AOS_CHROME_PLUGIN_PROMPT_TRANSFER_WRITE:
+          input.workflowId === "prompt-transfer-ukiyoe"
+          && String(input.webOperationBackend?.resolved_backend || input.webOperationBackend?.requested_backend || "") === "chrome_plugin"
+          && webOperationEffect
+          ? "1"
+          : "0",
         AUTOMATION_OS_WEB_OPERATION_CONTRACT_SCHEMA: "automation_os_web_operation_contract.v1",
         AUTOMATION_OS_WEB_OPERATION_ADAPTIVE: "semantic_live_state_bounded_exploration",
       }

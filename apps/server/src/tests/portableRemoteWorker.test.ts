@@ -9,6 +9,7 @@ const tempRoot = mkdtempSync(join(tmpdir(), "automation-os-portable-remote-worke
 process.env.AUTOMATION_OS_DB = join(tempRoot, "automation-os.sqlite");
 process.env.AUTOMATION_OS_ARTIFACT_ROOT = join(tempRoot, "artifacts");
 process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE = "canary";
+process.env.AOS_WEB_OPERATION_BACKEND_CONFIG = join(tempRoot, "web-operation-backend.json");
 
 const db = await import("../db/client.js");
 const { initRegisteredWorkflows } = await import("../registeredWorkflows.js");
@@ -17,11 +18,103 @@ const { startPortableWorkflowRun } = await import("../runs/portableWorkflowEntry
 const {
   claimPortableMacWorker,
   recordPortableMacWorkerReceipt,
-  requeuePortableMacWorkerAfterApproval
+  recordPortableMacWorkerReceiptAsync,
+  requeuePortableMacWorkerAfterApproval,
+  requeuePortableMacWorkerAfterApprovalAsync,
+  reconcileStalePortablePreparingRunsAsync,
+  validSafeCompanionToOfficialHandoff,
+  validBlockedSafeCompanionToOfficialHandoff
 } = await import("../runs/portableRemoteWorker.js");
+
+// Keep the pre-existing Browser Use CLI receipt fixtures explicit. The live
+// application default is Chrome Plugin; the dedicated regression below
+// overrides a run snapshot to exercise that lane.
+db.initDb();
+db.execSql(`INSERT OR REPLACE INTO web_operation_settings
+  (id, backend, revision, chrome_profile_id, chrome_profile_name, chrome_profile_directory, chrome_surface, updated_at, updated_by)
+  VALUES ('global', 'browser_use_cli', 1, 'profile2', 'Profile 2', 'Profile 2', 'signed_chrome_extension_profile2', '2026-01-01T00:00:00.000Z', 'portable-remote-worker-test');`);
 
 function effectAuthoritySha256(value: unknown): string {
   return createHash("sha256").update(`${JSON.stringify(value, null, 2)}\n`).digest("hex");
+}
+
+test("server admits only a complete signed-shape Companion-to-official no-effect handoff", () => {
+  const input = {
+    browser_surface: "signed_chrome_extension_profile2",
+    external_action_executed: false,
+    visual_readback_verified: true,
+    safe_surface_handoff: {
+      schema: "aos.safe_extension_surface_handoff.v1",
+      status: "completed",
+      direction: "one_way",
+      source_backend: "aos_chrome_companion",
+      source_surface: "aos_chrome_companion_profile_instance",
+      destination_backend: "chrome_plugin",
+      destination_surface: "signed_chrome_extension_profile2",
+      handoff_count: 1,
+      max_handoffs: 1,
+      external_action_executed: false,
+      replay_allowed: false,
+      source_no_effect_verified: true,
+      source_cleanup_verified: true,
+      destination_visual_verified: true,
+      destination_cleanup_verified: true,
+      destination_readback_verified: true,
+    },
+  };
+  const expected = { executionMode: "read_only" as const, browserSurface: "aos_chrome_companion_profile_instance" as const };
+  assert.equal(validSafeCompanionToOfficialHandoff(input, expected), true);
+  assert.equal(validSafeCompanionToOfficialHandoff({
+    ...input,
+    safe_surface_handoff: { ...input.safe_surface_handoff, source_no_effect_verified: false },
+  }, expected), false);
+  assert.equal(validSafeCompanionToOfficialHandoff({ ...input, visual_readback_verified: false }, expected), false);
+});
+
+test("server preserves a blocked no-effect handoff receipt for terminal reconciliation", () => {
+  const input = {
+    status: "blocked",
+    browser_surface: "signed_chrome_extension_profile2",
+    external_action_executed: false,
+    visual_readback_verified: false,
+    source_surface_receipt: {
+      external_action_executed: false,
+      mutation_dispatch_attempted: false,
+      mutation_dispatch_count: 0,
+      operation_effect_state: "none",
+      reconciliation_required: false,
+      cleanup_verified: true,
+    },
+    safe_surface_handoff: {
+      schema: "aos.safe_extension_surface_handoff.v1",
+      status: "blocked",
+      direction: "one_way",
+      source_backend: "aos_chrome_companion",
+      source_surface: "aos_chrome_companion_profile_instance",
+      destination_backend: "chrome_plugin",
+      destination_surface: "signed_chrome_extension_profile2",
+      handoff_count: 1,
+      max_handoffs: 1,
+      external_action_executed: false,
+      replay_allowed: false,
+      source_no_effect_verified: true,
+      source_cleanup_verified: true,
+      destination_visual_verified: false,
+      destination_cleanup_verified: false,
+      destination_readback_verified: false,
+    },
+  };
+  const expected = { executionMode: "read_only" as const, browserSurface: "aos_chrome_companion_profile_instance" as const };
+  assert.equal(validBlockedSafeCompanionToOfficialHandoff(input, expected), true);
+  assert.equal(validBlockedSafeCompanionToOfficialHandoff({
+    ...input,
+    source_surface_receipt: { ...input.source_surface_receipt, operation_effect_state: "unknown" },
+  }, expected), false);
+});
+
+function ensureTestCompany(companyId: string): void {
+  db.execSql(`INSERT OR IGNORE INTO companies (id, slug, name, status, created_at, updated_at)
+              VALUES (${db.sqlValue(companyId)}, ${db.sqlValue(companyId)}, ${db.sqlValue(companyId)}, 'active', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');`);
 }
 
 function businessLifecycle(claim: {
@@ -57,6 +150,7 @@ test("remote Mac worker claim and receipt stay Company-scoped, idempotent, and r
   db.initDb();
   initRegisteredWorkflows();
   const companyId = "portable_remote_worker_test_company";
+  ensureTestCompany(companyId);
   const workerId = "mac-remote-worker-regression";
   const started = await startPortableWorkflowRun({
     workflowId: "job-application-manager",
@@ -130,6 +224,18 @@ test("remote Mac worker claim and receipt stay Company-scoped, idempotent, and r
   assert.equal(receipt.receipt.external_action_executed, false);
   assert.equal(receipt.receipt.exact_blocker, null);
   assert.equal(receipt.receipt.read_only_proof_verified, true);
+  assert.match(receipt.artifact_uri, new RegExp(`^/api/v1/companies/${companyId}/artifacts/artifact_`));
+  const storedProof = db.querySql<{ artifact_id: string; uri: string }>(
+    `SELECT artifact_id, uri FROM proofs WHERE run_id=${db.sqlValue(started.runId)} ORDER BY created_at DESC LIMIT 1`,
+  )[0];
+  assert.equal(storedProof.artifact_id, receipt.artifact_uri.split("/").pop());
+  assert.equal(storedProof.uri, receipt.artifact_uri);
+  const storedArtifact = db.querySql<{ status: string; checksum_sha256: string; size_bytes: number; content_text: string }>(
+    `SELECT status, checksum_sha256, size_bytes, content_text FROM run_artifacts WHERE id=${db.sqlValue(storedProof.artifact_id)} LIMIT 1`,
+  )[0];
+  assert.equal(storedArtifact.status, "available");
+  assert.equal(storedArtifact.checksum_sha256, createHash("sha256").update(storedArtifact.content_text).digest("hex"));
+  assert.equal(storedArtifact.size_bytes, Buffer.byteLength(storedArtifact.content_text));
 
   const receiptReplay = recordPortableMacWorkerReceipt({
     companyId,
@@ -169,8 +275,122 @@ test("remote Mac worker claim and receipt stay Company-scoped, idempotent, and r
   assert.equal(stepMetadata.service_readiness_runtime_binding?.status, "verified");
 });
 
+test("a restarted worker instance cannot inherit a live claim from the prior process", async () => {
+  const companyId = "portable_remote_worker_instance_fence_company";
+  ensureTestCompany(companyId);
+  const workerId = "mac-worker-instance-fence";
+  const started = await startPortableWorkflowRun({
+    workflowId: "job-application-manager",
+    sourceTrigger: "automation_os_scheduler",
+    idempotencyKey: "portable-remote-worker-instance-fence",
+    companyId,
+    readOnlyStage: "candidate_supply",
+    inputBundle: {
+      source_snapshot_id: "snapshot-worker-instance-fence",
+      supply_run_id: "supply-worker-instance-fence",
+      bucket: "japan_targeted",
+      remaining: 0,
+      margin: 0,
+    },
+  });
+
+  const firstClaim = claimPortableMacWorker({
+    companyId,
+    workerId,
+    workerInstanceId: "instance-first-process",
+    requestedRunId: started.runId,
+  });
+  assert.ok(firstClaim);
+  assert.equal(firstClaim.worker_instance_id, "instance-first-process");
+
+  const restartedClaim = claimPortableMacWorker({
+    companyId,
+    workerId,
+    workerInstanceId: "instance-restarted-process",
+    requestedRunId: started.runId,
+  });
+  assert.equal(restartedClaim, null);
+  assert.equal(
+    db.querySql<{ status: string }>(`SELECT status FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`)[0].status,
+    "running",
+  );
+});
+
+test("portable Mac claim carries the fresh Chrome Plugin Profile 2 backend into the worker lane", async () => {
+  const companyId = "portable_remote_chrome_plugin_claim_company";
+  ensureTestCompany(companyId);
+  const started = await startPortableWorkflowRun({
+    workflowId: "job-application-manager",
+    sourceTrigger: "automation_os_scheduler",
+    idempotencyKey: "portable-remote-chrome-plugin-claim-regression",
+    companyId,
+    readOnlyStage: "candidate_supply",
+    inputBundle: {
+      source_snapshot_id: "snapshot-chrome-plugin-claim-regression",
+      supply_run_id: "supply-chrome-plugin-claim-regression",
+      bucket: "japan_targeted",
+      remaining: 0,
+      margin: 0,
+    },
+  });
+  const stored = db.querySql<{ metadata_json: string }>(
+    `SELECT metadata_json FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`,
+  )[0];
+  const metadata = JSON.parse(stored.metadata_json) as Record<string, unknown>;
+  db.execSql(`UPDATE runs SET metadata_json=${db.sqlValue({
+    ...metadata,
+    web_operation_backend: {
+      requested_backend: "chrome_plugin",
+      resolved_backend: "chrome_plugin",
+      revision: 7,
+      source: "aos_global_setting",
+      fallback_allowed: false,
+      browser_surface: "signed_chrome_extension_profile2",
+      chrome_profile: {
+        id: "profile2",
+        name: "Profile 2",
+        directory: "Profile 2",
+        surface: "signed_chrome_extension_profile2",
+      },
+    },
+  })} WHERE id=${db.sqlValue(started.runId)};`);
+
+  const claim = claimPortableMacWorker({ companyId, workerId: "mac-chrome-plugin-claim-regression", requestedRunId: started.runId });
+  assert.ok(claim);
+  assert.equal(claim.browser_surface, "signed_chrome_extension_profile2");
+  assert.equal(claim.web_operation_backend?.resolved_backend, "chrome_plugin");
+  assert.equal(claim.web_operation_backend?.source, "aos_global_setting");
+  assert.equal(claim.web_operation_backend?.fallback_allowed, false);
+  assert.equal(claim.web_operation_backend?.browser_surface, "signed_chrome_extension_profile2");
+  assert.equal((claim.web_operation_backend?.chrome_profile as Record<string, unknown>)?.directory, "Profile 2");
+
+  const receipt = recordPortableMacWorkerReceipt({
+    companyId,
+    workerId: "mac-chrome-plugin-claim-regression",
+    runId: started.runId,
+    receipt: {
+      status: "blocked",
+      exact_blocker: "chrome_plugin_probe_blocked",
+      external_action_executed: false,
+      browser_surface: "signed_chrome_extension_profile2",
+      workflow_id: claim.workflow_id,
+      run_id: claim.run_id,
+      step_id: claim.step_id,
+      cleanup_verified: true,
+      readback_verified: false,
+      effects_mode: "read_only",
+      read_only_stage_bound: true,
+      same_run_receipt: false,
+      external_executor_status: "chrome_plugin_probe",
+    },
+  });
+  assert.equal(receipt.receipt.browser_surface, "signed_chrome_extension_profile2");
+  assert.equal(receipt.receipt.exact_blocker, "chrome_plugin_probe_blocked");
+});
+
 test("read-only completion remains blocked when the candidate artifact proof is incomplete", async () => {
   const companyId = "portable_remote_read_only_proof_regression_company";
+  ensureTestCompany(companyId);
   const started = await startPortableWorkflowRun({
     workflowId: "job-application-manager",
     sourceTrigger: "automation_os_scheduler",
@@ -213,8 +433,419 @@ test("read-only completion remains blocked when the candidate artifact proof is 
   assert.equal(db.querySql<{ status: string }>(`SELECT status FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`)[0].status, "blocked");
 });
 
+test("Chrome Plugin candidate-supply proof completes with same-run cleanup and backend binding", async () => {
+  const companyId = "portable_remote_chrome_plugin_proof_company";
+  ensureTestCompany(companyId);
+  const started = await startPortableWorkflowRun({
+    workflowId: "job-application-manager",
+    sourceTrigger: "automation_os_ui",
+    idempotencyKey: "portable-remote-chrome-plugin-proof-regression",
+    companyId,
+    readOnlyStage: "candidate_supply",
+    inputBundle: {
+      source_snapshot_id: "snapshot-chrome-plugin-proof-regression",
+      supply_run_id: "supply-chrome-plugin-proof-regression",
+      bucket: "japan_targeted",
+      remaining: 0,
+      margin: 1,
+    },
+  });
+  const stored = db.querySql<{ metadata_json: string }>(
+    `SELECT metadata_json FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`,
+  )[0];
+  const metadata = JSON.parse(stored.metadata_json) as Record<string, unknown>;
+  const backendSnapshot = {
+    schema: "aos_web_operation_backend_snapshot.v1",
+    requested_backend: "chrome_plugin",
+    resolved_backend: "chrome_plugin",
+    revision: 19,
+    source: "aos_global_setting",
+    fallback_allowed: false,
+    chrome_profile: {
+      id: "profile2",
+      name: "Profile 2",
+      directory: "Profile 2",
+      surface: "signed_chrome_extension_profile2",
+    },
+    browser_surface: "signed_chrome_extension_profile2",
+    exact_blocker: null,
+  };
+  db.execSql(`UPDATE runs SET metadata_json=${db.sqlValue({
+    ...metadata,
+    web_operation_backend: backendSnapshot,
+  })} WHERE id=${db.sqlValue(started.runId)};`);
+  const claim = claimPortableMacWorker({
+    companyId,
+    workerId: "mac-chrome-plugin-proof-regression",
+    requestedRunId: started.runId,
+  });
+  assert.ok(claim);
+  const receipt = recordPortableMacWorkerReceipt({
+    companyId,
+    workerId: "mac-chrome-plugin-proof-regression",
+    runId: started.runId,
+    receipt: {
+      status: "complete",
+      exact_blocker: null,
+      external_action_executed: false,
+      browser_surface: "signed_chrome_extension_profile2",
+      workflow_id: claim.workflow_id,
+      run_id: claim.run_id,
+      step_id: claim.step_id,
+      cleanup_verified: true,
+      readback_verified: true,
+      effects_mode: "read_only",
+      read_only_stage_bound: true,
+      same_run_receipt: true,
+      external_executor_status: "chrome_plugin_candidate_supply_completed",
+      adapter_result: {
+        status: "ready",
+        read_only: true,
+        browser_backend: "chrome_plugin",
+        browser_surface: "signed_chrome_extension_profile2",
+        candidate_count: 7,
+        requested_count: 1,
+        artifact_uri: "file:///redacted/chrome-plugin-candidate.json",
+        bridge_receipt_path: "file:///redacted/chrome-plugin-bridge-receipt.json",
+        bridge_instance_id: "bridge-proof-regression",
+        web_operation_backend_snapshot: backendSnapshot,
+        tab_cleanup: { ok: true, cleanup_failed: false, tabs_closed: [], tabs_kept: [] },
+        cleanup_verified: true,
+        readback_verified: true,
+      },
+    },
+  });
+  assert.equal(receipt.receipt.status, "complete");
+  assert.equal(receipt.receipt.exact_blocker, null);
+  assert.equal(receipt.receipt.read_only_proof_verified, true);
+  assert.equal(db.querySql<{ status: string }>(`SELECT status FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`)[0].status, "complete");
+});
+
+test("Chrome Plugin reference-readback proof completes without business proof", async () => {
+  const companyId = "portable_remote_chrome_plugin_reference_company";
+  ensureTestCompany(companyId);
+  const started = await startPortableWorkflowRun({
+    workflowId: "job-application-manager",
+    sourceTrigger: "automation_os_ui",
+    idempotencyKey: "portable-remote-chrome-plugin-reference-regression",
+    companyId,
+    readOnlyStage: "reference_readback",
+  });
+  const stored = db.querySql<{ metadata_json: string }>(
+    `SELECT metadata_json FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`,
+  )[0];
+  const metadata = JSON.parse(stored.metadata_json) as Record<string, unknown>;
+  const backendSnapshot = {
+    schema: "aos_web_operation_backend_snapshot.v1",
+    requested_backend: "chrome_plugin",
+    resolved_backend: "chrome_plugin",
+    revision: 26,
+    source: "aos_global_setting",
+    fallback_allowed: false,
+    chrome_profile: {
+      id: "profile2",
+      name: "Profile 2",
+      directory: "Profile 2",
+      surface: "signed_chrome_extension_profile2",
+    },
+    browser_surface: "signed_chrome_extension_profile2",
+    exact_blocker: null,
+  };
+  db.execSql(`UPDATE runs SET metadata_json=${db.sqlValue({
+    ...metadata,
+    web_operation_backend: backendSnapshot,
+  })} WHERE id=${db.sqlValue(started.runId)};`);
+  const claim = claimPortableMacWorker({
+    companyId,
+    workerId: "mac-chrome-plugin-reference-regression",
+    requestedRunId: started.runId,
+  });
+  assert.ok(claim);
+  const receipt = recordPortableMacWorkerReceipt({
+    companyId,
+    workerId: "mac-chrome-plugin-reference-regression",
+    runId: started.runId,
+    receipt: {
+      status: "complete",
+      // Reproduce a receipt emitted by the previous verifier generation: the
+      // Chrome Plugin terminal evidence is complete, but the generic pending
+      // blocker was attached at the outer receipt boundary.
+      exact_blocker: "portable_remote_read_only_business_completion_proof_pending",
+      external_action_executed: false,
+      browser_surface: "signed_chrome_extension_profile2",
+      workflow_id: claim.workflow_id,
+      run_id: claim.run_id,
+      step_id: claim.step_id,
+      cleanup_verified: true,
+      readback_verified: true,
+      effects_mode: "read_only",
+      read_only_stage_bound: true,
+      same_run_receipt: true,
+      external_executor_status: "chrome_plugin_read_only_readback_completed",
+      adapter_result: {
+        status: "complete",
+        operation: "read",
+        browser_backend: "chrome_plugin",
+        browser_surface: "signed_chrome_extension_profile2",
+        requested_origin: "https://www.linkedin.com",
+        observed_origin: "https://www.linkedin.com",
+        hydration_ready: true,
+        bridge_receipt_path: "file:///redacted/chrome-plugin-bridge-receipt.json",
+        bridge_instance_id: "bridge-reference-regression",
+        web_operation_backend_snapshot: backendSnapshot,
+        tab_cleanup: { ok: true, cleanup_failed: false, tabs_closed: ["owned-tab"] },
+        cleanup_verified: true,
+        readback_verified: true,
+      },
+    },
+  });
+  assert.equal(receipt.receipt.status, "complete");
+  assert.equal(receipt.receipt.exact_blocker, null);
+  assert.equal(receipt.receipt.read_only_proof_verified, true);
+  assert.equal(receipt.receipt.business_proof_verified, false);
+  assert.equal(db.querySql<{ status: string }>(`SELECT status FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`)[0].status, "complete");
+});
+
+test("Chrome Plugin reference proof accepts the legacy outer bridge receipt path", async () => {
+  const companyId = "portable_remote_chrome_plugin_outer_receipt_path_company";
+  ensureTestCompany(companyId);
+  const started = await startPortableWorkflowRun({
+    workflowId: "job-application-manager",
+    sourceTrigger: "automation_os_ui",
+    idempotencyKey: "portable-remote-chrome-plugin-outer-receipt-path-regression",
+    companyId,
+    readOnlyStage: "reference_readback",
+  });
+  const stored = db.querySql<{ metadata_json: string }>(`SELECT metadata_json FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`)[0];
+  const metadata = JSON.parse(stored.metadata_json) as Record<string, unknown>;
+  const backendSnapshot = {
+    schema: "aos_web_operation_backend_snapshot.v1",
+    requested_backend: "chrome_plugin",
+    resolved_backend: "chrome_plugin",
+    revision: 30,
+    source: "aos_global_setting",
+    fallback_allowed: false,
+    chrome_profile: { id: "profile2", name: "Profile 2", directory: "Profile 2", surface: "signed_chrome_extension_profile2" },
+    browser_surface: "signed_chrome_extension_profile2",
+    exact_blocker: null,
+  };
+  db.execSql(`UPDATE runs SET metadata_json=${db.sqlValue({ ...metadata, web_operation_backend: backendSnapshot })} WHERE id=${db.sqlValue(started.runId)};`);
+  const claim = claimPortableMacWorker({ companyId, workerId: "mac-chrome-plugin-outer-receipt-path-regression", requestedRunId: started.runId });
+  assert.ok(claim);
+  const receipt = recordPortableMacWorkerReceipt({
+    companyId,
+    workerId: "mac-chrome-plugin-outer-receipt-path-regression",
+    runId: started.runId,
+    receipt: {
+      status: "complete",
+      exact_blocker: null,
+      external_action_executed: false,
+      browser_surface: "signed_chrome_extension_profile2",
+      workflow_id: claim.workflow_id,
+      run_id: claim.run_id,
+      step_id: claim.step_id,
+      cleanup_verified: true,
+      readback_verified: true,
+      effects_mode: "read_only",
+      read_only_stage_bound: true,
+      same_run_receipt: true,
+      bridge_receipt_path: "file:///redacted/outer-chrome-plugin-receipt.json",
+      external_executor_status: "chrome_plugin_read_only_readback_completed",
+      adapter_result: {
+        status: "complete",
+        operation: "read",
+        browser_backend: "chrome_plugin",
+        browser_surface: "signed_chrome_extension_profile2",
+        requested_origin: "https://x.com",
+        observed_origin: "https://x.com",
+        hydration_ready: true,
+        bridge_instance_id: "bridge-outer-receipt-path",
+        web_operation_backend_snapshot: backendSnapshot,
+        tab_cleanup: { ok: true, tabs_closed: ["owned-tab"], tabs_kept: [] },
+        cleanup_verified: true,
+        readback_verified: true,
+      },
+    },
+  });
+  assert.equal(receipt.receipt.status, "complete");
+  assert.equal(receipt.receipt.exact_blocker, null);
+  assert.equal(receipt.receipt.read_only_proof_verified, true);
+});
+
+test("PostgreSQL-safe portable receipt path persists a fresh read-only Chrome Plugin receipt asynchronously", async () => {
+  const companyId = "portable_remote_chrome_plugin_async_receipt_company";
+  ensureTestCompany(companyId);
+  const started = await startPortableWorkflowRun({
+    workflowId: "job-application-manager",
+    sourceTrigger: "automation_os_ui",
+    idempotencyKey: "portable-remote-chrome-plugin-async-receipt-regression",
+    companyId,
+    readOnlyStage: "reference_readback",
+  });
+  const stored = db.querySql<{ metadata_json: string }>(`SELECT metadata_json FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`)[0];
+  const metadata = JSON.parse(stored.metadata_json) as Record<string, unknown>;
+  const backendSnapshot = {
+    schema: "aos_web_operation_backend_snapshot.v1",
+    requested_backend: "chrome_plugin",
+    resolved_backend: "chrome_plugin",
+    revision: 26,
+    source: "aos_global_setting",
+    fallback_allowed: false,
+    chrome_profile: { id: "profile2", name: "Profile 2", directory: "Profile 2", surface: "signed_chrome_extension_profile2" },
+    browser_surface: "signed_chrome_extension_profile2",
+    exact_blocker: null,
+  };
+  db.execSql(`UPDATE runs SET metadata_json=${db.sqlValue({ ...metadata, web_operation_backend: backendSnapshot })} WHERE id=${db.sqlValue(started.runId)};`);
+  const claim = claimPortableMacWorker({ companyId, workerId: "mac-chrome-plugin-async-receipt-regression", requestedRunId: started.runId });
+  assert.ok(claim);
+  const result = await recordPortableMacWorkerReceiptAsync({
+    companyId,
+    workerId: "mac-chrome-plugin-async-receipt-regression",
+    runId: started.runId,
+    receipt: {
+      status: "complete",
+      exact_blocker: null,
+      external_action_executed: false,
+      browser_surface: "signed_chrome_extension_profile2",
+      workflow_id: claim.workflow_id,
+      run_id: claim.run_id,
+      step_id: claim.step_id,
+      cleanup_verified: true,
+      readback_verified: true,
+      effects_mode: "read_only",
+      read_only_stage_bound: true,
+      same_run_receipt: true,
+      external_executor_status: "chrome_plugin_async_readback_completed",
+      adapter_result: {
+        status: "complete",
+        operation: "read",
+        browser_backend: "chrome_plugin",
+        browser_surface: "signed_chrome_extension_profile2",
+        requested_origin: "https://www.linkedin.com",
+        observed_origin: "https://www.linkedin.com",
+        hydration_ready: true,
+        bridge_receipt_path: "file:///redacted/chrome-plugin-bridge-receipt.json",
+        bridge_instance_id: "bridge-async-receipt-regression",
+        web_operation_backend_snapshot: backendSnapshot,
+        tab_cleanup: { ok: true, cleanup_failed: false, tabs_closed: ["owned-tab"] },
+        cleanup_verified: true,
+        readback_verified: true,
+      },
+    },
+  });
+  assert.equal(result.replayed, false);
+  assert.equal(result.receipt.read_only_proof_verified, true);
+  assert.match(result.artifact_uri, new RegExp(`^/api/v1/companies/${companyId}/artifacts/artifact_`));
+  const asyncProof = db.querySql<{ artifact_id: string; uri: string }>(
+    `SELECT artifact_id, uri FROM proofs WHERE run_id=${db.sqlValue(started.runId)} ORDER BY created_at DESC LIMIT 1`,
+  )[0];
+  assert.equal(asyncProof.artifact_id, result.artifact_uri.split("/").pop());
+  assert.equal(asyncProof.uri, result.artifact_uri);
+  assert.equal(db.querySql<{ count: number }>(
+    `SELECT count(*) AS count FROM run_artifacts WHERE id=${db.sqlValue(asyncProof.artifact_id)} AND run_id=${db.sqlValue(started.runId)} AND company_id=${db.sqlValue(companyId)} AND status='available'`,
+  )[0].count, 1);
+  assert.equal(db.querySql<{ status: string }>(`SELECT status FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`)[0].status, "complete");
+});
+
+test("verified read-only receipt reconciliation preserves terminal run completion", async () => {
+  const companyId = "portable_remote_read_only_reconcile_complete_company";
+  ensureTestCompany(companyId);
+  const started = await startPortableWorkflowRun({
+    workflowId: "job-application-manager",
+    sourceTrigger: "automation_os_ui",
+    idempotencyKey: "portable-remote-read-only-reconcile-complete",
+    companyId,
+    readOnlyStage: "candidate_supply",
+    inputBundle: {
+      source_snapshot_id: "snapshot-read-only-reconcile-complete",
+      supply_run_id: "supply-read-only-reconcile-complete",
+      bucket: "japan_targeted",
+      remaining: 0,
+      margin: 1,
+    },
+  });
+  const stored = db.querySql<{ metadata_json: string }>(
+    `SELECT metadata_json FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`,
+  )[0];
+  const metadata = JSON.parse(stored.metadata_json) as Record<string, unknown>;
+  db.execSql(`UPDATE runs SET metadata_json=${db.sqlValue({
+    ...metadata,
+    web_operation_backend: {
+      requested_backend: "chrome_plugin",
+      resolved_backend: "chrome_plugin",
+      revision: 19,
+      source: "aos_global_setting",
+      fallback_allowed: false,
+      browser_surface: "signed_chrome_extension_profile2",
+      chrome_profile: {
+        id: "profile2",
+        name: "Profile 2",
+        directory: "Profile 2",
+        surface: "signed_chrome_extension_profile2",
+      },
+    },
+  })} WHERE id=${db.sqlValue(started.runId)};`);
+  const claim = claimPortableMacWorker({ companyId, workerId: "mac-read-only-reconcile-complete", requestedRunId: started.runId });
+  assert.ok(claim);
+  const backendSnapshot = {
+    schema: "aos_web_operation_backend_snapshot.v1",
+    requested_backend: "chrome_plugin",
+    resolved_backend: "chrome_plugin",
+    revision: 19,
+    source: "aos_global_setting",
+    fallback_allowed: false,
+    chrome_profile: { id: "profile2", name: "Profile 2", directory: "Profile 2", surface: "signed_chrome_extension_profile2" },
+    browser_surface: "signed_chrome_extension_profile2",
+    exact_blocker: null,
+  };
+  const receipt = recordPortableMacWorkerReceipt({
+    companyId,
+    workerId: "mac-read-only-reconcile-complete",
+    runId: started.runId,
+    receipt: {
+      status: "complete",
+      exact_blocker: null,
+      external_action_executed: false,
+      browser_surface: "signed_chrome_extension_profile2",
+      workflow_id: claim.workflow_id,
+      run_id: claim.run_id,
+      step_id: claim.step_id,
+      cleanup_verified: true,
+      readback_verified: true,
+      effects_mode: "read_only",
+      read_only_stage_bound: true,
+      same_run_receipt: true,
+      external_executor_status: "chrome_plugin_candidate_supply_completed",
+      adapter_result: {
+        status: "ready",
+        read_only: true,
+        browser_backend: "chrome_plugin",
+        browser_surface: "signed_chrome_extension_profile2",
+        candidate_count: 1,
+        requested_count: 1,
+        artifact_uri: "file:///redacted/chrome-plugin-candidate.json",
+        bridge_receipt_path: "file:///redacted/chrome-plugin-bridge-receipt.json",
+        bridge_instance_id: "bridge-reconcile-complete",
+        web_operation_backend_snapshot: backendSnapshot,
+        tab_cleanup: { ok: true, cleanup_failed: false, tabs_closed: [], tabs_kept: [] },
+        cleanup_verified: true,
+        readback_verified: true,
+      },
+    },
+  });
+  assert.equal(receipt.receipt.read_only_proof_verified, true);
+
+  const step = db.querySql<{ id: string }>(`SELECT id FROM run_steps WHERE run_id=${db.sqlValue(started.runId)} LIMIT 1`)[0];
+  db.execSql(`UPDATE runs SET status='queued' WHERE id=${db.sqlValue(started.runId)}; UPDATE run_steps SET status='queued' WHERE id=${db.sqlValue(step.id)};`);
+  const reconciled = claimPortableMacWorker({ companyId, workerId: "mac-read-only-reconcile-next", requestedRunId: started.runId });
+  assert.equal(reconciled, null);
+  assert.equal(db.querySql<{ status: string }>(`SELECT status FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`)[0].status, "complete");
+  assert.equal(db.querySql<{ status: string }>(`SELECT status FROM run_steps WHERE id=${db.sqlValue(step.id)} LIMIT 1`)[0].status, "completed");
+});
+
 test("remote Mac worker accepts the explicit local-worker receipt surface for local workflows", async () => {
   const companyId = "portable_remote_local_surface_regression";
+  ensureTestCompany(companyId);
   const workerId = "mac-local-surface-regression";
   const started = await startPortableLocalWorkflowRun({
     workflowId: "daily-backup-safety-check",
@@ -266,6 +897,7 @@ test("remote Mac worker claims a business effect only after target-bound AOS app
   process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE = "external";
   try {
     const companyId = "portable_remote_business_company";
+    ensureTestCompany(companyId);
     const started = await startPortableWorkflowRun({
       workflowId: "job-application-manager",
       sourceTrigger: "automation_os_ui",
@@ -295,7 +927,11 @@ test("remote Mac worker claims a business effect only after target-bound AOS app
     const approval = db.querySql<{ id: string }>(
       `SELECT id FROM approvals WHERE run_id=${db.sqlValue(started.runId)} ORDER BY created_at ASC LIMIT 1`
     )[0];
+    const step = db.querySql<{ id: string }>(
+      `SELECT id FROM run_steps WHERE run_id=${db.sqlValue(started.runId)} ORDER BY id ASC LIMIT 1`
+    )[0];
     assert.ok(approval);
+    assert.ok(step);
     db.execSql(`UPDATE approvals SET status='approved', decided_at=${db.sqlValue(new Date().toISOString())} WHERE id=${db.sqlValue(approval.id)};`);
 
     const claim = claimPortableMacWorker({ companyId, workerId, requestedRunId: started.runId });
@@ -358,8 +994,106 @@ test("remote Mac worker claims a business effect only after target-bound AOS app
   }
 });
 
+test("expired business authority terminalizes an explicit blocked no-effect receipt without replay", async () => {
+  const previousMode = process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE;
+  process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE = "external";
+  try {
+    const companyId = "portable_remote_expired_authority_no_effect_company";
+    ensureTestCompany(companyId);
+    const started = await startPortableWorkflowRun({
+      workflowId: "job-application-manager",
+      sourceTrigger: "automation_os_ui",
+      idempotencyKey: "portable-remote-expired-authority-no-effect",
+      companyId,
+      effectStage: "one_candidate_submit",
+      inputBundle: {
+        account_ref: "linkedin_authenticated_job_manager",
+        job_url: "https://www.linkedin.com/jobs/view/4405084151/",
+        application_url: "https://www.linkedin.com/jobs/view/4405084151/",
+        candidate_key: "opp-expired-authority-no-effect",
+        bucket: "japan_targeted",
+        sequence: 1,
+        attempt: 1,
+        source_snapshot_id: "snapshot-expired-authority-no-effect",
+        supply_run_id: "supply-expired-authority-no-effect",
+        company: "Example Company",
+        role: "Marketing Manager",
+        payload_hash: "b".repeat(64),
+      },
+    });
+    const { runWorkerOnce } = await import("../runs/workerEngine.js");
+    await runWorkerOnce(started.runId);
+    const approval = db.querySql<{ id: string }>(
+      `SELECT id FROM approvals WHERE run_id=${db.sqlValue(started.runId)} ORDER BY created_at ASC LIMIT 1`,
+    )[0];
+    assert.ok(approval);
+    db.execSql(`UPDATE approvals SET status='approved', decided_at=${db.sqlValue(new Date().toISOString())} WHERE id=${db.sqlValue(approval.id)};`);
+
+    const claim = claimPortableMacWorker({
+      companyId,
+      workerId: "mac-expired-authority-no-effect",
+      requestedRunId: started.runId,
+    });
+    assert.ok(claim);
+    assert.ok(claim.effect_authority);
+    const expiredAuthority = {
+      ...claim.effect_authority,
+      issued_at: "2019-01-01T00:00:00.000Z",
+      expires_at: "2020-01-01T00:00:00.000Z",
+      timeout_ms: 1,
+    };
+    const stored = db.querySql<{ metadata_json: string }>(
+      `SELECT metadata_json FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`,
+    )[0];
+    const metadata = JSON.parse(stored.metadata_json) as Record<string, unknown>;
+    const storedClaim = metadata.remote_worker_claim as Record<string, unknown>;
+    db.execSql(`UPDATE runs SET metadata_json=${db.sqlValue({
+      ...metadata,
+      remote_worker_claim: { ...storedClaim, portable_effect_authority: expiredAuthority },
+    })} WHERE id=${db.sqlValue(started.runId)};`);
+
+    const result = await recordPortableMacWorkerReceiptAsync({
+      companyId,
+      workerId: "mac-expired-authority-no-effect",
+      runId: started.runId,
+      receipt: {
+        status: "blocked",
+        exact_blocker: "trusted_chrome_runtime_unavailable",
+        external_action_executed: false,
+        browser_surface: claim.browser_surface,
+        workflow_id: claim.workflow_id,
+        run_id: claim.run_id,
+        step_id: claim.step_id,
+        cleanup_verified: true,
+        readback_verified: false,
+        effects_mode: "business_effect",
+        business_effect_stage: claim.business_effect_stage,
+        approval_receipt: claim.approval_receipt,
+        target_digest: claim.target_digest,
+        effect_authority_id: expiredAuthority.authority_id,
+        effect_authority_sha256: effectAuthoritySha256(expiredAuthority),
+        same_run_receipt: false,
+        external_executor_status: "trusted_runner_bridge_unavailable",
+      },
+    });
+    assert.equal(result.replayed, false);
+    assert.equal(result.receipt.status, "blocked");
+    assert.equal(result.receipt.exact_blocker, "portable_effect_authority_expired");
+    assert.equal(result.receipt.external_action_executed, false);
+    const state = db.querySql<{ status: string; metadata_json: string }>(
+      `SELECT status, metadata_json FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`,
+    )[0];
+    assert.equal(state.status, "blocked");
+    assert.equal((JSON.parse(state.metadata_json) as Record<string, unknown>).external_action_executed, false);
+  } finally {
+    if (previousMode === undefined) delete process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE;
+    else process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE = previousMode;
+  }
+});
+
 test("expired portable worker claim is blocked without replay when no receipt exists", async () => {
   const companyId = "portable_remote_expired_claim_company";
+  ensureTestCompany(companyId);
   const started = await startPortableWorkflowRun({
     workflowId: "job-application-manager",
     sourceTrigger: "automation_os_scheduler",
@@ -413,8 +1147,60 @@ test("expired portable worker claim is blocked without replay when no receipt ex
   });
 });
 
+test("expired registered root is terminally blocked instead of remaining queued forever", async () => {
+  const companyId = "portable_remote_expired_root_company";
+  ensureTestCompany(companyId);
+  const started = await startPortableWorkflowRun({
+    workflowId: "daily-ai-research-publish-run",
+    sourceTrigger: "automation_os_ui",
+    idempotencyKey: "portable-remote-expired-root-regression",
+    companyId,
+    readOnlyStage: "reference_readback",
+  });
+  const stored = db.querySql<{ metadata_json: string }>(
+    `SELECT metadata_json FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`,
+  )[0];
+  const metadata = JSON.parse(stored.metadata_json) as Record<string, unknown>;
+  const { createRegisteredRootAdmissionV1 } = await import("../runs/registeredRootAdmission.js");
+  const expiredRoot = createRegisteredRootAdmissionV1({
+    registeredAutomationId: "daily-ai-research-publish-run",
+    workflowId: "daily-ai-research-publish-run",
+    runId: started.runId,
+    sourceTrigger: "automation_os_ui",
+    definitionFingerprint: String((metadata.registered_root_admission as Record<string, unknown>).definition_fingerprint),
+    now: "2020-01-01T00:00:00.000Z",
+    ttlMs: 60_000,
+  });
+  db.execSql(`UPDATE runs SET metadata_json=${db.sqlValue({
+    ...metadata,
+    registered_root_admission: expiredRoot,
+  })} WHERE id=${db.sqlValue(started.runId)};`);
+
+  assert.equal(claimPortableMacWorker({
+    companyId,
+    workerId: "mac-expired-root-regression",
+    requestedRunId: started.runId,
+  }), null);
+  const state = db.querySql<{ run_status: string; step_status: string; blocker: string; external_action_executed: number; event_count: number }>(
+    `SELECT runs.status AS run_status, run_steps.status AS step_status,
+       json_extract(runs.metadata_json, '$.exact_blocker') AS blocker,
+       json_extract(runs.metadata_json, '$.external_action_executed') AS external_action_executed,
+       (SELECT COUNT(*) FROM worker_events WHERE run_id=${db.sqlValue(started.runId)} AND event_type='portable_remote_registered_root_reconciled') AS event_count
+     FROM runs JOIN run_steps ON run_steps.run_id=runs.id
+     WHERE runs.id=${db.sqlValue(started.runId)} LIMIT 1`,
+  )[0];
+  assert.deepEqual(state, {
+    run_status: "blocked",
+    step_status: "blocked",
+    blocker: "registered_root_admission_invalid:expired",
+    external_action_executed: 0,
+    event_count: 1,
+  });
+});
+
 test("candidate-supply claim waits for the persisted input bundle boundary", async () => {
-  const companyId = "portable_remote_bundle_race_company";
+    const companyId = "portable_remote_bundle_race_company";
+    ensureTestCompany(companyId);
   const started = await startPortableWorkflowRun({
     workflowId: "job-application-manager",
     sourceTrigger: "automation_os_scheduler",
@@ -442,6 +1228,7 @@ test("portable business claim fails closed when the AOS authority is absent, wit
   process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE = "external";
   try {
     const companyId = "portable_remote_authority_missing_company";
+    ensureTestCompany(companyId);
     const started = await startPortableWorkflowRun({
       workflowId: "job-application-manager",
       sourceTrigger: "automation_os_scheduler",
@@ -495,6 +1282,7 @@ test("portable business claim fails closed when an approved candidate URL drifts
   process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE = "external";
   try {
     const companyId = "portable_remote_target_drift_company";
+    ensureTestCompany(companyId);
     const started = await startPortableWorkflowRun({
       workflowId: "job-application-manager",
       sourceTrigger: "automation_os_ui",
@@ -577,6 +1365,7 @@ test("Daily AI and NisenPrints reject generic receipts without workflow business
         effectStage: item.stage,
         inputBundle: item.bundle,
       });
+      ensureTestCompany(item.companyId);
       await runWorkerOnce(started.runId);
       const approval = db.querySql<{ id: string }>(
         `SELECT id FROM approvals WHERE run_id=${db.sqlValue(started.runId)} ORDER BY created_at ASC LIMIT 1`,
@@ -627,6 +1416,7 @@ test("Daily AI business effect requires every plan proof and same-run source syn
   process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE = "external";
   try {
     const companyId = "portable_daily_business_proof_complete_company";
+    ensureTestCompany(companyId);
     const started = await startPortableWorkflowRun({
       workflowId: "daily-ai-research-publish-run",
       sourceTrigger: "automation_os_scheduler",
@@ -701,7 +1491,8 @@ test("approved portable business runs recover from blocked state into the Mac wo
   const previousMode = process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE;
   process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE = "external";
   try {
-    const companyId = "portable_remote_approval_recovery_company";
+  const companyId = "portable_remote_approval_recovery_company";
+  ensureTestCompany(companyId);
     const started = await startPortableWorkflowRun({
       workflowId: "job-application-manager",
       sourceTrigger: "automation_os_scheduler",
@@ -771,8 +1562,153 @@ test("approved portable business runs recover from blocked state into the Mac wo
   }
 });
 
+test("async approval recovery persists the target-bound receipt before Mac worker pickup", async () => {
+  const previousMode = process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE;
+  process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE = "external";
+  try {
+    const companyId = "portable_remote_async_approval_recovery_company";
+    ensureTestCompany(companyId);
+    const started = await startPortableWorkflowRun({
+      workflowId: "job-application-manager",
+      sourceTrigger: "automation_os_scheduler",
+      idempotencyKey: "portable-remote-async-approval-recovery-regression",
+      companyId,
+      effectStage: "one_candidate_submit",
+      inputBundle: {
+        account_ref: "linkedin_authenticated_job_manager",
+        job_url: "https://www.linkedin.com/jobs/view/4405084152/",
+        application_url: "https://www.linkedin.com/jobs/view/4405084152/",
+        candidate_key: "opp-remote-async-approval-recovery",
+        bucket: "japan_targeted",
+        sequence: 1,
+        attempt: 1,
+        source_snapshot_id: "snapshot-remote-async-approval-recovery",
+        supply_run_id: "supply-remote-async-approval-recovery",
+        company: "Example Company",
+        role: "Marketing Manager",
+        payload_hash: "e".repeat(64),
+      },
+    });
+    const approval = db.querySql<{ id: string }>(
+      `SELECT id FROM approvals WHERE run_id=${db.sqlValue(started.runId)} ORDER BY created_at ASC LIMIT 1`
+    )[0];
+    const step = db.querySql<{ id: string }>(
+      `SELECT id FROM run_steps WHERE run_id=${db.sqlValue(started.runId)} ORDER BY id ASC LIMIT 1`
+    )[0];
+    assert.ok(approval);
+    assert.ok(step);
+    // The user has already approved the exact run, but the worker was offline
+    // until the approval lease expired. Recovery may renew only this
+    // same-run, lock-bound approval; it must not create a new target/run.
+    db.execSql(`UPDATE approvals SET status='approved', decided_at=${db.sqlValue(new Date().toISOString())}, step_id=NULL, action_kind=NULL, target_account_ref_id=NULL, payload_hash=NULL, policy_version=NULL, expires_at='2020-01-01T00:00:00.000Z' WHERE id=${db.sqlValue(approval.id)};`);
+
+    const recovered = await requeuePortableMacWorkerAfterApprovalAsync(started.runId);
+    assert.deepEqual(recovered, {
+      requeued: true,
+      reason: "approval_decided_requeued",
+      approval_id: approval.id
+    });
+
+    const state = db.querySql<{ run_status: string; step_status: string; metadata_json: string }>(
+      `SELECT runs.status AS run_status, run_steps.status AS step_status, runs.metadata_json
+       FROM runs JOIN run_steps ON run_steps.run_id=runs.id
+       WHERE runs.id=${db.sqlValue(started.runId)} ORDER BY run_steps.id ASC LIMIT 1`
+    )[0];
+    assert.equal(state.run_status, "queued");
+    assert.equal(state.step_status, "queued");
+    const metadata = JSON.parse(state.metadata_json) as Record<string, unknown>;
+    assert.equal(metadata.approval_status, "approved");
+    assert.equal((metadata.portable_target_bound_approval_receipt as Record<string, unknown>).approval_status, "approved");
+    assert.equal((metadata.portable_target_bound_approval_receipt as Record<string, unknown>).external_action_authorized, false);
+    const approvalBinding = db.querySql<{ step_id: string; action_kind: string; policy_version: string; expires_at: string }>(
+      `SELECT step_id, action_kind, policy_version, expires_at FROM approvals WHERE id=${db.sqlValue(approval.id)} LIMIT 1`
+    )[0];
+    assert.equal(approvalBinding.step_id, step.id);
+    assert.equal(approvalBinding.action_kind, "one_candidate_submit");
+    assert.equal(approvalBinding.policy_version, "automation_os_portable_external_approval_binding.v1");
+    assert.ok(Date.parse(approvalBinding.expires_at) > Date.now());
+
+    const claim = claimPortableMacWorker({ companyId, workerId: "mac-async-approval-recovery", requestedRunId: started.runId });
+    assert.ok(claim);
+    assert.equal(claim.approval_id, approval.id);
+    assert.equal(claim.external_action_executed, false);
+  } finally {
+    if (previousMode === undefined) delete process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE;
+    else process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE = previousMode;
+  }
+});
+
+test("stale portable preparation is terminalized without creating an approval or replaying an effect", async () => {
+  const previousMode = process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE;
+  process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE = "external";
+  try {
+    const companyId = "portable_remote_stale_preparation_company";
+    ensureTestCompany(companyId);
+    const started = await startPortableLocalWorkflowRun({
+      workflowId: "obsidian-project-memory-audit",
+      sourceTrigger: "automation_os_scheduler",
+      idempotencyKey: "portable-remote-stale-preparation-regression",
+      companyId,
+      readOnlyStage: "reference_readback",
+    });
+    const run = db.querySql<{ metadata_json: string }>(
+      `SELECT metadata_json FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`
+    )[0];
+    const step = db.querySql<{ id: string; lane_id: string | null }>(
+      `SELECT id, lane_id FROM run_steps WHERE run_id=${db.sqlValue(started.runId)} ORDER BY id ASC LIMIT 1`
+    )[0];
+    assert.ok(run);
+    assert.ok(step);
+
+    const metadata = JSON.parse(run.metadata_json) as Record<string, unknown>;
+    db.execSql(`
+      DELETE FROM approvals WHERE run_id=${db.sqlValue(started.runId)};
+      UPDATE runs SET status='preparing', created_at='2020-01-01T00:00:00.000Z', metadata_json=${db.sqlValue({
+        ...metadata,
+        external_action_executed: false,
+        effect_stage: 'business_execute',
+        portable_workflow_invocation: {
+          ...(metadata.portable_workflow_invocation as Record<string, unknown>),
+          effect_stage: 'business_execute',
+        },
+        portable_worker: {
+          ...(metadata.portable_worker as Record<string, unknown>),
+          mode: 'business_effect',
+          effect_stage: 'business_execute',
+        },
+      })} WHERE id=${db.sqlValue(started.runId)};
+      UPDATE run_steps SET status='preparing', completed_at=NULL WHERE id=${db.sqlValue(step.id)};
+      UPDATE lanes SET status='blocked', health='preparing' WHERE id=${db.sqlValue(step.lane_id ?? "")};
+    `);
+
+    const result = await reconcileStalePortablePreparingRunsAsync({ companyId });
+    assert.deepEqual(result, { reconciled: 1, run_ids: [started.runId] });
+    const state = db.querySql<{ run_status: string; step_status: string; lane_status: string; metadata_json: string }>(
+      `SELECT runs.status AS run_status, run_steps.status AS step_status, lanes.status AS lane_status, runs.metadata_json
+       FROM runs JOIN run_steps ON run_steps.run_id=runs.id JOIN lanes ON lanes.id=run_steps.lane_id
+       WHERE runs.id=${db.sqlValue(started.runId)} AND run_steps.id=${db.sqlValue(step.id)} LIMIT 1`
+    )[0];
+    assert.deepEqual({ run_status: state.run_status, step_status: state.step_status, lane_status: state.lane_status }, {
+      run_status: "blocked",
+      step_status: "blocked",
+      lane_status: "blocked",
+    });
+    const finalMetadata = JSON.parse(state.metadata_json) as Record<string, unknown>;
+    assert.equal(finalMetadata.exact_blocker, "portable_local_business_preparation_incomplete");
+    assert.equal(finalMetadata.external_action_executed, false);
+    assert.equal(finalMetadata.portable_preparation_no_effect_verified, true);
+    assert.equal(db.querySql<{ count: number }>(
+      `SELECT count(*) AS count FROM approvals WHERE run_id=${db.sqlValue(started.runId)}`
+    )[0].count, 0);
+  } finally {
+    if (previousMode === undefined) delete process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE;
+    else process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE = previousMode;
+  }
+});
+
 test("existing no-effect receipt is reconciled and cannot block a newer Mac worker candidate", async () => {
   const companyId = "portable_remote_receipt_reconciliation_company";
+  ensureTestCompany(companyId);
   const workerId = "mac-receipt-reconciliation-regression";
   const older = await startPortableWorkflowRun({
     workflowId: "job-application-manager",

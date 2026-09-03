@@ -751,7 +751,8 @@ test("tenancy audit counts lineage failures without backfilling ownership", () =
     mvpAutomationSchedules: 1,
     mvpIdempotencyKeys: 1,
     companyMemoryEntries: 1,
-    companyConnectionAccountRefs: 1
+    companyConnectionAccountRefs: 1,
+    codexAppServerRegistryReadbacks: 0
   });
   assert.deepEqual(audit.counts.missingCompanyFk, {
     runs: 1,
@@ -768,7 +769,8 @@ test("tenancy audit counts lineage failures without backfilling ownership", () =
     mvpAutomationSchedules: 1,
     mvpIdempotencyKeys: 1,
     companyMemoryEntries: 1,
-    companyConnectionAccountRefs: 1
+    companyConnectionAccountRefs: 1,
+    codexAppServerRegistryReadbacks: 0
   });
   assert.equal(audit.counts.automationCurrentVersionMismatch, 1);
   assert.equal(audit.counts.automationProjectionVersionMismatch, 2);

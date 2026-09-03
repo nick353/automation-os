@@ -71,6 +71,42 @@ test("bound approval decision is revisioned, tenant scoped, and expires closed",
   }), /approval_expired/);
 });
 
+test("company approval inbox includes portable approvals without making them consumable bound approvals", () => {
+  const fixture = seedFixture("company_approval_portable_inbox", "owner_approval_portable_inbox", "service_approval_portable_inbox");
+  const now = "2029-01-01T00:00:00.000Z";
+  db.insert("approvals", {
+    id: "approval_portable_inbox",
+    company_id: fixture.companyId,
+    run_id: "run_portable_inbox",
+    job_id: null,
+    step_id: null,
+    title: "One candidate submit",
+    requested_by: fixture.serviceUserId,
+    status: "pending",
+    priority: "normal",
+    approval_group_id: "portable:run_portable_inbox",
+    action_kind: "one_candidate_submit",
+    target_account_ref_id: "auth:chrome-profile2",
+    payload_hash: "f".repeat(64),
+    policy_version: "automation_os_portable_external_approval_binding.v1",
+    expires_at: "2030-01-01T00:00:00.000Z",
+    decided_by_user_id: null,
+    decision_revision: 1,
+    consumed_at: null,
+    consumed_by_attempt_id: null,
+    resource_locks_json: "[]",
+    created_at: now,
+    decided_at: null,
+    decision_note: null
+  });
+
+  const listed = approvals.listCompanyApprovals(fixture.companyId);
+  assert.equal(listed.some((approval) => approval.id === "approval_portable_inbox"), true);
+  assert.equal(listed.find((approval) => approval.id === "approval_portable_inbox")?.jobId, null);
+  assert.equal(approvals.listBoundApprovals(fixture.companyId).some((approval) => approval.id === "approval_portable_inbox"), false);
+  assert.equal(approvals.getBoundApproval(fixture.companyId, "approval_portable_inbox"), undefined);
+});
+
 test("approval consume requires an exact live attempt binding and succeeds once", () => {
   const fixture = seedFixture("company_approval_b", "owner_approval_b", "service_approval_b");
   const job = enqueue(fixture, "approval-consume-job");

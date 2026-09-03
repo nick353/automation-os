@@ -15,14 +15,17 @@ test("Job business runner keeps its immutable ledger-artifact writer defined at 
   assert.match(source, /return writeImmutableJson\(artifact,/u);
 });
 
-test("Job business runner reconciles claims when Browser Use start fails before the flow exists", () => {
+test("Job business runner reconciles claims when no external intent was produced", () => {
   const source = readFileSync(runner, "utf8");
-  const adapterCall = source.indexOf("const result = await runJobManagerBrowserUseCliSubmit(");
+  const adapterCall = source.indexOf("adapterResult = await runJobManagerBrowserUseCliSubmit(");
   const startedAssignment = source.indexOf("browserStarted = result?.browser_flow_started === true;", adapterCall);
   assert.ok(adapterCall >= 0, "business adapter call must remain explicit");
-  assert.ok(startedAssignment > adapterCall, "browserStarted must use the adapter flow-start proof");
-  assert.equal(source.slice(0, adapterCall).includes("browserStarted = true;"), false);
-  assert.match(source, /if \(claimedBundle && !browserStarted\) \{/u);
+  assert.equal(startedAssignment, -1, "the runner must not use a stale result variable");
+  assert.match(source, /browserStarted = adapterResult\?\.browser_flow_started === true;/u);
+  assert.match(source, /external_intent_count/u);
+  assert.match(source, /ambiguous_external_effect/u);
+  assert.match(source, /if \(!submitted && claimedBundle && noExternalIntentProven\) \{/u);
+  assert.match(source, /if \(claimedBundle && noExternalIntentProven\) \{/u);
 });
 
 test("Job site playbook discovers submit labels from semantic value attributes", async () => {

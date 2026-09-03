@@ -60,7 +60,17 @@ child.stdout.on("data", (chunk) => {
       if (!waiter) continue;
       pending.delete(message.id);
       clearTimeout(waiter.timer);
-      if (message.error) waiter.reject(new Error("rpc_rejected"));
+      if (message.error) {
+        // Keep only the numeric JSON-RPC code. The server message may contain
+        // paths, URLs, provider data, or credential-like text.
+        const code = Number.isSafeInteger(message.error.code) ? String(message.error.code) : "unknown";
+        const error = new Error(`rpc_rejected_code_${code}`);
+        error.rpcErrorCode = code;
+        error.rpcErrorDataKeys = message.error.data && typeof message.error.data === "object"
+          ? Object.keys(message.error.data).slice(0, 20)
+          : [];
+        waiter.reject(error);
+      }
       else waiter.resolve(message);
       continue;
     }
@@ -126,6 +136,9 @@ try {
   const accountResponse = await rpc("account/read", { refreshToken: false });
   const account = accountReadback(accountResponse);
   output({ stage: "account/read", ...account });
+  // `requiresOpenaiAuth` describes the auth mode supported by the server;
+  // it is not an unauthenticated result when account/read also returned an
+  // account. Let the read-only thread/turn canary prove usable credentials.
   if (!account.account_present) {
     output({
       stage: "blocked",
@@ -150,7 +163,6 @@ try {
       threadId,
       input: [{ type: "text", text: "Return READY only. Do not use tools or modify files.", text_elements: [] }],
       approvalPolicy: "never",
-      permissionProfile: ":read-only",
       cwd: workspace
     });
     const turnId = typeof turnResponse?.result?.turn?.id === "string" ? turnResponse.result.turn.id : null;
@@ -174,7 +186,12 @@ try {
     });
   }
 } catch (error) {
-  output({ stage: "error", exact_error: String(error?.message ?? "unknown").replace(/[^a-zA-Z0-9_:-]/g, "_") });
+  output({
+    stage: "error",
+    exact_error: String(error?.message ?? "unknown").replace(/[^a-zA-Z0-9_:-]/g, "_"),
+    rpc_error_code: typeof error?.rpcErrorCode === "string" ? error.rpcErrorCode : null,
+    rpc_error_data_keys: Array.isArray(error?.rpcErrorDataKeys) ? error.rpcErrorDataKeys : []
+  });
   exitCode = 1;
 } finally {
   completed = true;

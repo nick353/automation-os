@@ -63,6 +63,20 @@ export function findScopedApproval(approvalId: string, companyIds: readonly stri
   `)[0];
 }
 
+export async function findScopedApprovalAsync(approvalId: string, companyIds: readonly string[]): Promise<ScopedApprovalRow | undefined> {
+  return (await querySqlAsync<ScopedApprovalRow>(`
+    SELECT approvals.*
+    FROM approvals
+    LEFT JOIN runs
+      ON runs.id=approvals.run_id
+     AND runs.company_id=approvals.company_id
+    WHERE approvals.id=${sqlValue(approvalId)}
+      AND ${scopedCompanyPredicate("approvals.company_id", companyIds)}
+      AND (approvals.run_id IS NULL OR runs.id IS NOT NULL)
+    LIMIT 1
+  `))[0];
+}
+
 export function findScopedProof(proofId: string, companyIds: readonly string[]): ScopedProofRow | undefined {
   return querySql<ScopedProofRow>(`
     SELECT proofs.*

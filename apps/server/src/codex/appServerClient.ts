@@ -75,6 +75,61 @@ export type CodexAppServerAccountReadback = {
   requiresOpenaiAuth: boolean;
 };
 
+export type CodexAppServerDeviceLogin = {
+  loginId: string;
+  verificationUrl: string;
+  userCode: string;
+};
+
+export type CodexAppServerAuthEventReadback = {
+  loginCompletion: {
+    loginId: string | null;
+    success: boolean;
+    error: string | null;
+    capturedAt: string;
+  } | null;
+  accountUpdated: {
+    authMode: string | null;
+    planType: string | null;
+    capturedAt: string;
+  } | null;
+};
+
+export type CodexAppServerPluginInstallResult = {
+  pluginName: string;
+  marketplaceName: string | null;
+  authPolicy: "ON_INSTALL" | "ON_USE" | null;
+  appsNeedingAuth: Array<{
+    id: string;
+    name: string;
+    category: string | null;
+    description: string | null;
+    installUrl: string | null;
+  }>;
+};
+
+export type CodexAppServerInstalledAppReadback = {
+  id: string;
+  runtimeName: string | null;
+  enabled: boolean;
+  callable: boolean;
+};
+
+export type CodexAppServerAppReadback = {
+  id: string;
+  name: string | null;
+  isAccessible: boolean;
+  isEnabled: boolean;
+  accessStateAvailable: boolean;
+  installUrl: string | null;
+};
+
+export type CodexAppServerPluginAppsReadback = {
+  pluginName: string;
+  marketplaceName: string | null;
+  apps: Array<{ id: string; name: string | null }>;
+};
+
 type PendingRequest = {
   resolve: (value: Record<string, unknown>) => void;
   reject: (error: Error) => void;
@@ -122,6 +177,8 @@ export class CodexAppServerClient {
   private readonly turnToThread = new Map<string, string>();
   private readonly turnListeners = new Map<string, (event: CodexAppServerEvent) => void>();
   private readonly pendingTurnListeners = new Map<string, (event: CodexAppServerEvent) => void>();
+  private authLoginCompletion: CodexAppServerAuthEventReadback["loginCompletion"] = null;
+  private authAccountUpdated: CodexAppServerAuthEventReadback["accountUpdated"] = null;
 
   constructor(private readonly options: {
     command?: string;
@@ -192,6 +249,156 @@ export class CodexAppServerClient {
     };
   }
 
+  async startDeviceCodeLogin(): Promise<CodexAppServerDeviceLogin> {
+    await this.start();
+    this.authLoginCompletion = null;
+    this.authAccountUpdated = null;
+    const response = await this.request("account/login/start", { type: "chatgptDeviceCode" });
+    const result = response.result && typeof response.result === "object"
+      ? (response.result as Record<string, unknown>)
+      : {};
+    const loginId = stringValue(result.loginId);
+    const verificationUrl = safeAuthUrl(result.verificationUrl);
+    const userCode = boundedDeviceCode(result.userCode);
+    if (!loginId || !verificationUrl || !userCode) throw new Error("codex_device_auth_start_response_invalid");
+    return { loginId, verificationUrl, userCode };
+  }
+
+  getAuthEventReadback(): CodexAppServerAuthEventReadback {
+    return {
+      loginCompletion: this.authLoginCompletion ? { ...this.authLoginCompletion } : null,
+      accountUpdated: this.authAccountUpdated ? { ...this.authAccountUpdated } : null
+    };
+  }
+
+  async readInstalledApps(input: { forceRefresh?: boolean } = {}): Promise<CodexAppServerInstalledAppReadback[]> {
+    await this.start();
+    const response = await this.request("app/installed", { forceRefresh: input.forceRefresh === true });
+    const result = response.result && typeof response.result === "object"
+      ? (response.result as Record<string, unknown>)
+      : {};
+    return Array.isArray(result.apps)
+      ? result.apps.flatMap((value) => {
+          if (!value || typeof value !== "object") return [];
+          const app = value as Record<string, unknown>;
+          const id = stringValue(app.id);
+          if (!id) return [];
+          return [{
+            id,
+            runtimeName: stringValue(app.runtimeName) ?? null,
+            enabled: app.enabled === true,
+            callable: app.callable === true
+          }];
+        }).slice(0, 500)
+      : [];
+  }
+
+  async readApp(input: { appId: string; includeTools?: boolean }): Promise<CodexAppServerAppReadback | null> {
+    const appId = boundedPluginName(input.appId, "codex_app_server_app_id_required");
+    await this.start();
+    const response = await this.request("app/read", {
+      appIds: [appId],
+      includeTools: input.includeTools === true
+    });
+    const result = response.result && typeof response.result === "object"
+      ? (response.result as Record<string, unknown>)
+      : {};
+    const app = Array.isArray(result.apps)
+      ? result.apps.find((value) => value && typeof value === "object" && stringValue((value as Record<string, unknown>).id) === appId) as Record<string, unknown> | undefined
+      : undefined;
+    const id = stringValue(app?.id) ?? appId;
+    if (!app) return null;
+    const accessStateAvailable = Object.prototype.hasOwnProperty.call(app, "isAccessible")
+      && Object.prototype.hasOwnProperty.call(app, "isEnabled");
+    return {
+      id,
+      name: stringValue(app.name) ?? null,
+      isAccessible: app.isAccessible === true,
+      isEnabled: app.isEnabled === true,
+      accessStateAvailable,
+      installUrl: safeAuthUrl(app.installUrl)
+    };
+  }
+
+  async readPluginApps(input: {
+    pluginName: string;
+    remoteMarketplaceName?: string;
+  }): Promise<CodexAppServerPluginAppsReadback> {
+    const pluginName = boundedPluginName(input.pluginName, "codex_app_server_plugin_name_required");
+    const marketplaceName = input.remoteMarketplaceName
+      ? normalizeMarketplaceName(input.remoteMarketplaceName)
+      : null;
+    await this.start();
+    const response = await this.request("plugin/read", {
+      pluginName,
+      ...(marketplaceName ? { remoteMarketplaceName: marketplaceName } : {})
+    });
+    const result = response.result && typeof response.result === "object"
+      ? (response.result as Record<string, unknown>)
+      : {};
+    const plugin = result.plugin && typeof result.plugin === "object"
+      ? result.plugin as Record<string, unknown>
+      : result;
+    const apps = Array.isArray(plugin.apps)
+      ? plugin.apps.flatMap((value) => {
+          if (!value || typeof value !== "object") return [];
+          const app = value as Record<string, unknown>;
+          const id = stringValue(app.id);
+          if (!id) return [];
+          return [{ id, name: stringValue(app.name) ?? null }];
+        }).slice(0, 50)
+      : [];
+    return { pluginName, marketplaceName, apps };
+  }
+
+  /**
+   * Install one exact Plugin through the remote Codex App Server registry.
+   * The server response intentionally exposes only app metadata and a
+   * provider auth URL; no connector token or credential material is returned.
+   */
+  async installPlugin(input: {
+    pluginName: string;
+    remoteMarketplaceName?: string;
+    installAttemptId?: string;
+  }): Promise<CodexAppServerPluginInstallResult> {
+    const pluginName = boundedPluginName(input.pluginName, "codex_app_server_plugin_name_required");
+    const marketplaceName = input.remoteMarketplaceName
+      ? normalizeMarketplaceName(input.remoteMarketplaceName)
+      : null;
+    const installAttemptId = input.installAttemptId
+      ? boundedPluginName(input.installAttemptId, "codex_app_server_install_attempt_id_invalid")
+      : null;
+    await this.start();
+    const response = await this.request("plugin/install", {
+      pluginName,
+      ...(marketplaceName ? { remoteMarketplaceName: marketplaceName } : {}),
+      ...(installAttemptId ? { installAttemptId } : {})
+    });
+    const result = response.result && typeof response.result === "object"
+      ? (response.result as Record<string, unknown>)
+      : {};
+    const appsNeedingAuth = Array.isArray(result.appsNeedingAuth)
+      ? result.appsNeedingAuth.flatMap((value) => {
+          if (!value || typeof value !== "object") return [];
+          const app = value as Record<string, unknown>;
+          const id = stringValue(app.id);
+          const name = stringValue(app.name);
+          if (!id || !name) return [];
+          return [{
+            id,
+            name,
+            category: stringValue(app.category) ?? null,
+            description: stringValue(app.description) ?? null,
+            installUrl: safeAuthUrl(app.installUrl)
+          }];
+        })
+      : [];
+    const authPolicy = result.authPolicy === "ON_INSTALL" || result.authPolicy === "ON_USE"
+      ? result.authPolicy
+      : null;
+    return { pluginName, marketplaceName, authPolicy, appsNeedingAuth };
+  }
+
   async startTurn(input: {
     threadId: string;
     text: string;
@@ -209,10 +416,9 @@ export class CodexAppServerClient {
       threadId,
       input: [{ type: "text", text, text_elements: [] }],
       approvalPolicy: "never",
-      // Codex CLI 0.145+ removed the legacy sandboxPolicy.access shape for
-      // restricted reads. Keep the turn on the built-in read-only profile so
-      // the worker remains unable to approve or write external effects.
-      permissionProfile: ":read-only",
+      // The thread was created with the built-in read-only sandbox. Omit a
+      // turn-level profile override so the request remains compatible with
+      // both the local and remote App Server protocol versions.
       ...(input.outputSchema ? { outputSchema: input.outputSchema } : {})
     };
     this.applyCwd(params);
@@ -398,7 +604,16 @@ export class CodexAppServerClient {
     this.pending.delete(message.id!);
     clearTimeout(pending.timer);
     if (message.error) {
-      pending.reject(new Error("codex_app_server_request_rejected"));
+      // Preserve only the protocol error code in the surfaced blocker. The
+      // remote server's message may contain paths, URLs, or provider data;
+      // exposing it would turn a useful diagnostic into an accidental data
+      // leak. The numeric code is enough to distinguish unsupported methods,
+      // invalid params, and provider-side rejection without revealing the
+      // payload.
+      const code = typeof message.error.code === "number" && Number.isSafeInteger(message.error.code)
+        ? String(message.error.code)
+        : "unknown";
+      pending.reject(new Error(`codex_app_server_request_rejected_code_${code}`));
       return;
     }
     pending.resolve({ result: message.result, error: message.error });
@@ -406,6 +621,21 @@ export class CodexAppServerClient {
 
   private handleNotification(message: JsonRpcMessage): void {
     const params = message.params ?? {};
+    const capturedAt = new Date().toISOString();
+    if (message.method === "account/login/completed") {
+      this.authLoginCompletion = {
+        loginId: stringValue(params.loginId) ?? null,
+        success: params.success === true,
+        error: stringValue(params.error) ?? null,
+        capturedAt
+      };
+    } else if (message.method === "account/updated") {
+      this.authAccountUpdated = {
+        authMode: stringValue(params.authMode) ?? null,
+        planType: stringValue(params.planType) ?? null,
+        capturedAt
+      };
+    }
     const notificationTurnId = stringValue(params.turnId) ?? nestedString(params.turn, "id");
     const threadId = stringValue(params.threadId) ?? (notificationTurnId ? this.turnToThread.get(notificationTurnId) : undefined);
     const turnId = notificationTurnId;
@@ -419,7 +649,7 @@ export class CodexAppServerClient {
         ? { delta: redactSensitiveText(stringValue(params.delta)!).slice(0, 4_000) }
         : {}),
       ...(nestedString(params.turn, "status") ? { status: nestedString(params.turn, "status") } : {}),
-      capturedAt: new Date().toISOString()
+      capturedAt
     };
     const key = threadId && turnId ? turnKey(threadId, turnId) : undefined;
     if (key) {
@@ -715,6 +945,36 @@ function turnKey(threadId: string, turnId: string): string {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function boundedPluginName(value: string, requiredCode: string): string {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  if (!normalized) throw new Error(requiredCode);
+  if (!/^[a-z0-9][a-z0-9._-]{0,127}$/iu.test(normalized)) throw new Error("codex_app_server_plugin_name_invalid");
+  return normalized;
+}
+
+export function normalizeMarketplaceName(value: string): string {
+  const normalized = boundedPluginName(value, "codex_app_server_marketplace_name_invalid");
+  return normalized === "openai-curated" ? "openai-curated-remote" : normalized;
+}
+
+function boundedDeviceCode(value: unknown): string | undefined {
+  const normalized = stringValue(value);
+  if (!normalized || normalized.length > 64 || !/^[a-z0-9-]+$/iu.test(normalized)) return undefined;
+  return normalized;
+}
+
+function safeAuthUrl(value: unknown): string | null {
+  const raw = stringValue(value);
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== "https:" && !(url.protocol === "http:" && (url.hostname === "localhost" || url.hostname === "127.0.0.1"))) return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
 }
 
 function nestedString(value: unknown, key: string): string | undefined {

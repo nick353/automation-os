@@ -107,6 +107,7 @@ export async function createCodexAppServerPlannerResponse(input: {
     "あなたはAutomation OSの会話司令室です。現在状態の説明、定期実行の作成案、既存定期実行の調整案、失敗修正案を同じ会話で扱います。",
     "必ずJSONだけを返してください。Markdown、説明文、コードブロックは禁止です。",
     "保存・スケジュール変更・実行・外部作用は自分で確定せず、proposedChangesとrequiresConfirmationに分けてください。",
+    "ツール選択契約: 公開snapshotのtoolPreferenceを読み、Pluginを最優先候補にする。MCP・CLI・APIは同率2位で、Pluginより先に選ばない。Gmail・Supabase等のconnectorは、Zeabur Codex App ServerのPlugin registry・MCP・connector認証readbackがreadyの時だけZeabur側を実行ownerにする。Mac WorkerはChrome Plugin/Profile 2専用で、Mac側connectorは明示されたfallback以外では使わない。selectedがneeds_company_authまたはZeabur配置blockerなら認証要求をopenQuestions/nextActionへ出し、MCP・CLI・API・Mac connectorへ黙ってfallbackしない。selectedがreadyでない場合も、接続済み・検証済みとは言わず、会社scopeと検証状態をそのまま返す。",
     "JSON Schema:",
     JSON.stringify(plannerJsonSchema()),
     "Automation OSの公開snapshot:",
@@ -141,8 +142,7 @@ export function buildLocalPlanner(messages: CreatePlannerMessage[], exactBlocker
   const facts = detectFacts(conversationText);
   const hasConcreteCadence = hasConcreteCadenceRequest(conversationText);
   const isScheduled = /毎朝|毎日|毎週|定期|schedule|daily|weekly|朝|夜|\b\d{1,2}\s*時|\b\d{1,2}:\d{2}\b/u.test(lower);
-  const isSubmit = /応募|申請|送信|submit|apply|フォーム/u.test(lower)
-    || (/予約/u.test(conversationText) && !isScheduled);
+  const isSubmit = isSubmitIntent(conversationText, { isScheduled });
   const isPublish = isPublishIntent(conversationText);
   const isResearch = /調査|確認|比較|探し|探す|research|watch|チェック|監視/u.test(lower);
   const isSecretStorageOnly = isSecretStorageOnlyRequest(conversationText);
@@ -466,6 +466,13 @@ function isPublishIntent(text: string): boolean {
   return /投稿|公開|publish|post|sns|x\.com|\bX\b|twitter|instagram|threads|pinterest|etsy/iu.test(text);
 }
 
+function isSubmitIntent(text: string, options: { isScheduled: boolean }): boolean {
+  const explicitlyNotSubmitting = /(?:応募|申請|送信|submit|apply|フォーム).{0,12}(?:しない|しません|不要|なし|送らない)|(?:しない|しません|不要|なし).{0,12}(?:応募|申請|送信|submit|apply|フォーム)/iu.test(text);
+  if (explicitlyNotSubmitting) return false;
+  return /応募|申請|送信|submit|apply|フォーム/iu.test(text)
+    || (/予約/u.test(text) && !options.isScheduled);
+}
+
 function isContinuationRequest(text: string): boolean {
   return /履歴からの続き相談|実行結果|止まった理由|不足している確認|保存記録|run[_ -]?id|途中で止ま|前回の続き|直前のrun|前の相談|保存済みの結果|run summary|summaryから/u.test(text);
 }
@@ -609,7 +616,24 @@ function extractWorkflowTargets(text: string) {
       boundary: "transcript取得、保存artifact、Obsidian反映、Daily AI候補化の可否をreadbackする"
     }
   ];
-  return targets.filter((target) => target.patterns.some((pattern) => pattern.test(text)));
+  return targets.filter((target) => target.patterns.some((pattern) => pattern.test(text)) && !isNegatedWorkflowTarget(target.label, text));
+}
+
+function isNegatedWorkflowTarget(label: string, text: string): boolean {
+  const targetPattern = label === "応募"
+    ? "応募|申請|送信|フォーム|求人"
+    : label === "SNS"
+      ? "投稿|公開|publish|post|sns"
+      : label === "NisenPrints"
+        ? "商品|公開|etsy|printify|pinterest"
+        : label === "転記"
+          ? "転記|書き込み|sheets?"
+          : label === "YouTube"
+            ? "文字起こし|transcript|youtube"
+            : "";
+  if (!targetPattern) return false;
+  const negative = `(?:${targetPattern}).{0,12}(?:しない|しません|不要|なし|送らない)|(?:しない|しません|不要|なし).{0,12}(?:${targetPattern})`;
+  return new RegExp(negative, "iu").test(text);
 }
 
 function hasAdjustmentIntent(text: string): boolean {

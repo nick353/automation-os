@@ -7,6 +7,13 @@ import { registeredBrowserLaneForWorkflow, visibleBrowserLaneForRecordReplay } f
 import { evaluateGeminiVideoQaAudit } from "./geminiVideoQa.js";
 import { issueLedgerMetadata } from "./issueLedger.js";
 import { inspectBrowserUseCliRunner } from "./browserUseCliRunnerGuard.js";
+import {
+  browserSurfaceForWebOperationBackend,
+  DEFAULT_CHROME_PROFILE,
+  WEB_OPERATION_BACKENDS,
+  WEB_OPERATION_BACKEND_SNAPSHOT_SCHEMA,
+  type WebOperationBackend
+} from "./webOperationBackendSettings.js";
 
 export type DailyAiRegisteredStatus = "complete" | "partial" | "blocked";
 
@@ -49,6 +56,13 @@ export type DailyAiRegisteredRunResult = DailyAiRegisteredEvaluation & {
       DAILY_AI_CLI_PROOF_ONLY_NO_POST_PREFLIGHT?: string;
       DAILY_AI_CLI_STEP_TIMEOUT_MS: string;
       AUTOMATION_OS_RUN_ID: string;
+      AOS_WEB_OPERATION_BACKEND: string;
+      AOS_WEB_OPERATION_BACKEND_REVISION: string;
+      AOS_CHROME_PROFILE_ID: string;
+      AOS_CHROME_PROFILE_NAME: string;
+      AOS_CHROME_PROFILE_DIRECTORY: string;
+      AOS_CHROME_PROFILE_SURFACE: string;
+      AOS_WEB_OPERATION_BACKEND_CONFIG: string;
     };
   };
   exitStatus: number | null;
@@ -58,18 +72,138 @@ export type DailyAiRegisteredRunResult = DailyAiRegisteredEvaluation & {
 };
 
 // Keep the established receipt filename for storage compatibility. The
-// receipt payload and command surface are Browser Use CLI-only; the filename
-// is not a transport selector.
+// filename is not a transport selector; the command surface follows the
+// immutable per-run backend snapshot.
 const summaryFileName = "registered-browser-summary.json";
 const projectRoot = "/Users/nichikatanaka/Documents/New project";
 const fixedOutputRoot = join(projectRoot, "artifacts", "automation-os-daily-ai-runs");
 const defaultBrowserUseRunner = join(projectRoot, "scripts", "run_daily_ai_browser_use_cli_registered.mjs");
+const defaultChromePluginRunner = join(projectRoot, "scripts", "run_daily_ai_chrome_plugin_registered.mjs");
 const defaultRunnerTimeoutMs = 90 * 60 * 1000;
 const defaultCliStepTimeoutMs = 45 * 60 * 1000;
 const browserUseRunnerMissing = "browser_use_cli_registered_runner_missing";
 const dailyAiRunnerPathPrefix = ["/Users/nichikatanaka/.local/bin", "/opt/homebrew/bin", "/usr/local/bin"];
 const dailyAiFallbackBrowserPort = 19882;
 const dailyAiFallbackBrowserProfile = "/Users/nichikatanaka/.browser-use-cli/profiles/scheduled/daily-ai";
+
+export const DAILY_AI_BACKEND_SNAPSHOT_MISSING_BLOCKER = "daily_ai_backend_snapshot_missing";
+export const DAILY_AI_BACKEND_SNAPSHOT_INVALID_BLOCKER = "daily_ai_backend_snapshot_invalid";
+export const DAILY_AI_BACKEND_SNAPSHOT_MISMATCH_BLOCKER = "daily_ai_backend_snapshot_mismatch";
+export const DAILY_AI_COMPANION_EFFECT_ADAPTER_UNAVAILABLE_BLOCKER =
+  "web_operation_aos_chrome_companion_effect_adapter_unavailable:daily_ai_registered";
+export const DAILY_AI_PLAYWRIGHT_EFFECT_ADAPTER_UNAVAILABLE_BLOCKER =
+  "web_operation_playwright_effect_adapter_unavailable:daily_ai_registered";
+
+export type DailyAiBackendSnapshotInspection = {
+  snapshot: Record<string, unknown> | null;
+  backend: WebOperationBackend | null;
+  profile: Record<string, unknown>;
+  blocker: string | null;
+};
+
+export function inspectDailyAiBackendSnapshot(value: unknown): DailyAiBackendSnapshotInspection {
+  const defaultProfile = { ...DEFAULT_CHROME_PROFILE };
+  if (!isRecord(value)) {
+    return {
+      snapshot: null,
+      backend: null,
+      profile: defaultProfile,
+      blocker: DAILY_AI_BACKEND_SNAPSHOT_MISSING_BLOCKER
+    };
+  }
+  if (value.backend_snapshot_missing === true) {
+    return {
+      snapshot: value,
+      backend: null,
+      profile: defaultProfile,
+      blocker: DAILY_AI_BACKEND_SNAPSHOT_MISSING_BLOCKER
+    };
+  }
+
+  const requested = value.requested_backend;
+  const resolved = value.resolved_backend;
+  const backend = isWebOperationBackend(resolved) ? resolved : null;
+  const profileRecord = isRecord(value.chrome_profile) ? value.chrome_profile : null;
+  const profile = profileRecord ?? defaultProfile;
+  const profileComplete = profileRecord !== null
+    && ["id", "name", "directory", "surface"].every((key) => typeof profileRecord[key] === "string" && profileRecord[key].trim());
+  const snapshotShapeValid = value.schema === WEB_OPERATION_BACKEND_SNAPSHOT_SCHEMA
+    && value.source === "aos_global_setting"
+    && isWebOperationBackend(requested)
+    && isWebOperationBackend(resolved)
+    && Number.isSafeInteger(value.revision)
+    && Number(value.revision) >= 1
+    && value.fallback_allowed === false
+    && typeof value.browser_surface === "string"
+    && value.browser_surface.trim().length > 0
+    && profileComplete
+    && (value.exact_blocker === null || typeof value.exact_blocker === "string");
+  if (!snapshotShapeValid || !backend) {
+    return {
+      snapshot: value,
+      backend,
+      profile,
+      blocker: DAILY_AI_BACKEND_SNAPSHOT_INVALID_BLOCKER
+    };
+  }
+  if (requested !== resolved) {
+    return {
+      snapshot: value,
+      backend,
+      profile,
+      blocker: DAILY_AI_BACKEND_SNAPSHOT_MISMATCH_BLOCKER
+    };
+  }
+
+  let expectedSurface: string;
+  try {
+    expectedSurface = browserSurfaceForWebOperationBackend(backend, String(profile.surface));
+  } catch {
+    return {
+      snapshot: value,
+      backend,
+      profile,
+      blocker: DAILY_AI_BACKEND_SNAPSHOT_INVALID_BLOCKER
+    };
+  }
+  if (value.browser_surface !== expectedSurface) {
+    return {
+      snapshot: value,
+      backend,
+      profile,
+      blocker: DAILY_AI_BACKEND_SNAPSHOT_MISMATCH_BLOCKER
+    };
+  }
+  if (typeof value.exact_blocker === "string" && value.exact_blocker.trim()) {
+    return {
+      snapshot: value,
+      backend,
+      profile,
+      blocker: value.exact_blocker
+    };
+  }
+  if (backend === "aos_chrome_companion") {
+    return {
+      snapshot: value,
+      backend,
+      profile,
+      blocker: DAILY_AI_COMPANION_EFFECT_ADAPTER_UNAVAILABLE_BLOCKER
+    };
+  }
+  if (backend === "playwright") {
+    return {
+      snapshot: value,
+      backend,
+      profile,
+      blocker: DAILY_AI_PLAYWRIGHT_EFFECT_ADAPTER_UNAVAILABLE_BLOCKER
+    };
+  }
+  return { snapshot: value, backend, profile, blocker: null };
+}
+
+function isWebOperationBackend(value: unknown): value is WebOperationBackend {
+  return typeof value === "string" && (WEB_OPERATION_BACKENDS as readonly string[]).includes(value);
+}
 
 function externalEffectsEnabled(): boolean {
   const value = (
@@ -99,8 +233,12 @@ export function dailyAiRegisteredOutputDir(runId: string): { cliRunId: string; o
   };
 }
 
-export function runDailyAiRegisteredRunner(input: { runId: string; startedAtMs?: number }): DailyAiRegisteredRunResult {
+export function runDailyAiRegisteredRunner(input: { runId: string; startedAtMs?: number; backendSnapshot?: unknown }): DailyAiRegisteredRunResult {
   const startedAtMs = input.startedAtMs ?? Date.now();
+  const backendSelection = inspectDailyAiBackendSnapshot(input.backendSnapshot);
+  const backendValue = backendSelection.snapshot ?? {};
+  const backend = backendSelection.backend;
+  const profile = backendSelection.profile;
   const dailyAiBrowserLane = visibleBrowserLaneForRecordReplay(registeredBrowserLaneForWorkflow("daily-ai-research-publish-run"));
   const { cliRunId, outputDir } = dailyAiRegisteredOutputDir(input.runId);
   const timeoutMs = dailyAiRunnerTimeoutMs();
@@ -110,17 +248,58 @@ export function runDailyAiRegisteredRunner(input: { runId: string; startedAtMs?:
     ? "DAILY_AI_CLI_PROOF_ONLY_NO_POST_PREFLIGHT=true "
     : "";
   mkdirSync(outputDir, { recursive: true });
-  const configuredRunner = (
-    process.env.AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER
-    || ""
-  ).trim();
-  const runner = configuredRunner
-    ? (existsSync(configuredRunner) ? configuredRunner : "")
-    : (externalEffectsEnabled() && existsSync(defaultBrowserUseRunner) ? defaultBrowserUseRunner : "");
-  const runnerInspection = runner ? inspectBrowserUseCliRunner(runner) : null;
-  const runnerBlocker = !runner
-    ? browserUseRunnerMissing
-    : runnerInspection?.exactBlocker ?? browserUseRunnerMissing;
+  const defaultRunner = backend === "chrome_plugin"
+    ? defaultChromePluginRunner
+    : backend === "browser_use_cli"
+      ? defaultBrowserUseRunner
+      : "";
+  const configuredRunner = String(backend === "chrome_plugin"
+    ? process.env.AUTOMATION_OS_DAILY_AI_CHROME_PLUGIN_RUNNER || ""
+    : backend === "browser_use_cli"
+      ? process.env.AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER || ""
+      : "").trim();
+  const runner = backendSelection.blocker
+    ? ""
+    : configuredRunner
+      ? (existsSync(configuredRunner) ? configuredRunner : "")
+      : (externalEffectsEnabled() && defaultRunner && existsSync(defaultRunner)
+        ? defaultRunner
+        : "");
+  const runnerInspection = runner
+    ? backend === "chrome_plugin"
+      ? inspectChromePluginRunner(runner)
+      : inspectBrowserUseCliRunner(runner)
+    : null;
+  const runnerBlocker = backendSelection.blocker
+    ?? (!runner
+      ? (backend === "chrome_plugin" ? "chrome_plugin_registered_runner_missing" : browserUseRunnerMissing)
+      : runnerInspection?.exactBlocker ?? (backend === "chrome_plugin" ? "chrome_plugin_registered_runner_missing" : browserUseRunnerMissing));
+  const browserDriver = backend === "chrome_plugin"
+    ? "chrome_plugin"
+    : backend === "browser_use_cli"
+      ? "browser_use_cli"
+      : backend === "aos_chrome_companion"
+        ? "aos_chrome_companion"
+        : backend === "playwright"
+          ? "playwright"
+          : "unavailable";
+  const browserSurface = backend
+    ? browserSurfaceForWebOperationBackend(backend, String(profile.surface))
+    : "unknown";
+  const cliProfileDir = backend === "chrome_plugin"
+    ? String(profile.directory)
+    : backend === "browser_use_cli"
+      ? dailyAiBrowserLane?.profileDir ?? dailyAiFallbackBrowserProfile
+      : "unavailable";
+  const backendEnv = {
+    AOS_WEB_OPERATION_BACKEND: backend ?? "",
+    AOS_WEB_OPERATION_BACKEND_REVISION: typeof backendValue.revision === "number" ? String(backendValue.revision) : "",
+    AOS_CHROME_PROFILE_ID: String(profile.id ?? ""),
+    AOS_CHROME_PROFILE_NAME: String(profile.name ?? ""),
+    AOS_CHROME_PROFILE_DIRECTORY: String(profile.directory ?? ""),
+    AOS_CHROME_PROFILE_SURFACE: browserSurface,
+    AOS_WEB_OPERATION_BACKEND_CONFIG: String(process.env.AOS_WEB_OPERATION_BACKEND_CONFIG || process.env.AUTOMATION_OS_WEB_OPERATION_BACKEND_CONFIG || ""),
+  };
 
   if (!runner || !runnerInspection?.ok) {
     const command = {
@@ -129,12 +308,14 @@ export function runDailyAiRegisteredRunner(input: { runId: string; startedAtMs?:
       cwd: projectRoot,
       display: runner
         ? "Daily AI runner is blocked because its source is not a canonical Browser Use CLI adapter"
-        : "Daily AI Browser Use CLI registered runner is not configured",
+        : backendSelection.blocker
+          ? `Daily AI runner is blocked: ${backendSelection.blocker}`
+          : "Daily AI Browser Use CLI registered runner is not configured",
       env: {
         PATH: runnerPath,
         DAILY_AI_CLI_RUN_ID: cliRunId,
         DAILY_AI_CLI_OUTPUT_DIR: outputDir,
-        DAILY_AI_BROWSER_DRIVER: "browser_use_cli",
+        DAILY_AI_BROWSER_DRIVER: browserDriver,
         DAILY_AI_CLI_BROWSER_VIDEO_QA: "no-post-preflight",
         DAILY_AI_CLI_REQUIRE_BROWSER_USE: "1",
         DAILY_AI_CLI_RECORDING_REQUIRED: "1",
@@ -144,23 +325,26 @@ export function runDailyAiRegisteredRunner(input: { runId: string; startedAtMs?:
         DAILY_AI_CLI_REPLENISH_BUFFER_TIMEOUT_MS: "600000",
         DAILY_AI_RUNWAY_MCP_TIMEOUT_SECONDS: "300",
         DAILY_AI_CDP_PORT: String(dailyAiBrowserLane?.cdpPort ?? dailyAiFallbackBrowserPort),
-        DAILY_AI_CLI_PROFILE_DIR: dailyAiBrowserLane?.profileDir ?? dailyAiFallbackBrowserProfile,
+        DAILY_AI_CLI_PROFILE_DIR: cliProfileDir,
         DAILY_AI_CLI_HEADLESS: dailyAiBrowserLane?.laneVisibility === "headless" ? "true" : "false",
         DAILY_AI_CLI_SHOW_BROWSER: dailyAiBrowserLane?.laneVisibility === "visible" ? "true" : "false",
         ...proofOnlyNoPostPreflightEnv,
         DAILY_AI_CLI_STEP_TIMEOUT_MS: String(defaultCliStepTimeoutMs),
-        AUTOMATION_OS_RUN_ID: input.runId
+        AUTOMATION_OS_RUN_ID: input.runId,
+        ...backendEnv
       }
     };
     if (proofOnlyNoPostPreflightDisplay) {
       command.display += ` ${proofOnlyNoPostPreflightDisplay.trim()}`;
     }
     const evaluation = blockedEvaluation(runnerBlocker, undefined, {
-      browser_driver: "browser_use_cli",
-      default_runner: defaultBrowserUseRunner,
+      browser_driver: browserDriver,
+      browser_surface: browserSurface,
+      default_runner: defaultRunner || undefined,
       required_env: "AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER or AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS=enabled",
       external_effects_enabled: externalEffectsEnabled(),
-      runner_inspection: runnerInspection
+      runner_inspection: runnerInspection,
+      backend_snapshot_blocker: backendSelection.blocker
     });
     return {
       ...evaluation,
@@ -178,10 +362,10 @@ export function runDailyAiRegisteredRunner(input: { runId: string; startedAtMs?:
     cwd: projectRoot,
     display:
       `DAILY_AI_CLI_RUN_ID=${JSON.stringify(cliRunId)} DAILY_AI_CLI_OUTPUT_DIR=${JSON.stringify(outputDir)} ` +
-      `DAILY_AI_BROWSER_DRIVER=browser_use_cli DAILY_AI_CLI_BROWSER_VIDEO_QA=no-post-preflight ` +
+      `DAILY_AI_BROWSER_DRIVER=${browserDriver} DAILY_AI_CLI_BROWSER_VIDEO_QA=no-post-preflight ` +
       `DAILY_AI_CLI_REQUIRE_BROWSER_USE=1 DAILY_AI_CLI_RECORDING_REQUIRED=1 DAILY_AI_CLI_EXTERNAL_VIDEO_QA_REQUIRED=0 ` +
       `DAILY_AI_CDP_PORT=${String(dailyAiBrowserLane?.cdpPort ?? dailyAiFallbackBrowserPort)} DAILY_AI_CLI_PROFILE_DIR=${JSON.stringify(
-        dailyAiBrowserLane?.profileDir ?? dailyAiFallbackBrowserProfile
+        cliProfileDir
       )} DAILY_AI_CLI_HEADLESS=${dailyAiBrowserLane?.laneVisibility === "headless" ? "true" : "false"} DAILY_AI_CLI_SHOW_BROWSER=${
         dailyAiBrowserLane?.laneVisibility === "visible" ? "true" : "false"
       } ` +
@@ -195,7 +379,7 @@ export function runDailyAiRegisteredRunner(input: { runId: string; startedAtMs?:
       PATH: runnerPath,
       DAILY_AI_CLI_RUN_ID: cliRunId,
       DAILY_AI_CLI_OUTPUT_DIR: outputDir,
-      DAILY_AI_BROWSER_DRIVER: "browser_use_cli",
+      DAILY_AI_BROWSER_DRIVER: browserDriver,
       DAILY_AI_CLI_BROWSER_VIDEO_QA: "no-post-preflight",
       DAILY_AI_CLI_REQUIRE_BROWSER_USE: "1",
       DAILY_AI_CLI_RECORDING_REQUIRED: "1",
@@ -205,12 +389,13 @@ export function runDailyAiRegisteredRunner(input: { runId: string; startedAtMs?:
       DAILY_AI_CLI_REPLENISH_BUFFER_TIMEOUT_MS: "600000",
       DAILY_AI_RUNWAY_MCP_TIMEOUT_SECONDS: "300",
       DAILY_AI_CDP_PORT: String(dailyAiBrowserLane?.cdpPort ?? dailyAiFallbackBrowserPort),
-      DAILY_AI_CLI_PROFILE_DIR: dailyAiBrowserLane?.profileDir ?? dailyAiFallbackBrowserProfile,
+      DAILY_AI_CLI_PROFILE_DIR: cliProfileDir,
       DAILY_AI_CLI_HEADLESS: dailyAiBrowserLane?.laneVisibility === "headless" ? "true" : "false",
       DAILY_AI_CLI_SHOW_BROWSER: dailyAiBrowserLane?.laneVisibility === "visible" ? "true" : "false",
       ...proofOnlyNoPostPreflightEnv,
       DAILY_AI_CLI_STEP_TIMEOUT_MS: String(defaultCliStepTimeoutMs),
-      AUTOMATION_OS_RUN_ID: input.runId
+      AUTOMATION_OS_RUN_ID: input.runId,
+      ...backendEnv
     }
   };
 
@@ -241,6 +426,30 @@ export function runDailyAiRegisteredRunner(input: { runId: string; startedAtMs?:
 function buildDailyAiRunnerPath(existingPath: string | undefined): string {
   const existing = existingPath?.trim();
   return existing ? `${dailyAiRunnerPathPrefix.join(":")}:${existing}` : dailyAiRunnerPathPrefix.join(":");
+}
+
+function inspectChromePluginRunner(runner: string): { ok: boolean; exactBlocker: string | null; runner: string; forbiddenSignals: string[] } {
+  try {
+    const source = readFileSync(runner, "utf8").slice(0, 512 * 1024);
+    const expectedEntryPoint = /runDailyAiChromePluginResume/u.test(source);
+    const expectedSurface = /signed_chrome_extension_profile2/u.test(source);
+    if (!expectedEntryPoint || !expectedSurface) {
+      return {
+        ok: false,
+        exactBlocker: "chrome_plugin_registered_runner_missing",
+        runner,
+        forbiddenSignals: ["canonical_chrome_plugin_entrypoint_missing"],
+      };
+    }
+    return { ok: true, exactBlocker: null, runner, forbiddenSignals: [] };
+  } catch {
+    return {
+      ok: false,
+      exactBlocker: "chrome_plugin_registered_runner_missing",
+      runner,
+      forbiddenSignals: ["runner_unreadable"],
+    };
+  }
 }
 
 function dailyAiProofOnlyNoPostPreflightEnv(): { DAILY_AI_CLI_PROOF_ONLY_NO_POST_PREFLIGHT?: "true" } {

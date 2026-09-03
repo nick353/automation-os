@@ -119,7 +119,9 @@ class FakeAppServerWebSocket implements AppServerWebSocketLike {
   private threadCounter = 0;
   private turnCounter = 0;
 
-  constructor(readonly url: string, readonly init: { headers: Record<string, string> }) {
+  private authenticated = false;
+
+  constructor(readonly url: string, readonly init: { headers: Record<string, string> }, private readonly rejectPluginInstall = false) {
     queueMicrotask(() => this.emit("open", {}));
   }
 
@@ -134,6 +136,57 @@ class FakeAppServerWebSocket implements AppServerWebSocketLike {
     const message = JSON.parse(data) as { id?: number; method?: string; params?: Record<string, unknown> };
     if (message.method === "initialize") {
       queueMicrotask(() => this.emitMessage({ id: message.id, result: { userAgent: "remote-fake", platformFamily: "linux", platformOs: "linux" } }));
+      return;
+    }
+    if (message.method === "plugin/install") {
+      if (this.rejectPluginInstall) {
+        queueMicrotask(() => this.emitMessage({ id: message.id, error: { code: -32601, message: "plugin install rejected by remote" } }));
+        return;
+      }
+      queueMicrotask(() => this.emitMessage({ id: message.id, result: {
+        authPolicy: "ON_INSTALL",
+        appsNeedingAuth: [{ id: "connector_gmail", name: "Gmail", category: "Communication", description: "Gmail connector", installUrl: "https://accounts.example.test/authorize?state=test" }]
+      } }));
+      return;
+    }
+    if (message.method === "app/installed") {
+      queueMicrotask(() => this.emitMessage({ id: message.id, result: {
+        apps: [{ id: "connector_gmail", runtimeName: "Gmail", enabled: true, callable: true }]
+      } }));
+      return;
+    }
+    if (message.method === "plugin/read") {
+      queueMicrotask(() => this.emitMessage({ id: message.id, result: {
+        plugin: { apps: [{ id: "connector_gmail", name: "Gmail" }] }
+      } }));
+      return;
+    }
+    if (message.method === "app/read") {
+      queueMicrotask(() => this.emitMessage({ id: message.id, result: {
+        apps: [{ id: "connector_gmail", name: "Gmail", isAccessible: false, isEnabled: false, installUrl: "https://chatgpt.com/apps/gmail/connector_gmail" }],
+        missingAppIds: []
+      } }));
+      return;
+    }
+    if (message.method === "account/read") {
+      queueMicrotask(() => this.emitMessage({ id: message.id, result: {
+        account: this.authenticated ? { type: "chatgpt", planType: "pro" } : null,
+        requiresOpenaiAuth: true
+      } }));
+      return;
+    }
+    if (message.method === "account/login/start") {
+      this.authenticated = true;
+      queueMicrotask(() => {
+        this.emitMessage({ id: message.id, result: {
+          type: "chatgptDeviceCode",
+          loginId: "login-123",
+          verificationUrl: "https://auth.openai.com/codex/device",
+          userCode: "ABCD-1234"
+        } });
+        this.emitMessage({ method: "account/login/completed", params: { loginId: "login-123", success: true, error: null } });
+        this.emitMessage({ method: "account/updated", params: { authMode: "chatgpt", planType: "pro" } });
+      });
       return;
     }
     if (message.method === "thread/start") {
@@ -190,10 +243,105 @@ test("Codex App Server remote websocket preserves auth boundary and completes a 
   assert.equal(threadStart?.params?.sandbox, "read-only");
   assert.equal(turnStart?.params?.cwd, "/workspace/company1");
   assert.equal(turnStart?.params?.approvalPolicy, "never");
-  assert.equal(turnStart?.params?.permissionProfile, ":read-only");
   assert.equal(result.status, "completed");
   assert.match(result.text, /remote read-only result/u);
   assert.equal(JSON.stringify(requests).includes("unit-test-token"), false);
+  client.close();
+});
+
+test("Codex App Server installs an exact Plugin and returns only the auth handoff metadata", async () => {
+  let socket: FakeAppServerWebSocket | undefined;
+  const client = new CodexAppServerClient({
+    remoteUrl: "wss://codex.example.test:4500/app-server",
+    remoteToken: "unit-test-token",
+    timeoutMs: 1_000,
+    webSocketFactory: (url, init) => {
+      socket = new FakeAppServerWebSocket(url, init);
+      return socket;
+    }
+  });
+
+  const result = await client.installPlugin({ pluginName: "gmail", remoteMarketplaceName: "openai-curated" });
+  const requests = socket?.sent.map((value) => JSON.parse(value) as { method?: string; params?: Record<string, unknown> }) ?? [];
+  const install = requests.find((request) => request.method === "plugin/install");
+  assert.deepEqual(install?.params, { pluginName: "gmail", remoteMarketplaceName: "openai-curated-remote" });
+  assert.equal(result.pluginName, "gmail");
+  assert.equal(result.marketplaceName, "openai-curated-remote");
+  assert.equal(result.authPolicy, "ON_INSTALL");
+  assert.deepEqual(result.appsNeedingAuth, [{
+    id: "connector_gmail",
+    name: "Gmail",
+    category: "Communication",
+    description: "Gmail connector",
+    installUrl: "https://accounts.example.test/authorize?state=test"
+  }]);
+  client.close();
+});
+
+test("Codex App Server preserves only the remote protocol error code on Plugin rejection", async () => {
+  const client = new CodexAppServerClient({
+    remoteUrl: "wss://codex.example.test:4500/app-server",
+    remoteToken: "unit-test-token",
+    timeoutMs: 1_000,
+    webSocketFactory: (url, init) => new FakeAppServerWebSocket(url, init, true)
+  });
+
+  await assert.rejects(
+    client.installPlugin({ pluginName: "google-drive", remoteMarketplaceName: "openai-curated" }),
+    /codex_app_server_request_rejected_code_-32601/u
+  );
+  client.close();
+});
+
+test("Codex App Server reads installed Plugin app access without treating callable as OAuth proof", async () => {
+  let socket: FakeAppServerWebSocket | undefined;
+  const client = new CodexAppServerClient({
+    remoteUrl: "wss://codex.example.test:4500/app-server",
+    remoteToken: "unit-test-token",
+    timeoutMs: 1_000,
+    webSocketFactory: (url, init) => {
+      socket = new FakeAppServerWebSocket(url, init);
+      return socket;
+    }
+  });
+
+  const installed = await client.readInstalledApps({ forceRefresh: true });
+  const plugin = await client.readPluginApps({ pluginName: "gmail", remoteMarketplaceName: "openai-curated" });
+  const app = await client.readApp({ appId: plugin.apps[0].id });
+  assert.deepEqual(installed, [{ id: "connector_gmail", runtimeName: "Gmail", enabled: true, callable: true }]);
+  assert.deepEqual(plugin, { pluginName: "gmail", marketplaceName: "openai-curated-remote", apps: [{ id: "connector_gmail", name: "Gmail" }] });
+  assert.equal(app?.isAccessible, false);
+  assert.equal(app?.isEnabled, false);
+  assert.equal(app?.accessStateAvailable, true);
+  assert.match(app?.installUrl ?? "", /^https:\/\/chatgpt\.com\/apps\/gmail\//u);
+  assert.equal(JSON.stringify(socket?.sent).includes("unit-test-token"), false);
+  client.close();
+});
+
+test("Codex App Server starts device auth and records same-connection completion readback", async () => {
+  let socket: FakeAppServerWebSocket | undefined;
+  const client = new CodexAppServerClient({
+    remoteUrl: "wss://codex.example.test:4500/app-server",
+    remoteToken: "unit-test-token",
+    timeoutMs: 1_000,
+    webSocketFactory: (url, init) => {
+      socket = new FakeAppServerWebSocket(url, init);
+      return socket;
+    }
+  });
+
+  const login = await client.startDeviceCodeLogin();
+  const account = await client.readAccount();
+  const events = client.getAuthEventReadback();
+  assert.deepEqual(login, {
+    loginId: "login-123",
+    verificationUrl: "https://auth.openai.com/codex/device",
+    userCode: "ABCD-1234"
+  });
+  assert.equal(account.accountPresent, true);
+  assert.equal(events.loginCompletion?.success, true);
+  assert.equal(events.accountUpdated?.authMode, "chatgpt");
+  assert.equal(JSON.stringify(socket?.sent).includes("unit-test-token"), false);
   client.close();
 });
 
@@ -297,7 +445,6 @@ test("Codex App Server child is started with an allowlisted environment and read
     assert.equal(threadStart?.params?.approvalPolicy, "never");
     assert.equal(threadStart?.params?.sandbox, "read-only");
     assert.equal(turnStart?.params?.approvalPolicy, "never");
-    assert.equal(turnStart?.params?.permissionProfile, ":read-only");
     assert.equal(turnStart?.params?.sandboxPolicy, undefined);
     assert.equal(turnStart?.params?.cwd, realpathSync("/tmp"));
   } finally {

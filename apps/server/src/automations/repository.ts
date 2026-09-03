@@ -1,5 +1,5 @@
-import { makeId, nowIso, querySql, querySqlAsync, runSqlTransaction, sqlValue, type SqlTransactionStep } from "../db/client.js";
-import { requireCompanyAccess } from "../companies/repository.js";
+import { makeId, nowIso, querySql, querySqlAsync, runSqlTransaction, runSqlTransactionAsync, sqlValue, type SqlTransactionStep } from "../db/client.js";
+import { requireCompanyAccess, requireCompanyAccessAsync } from "../companies/repository.js";
 import type {
   AutomationDefinitionInput,
   AutomationPatchInput,
@@ -7,7 +7,7 @@ import type {
   CompanyConnectionAccountRefInput,
   CompanyMemoryInput
 } from "./contracts.js";
-import { runIdempotentSqlMutation } from "./idempotency.js";
+import { runIdempotentSqlMutation, runIdempotentSqlMutationAsync } from "./idempotency.js";
 
 export class AutomationRepositoryError extends Error {
   constructor(public readonly code: string) {
@@ -97,6 +97,20 @@ export function getAutomationRecord(companyId: string, automationId: string, inc
   return row ? toAutomationRecord(row) : undefined;
 }
 
+export async function getAutomationRecordAsync(companyId: string, automationId: string, includeArchived = false): Promise<AutomationRecord | undefined> {
+  const company = required(companyId, "company_id_required");
+  const id = required(automationId, "automation_id_required");
+  const row = (await querySqlAsync<AutomationRow>(`
+    SELECT id, company_id, revision, current_version_id, automation_type, name, description, goal, lane,
+           risk_level, approval_policy, worker_command_kind, create_approval, builder_spec_json, status,
+           archived_at, created_at, updated_at
+    FROM mvp_automations
+    WHERE id=${sqlValue(id)} AND company_id=${sqlValue(company)} ${includeArchived ? "" : "AND archived_at IS NULL"}
+    LIMIT 1
+  `))[0];
+  return row ? toAutomationRecord(row) : undefined;
+}
+
 export type AutomationVersionRecord = Omit<AutomationRecord, "currentVersionId" | "archivedAt"> & {
   versionId: string;
   automationId: string;
@@ -109,6 +123,35 @@ export function listAutomationVersions(companyId: string, automationId: string):
     WHERE company_id=${sqlValue(automation.companyId)} AND automation_id=${sqlValue(automation.id)}
     ORDER BY revision DESC
   `).map((row) => ({
+    versionId: row.id,
+    automationId: row.automation_id,
+    id: row.automation_id,
+    companyId: row.company_id,
+    revision: Number(row.revision),
+    automationType: row.automation_type,
+    name: row.name,
+    description: row.description,
+    goal: row.goal,
+    lane: row.lane,
+    riskLevel: row.risk_level,
+    approvalPolicy: row.approval_policy,
+    workerCommandKind: row.worker_command_kind,
+    createApproval: row.create_approval === 1,
+    builderSpec: parseObject(row.builder_spec_json),
+    status: row.status,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  }));
+}
+
+export async function listAutomationVersionsAsync(companyId: string, automationId: string): Promise<AutomationVersionRecord[]> {
+  const automation = await getAutomationRecordAsync(companyId, automationId, true);
+  if (!automation) throw new AutomationRepositoryError("automation_not_found");
+  return (await querySqlAsync<any>(`
+    SELECT * FROM mvp_automation_versions
+    WHERE company_id=${sqlValue(automation.companyId)} AND automation_id=${sqlValue(automation.id)}
+    ORDER BY revision DESC
+  `)).map((row) => ({
     versionId: row.id,
     automationId: row.automation_id,
     id: row.automation_id,
@@ -178,6 +221,55 @@ export function createAutomationRecord(input: {
   return requiredAutomation(companyId, automationId, true);
 }
 
+/** PostgreSQL HTTP routes must keep the complete mutation on the async DB boundary. */
+export async function createAutomationRecordAsync(input: {
+  companyId: string;
+  actorUserId: string;
+  definition: AutomationDefinitionInput;
+  automationId?: string;
+  idempotencyKey?: string;
+  idempotencyRequest?: unknown;
+}): Promise<AutomationRecord> {
+  const companyId = required(input.companyId, "company_id_required");
+  const actorUserId = required(input.actorUserId, "actor_user_id_required");
+  await requireCompanyAccessAsync(companyId, ["owner", "admin", "operator"], actorUserId);
+  const automationId = input.automationId ? required(input.automationId, "automation_id_required") : makeId("automation");
+  if (!input.idempotencyKey && (await querySqlAsync(`SELECT id FROM mvp_automations WHERE id=${sqlValue(automationId)} LIMIT 1`))[0]) {
+    throw new AutomationRepositoryError("automation_id_conflict");
+  }
+  const timestamp = nowIso();
+  const versionId = makeId("automation_version");
+  const record = recordFromDefinition({
+    id: automationId,
+    companyId,
+    revision: 1,
+    currentVersionId: versionId,
+    definition: input.definition,
+    status: "draft",
+    archivedAt: null,
+    createdAt: timestamp,
+    updatedAt: timestamp
+  });
+  const steps = [
+    insertAutomationStep(record),
+    insertVersionStep(record),
+    auditStep(companyId, actorUserId, "automation.created", "automation", automationId, {}, record, timestamp)
+  ];
+  if (input.idempotencyKey) {
+    const result = await runIdempotentSqlMutationAsync({
+      companyId,
+      scope: `automation:create:${actorUserId}`,
+      key: input.idempotencyKey,
+      request: input.idempotencyRequest ?? input.definition,
+      resourceSteps: steps,
+      response: { automation_id: automationId, revision: record.revision, current_version_id: versionId }
+    });
+    return await requiredAutomationAsync(companyId, String(result.response.automation_id), true);
+  }
+  await runSqlTransactionAsync(steps);
+  return await requiredAutomationAsync(companyId, automationId, true);
+}
+
 export function updateAutomationRecord(input: {
   companyId: string;
   actorUserId: string;
@@ -213,6 +305,41 @@ export function updateAutomationRecord(input: {
   return requiredAutomation(next.companyId, next.id, true);
 }
 
+export async function updateAutomationRecordAsync(input: {
+  companyId: string;
+  actorUserId: string;
+  automationId: string;
+  patch: AutomationPatchInput;
+}): Promise<AutomationRecord> {
+  await requireCompanyAccessAsync(required(input.companyId, "company_id_required"), ["owner", "admin", "operator"], required(input.actorUserId, "actor_user_id_required"));
+  const current = await requiredAutomationAsync(input.companyId, input.automationId, true);
+  if (current.archivedAt) throw new AutomationRepositoryError("automation_archived");
+  if (current.revision !== input.patch.expectedRevision) throw new AutomationRepositoryError("automation_revision_conflict");
+  const timestamp = nowIso();
+  const next: AutomationRecord = {
+    ...current,
+    revision: current.revision + 1,
+    currentVersionId: makeId("automation_version"),
+    automationType: input.patch.automationType ?? current.automationType,
+    name: input.patch.name ?? current.name,
+    description: input.patch.description ?? current.description,
+    goal: input.patch.goal ?? current.goal,
+    lane: input.patch.lane ?? current.lane,
+    riskLevel: input.patch.riskLevel ?? current.riskLevel,
+    approvalPolicy: input.patch.approvalPolicy ?? current.approvalPolicy,
+    workerCommandKind: input.patch.workerCommandKind ?? current.workerCommandKind,
+    createApproval: input.patch.createApproval ?? current.createApproval,
+    builderSpec: input.patch.builderSpec ?? current.builderSpec,
+    updatedAt: timestamp
+  };
+  await runSqlTransactionAsync([
+    insertVersionStep(next),
+    updateAutomationStep(next, current.revision),
+    auditStep(next.companyId, required(input.actorUserId, "actor_user_id_required"), "automation.updated", "automation", next.id, current, next, timestamp)
+  ]);
+  return await requiredAutomationAsync(next.companyId, next.id, true);
+}
+
 export function activateAutomationRecord(input: {
   companyId: string;
   actorUserId: string;
@@ -238,6 +365,33 @@ export function activateAutomationRecord(input: {
     auditStep(next.companyId, required(input.actorUserId, "actor_user_id_required"), "automation.activated", "automation", next.id, current, next, timestamp)
   ]);
   return requiredAutomation(next.companyId, next.id, true);
+}
+
+export async function activateAutomationRecordAsync(input: {
+  companyId: string;
+  actorUserId: string;
+  automationId: string;
+  expectedRevision: number;
+}): Promise<AutomationRecord> {
+  await requireCompanyAccessAsync(required(input.companyId, "company_id_required"), ["owner", "admin", "operator"], required(input.actorUserId, "actor_user_id_required"));
+  const current = await requiredAutomationAsync(input.companyId, input.automationId, true);
+  if (current.archivedAt) throw new AutomationRepositoryError("automation_archived");
+  if (current.revision !== input.expectedRevision) throw new AutomationRepositoryError("automation_revision_conflict");
+  if (current.status === "active") return current;
+  const timestamp = nowIso();
+  const next: AutomationRecord = {
+    ...current,
+    revision: current.revision + 1,
+    currentVersionId: makeId("automation_version"),
+    status: "active",
+    updatedAt: timestamp
+  };
+  await runSqlTransactionAsync([
+    insertVersionStep(next),
+    updateAutomationStep(next, current.revision),
+    auditStep(next.companyId, required(input.actorUserId, "actor_user_id_required"), "automation.activated", "automation", next.id, current, next, timestamp)
+  ]);
+  return await requiredAutomationAsync(next.companyId, next.id, true);
 }
 
 export function archiveAutomationRecord(input: {
@@ -285,6 +439,7 @@ export type AutomationScheduleRecord = {
   revision: number;
   nextRunAt: string | null;
   lastRunAt: string | null;
+  catchUpPolicy: "skip" | "coalesce_one" | "explicit_occurrence" | null;
   pausedAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -329,6 +484,7 @@ export function saveAutomationSchedule(input: {
     revision: existing ? existing.revision + 1 : 1,
     nextRunAt: input.nextRunAt ?? null,
     lastRunAt: existing?.lastRunAt ?? null,
+    catchUpPolicy: existing?.catchUpPolicy ?? "skip",
     pausedAt: input.schedule.enabled ? null : timestamp,
     createdAt: existing?.createdAt ?? timestamp,
     updatedAt: timestamp
@@ -339,6 +495,45 @@ export function saveAutomationSchedule(input: {
     auditStep(next.companyId, required(input.actorUserId, "actor_user_id_required"), existing ? "automation.schedule_updated" : "automation.schedule_created", "automation_schedule", next.id, existing ?? {}, next, timestamp)
   ]);
   return listAutomationSchedules(next.companyId, next.automationId).find((item) => item.id === next.id)!;
+}
+
+export async function saveAutomationScheduleAsync(input: {
+  companyId: string;
+  actorUserId: string;
+  automationId: string;
+  schedule: AutomationScheduleInput;
+  nextRunAt?: string | null;
+}): Promise<AutomationScheduleRecord> {
+  await requireCompanyAccessAsync(required(input.companyId, "company_id_required"), ["owner", "admin", "operator"], required(input.actorUserId, "actor_user_id_required"));
+  const automation = await requiredAutomationAsync(input.companyId, input.automationId, false);
+  const existing = (await listAutomationSchedulesAsync(automation.companyId, automation.id))[0];
+  if (existing && existing.revision !== input.schedule.expectedRevision) throw new AutomationRepositoryError("automation_schedule_revision_conflict");
+  if (!existing && input.schedule.expectedRevision !== 1) throw new AutomationRepositoryError("automation_schedule_revision_conflict");
+  const timestamp = nowIso();
+  const next: AutomationScheduleRecord = {
+    id: existing?.id ?? makeId("automation_schedule"),
+    companyId: automation.companyId,
+    automationId: automation.id,
+    automationVersionId: automation.currentVersionId,
+    kind: input.schedule.kind,
+    expression: input.schedule.expression,
+    timezone: input.schedule.timezone,
+    enabled: input.schedule.enabled,
+    status: input.schedule.enabled ? "active" : "paused",
+    revision: existing ? existing.revision + 1 : 1,
+    nextRunAt: input.nextRunAt ?? null,
+    lastRunAt: existing?.lastRunAt ?? null,
+    catchUpPolicy: existing?.catchUpPolicy ?? "skip",
+    pausedAt: input.schedule.enabled ? null : timestamp,
+    createdAt: existing?.createdAt ?? timestamp,
+    updatedAt: timestamp
+  };
+  const mutation = existing ? updateScheduleStep(next, existing.revision) : insertScheduleStep(next);
+  await runSqlTransactionAsync([
+    mutation,
+    auditStep(next.companyId, required(input.actorUserId, "actor_user_id_required"), existing ? "automation.schedule_updated" : "automation.schedule_created", "automation_schedule", next.id, existing ?? {}, next, timestamp)
+  ]);
+  return (await listAutomationSchedulesAsync(next.companyId, next.automationId)).find((item) => item.id === next.id)!;
 }
 
 export function setAutomationSchedulePaused(input: {
@@ -369,6 +564,11 @@ export function listCompanyMemory(companyId: string): CompanyMemoryRecord[] {
   return querySql<any>(`SELECT * FROM company_memory_entries WHERE company_id=${sqlValue(required(companyId, "company_id_required"))} AND status='active' ORDER BY memory_key ASC`).map(toMemoryRecord);
 }
 
+export async function listCompanyMemoryAsync(companyId: string): Promise<CompanyMemoryRecord[]> {
+  const rows = await querySqlAsync<any>(`SELECT * FROM company_memory_entries WHERE company_id=${sqlValue(required(companyId, "company_id_required"))} AND status='active' ORDER BY memory_key ASC`);
+  return rows.map(toMemoryRecord);
+}
+
 export function saveCompanyMemory(input: { companyId: string; actorUserId: string; memory: CompanyMemoryInput }): CompanyMemoryRecord {
   const companyId = required(input.companyId, "company_id_required");
   requireCompanyAccess(companyId, ["owner", "admin", "operator"], required(input.actorUserId, "actor_user_id_required"));
@@ -391,6 +591,11 @@ export function listCompanyConnectionRefs(companyId: string): CompanyConnectionR
   return querySql<any>(`SELECT * FROM company_connection_account_refs WHERE company_id=${sqlValue(required(companyId, "company_id_required"))} ORDER BY platform, account_ref`).map(toConnectionRefRecord);
 }
 
+export async function listCompanyConnectionRefsAsync(companyId: string): Promise<CompanyConnectionRefRecord[]> {
+  const rows = await querySqlAsync<any>(`SELECT * FROM company_connection_account_refs WHERE company_id=${sqlValue(required(companyId, "company_id_required"))} ORDER BY platform, account_ref`);
+  return rows.map(toConnectionRefRecord);
+}
+
 export function saveCompanyConnectionRef(input: { companyId: string; actorUserId: string; connection: CompanyConnectionAccountRefInput }): CompanyConnectionRefRecord {
   const companyId = required(input.companyId, "company_id_required");
   requireCompanyAccess(companyId, ["owner", "admin"], required(input.actorUserId, "actor_user_id_required"));
@@ -411,6 +616,26 @@ export function saveCompanyConnectionRef(input: { companyId: string; actorUserId
   return listCompanyConnectionRefs(companyId).find((item) => item.id === next.id)!;
 }
 
+export async function saveCompanyConnectionRefAsync(input: { companyId: string; actorUserId: string; connection: CompanyConnectionAccountRefInput }): Promise<CompanyConnectionRefRecord> {
+  const companyId = required(input.companyId, "company_id_required");
+  await requireCompanyAccessAsync(companyId, ["owner", "admin"], required(input.actorUserId, "actor_user_id_required"));
+  const current = (await querySqlAsync<any>(`SELECT * FROM company_connection_account_refs WHERE company_id=${sqlValue(companyId)} AND platform=${sqlValue(input.connection.platform)} AND account_ref=${sqlValue(input.connection.accountRef)} LIMIT 1`))[0];
+  const existing = current ? toConnectionRefRecord(current) : undefined;
+  if (existing && input.connection.expectedRevision !== existing.revision) throw new AutomationRepositoryError("company_connection_ref_revision_conflict");
+  if (!existing && input.connection.expectedRevision !== null) throw new AutomationRepositoryError("company_connection_ref_revision_conflict");
+  const timestamp = nowIso();
+  if (existing?.status === "revoked") throw new AutomationRepositoryError("company_connection_ref_reconnect_action_required");
+  if (input.connection.expiresAt && Date.parse(input.connection.expiresAt) <= Date.parse(timestamp)) {
+    throw new AutomationRepositoryError("company_connection_ref_expired");
+  }
+  const next: CompanyConnectionRefRecord = { id: existing?.id ?? makeId("company_connection"), companyId, platform: input.connection.platform, accountRef: input.connection.accountRef, status: input.connection.status, scopes: input.connection.scopes, expiresAt: input.connection.expiresAt, oauthState: input.connection.oauthState, verificationStatus: input.connection.verificationStatus, lastVerifiedAt: input.connection.lastVerifiedAt, reconnectRequestedAt: existing?.reconnectRequestedAt ?? null, revokedAt: input.connection.status === "revoked" ? timestamp : null, revision: existing ? existing.revision + 1 : 1, createdAt: existing?.createdAt ?? timestamp, updatedAt: timestamp };
+  await runSqlTransactionAsync([
+    existing ? updateConnectionStep(next, existing.revision) : insertConnectionStep(next),
+    auditStep(companyId, required(input.actorUserId, "actor_user_id_required"), existing ? "company_connection.updated" : "company_connection.created", "company_connection", next.id, existing ?? {}, next, timestamp)
+  ]);
+  return (await listCompanyConnectionRefsAsync(companyId)).find((item) => item.id === next.id)!;
+}
+
 export function requestCompanyConnectionReconnect(input: { companyId: string; actorUserId: string; connectionId: string; expectedRevision: number }): CompanyConnectionRefRecord {
   requireCompanyAccess(required(input.companyId, "company_id_required"), ["owner", "admin"], required(input.actorUserId, "actor_user_id_required"));
   const current = requiredConnectionRef(input.companyId, input.connectionId);
@@ -422,6 +647,20 @@ export function requestCompanyConnectionReconnect(input: { companyId: string; ac
     auditStep(next.companyId, required(input.actorUserId, "actor_user_id_required"), "company_connection.reconnect_requested", "company_connection", next.id, current, next, timestamp)
   ]);
   return requiredConnectionRef(next.companyId, next.id);
+}
+
+export async function requestCompanyConnectionReconnectAsync(input: { companyId: string; actorUserId: string; connectionId: string; expectedRevision: number }): Promise<CompanyConnectionRefRecord> {
+  const companyId = required(input.companyId, "company_id_required");
+  await requireCompanyAccessAsync(companyId, ["owner", "admin"], required(input.actorUserId, "actor_user_id_required"));
+  const current = await requiredConnectionRefAsync(companyId, input.connectionId);
+  if (current.revision !== input.expectedRevision) throw new AutomationRepositoryError("company_connection_ref_revision_conflict");
+  const timestamp = nowIso();
+  const next: CompanyConnectionRefRecord = { ...current, status: "reconnect_required", oauthState: "reauthorization_required", verificationStatus: "unverified", reconnectRequestedAt: timestamp, revokedAt: null, revision: current.revision + 1, updatedAt: timestamp };
+  await runSqlTransactionAsync([
+    updateConnectionStep(next, current.revision),
+    auditStep(next.companyId, required(input.actorUserId, "actor_user_id_required"), "company_connection.reconnect_requested", "company_connection", next.id, current, next, timestamp)
+  ]);
+  return requiredConnectionRefAsync(next.companyId, next.id);
 }
 
 export function revokeCompanyConnectionRef(input: { companyId: string; actorUserId: string; connectionId: string; expectedRevision: number }): CompanyConnectionRefRecord {
@@ -437,8 +676,28 @@ export function revokeCompanyConnectionRef(input: { companyId: string; actorUser
   return requiredConnectionRef(next.companyId, next.id);
 }
 
+export async function revokeCompanyConnectionRefAsync(input: { companyId: string; actorUserId: string; connectionId: string; expectedRevision: number }): Promise<CompanyConnectionRefRecord> {
+  const companyId = required(input.companyId, "company_id_required");
+  await requireCompanyAccessAsync(companyId, ["owner", "admin"], required(input.actorUserId, "actor_user_id_required"));
+  const current = await requiredConnectionRefAsync(companyId, input.connectionId);
+  if (current.revision !== input.expectedRevision) throw new AutomationRepositoryError("company_connection_ref_revision_conflict");
+  const timestamp = nowIso();
+  const next: CompanyConnectionRefRecord = { ...current, status: "revoked", oauthState: "revoked", verificationStatus: "unverified", reconnectRequestedAt: null, revokedAt: timestamp, revision: current.revision + 1, updatedAt: timestamp };
+  await runSqlTransactionAsync([
+    updateConnectionStep(next, current.revision),
+    auditStep(next.companyId, required(input.actorUserId, "actor_user_id_required"), "company_connection.revoked", "company_connection", next.id, current, next, timestamp)
+  ]);
+  return requiredConnectionRefAsync(next.companyId, next.id);
+}
+
 function requiredAutomation(companyId: string, automationId: string, includeArchived: boolean): AutomationRecord {
   const found = getAutomationRecord(companyId, automationId, includeArchived);
+  if (!found) throw new AutomationRepositoryError("automation_not_found");
+  return found;
+}
+
+async function requiredAutomationAsync(companyId: string, automationId: string, includeArchived: boolean): Promise<AutomationRecord> {
+  const found = await getAutomationRecordAsync(companyId, automationId, includeArchived);
   if (!found) throw new AutomationRepositoryError("automation_not_found");
   return found;
 }
@@ -463,9 +722,9 @@ function updateAutomationStep(record: AutomationRecord, expectedRevision: number
   return { sql: `UPDATE mvp_automations SET automation_type=${sqlValue(record.automationType)}, name=${sqlValue(record.name)}, description=${sqlValue(record.description)}, "desc"=${sqlValue(record.description)}, goal=${sqlValue(record.goal)}, lane=${sqlValue(record.lane)}, risk_level=${sqlValue(record.riskLevel)}, approval_policy=${sqlValue(record.approvalPolicy)}, worker_command_kind=${sqlValue(record.workerCommandKind)}, create_approval=${record.createApproval ? 1 : 0}, status=${sqlValue(record.status)}, builder_spec_json=${sqlValue(record.builderSpec)}, current_version_id=${sqlValue(record.currentVersionId)}, revision=${record.revision}, archived_at=${sqlValue(record.archivedAt)}, updated_at=${sqlValue(record.updatedAt)} WHERE id=${sqlValue(record.id)} AND company_id=${sqlValue(record.companyId)} AND revision=${expectedRevision}`, expectChanges: 1 };
 }
 
-function insertScheduleStep(row: AutomationScheduleRecord): SqlTransactionStep { return { sql: `INSERT INTO mvp_automation_schedules (id, company_id, project_id, automation_id, automation_version_id, kind, expression, timezone, enabled, status, revision, next_run_at, last_run_at, paused_at, created_at, updated_at) VALUES (${sqlValue(row.id)}, ${sqlValue(row.companyId)}, ${sqlValue(row.companyId)}, ${sqlValue(row.automationId)}, ${sqlValue(row.automationVersionId)}, ${sqlValue(row.kind)}, ${sqlValue(row.expression)}, ${sqlValue(row.timezone)}, ${row.enabled ? 1 : 0}, ${sqlValue(row.status)}, ${row.revision}, ${sqlValue(row.nextRunAt)}, ${sqlValue(row.lastRunAt)}, ${sqlValue(row.pausedAt)}, ${sqlValue(row.createdAt)}, ${sqlValue(row.updatedAt)})`, expectChanges: 1 }; }
-function updateScheduleStep(row: AutomationScheduleRecord, expectedRevision: number): SqlTransactionStep { return { sql: `UPDATE mvp_automation_schedules SET automation_version_id=${sqlValue(row.automationVersionId)}, kind=${sqlValue(row.kind)}, expression=${sqlValue(row.expression)}, timezone=${sqlValue(row.timezone)}, enabled=${row.enabled ? 1 : 0}, status=${sqlValue(row.status)}, revision=${row.revision}, next_run_at=${sqlValue(row.nextRunAt)}, last_run_at=${sqlValue(row.lastRunAt)}, paused_at=${sqlValue(row.pausedAt)}, updated_at=${sqlValue(row.updatedAt)} WHERE id=${sqlValue(row.id)} AND company_id=${sqlValue(row.companyId)} AND automation_id=${sqlValue(row.automationId)} AND revision=${expectedRevision}`, expectChanges: 1 }; }
-function toScheduleRecord(row: any): AutomationScheduleRecord { return { id: row.id, companyId: row.company_id, automationId: row.automation_id, automationVersionId: row.automation_version_id, kind: row.kind, expression: row.expression, timezone: row.timezone, enabled: row.enabled === 1, status: row.status, revision: Number(row.revision), nextRunAt: row.next_run_at, lastRunAt: row.last_run_at, pausedAt: row.paused_at, createdAt: row.created_at, updatedAt: row.updated_at }; }
+function insertScheduleStep(row: AutomationScheduleRecord): SqlTransactionStep { return { sql: `INSERT INTO mvp_automation_schedules (id, company_id, project_id, automation_id, automation_version_id, kind, expression, timezone, enabled, status, revision, next_run_at, last_run_at, catch_up_policy, paused_at, created_at, updated_at) VALUES (${sqlValue(row.id)}, ${sqlValue(row.companyId)}, ${sqlValue(row.companyId)}, ${sqlValue(row.automationId)}, ${sqlValue(row.automationVersionId)}, ${sqlValue(row.kind)}, ${sqlValue(row.expression)}, ${sqlValue(row.timezone)}, ${row.enabled ? 1 : 0}, ${sqlValue(row.status)}, ${row.revision}, ${sqlValue(row.nextRunAt)}, ${sqlValue(row.lastRunAt)}, ${sqlValue(row.catchUpPolicy)}, ${sqlValue(row.pausedAt)}, ${sqlValue(row.createdAt)}, ${sqlValue(row.updatedAt)})`, expectChanges: 1 }; }
+function updateScheduleStep(row: AutomationScheduleRecord, expectedRevision: number): SqlTransactionStep { return { sql: `UPDATE mvp_automation_schedules SET automation_version_id=${sqlValue(row.automationVersionId)}, kind=${sqlValue(row.kind)}, expression=${sqlValue(row.expression)}, timezone=${sqlValue(row.timezone)}, enabled=${row.enabled ? 1 : 0}, status=${sqlValue(row.status)}, revision=${row.revision}, next_run_at=${sqlValue(row.nextRunAt)}, last_run_at=${sqlValue(row.lastRunAt)}, catch_up_policy=${sqlValue(row.catchUpPolicy)}, paused_at=${sqlValue(row.pausedAt)}, updated_at=${sqlValue(row.updatedAt)} WHERE id=${sqlValue(row.id)} AND company_id=${sqlValue(row.companyId)} AND automation_id=${sqlValue(row.automationId)} AND revision=${expectedRevision}`, expectChanges: 1 }; }
+function toScheduleRecord(row: any): AutomationScheduleRecord { return { id: row.id, companyId: row.company_id, automationId: row.automation_id, automationVersionId: row.automation_version_id, kind: row.kind, expression: row.expression, timezone: row.timezone, enabled: row.enabled === 1, status: row.status, revision: Number(row.revision), nextRunAt: row.next_run_at, lastRunAt: row.last_run_at, catchUpPolicy: row.catch_up_policy === "skip" || row.catch_up_policy === "coalesce_one" || row.catch_up_policy === "explicit_occurrence" ? row.catch_up_policy : null, pausedAt: row.paused_at, createdAt: row.created_at, updatedAt: row.updated_at }; }
 
 function insertMemoryStep(row: CompanyMemoryRecord): SqlTransactionStep { return { sql: `INSERT INTO company_memory_entries (id, company_id, memory_key, kind, title, body, revision, status, archived_at, created_at, updated_at) VALUES (${sqlValue(row.id)}, ${sqlValue(row.companyId)}, ${sqlValue(row.key)}, ${sqlValue(row.kind)}, ${sqlValue(row.title)}, ${sqlValue(row.body)}, ${row.revision}, ${sqlValue(row.status)}, NULL, ${sqlValue(row.createdAt)}, ${sqlValue(row.updatedAt)})`, expectChanges: 1 }; }
 function updateMemoryStep(row: CompanyMemoryRecord, expectedRevision: number): SqlTransactionStep { return { sql: `UPDATE company_memory_entries SET kind=${sqlValue(row.kind)}, title=${sqlValue(row.title)}, body=${sqlValue(row.body)}, revision=${row.revision}, status=${sqlValue(row.status)}, archived_at=${sqlValue(row.archivedAt)}, updated_at=${sqlValue(row.updatedAt)} WHERE id=${sqlValue(row.id)} AND company_id=${sqlValue(row.companyId)} AND revision=${expectedRevision}`, expectChanges: 1 }; }
@@ -477,6 +736,12 @@ function toConnectionRefRecord(row: any): CompanyConnectionRefRecord { return { 
 
 function requiredConnectionRef(companyId: string, connectionId: string): CompanyConnectionRefRecord {
   const row = querySql<any>(`SELECT * FROM company_connection_account_refs WHERE company_id=${sqlValue(required(companyId, "company_id_required"))} AND id=${sqlValue(required(connectionId, "company_connection_ref_id_required"))} LIMIT 1`)[0];
+  if (!row) throw new AutomationRepositoryError("company_connection_ref_not_found");
+  return toConnectionRefRecord(row);
+}
+
+async function requiredConnectionRefAsync(companyId: string, connectionId: string): Promise<CompanyConnectionRefRecord> {
+  const row = (await querySqlAsync<any>(`SELECT * FROM company_connection_account_refs WHERE company_id=${sqlValue(required(companyId, "company_id_required"))} AND id=${sqlValue(required(connectionId, "company_connection_ref_id_required"))} LIMIT 1`))[0];
   if (!row) throw new AutomationRepositoryError("company_connection_ref_not_found");
   return toConnectionRefRecord(row);
 }

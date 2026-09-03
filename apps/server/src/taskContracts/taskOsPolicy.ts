@@ -12,10 +12,10 @@ export const TRACE_SCHEMA_V1 = "automation_os_unified_trace.v1" as const;
 export const CANARY_RING_SCHEMA_V1 = "automation_os_canary_ring.v1" as const;
 export const BACKPRESSURE_SCHEMA_V1 = "automation_os_backpressure.v1" as const;
 
-export type ExecutionSurface = "api" | "connector" | "local" | "browser_use_cli" | "codex_app_browser";
+export type ExecutionSurface = "api" | "connector" | "local" | "browser_use_cli" | "codex_app_browser" | "aos_chrome_companion_profile_instance";
 export type SurfaceRouteV1 = { schema: typeof SURFACE_ROUTER_SCHEMA_V1; selected: ExecutionSurface | null; attempted: readonly ExecutionSurface[]; ui_required: boolean; exact_blocker: string | null; next_action: string };
 export function routeSurface(input: { uiRequired: boolean; preferred?: ExecutionSurface; available: readonly ExecutionSurface[]; allowed: readonly ExecutionSurface[] }): SurfaceRouteV1 {
-  const allowed = new Set(input.allowed); const candidates: Array<ExecutionSurface | undefined> = input.uiRequired ? [input.preferred, "browser_use_cli", "codex_app_browser"] : [input.preferred, "api", "connector", "local"];
+  const allowed = new Set(input.allowed); const candidates: Array<ExecutionSurface | undefined> = input.uiRequired ? [input.preferred, "aos_chrome_companion_profile_instance", "browser_use_cli", "codex_app_browser"] : [input.preferred, "api", "connector", "local"];
   const attempted = candidates.filter((value, index): value is ExecutionSurface => Boolean(value) && candidates.indexOf(value) === index).filter((value) => allowed.has(value) && input.available.includes(value));
   const selected = attempted[0] ?? null;
   return { schema: SURFACE_ROUTER_SCHEMA_V1, selected, attempted, ui_required: input.uiRequired, exact_blocker: selected ? null : "canonical_surface_unavailable", next_action: selected ? `execute via ${selected}` : "provide an allowed canonical surface or continue at the next non-UI stage" };

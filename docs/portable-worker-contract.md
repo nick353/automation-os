@@ -10,10 +10,20 @@ controller identity, first-class root, or App-owned session.
 workflow and run manifests. Every portable workflow uses:
 
 - `automation_os_worker` as the execution backend
-- the canonical `browser_use_cli` surface for browser work
-- the `mcp` gateway for connector work such as Gmail
+- the current AOS-selected signed Chrome Extension / Chrome Plugin Profile 2
+  surface for browser work
+- the configured Codex App Server / MCP plugin gateway for connector work such
+  as Gmail, Drive, Calendar, and Supabase
+- Zeabur's Codex App Server is the preferred connector execution owner. The Mac
+  worker's default scope is Chrome Plugin / Profile 2 only; a Mac connector
+  fallback is a separate explicit override and is never implicit.
 - `app_dependency: false`
 - an explicit idempotency key
+
+The detailed provider boundary is defined in
+[`docs/connector-execution-boundary.md`](./connector-execution-boundary.md).
+Legacy `browser_use_cli` references remain compatibility artifacts until each
+workflow is migrated; they must not be selected through an implicit fallback.
 
 The canary always sets `external_action_allowed: false`. It validates the
 binding and writes a receipt without starting Browser Use, calling a connector,
@@ -75,9 +85,13 @@ The runner is invoked without a shell and receives `--workflow-id`, `--run-id`,
 `--step-id`, `--source-trigger`, and `--idempotency-key`. It must print one
 final JSON receipt such as `{"status":"complete","external_action_executed":false}`
 or a blocked receipt with `exact_blocker`. The runner is the place to call the
-canonical Browser Use CLI and the Codex Server/MCP plugin gateway; Codex App is
-not part of this process. If the runner is absent, the run stops with the exact
-blocker `portable_external_adapter_not_configured`.
+canonical Browser Use CLI and the Codex Server/MCP plugin gateway. Connector
+execution belongs to the Zeabur Codex App Server Plugin registry when its
+installed/authenticated/company-scoped readback is ready. The Mac runner must
+not execute Gmail/Supabase by default; it returns
+`zeabur_connector_execution_handoff_required` unless an explicit Mac
+connector fallback is part of the run admission. If the runner is absent, the
+run stops with the exact blocker `portable_external_adapter_not_configured`.
 
 ## Worker relocation and Codex account switching
 

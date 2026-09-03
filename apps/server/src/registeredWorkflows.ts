@@ -341,6 +341,34 @@ export function readTrustedRegisteredWorkflowManifestHash(workflowId: string): s
   return createHash("sha256").update(canonicalJson(definition), "utf8").digest("hex");
 }
 
+/**
+ * Fingerprint the registered workflow definition without mutable runtime
+ * overlays. Scheduler/scheduleControl are operational state, not a source
+ * definition change, so an isolated safe-stop canary must remain valid when
+ * those fields are restored into the live database.
+ */
+export function registeredWorkflowDefinitionFingerprint(workflow: Pick<
+  RegisteredWorkflowRow,
+  "id" | "status" | "runner_kind" | "start_command_json" | "source_refs_json" | "provenance_json"
+>): string {
+  const provenance = parseJson<Record<string, unknown>>(workflow.provenance_json, {});
+  const stableProvenance = Object.fromEntries(
+    Object.entries(provenance).filter(([key]) => key !== "scheduler" && key !== "scheduleControl")
+  );
+  return createHash("sha256").update(JSON.stringify({
+    id: workflow.id,
+    status: workflow.status,
+    runner_kind: workflow.runner_kind,
+    start_command_json: workflow.start_command_json,
+    source_refs_json: workflow.source_refs_json,
+    provenance_json: JSON.stringify(stableProvenance)
+  }), "utf8").digest("hex");
+}
+
+export function registeredWorkflowScheduleFingerprint(workflow: Pick<RegisteredWorkflowRow, "schedule_json">): string {
+  return createHash("sha256").update(JSON.stringify({ schedule_json: workflow.schedule_json }), "utf8").digest("hex");
+}
+
 type StoredWorkflowFields = Pick<
   RegisteredWorkflowRow,
   | "id"
@@ -714,6 +742,18 @@ export function findFixedRegisteredWorkflow(id: string): RegisteredWorkflowDefin
 
 export function getRegisteredWorkflowStartCommand(id: string, companyIds?: readonly string[]): string | undefined {
   const workflow = companyIds ? getRegisteredWorkflowForCompanies(id, companyIds) : getRegisteredWorkflow(id);
+  if (companyIds && !workflow) return undefined;
+  const fixedCommand = findFixedRegisteredWorkflow(id)?.startCommand.command;
+  if (fixedCommand) return fixedCommand;
+  if (!workflow || workflow.runner_kind !== "research_plan_registered") return undefined;
+  const startCommand = parseJson<{ command?: unknown }>(workflow.start_command_json, {});
+  return typeof startCommand.command === "string" ? startCommand.command : undefined;
+}
+
+export async function getRegisteredWorkflowStartCommandAsync(id: string, companyIds?: readonly string[]): Promise<string | undefined> {
+  const workflow = companyIds
+    ? await getRegisteredWorkflowForCompaniesAsync(id, companyIds)
+    : await getRegisteredWorkflowAsync(id);
   if (companyIds && !workflow) return undefined;
   const fixedCommand = findFixedRegisteredWorkflow(id)?.startCommand.command;
   if (fixedCommand) return fixedCommand;

@@ -120,9 +120,17 @@ const VIDEO_QA_TERMS = [
 
 const AOS_NO_EFFECT_BRIDGE_MARKERS = [
   "aos_trigger_bridge_v1",
+  "external_action_executed"
+];
+
+const AOS_NO_EFFECT_BRIDGE_PROSE_MARKERS = [
   "provider-neutral, no-effect trigger",
-  "external_action_executed",
-  "do not use browser use"
+  "provider-neutral no-effect trigger"
+];
+
+const AOS_NO_EFFECT_BRIDGE_BROWSER_PROSE_MARKERS = [
+  "do not use browser use",
+  "never use browser use"
 ];
 
 const BROWSER_LANE_TERMS = [
@@ -150,6 +158,10 @@ const AUTHORITY_MARKERS = [
   "_shared/RUNBOOK.md",
   "STAGE_OBSERVATION_SCHEMA.md"
 ];
+
+// Technical lifecycle terms such as "post-readback" and "postcondition"
+// describe verification after an action; they are not publish/post effects.
+const POST_EFFECT_TERM = /\bpost(?:ing)?(?![- ]?(?:readback|condition|flight))\b/;
 
 // These files are created inside an immutable run directory.  They are
 // required by a workflow's completion contract, but their absence in the
@@ -426,6 +438,18 @@ function cleanToken(token: string): string {
   return token.replace(/[),.;:]+$/g, "");
 }
 
+function isPlaceholderAuthorityPath(path: string): boolean {
+  // Prompts often document run-owned paths with placeholders such as
+  // ``/artifacts/<fresh run.id>/...``.  The whitespace-bounded path scanner
+  // sees only ``<fresh`` and must not turn that prose into a missing file.
+  return path.split("/").some((segment) =>
+    segment.startsWith("<")
+    || segment.endsWith(">")
+    || segment.includes("${")
+    || segment.includes("}")
+  );
+}
+
 function uniqueBy<T>(items: T[], keyFn: (item: T) => string): T[] {
   const seen = new Set<string>();
   const result: T[] = [];
@@ -450,18 +474,18 @@ function extractAuthorityFiles(automation: AutomationTomlRecord): AutomationHeal
     while (offset < prompt.length) {
       const start = prompt.indexOf(prefix, offset);
       if (start < 0) break;
-      const suffix = prompt.slice(start + prefix.length).split(/[\s`"',)]/u, 1)[0].trim();
+      const suffix = prompt.slice(start + prefix.length).split(/[\s`"',)、。！？：；「」『』【】を]/u, 1)[0].trim();
       const path = `${prefix}${suffix}`;
-      if (looksLikeAuthority(path)) {
+      if (!isPlaceholderAuthorityPath(path) && looksLikeAuthority(path)) {
         files.push({ label: basename(path), path, exists: existsSync(path) });
       }
       offset = start + prefix.length;
     }
   }
-  const absolutePathRegex = /\/Users\/[^\s"'`,)]+/g;
+  const absolutePathRegex = /\/Users\/[^\s"'`,)、。！？：；「」『』【】を]+/g;
   for (const match of prompt.matchAll(absolutePathRegex)) {
     const path = cleanToken(match[0]);
-    if (looksLikeAuthority(path)) {
+    if (!isPlaceholderAuthorityPath(path) && looksLikeAuthority(path)) {
       files.push({ label: basename(path), path, exists: existsSync(path) });
     }
   }
@@ -570,20 +594,25 @@ function detectVideoQa(automation: AutomationTomlRecord): AutomationHealthEntry[
   const lower = `${automation.id}\n${automation.name}\n${automation.status}\n${prompt}`.toLowerCase();
   const wordingFound = VIDEO_QA_TERMS.filter((term) => lower.includes(term.toLowerCase()));
   if (automation.status !== "ACTIVE") return { likely_required: false, wording_found: wordingFound, status: "not_required" };
-  const isAosNoEffectBridge = AOS_NO_EFFECT_BRIDGE_MARKERS.every((marker) => lower.includes(marker));
+  const isAosNoEffectBridge = AOS_NO_EFFECT_BRIDGE_MARKERS.every((marker) => lower.includes(marker))
+    && AOS_NO_EFFECT_BRIDGE_PROSE_MARKERS.some((marker) => lower.includes(marker))
+    && AOS_NO_EFFECT_BRIDGE_BROWSER_PROSE_MARKERS.some((marker) => lower.includes(marker));
   if (isAosNoEffectBridge) return { likely_required: false, wording_found: wordingFound, status: "not_required" };
   const hasPositiveEffectInstruction = prompt.split(/\r?\n/u).some((line) => {
     const normalized = line.toLowerCase();
-    const effectTerm = /(publish|post|posting|pinterest|etsy|printify|linkedin|direct_publish|write|writes|send|submit|calendar|sheets)/.test(normalized);
+    const effectTerm = /(publish|pinterest|etsy|printify|linkedin|direct_publish|write|writes|send|submit|calendar|sheets)/.test(normalized)
+      || POST_EFFECT_TERM.test(normalized);
     const prohibition = /(never|do not|don't|without|no external|しない|行わない|実行しない|禁止)/.test(normalized);
     const readOnlyMarker = /(read[- ]only|読み取り専用)/.test(normalized);
     const mixedPositive = /(?:then|after|also|and)\s+(?:[^.!?]*\s+)?(publish|post|posting|write|writes|send|submit|calendar|sheets)/.test(normalized);
     return effectTerm && !prohibition && (!readOnlyMarker || mixedPositive);
   });
-  const likelyRequired =
-    /(publish|post|posting|pinterest|etsy|printify|linkedin|direct_publish|write|writes|send|submit|calendar|sheets)/.test(lower) &&
-    !/(inactive|historical proof only|do not run)/.test(lower) &&
-    hasPositiveEffectInstruction;
+  const hasPotentialEffectTerm =
+    /(publish|pinterest|etsy|printify|linkedin|direct_publish|write|writes|send|submit|calendar|sheets)/.test(lower)
+    || POST_EFFECT_TERM.test(lower);
+  const likelyRequired = hasPotentialEffectTerm
+    && !/(inactive|historical proof only|do not run)/.test(lower)
+    && hasPositiveEffectInstruction;
   if (!likelyRequired) return { likely_required: false, wording_found: wordingFound, status: "not_required" };
   if (wordingFound.length >= 3) return { likely_required: true, wording_found: wordingFound, status: "ok" };
   return {

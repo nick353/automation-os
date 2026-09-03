@@ -3,9 +3,11 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { runtimeBoundaryNextAction } from "./lib/runtime-boundary-route.mjs";
 
 const repoRoot = resolve(process.env.AUTOMATION_OS_REPO_ROOT || process.cwd());
-const expectedEffects = "read_only";
+const expectedServerEffects = "read_only";
+const expectedWorkerEffects = "enabled";
 const generatedAt = new Date().toISOString();
 
 function readText(path) {
@@ -16,14 +18,15 @@ function shellDefaultReadback(path) {
   const text = readText(path);
   if (text === null) return { path, exists: false };
   const dynamicRunnerSelection = /unset AUTOMATION_OS_PORTABLE_EXTERNAL_RUNNER AUTOMATION_OS_PORTABLE_EXTERNAL_DEFAULT_RUNNER/u.test(text);
-  const effects = text.match(/AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS=.*?read_only/u)?.[0] ?? null;
+  const effects = text.match(/AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS=.*?\$\{AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS:-([^}]+)\}/u)?.[1] ?? null;
   const legacyRunner = /portable-external-runner\.mjs/u.test(text);
   const enabledEffects = /AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS=.*?enabled/u.test(text);
   return {
     path,
     exists: true,
     dynamicRunnerSelection,
-    readOnlyDefault: Boolean(effects),
+    readOnlyDefault: effects === "read_only",
+    effectsDefault: effects,
     legacyRunnerReference: legacyRunner,
     enabledEffectsReference: enabledEffects
   };
@@ -32,11 +35,13 @@ function shellDefaultReadback(path) {
 function launchdReadback(path, expectsDynamicSelection = true) {
   const text = readText(path);
   if (text === null) return { path, exists: false };
+  const effects = text.match(/<key>AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS<\/key>\s*<string>([^<]+)<\/string>/u)?.[1] ?? null;
   return {
     path,
     exists: true,
     dynamicRunnerSelection: expectsDynamicSelection ? !text.includes("AUTOMATION_OS_PORTABLE_EXTERNAL_RUNNER") : null,
-    readOnlyDefault: expectsDynamicSelection ? text.includes("<string>read_only</string>") : null,
+    readOnlyDefault: effects === "read_only",
+    effectsDefault: effects,
     delegatesToInstalledHelper: expectsDynamicSelection ? null : text.includes("Library/Application Support/Automation OS/start-automation-os-server.sh"),
     legacyRunnerReference: text.includes("portable-external-runner.mjs"),
     enabledEffectsReference: text.includes("<string>enabled</string>")
@@ -86,6 +91,7 @@ function processEnvReadback(pid, command, processKind) {
 }
 
 const installedRoot = resolve(process.env.AUTOMATION_OS_INSTALLED_HELPER_ROOT || `${process.env.HOME || ""}/Library/Application Support/Automation OS`);
+const selectorPath = resolve(process.env.AUTOMATION_OS_SELECTOR_PATH || `${process.env.HOME || ""}/.social-flow/web-operation-backend.json`);
 const source = {
   server: shellDefaultReadback(resolve(repoRoot, "scripts/start-automation-os-server.sh")),
   worker: shellDefaultReadback(resolve(repoRoot, "scripts/start-automation-os-worker.sh"))
@@ -100,11 +106,26 @@ const launchd = {
 };
 const live = processIds().map((entry) => processEnvReadback(entry.pid, entry.command, entry.processKind));
 
-const staticEntries = [...Object.values(source), ...Object.values(launchd), ...Object.values(installed)];
-const staticMismatch = staticEntries.some((entry) =>
-  (!entry.exists || entry.delegatesToInstalledHelper === false || entry.dynamicRunnerSelection === false || entry.readOnlyDefault === false || entry.legacyRunnerReference || entry.enabledEffectsReference)
-);
-const staleLive = live.some((entry) => Boolean(entry.runner) || entry.effects && entry.effects !== expectedEffects);
+const staticEntries = [
+  ["server_helper", source.server],
+  ["worker_helper", source.worker],
+  ["server_launchd", launchd.server],
+  ["worker_launchd", launchd.worker],
+  ["server_installed_helper", installed.server],
+  ["worker_installed_helper", installed.worker]
+];
+const staticMismatch = staticEntries.some(([role, entry]) => {
+  if (!entry.exists || entry.delegatesToInstalledHelper === false || entry.dynamicRunnerSelection === false || entry.legacyRunnerReference) return true;
+  if (role === "server_launchd") return entry.enabledEffectsReference === true;
+  const expectedEffects = role.startsWith("worker") ? expectedWorkerEffects : expectedServerEffects;
+  return entry.effectsDefault !== expectedEffects || (role.startsWith("server") && entry.enabledEffectsReference === true);
+});
+const staleLive = live.some((entry) => {
+  if (Boolean(entry.runner)) return true;
+  if (!entry.effects) return false;
+  const expectedEffects = entry.processKind === "portable_remote_worker" ? expectedWorkerEffects : expectedServerEffects;
+  return entry.effects !== expectedEffects;
+});
 const exactBlocker = staticMismatch
   ? "automation_os_startup_boundary_drift"
   : staleLive
@@ -114,12 +135,16 @@ const exactBlocker = staticMismatch
 const result = {
   schema: "automation_os_runtime_boundary_readback.v1",
   generated_at: generatedAt,
-  expected: { runner_selection: "aos_resolver_dynamic", effects: expectedEffects },
+  expected: {
+    runner_selection: "aos_resolver_dynamic",
+    server_effects: expectedServerEffects,
+    worker_effects: expectedWorkerEffects
+  },
   source,
   installed,
   launchd,
   live_processes: live,
-  decision: exactBlocker ? "blocked_no_registered_external_canary" : "ready_for_authorized_read_only_admission",
+  decision: exactBlocker ? "blocked_no_registered_external_canary" : "ready_for_authorized_admission",
   exact_blocker: exactBlocker,
   external_action_executed: false,
   secret_values_read: false,
@@ -127,7 +152,7 @@ const result = {
     ? staticMismatch
       ? "Synchronize the installed helper/launchd boundary from the project source, then fresh-read before any worker relaunch."
       : "At an authorized maintenance window, relaunch the stale server/worker and fresh-read the new process environment before one registered read-only preflight."
-    : "Use the official registered read-only admission and retain same-run Browser Use receipt/readback/cleanup."
+    : runtimeBoundaryNextAction(selectorPath)
 };
 
 console.log(JSON.stringify(result, null, 2));

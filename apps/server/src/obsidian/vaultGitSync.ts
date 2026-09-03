@@ -54,8 +54,28 @@ export function runObsidianGitSync(options: ObsidianGitSyncOptions = {}): Obsidi
   const previous = readStatus(statusFile);
   const intervalMs = options.intervalMs ?? syncIntervalMs();
   const lastExecutedAt = resolveLastSuccessfulExecutionAt(previous);
-  if (!options.force && previous && lastExecutedAt && Date.now() - Date.parse(lastExecutedAt) < intervalMs) {
-    return persist(statusFile, { ...previous, skipped: true, startedAt, completedAt: new Date().toISOString(), statusFile, vaultPath, execute, lastExecutedAt });
+  const pendingChanges = !options.force
+    && existsSync(join(vaultPath, ".git"))
+    && gitStatusFiles(vaultPath).length > 0;
+  if (previous && shouldSkipGitSync({
+    force: options.force === true,
+    previous,
+    lastExecutedAt,
+    nowMs: Date.now(),
+    intervalMs,
+    pendingChanges
+  })) {
+    return persist(statusFile, {
+      ...previous,
+      skipped: true,
+      skipReason: "interval_clean",
+      startedAt,
+      completedAt: new Date().toISOString(),
+      statusFile,
+      vaultPath,
+      execute,
+      lastExecutedAt
+    });
   }
 
   try {
@@ -97,6 +117,19 @@ export function runObsidianGitSync(options: ObsidianGitSyncOptions = {}): Obsidi
 export function resolveLastSuccessfulExecutionAt(previous: ObsidianGitSyncResult | null): string | undefined {
   if (previous?.lastExecutedAt) return previous.lastExecutedAt;
   return previous?.execute === true && previous.ok ? previous.completedAt : undefined;
+}
+
+export function shouldSkipGitSync(input: {
+  force: boolean;
+  previous: ObsidianGitSyncResult | null;
+  lastExecutedAt?: string;
+  nowMs: number;
+  intervalMs: number;
+  pendingChanges: boolean;
+}): boolean {
+  if (input.force || input.pendingChanges || !input.previous || !input.lastExecutedAt) return false;
+  const lastExecutedMs = Date.parse(input.lastExecutedAt);
+  return Number.isFinite(lastExecutedMs) && input.nowMs - lastExecutedMs < input.intervalMs;
 }
 
 function syncLocked(input: { startedAt: string; statusFile: string; vaultPath: string; execute: boolean; lastExecutedAt?: string }): ObsidianGitSyncResult {

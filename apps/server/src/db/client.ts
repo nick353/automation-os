@@ -24,7 +24,7 @@ const postgresWorkerTimeoutMs = Number(process.env.AUTOMATION_OS_POSTGRES_WORKER
 const postgresSchemaAssumedCurrent = process.env.AUTOMATION_OS_POSTGRES_SCHEMA_ASSUMED_CURRENT === "1";
 // Bump when an idempotent migration adds a durable schema object that must be
 // applied to already-bootstrapped PostgreSQL databases.
-export const postgresSchemaBootstrapVersion = 11;
+export const postgresSchemaBootstrapVersion = 12;
 
 export const dbPath = process.env.AUTOMATION_OS_DB ?? defaultDbPath;
 export const dbBackend = postgresUrl ? "postgres" : "sqlite";
@@ -301,9 +301,28 @@ export function initDb(): void {
  */
 export async function initializePostgresSchemaAsync(): Promise<void> {
   if (dbBackend !== "postgres" || dbInitialized) return;
-  if (postgresSchemaAssumedCurrent || process.env.AUTOMATION_OS_ASSUME_EXISTING_POSTGRES_SCHEMA === "1") {
+  // The resident worker may skip the startup probe because its parent server
+  // already owns schema readiness. The server itself must still read the
+  // bootstrap marker: ASSUME_EXISTING is a legacy sync-path hint and cannot
+  // suppress a required idempotent migration during async startup.
+  if (postgresSchemaAssumedCurrent) {
     dbInitialized = true;
     dbInitRunCount += 1;
+    return;
+  }
+  if (process.env.AUTOMATION_OS_ASSUME_EXISTING_POSTGRES_SCHEMA === "1") {
+    // The server helper uses this flag to avoid a nested bootstrap worker.
+    // Apply the current small migration through the async pool instead; a
+    // synchronous migration would serialize several child connections and
+    // can stall on a constrained hosted Postgres plan.
+    dbInitializing = true;
+    try {
+      await runAssumedExistingPostgresMigrationsAsync();
+      dbInitialized = true;
+      dbInitRunCount += 1;
+    } finally {
+      dbInitializing = false;
+    }
     return;
   }
   if (dbInitializing) throw new Error("postgres_schema_initialization_reentrant");
@@ -721,6 +740,7 @@ function runIdempotentMigrations(): void {
   ensureColumn("mvp_automations", "current_version_id", "TEXT");
   ensureColumn("mvp_automations", "revision", "INTEGER NOT NULL DEFAULT 1");
   ensureColumn("mvp_automations", "archived_at", "TEXT");
+  ensureColumn("mvp_automation_schedules", "catch_up_policy", "TEXT DEFAULT 'skip'");
   if (listTableColumns("mvp_automations").has("desc")) {
     execSql("UPDATE mvp_automations SET description=\"desc\" WHERE trim(description)='' AND \"desc\" IS NOT NULL;");
     execSql("UPDATE mvp_automations SET \"desc\"=description WHERE trim(\"desc\")='' AND description IS NOT NULL;");
@@ -769,6 +789,7 @@ function runIdempotentMigrations(): void {
       revision INTEGER NOT NULL DEFAULT 1,
       next_run_at TEXT,
       last_run_at TEXT,
+      catch_up_policy TEXT DEFAULT 'skip',
       paused_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -1495,6 +1516,43 @@ function queryPostgresSqlBatch(sqls: string[]): Array<Array<Record<string, unkno
 async function queryPostgresAsyncRaw(sql: string): Promise<Array<Record<string, unknown>>> {
   const result = await getPostgresAsyncPool().query(translateSqlForPostgres(sql));
   return result.rows as Array<Record<string, unknown>>;
+}
+
+async function runAssumedExistingPostgresMigrationsAsync(): Promise<void> {
+  const marker = (await queryPostgresAsyncRaw(`
+    SELECT EXISTS (
+      SELECT 1 FROM information_schema.tables
+      WHERE table_schema=current_schema() AND table_name='automation_os_schema_bootstrap'
+    ) AS present;
+  `))[0];
+  let databaseVersion: number | null = null;
+  if (marker?.present === true) {
+    const version = (await queryPostgresAsyncRaw(
+      "SELECT version FROM automation_os_schema_bootstrap WHERE id='primary' LIMIT 1;"
+    ))[0];
+    if (version?.version !== undefined) databaseVersion = Number(version.version);
+  }
+  if (databaseVersion !== null && Number.isFinite(databaseVersion) && databaseVersion > postgresSchemaBootstrapVersion) {
+    throw new Error(`postgres_schema_version_newer_than_binary:${databaseVersion}:${postgresSchemaBootstrapVersion}`);
+  }
+  if (databaseVersion !== postgresSchemaBootstrapVersion) {
+    await getPostgresAsyncPool().query(
+      `ALTER TABLE mvp_automation_schedules ADD COLUMN IF NOT EXISTS catch_up_policy TEXT DEFAULT 'skip';`
+    );
+    await getPostgresAsyncPool().query(`
+      CREATE TABLE IF NOT EXISTS automation_os_schema_bootstrap (
+        id TEXT PRIMARY KEY,
+        version INTEGER NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `);
+    await getPostgresAsyncPool().query(`
+      INSERT INTO automation_os_schema_bootstrap (id, version, updated_at)
+      VALUES ('primary', $1, $2)
+      ON CONFLICT(id) DO UPDATE SET version=EXCLUDED.version, updated_at=EXCLUDED.updated_at
+      WHERE automation_os_schema_bootstrap.version <= EXCLUDED.version;
+    `, [postgresSchemaBootstrapVersion, nowIso()]);
+  }
 }
 
 function runPostgresWorker(operation: "exec" | "query", sql: string): Array<Record<string, unknown>> {

@@ -39,6 +39,33 @@ test("sanitizes NisenPrints run contract internals from dashboard metadata", () 
   assert.doesNotMatch(serialized, /stale_rows_pruned/);
 });
 
+test("compact dashboard metadata preserves public status while removing repeated receipts", () => {
+  const rows = sanitizeDashboardRows([
+    {
+      id: "run_compact",
+      metadata_json: JSON.stringify({
+        exact_blocker: "chrome_extension_bridge_refresh_requires_active_call",
+        stop_reason: "readback_pending",
+        external_action_executed: false,
+        proof_gate: { ok: false, missing: ["cleanup_receipt"] },
+        route_decision: { huge: "x".repeat(20_000) },
+        remote_worker_receipt: { huge: "x".repeat(20_000) },
+        portable_target_bound_approval_receipt: { huge: "x".repeat(20_000) }
+      })
+    }
+  ], { compactMetadata: true });
+  const metadata = JSON.parse(String(rows[0].metadata_json));
+
+  assert.equal(metadata.exact_blocker, "chrome_extension_bridge_refresh_requires_active_call");
+  assert.equal(metadata.stop_reason, "readback_pending");
+  assert.equal(metadata.external_action_executed, false);
+  assert.deepEqual(metadata.proof_gate, { ok: false, missing: ["片付け確認"] });
+  assert.equal(metadata.route_decision, undefined);
+  assert.equal(metadata.remote_worker_receipt, undefined);
+  assert.equal(metadata.portable_target_bound_approval_receipt, undefined);
+  assert.ok(JSON.stringify(metadata).length < 1_000);
+});
+
 test("sanitizes Research Planner and proof internals from dashboard metadata", () => {
   const rows = sanitizeDashboardRows([
     {
@@ -257,7 +284,8 @@ test("sanitizes proof rows to viewer links without raw file fields", () => {
       metadata_json: JSON.stringify({
         path: "/Users/nichikatanaka/Documents/Codex/automation-os/data/artifacts/run_1/screen.png",
         screenshotPath: "data/artifacts/run_1/screen.png",
-        summary: "saved"
+        summary: "saved",
+        external_action_executed: false
       })
     }
   ]);
@@ -269,6 +297,7 @@ test("sanitizes proof rows to viewer links without raw file fields", () => {
   assert.equal(row.uri, undefined);
   assert.equal(row.path, undefined);
   assert.equal(row.metadata_json, undefined);
+  assert.equal(row.external_action_executed, false);
   assert.doesNotMatch(serialized, /data\/artifacts|\/Users|screenshotPath|summary/);
 });
 
@@ -402,7 +431,7 @@ test("frontend starts without demo automations and global sync performs an API r
   assert.match(appSource, /useState<AutomationRow\[]>\(\[\]\)/);
   assert.match(appSource, /setFeedbackReadback\(state\.feedbacks \?\? \[\]\)/);
   assert.match(appSource, /const syncState = async \(\) =>/);
-  assert.match(appSource, /const state = await readMvpState\(\)/);
+  assert.match(appSource, /const state = await readMvpState(?:WithRetry)?\(\)/);
   assert.match(appSource, /<TopHeader[\s\S]*onSync=\{syncState\}/);
   assert.match(headerSource, /void onSync\(\)/);
 });
@@ -435,7 +464,7 @@ test("frontend project switcher is derived from API state records", () => {
   assert.doesNotMatch(tabsSource, /projectSlugs\.map/);
   assert.doesNotMatch(tabsSource, /\[\{ id: activeProject/);
   assert.match(source, /function ProjectUnavailablePage/);
-  assert.match(source, /type MvpLoadStatus = "loading" \| "ready" \| "error"/);
+  assert.match(source, /type MvpLoadStatus = "loading" \| "ready" \| (?:"degraded" \| )?"error"/);
   assert.match(source, /currentPath === "#\/projects"/);
   assert.match(source, /projectOptions\.some\(\(project\) => project\.id === requestedProject\)/);
   assert.match(templatesSource, /aria-label="テンプレートの保存先会社"/);
@@ -545,7 +574,7 @@ test("frontend first use creates and confirms a canonical company before automat
   assert.match(sidebarSource, /aria-label=\{label\}/);
   assert.match(sidebarSource, /className="nav-label"/);
   assert.match(appSource, /<form className="access-form" onSubmit=/);
-  assert.match(appSource, /autoFocus aria-describedby="operator-token-help operator-token-status"/);
+  assert.match(appSource, /controlId="shell\.auth-session\.retry"/);
   assert.match(chatSource, /targetProjectIsVerified = model\.mvpLoadStatus === "ready"/);
 });
 
@@ -595,6 +624,49 @@ test("frontend moves worker diagnostics to the owner-only Admin surface", () => 
   assert.doesNotMatch(runsSource, /\/api\/mvp\/worker\/once|workerを実行|runWorkerOnce/);
 });
 
+test("Admin separates portable heartbeat freshness from local worker diagnostics", () => {
+  const source = readAppSource();
+  const adminSource = appSection(source, "function OwnerAdminPage", "function renderPage");
+
+  assert.match(adminSource, /adminWorkerFreshnessLabel\(diagnostics, model\.mvpState\.worker\)/);
+  assert.match(source, /portableDiagnosticHeartbeatLabel/);
+  assert.match(source, /diagnostics\?\.pc\?\.system_checks/);
+  assert.match(source, /portable_mac_worker/);
+  assert.match(source, /metadata\.heartbeat_at/);
+  assert.match(source, /diagnostics\?\.pc\?\.local_worker/);
+  assert.match(source, /Portable Mac worker:/);
+  assert.match(source, /local worker診断:/);
+});
+
+test("Web operation admission does not invent a configured backend before state readback", () => {
+  const source = readAppSource();
+  const admissionSource = appSection(source, "function WebOperationAdmissionPanel", "function FeedbackPage");
+
+  assert.match(admissionSource, /const configuredBackend = model\.mvpState\.web_operation_backend\?\.backend;/);
+  assert.match(admissionSource, /configuredBackend === undefined/);
+  assert.match(admissionSource, /configuredBackendLabel/);
+  assert.doesNotMatch(admissionSource, /web_operation_backend\?\.backend \?\? "chrome_plugin"/);
+});
+
+test("frontend instruments the backend selector as a distinct local control", () => {
+  const source = readAppSource();
+  const adminSource = appSection(source, "function OwnerAdminPage", "function renderPage");
+  const manifest = readFileSync(resolve(process.cwd(), "apps/web/src/controlManifest.ts"), "utf8");
+
+  assert.match(adminSource, /data-control-id="admin\.web-operation-backend\.select"/);
+  assert.match(adminSource, /id="admin-web-operation-backend"[\s\S]*value=\{backendChoice\}/);
+  assert.match(manifest, /id: "admin\.web-operation-backend\.select"/);
+});
+
+test("frontend instruments every presentation profile editor field as a local draft control", () => {
+  const source = readAppSource();
+  const editorSource = appSection(source, "function ProjectPresentationProfilePanel", "function ProjectPresentationProfileSummary");
+  const manifest = readFileSync(resolve(process.cwd(), "apps/web/src/controlManifest.ts"), "utf8");
+
+  assert.equal((editorSource.match(/data-control-id="truthful\.performance\.profile\.field\./g) ?? []).length, 10);
+  assert.match(manifest, /id: "truthful\.performance\.profile\.field\.\*"/);
+});
+
 test("frontend keeps company pages free of internal diagnostics and uses persisted integrations", () => {
   const source = readAppSource();
   const homeSource = appSection(source, "function HomePage", "function ChatPage");
@@ -613,7 +685,7 @@ test("frontend keeps company pages free of internal diagnostics and uses persist
   assert.match(integrationsSource, /inventoryStatus/);
   assert.match(integrationsSource, /integrations\.reconnect/);
   assert.match(integrationsSource, /integrations\.revoke/);
-  assert.match(runDetailSource, /publicBlockerSummary\(run\.exact_blocker\)/);
+  assert.match(runDetailSource, /publicRunBlockerSummary\(run\)/);
   assert.doesNotMatch(runDetailSource, /run\.exact_blocker \?\?/);
   assert.match(adminSource, /PC・Browser・Codex・Obsidian・Worker・Deployment/);
 });
@@ -695,6 +767,20 @@ test("frontend loads run-scoped details and prefers the newest run snapshot", ()
   assert.match(runsSource, /setSelectedRunDetail\(null\);\s*setSelectedProofId\(null\);\s*setProofView\(null\);\s*setDetailLoading\(true\)/);
 });
 
+test("frontend derives run proof counts from company-scoped proof rows", () => {
+  const source = readAppSource();
+  const runsSource = appSection(source, "function RunsPage", "function PcStatusPage");
+  const homeSource = appSection(source, "function HomePage", "function ChatPage");
+
+  assert.match(source, /function proofRowsForRun\(run: any, proofs: any\[\] = \[\]\)/);
+  assert.match(source, /function proofCountForRun\(run: any, proofs: any\[\] = \[\]\)/);
+  assert.match(runsSource, /proofCountForRun\(run, proofs\)/);
+  assert.match(runsSource, /proofRowsForRun\(selectedRun, proofs\)/);
+  assert.match(runsSource, /proofCount=\{selectedProofs\.length\}/);
+  assert.match(homeSource, /const proofReady = \(mvpState\.proofs \?\? \[\]\)\.length > 0/);
+  assert.doesNotMatch(runsSource, /run\.proof_ids/);
+});
+
 test("frontend opens proofs only through the id-based viewer", () => {
   const source = readAppSource();
   const runsSource = appSection(source, "function RunsPage", "function PcStatusPage");
@@ -726,9 +812,10 @@ test("frontend history uses public status and blocker labels", () => {
   const runsSource = appSection(source, "function RunsPage", "function PcStatusPage");
 
   assert.match(source, /function publicRunStatus/);
+  assert.match(source, /function publicRunStatusForRun/);
   assert.match(source, /function publicBlockerSummary/);
-  assert.match(runsSource, /label=\{publicRunStatus\(run\.status\)\}/);
-  assert.match(runsSource, /publicBlockerSummary\(run\.exact_blocker\)/);
+  assert.match(runsSource, /label=\{publicRunStatusForRun\(run, mvpState\)\}/);
+  assert.match(runsSource, /publicRunBlockerSummary\(run\)/);
   assert.doesNotMatch(runsSource, /label=\{run\.status\}/);
   assert.doesNotMatch(runsSource, /\{run\.exact_blocker \?\? "-"/);
 });
@@ -752,6 +839,9 @@ test("frontend approval screen preserves the human decision boundary", () => {
   assert.match(approvalsSource, /外部投稿・送信・応募・公開は承認と証跡なしに実行しません/);
   assert.match(approvalsSource, /approveSelected/);
   assert.match(approvalsSource, /rejectSelected/);
+  assert.match(approvalsSource, /const portableBound =/);
+  assert.match(approvalsSource, /item\.bound \|\| item\.portableBound/);
+  assert.match(approvalsSource, /portable run\/action/);
 });
 
 test("frontend create reset starts a clean consultation and creation remains approval gated", () => {

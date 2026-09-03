@@ -25,6 +25,10 @@
   <string>__AUTOMATION_OS_WORKER_STDERR__</string>
   <key>EnvironmentVariables</key>
   <dict>
+    <key>HOME</key>
+    <string>__AUTOMATION_OS_HOME__</string>
+    <key>CODEX_HOME</key>
+    <string>__AUTOMATION_OS_HOME__/.codex</string>
     <key>AUTOMATION_OS_REPO_ROOT</key>
     <string>__AUTOMATION_OS_WORKER_REPO_ROOT__</string>
     <key>AUTOMATION_OS_WORKER_CONFIG</key>
@@ -35,38 +39,56 @@
     <string>server</string>
     <key>AUTOMATION_OS_ASSUME_EXISTING_POSTGRES_SCHEMA</key>
     <string>1</string>
+    <key>AOS_CHROME_PLUGIN_BACKGROUND_READ_ONLY_CAPABILITY_PATH</key>
+    <string>__AUTOMATION_OS_HOME__/.codex/runtime/aos-chrome-plugin-background-read-only-capability.v1.json</string>
+    <key>AOS_CHROME_PLUGIN_READBACK_PATH</key>
+    <string>__AUTOMATION_OS_HOME__/.social-flow/aos-company1-profile2-bridge-readback-v2.json</string>
     <key>AUTOMATION_OS_POSTGRES_SCHEMA_ASSUMED_CURRENT</key>
     <string>1</string>
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>AUTOMATION_OS_PORTABLE_WORKER_MODE</key>
     <string>external</string>
+    <key>AUTOMATION_OS_PORTABLE_QUEUE_AUTHORITY</key>
+    <string>remote</string>
+    <key>AUTOMATION_OS_PORTABLE_LOCAL_QUEUE_URL</key>
+    <string>http://127.0.0.1:8787</string>
+    <key>AUTOMATION_OS_PORTABLE_REMOTE_HTTP_TIMEOUT_MS</key>
+    <string>60000</string>
+    <key>AUTOMATION_OS_PORTABLE_LOCAL_QUEUE_COMPANY_ID</key>
+    <string>company_2560580981cedfd106b66245</string>
     <key>AUTOMATION_OS_PORTABLE_REMOTE_URL</key>
-    <string></string>
+    <string>https://automation-os.zeabur.app</string>
     <key>AUTOMATION_OS_PORTABLE_REMOTE_COMPANY_ID</key>
-    <string></string>
+    <string>company_2560580981cedfd106b66245</string>
     <key>AUTOMATION_OS_PORTABLE_REMOTE_POLL_MS</key>
     <string>30000</string>
     <key>AUTOMATION_OS_PORTABLE_REMOTE_ARTIFACT_ROOT</key>
-    <string></string>
+    <string>__AUTOMATION_OS_WORKER_REPO_ROOT__/data/artifacts/portable-remote-worker</string>
     <key>AUTOMATION_OS_WORKER_DURABLE_ONLY</key>
     <string>1</string>
-    <key>AUTOMATION_OS_DURABLE_SERVICE_USER_ID</key>
-    <string></string>
+    <key>CODEX_SESSION_ID</key>
+    <string>019ffbaf-201e-7810-a30d-cb76fd95a45b</string>
+    <key>CODEX_THREAD_ID</key>
+    <string>019ffbaf-201e-7810-a30d-cb76fd95a45b</string>
+    <key>CODEX_TURN_ID</key>
+    <string>bb58e583-9251-43fe-82a6-95affa126308</string>
+  <key>AUTOMATION_OS_DURABLE_SERVICE_USER_ID</key>
+    <string>aos_service_0f4e6b6c65edf796364e</string>
     <key>AUTOMATION_OS_PORTABLE_EXTERNAL_WORKDIR</key>
-    <string></string>
+    <string>__AUTOMATION_OS_WORKER_REPO_ROOT__</string>
     <key>AUTOMATION_OS_PORTABLE_EXTERNAL_TIMEOUT_MS</key>
     <string>3600000</string>
     <key>AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS</key>
-    <string>read_only</string>
+    <string>enabled</string>
     <key>AUTOMATION_OS_BROWSER_USE_PROJECT_ROOT</key>
-    <string></string>
+    <string>__AUTOMATION_OS_WORKER_BROWSER_USE_PROJECT_ROOT__</string>
     <key>AUTOMATION_OS_PORTABLE_BUSINESS_RUNNER_JOB_APPLICATION</key>
-    <string></string>
+    <string>__AUTOMATION_OS_WORKER_BROWSER_USE_PROJECT_ROOT__/scripts/browser_use/job_manager_browser_use_cli_business_runner.mjs</string>
     <key>AUTOMATION_OS_PORTABLE_BUSINESS_RUNNER_DAILY_AI</key>
-    <string></string>
+    <string>__AUTOMATION_OS_WORKER_REPO_ROOT__/scripts/aos-daily-ai-business-runner.mjs</string>
     <key>AUTOMATION_OS_PORTABLE_BUSINESS_RUNNER_NISENPRINTS</key>
-    <string></string>
+    <string>__AUTOMATION_OS_WORKER_REPO_ROOT__/scripts/aos-nisenprints-business-runner.mjs</string>
   </dict>
 </dict>
 </plist>

@@ -10,6 +10,9 @@ const tempRoot = mkdtempSync(join(tmpdir(), "automation-os-worker-engine-"));
 process.env.AUTOMATION_OS_DB = join(tempRoot, "automation-os.sqlite");
 process.env.AUTOMATION_OS_ARTIFACT_ROOT = join(tempRoot, "artifacts");
 process.env.AUTOMATION_OS_NISENPRINTS_PLAYWRIGHT_OUTPUT_ROOT = join(tempRoot, "nisenprints-node-runs");
+// Backend selection is a per-test control-plane fixture. Do not let parallel
+// test files race through the user's shared ~/.social-flow mirror.
+process.env.AOS_WEB_OPERATION_BACKEND_CONFIG = join(tempRoot, "web-operation-backend.json");
 const fakeCodexControlPath = join(process.env.AUTOMATION_OS_ARTIFACT_ROOT, "fake-codex-control.json");
 
 const { buildExecutionRoutingSnapshot } = await import("../codex/executionRouting.js");
@@ -18,7 +21,7 @@ const worker = await import("../runs/workerEngine.js");
 const { portableWorkflowIdForWorkerAdapter } = await import("../runs/portableWorkflowWorker.js");
 const snsRunner = await import("../runs/snsMultiPosterRegisteredRunner.js");
 const api = await import("../index.js");
-const { execSql, initDb, querySql, resetDemoData, sqlValue } = db;
+const { execSql, initDb, nowIso, querySql, resetDemoData, sqlValue } = db;
   const {
     approvalsAllowProtectedSteps,
     buildWorkerCommand,
@@ -34,6 +37,7 @@ const { execSql, initDb, querySql, resetDemoData, sqlValue } = db;
     startCommandRun
   } = worker;
 const { evaluateSnsMultiPosterSummary } = snsRunner;
+const { writeWebOperationBackendSetting } = await import("../runs/webOperationBackendSettings.js");
 
 test("prepareOnly command runs reject explicit worker claims without changing status", async () => {
   initDb();
@@ -1446,11 +1450,11 @@ test("SNS Multi Poster legacy filename is fail-closed and delegates to Browser U
   assert.doesNotMatch(source, /from ["']playwright|chromium\\.launch|connectOverCDP|remote-debugging-port|Input\\.dispatchMouseEvent|CdpWebSocketTransport/i);
 });
 
-test("SNS Multi Poster default runner is a canonical Browser Use CLI effect-admission adapter", () => {
+test("SNS Multi Poster historical AOS runner is an explicit Browser Use CLI compatibility stop", () => {
   const source = readFileSync("scripts/run_sns_multi_poster_ukiyoe_browser_use_cli.mjs", "utf8");
   assert.match(source, /browser-use-cli\/lib\/stage-adapter\.mjs/u);
-  assert.match(source, /runBrowserUseCliFlowCommand/u);
-  assert.match(source, /sns_multi_poster_target_account_audience_authority_missing/u);
+  assert.match(source, /startBrowserUseCliFlow/u);
+  assert.match(source, /sns_multi_poster_portable_admission_required/u);
   assert.match(source, /external_action_executed: false/u);
   assert.doesNotMatch(source, /playwright|puppeteer|connectOverCDP|remote-debugging-port/iu);
 });
@@ -1458,6 +1462,9 @@ test("SNS Multi Poster default runner is a canonical Browser Use CLI effect-admi
 test("X registered workflow records human-input evidence blocker when callable surface is missing", async () => {
   initDb();
   resetDemoData();
+  // The X lane is a no-effect human-input evidence stop on the selected
+  // Chrome Plugin surface. Browser Use CLI remains unbound for this adapter.
+  writeWebOperationBackendSetting({ backend: "chrome_plugin", actorUserId: "worker-engine-test" });
 
   const created = await startCommandRun("X authenticated browser lane registered workflow billing-only x.com save lane proof", {
     metadata: {
@@ -1633,6 +1640,82 @@ test("requires explicit approval rows before protected steps can run", () => {
   assert.equal(approvalsAllowProtectedSteps([{ status: "pending" }]), false);
   assert.equal(approvalsAllowProtectedSteps([{ status: "approved" }]), true);
   assert.equal(approvalsAllowProtectedSteps([{ status: "approved" }, { status: "pending" }]), false);
+});
+
+test("upgrades one broad pending portable approval when the target bundle becomes available", async () => {
+  initDb();
+  resetDemoData();
+  const runId = "run_portable_external_broad_approval_upgrade";
+  const stepId = `${runId}_step_1`;
+  const laneId = `${runId}_lane_1`;
+  const approvalId = `${runId}_approval`;
+  const companyId = "company_portable_external_broad_approval";
+  const now = nowIso();
+  const input = {
+    candidate_key: "candidate-upgrade",
+    job_url: "https://example.com/jobs/upgrade",
+    application_url: "https://example.com/jobs/upgrade/apply",
+    account_ref: "profile2",
+    payload_hash: "a".repeat(64),
+    resume_sha256: "b".repeat(64),
+    source_snapshot_id: "snapshot-upgrade",
+    supply_run_id: "supply-upgrade",
+    company: "Example",
+    role: "Engineer",
+    owner_ref: "owner-upgrade",
+    authority_ref: "authority-upgrade",
+    input_bundle_ref: "bundle-upgrade",
+    target_digest: "c".repeat(64),
+    source_state_digest: "d".repeat(64),
+  };
+  const metadata = {
+    adapter: "job_submit_registered",
+    web_operation_backend: {
+      schema: "automation_os_web_operation_backend.v1",
+      requested_backend: "browser_use_cli",
+      resolved_backend: "browser_use_cli",
+      revision: 1,
+      browser_surface: "browser_use_cli",
+      fallback_allowed: false,
+    },
+    portable_workflow_invocation: {
+      workflow_id: "job-application-manager",
+      effect_stage: "web_operation_effect",
+      idempotency_key: "portable-broad-approval-upgrade",
+    },
+    portable_worker: { mode: "external", workflow_id: "job-application-manager" },
+    portable_input_bundle: { sha256: "e".repeat(64), input },
+    external_action_executed: false,
+  };
+  execSql(`
+    INSERT INTO runs (id, company_id, name, objective, status, execution_source, quarantined, metadata_json, created_at, updated_at)
+    VALUES (${sqlValue(runId)}, ${sqlValue(companyId)}, 'portable approval upgrade', 'portable approval upgrade', 'waiting_approval', 'automation-os', 0, ${sqlValue(metadata)}, ${sqlValue(now)}, ${sqlValue(now)});
+    INSERT INTO lanes (id, run_id, role, cdp_port, profile_dir, workdir, status, current_task, progress, health, resource_locks_json, updated_at)
+    VALUES (${sqlValue(laneId)}, ${sqlValue(runId)}, 'Portable Worker', 0, '/tmp/portable-approval-upgrade-profile', '/tmp/portable-approval-upgrade-workdir', 'blocked', 'waiting approval', 0, 'approval_required', '[]', ${sqlValue(now)});
+    INSERT INTO run_steps (id, run_id, company_id, name, status, lane_id, started_at, completed_at, metadata_json)
+    VALUES (${sqlValue(stepId)}, ${sqlValue(runId)}, ${sqlValue(companyId)}, 'portable approval upgrade', 'waiting_approval', ${sqlValue(laneId)}, NULL, NULL, ${sqlValue({ adapter: "job_submit_registered" })});
+    INSERT INTO approvals (id, run_id, company_id, title, requested_by, status, priority, approval_group_id, resource_locks_json, created_at)
+    VALUES (${sqlValue(approvalId)}, ${sqlValue(runId)}, ${sqlValue(companyId)}, 'Broad portable approval', 'worker', 'pending', 'high', ${sqlValue(`${runId}_group`)}, ${sqlValue(["portable_external:job-application-manager"])}, ${sqlValue(now)});
+  `);
+
+  await runWorkerCycle(runId);
+
+  const approvals = querySql<{
+    id: string;
+    status: string;
+    step_id: string | null;
+    action_kind: string | null;
+    policy_version: string | null;
+    resource_locks_json: string;
+  }>(`SELECT id, status, step_id, action_kind, policy_version, resource_locks_json FROM approvals WHERE run_id=${sqlValue(runId)}`);
+  assert.equal(approvals.length, 1);
+  assert.equal(approvals[0]?.id, approvalId);
+  assert.equal(approvals[0]?.status, "pending");
+  assert.equal(approvals[0]?.step_id, stepId);
+  assert.equal(approvals[0]?.action_kind, "web_operation_effect");
+  assert.equal(approvals[0]?.policy_version, "automation_os_portable_external_approval_binding.v1");
+  assert.match(approvals[0]?.resource_locks_json ?? "", /portable_external_target:job-application-manager:[a-f0-9]{64}:portable-broad-approval-upgrade/u);
+  assert.equal(querySql<{ status: string }>(`SELECT status FROM runs WHERE id=${sqlValue(runId)} LIMIT 1`)[0]?.status, "waiting_approval");
 });
 
 test("records collision resources without approval-stopping non-billing parallel commits", () => {
@@ -1849,6 +1932,7 @@ test("blocks browser adapters before worker command spawn and persists canonical
 });
 
 test("blocks every legacy browser-backed adapter before worker command spawn and records adapter-specific block metadata", async () => {
+  writeWebOperationBackendSetting({ backend: "browser_use_cli", actorUserId: "worker-engine-legacy-browser-test" });
   const cases = [
     {
       adapter: "playwright_cli" as const,
@@ -1927,17 +2011,18 @@ test("blocks every legacy browser-backed adapter before worker command spawn and
       assert.equal(runMetadata.command_display, command.display, `${item.adapter} connected=${chromeConnected}`);
       assert.equal(stepMetadata.execution_mode, workerModeForAdapter(item.adapter), `${item.adapter} connected=${chromeConnected}`);
       assert.equal(stepMetadata.command_display, command.display, `${item.adapter} connected=${chromeConnected}`);
-      const expectedBlocker = item.adapter === "playwright_cli" ? "browser_use_cli_required" : "browser_use_cli_workflow_adapter_missing";
+      const expectedRouteBlocker = item.adapter === "playwright_cli" ? "browser_use_cli_required" : "browser_use_cli_workflow_adapter_missing";
+      const expectedBlocker = expectedRouteBlocker;
       assert.equal(runMetadata.adapter_policy?.classification, "browser_use_cli", `${item.adapter} connected=${chromeConnected}`);
       assert.equal(stepMetadata.adapter_policy?.classification, "browser_use_cli", `${item.adapter} connected=${chromeConnected}`);
-      assert.equal(runMetadata.adapter_policy?.exactBlocker, expectedBlocker, `${item.adapter} connected=${chromeConnected}`);
-      assert.equal(stepMetadata.adapter_policy?.exactBlocker, expectedBlocker, `${item.adapter} connected=${chromeConnected}`);
+      assert.equal(runMetadata.adapter_policy?.exactBlocker, expectedRouteBlocker, `${item.adapter} connected=${chromeConnected}`);
+      assert.equal(stepMetadata.adapter_policy?.exactBlocker, expectedRouteBlocker, `${item.adapter} connected=${chromeConnected}`);
       assert.ok((runMetadata.adapter_policy?.evidence ?? []).length > 0, `${item.adapter} connected=${chromeConnected}`);
-      assert.equal(runMetadata.route_readback?.exactBlocker, expectedBlocker, `${item.adapter} connected=${chromeConnected}`);
-      assert.equal(stepMetadata.route_readback?.exactBlocker, expectedBlocker, `${item.adapter} connected=${chromeConnected}`);
-      assert.equal(runMetadata.route_readback?.fallbackReason, `blocked:${expectedBlocker}`, `${item.adapter} connected=${chromeConnected}`);
-      assert.equal(stepMetadata.route_readback?.fallbackReason, `blocked:${expectedBlocker}`, `${item.adapter} connected=${chromeConnected}`);
-      assert.match(runMetadata.route_readback?.evidence?.join(" ") ?? "", new RegExp(`exactBlocker=${expectedBlocker}`), `${item.adapter} connected=${chromeConnected}`);
+      assert.equal(runMetadata.route_readback?.exactBlocker, expectedRouteBlocker, `${item.adapter} connected=${chromeConnected}`);
+      assert.equal(stepMetadata.route_readback?.exactBlocker, expectedRouteBlocker, `${item.adapter} connected=${chromeConnected}`);
+      assert.equal(runMetadata.route_readback?.fallbackReason, `blocked:${expectedRouteBlocker}`, `${item.adapter} connected=${chromeConnected}`);
+      assert.equal(stepMetadata.route_readback?.fallbackReason, `blocked:${expectedRouteBlocker}`, `${item.adapter} connected=${chromeConnected}`);
+      assert.match(runMetadata.route_readback?.evidence?.join(" ") ?? "", new RegExp(`exactBlocker=${expectedRouteBlocker}`), `${item.adapter} connected=${chromeConnected}`);
       assert.match(runMetadata.route_readback?.evidence?.join(" ") ?? "", /adapter_policy=browser_use_cli/, `${item.adapter} connected=${chromeConnected}`);
       assert.equal(runMetadata.proof_gate?.ok, false, `${item.adapter} connected=${chromeConnected}`);
       assert.deepEqual(runMetadata.proof_gate?.missing, [expectedBlocker], `${item.adapter} connected=${chromeConnected}`);
@@ -2455,9 +2540,79 @@ test("Daily AI registered workflow records billing-only runner safety metadata",
   }
 });
 
+test("blocks Daily AI registered dispatch when the stored backend snapshot is missing", async () => {
+  initDb();
+  resetDemoData();
+  writeWebOperationBackendSetting({ backend: "browser_use_cli", actorUserId: "worker-engine-daily-ai-missing-snapshot" });
+
+  const summary = await startCommandRun("Daily AI registered workflow run full flow");
+  const runBefore = querySql<{ metadata_json: string }>(`SELECT metadata_json FROM runs WHERE id=${sqlValue(summary.runId)} LIMIT 1`)[0];
+  const metadata = JSON.parse(runBefore.metadata_json) as Record<string, unknown>;
+  delete metadata.web_operation_backend;
+  execSql(`
+    UPDATE runs SET metadata_json=${sqlValue(metadata)} WHERE id=${sqlValue(summary.runId)};
+    UPDATE approvals SET status='approved', decided_at=${sqlValue(new Date().toISOString())} WHERE run_id=${sqlValue(summary.runId)};
+  `);
+
+  await runWorkerCycle(summary.runId);
+
+  const run = querySql<{ status: string; metadata_json: string }>(`SELECT status, metadata_json FROM runs WHERE id=${sqlValue(summary.runId)} LIMIT 1`)[0];
+  const step = querySql<{ status: string; metadata_json: string }>(`SELECT status, metadata_json FROM run_steps WHERE run_id=${sqlValue(summary.runId)} LIMIT 1`)[0];
+  const events = querySql<{ event_type: string }>(`SELECT event_type FROM worker_events WHERE run_id=${sqlValue(summary.runId)} ORDER BY created_at ASC`);
+  const runMetadata = JSON.parse(run.metadata_json);
+  const stepMetadata = JSON.parse(step.metadata_json);
+
+  assert.equal(run.status, "blocked");
+  assert.equal(step.status, "blocked");
+  assert.equal(runMetadata.exact_blocker, "daily_ai_backend_snapshot_missing");
+  assert.equal(stepMetadata.exact_blocker, "daily_ai_backend_snapshot_missing");
+  assert.equal(stepMetadata.daily_ai_status, undefined);
+  assert.equal(stepMetadata.external_action_executed, false);
+  assert.equal(events.some((event) => event.event_type === "worker_started"), false);
+});
+
+test("blocks Daily AI registered dispatch when the stored backend snapshot mismatches", async () => {
+  initDb();
+  resetDemoData();
+  writeWebOperationBackendSetting({ backend: "browser_use_cli", actorUserId: "worker-engine-daily-ai-mismatched-snapshot" });
+
+  const summary = await startCommandRun("Daily AI registered workflow run full flow");
+  const runBefore = querySql<{ metadata_json: string }>(`SELECT metadata_json FROM runs WHERE id=${sqlValue(summary.runId)} LIMIT 1`)[0];
+  const metadata = JSON.parse(runBefore.metadata_json) as Record<string, unknown>;
+  const backendSnapshot = metadata.web_operation_backend as Record<string, unknown>;
+  metadata.web_operation_backend = {
+    ...backendSnapshot,
+    requested_backend: "browser_use_cli",
+    resolved_backend: "aos_chrome_companion",
+    browser_surface: "aos_chrome_companion_profile_instance",
+    exact_blocker: null
+  };
+  execSql(`
+    UPDATE runs SET metadata_json=${sqlValue(metadata)} WHERE id=${sqlValue(summary.runId)};
+    UPDATE approvals SET status='approved', decided_at=${sqlValue(new Date().toISOString())} WHERE run_id=${sqlValue(summary.runId)};
+  `);
+
+  await runWorkerCycle(summary.runId);
+
+  const run = querySql<{ status: string; metadata_json: string }>(`SELECT status, metadata_json FROM runs WHERE id=${sqlValue(summary.runId)} LIMIT 1`)[0];
+  const step = querySql<{ status: string; metadata_json: string }>(`SELECT status, metadata_json FROM run_steps WHERE run_id=${sqlValue(summary.runId)} LIMIT 1`)[0];
+  const events = querySql<{ event_type: string }>(`SELECT event_type FROM worker_events WHERE run_id=${sqlValue(summary.runId)} ORDER BY created_at ASC`);
+  const runMetadata = JSON.parse(run.metadata_json);
+  const stepMetadata = JSON.parse(step.metadata_json);
+
+  assert.equal(run.status, "blocked");
+  assert.equal(step.status, "blocked");
+  assert.equal(runMetadata.exact_blocker, "daily_ai_backend_snapshot_mismatch");
+  assert.equal(stepMetadata.exact_blocker, "daily_ai_backend_snapshot_mismatch");
+  assert.equal(stepMetadata.daily_ai_status, undefined);
+  assert.equal(stepMetadata.external_action_executed, false);
+  assert.equal(events.some((event) => event.event_type === "worker_started"), false);
+});
+
 test("NisenPrints workflow uses the AOS Browser Use adapter and pre-blocks an unsafe runner", async () => {
   initDb();
   resetDemoData();
+  writeWebOperationBackendSetting({ backend: "browser_use_cli", actorUserId: "worker-engine-nisenprints-test" });
   const restoreRunner = installFakeNisenPrintsBrowserUseRunner("worker-nisenprints-nonzero", 7);
   try {
     const summary = await startCommandRun("NisenPrints registered workflow billing-only proof gate full publish");
@@ -4491,6 +4646,7 @@ test("stores NisenPrints Etsy Sync contract in plan and start metadata", async (
 test("starts NisenPrints contract runs behind the registered external approval gate", async () => {
   initDb();
   resetDemoData();
+  writeWebOperationBackendSetting({ backend: "browser_use_cli", actorUserId: "worker-engine-nisenprints-contract-test" });
   const restoreRunner = installFakeNisenPrintsBrowserUseRunner("worker-nisenprints-sync-unsafe", 7);
   try {
   const summary = await startCommandRun("NisenPrints Etsy Sync current listings 正本同期");

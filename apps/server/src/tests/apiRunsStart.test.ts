@@ -1219,7 +1219,9 @@ test("Create schedule adjustment covers registered workflow, Schedule, worker pi
     assert.equal(startBody.workerProtocol, "local_worker_loop_required");
     assert.match(String(startBody.nextAction), /worker loop/);
     assert.equal(startBody.portable?.execution_mode, "external");
-    assert.equal(startBody.portable?.browser_surface, "browser_use_cli");
+    // Normal registered browser work resolves through the Companion-first
+    // route; Browser Use CLI remains an explicit non-Chrome backend only.
+    assert.equal(startBody.portable?.browser_surface, "aos_chrome_companion_profile_instance");
     assert.equal(startBody.portable?.connector_gateway, "mcp");
     assert.equal(startBody.workflow.schedule_label, "毎日 08:00");
     assert.equal(runMetadata.registered_workflow_id, "daily-ai-research-publish-run");
@@ -2057,6 +2059,84 @@ test("Create planner jobs bypass production write guard because they only queue 
     else process.env.AUTOMATION_OS_REQUIRE_WRITE_TOKEN = previousRequire;
     if (previousToken === undefined) delete process.env.AUTOMATION_OS_WRITE_TOKEN;
     else process.env.AUTOMATION_OS_WRITE_TOKEN = previousToken;
+  }
+});
+
+test("portable workflow HTTP start and replay preserve the selected backend snapshot", async () => {
+  db.initDb();
+  db.resetDemoData();
+  seedOwnerCompany();
+
+  const originalSetting = db.querySql<{
+    backend: string;
+    revision: number;
+    chrome_profile_id: string;
+    chrome_profile_name: string;
+    chrome_profile_directory: string;
+    chrome_surface: string;
+    updated_at: string;
+    updated_by: string | null;
+  }>("SELECT backend, revision, chrome_profile_id, chrome_profile_name, chrome_profile_directory, chrome_surface, updated_at, updated_by FROM web_operation_settings WHERE id='global' LIMIT 1;")[0] ?? null;
+  const startRequest = { idempotency_key: "api-runs-start-backend-snapshot-replay" };
+
+  try {
+    const startResponse = await postJson("/api/registered-workflows/daily-ai-research-publish-run/start", startRequest);
+    const startBody = JSON.parse(startResponse.body) as {
+      accepted?: boolean;
+      replayed?: boolean;
+      runId?: string;
+      portable?: { backend?: string; browser_surface?: string };
+    };
+    assert.equal(startResponse.status, 202);
+    assert.equal(startBody.accepted, true);
+    assert.equal(startBody.replayed, false);
+    assert.ok(startBody.runId);
+
+    const run = db.querySql<{ metadata_json: string }>(
+      `SELECT metadata_json FROM runs WHERE id=${db.sqlValue(startBody.runId)} LIMIT 1;`
+    )[0];
+    const metadata = JSON.parse(run.metadata_json) as {
+      web_operation_backend?: { resolved_backend?: string; browser_surface?: string };
+    };
+    assert.equal(metadata.web_operation_backend?.resolved_backend, "aos_chrome_companion");
+    assert.equal(metadata.web_operation_backend?.browser_surface, "aos_chrome_companion_profile_instance");
+    assert.equal(startBody.portable?.backend, metadata.web_operation_backend?.resolved_backend);
+    assert.equal(startBody.portable?.browser_surface, metadata.web_operation_backend?.browser_surface);
+
+    db.execSql(`
+      UPDATE web_operation_settings
+      SET backend='browser_use_cli', revision=revision + 1, updated_at=${db.sqlValue(db.nowIso())}
+      WHERE id='global';
+    `);
+    const replayResponse = await postJson("/api/registered-workflows/daily-ai-research-publish-run/start", startRequest);
+    const replayBody = JSON.parse(replayResponse.body) as {
+      accepted?: boolean;
+      replayed?: boolean;
+      runId?: string;
+      portable?: { backend?: string; browser_surface?: string };
+    };
+    assert.equal(replayResponse.status, 202);
+    assert.equal(replayBody.accepted, true);
+    assert.equal(replayBody.replayed, true);
+    assert.equal(replayBody.runId, startBody.runId);
+    assert.equal(replayBody.portable?.backend, metadata.web_operation_backend?.resolved_backend);
+    assert.equal(replayBody.portable?.browser_surface, metadata.web_operation_backend?.browser_surface);
+  } finally {
+    if (originalSetting) {
+      db.execSql(`
+        UPDATE web_operation_settings
+        SET backend=${db.sqlValue(originalSetting.backend)}, revision=${db.sqlValue(originalSetting.revision)},
+            chrome_profile_id=${db.sqlValue(originalSetting.chrome_profile_id)},
+            chrome_profile_name=${db.sqlValue(originalSetting.chrome_profile_name)},
+            chrome_profile_directory=${db.sqlValue(originalSetting.chrome_profile_directory)},
+            chrome_surface=${db.sqlValue(originalSetting.chrome_surface)},
+            updated_at=${db.sqlValue(originalSetting.updated_at)},
+            updated_by=${db.sqlValue(originalSetting.updated_by)}
+        WHERE id='global';
+      `);
+    } else {
+      db.execSql("DELETE FROM web_operation_settings WHERE id='global';");
+    }
   }
 });
 

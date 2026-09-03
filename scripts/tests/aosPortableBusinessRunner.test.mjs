@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
-import { buildBusinessWebOperationLifecycle, businessRunnerBindingEnvironment, runChild, runnerFor } from "../aos-portable-business-runner.mjs";
+import { buildBusinessWebOperationLifecycle, businessRunnerBindingEnvironment, runChild, runnerFor, selectedBackend, selectedBrowserSurface, selectedBrowserSurfaceMismatch } from "../aos-portable-business-runner.mjs";
 import { WEB_OPERATION_CONTRACT } from "../portable-business-action-plan.mjs";
 
 const ROOT = process.cwd();
@@ -26,13 +26,79 @@ const WORKFLOWS = Object.freeze({
     proofs: ["generation_manifest", "etsy_listing", "pinterest_pin_url", "etsy_visit_site_match", "cleanup_receipt"],
     blocker: "nisenprints_browser_use_cli_no_launch_canary",
   },
+  "sns-multi-poster-ukiyoe": {
+    key: "SNS_MULTI_POSTER",
+    runnerKey: "sns_multi_poster",
+    stages: ["source_readback", "account_preflight", "browser_preflight", "one_candidate_publish", "same_run_sync_readback", "cleanup"],
+    proofs: ["published_url_or_exact_blocker", "same_run_source_of_truth_readback", "cleanup_receipt"],
+    blocker: "sns_browser_use_cli_input_bundle_missing",
+  },
+  "x-authenticated-browser-lane": {
+    key: "X_AUTHENTICATED_BROWSER_LANE",
+    runnerKey: "x_authenticated_browser_lane",
+    stages: ["source_readback", "account_preflight", "browser_preflight", "one_candidate_publish", "same_run_sync_readback", "cleanup"],
+    proofs: ["published_url_or_exact_blocker", "same_run_source_of_truth_readback", "cleanup_receipt"],
+    blocker: "x_browser_use_cli_input_bundle_missing",
+  },
+});
+
+test("Chrome Plugin/Profile 2 is the safe default when no backend is injected", () => {
+  assert.equal(selectedBackend({}), "chrome_plugin");
+  assert.equal(selectedBrowserSurface({}), "signed_chrome_extension_profile2");
+  assert.equal(selectedBrowserSurfaceMismatch({}), null);
+});
+
+test("AOS Chrome Companion is recognized without becoming an implicit effectful fallback", () => {
+  const environment = { AOS_WEB_OPERATION_BACKEND: "aos_chrome_companion" };
+  assert.equal(selectedBackend(environment), "aos_chrome_companion");
+  assert.equal(selectedBrowserSurface(environment), "aos_chrome_companion_profile_instance");
+  assert.equal(selectedBrowserSurfaceMismatch(environment), null);
+  const result = spawnSync(process.execPath, [RUNNER,
+    "--workflow-id", "daily-ai-research-publish-run",
+    "--run-id", "run_companion_no_effect_admission",
+    "--step-id", "step_companion_no_effect_admission",
+    "--source-trigger", "automation_os_ui",
+    "--idempotency-key", "companion-no-effect-admission",
+  ], { encoding: "utf8", env: { PATH: process.env.PATH, ...environment } });
+  assert.equal(result.status, 1, `${result.stderr}\n${result.stdout}`);
+  assert.equal(result.stderr, "");
+  const receipt = JSON.parse(result.stdout.trim());
+  assert.equal(receipt.browser_surface, "aos_chrome_companion_profile_instance");
+  assert.equal(receipt.exact_blocker, "portable_external_effects_disabled");
+  assert.equal(receipt.external_action_executed, false);
+});
+
+test("Chrome Plugin/Profile 2 fails closed when the selector surface mismatches", () => {
+  const environment = {
+    AOS_WEB_OPERATION_BACKEND: "chrome_plugin",
+    AOS_CHROME_PROFILE_SURFACE: "browser_use_cli",
+  };
+  assert.equal(selectedBrowserSurface(environment), "browser_use_cli");
+  assert.equal(selectedBrowserSurfaceMismatch(environment), "portable_external_business_surface_mismatch");
+
+  const result = spawnSync(process.execPath, [RUNNER,
+    "--workflow-id", "daily-ai-research-publish-run",
+    "--run-id", "run_chrome_surface_mismatch",
+    "--step-id", "step_chrome_surface_mismatch",
+    "--source-trigger", "automation_os_scheduler",
+    "--idempotency-key", "chrome-surface-mismatch-idempotency",
+  ], { encoding: "utf8", env: { PATH: process.env.PATH, ...environment } });
+  assert.equal(result.status, 1, `${result.stderr}\n${result.stdout}`);
+  assert.equal(result.stderr, "");
+  const receipt = JSON.parse(result.stdout.trim());
+  assert.equal(receipt.exact_blocker, "portable_external_business_surface_mismatch");
+  assert.equal(receipt.external_action_executed, false);
+  assert.deepEqual(receipt.binding_readback, {
+    selected_browser_surface: "browser_use_cli",
+    expected_browser_surface: "signed_chrome_extension_profile2",
+  });
 });
 
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-function boundFiles(root, workflowId, runId, stepId, idempotencyKey) {
+function boundFiles(root, workflowId, runId, stepId, idempotencyKey, browserSurface = "browser_use_cli", backend = browserSurface) {
   const spec = WORKFLOWS[workflowId];
   const admissionValue = {
     schema: "automation_os_portable_external_admission.v1",
@@ -42,7 +108,7 @@ function boundFiles(root, workflowId, runId, stepId, idempotencyKey) {
     source_trigger: "automation_os_scheduler",
     idempotency_key: idempotencyKey,
     audience: "portable_external_runner",
-    browser_surface: "browser_use_cli",
+    browser_surface: browserSurface,
     approval_status: "approved",
     expires_at: new Date(Date.now() + 60_000).toISOString(),
   };
@@ -60,7 +126,9 @@ function boundFiles(root, workflowId, runId, stepId, idempotencyKey) {
     step_id: stepId,
     source_trigger: "automation_os_scheduler",
     idempotency_key: idempotencyKey,
-    browser_surface: "browser_use_cli",
+    web_operation_backend: backend,
+    web_operation_backend_revision: 1,
+    browser_surface: browserSurface,
     external_effect_policy: "approved",
     approval_status: "approved",
     allowed_stages: spec.stages,
@@ -132,6 +200,7 @@ function invokeNoLaunch(workflowId) {
       AUTOMATION_OS_REPO_ROOT: ROOT,
       AUTOMATION_OS_ARTIFACT_ROOT: root,
       AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS: "enabled",
+      AOS_WEB_OPERATION_BACKEND: "browser_use_cli",
       AUTOMATION_OS_PORTABLE_EXTERNAL_APPROVAL: "approved",
       AUTOMATION_OS_PORTABLE_EXTERNAL_ADMISSION_PATH: files.admissionPath,
       AUTOMATION_OS_PORTABLE_EXTERNAL_ADMISSION_SHA256: files.admissionSha256,
@@ -149,12 +218,78 @@ function invokeNoLaunch(workflowId) {
 }
 
 test("clean worker binding resolves both workflow-specific AOS business runners", () => {
-  const environment = { AUTOMATION_OS_REPO_ROOT: ROOT };
+  const environment = { AUTOMATION_OS_REPO_ROOT: ROOT, AOS_WEB_OPERATION_BACKEND: "browser_use_cli" };
   assert.equal(runnerFor("daily-ai-research-publish-run", environment), join(ROOT, "scripts", "aos-daily-ai-business-runner.mjs"));
   assert.equal(runnerFor("nisenprints-daily-product-canva-printify-etsy-pinterest", environment), join(ROOT, "scripts", "aos-nisenprints-business-runner.mjs"));
   const binding = businessRunnerBindingEnvironment(environment);
+  assert.equal(binding.AOS_WEB_OPERATION_BACKEND, "browser_use_cli");
+  assert.equal(binding.AUTOMATION_OS_BROWSER_DRIVER, "browser_use_cli");
+  assert.equal(binding.AUTOMATION_OS_BROWSER_SURFACE, "browser_use_cli");
   assert.equal(binding.AUTOMATION_OS_PORTABLE_BUSINESS_RUNNER_DAILY_AI, join(ROOT, "scripts", "aos-daily-ai-business-runner.mjs"));
   assert.equal(binding.AUTOMATION_OS_PORTABLE_BUSINESS_RUNNER_NISENPRINTS, join(ROOT, "scripts", "aos-nisenprints-business-runner.mjs"));
+});
+
+test("Browser Use CLI X workflow resolves its own registered runner", () => {
+  const projectRoot = "/tmp/browser-use-project";
+  assert.equal(
+    runnerFor("x-authenticated-browser-lane", {
+      AUTOMATION_OS_BROWSER_USE_PROJECT_ROOT: projectRoot,
+      AOS_WEB_OPERATION_BACKEND: "browser_use_cli",
+    }),
+    join(projectRoot, "scripts", "run_x_authenticated_browser_lane_browser_use_cli.mjs"),
+  );
+});
+
+test("Browser Use CLI SNS workflow resolves its own registered runner", () => {
+  const projectRoot = "/tmp/browser-use-project";
+  assert.equal(
+    runnerFor("sns-multi-poster-ukiyoe", {
+      AUTOMATION_OS_BROWSER_USE_PROJECT_ROOT: projectRoot,
+      AOS_WEB_OPERATION_BACKEND: "browser_use_cli",
+    }),
+    join(projectRoot, "scripts", "run_sns_multi_poster_ukiyoe_browser_use_cli.mjs"),
+  );
+});
+
+test("Chrome Plugin worker binding cannot inherit the Browser Use job runner", () => {
+  const environment = {
+    AUTOMATION_OS_REPO_ROOT: ROOT,
+    AOS_WEB_OPERATION_BACKEND: "chrome_plugin",
+    AUTOMATION_OS_BROWSER_USE_PROJECT_ROOT: "/tmp/browser-use-project",
+    AUTOMATION_OS_CHROME_PLUGIN_PROJECT_ROOT: "/tmp/chrome-plugin-project",
+    AUTOMATION_OS_PORTABLE_BUSINESS_RUNNER_JOB_APPLICATION: "/tmp/browser-use-project/scripts/browser_use/job_manager_browser_use_cli_business_runner.mjs",
+  };
+  assert.equal(
+    runnerFor("job-application-manager", environment),
+    join(ROOT, "scripts", "aos-job-chrome-plugin-business-runner.mjs"),
+  );
+  assert.equal(
+    runnerFor("daily-ai-research-publish-run", environment),
+    join("/tmp/chrome-plugin-project", "scripts", "run_daily_ai_chrome_plugin_registered.mjs"),
+  );
+  assert.equal(
+    runnerFor("sns-multi-poster-ukiyoe", environment),
+    join("/tmp/chrome-plugin-project", "scripts", "run_sns_multi_poster_chrome_plugin_registered.mjs"),
+  );
+  assert.equal(
+    runnerFor("x-authenticated-browser-lane", environment),
+    join("/tmp/chrome-plugin-project", "scripts", "run_sns_multi_poster_chrome_plugin_registered.mjs"),
+  );
+  assert.equal(
+    runnerFor("prompt-transfer-ukiyoe", environment),
+    join("/tmp/chrome-plugin-project", "scripts", "run_prompt_transfer_chrome_plugin_registered.mjs"),
+  );
+  assert.equal(
+    runnerFor("nisenprints-daily-product-canva-printify-etsy-pinterest", environment),
+    join("/tmp/chrome-plugin-project", "scripts", "run_nisenprints_chrome_plugin_registered.mjs"),
+  );
+  assert.equal(
+    runnerFor("daily-ai-research-publish-run", { AUTOMATION_OS_REPO_ROOT: ROOT, AOS_WEB_OPERATION_BACKEND: "playwright" }),
+    join(ROOT, "scripts", "aos-playwright-business-runner.mjs"),
+  );
+  const binding = businessRunnerBindingEnvironment(environment);
+  assert.equal(binding.AUTOMATION_OS_CHROME_PLUGIN_PROJECT_ROOT, "/tmp/chrome-plugin-project");
+  assert.equal(binding.AUTOMATION_OS_PORTABLE_BUSINESS_RUNNER_JOB_APPLICATION, undefined);
 });
 
 test("generic web-operation intent dispatches Daily AI and NisenPrints through the common AOS runner", () => {
@@ -206,6 +341,7 @@ test("generic web-operation intent dispatches Daily AI and NisenPrints through t
         AUTOMATION_OS_REPO_ROOT: repoRoot,
         AUTOMATION_OS_ARTIFACT_ROOT: root,
         AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS: "enabled",
+        AOS_WEB_OPERATION_BACKEND: "browser_use_cli",
         AUTOMATION_OS_PORTABLE_EXTERNAL_APPROVAL: "approved",
         AUTOMATION_OS_PORTABLE_EXTERNAL_ADMISSION_PATH: files.admissionPath,
         AUTOMATION_OS_PORTABLE_EXTERNAL_ADMISSION_SHA256: files.admissionSha256,
@@ -236,6 +372,48 @@ test("business runner binds the canonical package Browser Use helper during inst
   assert.equal(binding.BROWSER_USE_CLI_HELPER, helperPath);
 });
 
+test("Playwright selection reaches its workflow-owned entrypoint and remains effect-blocked", () => {
+  const root = mkdtempSync(join(tmpdir(), "aos-playwright-entrypoint-only-"));
+  const workflowId = "daily-ai-research-publish-run";
+  const runId = "run_playwright_entrypoint_only";
+  const stepId = "step_playwright_entrypoint_only";
+  const idempotencyKey = `${runId}-idempotency`;
+  const files = boundFiles(root, workflowId, runId, stepId, idempotencyKey, "playwright", "playwright");
+  const result = spawnSync(process.execPath, [RUNNER,
+    "--workflow-id", workflowId,
+    "--run-id", runId,
+    "--step-id", stepId,
+    "--source-trigger", "automation_os_scheduler",
+    "--idempotency-key", idempotencyKey,
+  ], {
+    encoding: "utf8",
+    env: {
+      PATH: process.env.PATH,
+      AUTOMATION_OS_REPO_ROOT: ROOT,
+      AUTOMATION_OS_ARTIFACT_ROOT: root,
+      AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS: "enabled",
+      AOS_WEB_OPERATION_BACKEND: "playwright",
+      AOS_WEB_OPERATION_BACKEND_REVISION: "1",
+      AUTOMATION_OS_PORTABLE_EXTERNAL_APPROVAL: "approved",
+      AUTOMATION_OS_PORTABLE_EXTERNAL_ADMISSION_PATH: files.admissionPath,
+      AUTOMATION_OS_PORTABLE_EXTERNAL_ADMISSION_SHA256: files.admissionSha256,
+      AUTOMATION_OS_PORTABLE_BUSINESS_ACTION_PLAN_PATH: files.actionPlanPath,
+      AUTOMATION_OS_PORTABLE_BUSINESS_ACTION_PLAN_SHA256: files.actionPlanSha256,
+      AUTOMATION_OS_PORTABLE_EFFECT_AUTHORITY_PATH: files.authorityPath,
+      AUTOMATION_OS_PORTABLE_EFFECT_AUTHORITY_SHA256: files.authoritySha256,
+      AUTOMATION_OS_PORTABLE_EFFECT_AUTHORITY_ID: files.authorityId,
+    },
+  });
+  assert.equal(result.status, 1, `${result.stderr}\n${result.stdout}`);
+  const receipt = JSON.parse(result.stdout.trim());
+  assert.equal(receipt.browser_surface, "playwright");
+  assert.equal(receipt.exact_blocker, "playwright_effect_stages_not_implemented");
+  assert.equal(receipt.external_action_executed, false);
+  assert.equal(receipt.workflow_id, workflowId);
+  assert.equal(receipt.run_id, runId);
+  assert.equal(receipt.step_id, stepId);
+});
+
 test("flat business receipt cannot claim external completion without a strict lifecycle proof", () => {
   const input = {
     workflow_id: "daily-ai-research-publish-run",
@@ -261,6 +439,46 @@ test("flat business receipt cannot claim external completion without a strict li
   assert.equal(lifecycle.state, "effect_unknown");
   assert.equal(lifecycle.exact_blocker, "portable_external_business_lifecycle_proof_missing");
   assert.equal(lifecycle.lifecycle_proof_verified, false);
+});
+
+test("Playwright entrypoint exposes an explicit no-fallback capability receipt", () => {
+  const root = mkdtempSync(join(tmpdir(), "aos-playwright-entrypoint-receipt-"));
+  const runId = "run_playwright_capability_receipt";
+  const stepId = "step_playwright_capability_receipt";
+  const result = spawnSync(process.execPath, [join(ROOT, "scripts", "aos-playwright-business-runner.mjs")], {
+    encoding: "utf8",
+    env: {
+      PATH: process.env.PATH,
+      AUTOMATION_OS_PORTABLE_BUSINESS_RUN_ID: runId,
+      AUTOMATION_OS_PORTABLE_BUSINESS_STEP_ID: stepId,
+      AUTOMATION_OS_PORTABLE_BUSINESS_WORKFLOW_ID: "daily-ai-research-publish-run",
+      AUTOMATION_OS_ARTIFACT_ROOT: root,
+    },
+  });
+  assert.equal(result.status, 0, `${result.stderr}\n${result.stdout}`);
+  assert.equal(result.stderr, "");
+  const receipt = JSON.parse(result.stdout.trim());
+  assert.equal(receipt.status, "blocked");
+  assert.equal(receipt.exact_blocker, "playwright_effect_stages_not_implemented");
+  assert.equal(receipt.external_action_executed, false);
+  assert.equal(receipt.browser_surface, "playwright");
+  assert.equal(receipt.run_id, runId);
+  assert.equal(receipt.step_id, stepId);
+  assert.equal(receipt.same_run_receipt, false);
+  assert.equal(receipt.cleanup_verified, true);
+  assert.deepEqual(receipt.runner_receipt && {
+    adapter_mode: receipt.runner_receipt.adapter_mode,
+    effect_stages_implemented: receipt.runner_receipt.effect_stages_implemented,
+    browser_session_started: receipt.runner_receipt.browser_session_started,
+    cleanup_verified: receipt.runner_receipt.cleanup_verified,
+    fallback_allowed: receipt.runner_receipt.fallback_allowed,
+  }, {
+    adapter_mode: "entrypoint_only",
+    effect_stages_implemented: false,
+    browser_session_started: false,
+    cleanup_verified: true,
+    fallback_allowed: false,
+  });
 });
 
 test("strict lifecycle proof is required before a business effect can be complete", () => {

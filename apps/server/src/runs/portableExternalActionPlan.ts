@@ -2,6 +2,7 @@ import { constants, chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdi
 import { createHash } from "node:crypto";
 import { dirname, resolve, sep } from "node:path";
 import { getPortableExternalBusinessPlan } from "./portableExternalBusinessPlan.js";
+import { getWebOperationContract, getWebOperationContractForSurface } from "./webOperationContract.js";
 
 export const PORTABLE_EXTERNAL_ACTION_PLAN_SCHEMA_V1 = "automation_os_portable_external_action_plan.v1" as const;
 export const PORTABLE_EXTERNAL_ACTION_PLAN_ISSUE_FAILED = "portable_external_action_plan_issue_failed" as const;
@@ -57,9 +58,32 @@ export function issuePortableExternalActionPlan(input: {
   sourceTrigger: string;
   idempotencyKey: string;
   inputBundlePath?: string | null;
+  webOperationBackend?: Record<string, unknown> | null;
 }): { path: string; sha256: string } {
   const plan = getPortableExternalBusinessPlan(input.workflowId);
   if (!plan) throw new Error("portable_external_action_plan_workflow_invalid");
+  const backend = String(input.webOperationBackend?.resolved_backend || input.webOperationBackend?.requested_backend || "browser_use_cli").trim();
+  const profile = input.webOperationBackend?.chrome_profile && typeof input.webOperationBackend.chrome_profile === "object"
+    ? input.webOperationBackend.chrome_profile as Record<string, unknown>
+    : {};
+  const browserSurface = backend === "chrome_plugin"
+    ? String(profile.surface || "signed_chrome_extension_profile2")
+    : backend === "aos_chrome_companion"
+      ? "aos_chrome_companion_profile_instance"
+      : backend;
+  if (!new Set(["chrome_plugin", "browser_use_cli", "playwright", "aos_chrome_companion"]).has(backend)) {
+    throw new Error(`portable_external_action_plan_backend_invalid:${backend || "empty"}`);
+  }
+  if (backend === "chrome_plugin" && browserSurface !== "signed_chrome_extension_profile2") {
+    throw new Error("chrome_plugin_web_operation_contract_mismatch");
+  }
+  const webOperationContract = browserSurface === "signed_chrome_extension_profile2"
+    ? getWebOperationContractForSurface("signed_chrome_extension_profile2")
+    : browserSurface === "aos_chrome_companion_profile_instance"
+      ? getWebOperationContractForSurface("aos_chrome_companion_profile_instance")
+    : browserSurface === "browser_use_cli"
+      ? getWebOperationContract()
+      : plan.required_runner_contract.web_operation_contract;
   const runRoot = safeRunRoot(input.runId);
   mkdirSync(runRoot, { recursive: true, mode: 0o700 });
   chmodSync(runRoot, 0o700);
@@ -77,8 +101,10 @@ export function issuePortableExternalActionPlan(input: {
       || existing.source_trigger !== input.sourceTrigger
       || existing.idempotency_key !== input.idempotencyKey
       || existing.approval_status !== "approved"
-    || existing.browser_surface !== "browser_use_cli"
-      || JSON.stringify(existing.web_operation_contract) !== JSON.stringify(plan.required_runner_contract.web_operation_contract)) {
+    || String(existing.web_operation_backend || "browser_use_cli") !== backend
+    || Number(existing.web_operation_backend_revision || 1) !== Number(input.webOperationBackend?.revision || 1)
+    || String(existing.browser_surface || "browser_use_cli") !== browserSurface
+      || JSON.stringify(existing.web_operation_contract) !== JSON.stringify(webOperationContract)) {
       throw new Error("portable_external_action_plan_immutable_collision");
     }
     chmodSync(existingPath, 0o600);
@@ -93,12 +119,14 @@ export function issuePortableExternalActionPlan(input: {
     step_id: input.stepId,
     source_trigger: input.sourceTrigger,
     idempotency_key: input.idempotencyKey,
-    browser_surface: "browser_use_cli",
+    web_operation_backend: backend,
+    web_operation_backend_revision: Number(input.webOperationBackend?.revision || 1),
+    browser_surface: browserSurface,
     external_effect_policy: "approved",
     approval_status: "approved",
     allowed_stages: plan.stages,
     required_business_proofs: plan.required_business_proofs,
-    web_operation_contract: plan.required_runner_contract.web_operation_contract,
+    web_operation_contract: webOperationContract,
     input_bundle_sha256: bundleSha256(input.inputBundlePath, runRoot),
     issued_at: new Date(now).toISOString(),
     expires_at: new Date(now + Math.min(3_600_000, Math.max(1_000, Number(process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_TIMEOUT_MS || 900_000)))).toISOString(),

@@ -20,6 +20,7 @@ export type TenancyAuditCounts = {
     mvpIdempotencyKeys: number;
     companyMemoryEntries: number;
     companyConnectionAccountRefs: number;
+    codexAppServerRegistryReadbacks: number;
   };
   missingCompanyFk: {
     runs: number;
@@ -37,6 +38,7 @@ export type TenancyAuditCounts = {
     mvpIdempotencyKeys: number;
     companyMemoryEntries: number;
     companyConnectionAccountRefs: number;
+    codexAppServerRegistryReadbacks: number;
   };
   automationCurrentVersionMismatch: number;
   automationProjectionVersionMismatch: number;
@@ -85,7 +87,8 @@ const companyScopedTables = [
   { key: "mvpAutomationSchedules", table: "mvp_automation_schedules" },
   { key: "mvpIdempotencyKeys", table: "mvp_idempotency_keys" },
   { key: "companyMemoryEntries", table: "company_memory_entries" },
-  { key: "companyConnectionAccountRefs", table: "company_connection_account_refs" }
+  { key: "companyConnectionAccountRefs", table: "company_connection_account_refs" },
+  { key: "codexAppServerRegistryReadbacks", table: "codex_app_server_registry_readbacks" }
 ] as const;
 
 export function auditTenancy(): TenancyAuditResult {

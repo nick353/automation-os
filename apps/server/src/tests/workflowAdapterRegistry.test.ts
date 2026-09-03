@@ -59,7 +59,7 @@ test("local adapters are bound to the same control plane without fabricating con
   assert.ok(local.every((definition) => definition.execution_authority === "automation_os_control_plane"));
   assert.ok(local.every((definition) => definition.external_action_default === false));
   assert.ok(local.every((definition) => validateWorkflowAdapterContract(definition).ok));
-  assert.match(getWorkflowAdapterDefinition("email-review-reply")?.exact_blockers.join(",") ?? "", /gmail_connector_context_isolation_unavailable/);
+  assert.match(getWorkflowAdapterDefinition("email-review-reply")?.exact_blockers.join(",") ?? "", /zeabur_codex_app_server_registry_readback_missing/);
 });
 
 test("NisenPrints keeps Canva, Printify, Etsy, and Pinterest as separate adapters", () => {

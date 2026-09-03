@@ -20,13 +20,18 @@ usage() {
 
 health_readback() {
   local url="http://127.0.0.1:$PORT/api/health"
-  local attempt
-  for attempt in {1..20}; do
-    if curl -fsS "$url" >/dev/null 2>&1; then
+  local attempt=1
+  local max_attempts="${AUTOMATION_OS_HEALTH_ATTEMPTS:-120}"
+  # Postgres schema readiness can take longer than the old 20-second probe
+  # window. A short probe made a healthy launchd restart look like an auth or
+  # server failure even though the service became ready shortly afterwards.
+  while (( attempt <= max_attempts )); do
+    if curl --connect-timeout 1 --max-time 3 -fsS "$url" >/dev/null 2>&1; then
       printf 'health ok: %s\n' "$url"
       return 0
     fi
     sleep 1
+    (( attempt++ ))
   done
   printf 'health blocked: %s\n' "$url" >&2
   return 1
@@ -62,7 +67,16 @@ install_agent() {
   plutil -lint "$SOURCE_PLIST"
   mkdir -p "$TARGET_DIR"
   mkdir -p "$HELPER_DIR"
-  cp "$REPO_ROOT/scripts/start-automation-os-server.sh" "$HELPER_SCRIPT"
+  # The installed helper lives outside the repository.  Preserve the caller's
+  # explicit root when launchd supplies one, but make direct/manual invocation
+  # resolve the same repository instead of guessing from
+  # "$HOME/Library/Application Support".
+  {
+    printf '%s\n' '#!/bin/zsh'
+    printf '%s\n' 'set -euo pipefail'
+    printf 'export AUTOMATION_OS_REPO_ROOT="${AUTOMATION_OS_REPO_ROOT:-%s}"\n' "$REPO_ROOT"
+    tail -n +3 "$REPO_ROOT/scripts/start-automation-os-server.sh"
+  } > "$HELPER_SCRIPT"
   chmod +x "$HELPER_SCRIPT"
   cp "$SOURCE_PLIST" "$TARGET_PLIST"
   reload_agent

@@ -33,7 +33,11 @@ export type ResearchPlanSchedulerProcessOptions = {
 };
 
 const moduleDir = dirname(fileURLToPath(import.meta.url));
-const DEFAULT_TIMEOUT_MS = 15_000;
+// The scheduler child performs a bounded Postgres read and may admit more
+// than one fixed workflow. Fifteen seconds was shorter than the current
+// production readback envelope and caused repeated false timeout blockers.
+// Keep the 60-second hard ceiling and fail closed on a genuine timeout.
+const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_TIMEOUT_MS = 60_000;
 
 const defaultExecFile: SchedulerExecFile = (file, args, options, callback) => {
@@ -55,7 +59,11 @@ export function runResearchPlanSchedulerInChild(
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     AUTOMATION_OS_SCHEDULER_NOW: now.toISOString(),
-    AUTOMATION_OS_POSTGRES_SCHEMA_ASSUMED_CURRENT: "1"
+    AUTOMATION_OS_POSTGRES_SCHEMA_ASSUMED_CURRENT: "1",
+    // The server startup owns the fixed catalog seed. A scheduler tick must
+    // consume that catalog without repeating synchronous DELETE/upsert work;
+    // the child timeout is a safety boundary, not a catalog migration lane.
+    AUTOMATION_OS_SCHEDULER_READ_REGISTERED_ONLY: "1"
   };
   if (options.allowedCompanyIds) {
     env.AUTOMATION_OS_SCHEDULER_ALLOWED_COMPANY_IDS = JSON.stringify(

@@ -11,6 +11,10 @@ const tempRoot = mkdtempSync(join(tmpdir(), "automation-os-first-stage-"));
 const skillRoot = join(tempRoot, "skills");
 const pluginRoot = join(tempRoot, "plugins");
 const automationRoot = join(tempRoot, "automations");
+process.env.NODE_TEST_CONTEXT = "1";
+// Keep browser health compatibility fixtures independent from the live
+// Chrome bridge readback owned by the desktop session.
+process.env.AOS_CHROME_PLUGIN_READBACK_PATH = join(tempRoot, "missing-chrome-plugin-readback.json");
 process.env.AUTOMATION_OS_DB = join(tempRoot, "automation-os.sqlite");
 process.env.AUTOMATION_OS_SECRET_DIR = join(tempRoot, "secrets");
 process.env.AUTOMATION_OS_CODEX_SKILL_ROOTS = skillRoot;
@@ -227,6 +231,14 @@ function quoteSqlIdentifier(value: string): string {
   return `"${value.replaceAll('"', '""')}"`;
 }
 
+async function waitForFile(path: string, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!existsSync(path) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.equal(existsSync(path), true, `expected deferred artifact: ${path}`);
+}
+
 function insertAppServerProbeFixtures(): { runId: string; stepId: string; approvalId: string } {
   const now = db.nowIso();
   const runId = "run_api_server_probe_fixture";
@@ -323,6 +335,7 @@ test("POST /api/approvals/:id/cancel cancels a pending approval and marks the ru
     const body = JSON.parse(response.body) as { status: string; decision_note: string };
     const run = db.querySql<{ status: string; metadata_json: string }>("SELECT status, metadata_json FROM runs WHERE id='run_cancel'")[0];
     const metadata = JSON.parse(run.metadata_json) as { stop_reason?: string };
+    await waitForFile(statusFile);
     const obsidianStatus = JSON.parse(readFileSync(statusFile, "utf8")) as { ok: boolean; reason: string };
 
     assert.equal(response.status, 200);
@@ -1954,7 +1967,7 @@ test("registered workflow scheduler starts due fixed registered workflows with p
   assert.equal(result.runIds.length, 5);
 
   const dailyRun = db.querySql<{ id: string; status: string; metadata_json: string }>(
-    "SELECT id, status, metadata_json FROM runs WHERE objective='Daily AI registered workflow run full flow' ORDER BY created_at DESC LIMIT 1"
+    "SELECT id, status, metadata_json FROM runs WHERE json_extract(metadata_json, '$.registeredWorkflowId')='daily-ai-research-publish-run' ORDER BY created_at DESC LIMIT 1"
   )[0];
   assert.ok(dailyRun);
   const metadata = JSON.parse(dailyRun.metadata_json) as {
@@ -1973,6 +1986,7 @@ test("registered workflow scheduler starts due fixed registered workflows with p
     worker_protocol?: string;
     worker_mode?: string;
     worker_loop?: { requiredCommand?: string };
+    portable_workflow_invocation?: { read_only_stage?: string };
     plan?: { approvalRequired?: boolean; tasks?: Array<{ adapter?: string }> };
   };
   assert.equal(metadata.registeredWorkflowId, "daily-ai-research-publish-run");
@@ -1991,6 +2005,7 @@ test("registered workflow scheduler starts due fixed registered workflows with p
   assert.equal(metadata.worker_protocol, "local_worker_loop_required");
   assert.equal(metadata.worker_mode, "queued_for_local_worker_loop");
   assert.equal(metadata.worker_loop?.requiredCommand, "npm run worker:loop");
+  assert.equal(metadata.portable_workflow_invocation?.read_only_stage, "reference_readback");
   assert.equal(db.querySql<{ count: number }>("SELECT count(*) AS count FROM worker_events WHERE run_id=" + db.sqlValue(dailyRun.id) + " AND event_type='queued_for_worker_loop'")[0].count, 1);
 
   const pendingApproval = db.querySql<{ id: string; status: string }>(
@@ -2514,7 +2529,7 @@ test("GET /api/browser/health reports local Playwright and Codex Browser bridge 
   assert.equal(okBody.codexBrowserBridge.directCallableFromLocalApp, false);
   assert.equal(okBody.localApp.canReportHealth, true);
   assert.equal(okBody.chromeExtension.status, "blocked");
-  assert.equal(okBody.chromeExtension.exactBlocker, "chrome_extension_requires_codex_bridge");
+  assert.equal(okBody.chromeExtension.exactBlocker, "chrome_extension_bridge_readback_missing");
   assert.equal(typeof okBody.chromeExtension.summary, "string");
   assert.equal(typeof okBody.chromeExtension.nextAction, "string");
   assert.equal(typeof okBody.chromeExtension.cdpLaneConfigured, "boolean");

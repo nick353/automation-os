@@ -55,6 +55,11 @@ proof.
 - Persistent Codex state: mount the approved volume at `CODEX_HOME` and supply
   the approved Codex authentication in that service boundary. This repository
   does not create, copy, or print credentials.
+- Plugin placement: install and authenticate Gmail, Supabase, Drive, Calendar,
+  or another connector in this Zeabur Codex App Server's Plugin registry. AOS
+  only consumes a redacted registry readback; it does not become a second
+  Plugin store. Direct MCP entries are separate from the Plugin registry and
+  must be read back independently.
 - Automation OS: set the remote URL/token only after the endpoint and secret
   have been approved. AOS accepts either the existing environment variable
   `AUTOMATION_OS_CODEX_APP_SERVER_REMOTE_TOKEN` or a secret-manager file at
@@ -90,8 +95,11 @@ proof.
    switched from local stdio to the remote server. Until then, local stdio is
    retained and a remote blocker fails closed.
 
-Mac-worker capabilities remain intentionally local: canonical Browser Use CLI
-sessions, iPhone/Simulator control, Obsidian vault access, and local files.
+Mac-worker capabilities remain intentionally local: Chrome Plugin / Profile 2
+for browser operations, plus the other explicitly local machine capabilities.
+Connector execution belongs to the Zeabur Codex App Server when its Plugin,
+MCP, runtime, and connector-auth readback is verified. A Mac connector lane is
+an explicit fallback only.
 Moving the Codex App Server to Zeabur does not move those capabilities or
 authorize public access to them. If the Mac is closed, AOS scheduler/queue and
 Zeabur Codex inference may continue, but Browser Use jobs remain queued until

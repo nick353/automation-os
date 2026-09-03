@@ -1,17 +1,24 @@
 import { createHash } from "node:crypto";
 import {
   createAutomationRecord,
+  createAutomationRecordAsync,
   getAutomationRecord,
+  getAutomationRecordAsync,
   listAutomationSchedules,
+  listAutomationSchedulesAsync,
   saveAutomationSchedule,
+  saveAutomationScheduleAsync,
   activateAutomationRecord,
+  activateAutomationRecordAsync,
   updateAutomationRecord,
+  updateAutomationRecordAsync,
   type AutomationRecord,
   type AutomationScheduleRecord
 } from "./repository.js";
 import type { AutomationDefinitionInput } from "./contracts.js";
 import { getWorkflowAdapterDefinition, type WorkflowAdapterDefinition } from "../providers/workflowAdapterRegistry.js";
 import { portableScheduleDispatchForRegisteredAutomation, type PortableScheduleDispatch } from "../runs/portableScheduleDispatch.js";
+import { UNATTENDED_FIXED_LOCAL_EFFECT_POLICY } from "../runs/portableLocalWorkflow.js";
 
 export const REGISTERED_AUTOMATION_CATALOG_SCHEMA = "aos.registered_automation_catalog.v1" as const;
 export const REGISTERED_AUTOMATION_ADOPTION_SCHEMA = "aos.registered_automation_adoption.v1" as const;
@@ -44,6 +51,7 @@ export type RegisteredAutomationCatalogEntry = {
     externalActionDefault: false;
     adapterStatus: "control_plane_ready" | "runner_pending" | "identity_capability_pending" | "mac_worker_read_only_ready";
   };
+  unattendedEffectPolicy?: typeof UNATTENDED_FIXED_LOCAL_EFFECT_POLICY;
   stages: RegisteredAutomationStage[];
   exactBlockers: string[];
 };
@@ -58,6 +66,7 @@ export type RegisteredAutomationAdoptionSpec = {
   effectClass: RegisteredAutomationCatalogEntry["effectClass"];
   providerPolicy: RegisteredAutomationCatalogEntry["providerPolicy"];
   execution: RegisteredAutomationCatalogEntry["execution"];
+  unattendedEffectPolicy: typeof UNATTENDED_FIXED_LOCAL_EFFECT_POLICY | null;
   stages: RegisteredAutomationStage[];
   workflowAdapter: WorkflowAdapterDefinition | null;
   portableDispatch: PortableScheduleDispatch | null;
@@ -167,6 +176,7 @@ export const registeredAutomationCatalog: readonly RegisteredAutomationCatalogEn
     effectClass: "local_only",
     providerPolicy: { schema: "aos.execution_provider.v1", authority: "automation_os_control_plane", providerSelectable: true, codexIsNotAuthority: true },
     execution: { defaultMode: "preflight_no_effect", externalActionDefault: false, adapterStatus: "mac_worker_read_only_ready" },
+    unattendedEffectPolicy: UNATTENDED_FIXED_LOCAL_EFFECT_POLICY,
     stages: [
       { id: "source_snapshot", kind: "read", externalEffect: false, requiredProof: ["local_source_readback"] },
       { id: "backup_snapshot", kind: "effect", externalEffect: true, requiredProof: ["snapshot_artifact"] },
@@ -210,6 +220,7 @@ export const registeredAutomationCatalog: readonly RegisteredAutomationCatalogEn
     effectClass: "local_only",
     providerPolicy: { schema: "aos.execution_provider.v1", authority: "automation_os_control_plane", providerSelectable: true, codexIsNotAuthority: true },
     execution: { defaultMode: "preflight_no_effect", externalActionDefault: false, adapterStatus: "mac_worker_read_only_ready" },
+    unattendedEffectPolicy: UNATTENDED_FIXED_LOCAL_EFFECT_POLICY,
     stages: [
       { id: "project_resolution", kind: "read", externalEffect: false, requiredProof: ["project_authority_readback"] },
       { id: "audit", kind: "read", externalEffect: false, requiredProof: ["unresolved_only_audit"] },
@@ -245,6 +256,7 @@ export function buildRegisteredAutomationAdoptionSpec(entry: RegisteredAutomatio
     effectClass: entry.effectClass,
     providerPolicy: entry.providerPolicy,
     execution: entry.execution,
+    unattendedEffectPolicy: entry.unattendedEffectPolicy ?? null,
     stages: entry.stages,
     workflowAdapter,
     portableDispatch: portableScheduleDispatchForRegisteredAutomation({
@@ -308,6 +320,59 @@ export function adoptRegisteredAutomationCatalog(input: {
   return { companyId: input.companyId, adopted, externalActionExecuted: false };
 }
 
+/** Async counterpart for PostgreSQL HTTP management routes. */
+export async function adoptRegisteredAutomationCatalogAsync(input: {
+  companyId: string;
+  actorUserId: string;
+  sourceAutomationIds?: readonly string[];
+  enableSchedules?: boolean;
+}): Promise<RegisteredAutomationAdoptionResult> {
+  const requested = input.sourceAutomationIds?.length
+    ? [...new Set(input.sourceAutomationIds)]
+    : registeredAutomationCatalog.map((entry) => entry.sourceAutomationId);
+  const entries = requested.map((sourceId) => {
+    const entry = getRegisteredAutomationCatalogEntry(sourceId);
+    if (!entry) throw new Error(`registered_automation_catalog_unknown:${sourceId}`);
+    return entry;
+  });
+  const adopted: RegisteredAutomationAdoptionResult["adopted"] = [];
+  for (const entry of entries) {
+    const adoption = buildRegisteredAutomationAdoptionSpec(entry);
+    const automationId = deterministicCompanyAutomationId(input.companyId, entry.sourceAutomationId);
+    const definition: AutomationDefinitionInput = {
+      automationType: "registered_workflow",
+      name: entry.name,
+      description: entry.description,
+      goal: entry.goal,
+      lane: entry.browserSurface === "browser_use_cli" ? "browser_use_cli" : "local",
+      riskLevel: entry.stages.some((stage) => stage.externalEffect) ? "high" : "medium",
+      approvalPolicy: "required_before_external_action",
+      workerCommandKind: entry.workerCommandKind,
+      createApproval: entry.stages.some((stage) => stage.externalEffect),
+      builderSpec: adoption as unknown as Record<string, unknown>
+    };
+    const existing = await getAutomationRecordAsync(input.companyId, automationId, true);
+    const automation = existing
+      ? await synchronizeExistingAutomationAsync(existing, adoption, input.actorUserId)
+      : await createAutomationRecordAsync({ companyId: input.companyId, actorUserId: input.actorUserId, automationId, definition, idempotencyKey: `adopt-${entry.sourceAutomationId}`, idempotencyRequest: adoption });
+    const activeAutomation = automation.status === "active"
+      ? automation
+      : await activateAutomationRecordAsync({ companyId: input.companyId, actorUserId: input.actorUserId, automationId: automation.id, expectedRevision: automation.revision });
+    const existingSchedule = (await listAutomationSchedulesAsync(input.companyId, activeAutomation.id))[0];
+    const schedule = existingSchedule
+      ? verifyExistingSchedule(existingSchedule, entry)
+      : await saveAutomationScheduleAsync({
+          companyId: input.companyId,
+          actorUserId: input.actorUserId,
+          automationId: activeAutomation.id,
+          schedule: { kind: entry.schedule.kind, expression: entry.schedule.expression, timezone: entry.schedule.timezone, enabled: input.enableSchedules ?? true, expectedRevision: 1 },
+          nextRunAt: null
+        });
+    adopted.push({ sourceAutomationId: entry.sourceAutomationId, canonicalWorkflowId: entry.canonicalWorkflowId, automation: activeAutomation, schedule, adoption });
+  }
+  return { companyId: input.companyId, adopted, externalActionExecuted: false };
+}
+
 function synchronizeExistingAutomation(existing: AutomationRecord, adoption: RegisteredAutomationAdoptionSpec, actorUserId: string): AutomationRecord {
   const current = existing.builderSpec as Partial<RegisteredAutomationAdoptionSpec>;
   if (current.schema !== adoption.schema || current.sourceAutomationId !== adoption.sourceAutomationId || current.canonicalWorkflowId !== adoption.canonicalWorkflowId) {
@@ -315,6 +380,20 @@ function synchronizeExistingAutomation(existing: AutomationRecord, adoption: Reg
   }
   if (JSON.stringify(current) === JSON.stringify(adoption)) return existing;
   return updateAutomationRecord({
+    companyId: existing.companyId,
+    actorUserId,
+    automationId: existing.id,
+    patch: { expectedRevision: existing.revision, builderSpec: adoption as unknown as Record<string, unknown> }
+  });
+}
+
+async function synchronizeExistingAutomationAsync(existing: AutomationRecord, adoption: RegisteredAutomationAdoptionSpec, actorUserId: string): Promise<AutomationRecord> {
+  const current = existing.builderSpec as Partial<RegisteredAutomationAdoptionSpec>;
+  if (current.schema !== adoption.schema || current.sourceAutomationId !== adoption.sourceAutomationId || current.canonicalWorkflowId !== adoption.canonicalWorkflowId) {
+    throw new Error(`registered_automation_adoption_conflict:${adoption.sourceAutomationId}`);
+  }
+  if (JSON.stringify(current) === JSON.stringify(adoption)) return existing;
+  return await updateAutomationRecordAsync({
     companyId: existing.companyId,
     actorUserId,
     automationId: existing.id,

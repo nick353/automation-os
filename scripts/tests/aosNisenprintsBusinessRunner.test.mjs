@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -28,7 +28,41 @@ function admission(root, runId, stepId) {
   return { file, sha256: createHash("sha256").update(bytes).digest("hex") };
 }
 
-function effectAuthority(root, runId, stepId) {
+function targetDigest(bundle) {
+  const keys = [
+    "account_ref", "target_key", "payload_hash", "content_key", "product_key", "asset_manifest_id",
+    "job_url", "application_url", "candidate_key", "bucket", "sequence", "attempt",
+    "source_snapshot_id", "supply_run_id", "company", "role", "audience", "target_digest", "source_state_digest",
+  ];
+  return createHash("sha256").update(JSON.stringify(Object.fromEntries(
+    keys.filter((key) => Object.hasOwn(bundle, key)).map((key) => [key, bundle[key]]),
+  ))).digest("hex");
+}
+
+function inputBundle(root, runId, documentRunId = runId) {
+  const runRoot = join(root, runId);
+  mkdirSync(runRoot, { recursive: true, mode: 0o700 });
+  const input = {
+    account_ref: "nisenprints_authenticated_accounts",
+    target_key: "product-nisenprints-001",
+    product_key: "product-nisenprints-001",
+    asset_manifest_id: "asset-manifest-nisenprints-001",
+    payload_hash: "c".repeat(64),
+    source_snapshot_id: "snapshot-nisenprints-business-contract",
+  };
+  const value = {
+    schema: "automation_os_portable_workflow_input_bundle.v1",
+    workflow_id: "nisenprints-daily-product-canva-printify-etsy-pinterest",
+    run_id: documentRunId,
+    input,
+  };
+  const bytes = `${JSON.stringify(value, null, 2)}\n`;
+  const file = join(runRoot, `portable-input-bundle-${documentRunId}.v1.json`);
+  writeFileSync(file, bytes, { mode: 0o600 });
+  return { file, sha256: createHash("sha256").update(bytes).digest("hex"), input };
+}
+
+function effectAuthority(root, runId, stepId, overrides = {}) {
   const value = {
     schema: "automation_os_portable_external_effect_authority.v1",
     authority_id: "authority_nisenprints_business_contract",
@@ -41,9 +75,9 @@ function effectAuthority(root, runId, stepId) {
     effect_class: "external_non_idempotent",
     approval_status: "approved",
     idempotency_key: `${runId}-idempotency`,
-    target_digest: "a".repeat(64),
-    input_bundle_sha256: "b".repeat(64),
-    payload_hash: "c".repeat(64),
+    target_digest: overrides.target_digest || "a".repeat(64),
+    input_bundle_sha256: overrides.input_bundle_sha256 || "b".repeat(64),
+    payload_hash: overrides.payload_hash || "c".repeat(64),
     external_action_authorized: true,
     expires_at: new Date(Date.now() + 60_000).toISOString(),
   };
@@ -84,7 +118,7 @@ function invoke({ noLaunch = false, readOnlyStage = "", rootRunner = "" } = {}) 
   return { status: result.status, receipt: JSON.parse(result.stdout.trim()) };
 }
 
-function addActionPlan(root, runId, stepId) {
+function addActionPlan(root, runId, stepId, inputBundleSha256 = null) {
   const runRoot = join(root, runId);
   mkdirSync(runRoot, { recursive: true, mode: 0o700 });
   const payload = {
@@ -102,7 +136,7 @@ function addActionPlan(root, runId, stepId) {
     allowed_stages: ["prepare_context", "browser_preflight", "runway_generate", "canva_preflight", "canva_transaction", "canva_commit_export", "canva_artifact_gate", "canva_verify", "printify_product_copy", "printify_publish", "etsy_listing_discovery", "etsy_media_repair", "pinterest_queue", "pinterest_post", "strict_completion", "cleanup"],
     required_business_proofs: ["generation_manifest", "etsy_listing", "pinterest_pin_url", "etsy_visit_site_match", "cleanup_receipt"],
     web_operation_contract: WEB_OPERATION_CONTRACT,
-    input_bundle_sha256: null,
+    input_bundle_sha256: inputBundleSha256,
     issued_at: new Date().toISOString(),
     expires_at: new Date(Date.now() + 60_000).toISOString(),
   };
@@ -116,15 +150,16 @@ function addActionPlan(root, runId, stepId) {
 function stubRootRunner(root, runId, includeProofs = false) {
   const cleanup = join(root, runId, "cleanup.json");
   const resultPath = join(root, runId, "result.json");
+  const launchMarker = join(root, "root-runner-launched");
   writeFileSync(cleanup, `${JSON.stringify({ schema: "automation_kernel_cleanup_proof.v1", cleanup_complete: true, residual_owned_processes: 0 })}\n`, { mode: 0o600 });
   writeFileSync(resultPath, "{}\n", { mode: 0o600 });
   const runner = join(root, "stub-root-runner.mjs");
   const proofFields = includeProofs
     ? ", business_proofs: { generation_manifest: true, etsy_listing: true, pinterest_pin_url: true, etsy_visit_site_match: true, cleanup_receipt: true }, same_run_source_sync: true"
     : "";
-  writeFileSync(runner, `// browser-use-cli stage-adapter\nexport async function runRegisteredAutomation() { if (process.env.NISENPRINTS_BROWSER_USE_CLI_PORT !== "19884") throw new Error("port_not_bound"); return { result_path: ${JSON.stringify(resultPath)}, result: { schema: "automation_kernel_result.v2", run_id: ${JSON.stringify(runId)}, terminal_status: "succeeded", exact_blocker: null, cleanup_proof: ${JSON.stringify(cleanup)}, stage_results: [{ details: { external_intent_observed: true } }]${proofFields} } }; }\n`, { mode: 0o700 });
+  writeFileSync(runner, `// browser-use-cli stage-adapter\nimport { writeFileSync } from "node:fs";\nexport async function runRegisteredAutomation() { if (process.env.NISENPRINTS_BROWSER_USE_CLI_PORT !== "19884") throw new Error("port_not_bound"); writeFileSync(${JSON.stringify(launchMarker)}, "launched\\n"); return { result_path: ${JSON.stringify(resultPath)}, result: { schema: "automation_kernel_result.v2", run_id: ${JSON.stringify(runId)}, terminal_status: "succeeded", exact_blocker: null, cleanup_proof: ${JSON.stringify(cleanup)}, stage_results: [{ details: { external_intent_observed: true } }]${proofFields} } }; }\n`, { mode: 0o700 });
   chmodSync(runner, 0o700);
-  return runner;
+  return { runner, launchMarker };
 }
 
 test("NisenPrints business wrapper preserves the no-launch boundary", () => {
@@ -146,10 +181,11 @@ test("NisenPrints business wrapper can enter the approved root runner after plan
   const root = mkdtempSync(join(tmpdir(), "aos-nisenprints-approved-plan-"));
   const runId = "run_nisenprints_business_contract";
   const stepId = "step_nisenprints_business_contract";
-  const plan = addActionPlan(root, runId, stepId);
+  const bundle = inputBundle(root, runId);
+  const plan = addActionPlan(root, runId, stepId, bundle.sha256);
   const stub = stubRootRunner(root, runId);
   const current = admission(root, runId, stepId);
-  const authority = effectAuthority(root, runId, stepId);
+  const authority = effectAuthority(root, runId, stepId, { target_digest: targetDigest(bundle.input), input_bundle_sha256: bundle.sha256 });
   const result = spawnSync(process.execPath, [
     runnerPath.pathname,
     "--workflow-id", "nisenprints-daily-product-canva-printify-etsy-pinterest",
@@ -157,23 +193,25 @@ test("NisenPrints business wrapper can enter the approved root runner after plan
     "--step-id", stepId,
     "--source-trigger", "automation_os_scheduler",
     "--idempotency-key", `${runId}-idempotency`,
-  ], { encoding: "utf8", env: { PATH: process.env.PATH, AUTOMATION_OS_ARTIFACT_ROOT: root, AUTOMATION_OS_PORTABLE_BUSINESS_ADMISSION_PATH: current.file, AUTOMATION_OS_PORTABLE_BUSINESS_ADMISSION_SHA256: current.sha256, AUTOMATION_OS_PORTABLE_BUSINESS_ACTION_PLAN_PATH: plan.file, AUTOMATION_OS_PORTABLE_BUSINESS_ACTION_PLAN_SHA256: plan.sha256, AUTOMATION_OS_NISENPRINTS_BROWSER_USE_RUNNER: stub, AUTOMATION_OS_PORTABLE_EFFECT_AUTHORITY_PATH: authority.file, AUTOMATION_OS_PORTABLE_EFFECT_AUTHORITY_SHA256: authority.sha256 } });
+  ], { encoding: "utf8", env: { PATH: process.env.PATH, AUTOMATION_OS_ARTIFACT_ROOT: root, AUTOMATION_OS_PORTABLE_BUSINESS_ADMISSION_PATH: current.file, AUTOMATION_OS_PORTABLE_BUSINESS_ADMISSION_SHA256: current.sha256, AUTOMATION_OS_PORTABLE_BUSINESS_ACTION_PLAN_PATH: plan.file, AUTOMATION_OS_PORTABLE_BUSINESS_ACTION_PLAN_SHA256: plan.sha256, AUTOMATION_OS_PORTABLE_BUSINESS_INPUT_BUNDLE_PATH: bundle.file, AUTOMATION_OS_NISENPRINTS_BROWSER_USE_RUNNER: stub.runner, AUTOMATION_OS_PORTABLE_EFFECT_AUTHORITY_PATH: authority.file, AUTOMATION_OS_PORTABLE_EFFECT_AUTHORITY_SHA256: authority.sha256 } });
   assert.equal(result.status, 0, result.stderr);
   const receipt = JSON.parse(result.stdout.trim());
   assert.equal(receipt.status, "complete");
   assert.equal(receipt.external_action_executed, true);
   assert.equal(receipt.same_run_receipt, true);
   assert.equal(receipt.cleanup_verified, true);
+  assert.equal(receipt.runner_receipt.input_bundle_sha256, bundle.sha256);
 });
 
 test("NisenPrints business wrapper preserves explicit root business proofs and same-run sync", () => {
   const root = mkdtempSync(join(tmpdir(), "aos-nisenprints-proof-propagation-"));
   const runId = "run_nisenprints_business_contract";
   const stepId = "step_nisenprints_business_contract";
-  const plan = addActionPlan(root, runId, stepId);
+  const bundle = inputBundle(root, runId);
+  const plan = addActionPlan(root, runId, stepId, bundle.sha256);
   const stub = stubRootRunner(root, runId, true);
   const current = admission(root, runId, stepId);
-  const authority = effectAuthority(root, runId, stepId);
+  const authority = effectAuthority(root, runId, stepId, { target_digest: targetDigest(bundle.input), input_bundle_sha256: bundle.sha256 });
   const result = spawnSync(process.execPath, [
     runnerPath.pathname,
     "--workflow-id", "nisenprints-daily-product-canva-printify-etsy-pinterest",
@@ -181,11 +219,35 @@ test("NisenPrints business wrapper preserves explicit root business proofs and s
     "--step-id", stepId,
     "--source-trigger", "automation_os_scheduler",
     "--idempotency-key", `${runId}-idempotency`,
-  ], { encoding: "utf8", env: { PATH: process.env.PATH, AUTOMATION_OS_ARTIFACT_ROOT: root, AUTOMATION_OS_PORTABLE_BUSINESS_ADMISSION_PATH: current.file, AUTOMATION_OS_PORTABLE_BUSINESS_ADMISSION_SHA256: current.sha256, AUTOMATION_OS_PORTABLE_BUSINESS_ACTION_PLAN_PATH: plan.file, AUTOMATION_OS_PORTABLE_BUSINESS_ACTION_PLAN_SHA256: plan.sha256, AUTOMATION_OS_NISENPRINTS_BROWSER_USE_RUNNER: stub, AUTOMATION_OS_PORTABLE_EFFECT_AUTHORITY_PATH: authority.file, AUTOMATION_OS_PORTABLE_EFFECT_AUTHORITY_SHA256: authority.sha256 } });
+  ], { encoding: "utf8", env: { PATH: process.env.PATH, AUTOMATION_OS_ARTIFACT_ROOT: root, AUTOMATION_OS_PORTABLE_BUSINESS_ADMISSION_PATH: current.file, AUTOMATION_OS_PORTABLE_BUSINESS_ADMISSION_SHA256: current.sha256, AUTOMATION_OS_PORTABLE_BUSINESS_ACTION_PLAN_PATH: plan.file, AUTOMATION_OS_PORTABLE_BUSINESS_ACTION_PLAN_SHA256: plan.sha256, AUTOMATION_OS_PORTABLE_BUSINESS_INPUT_BUNDLE_PATH: bundle.file, AUTOMATION_OS_NISENPRINTS_BROWSER_USE_RUNNER: stub.runner, AUTOMATION_OS_PORTABLE_EFFECT_AUTHORITY_PATH: authority.file, AUTOMATION_OS_PORTABLE_EFFECT_AUTHORITY_SHA256: authority.sha256 } });
   assert.equal(result.status, 0, result.stderr);
   const receipt = JSON.parse(result.stdout.trim());
   assert.deepEqual(receipt.runner_receipt.business_proofs, { generation_manifest: true, etsy_listing: true, pinterest_pin_url: true, etsy_visit_site_match: true, cleanup_receipt: true });
   assert.equal(receipt.runner_receipt.same_run_source_sync, true);
+});
+
+test("NisenPrints business wrapper rejects a stale input bundle before root launch", () => {
+  const root = mkdtempSync(join(tmpdir(), "aos-nisenprints-stale-input-"));
+  const runId = "run_nisenprints_business_contract";
+  const stepId = "step_nisenprints_business_contract";
+  const staleBundle = inputBundle(root, runId, "run_nisenprints_previous_run");
+  const plan = addActionPlan(root, runId, stepId, staleBundle.sha256);
+  const stub = stubRootRunner(root, runId);
+  const current = admission(root, runId, stepId);
+  const authority = effectAuthority(root, runId, stepId, { target_digest: targetDigest(staleBundle.input), input_bundle_sha256: staleBundle.sha256 });
+  const actual = spawnSync(process.execPath, [
+    runnerPath.pathname,
+    "--workflow-id", "nisenprints-daily-product-canva-printify-etsy-pinterest",
+    "--run-id", runId,
+    "--step-id", stepId,
+    "--source-trigger", "automation_os_scheduler",
+    "--idempotency-key", `${runId}-idempotency`,
+  ], { encoding: "utf8", env: { PATH: process.env.PATH, AUTOMATION_OS_ARTIFACT_ROOT: root, AUTOMATION_OS_PORTABLE_BUSINESS_ADMISSION_PATH: current.file, AUTOMATION_OS_PORTABLE_BUSINESS_ADMISSION_SHA256: current.sha256, AUTOMATION_OS_PORTABLE_BUSINESS_ACTION_PLAN_PATH: plan.file, AUTOMATION_OS_PORTABLE_BUSINESS_ACTION_PLAN_SHA256: plan.sha256, AUTOMATION_OS_PORTABLE_BUSINESS_INPUT_BUNDLE_PATH: staleBundle.file, AUTOMATION_OS_NISENPRINTS_BROWSER_USE_RUNNER: stub.runner, AUTOMATION_OS_PORTABLE_EFFECT_AUTHORITY_PATH: authority.file, AUTOMATION_OS_PORTABLE_EFFECT_AUTHORITY_SHA256: authority.sha256 } });
+  assert.equal(actual.status, 1, actual.stderr);
+  const receipt = JSON.parse(actual.stdout.trim());
+  assert.equal(receipt.exact_blocker, "nisenprints_business_input_bundle_binding_invalid");
+  assert.equal(receipt.external_action_executed, false);
+  assert.equal(existsSync(stub.launchMarker), false);
 });
 
 test("NisenPrints business wrapper reports a configured root runner that is unavailable", () => {

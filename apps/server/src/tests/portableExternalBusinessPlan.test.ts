@@ -1,14 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { getPortableExternalBusinessPlan, portableExternalBusinessPlans, PORTABLE_ACCOUNT_TARGET_PAYLOAD_RECEIPT_CONTRACT_SCHEMA_V1, PORTABLE_EXTERNAL_BUSINESS_PLAN_SCHEMA_V1, validatePortableBusinessInputBundle } from "../runs/portableExternalBusinessPlan.js";
-import { admitWebOperationEffect, getWebOperationContract, resolveLiveSemanticTarget, validateWebOperationIntent } from "../runs/webOperationContract.js";
+import { getPortableExternalBusinessPlan, portableExternalBusinessPlans, PORTABLE_ACCOUNT_TARGET_PAYLOAD_RECEIPT_CONTRACT_SCHEMA_V1, PORTABLE_EXTERNAL_BUSINESS_PLAN_SCHEMA_V1, validatePortableBusinessInputBundle, validatePortableExternalBusinessPlan } from "../runs/portableExternalBusinessPlan.js";
+import { admitWebOperationEffect, getWebOperationContract, getWebOperationContractForSurface, resolveLiveSemanticTarget, validateWebOperationIntent } from "../runs/webOperationContract.js";
 
-test("portable external business plans are provider-neutral and Browser Use CLI bound", () => {
+test("portable external business plans are provider-neutral and bound to the canonical Browser Use CLI", () => {
   const plans = Object.values(portableExternalBusinessPlans);
-  assert.equal(plans.length, 3);
+  assert.equal(plans.length, 6);
   for (const plan of plans) {
     assert.equal(plan.schema, PORTABLE_EXTERNAL_BUSINESS_PLAN_SCHEMA_V1);
     assert.equal(plan.browser_surface, "browser_use_cli");
+    assert.equal(plan.browser_runtime, "browser_use_cli");
+    assert.deepEqual(plan.connector_priority, ["plugin", "mcp", "cli", "api"]);
+    assert.equal(plan.connector_fallback_policy, "no_implicit_fallback");
     assert.equal(plan.llm_provider_neutral, true);
     assert.equal(plan.app_dependency, false);
     assert.equal(plan.external_effect_policy, "approval_required");
@@ -16,6 +19,9 @@ test("portable external business plans are provider-neutral and Browser Use CLI 
     assert.ok(plan.required_business_proofs.length > 0);
     assert.equal(plan.required_runner_contract.same_run_receipt, true);
     assert.equal(plan.required_runner_contract.web_operation_contract.schema, "automation_os_web_operation_contract.v1");
+    assert.equal(plan.required_runner_contract.web_operation_contract.browser_surface, "browser_use_cli");
+    assert.deepEqual(plan.required_runner_contract.web_operation_contract.browser_kernel.supported_surfaces, ["browser_use_cli"]);
+    assert.equal(plan.required_runner_contract.web_operation_contract.fixed_kernel.forbidden_surfaces.includes("extension"), true);
     assert.equal(plan.required_runner_contract.web_operation_contract.fixed_kernel.workflow_owned_persistent_profile, true);
     assert.equal(plan.required_runner_contract.web_operation_contract.adaptive_layer.site_playbook_role, "hint_only");
     assert.equal(plan.required_runner_contract.web_operation_contract.adaptive_layer.no_fixed_css_selector_authority, true);
@@ -75,6 +81,9 @@ test("common web operation intent resolves only one fresh semantic target", () =
   assert.deepEqual(admitWebOperationEffect({ intent: effectIntent, resolution: resolveLiveSemanticTarget({ intent: effectIntent, candidates: [candidate] }) }), { status: "awaiting_approval", exact_blocker: "web_operation_approval_pending" });
   assert.throws(() => validateWebOperationIntent({ ...readIntent, target: { semantic_query: "Publish", css_selector: "button" } }), /web_operation_intent_fixed_target_rejected/);
   assert.equal(getWebOperationContract().operation_model.exploration_limits.max_steps, 32);
+  const chromeContract = getWebOperationContractForSurface("signed_chrome_extension_profile2");
+  assert.equal(chromeContract.browser_surface, "signed_chrome_extension_profile2");
+  assert.doesNotThrow(() => validatePortableExternalBusinessPlan(getPortableExternalBusinessPlan("job-application-manager")!));
 });
 
 test("business input bundles fail closed until workflow account, target, and payload fields are bound", () => {
@@ -135,6 +144,18 @@ test("business input bundles fail closed until workflow account, target, and pay
     }),
     { ok: true },
   );
+  for (const workflowId of ["sns-multi-poster-ukiyoe", "x-authenticated-browser-lane"] as const) {
+    assert.deepEqual(
+      validatePortableBusinessInputBundle(workflowId, {
+        account_ref: "sns-account",
+        target_key: "content-001:x",
+        content_key: "content-001",
+        payload_hash: "a".repeat(64),
+        source_snapshot_id: "snapshot-001",
+      }),
+      { ok: true },
+    );
+  }
 });
 
 test("portable external business plan lookup returns a defensive copy", () => {
@@ -143,4 +164,22 @@ test("portable external business plan lookup returns a defensive copy", () => {
   (plan.stages as string[]).push("test_only");
   assert.equal(getPortableExternalBusinessPlan("job-application-manager")?.stages.includes("test_only"), false);
   assert.equal(getPortableExternalBusinessPlan("unknown"), null);
+});
+
+test("Browser Use CLI plans fail closed when their nested web contract drifts to Profile 2", () => {
+  const plan = getPortableExternalBusinessPlan("job-application-manager");
+  assert.ok(plan);
+  assert.throws(
+    () => validatePortableExternalBusinessPlan({
+      ...plan,
+      required_runner_contract: {
+        ...plan.required_runner_contract,
+        web_operation_contract: {
+          ...plan.required_runner_contract.web_operation_contract,
+          browser_surface: "signed_chrome_extension_profile2",
+        },
+      },
+    }),
+    /browser_use_cli_web_operation_contract_mismatch/,
+  );
 });
