@@ -1,0 +1,34 @@
+{
+  "schema": "aos.company1.backup_obsidian.ui_readonly.v1",
+  "captured_at": "2026-09-14T19:44:53+09:00",
+  "company_id": "company_2560580981cedfd106b66245",
+  "selected_account": "nichika2000823@gmail.com",
+  "route": "https://aos-admin-ingress.zeabur.app/#/projects/company_2560580981cedfd106b66245/automations",
+  "actions": [
+    {
+      "workflow": "Backup",
+      "action": "取得済みローカル情報を確認",
+      "result": "verified",
+      "runs": 39,
+      "proofs": 0,
+      "latest": "complete",
+      "metadata": "snapshot/integrity",
+      "provider_or_external": false,
+      "business_completion": false
+    },
+    {
+      "workflow": "Obsidian",
+      "action": "取得済みローカル情報を確認",
+      "result": "verified",
+      "runs": 14,
+      "proofs": 0,
+      "latest": "complete",
+      "metadata": "project/Vault parity",
+      "provider_or_external": false,
+      "business_completion": false
+    }
+  ],
+  "external_action_executed": false,
+  "cleanup_verified": true,
+  "interpretation": "Fresh production-route UI readback confirmed the local Backup and Obsidian evidence without provider connection, authentication, queue, Vault update, or external site operation. Business completion remains unclaimed because proofs=0."
+}

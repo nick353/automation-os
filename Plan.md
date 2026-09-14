@@ -23850,3 +23850,14 @@ Evidence: `outputs/aos-scheduler-current-readback-20260914.json`、`artifacts/au
 Evidence: `outputs/aos-company1-production-schedule-readback-20260914.json`。
 
 **Next action:** 本番scheduleを有効化する前に、正本scheduleのpromotion/materialization境界を確定する。必要ならユーザーに「どのworkflowを定期実行へ昇格するか」を確認し、1件ずつsame-run readback付きでmaterializeする。
+
+## 2026-09-14T19:44:53+09:00 — Backup / Obsidian production-route UI read-only confirmation
+
+- [x] Company 1 protected routeでBackupのローカル情報をfresh確認した（runs=39、proofs=0、latest=complete、snapshot/integrity metadataあり）。
+- [x] 同じrouteでObsidianのローカル情報をfresh確認した（runs=14、proofs=0、latest=complete、project/Vault parity metadataあり）。
+- [x] Provider接続・認証・queue・外部サイト操作・Vault更新なし、`external_action=false`を確認した。
+- [ ] proofs=0のため、業務完了、provider receipt、source sync、定期実行成功とはみなさない。
+
+Evidence: `outputs/aos-company1-backup-obsidian-ui-readonly-20260914.json`。
+
+**Next action:** 同じread-only基準でGmailのunknown_readbackを解消するか、ユーザー承認が必要なschedule promotion境界を先に確定する。外部効果へは進めない。
