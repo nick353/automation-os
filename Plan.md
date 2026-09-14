@@ -24041,3 +24041,15 @@ Evidence: fresh Companion `#/runs` readback at `20:37:44 JST`, rows/status readb
 Evidence: cache-busted Company 1 page, Companion run `run_aos_daily_ai_correct_preflight_20260914_1149`, queued receipt `run_mu16chb0_55tuzy`, and `data/artifacts/portable-remote-worker/worker-status.v1.json` readback.
 
 **Next action:** retain this Run as the single reconciliation target, obtain its authoritative Run/worker status without clicking again, then close the Companion session and record cleanup. If it remains queued while the worker is idle, diagnose the worker polling/claim path rather than replaying the preflight.
+
+## 2026-09-14T20:49:00+09:00 — Daily AI preflight worker receipt reconciled
+
+- [x] The same Run `run_mu16chb0_55tuzy` was found in the worker artifact directory; no second trigger or replay was issued.
+- [x] Worker receipt is `status=complete`, `child_exit_code=0`, workflow=`daily-ai-research-publish-run`, stage bound to `read_only`, and `external_action_executed=false`.
+- [x] Protected readback confirms the server accepted the receipt, `same_run_receipt=true`, `read_only_proof_verified=true`, `readback_verified=true`, `cleanup_verified=true`, and `exact_blocker=null`.
+- [x] Companion adapter readback used the intended `aos_chrome_companion_profile_instance` surface, performed no mutation (`mutation_dispatch_count=0`), and closed its task-owned session/tab.
+- [ ] This remains a read-only preflight, not Daily AI business completion: `same_run_source_sync=false` and `business_proof_verified=false`. Sheets update, publish, engagement, and other external effects were not performed.
+
+Evidence: `data/artifacts/portable-remote-worker/run_mu16chb0_55tuzy/portable-runner-receipt.v1.json`, `portable-protected-readback.v1.json`, `portable-external-action-plan.v1.json`, and worker status readback.
+
+**Next action:** proceed to the next independent read-only acceptance gap: reconcile the current Backup/Obsidian/local-only lanes and the durable UI status of the completed preflights, while preserving all business-effect gates.
