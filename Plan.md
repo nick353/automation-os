@@ -19,7 +19,7 @@ AOSの残存業務を、低リスクの内部処理から段階的に実行す�
 
 ### Phase 1 — 外部効果なしの内部業務
 
-1. **Backup safety check** — ローカルスナップショット、checksum、manifest、Run receipt、cleanupを確認する。
+1. **Backup safety check** — ローカルスナップショット、checksum、manifest、Run receipt、cleanupを確認する。2026-09-14 Run `20260914T145046+0900` は完了し、6ソースOK、snapshot `20260914T145046+0900`、backup commit `9f6b15976a4312b2b49930c34dd49ac36b5e8fd9`、remote `origin/main`一致、dirty=0を確認済み。
 2. **Obsidian project memory audit** — 現在の `runnable=false` 登録をreadbackし、必要なら登録有効化を別承認してからaudit artifactを作成する。Vault/Git同期は別承認。
 3. **Morning Brief** — 配信先と朝/夜の時刻を決め、内部配信receiptを確認する。未決定のまま有効化しない。
 
