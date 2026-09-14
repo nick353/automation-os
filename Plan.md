@@ -23656,3 +23656,14 @@ Evidence: `outputs/aos-deployed-ui-acceptance-readback-20260914.json`、Zeabur d
 Evidence: `outputs/aos-gmail-topeyes-reply-receipt-20260914.json`、Gmail thread `【株式会社TopEyes】書類選考結果のご連絡`の最新19:01表示。
 
 **Next action:** 同じTopEyesスレッドの返信を再送せず、先方の確定返信を待つ。AOS残存業務はNisenPrints viewport、Backup/Obsidian導線、Daily AI scheduler owner mismatchのread-only修正・検証を続行する。
+
+## 2026-09-14 — UI/read-only boundary verification
+
+- [x] Web typecheck、Workflow Start Guide / all-page-button QA 29件、Web production build、Server buildが成功した。
+- [x] 5行の開始ガイドと6件の登録inventoryを別集合として扱い、canonical binding・company scope・fresh registration readbackを実行可否の根拠にする設計を確認した。
+- [x] Backup/Obsidianのlocal-only read-only確認はaggregate effect gateから独立し、外部効果を推測しない設計を確認した。
+- [ ] Web buildの500kB超chunk advisory、NisenPrintsのlive viewport境界、Backup/Obsidianの本番導線表示、Daily AI scheduler owner mismatchは残る。
+
+Evidence: `outputs/aos-ui-readonly-boundary-verification-20260914.json`。
+
+**Next action:** 外部効果なしのまま、Backup/Obsidianのlocal-only read-only結果が本番UIに表示されるかをCompanionで再確認し、必要ならUI導線だけを修正する。NisenPrintsの対象クリックは同じviewport blockerを再送せず保持する。

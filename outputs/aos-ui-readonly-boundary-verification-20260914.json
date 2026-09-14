@@ -1,0 +1,26 @@
+{
+  "capturedAt": "2026-09-14",
+  "scope": "UI/read-only boundary verification",
+  "checks": [
+    { "command": "npm run typecheck:web", "status": "passed" },
+    { "command": "node --test scripts/tests/workflowStartGuide.test.mjs scripts/tests/allPageButtonQa.test.mjs", "status": "passed", "tests": 29 },
+    { "command": "npm run build:web", "status": "passed", "warning": "index bundle exceeds 500 kB chunk advisory" },
+    { "command": "npm run build:server", "status": "passed" }
+  ],
+  "verifiedInvariants": [
+    "five-row guide remains separate from dynamic six-record registration inventory",
+    "canonical binding and company scope are required before execution claims",
+    "loading/error registration states remain distinct from confirmed absence",
+    "local-only Backup/Obsidian checks remain independent from aggregate effect gate",
+    "effectful controls remain gated by fresh registration readback and can_preflight",
+    "external_action is not inferred from build or static manifest checks"
+  ],
+  "externalActionExecuted": false,
+  "deploymentPerformed": false,
+  "remaining": [
+    "NisenPrints live viewport target boundary",
+    "Backup/Obsidian deployed-route read-only control visibility",
+    "Daily AI scheduler owner-boundary liveness mismatch",
+    "bundle-size advisory is not a release blocker but remains a UX/performance follow-up"
+  ]
+}
