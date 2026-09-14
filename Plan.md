@@ -23589,3 +23589,14 @@ Evidence: `run_aos_nisenprints_reopen_20260914_0906`, `run_aos_nisenprints_scrol
 Evidence: Companion runs `run_aos_backup_query_20260914_0909`, `run_aos_backup_preflight_query_20260914_0909`, `run_aos_backup_preflight_names_20260914_0910`, `run_aos_obsidian_preflight_query_20260914_0910`。
 
 **Next action:** 外部効果を起こさずに進められる最後の登録lane（求人応募）のread-only表示を同様に確認する。その後、NisenPrints/Backup/Obsidianの登録・UI導線差分を修正対象としてまとめ、業務実行は認証・対象・payload・approvalが揃うまで開始しない。
+
+## 2026-09-14T09:13:30Z — sequential job-application registration readback
+
+- [x] 求人応募の専用画面、対象登録導線、既存応募照合の高影響注意書きをfresh queryで確認した。
+- [x] 登録欄には「応募: read-only preflight」が存在し、disabled=false。表示位置をscroll/queryで再確認したが、Companionのvisual target境界内に確実に収める前に処理を停止した。応募送信、対象登録、承認、provider callは行っていない。
+- [x] read-only query/scrollのみで、認証要求、外部効果、応募、source sync、business completionは0件。
+- [ ] 求人応募はread-onlyボタン自体は存在するが、高影響laneであり、対象・アカウント・payload・approvalが未固定のため、専用画面を開く操作や実応募には進まない。
+
+Evidence: Companion runs `run_aos_job_application_preflight_query_20260914_0911`, `run_aos_job_application_scroll_20260914_0911`, `run_aos_job_application_scroll2_20260914_0911`。
+
+**Next action:** 上から順番のread-only登録確認は完了。NisenPrintsのviewport問題、Backupの登録欄不在、Obsidianのpreflight導線不在を修正候補として整理し、認証が不要な内部テスト・UI導線修正を先に行う。外部業務はユーザーが対象・アカウント・payload・承認を1件ずつ確定した後にのみ開始する。
