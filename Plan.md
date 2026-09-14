@@ -23545,3 +23545,17 @@ Evidence: commit前のserver build、focused tests 16/16、runtime alias import 
 Evidence: Zeabur deployment `6aa7b45514304c79dfa42cf1`、`/readyz` HTTP 200、Companion runs `run_aos_postdeploy_home_readback_20260914_0849` / `run_aos_postdeploy_company1_detail_20260914_0850`（2026-09-14）。
 
 **Next action:** 外部効果を起こさない範囲で、Company 1のprotected schedule readbackとworkflow admissionの詳細を確認する。`can_run=false`のままなら業務Run・送信・公開・応募・schedule変更は開始しない。
+
+## 2026-09-14T08:52:00Z — protected schedule materialization and workflow admission detail
+
+- [x] Company 1 registered automation tableをfresh queryし、schedule、next occurrence、automation version、execution contract、lane、last run、statusをreadbackした。
+- [x] 有効な登録automationは、Gmail 07:30 / next 2026-09-14T22:30Z / revision `automation_version_mtkthfz8_tuwhgo`、NisenPrints 08:30 / next 23:30Z / `automation_version_mtol1ids_5aioee`、Daily AI 09:00 / next 2026-09-15T00:00Z / `automation_version_mtoq8swe_yewi9u`、Obsidian MON 09:30 / next 2026-09-21T00:30Z / `automation_version_msxvv740_k4wxuu`、Backup 09:00 / next 2026-09-15T00:00Z / `automation_version_mtkti12d_o2utv5`、求人応募 07:30 / next 22:30Z / `automation_version_msxvva6c_b0iq5p`として確認した。表示timezoneはAsia/Tokyoのcanonical scheduleと一致する。
+- [x] Execution contractは、Gmail/NisenPrints/Obsidian/Backupが`requires_registered_runner_readback`、Daily AIが`queues_portable_mac_worker`、求人が`queues_portable_mac_worker`、laneは各workflowに応じてlocal / aos_chrome_companion / browser_use_cliとreadbackした。
+- [x] workflow admissionは6 laneすべて`read-only preflight=admitted / manual no-effect=available / effectful gate=blocked / live=未claim（予約のみ） / proof=historical_not_current`だった。これは定期設定が存在する証明であり、runner claim・業務実行・provider receiptの証明ではない。
+- [x] 行内guideではGmail/Backup/Obsidianが`unknown_readback`、Daily AI/NisenPrintsが`Mac workerのCompanion同一Run readback待ち`、求人応募がAOS portable queue境界として表示された。外部効果は承認・同一Run receipt・source sync後のみ許可される。
+- [x] 読み取り専用query中にmutation dispatch、provider call、schedule変更、手動Run、外部効果は0件。Companion session/tab cleanupも完了した。
+- [ ] 定期実行の設定値はmaterialized/readableだが、effectful gateはblockedのまま。次に必要なのは対象workflowを1件選び、fresh target/account/payload/approvalと同一Runのread-only preflightを成立させること。未選択のまま外部業務Runやschedule変更は開始しない。
+
+Evidence: Companion run `run_aos_schedule_row_query_20260914_0855` and protected route `/#/projects/company_2560580981cedfd106b66245/automations`（2026-09-14）。
+
+**Next action:** ユーザーが最初に検証するworkflowを1件（Gmail / Daily AI / NisenPrints / Backup / Obsidian / 求人応募）選び、対象・account・payload・approvalを確定した場合のみ、read-only preflightから進める。
