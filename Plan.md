@@ -24017,3 +24017,27 @@ Evidence: authenticated schedule endpoint readbacks for the five deterministic C
 Evidence: Companion run `run_aos_daily_ai_preflight_20260914_1142`, visual proof/scroll readback, post-click exact page readback, and `data/artifacts/portable-remote-worker/worker-status.v1.json`.
 
 **Next action:** reconcile this dispatched preflight through the authoritative AOS Runs/readback surface without replaying the click. If no Run receipt exists, fix the UI-to-preflight response/readback binding before any further preflight attempt.
+
+## 2026-09-14T20:38:30+09:00 — Daily AI preflight reconciliation completed
+
+- [x] Fresh `#/runs` readback after the dispatched click showed `runs=500`, `proofs=500`, and the latest relevant record remained the older `run_mu14jp5j_n4djdg` with `blocker=companion_profile_not_connected`; no new Run ID or preflight receipt appeared for the current click.
+- [x] The same readback showed the Run safety boundary as external operations disabled and no approval-pending item created by this attempt. The portable worker status remained idle/heartbeat-ok.
+- [x] The dispatched preflight was not replayed. This is now classified as a UI-to-preflight response/readback mismatch, not a provider failure or business completion.
+- [x] Reconciliation task tab cleanup completed with `foreign_tabs_mutated=false`, `unknown_effect=[]`, and `external_action_executed=false`.
+- [ ] Fix the deployed UI binding so the exact preflight control either exposes its AOS Run receipt or fails before browser dispatch; until then, Daily AI same-run worker proof and source sync remain unverified.
+
+Evidence: fresh Companion `#/runs` readback at `20:37:44 JST`, rows/status readback, worker-status readback, and cleanup receipt.
+
+**Next action:** inspect and correct the deployed preflight control/endpoint binding, then deploy and perform one new no-effect preflight only after the new control's receipt path is observable. Do not click the current control again.
+
+## 2026-09-14T20:44:00+09:00 — Daily AI correct portable preflight queued
+
+- [x] Fresh cache-busted bundle/readback distinguished the two similarly named controls: `projects.registered.open.daily-ai-research-publish-run` is the details/readiness control, while `projects.registered.portable-run.daily-ai-research-publish-run` is the actual no-effect `reference_readback` queue control.
+- [x] One exact visual proof and one signed click were performed on the correct portable-run control with `target_resolution=exact`, `browser_effect=known_effect`, and `external_action_executed=false`.
+- [x] Same-page receipt readback confirmed `Daily AI: read-only preflight queued / run=run_mu16chb0_55tuzy / stage=reference_readback / mode=external / external_action=false`. This is the AOS queue receipt; no provider post, send, publish, delete, or authentication action was permitted.
+- [x] Local worker readback after a fresh five-second observation remains `heartbeat_status=ok`, transport `acknowledged`, binding `verified`, `status=idle`, `run_id=null`; therefore worker pickup/provider-neutral execution and source sync are not yet proven.
+- [x] No replay was made. Companion cleanup remains required before terminal completion; effectful business stages remain gated.
+
+Evidence: cache-busted Company 1 page, Companion run `run_aos_daily_ai_correct_preflight_20260914_1149`, queued receipt `run_mu16chb0_55tuzy`, and `data/artifacts/portable-remote-worker/worker-status.v1.json` readback.
+
+**Next action:** retain this Run as the single reconciliation target, obtain its authoritative Run/worker status without clicking again, then close the Companion session and record cleanup. If it remains queued while the worker is idle, diagnose the worker polling/claim path rather than replaying the preflight.
