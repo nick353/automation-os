@@ -52,6 +52,8 @@ AOSの残存業務を、低リスクの内部処理から段階的に実行す�
 - [ ] 夜Briefのdelivery receipt → source sync → reconciliation → cleanup
 - 現在の正確な停止理由: `brief_delivery_destination_and_morning_evening_time_not_decided`
 - Companion fresh tab readbackではZeabur管理画面と空白タブのみ。AOS管理画面タブがないため、このターンでは配信実行・設定変更を行っていない。
+- AOS canonical UI `https://aos-admin-ingress.zeabur.app/` をCompanion task-owned tabでfresh readbackし、画面上の「朝Brief」「夜Brief」「fresh readback」「AOS Homeに配信」、`source=AOS DB / Home delivery=internal / external notification=false / external_action=false` を確認した。具体的な朝夜時刻とdelivery receiptは画面上で確認できず、配信操作は行っていない。
+- 同一readback後にCompanion profile transportが切断され、current exact blockerは `profile_not_connected`。task-owned tabはledger-onlyで保持され、外部効果・dispatchは0。再接続後にfresh sessionを開始するまで再試行しない。
 
 番号だけの選択で進められるのは、まずread-only候補確認まで。送信・公開・応募・更新の直前には、対象と内容をもう一度表示し、1回だけ明示承認を取る。
 
