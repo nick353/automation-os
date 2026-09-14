@@ -23559,3 +23559,22 @@ Evidence: Zeabur deployment `6aa7b45514304c79dfa42cf1`、`/readyz` HTTP 200、Co
 Evidence: Companion run `run_aos_schedule_row_query_20260914_0855` and protected route `/#/projects/company_2560580981cedfd106b66245/automations`（2026-09-14）。
 
 **Next action:** ユーザーが最初に検証するworkflowを1件（Gmail / Daily AI / NisenPrints / Backup / Obsidian / 求人応募）選び、対象・account・payload・approvalを確定した場合のみ、read-only preflightから進める。
+
+## 2026-09-14T09:01:00Z — sequential read-only preflight attempt
+
+- [x] ユーザー指示「上から順番に」に従い、Gmail以外で最上段のDaily AIから開始した。
+- [x] Daily AIのread-only preflightをCompanion同一Runで実行し、画面のfresh readbackで`read-only=true / readiness_pass / read-only preflight=admitted / effectful gate=blocked / external_action=false`を確認した。認証要求・外部送信・公開・応募は発生していない。
+- [x] 次のNisenPrintsについて、対象ボタンの存在と位置をread-only queryで確認した。クリックはviewport外で安全に停止し、dispatch/provider call/external effectは0件。
+- [ ] Companionのviewport/scroll復元により、NisenPrintsのread-only preflightは未実行。これは業務側の認証不足ではなく、ブラウザ操作の可視ターゲット境界である。
+
+Evidence: Companion runs `run_aos_daily_ai_readonly_preflight_20260914_0858`（同一Run post visual readback）、`run_aos_nisenprints_query_20260914_0904`（button存在・rect readback）、NisenPrints click attemptsは全て`visual_target_outside_viewport / no_dispatch`。
+
+**Next action:** 同じタブを再利用してNisenPrintsのread-only確認だけを再開する。認証画面が出た場合のみユーザー操作を依頼し、手動実行・公開・投稿・商品更新へは進まない。
+
+## 2026-09-14T09:06:30Z — NisenPrints viewport blocker reconfirmed
+- [x] 実タブを新規のCompanion task tabとして再作成し、Company 1のautomations画面を同一originで読み込んだ。
+- [x] `NisenPrints: read-only preflight`をfresh queryで1件確認し、スクロール後も存在・disabled=falseを確認した。
+- [x] ページ最下部まで安全にスクロールしたが、Companionのvisual target inspectionは`visual_target_outside_viewport`で停止。クリックはno_dispatchで、`external_action_executed=false`、provider receipt・source sync・business completionは未発生。
+- [ ] NisenPrintsのread-only preflightは未実行。原因は認証ではなく、現行UIの可視ターゲット／viewport復元境界である。
+Evidence: `run_aos_nisenprints_reopen_20260914_0906`, `run_aos_nisenprints_scroll_query_20260914_0906`, `run_aos_nisenprints_scroll_query_20260914_0907`, `run_aos_nisenprints_readonly_preflight_20260914_0906`。
+**Next action:** NisenPrintsは現時点で再送せずブロッカーとして保持し、次順位のread-only lane（Backup/Obsidian）を確認する。認証画面が出た場合のみユーザー操作を依頼する。
