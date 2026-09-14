@@ -24053,3 +24053,16 @@ Evidence: cache-busted Company 1 page, Companion run `run_aos_daily_ai_correct_p
 Evidence: `data/artifacts/portable-remote-worker/run_mu16chb0_55tuzy/portable-runner-receipt.v1.json`, `portable-protected-readback.v1.json`, `portable-external-action-plan.v1.json`, and worker status readback.
 
 **Next action:** proceed to the next independent read-only acceptance gap: reconcile the current Backup/Obsidian/local-only lanes and the durable UI status of the completed preflights, while preserving all business-effect gates.
+
+## 2026-09-14T20:54:00+09:00 — Preflight status readback UI deployed
+
+- [x] The registered-workflow preflight handler now performs a same-Run `/api/runs/:runId` readback and displays `same-run status` / blocker next to the queued receipt; it also stores the Run ID/status in the existing registered readback state.
+- [x] `npm run typecheck:web`, `npm run build:web`, `npm run test:e2e:contract` (67/67), and `git diff --check` passed.
+- [x] The exact existing Zeabur target `automation-wiled` / `automation-os` was freshly verified under account `nichika2000823@gmail.com`; deployment `6aa7df87a6ec7d5555ae3990` used the expected `docker` plan and reached `RUNNING`. Existing service deployment was preserved during the rollout.
+- [x] Fresh service and ingress `/readyz` both returned HTTP 200. The deployed JavaScript bundle contains the new `same-run status=` readback path.
+- [ ] A direct API temporary-tab readback was attempted once but timed out at Companion tab creation with `operation_effect_unknown`; it was not replayed and is not evidence of provider failure. The worker artifact remains the authoritative Run proof.
+- [ ] UI durable completion for every workflow, business-effect completion, and source sync remain separate gates; no send, publish, application, Sheets update, or approval consumption was performed.
+
+Evidence: commit `4fc6e352`, typecheck/build/contract test output, Zeabur deployment `6aa7df87a6ec7d5555ae3990` and Docker build logs, fresh `/readyz`, and deployed bundle readback.
+
+**Next action:** fresh-read the deployed Company 1 page after cache bust and verify the new same-Run label is visible on a safe no-effect path; then consolidate the completed Backup/Obsidian/Daily AI preflight evidence and leave only genuine business-effect/user-decision gates.
