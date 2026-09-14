@@ -148,6 +148,16 @@ AOSの残存業務を、低リスクの内部処理から段階的に実行す�
 - [x] この確認ではsecretを読まず、Zeabur deployment、WSS initialize、thread/turn、外部効果を実行していない。
 - [ ] deployment_authorized=false。反映先・revision・secret boundaryの外部確認なしにデプロイ済みとはclaimしない。
 
+### 2026-09-14 Zeabur target/deployment readback
+
+- [x] Zeaburの個人workspace、project `automation-wiled`、対象service `automation-os`、ingress service `aos-admin-ingress`をfresh read-onlyで特定した。
+- [x] `automation-os` の現在deploymentは `RUNNING`、target refは `refs/heads/main`、deployment commitは `08cac9f769ff407517f3fb5100ddfb0593aa6003` と確認した。
+- [x] 現在のservice設定は root/build/start の秘密を含まない範囲で確認し、対象serviceの取り違えはないことを確認した。
+- [ ] 現行ローカル正本HEAD `6e5d7d2e52491c6be026baef65a87f1476a1ee06` と本番deployment commitが一致していないため、UI簡素化を本番反映済みとは扱わない。
+- [ ] deploy前に対象revision、source範囲、build/start設定、secret boundaryを再確認し、承認された場合だけ対象serviceへ反映する。反映後はdeployment、logs、`/readyz`、fresh authenticated UI、live asset、WSS/thread/turnを別々にreadbackする。
+
+Evidence: Zeabur CLI read-only service/project/deployment readback（2026-09-14）。
+
 ## 実行順序
 
 ### Phase 0 — 共通ゲート
