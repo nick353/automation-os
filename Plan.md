@@ -18,6 +18,13 @@ AOSの残存業務を、低リスクの内部処理から段階的に実行す�
   - [7 workflow readiness matrix](outputs/aos-seven-workflow-readiness-matrix-20260914.json)
   - [production readiness readback](outputs/aos-production-readiness-current-20260914.json)
 
+### 2026-09-14 latest protected Home readback
+
+- [x] Companion/Profile 2で本番Homeをfresh semantic + visual readbackし、URL `https://aos-admin-ingress.zeabur.app/`、title `Automation OS`、Company 1の利用対象、7件の確認対象、朝夜Briefの表示を確認した。
+- [x] Home上で`receipt=verified / source sync=synced / reconciliation=reconciled / cleanup=verified`、`source=AOS DB / Home delivery=internal / external notification=false / external_action=false`を確認した。
+- [x] Browser operationは`known_no_effect`、`browser_mutation_executed=false`、`external_action_executed=false`で、Companion task-owned tabをowner-scoped cleanup済み（closed=1、unknown_effect=0、foreign_tabs_mutated=false）。
+- [ ] Chat / Company / Runs / Approvals / Plugins / Adminの同一Profile fresh semantic + visual readback、およびBrief protected schedule materialization readbackは未完了。
+
 ### 統合台帳
 
 | 領域 | 現在の状態 | 次の判定条件 |
