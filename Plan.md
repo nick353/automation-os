@@ -236,6 +236,14 @@ Evidence: post-deploy AOS/Companion readback（2026-09-14）。
 
 Evidence: resumed Companion status and recovery preflight（2026-09-14）。
 
+### 2026-09-14 resumed transport audit threshold
+
+- [x] Goal再開後の連続fresh確認でCompanion statusを再確認したが、今回も`Transport closed`だった。
+- [x] 再開後3回の確認で同一blockerが継続し、Zeabur本番反映、live health、静的QA、no-effect scheduler、recovery preflight以外の独立工程は消化済みである。
+- [ ] protected UI、定期実行materialization、provider receipt、業務completionはCompanion broker復旧なしには確認不能。旧session/lease/Runの再利用や外部効果は行わない。
+
+Evidence: resumed Companion status readback（2026-09-14）。
+
 ## 実行順序
 
 ### Phase 0 — 共通ゲート
