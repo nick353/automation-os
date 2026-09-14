@@ -101,6 +101,13 @@ AOSの残存業務を、低リスクの内部処理から段階的に実行す�
 - [x] 未認証の`/api/mvp/state?projection=summary`はHTTP 401、`exactBlocker=owner_sso_required`でfail-closedした。
 - [x] これはIngressの到達性と認証ゲートの証明であり、Company・schedule・providerのreadbackではない。認証情報を推測・送信せず、Companion transport復旧または本人のSSO境界を待つ。
 
+### 2026-09-14 server全体回帰テスト
+
+- [x] `npm test` 完了：1,566 pass / 0 fail / 28 skip。
+- [x] API auth、Company scope、scheduler、idempotency、Gmail admission、Daily AI/NisenPrints/求人のeffect gate、Companion/Chrome surface、UI truthfulness、receipt/source-sync/cleanup gateを含むserver test suiteを再確認した。
+- [x] 28 skipはPostgreSQL fixture未設定またはlive browser/recording環境依存であり、失敗や外部効果ではない。
+- [ ] 全体テスト合格はprotected production readback、provider receipt、業務完了を代替しない。
+
 ## 実行順序
 
 ### Phase 0 — 共通ゲート
