@@ -140,6 +140,14 @@ AOSの残存業務を、低リスクの内部処理から段階的に実行す�
 - [x] `npm run build:web`：成功。bundle size warningのみで、機能エラーなし。
 - [ ] runtime screen QAは引き続きfresh selected browser authority待ち。静的・source QAを実機確認へ昇格しない。
 
+### 2026-09-14 Zeabur本番反映前source gate
+
+- [x] `npm run qa:zeabur-codex-app-server-source` は`ready_for_external_deploy_preflight`、failed checks=0。
+- [x] Dockerfile、entrypoint、readyz、secret-manager boundary、loopback default、non-loopback approval、config reference、READMEの全20 source checksを確認した。
+- [x] web/server bundleとPlan.mdの存在を確認した。
+- [x] この確認ではsecretを読まず、Zeabur deployment、WSS initialize、thread/turn、外部効果を実行していない。
+- [ ] deployment_authorized=false。反映先・revision・secret boundaryの外部確認なしにデプロイ済みとはclaimしない。
+
 ## 実行順序
 
 ### Phase 0 — 共通ゲート
