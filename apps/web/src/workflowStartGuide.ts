@@ -519,7 +519,17 @@ function buildItem(definition: Definition, input: WorkflowStartGuideInput): Work
   };
   if (!companyId) return withRegistration({ ...base, state: "needs_readback", statusLabel: "会社未確認", nextAction: "会社1のfresh state readbackを確認", proofLabel: "未確認", externalEffectLabel: "外部操作なし", exactBlocker: "company_scope_missing" });
   if (input.auth?.verified !== true) return withRegistration({ ...base, state: "needs_auth", statusLabel: "認証readback待ち", nextAction: "Company 1の保護stateを再読込", proofLabel: "未確認", externalEffectLabel: "外部操作なし", exactBlocker: input.auth?.exactBlocker ?? "owner_sso_required" });
-  const { matches, mismatched } = registeredMatches(definition, input.automations ?? [], companyId);
+  const { matches: discoveredMatches, mismatched } = registeredMatches(definition, input.automations ?? [], companyId);
+  // The company-scoped registration projection is the execution authority.
+  // If the saved guide also contains Chat bindings/drafts for the same
+  // workflow, narrow the candidate set to that exact registered id before
+  // evaluating ambiguity. Those historical rows remain available in the
+  // separate saved-jobs section, but must not block the canonical start lane.
+  const registeredId = text(registration?.id);
+  const registeredMatchesById = registeredId
+    ? discoveredMatches.filter((item) => text(item.id) === registeredId)
+    : [];
+  const matches = registeredMatchesById.length === 1 ? registeredMatchesById : discoveredMatches;
   const candidates = matches.map((item) => ({
     id: text(item.id) || "(id未確認)",
     name: itemName(item) || "(名前未確認)",
