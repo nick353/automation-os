@@ -60,6 +60,13 @@ AOSの残存業務を、低リスクの内部処理から段階的に実行す�
 - [x] Backupは別承認のsnapshot、Obsidianは`runnable=false`のため、いずれも外部効果なしで勝手にmaterializeしない。
 - 証拠: [aos-shortest-sequence-current-readback-20260914.json](outputs/aos-shortest-sequence-current-readback-20260914.json)
 
+### 2026-09-14 Daily AI scheduler liveness readback
+
+- [x] Daily AIのautomation.tomlとCodex SQLite登録は`ACTIVE`、RRULEは毎日09:00、prompt hash parityは一致した。
+- [ ] 共有registryに旧Heartbeat `automation-2` が残っているが、`/Users/nichikatanaka/.codex/automations/automation-2/` とqueueが存在せず、監督カーソルのlive readbackができない。
+- [ ] この状態はDaily AI登録本体のACTIVE証明ではあるが、supervisor livenessや次回tickの証明ではない。削除・再作成はscheduler-ownerの明示判断後に行う。
+- 証拠: [aos-daily-ai-scheduler-liveness-readback-20260914.json](outputs/aos-daily-ai-scheduler-liveness-readback-20260914.json)
+
 ### 実行ポリシー
 
 1. read-only候補確認、内部配信、証跡整理は独立して進める。

@@ -1,0 +1,25 @@
+{
+  "schema": "daily_ai_scheduler_liveness.v1",
+  "captured_at": "2026-09-14T09:51:55.482Z",
+  "automation_id": "daily-ai-research-publish-run",
+  "registered": {
+    "status": "ACTIVE",
+    "rrule": "RRULE:FREQ=DAILY;BYHOUR=9;BYMINUTE=0;BYSECOND=0",
+    "prompt_parity": "verified",
+    "cwd": "/Users/nichikatanaka/Documents/仕事関連"
+  },
+  "supervisor_queue": {
+    "path": "/Users/nichikatanaka/.codex/automations/automation-2/queue.json",
+    "readback": "missing",
+    "exact_blocker": "scheduler_queue_missing:/Users/nichikatanaka/.codex/automations/automation-2/queue.json"
+  },
+  "registry_conflict": {
+    "legacy_supervisor_id": "automation-2",
+    "registry_entry_present": true,
+    "automation_toml_present": false,
+    "interpretation": "stale_orphaned_heartbeat_registration_requires_owner_decision"
+  },
+  "mutation": "read_only",
+  "external_action_executed": false,
+  "next_action": "Do not delete or recreate the supervisor registration without explicit scheduler-owner approval; repair the registered automation owner first."
+}
