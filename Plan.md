@@ -108,6 +108,14 @@ AOSの残存業務を、低リスクの内部処理から段階的に実行す�
 - [x] 28 skipはPostgreSQL fixture未設定またはlive browser/recording環境依存であり、失敗や外部効果ではない。
 - [ ] 全体テスト合格はprotected production readback、provider receipt、業務完了を代替しない。
 
+### 2026-09-14 全画面・全操作静的QA
+
+- [x] `npm run qa:all-page-buttons` は`status=passed`、issues=0で完了した。
+- [x] Home / Chat / Company / Runs / Approvals / Plugins / Adminおよび関連routeを静的に確認した。
+- [x] control manifest 408件、rendered patterns 529件、native controls 94件とcustom controls 153件で、missing control id=0、duplicate id=0、unclassified=0、orphan=0。
+- [x] Companionを優先surfaceとして固定し、no-post-dispatch fallbackとruntime QAの未確認境界を出力した。
+- [ ] runtime screen QAは`fresh_selected_browser_authority_required_for_runtime_screen_qa`で未実施。静的QA合格を実機操作済みとは扱わない。
+
 ## 実行順序
 
 ### Phase 0 — 共通ゲート
