@@ -23697,3 +23697,13 @@ Evidence: `outputs/aos-all-page-button-static-qa-20260914.json`、`work/qa/all-p
 Evidence: `outputs/aos-production-registered-readback-auth-boundary-20260914.json`、HTTP 401 response。
 
 **Next action:** ユーザーがOwner SSOを認証した後、同じCompany 1 routeをCompanionで再読し、Backup/Obsidian row controlとNisenPrints read-only導線を確認する。
+
+## 2026-09-14T10:06:34Z — local Obsidian/project authority audit
+
+- [x] Automation OS project auditは`status=ok`、issues 0件。STATE.md、project registry、context packが存在し、生成Obsidianページをlocator扱いにする境界も確認した。
+- [x] approval-required actions（deploy/delete/secret変更等）は実行していない。
+- [ ] これはローカル正本・Obsidian連携の健全性確認であり、Vault更新・Git同期・業務Run完了の証明ではない。
+
+Evidence: `outputs/aos-local-project-obsidian-audit-20260914.json`。
+
+**Next action:** Owner SSO認証後のprotected UI readbackを優先する。認証待ちの間はDaily AI scheduler missing queueを修復・再作成せず、owner boundaryとして保持する。
