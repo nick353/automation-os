@@ -202,6 +202,14 @@ Evidence: `portableSchedulerCanary` fresh stdout readback（2026-09-14）。
 
 Evidence: clean `git archive` staging readback and Zeabur deployment status（2026-09-14）。
 
+### 2026-09-14 deployment builder started
+
+- [x] deployment `6aa7a0b0f10957ea50bedd5f`に`startedAt=2026-09-14T07:32:08.817Z`が入り、Zeabur build logも4段階（source download / start event / builder creation / builder initialization）まで進んだ。
+- [ ] 現時点はまだ`BUILDING`で、`finishedAt`、commit/ref、RUNNING、live assetは未確認。旧deploymentのready状態から新deploymentへの切替も未確認。
+- [x] build中の再デプロイ、restart、rollback、workflow業務実行、provider call、外部効果は行っていない。
+
+Evidence: Zeabur deployment/status/build-log readback（2026-09-14）。
+
 ## 実行順序
 
 ### Phase 0 — 共通ゲート
