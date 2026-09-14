@@ -57,6 +57,15 @@ AOSの残存業務を、低リスクの内部処理から段階的に実行す�
 - [ ] これはcontrol-plane readinessであり、業務workflow完了やprotected schedule materializationの証明ではない
 - 証拠: `outputs/aos-runtime-automation-health-readback-20260914.json`
 
+### 2026-09-14 protected Company / schedule readback correction
+
+- [x] local SQLite診断をread-only実行し、登録Company 1とlocal診断Companyの不一致を検出
+- [x] local診断は`production_claim_allowed=false`であり、schedule materializationを実行しないことを確認
+- [x] Companionでprotected AOS画面をfresh readbackしたが、表示は「状態を確認中 / 詳細readback未確認」のままsettleせず、Company scopeは未確認
+- [x] authority expiryはdispatch 0、external action false、unknown effectなしでcleanupした
+- [ ] authority-validなfresh protected Company/schedule readback、service identity、account refs、overdue occurrence policyの確認
+- 証拠: `outputs/aos-company-binding-current-readback-20260914.json`
+
 ## 実行順序
 
 ### Phase 0 — 共通ゲート

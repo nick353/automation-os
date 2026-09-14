@@ -1,0 +1,41 @@
+{
+  "schema": "aos.company_binding.current_readback.v1",
+  "read_at": "2026-09-14T06:50:54Z",
+  "canonical_trigger_company_id": "company_2560580981cedfd106b66245",
+  "local_diagnostic": {
+    "readback_kind": "local_sqlite_readonly_diagnostic",
+    "observed_company_id": "company_9588eaafb46d7cbaead81811",
+    "schedule_count": 6,
+    "production_claim_allowed": false,
+    "status": "blocked",
+    "exact_blocker": "canonical_company_unresolved",
+    "materialization_decision": "blocked",
+    "additional_blockers": [
+      "protected_aos_company_and_endpoint_not_owner_selected",
+      "codex_trigger_aos_company_and_project_binding_not_reconciled",
+      "durable_scheduler_service_user_id_missing",
+      "current_aos_account_refs_missing",
+      "scheduler_overdue_occurrence_policy_required"
+    ]
+  },
+  "protected_companion_readback": {
+    "origin": "https://aos-admin-ingress.zeabur.app",
+    "surface": "aos_chrome_companion_profile_instance",
+    "page_title": "Automation OS",
+    "visible_state": "状態を確認中 / 詳細readback未確認",
+    "company_scope_confirmed": false,
+    "provider_receipt": "unverified",
+    "source_sync": "unverified",
+    "business_completion": "unverified",
+    "authority_blocker": "authority_expired",
+    "dispatch_count": 0,
+    "external_action_executed": false
+  },
+  "cleanup": {
+    "session_closed": true,
+    "foreign_tabs_mutated": false,
+    "unknown_effect": false,
+    "tab_retained_because": "task_still_active"
+  },
+  "next_action": "Obtain a fresh protected AOS company/schedule readback after an authority-valid session; do not materialize or rewire schedules from local SQLite diagnostic state."
+}
