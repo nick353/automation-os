@@ -23980,3 +23980,16 @@ Evidence: commit `caaa238a`, Zeabur deployment JSON readback, `/readyz` HTTP 200
 Evidence: Companion run IDs `run_aos_company1_adopt_20260914_1112`, `run_aos_company1_adopt_20260914_1113`, `run_aos_company1_adopt_20260914_1114`; owner cleanup receipts at 20:14 JST.
 
 **Next action:** fix or bypass only the Companion target-resolution defect for this AOS button, then perform one fresh pre-read and one authorized adoption transaction; confirm the exact adopted count and schedule `next_run_at` values before claiming completion.
+
+## 2026-09-14T20:24:00+09:00 — Stable Companion target deployed and Company 1 sync dispatched
+
+- [x] Added a stable control hook for the Company 1 Companion sync action and deployed commit `be8c140b` to the explicit Zeabur target `automation-wiled` / `automation-os`; service readback remained `RUNNING`, and both service `/readyz` endpoints returned HTTP 200.
+- [x] Fresh Companion readback verified Company 1 scope, Owner context, and the exact `AOS Chrome Companion経路へ同期` button. The first post-deploy read saw the button disabled while the page was settling; after the page settled it was enabled. The new `data-testid` was not exposed by the deployed DOM, so the existing exact `data-control-id` CSS locator was used.
+- [x] A first click before scrolling failed at the Companion/browser layer with no external effect. No replay was made. A read-only `page.scroll` brought the exact button into the viewport, after which one signed click dispatched successfully with `target_resolution=exact`, `browser_effect=known_effect`, and `external_action_executed=false`.
+- [x] Same-browser authenticated GET readback confirmed Company 1 scope, `automation_count=12`, the five requested Company 1 projections (`automation`, Daily AI, Backup, NisenPrints, Obsidian) present and `status=active`, and `external_actions_http_blocked=pass`. The canonical registry remains a separate 7-item source of truth; the job-application workflow and Company Brief heartbeat were not silently included.
+- [x] Companion task tab/session cleanup completed with `foreign_tabs_mutated=false`, `unknown_effect=[]`, and `external_action_executed=false`.
+- [ ] Provider/business completion is not claimed: the UI/GET readback does not expose a same-run adoption receipt or per-workflow `next_run_at` values. The five projections are active, but schedule execution and worker same-run pickup still require separate proof.
+
+Evidence: commit `be8c140b`; Zeabur deployment/service/readyz readback; Companion runs `run_aos_companion_surface_sync_20260914_1123` and `run_aos_registered_api_readback_20260914_1125`; authenticated GET readback; owner cleanup receipt.
+
+**Next action:** obtain a fresh schedule/readback view or server-side adoption receipt for the five projections, then separately verify worker pickup and same-run receipts. Do not replay the sync click or claim all seven canonical workflows are enabled.
