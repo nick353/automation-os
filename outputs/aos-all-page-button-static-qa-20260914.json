@@ -1,0 +1,19 @@
+{
+  "schema": "automation-os-ui-qa-preflight.v1",
+  "capturedAt": "2026-09-14T10:04:30Z",
+  "status": "passed",
+  "mode": "static_preflight",
+  "manifestEntries": 408,
+  "renderedPatterns": 529,
+  "nativeInteractiveControls": { "total": 94, "missingControlId": 0 },
+  "customInteractiveControls": { "total": 153, "missingControlId": 0 },
+  "duplicateIds": 0,
+  "unclassifiedRendered": 0,
+  "orphanManifestEntries": 0,
+  "runtimeQa": {
+    "status": "unverified",
+    "exactBlocker": "fresh_selected_browser_authority_required_for_runtime_screen_qa",
+    "externalEffects": "none"
+  },
+  "interpretation": "Static ownership and control classification passed. This does not claim that every runtime control was clicked or that external workflows completed."
+}

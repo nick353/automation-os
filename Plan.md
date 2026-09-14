@@ -23676,3 +23676,13 @@ Evidence: `outputs/aos-ui-readonly-boundary-verification-20260914.json`。
 Evidence: `outputs/aos-backup-obsidian-ui-latest-readback-20260914.json`、Companion run `run_aos_backup_obsidian_ui_readback_20260914`。
 
 **Next action:** 本番UIのloading fail-closedを受入れ、Backup/Obsidianのhydrated row controlはAPI/readbackがreadyになった同一Runの表示でのみ再確認する。NisenPrints viewport境界を再送せず、scheduler owner mismatchはローカル所有者の判断待ちとして保持する。
+
+## 2026-09-14T10:04:30Z — all-page static control QA
+
+- [x] 全ページのstatic preflightが`passed`。manifest 408件、rendered pattern 529件、native control 94件・custom control 153件でcontrol id欠落は0件。
+- [x] duplicate id、未分類rendered control、orphan manifest entryはいずれも0件。
+- [ ] runtime QAは未実行。fresh selected browser authorityが必要で、static passを「全ボタン操作確認済み」や業務完了とは扱わない。
+
+Evidence: `outputs/aos-all-page-button-static-qa-20260914.json`、`work/qa/all-page-button-static-preflight.json`。
+
+**Next action:** runtime QAは同一Companion authorityでread-only画面確認に限定し、外部効果ボタンを押さない。現時点の残存業務ゲートは従来どおり保持する。
