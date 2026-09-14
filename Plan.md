@@ -220,6 +220,14 @@ Evidence: Zeabur deployment/status/build-log readback（2026-09-14）。
 
 Evidence: Zeabur deployment/build log, public `/readyz`, live asset, protected API boundary readback（2026-09-14）。
 
+### 2026-09-14 post-deploy AOS transport retry
+
+- [x] 本番deploymentが`RUNNING`へ切り替わった後、AOS runtime、local health、Companion capabilityを各1回fresh readbackした。
+- [x] 3経路とも`Transport closed`であり、認証済みUIへ進むためのtransportは未復旧と確認した。
+- [x] 再送ループ、別browser backendへの切替、既存tabのclaim、業務workflow開始は行っていない。
+
+Evidence: post-deploy AOS/Companion readback（2026-09-14）。
+
 ## 実行順序
 
 ### Phase 0 — 共通ゲート
