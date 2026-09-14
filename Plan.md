@@ -23838,3 +23838,15 @@ Evidence: `outputs/aos-daily-ai-route-readonly-canary-20260914.json`。
 Evidence: `outputs/aos-scheduler-current-readback-20260914.json`、`artifacts/automation-health/2026-09-14T104040680Z.json`。
 
 **Next action:** Protected production routeでCompany 1のschedule実体とnext_run_atをfresh readbackし、欠落している場合だけユーザー承認下でmaterializeする。Daily AIは現行AOS Runと紐づく新しいread-only preflightから再開する。
+
+## 2026-09-14T19:42:39+09:00 — protected production schedule readback
+
+- [x] Owner routeのCompany 1をfresh同期し、MVP state=confirmed、canonical registry=7件を確認した。
+- [x] 本番route上でcanonical schedule定義を確認した（Daily AI 09:00、NisenPrints 08:30、Backup 09:00、Obsidian 月曜09:30、Gmail/応募07:30、Brief 07:45/21:45 Asia/Tokyo）。
+- [x] `promoted_to_runtime_registry=false`、全canonical `default=false / executed=false`、登録inventory `can_run=false / can_preflight=true`を確認した。
+- [x] 本番routeには`next_run_at`とenabled runtime scheduleのreadbackがなく、定期実行のmaterializationは未証明。作成・有効化は行っていない。
+- [x] Daily AI/NisenPrintsはMac worker Companion同一Run readback待ち、Gmail/Backup/Obsidianはunknown_readbackのまま。外部効果は未開始。
+
+Evidence: `outputs/aos-company1-production-schedule-readback-20260914.json`。
+
+**Next action:** 本番scheduleを有効化する前に、正本scheduleのpromotion/materialization境界を確定する。必要ならユーザーに「どのworkflowを定期実行へ昇格するか」を確認し、1件ずつsame-run readback付きでmaterializeする。

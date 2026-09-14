@@ -1,0 +1,34 @@
+{
+  "schema": "aos.company1.production_schedule_readback.v1",
+  "captured_at": "2026-09-14T19:42:39+09:00",
+  "company_id": "company_2560580981cedfd106b66245",
+  "selected_account": "nichika2000823@gmail.com",
+  "route": "https://aos-admin-ingress.zeabur.app/#/projects/company_2560580981cedfd106b66245/automations",
+  "mvp_state": "confirmed",
+  "canonical_registry": {
+    "count": 7,
+    "promoted_to_runtime_registry": false,
+    "external_action_executed": false,
+    "entries": [
+      {"id":"job-application-manager","schedule":"07:30 Asia/Tokyo","entry":"job_submit_registered","default":false,"executed":false},
+      {"id":"email-review-reply","schedule":"07:30 Asia/Tokyo","entry":"email_review_registered","default":false,"executed":false},
+      {"id":"daily-ai-research-publish-run","schedule":"09:00 Asia/Tokyo","entry":"daily_ai_registered","default":false,"executed":false},
+      {"id":"daily-backup-safety-check","schedule":"09:00 Asia/Tokyo","entry":"local_backup_registered","default":false,"executed":false},
+      {"id":"nisenprints-daily-product-canva-printify-etsy-pinterest","schedule":"08:30 Asia/Tokyo","entry":"nisenprints_registered","default":false,"executed":false},
+      {"id":"obsidian-project-memory-audit","schedule":"MON 09:30 Asia/Tokyo","entry":"obsidian_audit_registered","default":false,"executed":false},
+      {"id":"aos-morning-brief","schedule":"07:45, 21:45 Asia/Tokyo","entry":"company_brief_heartbeat","default":false,"executed":false}
+    ]
+  },
+  "registered_inventory": {"count":12,"status":"ready","can_run":false,"can_preflight":true,"external_action":false},
+  "workflow_readback": {
+    "daily_ai_blocker":"Mac workerのCompanion同一Run readback待ち",
+    "nisenprints_blocker":"Mac workerのCompanion同一Run readback待ち",
+    "gmail_blocker":"unknown_readback",
+    "backup_blocker":"unknown_readback",
+    "obsidian_blocker":"unknown_readback"
+  },
+  "next_run_at": "not_exposed_in_current_route_readback",
+  "schedule_materialized": "not_proven",
+  "external_action_executed": false,
+  "interpretation": "Protected production route exposes canonical schedule definitions, but not an enabled runtime schedule or next_run_at. The registry is not promoted and the registered inventory remains read-only. No schedule was created or enabled."
+}
