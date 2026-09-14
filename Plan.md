@@ -95,6 +95,12 @@ AOSの残存業務を、低リスクの内部処理から段階的に実行す�
 - [x] scheduler canaryは登録root admissionとsource trigger=`automation_os_scheduler`を生成したが、実業務Run・provider receipt・公開・送信は開始していない。
 - [ ] このcanaryはprotected schedule materialization、local-only workflowの業務実行、provider business completionを証明しない。
 
+### 2026-09-14 protected ingress HTTP境界確認
+
+- [x] `https://aos-admin-ingress.zeabur.app/readyz` はHTTP 200、`service=aos-admin-ingress / status=ready`を返した。
+- [x] 未認証の`/api/mvp/state?projection=summary`はHTTP 401、`exactBlocker=owner_sso_required`でfail-closedした。
+- [x] これはIngressの到達性と認証ゲートの証明であり、Company・schedule・providerのreadbackではない。認証情報を推測・送信せず、Companion transport復旧または本人のSSO境界を待つ。
+
 ## 実行順序
 
 ### Phase 0 — 共通ゲート
