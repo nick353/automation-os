@@ -81,6 +81,13 @@ AOSの残存業務を、低リスクの内部処理から段階的に実行す�
 - [x] ローカルの`npm run automation:health`は`total=7 / active=7 / ok=7 / warnings=0 / blockers=0 / db_drift=0 / missing_entrypoints=0`を再確認した。
 - [ ] local health/automation healthはprotected Company・schedule・provider receiptの証明ではない。Companion transport復旧後にprotected readbackを優先する。
 
+### 2026-09-14 transport復旧前の契約・復旧ソース確認
+
+- [x] `npm run recovery:preflight` は`ready_for_recovery`。復旧に必要なソース、runbook、Zeabur定義、worker runner定義を全て確認した。
+- [x] preflightはsecretを読み取らず、外部効果を実行していない。
+- [x] Chrome Plugin/Profile 2の固定surface、Companionの明示選択、workflow-owned runner、no-fallback、same-run source sync、unknown effect no-replayの契約テスト33/33 pass。
+- [ ] preflightと契約テストはCompanion brokerのlive transport復旧やprotected AOS画面のsettled readbackを証明しない。
+
 ## 実行順序
 
 ### Phase 0 — 共通ゲート
