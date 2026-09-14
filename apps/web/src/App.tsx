@@ -2809,9 +2809,9 @@ function reactNodeText(node: React.ReactNode): string {
   return "";
 }
 
-function Button({ children, icon, variant = "secondary", onClick, disabled = false, controlId, type = "button", ariaLabel }: { children: React.ReactNode; icon?: React.ReactNode; variant?: "primary" | "secondary" | "danger"; onClick?: () => void; disabled?: boolean; controlId?: string; type?: "button" | "submit"; ariaLabel?: string }) {
+function Button({ children, icon, variant = "secondary", onClick, disabled = false, controlId, type = "button", ariaLabel, testId }: { children: React.ReactNode; icon?: React.ReactNode; variant?: "primary" | "secondary" | "danger"; onClick?: () => void; disabled?: boolean; controlId?: string; type?: "button" | "submit"; ariaLabel?: string; testId?: string }) {
   const explicitLabel = ariaLabel?.trim() || reactNodeText(children).trim() || undefined;
-  return <button type={type} data-control-id={controlId} className={`btn ${variant}`} aria-label={explicitLabel} title={explicitLabel} onClick={onClick} disabled={disabled}>{icon}{children}</button>;
+  return <button type={type} data-control-id={controlId} data-testid={testId} className={`btn ${variant}`} aria-label={explicitLabel} title={explicitLabel} onClick={onClick} disabled={disabled}>{icon}{children}</button>;
 }
 
 function IconButton({ children, onClick, label, controlId, disabled = false }: { children: React.ReactNode; onClick?: () => void; label: string; controlId?: string; disabled?: boolean }) {
@@ -9866,7 +9866,7 @@ function AutomationsPage({ model }: { model: AppModel }) {
             {registeredReadbackStatus === "error" && <small>確認事項: {publicBlockerSummary(registeredReadback.exact_boundary ?? "registered_automation_readback_unavailable")}。正規Bridgeのfresh readback後にread-only可否を再判定します。</small>}
             <div className="button-row compact">
               <Button controlId="projects.registered.refresh" onClick={() => { void loadRegisteredReadback(); }} disabled={registeredReadbackRefreshing || !activeProject} icon={<RefreshCw size={14} />}>{registeredReadbackRefreshing ? "再確認中" : "登録状態を再確認"}</Button>
-              <Button controlId="projects.registered.companion-surface-refresh" onClick={() => { void refreshRegisteredCompanionSurface(); }} disabled={registeredSurfaceRefreshing || registeredReadbackRefreshing || !activeProject || !canMutateCompany} icon={<RefreshCw size={14} />}>{registeredSurfaceRefreshing ? "同期中" : `${publicWebOperationBackendLabel(selectedBackend)}経路へ同期`}</Button>
+              <Button testId="projects-registered-companion-surface-refresh" controlId="projects.registered.companion-surface-refresh" onClick={() => { void refreshRegisteredCompanionSurface(); }} disabled={registeredSurfaceRefreshing || registeredReadbackRefreshing || !activeProject || !canMutateCompany} icon={<RefreshCw size={14} />}>{registeredSurfaceRefreshing ? "同期中" : `${publicWebOperationBackendLabel(selectedBackend)}経路へ同期`}</Button>
             </div>
           </div>
           <details className="home-secondary-details" data-control-id="projects.registered.details">
