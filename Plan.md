@@ -210,6 +210,16 @@ Evidence: clean `git archive` staging readback and Zeabur deployment status（20
 
 Evidence: Zeabur deployment/status/build-log readback（2026-09-14）。
 
+### 2026-09-14 production deployment and live asset readback
+
+- [x] deployment `6aa7a0b0f10957ea50bedd5f`が`RUNNING`へ遷移し、`finishedAt=2026-09-14T07:35:08.417Z`を確認した。
+- [x] `https://automation-os.zeabur.app/readyz`はHTTP 200、service status=`ready`を返した。
+- [x] live HTMLから配信JS/CSSを取得し、live JSに今回の簡素化した通常表示（`実行可否`、`外部操作: なし`）と、技術詳細を折りたたみ表示するコードを確認した。配信JSのLast-Modifiedは`2026-09-14T07:34:45Z`。
+- [x] 未認証の`/api/mvp/state?projection=summary`はHTTP 401、`exactBlocker=production_token_required`でfail-closedした。
+- [ ] Companion transportが`Transport closed`のため、認証済みprotected UIのsettled readback、WSS/thread/turn、schedule materialization、業務workflowのprovider receiptは未確認。
+
+Evidence: Zeabur deployment/build log, public `/readyz`, live asset, protected API boundary readback（2026-09-14）。
+
 ## 実行順序
 
 ### Phase 0 — 共通ゲート
