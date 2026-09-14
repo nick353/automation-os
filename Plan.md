@@ -116,6 +116,15 @@ AOSの残存業務を、低リスクの内部処理から段階的に実行す�
 - [x] Companionを優先surfaceとして固定し、no-post-dispatch fallbackとruntime QAの未確認境界を出力した。
 - [ ] runtime screen QAは`fresh_selected_browser_authority_required_for_runtime_screen_qa`で未実施。静的QA合格を実機操作済みとは扱わない。
 
+### 2026-09-14 7 workflow readiness再監査
+
+- [x] readiness matrixとworkflow gate matrixを再集計した。
+- [x] Gmailはread-only canaryのreceipt/source sync/reconciliation/cleanupまで確認済みだが、送信・イベント作成は未実行。
+- [x] Backupは同一Runのno-effect readback/cleanupまで確認済みだが、fresh backup effectは未開始。Obsidianは`runnable=false`のため有効化待ち。
+- [x] Daily AI、NisenPrints、求人はfresh provider/browser authority不足でbusiness run前に停止している。
+- [x] Morning Briefは内部deliveryのdestination/time決定とprotected schedule materializationが未完了。
+- [ ] 7 workflowの業務完了は未claim。外部効果を伴うworkflowはCompanion復旧と対象・payload・approvalのfresh readback後に1件ずつ進める。
+
 ## 実行順序
 
 ### Phase 0 — 共通ゲート
