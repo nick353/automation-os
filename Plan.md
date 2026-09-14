@@ -24005,3 +24005,15 @@ Evidence: commit `be8c140b`; Zeabur deployment/service/readyz readback; Companio
 Evidence: authenticated schedule endpoint readbacks for the five deterministic Company 1 automation IDs; `data/artifacts/portable-remote-worker/worker-status.v1.json`; Companion runs `run_aos_daily_ai_preflight_20260914_1136` and schedule readback runs; owner cleanup receipt.
 
 **Next action:** use the dedicated Daily AI preflight control after a verified viewport scroll (or improve the page's scroll target) and then read back the same Run's worker receipt/source sync. Keep all effectful provider stages gated until target, account, content, approval, provider receipt, source sync, reconciliation, and cleanup are present.
+
+## 2026-09-14T20:37:30+09:00 — Daily AI preflight dispatch and reconciliation boundary
+
+- [x] Fresh Company 1 page readback found the Daily AI read-only preflight control enabled but below the initial viewport. A visual-point proof plus `visual.scroll` moved the page to `scroll.y=1487`; a fresh exact visual target proof then confirmed the button visible and enabled.
+- [x] One signed click dispatched with `target_resolution=exact`, `browser_effect=known_effect`, and `external_action_dispatched=true`. The expected boundary remained `external_action_executed=false`; no provider write, publish, send, or submit was allowed.
+- [x] Same-page post-click readback returned to the existing readiness receipt (`read-only preflight ready`, `readiness_pass`, `external_action=false`) and did not expose a new Run ID or queued receipt. The local worker remained `idle` with heartbeat `ok` and no run observation. Therefore same-run worker receipt/source sync is not proven.
+- [x] No second click was issued. The task-owned tab/session was closed with `foreign_tabs_mutated=false`, `unknown_effect=[]`, and `external_action_executed=false`.
+- [ ] Daily AI preflight remains at the reconciliation boundary: browser dispatch is evidenced, but AOS Run receipt, worker pickup, source sync, and business completion are unverified. Effectful execution remains gated.
+
+Evidence: Companion run `run_aos_daily_ai_preflight_20260914_1142`, visual proof/scroll readback, post-click exact page readback, and `data/artifacts/portable-remote-worker/worker-status.v1.json`.
+
+**Next action:** reconcile this dispatched preflight through the authoritative AOS Runs/readback surface without replaying the click. If no Run receipt exists, fix the UI-to-preflight response/readback binding before any further preflight attempt.
