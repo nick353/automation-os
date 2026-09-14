@@ -23531,3 +23531,17 @@ Evidence: [aos-reference-workflow-canary-20260914.json](outputs/aos-reference-wo
 Evidence: commit前のserver build、focused tests 16/16、runtime alias import readback（2026-09-14）。
 
 **Next action:** clean source preflightを通してから対象service `automation-os`へ1回だけdeployし、deployment → readyz → protected detail → schedule materializationの順でfresh readbackする。
+
+## 2026-09-14T08:50:00Z — PostgreSQL alias deployment and protected readback
+
+- [x] clean source preflightは20/20 pass。secret readなし、外部業務効果なし。
+- [x] 既存の正確な対象 `project=69df815a554543d46b0f2485 / environment=69df815a5ae0a69725e92048 / service=6a47122e24bec8372d3e1a31`へ1回だけdeployした。
+- [x] deployment `6aa7b45514304c79dfa42cf1`はDocker build完了、`RUNNING`、`finishedAt=2026-09-14T08:48:11.874Z`。公開`https://automation-os.zeabur.app/readyz`はHTTP 200、`service=automation-os / status=ready`。
+- [x] deploy後のCompanion fresh protected readbackでHomeの詳細状態、Company 1のCanonical正本7件、Company Brief 07:45/21:45、登録automation 6件、`company-scoped readback / status=ready / count=6 / external_action=false`を確認した。
+- [x] deploy後も開始ガイドは`can_run=false / can_preflight=true`、`promoted_to_runtime_registry=false`。したがってlinked DB aliasでprotected readbackは復旧したが、業務Run・schedule有効化・provider completionは未claim。
+- [x] deploy後のCompanion session/tabを閉じ、lease解放、foreign変更なし、unknown effectなし、external actionなしのcleanup receiptを取得した。
+- [ ] 残存ゲートは、protected schedule materializationの登録ID/revision/timezone/worker入口比較、`can_run`を安全に満たすworkflow admission、そして対象・account・payload・approvalを固定したnamed workflowのprovider receipt → source sync → reconciliation → cleanup → business completionである。
+
+Evidence: Zeabur deployment `6aa7b45514304c79dfa42cf1`、`/readyz` HTTP 200、Companion runs `run_aos_postdeploy_home_readback_20260914_0849` / `run_aos_postdeploy_company1_detail_20260914_0850`（2026-09-14）。
+
+**Next action:** 外部効果を起こさない範囲で、Company 1のprotected schedule readbackとworkflow admissionの詳細を確認する。`can_run=false`のままなら業務Run・送信・公開・応募・schedule変更は開始しない。
