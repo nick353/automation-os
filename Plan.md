@@ -88,6 +88,13 @@ AOSの残存業務を、低リスクの内部処理から段階的に実行す�
 - [x] Chrome Plugin/Profile 2の固定surface、Companionの明示選択、workflow-owned runner、no-fallback、same-run source sync、unknown effect no-replayの契約テスト33/33 pass。
 - [ ] preflightと契約テストはCompanion brokerのlive transport復旧やprotected AOS画面のsettled readbackを証明しない。
 
+### 2026-09-14 scheduler no-effect canary再確認
+
+- [x] `portableSchedulerCanary` はcatalog workflow 6/6を`completed`で検証した。
+- [x] 全6件で`browser_started=false`、`connector_called=false`、`external_action_executed=false`、manifest validation → run binding → readback → cleanupを確認した。
+- [x] scheduler canaryは登録root admissionとsource trigger=`automation_os_scheduler`を生成したが、実業務Run・provider receipt・公開・送信は開始していない。
+- [ ] このcanaryはprotected schedule materialization、local-only workflowの業務実行、provider business completionを証明しない。
+
 ## 実行順序
 
 ### Phase 0 — 共通ゲート
