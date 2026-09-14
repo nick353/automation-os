@@ -23732,3 +23732,15 @@ Evidence: `outputs/aos-owner-sso-gmail-selection-readback-20260914.json`、AOS `
 Evidence: `outputs/aos-portable-scheduler-canary-current-20260914.json`。
 
 **Next action:** 既存の本番認証済みCompany 1 routeでBackup/Obsidian/NisenPrints/Daily AIのread-only preflightを個別確認し、実行可能性と外部効果証跡を分離して更新する。
+
+## 2026-09-14T10:19:23Z — company binding readiness再確認
+
+- [x] `aos:company-binding-readiness`をfresh read-only実行した。
+- [x] portable canaryは別途成功しており、worker/control-planeのno-effect経路は動作する。
+- [ ] ローカル診断では`canonical_company_id=null`、trigger側は`company_2560580981cedfd106b66245`、local SQLite側は`company_9588eaafb46d7cbaead81811`で不一致。`canonical_company_unresolved`として停止した。
+- [ ] durable scheduler service identity、current AOS account refs、fresh selected provider/browser authorityが未確定。ローカル診断だけで会社を採用・スケジュールmaterializeしてはいけない。
+- [x] provider/browser/brief/chatのmutation、schedule materialization、外部効果は実行していない。
+
+Evidence: `outputs/aos-company-binding-readiness-current-20260914.json`。
+
+**Next action:** Owner-authenticated protected AOS readbackをcanonical authorityとして、Company 1とlocal diagnostic companyの対応を同一Runでreconcileする。現時点では本番定期実行を有効化・再作成しない。

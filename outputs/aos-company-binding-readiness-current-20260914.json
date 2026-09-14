@@ -1,0 +1,20 @@
+{
+  "capturedAt": "2026-09-14T10:19:23.785Z",
+  "schema": "company_binding_readiness.v1",
+  "status": "blocked",
+  "productionReady": false,
+  "canonicalCompanyId": null,
+  "triggerCompanyId": "company_2560580981cedfd106b66245",
+  "localDiagnosticCompanyId": "company_9588eaafb46d7cbaead81811",
+  "exactBlockers": [
+    "canonical_company_unresolved",
+    "protected_aos_company_and_endpoint_not_owner_selected",
+    "codex_trigger_aos_company_and_project_binding_not_reconciled",
+    "durable_scheduler_service_user_id_missing",
+    "current_aos_account_refs_missing",
+    "fresh_selected_provider_and_browser_authority_missing"
+  ],
+  "readOnly": true,
+  "externalActionExecuted": false,
+  "interpretation": "The local SQLite diagnostic is not authorized to choose between the protected trigger company and the local diagnostic company. The protected AOS Company 1 readback exists, but canonical adoption and durable service identity/account binding are not proven in this local diagnostic. Do not materialize schedules or repair by guess."
+}
