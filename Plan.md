@@ -23487,6 +23487,7 @@ Evidence: `work/aos-company1-local-regression-runtime-readback-20260909.json`。
 - [x] 設定・接続は会社未選択では認証対象を表示せず、Gmail read-only canaryは未実行、Plugin inventoryは取得中/0件として未確認表示を維持した。秘密情報入力・認証・外部効果は行っていない。
 - [x] Adminはmembership/detail readback pending中で、未確認状態では保存・実行・外部操作ボタンを表示しないことを確認した。
 - [x] すべて読み取り専用で実施し、送信・公開・応募・削除・認証・課金・定期実行変更は0件。Companion transport復旧と画面readbackは確認できたが、provider receipt/source sync/reconciliation/business completionを新規業務Runで得た証明ではない。
+- [x] 監査終了後にsessionをterminal closeし、task-owned tabを1件閉じ、lease解放確認、foreign tabs変更なし、unknown effectなし、external actionなしのcleanup receiptを得た。
 - [ ] 残存ゲートは、protected detail readbackのsettle、schedule materializationの登録ID/timezone/worker入口比較、対象を固定したnamed workflow 1件のprovider receipt → source sync → reconciliation → cleanup → business completionである。
 
 Evidence: Companion fresh runs `run_aos_projects_readback_20260914_0829`, `run_aos_runs_readback_20260914_0830b`, `run_aos_approvals_readback_20260914_0831`, `run_aos_plugins_readback_20260914_0832`, `run_aos_admin_readback_20260914_0833`, `run_aos_projects_readback_20260914_0834`, `run_aos_chat_readback_20260914_0835`（2026-09-14）。
