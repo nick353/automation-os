@@ -1,0 +1,24 @@
+{
+  "schema": "aos.runtime_ui.core_routes_qa.v1",
+  "captured_at": "2026-09-14T19:50:00+09:00",
+  "company_id": "company_2560580981cedfd106b66245",
+  "selected_account": "nichika2000823@gmail.com",
+  "browser_surface": "aos_chrome_companion_profile_instance",
+  "routes": [
+    {"route":"#/","screen":"Home","settled":true,"controls":true,"external_effects":false},
+    {"route":"#/chat","screen":"Chat","settled":true,"controls":true,"external_effects":false},
+    {"route":"#/projects/company_2560580981cedfd106b66245/automations","screen":"Company 1 Automations","settled":true,"controls":true,"external_effects":false,"can_run":false,"can_preflight":true},
+    {"route":"#/runs?company_id=company_2560580981cedfd106b66245","screen":"Runs","settled":true,"controls":true,"external_effects":false,"approval_pending":0},
+    {"route":"#/plugins","screen":"Plugins","settled":true,"controls":true,"external_effects":false,"selected_plugin":"gmail","company_scope":"verified","read_only_canary":"same-run verified"}
+  ],
+  "runtime_observations": {
+    "home": "今日の要確認Runと外部操作停止境界を表示",
+    "chat": "会社1 scopeと実行面の状態を表示。送信は未実行",
+    "automations": "Company 1 scope、12 registered readback、read-only onlyを表示",
+    "runs": "会社別履歴、安全境界、approval pending=0を表示",
+    "plugins": "Gmailを選択後、会社scope verified / 利用可能へsettle。github未確認表示は対象選択により解消"
+  },
+  "external_action_executed": false,
+  "cleanup_verified": true,
+  "interpretation": "Core AOS routes settled under fresh Companion authority and exposed usable controls. This is targeted runtime QA, not proof that every one of the 21 routes and 408 controls has been clicked."
+}

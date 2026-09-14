@@ -23885,3 +23885,16 @@ Evidence: `outputs/aos-company1-gmail-runs-readback-20260914.json`、`outputs/ao
 Evidence: `outputs/aos-ui-static-acceptance-20260914.json`、`work/qa/all-page-button-static-preflight-20260914.json`。
 
 **Next action:** Runtime-verify the highest-value screens (Home, Chat, Company 1 Automations, Runs, Plugins) with fresh Companion authority, then expand only if a control fails. Do not treat static coverage as completion.
+
+## 2026-09-14T19:50:00+09:00 — core runtime UI QA
+
+- [x] Fresh Companion tabでHome、Chat、Company 1 Automations、Runs、Pluginsを順に開き、settled readbackと主要controlsを確認した。
+- [x] AutomationsはCompany 1 scope、12 registered readback、`can_run=false / can_preflight=true`を表示した。
+- [x] Runsは会社別履歴と安全境界を表示し、approval pending=0を確認した。
+- [x] Pluginsで対象をGmailに選択し、`会社接続・Server利用確認済み`、company scope verified、同一Run read-only canary verifiedを確認した。
+- [x] UI操作はPlugin選択のみ。送信・返信・公開・応募・更新・認証開始は行っていない。タブcleanup済み。
+- [ ] 21 route / 408 control全件のruntime click QAと、schedule promotion / next_run_atは未完了。
+
+Evidence: `outputs/aos-runtime-ui-qa-core-routes-20260914.json`。
+
+**Next action:** Core routeで見つかった残存境界（runtime全件QA、schedule promotion、Daily AI/NisenPrints同一Run authority）を順に詰める。Gmailは選択・接続readback済みなので外部送信へは進めない。
