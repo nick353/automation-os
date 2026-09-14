@@ -94,6 +94,15 @@ AOSの残存業務を、低リスクの内部処理から段階的に実行す�
 
 番号だけの選択で進められるのは、まずread-only候補確認まで。送信・公開・応募・更新の直前には、対象と内容をもう一度表示し、1回だけ明示承認を取る。
 
+### 2026-09-14 Gmail read-only候補確認
+
+- [x] `nichika2000823@gmail.com` / Profile `Soy` をfresh profile readback
+- [x] 受信候補を検索し、返信が必要そうな候補を本文・最新スレッドで分類
+- [x] テテマーチ、ヤグラ、Robert Waltersを候補として保存
+- [x] Faber、JAC、TopEyes、リジョブは返信済み・日程確定等の理由で重複返信対象から除外
+- [ ] 返信対象1件の選択、本文の明示承認、送信receipt、source sync、reconciliation、cleanup
+- 証拠: `outputs/aos-gmail-readonly-candidate-readback-20260914.json`
+
 ## UI/UX簡素化計画
 
 現状は主要7画面のread-only表示、Company scope、Chat、Runs、Approvals、Plugins、Admin、Companion接続を確認済み。ただし日常利用者向けには技術情報が多い。
