@@ -158,6 +158,15 @@ AOSの残存業務を、低リスクの内部処理から段階的に実行す�
 
 Evidence: Zeabur CLI read-only service/project/deployment readback（2026-09-14）。
 
+### 2026-09-14 Zeabur deployment実行・切替待ち
+
+- [x] 既存の正確な対象 `project=69df815a554543d46b0f2485 / service=6a47122e24bec8372d3e1a31 / environment=69df815a5ae0a69725e92048` を指定して、ローカル正本からdeployment要求を1回実行した。
+- [x] Zeabur CLIは`Service deployed successfully`を返し、新deployment `6aa7a0b0f10957ea50bedd5f`を発行した。
+- [x] デプロイ中も既存の`automation-os.zeabur.app/readyz`はHTTP 200で、サービス停止や外部業務効果は確認されていない。
+- [ ] 新deploymentは現時点で`BUILDING`、deployment commit/ref未確定。RUNNING、live asset、fresh authenticated UI、WSS/thread/turnの確認前に本番反映完了とはclaimしない。
+
+Evidence: Zeabur deployment `6aa7a0b0f10957ea50bedd5f`、`https://automation-os.zeabur.app/readyz` readback（2026-09-14）。
+
 ## 実行順序
 
 ### Phase 0 — 共通ゲート
