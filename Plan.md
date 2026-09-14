@@ -23861,3 +23861,15 @@ Evidence: `outputs/aos-company1-production-schedule-readback-20260914.json`。
 Evidence: `outputs/aos-company1-backup-obsidian-ui-readonly-20260914.json`。
 
 **Next action:** 同じread-only基準でGmailのunknown_readbackを解消するか、ユーザー承認が必要なschedule promotion境界を先に確定する。外部効果へは進めない。
+
+## 2026-09-14T19:45:40+09:00 — Gmail Company 1 Runs readback
+
+- [x] Company 1 Runsをfresh取得した（total=500、processing candidates=10、queued=2、running=0、approval pending=0）。
+- [x] Runs画面の安全境界が`external_action_disabled_without_approval`であることを確認した。
+- [x] `nichika2000823@gmail.com`のProvider read-only profile / labels証拠と、既存Gmail canaryのreceipt/source sync/reconciliation/cleanup verifiedを再確認した。
+- [ ] Gmail workflowの現状は`unknown_readback`。これは返信・下書き・送信の業務Runが未実行・未主張であることと整合し、provider接続成功だけでは解消しない。
+- [x] Gmail送信・返信・下書き作成は行っていない。確認タブはcleanupした。
+
+Evidence: `outputs/aos-company1-gmail-runs-readback-20260914.json`、`outputs/aos-gmail-exact-account-provider-readback-20260914.md`。
+
+**Next action:** Gmailは外部効果なしの接続証拠を保持し、返信を行う場合のみ対象メール・本文・明示承認を同一Runで取得してから一件だけ実行する。並行してschedule promotion境界を確定する。

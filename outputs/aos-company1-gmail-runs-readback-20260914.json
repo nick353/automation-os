@@ -1,0 +1,32 @@
+{
+  "schema": "aos.company1.gmail_runs_readback.v1",
+  "captured_at": "2026-09-14T19:45:40+09:00",
+  "company_id": "company_2560580981cedfd106b66245",
+  "selected_account": "nichika2000823@gmail.com",
+  "route": "https://aos-admin-ingress.zeabur.app/#/runs?company_id=company_2560580981cedfd106b66245",
+  "runs_readback": {
+    "total": 500,
+    "processing_candidates": 10,
+    "stopped": 341,
+    "completed": 147,
+    "queued": 2,
+    "running": 0,
+    "approval_pending": 0,
+    "safety_boundary": "external_action_disabled_without_approval"
+  },
+  "gmail_provider_readback": {
+    "account": "nichika2000823@gmail.com",
+    "provider_receipt": "verified",
+    "source_sync": "verified for prior read-only canary",
+    "reconciliation": "verified for prior read-only canary",
+    "cleanup": "verified for prior read-only canary",
+    "external_action": false
+  },
+  "workflow_business_readback": {
+    "current_ui_status": "unknown_readback",
+    "business_completion": false,
+    "interpretation": "The provider account and prior read-only canary are verified, but no Gmail reply/draft/send business Run is claimed."
+  },
+  "external_action_executed": false,
+  "next_action": "Keep Gmail provider read-only evidence separate from any future reply/send Run; obtain target/message/approval in one Run before external action."
+}
