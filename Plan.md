@@ -23578,3 +23578,14 @@ Evidence: Companion runs `run_aos_daily_ai_readonly_preflight_20260914_0858`（�
 - [ ] NisenPrintsのread-only preflightは未実行。原因は認証ではなく、現行UIの可視ターゲット／viewport復元境界である。
 Evidence: `run_aos_nisenprints_reopen_20260914_0906`, `run_aos_nisenprints_scroll_query_20260914_0906`, `run_aos_nisenprints_scroll_query_20260914_0907`, `run_aos_nisenprints_readonly_preflight_20260914_0906`。
 **Next action:** NisenPrintsは現時点で再送せずブロッカーとして保持し、次順位のread-only lane（Backup/Obsidian）を確認する。認証画面が出た場合のみユーザー操作を依頼する。
+
+## 2026-09-14T09:10:45Z — sequential Backup/Obsidian registration readback
+
+- [x] 次順位のBackupをCompany 1の実画面でfresh queryした。開始ガイドにはBackupの会社別Runs導線があるが、登録automation欄のread-only preflightボタン一覧にはBackupが存在しなかった。
+- [x] Obsidianもfresh queryした。開始ガイドにはObsidianの会社別Runs導線があり、登録欄には「Obsidianプロジェクト記憶 週次監査を編集」「…をアーカイブ」が存在するが、read-only preflightボタンは存在しなかった。
+- [x] いずれもページqueryのみで、クリック、provider call、認証要求、schedule変更、外部効果は0件。Companion outcomeは`known_no_effect`、visual readback verified、provider/source/business completionは未claim。
+- [ ] Backupは開始ガイドと登録欄の不一致、Obsidianはread-only preflight導線不在が残存問題。認証不足ではなく、登録定義またはUI導線の実装差分である。
+
+Evidence: Companion runs `run_aos_backup_query_20260914_0909`, `run_aos_backup_preflight_query_20260914_0909`, `run_aos_backup_preflight_names_20260914_0910`, `run_aos_obsidian_preflight_query_20260914_0910`。
+
+**Next action:** 外部効果を起こさずに進められる最後の登録lane（求人応募）のread-only表示を同様に確認する。その後、NisenPrints/Backup/Obsidianの登録・UI導線差分を修正対象としてまとめ、業務実行は認証・対象・payload・approvalが揃うまで開始しない。
