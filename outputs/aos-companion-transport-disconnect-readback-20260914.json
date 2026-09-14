@@ -1,0 +1,21 @@
+{
+  "schema": "aos.companion.transport_disconnect_readback.v1",
+  "captured_at": "2026-09-14T19:58:30+09:00",
+  "profile_instance_id": "profile_37fd31b6-ed53-4a35-8604-ab92ffbab05a",
+  "companion": {
+    "connected": false,
+    "logical_sessions": 0,
+    "pending_operations": 0,
+    "timed_out_unresolved": 0,
+    "reconciliation_pending_visible": 1,
+    "queue_count": 0,
+    "ledger_only_task_tab": 1,
+    "primary_blocker": "profile_not_connected",
+    "next_action": "reconnect_companion_profile_and_read_fresh_status"
+  },
+  "affected_run": "aos-daily-ai-route-readonly-20260914-193836",
+  "affected_target_tab": 1980921208,
+  "target_disposition": "ledger_only",
+  "external_action_executed": false,
+  "interpretation": "The Companion native pipe disconnected after the no-effect route canary. No active operation remains; the retained ledger is the restart record. Do not replay or claim provider completion until the profile reconnects and fresh status is read."
+}

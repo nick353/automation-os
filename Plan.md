@@ -23933,3 +23933,14 @@ Evidence: `outputs/aos-daily-ai-automation-registration-audit-20260914.json`、`
 Evidence: `outputs/aos-daily-ai-no-effect-trigger-readback-20260914.json`。
 
 **Next action:** `run_mu14jp5j_n4djdg`のworker pickup、receipt、source sync、reconciliation、cleanupを同一Runでreadbackする。外部効果stageへは進めない。
+
+## 2026-09-14T19:58:30+09:00 — Companion transport disconnect after trigger
+
+- [x] Companion fresh statusを取得し、profile `connected=false`、logical sessions=0、pending operations=0、unresolved timeout=0を確認した。
+- [x] 既存のroute-canary tabは`ledger_only`へ保持され、replay不可の再開記録になっている。reconciliation visible=1だがactive operationはない。
+- [x] 新しいDaily AI triggerの外部効果はfalseのまま。provider receipt・業務完了は主張していない。
+- [ ] Companion profile reconnect後のfresh statusと、queued Run `run_mu14jp5j_n4djdg`のsame-run readbackが必要。切断中に再送・cleanup・業務実行は行わない。
+
+Evidence: `outputs/aos-companion-transport-disconnect-readback-20260914.json`、`outputs/aos-daily-ai-no-effect-trigger-readback-20260914.json`。
+
+**Next action:** Companionを再接続できる状態に戻し、fresh statusを確認してから、同じqueued Runのreceipt/readbackを一度だけ取得する。ユーザーの認証・拡張再接続が必要になった場合はそこで停止して依頼する。
