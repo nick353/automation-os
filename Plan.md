@@ -24140,3 +24140,12 @@ Evidence: `data/artifacts/portable-remote-worker/run_mu0ib2rx_s2rblp/portable-lo
 - [x] Existing business-effect receipts are limited to the already reconciled Backup and Obsidian runs. The worker remains idle/healthy and Zeabur remains ready.
 
 **Next action:** the remaining work now requires a new user-selected target/account/content for one provider lane. Until that input exists, no safe internal action can produce provider receipt or business completion.
+
+## 2026-09-14T21:40:00+09:00 — Email reply lane selected; AOS source control unavailable
+
+- [x] Based on the user's instruction to choose, selected the lightest candidate lane: one short Gmail reply from `nichika2000823@gmail.com` after fresh read-only inspection.
+- [x] Fresh Gmail read-only inspection confirmed the designated account and a direct inbound thread from 吉住ホーム. A proposed reply would acknowledge the vacancy response and decline the unavailable dates; no message was sent or drafted.
+- [x] Companion opened a task-owned AOS page and performed one read-only query. The expected email-review control was not provisioned (`task_target_not_provisioned`, zero matching controls); browser mutation and external action were both false, and the task tab was cleaned up.
+- [ ] Do not bypass the AOS source-Run/admission path with a direct Gmail send. Provider receipt, source sync, reconciliation, and cleanup for this reply remain unproven.
+
+**Next action:** repair or expose the registered `email-review-reply` source/admission control, then perform one fresh no-send source Run before any reply effect. Other external lanes remain gated by the same target-bound requirement.
