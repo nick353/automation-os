@@ -44,7 +44,7 @@ AOSの残存業務を、低リスクの内部処理から段階的に実行す�
 | Backup safety | 完了確認済み | 新しいsnapshotやpushは別承認がある場合だけ実行 |
 | Obsidian | read-only監査済み、登録は`runnable=false` | 有効化・Vault/Git同期は別承認後にfresh readback |
 | Morning / Evening Brief | 内部配信receipt chainと保護設定へのschedule materialization readback完了 | 次回自然tickのsame-run deliveryを継続監視。設定変更は不要 |
-| Gmail | read-only候補確認まで | 対象1件・本文・送信アカウントを表示し、明示承認後に1回だけ送信 |
+| Gmail | read-only候補確認まで完了。TopEyesを第一候補、IBJを第二候補として固定 | 本文・送信アカウントを最終表示し、ユーザーの明示承認後に1回だけ送信 |
 | Daily AI | 未完了 | 対象・公開先・本文・アカウントを固定し、公開承認後にreceipt確認 |
 | NisenPrints | 未完了 | 商品1件・公開先・素材・アカウントを固定し、公開承認後にreceipt確認 |
 | 求人応募 | 未完了 | 企業・求人URL・応募情報・アカウントを固定し、最終確認後に1件送信 |

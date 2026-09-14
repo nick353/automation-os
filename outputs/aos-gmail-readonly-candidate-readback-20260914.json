@@ -1,53 +1,51 @@
 {
   "schema": "aos.gmail.readonly_candidate_readback.v1",
-  "read_at": "2026-09-14",
-  "account": {
-    "email": "nichika2000823@gmail.com",
-    "link_id": "link_6a4fbeb1155c81918a1f0241bfcc5011",
-    "profile": "Soy"
-  },
-  "query": "in:inbox -in:spam -in:trash newer_than:14d",
-  "mutation": {
-    "sent": false,
-    "draft_created": false,
-    "labels_changed": false,
-    "archive_or_delete": false
+  "captured_at": "2026-09-14T09:49:15.169Z",
+  "accounts": {
+    "okinawa2000823@gmail.com": {
+      "account_index": 0,
+      "inbox_readback": "verified",
+      "external_action_executed": false
+    },
+    "nichika2000823@gmail.com": {
+      "account_index": 1,
+      "inbox_readback": "verified",
+      "external_action_executed": false
+    }
   },
   "candidates": [
     {
-      "thread_id": "1a0898e0a590c85d",
-      "message_id": "1a09e97cee839bf8",
-      "sender": "テテマーチ株式会社",
-      "subject": "Re: Re: Re: 応募の御礼とカジュアル面談のご依頼／テテマーチ株式会社",
-      "classification": "返信候補",
-      "latest_request": "9/25（金）14:00のオンライン面談について可否確認",
-      "reply_required": true
+      "account": "nichika2000823@gmail.com",
+      "sender": "株式会社TopEyes 採用担当",
+      "subject": "【株式会社TopEyes】書類選考結果のご連絡",
+      "received": "18:26",
+      "summary": "提示された複数の日程から参加可能な時間帯を複数回答してほしい内容",
+      "recommended": true,
+      "reply_body": null,
+      "approval": "required_before_reply"
     },
     {
-      "thread_id": "1a09e97029a70404",
-      "message_id": "1a09e97029a70404",
-      "sender": "株式会社ヤグラ 竹次智優様",
-      "subject": "面談のご案内",
-      "classification": "返信候補",
-      "latest_request": "面談予約URLから都合のよい日時を選択",
-      "reply_required": true
-    },
-    {
-      "thread_id": "1a09e2957a0ad3eb",
-      "message_id": "1a09e2957a0ad3eb",
-      "sender": "Robert Walters Japan Maddie Quan様",
-      "subject": "Robert Walters: Reaching out about CV submission",
-      "classification": "確認候補",
-      "latest_request": "CV提出後の連絡。本文全体確認後に返信要否を判断",
-      "reply_required": null
+      "account": "nichika2000823@gmail.com",
+      "sender": "株式会社IBJ 採用担当",
+      "subject": "【株式会社IBJ】1次面接のご案内",
+      "received": "18:12",
+      "summary": "一次面接の希望日を複数回答してほしい内容",
+      "recommended": false,
+      "reply_body": null,
+      "approval": "required_before_reply"
     }
   ],
-  "excluded_as_no_reply_needed": [
-    "1a08e1eb1ac2e99b Faber Company: 面談日時確定の通知",
-    "1a09e84343c57d25 JAC: こちらから既に返信済み",
-    "1a09e49e1caaf890 TopEyes: こちらから候補日時を既に返信済み",
-    "1a08a93ad394040e リジョブ: 条件回答済み、先方の予約URL案内"
-  ],
-  "business_completion": "not_claimed",
-  "next_action": "ユーザーが返信対象を1件選び、本文を確認・承認した場合のみ送信候補を作成する"
+  "readback": {
+    "provider_receipt": "not_applicable",
+    "source_sync": "readback_verified",
+    "reconciliation": "readback_verified",
+    "external_action_executed": false
+  },
+  "cleanup": {
+    "session_closed": true,
+    "leases_released": 1,
+    "lease_release_confirmed": true,
+    "unknown_effect": [],
+    "foreign_tabs_mutated": false
+  }
 }
