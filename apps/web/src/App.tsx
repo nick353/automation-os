@@ -1896,6 +1896,15 @@ function registeredWorkflowBuilderConfig(automation: Record<string, any> | undef
   };
 }
 
+function registeredWorkflowMatchesRouteKey(automation: Record<string, any> | undefined, routeKey: string): boolean {
+  if (!automation || automation.automation_type !== "registered_workflow") return false;
+  const spec = (automation.builder_spec ?? automation.builderSpec) as Record<string, unknown> | undefined;
+  if (!spec || typeof spec !== "object") return false;
+  const canonicalWorkflowId = String(spec.canonicalWorkflowId ?? spec.canonical_workflow_id ?? "").trim();
+  const sourceAutomationId = String(spec.sourceAutomationId ?? spec.source_automation_id ?? "").trim();
+  return canonicalWorkflowId === routeKey || sourceAutomationId === routeKey;
+}
+
 type ChatWorkflowOption = { automation_id: string; automation_revision: number; automation_version_id: string;
   workflow_id: string; name: string; scope: string; definition_sha256: string;
   can_run_once: boolean; can_save_draft: boolean; requires_approval: boolean; manual_blocker: string | null };
@@ -9955,9 +9964,16 @@ function BuilderPage({ model }: { model: AppModel }) {
   const projectName = projectLabelFromState(mvpState, activeProject);
   const routeAutomationKey = automationIdFromRoute(route);
   const persistedAutomation = mvpState.automations?.find((item) => item.id === routeAutomationKey && (item.project_id ?? item.company_id ?? activeProject) === activeProject)
-    ?? mvpState.automations?.find((item) => (item.project_id ?? item.company_id ?? activeProject) === activeProject && item.automation_type === routeAutomationKey);
+    ?? mvpState.automations?.find((item) => (item.project_id ?? item.company_id ?? activeProject) === activeProject && item.automation_type === routeAutomationKey)
+    // Canonical routes are stable public IDs; an adopted registered workflow
+    // uses a deterministic company-scoped runtime ID. Resolve only an
+    // existing, company-scoped record whose persisted spec proves the bind.
+    ?? mvpState.automations?.find((item) => (item.project_id ?? item.company_id ?? activeProject) === activeProject && registeredWorkflowMatchesRouteKey(item, routeAutomationKey));
   const automationId = persistedAutomation?.id ?? routeAutomationKey;
-  const persistedSpec = mvpState.builder_specs?.find((item) => item.automation_id === automationId);
+  const persistedSpec = mvpState.builder_specs?.find((item) => item.automation_id === automationId)
+    ?? (persistedAutomation?.builder_spec || persistedAutomation?.builderSpec
+      ? { automation_id: automationId, spec: (persistedAutomation.builder_spec ?? persistedAutomation.builderSpec) }
+      : undefined);
   const persistedSchedule = mvpState.schedules?.find((item) => String(item.automation_id ?? item.automationId ?? "") === automationId);
   const builderType = persistedAutomation?.automation_type ?? routeAutomationKey;
   const builderTypeSupported = isSupportedAutomationType(builderType);

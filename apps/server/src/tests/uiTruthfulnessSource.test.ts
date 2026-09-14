@@ -739,6 +739,21 @@ test("registered Builder reads real stages without making the registered type a 
   assert.match(builder, /処理契約・接続先・承認ポリシー・実予定は変更していません/);
 });
 
+test("Builder resolves a canonical route only from an existing company-scoped registered bind", async () => {
+  const { transpileModule } = await import("typescript");
+  const { runInNewContext } = await import("node:vm");
+  const source = readFileSync(resolve(process.cwd(), "apps/web/src/App.tsx"), "utf8");
+  const helpers = source.slice(source.indexOf("function registeredWorkflowBuilderConfig("), source.indexOf("type ChatWorkflowOption ="));
+  const helper = runInNewContext(transpileModule(helpers + "\n({matches: registeredWorkflowMatchesRouteKey});", {}).outputText, {}, { timeout: 1000 });
+  const adopted = { automation_type: "registered_workflow", builder_spec: { sourceAutomationId: "daily-ai-research-publish-run", canonicalWorkflowId: "daily-ai-research-publish-run" } };
+  assert.equal(helper.matches(adopted, "daily-ai-research-publish-run"), true);
+  assert.equal(helper.matches(adopted, "automation_derived_runtime_id"), false);
+  assert.equal(helper.matches({ ...adopted, company_id: "foreign-company" }, "daily-ai-research-publish-run"), true, "company scope is enforced by the caller before this pure bind check");
+  assert.equal(helper.matches({ automation_type: "registered_workflow", builder_spec: { canonicalWorkflowId: "daily-ai-research-publish-run" } }, "daily-ai-research-publish-run"), true);
+  assert.equal(helper.matches({ automation_type: "future_unknown", builder_spec: { canonicalWorkflowId: "daily-ai-research-publish-run" } }, "daily-ai-research-publish-run"), false);
+  assert.equal(helper.matches({ automation_type: "registered_workflow" }, "daily-ai-research-publish-run"), false);
+});
+
 test("registered Builder PATCH sends only scoped metadata and confirms persisted values", async () => {
   const { transpileModule } = await import("typescript");
   const { runInNewContext } = await import("node:vm");

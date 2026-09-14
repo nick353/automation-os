@@ -23944,3 +23944,15 @@ Evidence: `outputs/aos-daily-ai-no-effect-trigger-readback-20260914.json`。
 Evidence: `outputs/aos-companion-transport-disconnect-readback-20260914.json`、`outputs/aos-daily-ai-no-effect-trigger-readback-20260914.json`。
 
 **Next action:** Companionを再接続できる状態に戻し、fresh statusを確認してから、同じqueued Runのreceipt/readbackを一度だけ取得する。ユーザーの認証・拡張再接続が必要になった場合はそこで停止して依頼する。
+
+## 2026-09-14T20:10:00+09:00 — Canonical route bind resolution hardening
+
+- [x] Existing Company-scoped `registered_workflow` records now resolve from a canonical route only when their persisted `builder_spec` proves either `canonicalWorkflowId` or `sourceAutomationId` equality.
+- [x] Builder falls back to the automation's persisted `builder_spec` when a separate `builder_specs` projection is absent.
+- [x] Unknown types, foreign company records, and unadopted canonical routes remain fail-closed; this change does not create, adopt, activate, or schedule any automation.
+- [x] Focused registered Builder tests passed 4/4; web typecheck and production web build passed.
+- [ ] Company 1 canonical catalog is still not promoted into the runtime registry, so `next_run_at` and enabled schedules remain unproven.
+
+Evidence: `apps/web/src/App.tsx`, `apps/server/src/tests/uiTruthfulnessSource.test.ts`, `npm run typecheck:web`, `npm run build:web`.
+
+**Next action:** obtain a fresh read-only runtime inventory after deployment and confirm whether an existing adopted record now resolves. Do not call the adoption endpoint or enable schedules without explicit authorization for that state change.
