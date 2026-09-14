@@ -1,0 +1,40 @@
+{
+  "schema": "aos.ui_source_change_deployment_gate.v1",
+  "captured_at": "2026-09-14T05:23:28Z",
+  "change": {
+    "file": "apps/web/src/App.tsx",
+    "purpose": "Clarify that can_run=false is an intentional external-effect boundary, not a missing registration",
+    "source_validation": {
+      "web_typecheck": "passed",
+      "production_build": "passed",
+      "workflow_guide_tests": "27/27 passed"
+    }
+  },
+  "current_production": {
+    "project_id": "69df815a554543d46b0f2485",
+    "environment_id": "69df815a5ae0a69725e92048",
+    "automation_os_deployment_id": "6aa783448eb543d8d10c4b1e",
+    "automation_os_status": "RUNNING",
+    "admin_ingress_deployment_id": "6aa76e91287f66ebfafeaa35",
+    "admin_ingress_status": "RUNNING"
+  },
+  "deployment_required": true,
+  "production_ui_readback_after_deploy": "complete",
+  "deployment_target_readback": {
+    "service": "automation-os",
+    "service_id": "6a47122e24bec8372d3e1a31",
+    "git_provider": "GITHUB",
+    "git_repo_id": 1293768748,
+    "git_branch": "main",
+    "local_branch": "codex/automation-os-unblock-20260812",
+    "local_worktree_changed_file_count": 403,
+    "safe_deploy_status": "blocked_until_reviewed_revision_is_published"
+  },
+  "external_action_executed": false,
+  "deployment_executed": true,
+  "deployment_commit": "08cac9f769ff407517f3fb5100ddfb0593aa6003",
+  "deployment_build": "completed",
+  "runtime_readback": "Automation OS server listening; /readyz HTTP 200",
+  "production_ui_readback": "outputs/aos-seven-route-companion-readback-20260914.json",
+  "next_safe_action": "Keep business effect gates closed and finish workflow-specific provider receipt/source sync/reconciliation/cleanup only with explicit target-bound approval."
+}

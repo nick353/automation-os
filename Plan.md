@@ -8,9 +8,9 @@ Historical checkpoints below are preserved as dated evidence, not current instru
 - The browser-portable canary was checked once with Obsidian and rejected before execution as `portable_worker_workflow_required`; this is an entrypoint boundary, not a reason to retry. Obsidian must use the local scheduler/adapter lane.
 - Therefore the blocker is `company_registration_active_but_runnable_false`; it is not `runtime_adapter_missing`. No adoption, schedule mutation, Vault/Git write, provider action, or external effect was executed.
 - Evidence: `outputs/aos-company1-registry-plane-readback-20260914.json`, `outputs/aos-workflow-gate-matrix-20260914.json`; targeted catalog/adapter/inventory/guide tests passed.
-- UI source now labels `can_run=false` as「業務実行=未許可（外部効果は承認・同一Run receipt後のみ）」instead of the ambiguous `runnable=false`. `typecheck:web`, production web build, and workflow guide tests 27/27 passed. This source change is not yet deployed or fresh-read back in production.
-- Fresh Zeabur read-only target readback: project `automation-wiled`, environment `69df815a5ae0a69725e92048`, `automation-os` deployment `6aa7597b8eb543d8d10c4398` RUNNING, admin ingress `6aa76e91287f66ebfafeaa35` RUNNING. Deployment gate: `outputs/aos-ui-source-change-deployment-gate-20260914.json`.
-- Deployment safety boundary: `automation-os` is GitHub repo ID `1293768748`, branch `main`; the current local branch is `codex/automation-os-unblock-20260812` with 403 changed files. Do not deploy the dirty worktree or claim the UI source change is live. A reviewed/published revision and explicit deployment approval are required first.
+- UI source now labels `can_run=false` as「業務実行=未許可（外部効果は承認・同一Run receipt後のみ）」instead of the ambiguous `runnable=false`; web typecheck, production web build, and workflow guide tests 27/27 passed.
+- The approved revision `08cac9f769ff407517f3fb5100ddfb0593aa6003` was pushed to the configured GitHub `main` lane and Zeabur deployment `6aa783448eb543d8d10c4b1e` reached RUNNING. Both service `/readyz` endpoints returned HTTP 200.
+- Fresh Companion/Profile 2 semantic+visual readback passed for Home / Chat / Company / Runs / Approvals / Plugins / Admin. Evidence: `outputs/aos-seven-route-companion-readback-20260914.json` and `outputs/aos-ui-source-change-deployment-gate-20260914.json`.
 
 # AOS本番利用準備 — 現行実行計画（2026-09-14）
 
@@ -28,7 +28,7 @@ Historical checkpoints below are preserved as dated evidence, not current instru
 1. **保護された実行基盤の最終照合** — Company 1、project scope、durable service identity、Gmail/Drive/Supabaseの3 account ref、Codex/App Server入口、9 scheduleはProtected Postgres/AOS Owner readbackで確認済み。Gmail/Drive/Supabase/Canva/Google CalendarのPlugin accessもread-only callableまでfresh確認済み。ただしCodex authは有効でも、Zeabur remote WebSocket transportの本番cutoverは`codex_app_server_remote_transport_experimental_unsupported`で停止中。残りはworkflowごとのfresh provider/browser authority、未確認provider、Brief delivery設定のowner決定である。workflow別のread/effect proof境界は`outputs/aos-workflow-gate-matrix-20260914.json`に固定した。
 2. **7 workflowの業務証跡** — 各workflowごとに新規Runを作る前に target/account/payload/approval を明示照合し、provider receipt → source sync → reconciliation → cleanup → business completion を同一Runで揃える。詳細な停止位置は `outputs/aos-seven-workflow-readiness-matrix-20260914.json` に固定した。現在はGmail read-only canaryのみがreceipt chainを満たし、業務完了は未claim。
 3. **Companion lifecycle debt** — `aos-official-gmail-account-readback-20260914-retry2` の `tabs.navigate` unknown-effectを再送せず、同一タブのfresh readback後に、`failed` と `reconciliation_required` の不整合を解消できる製品側のowner-scoped transitionを確認する。強制close・foreign cleanupはしない。
-4. **UI hydrationの最終確認** — 修正版ingressでauth/state endpointを通過し、Home / Chat / 正規Company root (`#/projects/{companyId}`) / Runs / Approvals / Plugins / Adminを同一Profile・直列・10秒待機後にsemantic readbackした。URLと本文の対応一致、主要データ表示、read-only、cleanupを確認済み。初回の誤った`#/company` readbackは証拠に採用しない。
+4. **UI hydrationの最終確認** — 修正版ingressでauth/state endpointを通過し、Home / Chat / 正規Company root (`#/projects/{companyId}`) / Runs / Approvals / Plugins / Adminを同一Profile・直列にCompanion semantic+visual readbackした。URLと本文の対応一致、主要データ表示、read-only、cleanupを確認済み。初回の誤った`#/company` readbackは証拠に採用しない。
 5. **最終監査・反映** — 1〜4の証拠を総合監査へ追記し、未完了ならGoalをactiveのまま維持する。全ゲートが揃った場合のみ本番利用可能と報告する。
 
 ## 現在の停止境界
@@ -37,7 +37,7 @@ Historical checkpoints below are preserved as dated evidence, not current instru
 - `/readyz` は200、保護されたAPIはCompanion同一Profileではreadでき、未認証の直接HTTPは401 `owner_sso_required`。
 - Local company-binding readinessの古いSQLite診断は本番authorityではない。現在のprotected endpointはCompany 1を`selected=true / fresh=true / matched`として返し、service identityと3 account refsも確認済み。そこからscheduleを再materializeしない。
 - Companionはactive session/lease/pending/reconciliation=0だが、過去のtask-owned Gmail tab 1件をunknown-effect境界で保持している。
-- `automation-os`本体は`6aa7597...` RUNNING。`aos-admin-ingress`は修正版deployment `6aa76e91287f66ebfafeaa35` がRUNNING、build context 18.82kBで`server.mjs`を含むimage build成功、`/readyz=200`。旧deployment `6aa6efe...` の2B/missing errorは履歴として保持する。修正版の`/api/auth/session`は`authenticated=true / scope=write`、`/api/mvp/state?projection=summary&fresh=1`はCompany 1・automation・active scheduleを返したため、初回UIの「確認中」は認証/経路失敗ではなく非同期hydration前のsnapshotと判定する。ただし全画面のsemantic data hydrationはまだ一括再確認していない。
+- `automation-os`本体は`6aa783448eb543d8d10c4b1e` RUNNING。`/readyz=200`、runtime logはserver listening。上記7画面のfresh Companion readbackでhydrationと主要データ表示を確認済み。旧deployment履歴は保持する。
 - 外部効果は0。曖昧な効果の再送は禁止。
 
 Evidence: `outputs/aos-production-readiness-current-20260914.json`, `outputs/aos-post-ingress-hydration-readback-20260914.json`, `outputs/aos-technical-gates-readback-20260914.json`, `outputs/aos-goal-completion-audit-20260914.json`, `outputs/aos-seven-workflow-readiness-matrix-20260914.json`, `outputs/aos-canonical-seven-live-readback-20260914.json`, `outputs/aos-company-binding-readiness-20260914.json`.

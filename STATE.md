@@ -24829,3 +24829,11 @@ The fresh Company 1 page makes the planes explicit: Canonical正本=7, protected
 Fresh Companion semantic readback identified Company 1 Obsidian as `automation_e977435478c5c01ad1f47a49`, active but `runnable=false`, with canonical workflow `obsidian-project-memory-audit`, entrypoint `obsidian_audit_registered`, and Monday 09:30 Asia/Tokyo schedule. Source and targeted tests confirm the local Obsidian adapter exists in the six-entry provider-neutral adapter registry; it is excluded only from the separate fixed browser adapter inventory. The exact current blocker is `company_registration_active_but_runnable_false`. No schedule/adoption/Vault/Git/provider/external mutation occurred. Evidence: `outputs/aos-company1-registry-plane-readback-20260914.json`, `outputs/aos-workflow-gate-matrix-20260914.json`.
 
 The guide source was clarified so `can_run=false` is displayed as an intentional external-effect boundary rather than a missing registration. Web typecheck, production build, and 27 guide tests passed. The change is source-only and awaits an explicitly authorized deployment followed by fresh production UI readback.
+
+## Approved UI deployment and seven-route Companion readback — 2026-09-14 continuation
+
+The approved source revision `08cac9f769ff407517f3fb5100ddfb0593aa6003` was pushed to the configured GitHub `main` lane. Zeabur deployment `6aa783448eb543d8d10c4b1e` reached `RUNNING`; build/runtime logs completed and `/readyz` returned HTTP 200. No business external effect was executed.
+
+Using one task-owned Chrome tab and an exact Companion/Profile 2 lease, fresh semantic and visual reads passed for Home, Chat, Company 1, Runs, Approvals, Plugins, and Admin. The readback confirms Company 1 scope, canonical registry 7, adapter inventory 6, runs/proofs counts, fail-closed approval states, Gmail read-only receipt chain, and `AOS Chrome Companion` as the Admin execution surface. Evidence: `outputs/aos-seven-route-companion-readback-20260914.json`.
+
+This completes the read-only deployment/UI gate only. It does not prove remaining provider receipts, source sync, reconciliation, cleanup, business completion, Brief delivery, or remote Codex WebSocket cutover. The historical unknown-effect Companion tab remains retained and was not replayed or force-closed.

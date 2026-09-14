@@ -1,0 +1,71 @@
+{
+  "generated_at": "2026-09-14",
+  "goal": "AOSを本番利用可能な状態へ近づけ、7自動化・主要画面・Companion・証跡境界を確認する",
+  "company_id": "company_2560580981cedfd106b66245",
+  "external_action_executed": false,
+  "requirements": [
+    {
+      "id": "docs_and_plan",
+      "requirement": "正本ドキュメントと実行計画を整理する",
+      "status": "complete",
+      "evidence": ["Plan.md", "STATE.md", "outputs/aos-production-readiness-current-20260914.json"]
+    },
+    {
+      "id": "seven_registry",
+      "requirement": "7自動化の構成・Company scope・execution adapter境界を確認する",
+      "status": "complete_for_read_only_configuration",
+      "evidence": ["outputs/aos-canonical-seven-live-readback-20260914.json", "outputs/aos-seven-workflow-readiness-matrix-20260914.json", "canonical registry tests 2/2", "registered catalog tests 6/6"],
+      "not_proven": "business completion or effectful provider execution"
+    },
+    {
+      "id": "schedules_and_entrypoints",
+      "requirement": "schedule・入口・service identity・account refsを確認する",
+      "status": "complete_for_protected_readback",
+      "evidence": ["protected control-plane readiness", "protected reconciliation", "3 account refs", "9 protected schedules"],
+      "not_proven": "fresh provider/browser authority and materialized business execution"
+    },
+    {
+      "id": "major_screens_and_companion",
+      "requirement": "最新デプロイ後のHome/Chat/Company/Runs/Approvals/Plugins/AdminとCompanionをfresh readbackする",
+      "status": "complete_for_read_only_ui_readback",
+      "evidence": ["outputs/aos-seven-route-companion-readback-20260914.json", "Zeabur deployment 6aa783448eb543d8d10c4b1e", "Companion Profile 2 same-tab semantic+visual readback"],
+      "not_proven": "provider/browser authority for effectful business workflows; historical unknown-effect tab reconciliation"
+    },
+    {
+      "id": "auth_and_receipt_gates",
+      "requirement": "認証・provider receipt・source sync・reconciliation・cleanupを分離して確認する",
+      "status": "partial",
+      "verified": ["Codex auth already_authenticated", "Gmail read-only canary receipt/source sync/reconciliation/cleanup", "Backup read-only same-run receipt/readback/cleanup"],
+      "unverified": ["Obsidian Company runnable gate and scheduled same-Run audit", "provider-browser authority for remaining lanes", "business provider receipts for remaining workflows", "business completion"],
+      "blockers": ["codex_app_server_remote_transport_experimental_unsupported", "remaining_provider_workflow_receipts_not_proven"],
+      "fresh_verified": ["gmail@openai-curated-remote installed/verified/callable", "google-drive", "supabase", "canva", "google-calendar", "Gmail read-only provider receipt/source sync/reconciliation/cleanup"]
+    },
+    {
+      "id": "production_acceptance",
+      "requirement": "本番利用可能と主張できる受入れ証拠を揃える",
+      "status": "not_complete",
+      "reason": "production_ready=null; business provider receipts/source sync/reconciliation/cleanup remain incomplete for most workflows; Brief delivery not_attempted; external effects intentionally zero",
+      "evidence": ["outputs/aos-production-readiness-current-20260914.json"]
+    }
+  ],
+  "next_actions": [
+    "Resolve or explicitly accept the Codex remote transport production-cutover blocker.",
+    "Keep unverified Plugin/provider lanes fail-closed; obtain a fresh target-bound receipt chain for each remaining workflow.",
+    "For each provider-browser workflow, obtain fresh selected provider/browser authority before any effectful run.",
+    "Decide Brief destination and morning/evening schedule before attempting delivery.",
+    "Keep the historical unknown-effect Companion tab retained; do not replay or force-close it.",
+    "Use the deployed seven-route readback as the UI baseline; do not treat screen availability as business completion."
+  ],
+  "evidence_files": [
+    "Plan.md",
+    "STATE.md",
+    "outputs/aos-production-readiness-current-20260914.json",
+    "outputs/aos-seven-workflow-readiness-matrix-20260914.json",
+    "outputs/aos-workflow-gate-matrix-20260914.json",
+    "outputs/aos-canonical-seven-live-readback-20260914.json",
+    "outputs/aos-seven-readonly-preflight-20260914.json",
+    "outputs/aos-backup-obsidian-readonly-audit-20260914.json",
+    "outputs/aos-company1-backup-preflight-readback-20260914.json",
+    "outputs/aos-seven-route-companion-readback-20260914.json"
+  ]
+}

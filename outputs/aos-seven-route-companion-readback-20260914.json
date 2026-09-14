@@ -1,0 +1,16 @@
+{
+  "schema": "aos.seven_route_companion_readback.v1",
+  "captured_at": "2026-09-14T05:23:28Z",
+  "deployment": {"commit": "08cac9f769ff407517f3fb5100ddfb0593aa6003", "zeabur_deployment_id": "6aa783448eb543d8d10c4b1e", "status": "RUNNING", "readyz": "HTTP 200"},
+  "companion": {"profile": "Profile 2", "tab_id": 1980920751, "semantic_visual_same_tab": true, "status": "connected", "external_action_executed": false},
+  "routes": [
+    {"name":"Home","hash":"#/","status":"readback_pass","key":"today summary, 7 Company 1 items, internal delivery, external_action=false"},
+    {"name":"Chat","hash":"#/chat","status":"readback_pass","key":"Company 1 scope, session selector, request textarea, no-effect/approval stages"},
+    {"name":"Company","hash":"#/projects/company_2560580981cedfd106b66245","status":"readback_pass","key":"canonical registry 7, guide 5/5, adapter inventory 6, external_action=false"},
+    {"name":"Runs","hash":"#/runs","status":"readback_pass","key":"runs=500, proofs=500, queued=2, approvals=0, external boundary shown"},
+    {"name":"Approvals","hash":"#/approvals","status":"readback_pass","key":"Company 1 scope, read-only lookup, expired/unconfirmed approvals fail closed"},
+    {"name":"Plugins","hash":"#/plugins","status":"readback_pass","key":"Gmail read-only receipt chain verified; user auth flow and Companion selection visible"},
+    {"name":"Admin","hash":"#/admin","status":"readback_pass","key":"AOS Chrome Companion selected, revision=33, local sync=ok, adapters fail closed"}
+  ],
+  "not_proven": ["provider receipts and business completion for remaining workflows", "source sync/reconciliation/cleanup for remaining effectful lanes", "remote Codex App Server production WebSocket cutover", "historical unknown-effect Companion tab reconciliation"]
+}
