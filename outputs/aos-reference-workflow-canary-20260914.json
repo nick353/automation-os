@@ -1,0 +1,51 @@
+{
+  "schema": "automation_os_reference_workflow_canary.v2",
+  "ok": true,
+  "mode": "isolated_sqlite_proof_backed_safe_stop_canary",
+  "external_action_executed": false,
+  "safety_reference_paths_ok": true,
+  "paths": [
+    {
+      "id": "daily-ai-research-publish-run",
+      "status": "proof_backed_safe_stop_verified",
+      "exact_blocker": "aos_chrome_companion_task_id_missing",
+      "runner_started": false,
+      "external_action_executed": false,
+      "approval_boundary_verified": true,
+      "company_scope_verified": true,
+      "start_lineage_verified": true,
+      "worker_blocked_event_verified": true,
+      "safety_proof_verified": true,
+      "runtime_binding_verified": true,
+      "cleanup_receipt_verified": true
+    },
+    {
+      "id": "job-application-manager",
+      "status": "proof_backed_safe_stop_verified",
+      "exact_blocker": "aos_chrome_companion_task_id_missing",
+      "runner_started": false,
+      "external_action_executed": false,
+      "approval_boundary_verified": true,
+      "company_scope_verified": true,
+      "start_lineage_verified": true,
+      "worker_blocked_event_verified": true,
+      "safety_proof_verified": true,
+      "runtime_binding_verified": true,
+      "cleanup_receipt_verified": true
+    },
+    {
+      "id": "nisenprints-daily-product-canva-printify-etsy-pinterest",
+      "status": "proof_backed_safe_stop_verified",
+      "exact_blocker": "aos_chrome_companion_task_id_missing",
+      "runner_started": false,
+      "external_action_executed": false,
+      "approval_boundary_verified": true,
+      "company_scope_verified": true,
+      "start_lineage_verified": true,
+      "worker_blocked_event_verified": true,
+      "safety_proof_verified": true,
+      "runtime_binding_verified": true,
+      "cleanup_receipt_verified": true
+    }
+  ]
+}

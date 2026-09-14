@@ -23507,3 +23507,16 @@ Evidence: Companion fresh runs `run_aos_projects_readback_20260914_0829`, `run_a
 Evidence: runtime/local health/account readback（2026-09-14T08:34Z）、Companion runs `run_aos_home_detail_readback_20260914_0836` / `run_aos_projects_detail_readback_20260914_0837` / `run_aos_company1_automations_readback_20260914_0838`、`work/reference-workflow-canary-20260914.json` 未生成（DB requiredで停止）。
 
 **Next action:** 本番PostgreSQL接続値をこのスレッドへ貼らず、既存の正規runtime/secret boundaryに設定できた時点で同じread-only canaryを再開する。外部業務Runは、ユーザーが1件の対象・アカウント・payload・承認を確定するまで開始しない。
+
+## 2026-09-14T08:40:00Z — Zeabur secret boundary and isolated canary proof
+
+- [x] Zeaburのfresh target readbackでpersonal workspace、project `automation-wiled`、service `automation-os`、environmentを再確認した。対象取り違えなし。
+- [x] 値を表示せずservice variablesを監査した。`DATABASE_URL`は存在するが長さ15・PostgreSQL schemeではなく、AOS production startup policyの`production_postgres_configuration_invalid`と整合した。
+- [x] linked read-only variablesには`POSTGRES_CONNECTION_STRING`（値は非表示、PostgreSQL scheme=true）が存在する一方、`POSTGRES_URI`はPostgreSQL schemeではなかった。既存のsecretをコピー・再設定・公開・再起動はしていない。
+- [x] `AUTOMATION_OS_SERVICE_IDENTITY_TOKEN`、`AUTOMATION_OS_DURABLE_SERVICE_USER_ID`、Company canonical ID等は値を表示せず存在・長さ・placeholder非該当だけ確認した。
+- [x] 隔離SQLite + 一時artifact rootでreference workflow canaryを実行し、Daily AI、Job Application Manager、NisenPrintsの3経路すべてが`proof_backed_safe_stop_verified`となった。company scope、approval boundary、start lineage、worker blocked event、safety proof、runtime binding、cleanupを各3件で確認し、runner_started=false、external_action_executed=falseだった。
+- [ ] 本番DB境界の残存問題は、linked PostgreSQLの正規接続値をAOSが読む名前（`AUTOMATION_OS_DATABASE_URL`、`DATABASE_URL`、または正規`POSTGRES_URI`）へ、Zeaburのsecret/reference機構で安全に割り当てること。値の貼付・表示・推測は行わない。
+
+Evidence: [aos-reference-workflow-canary-20260914.json](outputs/aos-reference-workflow-canary-20260914.json)、Zeabur CLI variable metadata readback（値非表示、2026-09-14）。
+
+**Next action:** Zeaburの既存linked PostgreSQL secretをAOSのproduction startup policyが読む変数名へ割り当てる明示承認が得られるまで、secret mutation・restart・deployは行わない。承認後は変数名と非機密metadataだけをreadbackし、`ready_for_authorized_admission` → protected schedule materializationの順に再確認する。
