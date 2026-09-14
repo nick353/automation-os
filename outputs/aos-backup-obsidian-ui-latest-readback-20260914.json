@@ -1,0 +1,16 @@
+{
+  "capturedAt": "2026-09-14T10:03:33Z",
+  "route": "https://aos-admin-ingress.zeabur.app/#/projects/company_2560580981cedfd106b66245/automations",
+  "status": "read",
+  "title": "Automation OS",
+  "coverage": { "requested": 1, "read": 1, "failed": 0 },
+  "snapshot": {
+    "phase": "loading",
+    "blocker": "mvp_state_readback_pending",
+    "controls": "save_execute_external_controls_hidden_until_readback",
+    "textSha256": "d7367356aaed110b02358a96e64b934daa2d4c002ffbf323dd4690f164bc02a9"
+  },
+  "externalActionExecuted": false,
+  "cleanupComplete": true,
+  "interpretation": "This live snapshot proves fail-closed loading behavior and route reachability, but it does not prove the hydrated Backup/Obsidian row controls. Earlier settled protected readback remains authoritative for data hydration; no control was clicked or retried here."
+}

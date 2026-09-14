@@ -23667,3 +23667,12 @@ Evidence: `outputs/aos-gmail-topeyes-reply-receipt-20260914.json`、Gmail thread
 Evidence: `outputs/aos-ui-readonly-boundary-verification-20260914.json`。
 
 **Next action:** 外部効果なしのまま、Backup/Obsidianのlocal-only read-only結果が本番UIに表示されるかをCompanionで再確認し、必要ならUI導線だけを修正する。NisenPrintsの対象クリックは同じviewport blockerを再送せず保持する。
+
+## 2026-09-14T10:03:33Z — Backup/Obsidian latest deployed route readback
+
+- [x] Company 1の本番automations routeをCompanionで1/1 readし、URL/title、`mvp_state_readback_pending`、保存・実行・外部操作の非表示、外部効果なし、cleanup完了を確認した。
+- [ ] この取得はloading-stateで終了したため、Backup/Obsidianのhydrated row control表示そのものは証明していない。読み取りの再送やボタンの推測クリックはしていない。
+
+Evidence: `outputs/aos-backup-obsidian-ui-latest-readback-20260914.json`、Companion run `run_aos_backup_obsidian_ui_readback_20260914`。
+
+**Next action:** 本番UIのloading fail-closedを受入れ、Backup/Obsidianのhydrated row controlはAPI/readbackがreadyになった同一Runの表示でのみ再確認する。NisenPrints viewport境界を再送せず、scheduler owner mismatchはローカル所有者の判断待ちとして保持する。
