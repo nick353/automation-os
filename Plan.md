@@ -167,6 +167,15 @@ Evidence: Zeabur CLI read-only service/project/deployment readback（2026-09-14�
 
 Evidence: Zeabur deployment `6aa7a0b0f10957ea50bedd5f`、`https://automation-os.zeabur.app/readyz` readback（2026-09-14）。
 
+### 2026-09-14 Zeabur deployment build-pending再確認
+
+- [x] 同一deployment `6aa7a0b0f10957ea50bedd5f`をfresh readbackし、引き続き`BUILDING`、`startedAt/finishedAt`未設定、commit/ref未確定であることを確認した。
+- [x] build log readbackは空で、既存の稼働サービスの`/readyz=200`は維持されている。新deploymentが本番トラフィックへ切り替わった証拠はない。
+- [x] 同一deploymentの再発行、restart、rollback、業務workflow、provider call、外部効果は実行していない。
+- [ ] exact blockerは`zeabur_deployment_stuck_building_without_build_log`。Zeabur側でdeploymentがterminalizeするか、build-log/readback権限が回復するまで、追加デプロイは行わない。
+
+Evidence: Zeabur deployment/status/log readback（2026-09-14）。
+
 ## 実行順序
 
 ### Phase 0 — 共通ゲート
