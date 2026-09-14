@@ -1,0 +1,30 @@
+{
+  "schema": "aos.external_reply_receipt.v1",
+  "capturedAt": "2026-09-14T19:01:00+09:00",
+  "workflow": "email-review-reply",
+  "provider": "Gmail",
+  "account": "nichika2000823@gmail.com",
+  "target": {
+    "organization": "株式会社TopEyes",
+    "recipient": "23053-36899-85819-4432.ap@topeyes.hrmos.co",
+    "threadSubject": "【株式会社TopEyes】書類選考結果のご連絡"
+  },
+  "payload": {
+    "interviewSlot": "2026-09-28 14:00-15:30 Asia/Tokyo",
+    "body": "小幡様\n\nお世話になっております。田仲二千です。\n\n一次面接につきまして、下記日程で調整可能です。\n第1希望：9月28日（月）14:00〜15:30\n\nオンライン（Google Meet）で問題ございません。\nお手数をおかけしますが、よろしくお願いいたします。"
+  },
+  "providerReceipt": {
+    "status": "sent",
+    "sentAtVisible": "19:01",
+    "threadReadback": "latest message from Soy in the TopEyes thread",
+    "accountReadback": "Soy <nichika2000823@gmail.com>"
+  },
+  "aosBoundary": {
+    "externalActionExecuted": true,
+    "sourceSync": "not_proven",
+    "reconciliation": "provider_thread_readback_verified; aos_source_record_not_available",
+    "cleanup": "browser_tab_not_retained_after_provider_readback",
+    "businessCompletion": "provider_sent_only; recipient_confirmation_pending"
+  },
+  "nextAction": "Wait for TopEyes confirmation; do not send a duplicate reply. If confirmation arrives, read it back and reconcile the interview schedule separately."
+}

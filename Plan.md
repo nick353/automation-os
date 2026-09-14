@@ -23645,3 +23645,14 @@ Evidence: Companion runs `run_aos_job_application_preflight_query_20260914_0911`
 Evidence: `outputs/aos-deployed-ui-acceptance-readback-20260914.json`、Zeabur deployment `6aa7bcb8f10957ea50bee3bf`、Companion run `run_aos_deployed_ui_readback_20260914`。
 
 **Next action:** TopEyesの9月28日13:00は先方提示の14:00–17:00枠外のため、時間外打診を送るか14:00以降に合わせるかをユーザーに確認する。AOS側はNisenPrintsのviewport、Backup/Obsidianの導線差分、Daily AI scheduler owner mismatchを外部効果なしで修正・検証する。
+
+## 2026-09-14T19:01:00+09:00 — TopEyes interview availability reply
+
+- [x] `nichika2000823@gmail.com`のGmailスレッドをfresh readbackし、TopEyesの提示枠（9月28日14:00–17:00）と宛先を確認した。
+- [x] ユーザー指定の9月28日14:00開始を、面接1時間半の候補（14:00–15:30）として返信した。
+- [x] Gmailスレッドの最新メッセージが`Soy`から19:01として表示され、provider receipt=`sent`を確認した。重複送信はしていない。
+- [ ] TopEyes側の面接確定返信は未受信。AOSのsource recordへの自動同期はこのprovider UI操作では証明されていないため、業務完了は`provider_sent_only`として扱う。
+
+Evidence: `outputs/aos-gmail-topeyes-reply-receipt-20260914.json`、Gmail thread `【株式会社TopEyes】書類選考結果のご連絡`の最新19:01表示。
+
+**Next action:** 同じTopEyesスレッドの返信を再送せず、先方の確定返信を待つ。AOS残存業務はNisenPrints viewport、Backup/Obsidian導線、Daily AI scheduler owner mismatchのread-only修正・検証を続行する。
