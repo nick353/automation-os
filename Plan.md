@@ -23815,3 +23815,14 @@ Evidence: `outputs/aos-company1-local-readonly-preflight-20260914.json`。
 Evidence: `outputs/aos-daily-ai-readonly-ui-attempt-20260914.json`。
 
 **Next action:** Daily AIのUI操作を再送せず、Mac worker側のfresh Companion同一Run authorityを取得できる境界を確認する。取得できるまで、研究公開・SNS投稿・メール送信などの外部効果へ進めない。
+
+## 2026-09-14T19:38:44+09:00 — Company 1 automation route Companion canary
+
+- [x] `company_2560580981cedfd106b66245`のautomation routeを新しいRunでCompanion read-only target provisionした。
+- [x] Signed transaction、visual readback、task-owned session cleanupを確認した。
+- [x] `mutation_dispatch_count=0`、`external_action_executed=false`、`reconciliation_required=false`を確認した。
+- [ ] `provider_receipt_trusted=false`。これはAOS route/Companion surfaceの確認であり、Daily AI業務Runや公開成果の証明ではない。
+
+Evidence: `outputs/aos-daily-ai-route-readonly-canary-20260914.json`。
+
+**Next action:** Daily AI固有のsame-run authority/readbackをMac workerから確立する。route canary成功だけでは業務Runへ昇格しない。

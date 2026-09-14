@@ -1,0 +1,22 @@
+{
+  "schema": "aos.chrome_companion.adapter.v1",
+  "captured_at": "2026-09-14T19:38:44+09:00",
+  "company_id": "company_2560580981cedfd106b66245",
+  "target": "Company 1 automation route",
+  "selected_account": "nichika2000823@gmail.com",
+  "run_id": "aos-daily-ai-route-readonly-20260914-193836",
+  "task_id": "01a08939-ee7a-7632-8c3d-558fc4f90b6d",
+  "execution_surface": "aos_chrome_companion_profile_instance",
+  "result": "verified",
+  "read_only": true,
+  "mutation_dispatch_count": 0,
+  "external_action_executed": false,
+  "provider_receipt_trusted": false,
+  "visual_readback_verified": true,
+  "target_provision": "signed_transaction",
+  "cleanup": {
+    "session_closed": true,
+    "lease_released_by_session_close": true
+  },
+  "interpretation": "Fresh Companion target provisioning, visual readback, and cleanup succeeded for the Company 1 automation route. This verifies the route and Companion surface, not a Daily AI business run or provider receipt."
+}
