@@ -1,6 +1,71 @@
 <!-- The consolidated active execution plan is at the start of this file.
 Historical checkpoints below are preserved as dated evidence, not current instructions. -->
 
+# AOS残存業務実行・UI簡素化計画（2026-09-14）
+
+## Goal
+
+AOSの残存業務を、低リスクの内部処理から段階的に実行する。各workflowで対象・アカウント・内容・承認を確定し、Provider receipt → source sync → reconciliation → cleanup → 業務完了証跡を同一Runで揃える。外部送信・公開・応募・更新は、明示承認が揃うまで実行しない。
+
+## 実行順序
+
+### Phase 0 — 共通ゲート
+
+- Company 1 `company_2560580981cedfd106b66245` を対象Companyとして固定する。
+- 実行前に workflow ID、対象、アカウント、payload、approval、idempotency key をreadbackする。
+- Companionは同一Profile・同一Run・task-owned tabを使用する。
+- 不明な効果、timeout、unknown effect は再送せず、先にfresh readbackとreconciliationを行う。
+- 完了条件はUIの「完了」ではなく、Provider receipt、source sync、reconciliation、cleanup、業務proofの全てが揃うこと。
+
+### Phase 1 — 外部効果なしの内部業務
+
+1. **Backup safety check** — ローカルスナップショット、checksum、manifest、Run receipt、cleanupを確認する。
+2. **Obsidian project memory audit** — 現在の `runnable=false` 登録をreadbackし、必要なら登録有効化を別承認してからaudit artifactを作成する。Vault/Git同期は別承認。
+3. **Morning Brief** — 配信先と朝/夜の時刻を決め、内部配信receiptを確認する。未決定のまま有効化しない。
+
+### Phase 2 — 低リスクのProvider操作
+
+4. **Gmail review/reply** — `nichika2000823@gmail.com` の対象メールを1件だけ選び、返信本文を事前表示して承認後に送信する。任意の「軽いメール」を推測して送信しない。
+5. **Daily AI** — 対象コンテンツ・公開先・アカウント・本文を1件に限定し、fresh browser authorityと公開receiptを確認する。
+
+### Phase 3 — 高影響の外部操作
+
+6. **NisenPrints** — 商品ID、Etsy/Pinterest等の公開先、素材、説明、アカウントを確定し、1商品だけ公開する。
+7. **求人応募** — 企業・求人URL・応募情報・アカウントを確定し、1候補だけ送信する。送信前に最終画面を確認する。
+
+## ユーザーに求める選択
+
+- `1`: Backupを実行
+- `2`: Obsidian登録の有効化確認から開始
+- `3`: Morning Briefの配信先・朝夜時刻を決める
+- `4`: Gmailの返信候補を表示して1件選ぶ
+- `5`: Daily AIの公開候補を表示して1件選ぶ
+- `6`: NisenPrintsの商品候補を表示して1件選ぶ
+- `7`: 求人応募候補を表示して1件選ぶ
+
+番号だけの選択で進められるのは、まずread-only候補確認まで。送信・公開・応募・更新の直前には、対象と内容をもう一度表示し、1回だけ明示承認を取る。
+
+## UI/UX簡素化計画
+
+現状は主要7画面のread-only表示、Company scope、Chat、Runs、Approvals、Plugins、Admin、Companion接続を確認済み。ただし日常利用者向けには技術情報が多い。
+
+優先して整理する表示は次のとおり。
+
+1. Homeを「今日やること / 承認が必要 / 完了」に集約する。
+2. Chatを「依頼を書く → 対象を確認 → 下書き/実行 → 結果」の4段階に固定する。
+3. Runsでは技術状態を折りたたみ、業務状態と次の操作を先に表示する。
+4. Pluginsでは519件のカタログを通常画面から隠し、接続済み / 要認証 / 使用不可の3分類だけを先に表示する。
+5. Admin・Provider receipt・source sync等は「詳細診断」に移し、通常ユーザーには表示しない。
+6. `read-only確認`、`承認待ち`、`業務実行`、`業務完了`を別の日本語ラベルと色で統一する。
+
+## 完了条件
+
+- 各選択workflowについて同一Runのreceipt chainが揃う。
+- 外部効果のあるworkflowは、対象・アカウント・内容・承認が記録される。
+- 不明な効果・未確認のProvider・未照合のsourceは業務完了にしない。
+- UIの主要導線で、ユーザーが次に押す操作を1つに絞って理解できる。
+- 証跡をこのPlan.md、STATE.md、workflow別JSONへ追記する。
+
 ## 2026-09-14T04:36Z — latest registry-plane correction
 
 - Companion fresh readback confirmed Company 1 Obsidian registration `automation_e977435478c5c01ad1f47a49`, `active`, `runnable=false`, canonical `obsidian-project-memory-audit`, entrypoint `obsidian_audit_registered`, schedule Monday 09:30 Asia/Tokyo.
