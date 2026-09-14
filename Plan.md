@@ -228,6 +228,14 @@ Evidence: Zeabur deployment/build log, public `/readyz`, live asset, protected A
 
 Evidence: post-deploy AOS/Companion readback（2026-09-14）。
 
+### 2026-09-14 resumed recovery preflight
+
+- [x] Goal再開後にCompanion statusをfreshで1回確認したが、引き続き`Transport closed`だった。旧session/lease/tab/Runは再利用していない。
+- [x] `npm run recovery:preflight`は`ready_for_recovery`、required source/runbook filesは全て存在、`secrets_read=false`、`external_action_executed=false`だった。
+- [ ] host-managed secrets、Companion brokerのlive transport、Owner/SSO protected readbackは未復旧。preflight合格を業務workflow開始可能とは扱わない。
+
+Evidence: resumed Companion status and recovery preflight（2026-09-14）。
+
 ## 実行順序
 
 ### Phase 0 — 共通ゲート
