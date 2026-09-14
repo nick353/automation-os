@@ -23474,3 +23474,21 @@ Evidence: `work/aos-local-ui-fresh-readback-20260909.json`。
 Evidence: `work/aos-company1-local-regression-runtime-readback-20260909.json`。
 
 **Next action:** retained tabを手動close・再送せず、fresh target/account/payload/approvalが明示されたnamed workflow 1件の同一Run証跡照合が成立した場合だけ、残りactionの扱いを決める。
+
+## 2026-09-14T08:35:00Z — Companion復旧後の全主要画面fresh readback
+
+- [x] Companionが復旧し、connected profile 1件、fresh generation、logical session 1件、lease/pending/timeout/reconciliation/queue 0件、`fullyIdle=true`を確認した。
+- [x] protected Homeをsemantic+visual readbackし、`状態を確認済み`、worker idle、Company 1の対象概要、内部配信のreceipt/source sync/reconciliation/cleanup表示、外部通知・外部操作なしを確認した。
+- [x] 主要routeの到達性を確認した: Home `#/`、Chat `#/chat`、会社 / 仕事 `#/projects`、履歴 `#/runs`、承認 `#/approvals`、設定・接続 `#/plugins`、Admin `#/admin`。
+- [x] 会社 / 仕事はProject Aと会社1を表示し、会社1は`自動化25 / Run 0 / 待機・実行3 / 要確認`、詳細readback pending、安全停止中、read-only確認可と表示した。
+- [x] Chatは会社1を作成対象として表示し、自然言語入力、会社scope、送信モード、定期実行作成・既存定期実行調整・失敗確認の入口を確認した。外部効果は別承認として表示した。
+- [x] 履歴は`runs=500 / proofs=500`、処理中10・停止341・完了147、承認待ち0、外部操作なしを表示した。一部の要確認Runには`portable_remote_claim_expired_without_receipt`およびChrome Plugin/Bridge確認の記録が残っている。
+- [x] 承認は会社1 scopeで承認候補0、承認待ち0、承認済み0。Standing Approvalは未確認として無効扱い、安全境界を維持した。
+- [x] 設定・接続は会社未選択では認証対象を表示せず、Gmail read-only canaryは未実行、Plugin inventoryは取得中/0件として未確認表示を維持した。秘密情報入力・認証・外部効果は行っていない。
+- [x] Adminはmembership/detail readback pending中で、未確認状態では保存・実行・外部操作ボタンを表示しないことを確認した。
+- [x] すべて読み取り専用で実施し、送信・公開・応募・削除・認証・課金・定期実行変更は0件。Companion transport復旧と画面readbackは確認できたが、provider receipt/source sync/reconciliation/business completionを新規業務Runで得た証明ではない。
+- [ ] 残存ゲートは、protected detail readbackのsettle、schedule materializationの登録ID/timezone/worker入口比較、対象を固定したnamed workflow 1件のprovider receipt → source sync → reconciliation → cleanup → business completionである。
+
+Evidence: Companion fresh runs `run_aos_projects_readback_20260914_0829`, `run_aos_runs_readback_20260914_0830b`, `run_aos_approvals_readback_20260914_0831`, `run_aos_plugins_readback_20260914_0832`, `run_aos_admin_readback_20260914_0833`, `run_aos_projects_readback_20260914_0834`, `run_aos_chat_readback_20260914_0835`（2026-09-14）。
+
+**Next action:** 認証や詳細readbackが未確定の画面では操作を開始せず、ユーザーが対象・アカウント・payload・承認を明示したnamed workflowを1件選んだ場合のみ、同一Runでread-only admissionから外部効果ゲートへ進む。選択がない間はUI/定期実行のreadbackと証跡整理を継続する。
