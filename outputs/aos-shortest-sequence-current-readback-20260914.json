@@ -1,0 +1,60 @@
+{
+  "schema": "aos.shortest_sequence.current_readback.v1",
+  "captured_at": "2026-09-14T09:51:00.855Z",
+  "company_id": "company_2560580981cedfd106b66245",
+  "control_plane": {
+    "local_health_http_status": 200,
+    "runtime_decision": "ready_for_authorized_admission",
+    "server_effects": "read_only",
+    "worker_effects": "enabled",
+    "external_action_executed": false
+  },
+  "companion": {
+    "build_id": "install-b3a46274-fc03-48d2-9749-d20fd81114d1",
+    "profile_connected": true,
+    "current_task_state": "done",
+    "current_task_sessions": 0,
+    "current_task_leases": 0,
+    "pending_operations": 0,
+    "unresolved_timeouts": 0,
+    "reconciliation_pending_active": 0,
+    "foreign_profile_resources_untouched": true
+  },
+  "workflow_order": [
+    {
+      "id": "email-review-reply",
+      "state": "read_only_candidate_verified",
+      "next": "explicit_target_body_account_approval"
+    },
+    {
+      "id": "daily-ai-research-publish-run",
+      "state": "blocked_before_business_run",
+      "blocker": "fresh_selected_provider_and_browser_authority_missing"
+    },
+    {
+      "id": "nisenprints-daily-product-canva-printify-etsy-pinterest",
+      "state": "blocked_before_business_run",
+      "blocker": "provider_auth_and_fresh_browser_authority_for_remaining_surfaces_missing"
+    },
+    {
+      "id": "job-application-manager",
+      "state": "blocked_before_business_run",
+      "blocker": "fresh_selected_provider_and_browser_authority_missing"
+    },
+    {
+      "id": "daily-backup-safety-check",
+      "state": "eligible_but_not_materialized",
+      "next": "separate_snapshot_approval"
+    },
+    {
+      "id": "obsidian-project-memory-audit",
+      "state": "blocked_before_preflight",
+      "blocker": "company_registration_active_but_runnable_false"
+    }
+  ],
+  "brief": {
+    "canonical_schedule": "07:45, 21:45 Asia/Tokyo",
+    "schedule_materialization_readback": "verified",
+    "external_action_executed": false
+  }
+}

@@ -51,6 +51,15 @@ AOSの残存業務を、低リスクの内部処理から段階的に実行す�
 | UI/UX | 主要画面のfresh readbackと簡素化方針は確認済み | 日常導線の表示整理と定期実行互換性の最終受入 |
 | 定期実行 | canonical定義・回帰検証あり | 登録ID・schedule・timezone・worker入口のbefore/after機械比較 |
 
+### 2026-09-14 latest shortest-sequence readback
+
+- [x] local health HTTP 200、runtime `ready_for_authorized_admission`、server read-only、worker enabledをfresh readbackした。
+- [x] Companion/Profile 2は接続中、現taskは`done`、task-owned session/lease=0、pending operation=0、unresolved timeout=0、active reconciliation=0。foreign profile resourceは変更していない。
+- [x] Gmailは`nichika2000823@gmail.com`の候補確認まで完了。次は対象・本文・アカウントの明示承認が必要。
+- [x] Daily AI / NisenPrints / 求人は、provider/browser business run前のfresh authority不足で停止。Daily AIは登録Skillのselected adapterとRunway media gateも維持する。
+- [x] Backupは別承認のsnapshot、Obsidianは`runnable=false`のため、いずれも外部効果なしで勝手にmaterializeしない。
+- 証拠: [aos-shortest-sequence-current-readback-20260914.json](outputs/aos-shortest-sequence-current-readback-20260914.json)
+
 ### 実行ポリシー
 
 1. read-only候補確認、内部配信、証跡整理は独立して進める。
