@@ -23791,3 +23791,15 @@ Evidence: `outputs/aos-production-operations-monitor-current-20260914.json`。
 Evidence: `outputs/aos-gmail-selected-companion-canary-20260914.json`、`outputs/aos-gmail-exact-account-provider-readback-20260914.md`。
 
 **Next action:** Fresh Companion same-run authorityが確保できるworkflowから、まずno-effect vertical preflightを一件だけ開始する。provider receipt、source sync、reconciliation、cleanupが揃うまで外部業務操作は開始しない。
+
+## 2026-09-14T19:33:22+09:00 — Backup / Obsidian local read-only preflight
+
+- [x] Company 1 protected routeをfresh同期し、開始ガイドを展開した。
+- [x] Backupの取得済みローカル情報を確認した（runs=39、proofs=0、latest=complete、snapshot/integrity metadataあり）。
+- [x] Obsidianの取得済みローカル情報を確認した（runs=14、proofs=0、latest=complete、project/Vault parity metadataあり）。
+- [x] 両方ともProvider接続・認証・queue・外部サイト操作なし、`external_action=false`を確認した。
+- [ ] 業務完了、provider receipt、外部効果は未確認。Vault更新・バックアップ変更は行っていない。
+
+Evidence: `outputs/aos-company1-local-readonly-preflight-20260914.json`。
+
+**Next action:** Daily AIまたはNisenPrintsのMac worker同一Run authorityをread-onlyで確立する。未確定のまま公開・商品更新・送信へ進めない。

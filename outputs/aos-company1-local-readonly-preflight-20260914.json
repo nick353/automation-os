@@ -1,0 +1,31 @@
+{
+  "schema": "aos.company1.local_readonly_preflight.v1",
+  "captured_at": "2026-09-14T19:33:22.948+09:00",
+  "company_id": "company_2560580981cedfd106b66245",
+  "external_action_executed": false,
+  "workflows": {
+    "daily-backup-safety-check": {
+      "status": "local_readback_verified",
+      "runs": 39,
+      "proofs": 0,
+      "latest": "complete",
+      "metadata": "snapshot/integrity metadata=あり",
+      "provider_connection_or_auth": false,
+      "queue": false,
+      "external_site_operation": false,
+      "business_completion": "not_claimed"
+    },
+    "obsidian-project-memory-audit": {
+      "status": "local_readback_verified",
+      "runs": 14,
+      "proofs": 0,
+      "latest": "complete",
+      "metadata": "project/Vault parity metadata=あり",
+      "provider_connection_or_auth": false,
+      "queue": false,
+      "external_site_operation": false,
+      "business_completion": "not_claimed"
+    }
+  },
+  "interpretation": "Fresh UI readback confirms local metadata only. No Vault update, backup mutation, provider operation, or business completion was performed."
+}
