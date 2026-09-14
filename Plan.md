@@ -49,6 +49,14 @@ AOSの残存業務を、低リスクの内部処理から段階的に実行す�
 - 証拠: `outputs/aos-scheduler-ui-verification-20260914.json`
 - 注記: web buildのbundle-size warningは非致命。UIの分割最適化は別の品質改善タスクとして残す。
 
+### 2026-09-14 runtime / automation health readback
+
+- [x] runtime `ready_for_authorized_admission`、server read-only、worker enabled、external action false
+- [x] local `/readyz` HTTP 200、Codex account/thread/turn readback完了
+- [x] automation health `total=7 / active=7 / ok=7 / warnings=0 / blockers=0 / db_drift=0 / missing_entrypoints=0`
+- [ ] これはcontrol-plane readinessであり、業務workflow完了やprotected schedule materializationの証明ではない
+- 証拠: `outputs/aos-runtime-automation-health-readback-20260914.json`
+
 ## 実行順序
 
 ### Phase 0 — 共通ゲート

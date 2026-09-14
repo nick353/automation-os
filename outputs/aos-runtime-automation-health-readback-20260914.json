@@ -1,0 +1,44 @@
+{
+  "schema": "aos.runtime_automation_health_readback.v1",
+  "read_at": "2026-09-14T06:45:12Z",
+  "runtime": {
+    "decision": "ready_for_authorized_admission",
+    "exact_blocker": null,
+    "server_effects": "read_only",
+    "worker_effects": "enabled",
+    "external_action_executed": false,
+    "live_remote_worker_observed": true
+  },
+  "health": {
+    "http_status": 200,
+    "reachable": true,
+    "external_action_executed": false
+  },
+  "codex_account": {
+    "account_present": true,
+    "account_type": "chatgpt",
+    "thread_started": true,
+    "turn_completed": true
+  },
+  "automation_health": {
+    "total": 7,
+    "active": 7,
+    "inactive": 0,
+    "ok": 7,
+    "warnings": 0,
+    "blockers": 0,
+    "db_drift": 0,
+    "missing_entrypoints": 0,
+    "video_qa_issues": 0
+  },
+  "interpretation": {
+    "control_plane_ready": true,
+    "business_workflow_completion": false,
+    "protected_schedule_materialization_verified": false
+  },
+  "external_effects": {
+    "email_sent": false,
+    "publication_or_application": false,
+    "production_schedule_changed": false
+  }
+}
