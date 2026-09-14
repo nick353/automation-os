@@ -23910,3 +23910,26 @@ Evidence: `outputs/aos-runtime-ui-qa-core-routes-20260914.json`。
 Evidence: `outputs/aos-daily-ai-builder-schedule-readback-20260914.json`、`outputs/aos-company1-production-schedule-readback-20260914.json`。
 
 **Next action:** runtime automation IDとcanonical workflow IDのbind経路をread-onlyで特定し、promotionが安全に可能か確認する。IDを推測してBuilder保存やschedule有効化はしない。
+
+## 2026-09-14T19:55:00+09:00 — Daily AI registration / queue audit
+
+- [x] Current Codex automation registrationをfresh readbackした。`daily-ai-research-publish-run`はACTIVE、daily 09:00、current bridge ID=`automation_90303bb7919647e5005004ed`。
+- [x] 旧`automation-2/queue.json`は存在しないが、これは現行ACTIVE登録のIDではない。登録を削除・再作成・queue復元していない。
+- [x] AOS Builder側はcanonical schedule=09:00を表示する一方、runtime builder resolution未解決、scheduler=not_configured、next_run_at=null、enabled=false。
+- [ ] 残るbind問題は、canonical workflow → current registered bridge/runtime automation → AOS durable job/runの接続。これができるまで定期実行成功とは主張しない。
+
+Evidence: `outputs/aos-daily-ai-automation-registration-audit-20260914.json`、`/Users/nichikatanaka/.codex/automations/daily-ai-research-publish-run/automation.toml`、`outputs/aos-daily-ai-builder-schedule-readback-20260914.json`。
+
+**Next action:** current bridgeのread-only triggerが返すfresh AOS job/run receiptを取得し、Company 1 canonical IDとのbindを確認する。外部効果を含むDaily AI業務Runは実行しない。
+
+## 2026-09-14T19:57:00+09:00 — Daily AI provider-neutral trigger admission
+
+- [x] Current bridge ID `automation_90303bb7919647e5005004ed`へ、Company 1 scopeでprovider-neutral / `preflight_no_effect` triggerを一度だけ送った。
+- [x] AOS receiptで`ok=true`、`accepted=true`、`queued=true`、`provider_neutral=true`、worker protocol=`mac_worker_polling_required`を確認した。
+- [x] 新しいRun `run_mu14jp5j_n4djdg`、automation version `automation_version_mtsovnsg_221535`、Company 1 bindを確認した。
+- [x] `external_action_executed=false`。投稿・公開・送信・provider mutationは行っていない。
+- [ ] Runs画面のpost-trigger readbackはCompanion native pipe切断で未取得。Runを再送せず、次は同じRunのfresh status/readbackを取得する。
+
+Evidence: `outputs/aos-daily-ai-no-effect-trigger-readback-20260914.json`。
+
+**Next action:** `run_mu14jp5j_n4djdg`のworker pickup、receipt、source sync、reconciliation、cleanupを同一Runでreadbackする。外部効果stageへは進めない。

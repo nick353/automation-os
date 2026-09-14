@@ -1,0 +1,27 @@
+{
+  "schema": "aos.daily_ai.no_effect_trigger_readback.v1",
+  "captured_at": "2026-09-14T19:57:00+09:00",
+  "company_id": "company_2560580981cedfd106b66245",
+  "canonical_workflow_id": "daily-ai-research-publish-run",
+  "registered_bridge_automation_id": "automation_90303bb7919647e5005004ed",
+  "idempotency_key_scope": "codex-app:daily-ai-research-publish-run:current-utc-minute",
+  "trigger_receipt": {
+    "schema": "aos.portable_workflow_trigger.v1",
+    "ok": true,
+    "accepted": true,
+    "queued": true,
+    "provider_neutral": true,
+    "portable": true,
+    "worker_protocol": "mac_worker_polling_required",
+    "run_id": "run_mu14jp5j_n4djdg",
+    "run_status": "queued",
+    "automation_version_id": "automation_version_mtsovnsg_221535",
+    "external_action_executed": false
+  },
+  "post_trigger_ui_readback": {
+    "result": "not_observed",
+    "exact_blocker": "companion_native_pipe_closed_before_runs_readback",
+    "replay_allowed": false
+  },
+  "interpretation": "The current registered bridge accepted one provider-neutral no-effect Daily AI trigger and created a Company 1 queued Run. This proves admission and scope binding only; it does not prove Mac worker pickup, provider receipt, source sync, reconciliation, cleanup, or business completion."
+}
