@@ -1,0 +1,32 @@
+{
+  "schema": "aos.scheduler_ui_verification.v1",
+  "verified_at": "2026-09-14",
+  "commands": [
+    "npm run build:server",
+    "npm run typecheck:web",
+    "npm run build:web",
+    "node --test --test-concurrency=1 --test-isolation=process apps/server/dist/tests/automationScheduler.test.js apps/server/dist/tests/automationIdempotency.test.js apps/server/dist/tests/companyBriefs.test.js apps/server/dist/tests/automationContracts.test.js"
+  ],
+  "results": {
+    "server_build": "pass",
+    "web_typecheck": "pass",
+    "web_production_build": "pass",
+    "targeted_tests": { "pass": 35, "fail": 0, "skipped": 0 }
+  },
+  "covered_boundaries": [
+    "timezone and cron cadence",
+    "natural scheduler tick",
+    "idempotency and replay protection",
+    "durable occurrence materialization without provider invocation",
+    "service identity fail-closed",
+    "morning/evening Brief generation and company isolation"
+  ],
+  "external_effects": {
+    "provider_called": false,
+    "email_sent": false,
+    "publication_or_application": false,
+    "production_schedule_mutated": false
+  },
+  "warning": "web build emitted a non-fatal bundle-size warning for the main chunk",
+  "business_completion": "not_claimed"
+}

@@ -40,6 +40,15 @@ AOSの残存業務を、低リスクの内部処理から段階的に実行す�
 3. `unknown effect`、timeout、未照合receiptは再送せず、fresh readbackとreconciliationを先に行う。
 4. Goalは全ゲートが揃うまで`active`を維持する。人間操作待ちのworkflowがあっても、独立したread-only工程は継続する。
 
+### 2026-09-14 定期実行・UI回帰確認
+
+- [x] server build、web typecheck、web production build
+- [x] scheduler / idempotency / Brief / automation contractの対象テスト35/35 pass
+- [x] timezone、自然tick、重複防止、provider未呼出の内部materialization、service identity fail-closed、朝夕Brief生成を確認
+- [x] この確認ではメール送信、公開、応募、production schedule変更を行っていない
+- 証拠: `outputs/aos-scheduler-ui-verification-20260914.json`
+- 注記: web buildのbundle-size warningは非致命。UIの分割最適化は別の品質改善タスクとして残す。
+
 ## 実行順序
 
 ### Phase 0 — 共通ゲート
