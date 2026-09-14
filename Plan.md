@@ -23493,3 +23493,17 @@ Evidence: `work/aos-company1-local-regression-runtime-readback-20260909.json`。
 Evidence: Companion fresh runs `run_aos_projects_readback_20260914_0829`, `run_aos_runs_readback_20260914_0830b`, `run_aos_approvals_readback_20260914_0831`, `run_aos_plugins_readback_20260914_0832`, `run_aos_admin_readback_20260914_0833`, `run_aos_projects_readback_20260914_0834`, `run_aos_chat_readback_20260914_0835`（2026-09-14）。
 
 **Next action:** 認証や詳細readbackが未確定の画面では操作を開始せず、ユーザーが対象・アカウント・payload・承認を明示したnamed workflowを1件選んだ場合のみ、同一Runでread-only admissionから外部効果ゲートへ進む。選択がない間はUI/定期実行のreadbackと証跡整理を継続する。
+
+## 2026-09-14T08:38:00Z — protected detail readback and runtime admission update
+
+- [x] AOS runtime readbackは`ready_for_authorized_admission`、server read-only、worker effects enabled、local health HTTP 200、Codex App Server account/thread/turn completed、Companion connectedをfresh確認した。
+- [x] 新規Companion sessionでHomeの詳細readbackがsettleし、今日のRun 27件（完了23 / 要確認4）、承認待ち0、登録自動化9、Company 1対象5 workflow、AOS Home内部Briefのreceipt/source sync/reconciliation/cleanup、external notification/action=falseを確認した。
+- [x] Company 1のprotected `/#/projects/company_2560580981cedfd106b66245/automations`をsemantic+visualでfresh確認した。Canonical正本7件、Company Brief heartbeat 1件を含む7 schedulesを取得し、朝Brief 07:45・夜Brief 21:45、Gmail/Daily AI/Backup/NisenPrints/Obsidian/求人の各schedule・entrypoint・external_action=falseを確認した。
+- [x] 同画面でCompany 1登録automationは6件、`status=ready`、`count=6`、`external_action=false`、開始ガイドは`can_run=false / can_preflight=true`、`promoted_to_runtime_registry=false`と確認した。したがって、登録・canonical readbackは完了したが、業務Runや定期実行の有効化完了とは扱わない。
+- [x] 外部効果なしのreference workflow canaryは、build成功後に`reference_workflow_canary_db_required`で停止した。DB接続値を推測・代入せず、provider call、workflow start、外部効果は0件。これは実行不能の正確な環境境界として記録する。
+- [x] 監査終了後にCompanion session/tabを閉じ、lease解放、foreign変更なし、unknown effectなし、external actionなしのcleanup receiptを取得した。
+- [ ] 残存ゲートは、production PostgreSQLの実値を安全に設定した環境での同一Run internal reference canary、protected schedule materializationの登録ID/revision/timezone/worker入口比較、そして対象・account・payload・approvalを固定したnamed workflowのprovider receipt → source sync → reconciliation → cleanup → business completionである。
+
+Evidence: runtime/local health/account readback（2026-09-14T08:34Z）、Companion runs `run_aos_home_detail_readback_20260914_0836` / `run_aos_projects_detail_readback_20260914_0837` / `run_aos_company1_automations_readback_20260914_0838`、`work/reference-workflow-canary-20260914.json` 未生成（DB requiredで停止）。
+
+**Next action:** 本番PostgreSQL接続値をこのスレッドへ貼らず、既存の正規runtime/secret boundaryに設定できた時点で同じread-only canaryを再開する。外部業務Runは、ユーザーが1件の対象・アカウント・payload・承認を確定するまで開始しない。
