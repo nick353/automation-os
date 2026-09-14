@@ -49,14 +49,15 @@ AOSの残存業務を、低リスクの内部処理から段階的に実行す�
 - [x] 外部通知なし、AOS Home内部配信のみ
 - [x] canonical sourceで朝07:45・夜21:45 Asia/Tokyoを確認
 - [ ] 保護されたAOS設定への朝夜時刻materializationをreadback
-- [ ] 朝Briefのdelivery receipt → source sync → reconciliation → cleanup
-- [ ] 夜Briefのdelivery receipt → source sync → reconciliation → cleanup
+- [x] 朝Briefのdelivery receipt → source sync → reconciliation → cleanup（2026-09-14 fresh UI readback）
+- [x] 夜Briefのdelivery receipt → source sync → reconciliation → cleanup（2026-09-14 fresh UI readback）
 - 現在の正確な停止理由: `brief_delivery_destination_and_morning_evening_time_not_decided`
 - Companion fresh tab readbackではZeabur管理画面と空白タブのみ。AOS管理画面タブがないため、このターンでは配信実行・設定変更を行っていない。
 - AOS canonical UI `https://aos-admin-ingress.zeabur.app/` をCompanion task-owned tabでfresh readbackし、画面上の「朝Brief」「夜Brief」「fresh readback」「AOS Homeに配信」、`source=AOS DB / Home delivery=internal / external notification=false / external_action=false` を確認した。具体的な朝夜時刻とdelivery receiptは画面上で確認できず、配信操作は行っていない。
 - 同一readback後にCompanion profile transportが切断され、current exact blockerは `profile_not_connected`。task-owned tabはledger-onlyで保持され、外部効果・dispatchは0。再接続後にfresh sessionを開始するまで再試行しない。
 - 再接続後のfresh sessionでAOS Homeを再取得し、semantic+visual readbackと `tabs.navigate` の同一Run証跡を確認した。朝Briefボタンの期間切替は `page_execution_timeout` で停止したが `dispatch_count=0`、`external_action_executed=false`。同じ対象を再クリックせず、Companion sessionはtask-owned cleanup receiptで閉じた（closed tab=1980920778）。朝夜のdelivery receiptは未確認のまま維持する。
 - 最新のObsidian read-only artifact（`outputs/aos-backup-obsidian-readonly-audit-20260914.json`）には同一Run receiptとcleanup proofがある一方、保護されたCompany 1 registry readbackは `active / runnable=false` のまま。ローカルread-only証跡を本番business completionへ昇格せず、登録ゲート解消とVault/Git同期承認を別工程として維持する。
+- 朝Brief（07:45）と夜Brief（21:45）を、Company 1のAOS Homeへ内部配信した。両方とも画面fresh readbackで `receipt=verified / source sync=synced / reconciliation=reconciled / cleanup=verified`、`external notification=false`、`external_action=false` を確認し、Companionのtask-owned tabをcleanupした。証拠: `outputs/aos-brief-home-delivery-readback-20260914.json`。これは内部Brief配信の完了であり、外部業務workflowのbusiness completionは別管理とする。
 
 番号だけの選択で進められるのは、まずread-only候補確認まで。送信・公開・応募・更新の直前には、対象と内容をもう一度表示し、1回だけ明示承認を取る。
 

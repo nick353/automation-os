@@ -1,0 +1,33 @@
+{
+  "schema": "aos.brief.home_delivery_readback.v1",
+  "captured_at": "2026-09-14T06:34:30+09:00",
+  "company_id": "company_2560580981cedfd106b66245",
+  "destination": "aos_home",
+  "timezone": "Asia/Tokyo",
+  "external_notification": false,
+  "external_action_executed": false,
+  "periods": {
+    "evening": {
+      "schedule": "21:45",
+      "run_id": "aos-brief-evening-home-delivery-20260914",
+      "browser_effect": "known_effect",
+      "dispatch_count": 1,
+      "ui_readback": "receipt=verified; source sync=synced; reconciliation=reconciled; cleanup=verified"
+    },
+    "morning": {
+      "schedule": "07:45",
+      "run_id": "aos-brief-morning-home-delivery-20260914",
+      "browser_effect": "known_effect",
+      "dispatch_count": 1,
+      "ui_readback": "receipt=verified; source sync=synced; reconciliation=reconciled; cleanup=verified"
+    }
+  },
+  "companion_cleanup": {
+    "session_id": "session_99c90dfa-23f7-4f3b-825e-61e44a01109b",
+    "closed_tab_ids": [1980920780],
+    "status": "completed",
+    "foreign_tabs_mutated": false,
+    "external_action_executed": false
+  },
+  "business_completion": "internal_home_delivery_verified; external_business_effect_not_claimed"
+}
