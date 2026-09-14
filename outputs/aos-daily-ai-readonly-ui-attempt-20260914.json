@@ -1,0 +1,18 @@
+{
+  "schema": "aos.daily_ai.readonly_ui_attempt.v1",
+  "captured_at": "2026-09-14T19:40:00+09:00",
+  "company_id": "company_2560580981cedfd106b66245",
+  "target": "Daily AI",
+  "selected_account": "nichika2000823@gmail.com",
+  "button": "Daily AI: read-only preflight",
+  "locator": "button[aria-label=\"Daily AI: read-only preflight\"]",
+  "dom_match_count": 1,
+  "ui_click_result": "timed_out",
+  "post_click_readback": "unchanged",
+  "run_receipt": "not_observed",
+  "browser_dispatch": "not_proven",
+  "external_action_executed": false,
+  "replay_allowed": false,
+  "exact_blocker": "ui_readonly_preflight_click_timeout_or_unproven_dispatch",
+  "interpretation": "Fresh readback showed no new run, provider receipt, or external effect. The read-only control was not replayed. Daily AI remains blocked on Mac worker Companion same-run authority/readback."
+}

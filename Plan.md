@@ -23803,3 +23803,15 @@ Evidence: `outputs/aos-gmail-selected-companion-canary-20260914.json`、`outputs
 Evidence: `outputs/aos-company1-local-readonly-preflight-20260914.json`。
 
 **Next action:** Daily AIまたはNisenPrintsのMac worker同一Run authorityをread-onlyで確立する。未確定のまま公開・商品更新・送信へ進めない。
+
+## 2026-09-14T19:40:00+09:00 — Daily AI UI read-only preflight attempt
+
+- [x] Company 1 scopeで`Daily AI: read-only preflight`ボタンがDOM上1件存在し、選択アカウントを`nichika2000823@gmail.com`として確認した。
+- [x] Companion経由のfresh UI操作を一度試行したが、クリックはタイムアウトした。
+- [x] 直後のfresh readbackは未変化で、新しいRun、provider receipt、source sync、reconciliation、外部効果は観測されなかった。
+- [x] 再送・再クリックは行わず、AOS確認用タブをcleanupした。外部操作は開始していない。
+- [ ] Daily AIは引き続きMac workerのCompanion同一Run authority/readback待ち。今回のUI timeoutだけでは業務Run完了とみなさない。
+
+Evidence: `outputs/aos-daily-ai-readonly-ui-attempt-20260914.json`。
+
+**Next action:** Daily AIのUI操作を再送せず、Mac worker側のfresh Companion同一Run authorityを取得できる境界を確認する。取得できるまで、研究公開・SNS投稿・メール送信などの外部効果へ進めない。
