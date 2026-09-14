@@ -133,6 +133,13 @@ AOSの残存業務を、低リスクの内部処理から段階的に実行す�
 - [x] コミット `8be09f65`。schedule、worker入口、Company scope、外部効果境界は変更していない。
 - [ ] protected ingress上の実機runtime QAはCompanion transport復旧後に確認する。
 
+### 2026-09-14 簡素化後の再受入
+
+- [x] `npm run qa:all-page-buttons`：`status=passed`、issues=0、control id欠落・重複・未分類・孤立なし。
+- [x] `npx tsx --test apps/server/src/tests/uiTruthfulnessSource.test.ts`：109/109 pass。
+- [x] `npm run build:web`：成功。bundle size warningのみで、機能エラーなし。
+- [ ] runtime screen QAは引き続きfresh selected browser authority待ち。静的・source QAを実機確認へ昇格しない。
+
 ## 実行順序
 
 ### Phase 0 — 共通ゲート
