@@ -23634,3 +23634,14 @@ Evidence: Companion runs `run_aos_backup_query_20260914_0909`, `run_aos_backup_p
 Evidence: Companion runs `run_aos_job_application_preflight_query_20260914_0911`, `run_aos_job_application_scroll_20260914_0911`, `run_aos_job_application_scroll2_20260914_0911`。
 
 **Next action:** 上から順番のread-only登録確認は完了。NisenPrintsのviewport問題、Backupの登録欄不在、Obsidianのpreflight導線不在を修正候補として整理し、認証が不要な内部テスト・UI導線修正を先に行う。外部業務はユーザーが対象・アカウント・payload・承認を1件ずつ確定した後にのみ開始する。
+
+## 2026-09-14T09:30:00Z — latest live deployed UI acceptance readback
+
+- [x] Zeaburの`automation-os`最新deployment `6aa7bcb8f10957ea50bee3bf`が`RUNNING`で、`automation-os`と`aos-admin-ingress`の`/readyz`がHTTP 200。
+- [x] 本番IngressのHome・Chat・ProjectsをCompanion同一Runで3/3 readし、URLとタイトル`Automation OS`、cleanup完了、`externalActionExecuted=false`を確認した。
+- [x] Home/Projectsは`mvp_state_readback_pending`中に保存・実行・外部操作ボタンを隠し、ChatはCompany 1 canonical scopeと入力待ちを表示する。安全なfail-closed表示は受入れた。
+- [ ] このloading-state snapshotは業務workflow完了、provider receipt、または完全なprotected data hydrationの証明ではない。Company 1/Briefのsettled protected readbackは別証跡として扱う。
+
+Evidence: `outputs/aos-deployed-ui-acceptance-readback-20260914.json`、Zeabur deployment `6aa7bcb8f10957ea50bee3bf`、Companion run `run_aos_deployed_ui_readback_20260914`。
+
+**Next action:** TopEyesの9月28日13:00は先方提示の14:00–17:00枠外のため、時間外打診を送るか14:00以降に合わせるかをユーザーに確認する。AOS側はNisenPrintsのviewport、Backup/Obsidianの導線差分、Daily AI scheduler owner mismatchを外部効果なしで修正・検証する。

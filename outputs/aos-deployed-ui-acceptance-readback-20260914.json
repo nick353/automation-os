@@ -1,0 +1,59 @@
+{
+  "capturedAt": "2026-09-14",
+  "scope": "live deployed UI acceptance readback",
+  "deployment": {
+    "service": "automation-os",
+    "deploymentId": "6aa7bcb8f10957ea50bee3bf",
+    "status": "RUNNING",
+    "readyz": {
+      "automationOs": { "url": "https://automation-os.zeabur.app/readyz", "httpStatus": 200 },
+      "adminIngress": { "url": "https://aos-admin-ingress.zeabur.app/readyz", "httpStatus": 200 }
+    }
+  },
+  "routes": [
+    {
+      "route": "home",
+      "url": "https://aos-admin-ingress.zeabur.app/#/home",
+      "status": "read",
+      "title": "Automation OS",
+      "mvpState": "loading",
+      "blocker": "mvp_state_readback_pending",
+      "safetyBehavior": "save_execute_external_controls_hidden_until_readback"
+    },
+    {
+      "route": "chat",
+      "url": "https://aos-admin-ingress.zeabur.app/#/chat",
+      "status": "read",
+      "title": "Automation OS",
+      "companyScope": "company_2560580981cedfd106b66245",
+      "inputState": "waiting",
+      "safetyBehavior": "company_selection_required_before_planner_save_or_execute"
+    },
+    {
+      "route": "projects",
+      "url": "https://aos-admin-ingress.zeabur.app/#/projects",
+      "status": "read",
+      "title": "Automation OS",
+      "mvpState": "loading",
+      "blocker": "mvp_state_readback_pending",
+      "safetyBehavior": "save_execute_external_controls_hidden_until_readback"
+    }
+  ],
+  "coverage": { "read": 3, "requested": 3, "complete": true },
+  "externalActionExecuted": false,
+  "cleanupComplete": true,
+  "interpretation": {
+    "proved": [
+      "latest Zeabur deployment is running",
+      "both live health endpoints return HTTP 200",
+      "Home, Chat, and Projects routes are reachable",
+      "the deployed UI fails closed while MVP state readback is pending",
+      "the Companion readback completed cleanup without external effects"
+    ],
+    "notProved": [
+      "business workflow completion",
+      "provider receipt for external work",
+      "full protected data hydration in this loading-state snapshot"
+    ]
+  }
+}
