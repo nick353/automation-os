@@ -200,6 +200,18 @@ function itemCanonicalId(item: Record<string, unknown>): string {
   return text(item.canonicalWorkflowId ?? item.canonical_workflow_id ?? builder?.canonicalWorkflowId ?? builder?.canonical_workflow_id ?? adapterRecord?.workflow_id ?? item.workflow_id ?? item.workflowId);
 }
 
+function isRegisteredWorkflowRecord(item: Record<string, unknown>, definition: Definition): boolean {
+  const automationType = text(item.automation_type ?? item.automationType).toLowerCase();
+  if (automationType === "registered_workflow") return true;
+  const rawBuilder = item.builder_spec ?? item.builderSpec;
+  const builder = rawBuilder && typeof rawBuilder === "object" && !Array.isArray(rawBuilder)
+    ? rawBuilder as Record<string, unknown>
+    : null;
+  const schema = text(builder?.schema).toLowerCase();
+  return schema === "aos.registered_automation_adoption.v1"
+    && itemCanonicalId(item).toLowerCase() === definition.id.toLowerCase();
+}
+
 function registeredCanonicalId(item: Record<string, unknown>): string {
   const explicit = itemCanonicalId(item);
   if (explicit) return explicit;
@@ -429,9 +441,28 @@ function registeredMatches(definition: Definition, automations: readonly Record<
   }
   const savedMatches = matches.filter((item) => item._guide_source === "saved");
   const savedMismatched = mismatched.filter((item) => item._guide_source === "saved");
+  // A company can also contain Chat-created bindings or drafts that point at
+  // the same workflow. They are useful history, but they are not the
+  // registered execution authority. Prefer the exact canonical registered
+  // workflow when one is present so the start guide does not fail closed on
+  // a non-authoritative binding candidate.
+  const scopedMatches = savedMatches.length ? savedMatches : matches;
+  const scopedMismatched = savedMatches.length ? savedMismatched : mismatched;
+  const canonicalRegistered = scopedMatches.filter((item) => itemCanonicalId(item).toLowerCase() === definition.id.toLowerCase()
+    && isRegisteredWorkflowRecord(item, definition));
+  const canonicalMatches = scopedMatches.filter((item) => itemCanonicalId(item).toLowerCase() === definition.id.toLowerCase());
+  const preferredMatches = canonicalRegistered.length > 0
+    ? canonicalRegistered
+    : canonicalMatches.length > 0
+      ? canonicalMatches
+      : scopedMatches;
+  const preferredMismatched = scopedMismatched.filter((item) => {
+    const canonical = itemCanonicalId(item).toLowerCase() === definition.id.toLowerCase();
+    return canonicalRegistered.length === 0 && canonical;
+  });
   return {
-    matches: savedMatches.length ? savedMatches : matches,
-    mismatched: savedMatches.length ? savedMismatched : mismatched
+    matches: preferredMatches,
+    mismatched: preferredMismatched
   };
 }
 
