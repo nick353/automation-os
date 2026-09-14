@@ -17,9 +17,12 @@
     "legacy_supervisor_id": "automation-2",
     "registry_entry_present": true,
     "automation_toml_present": false,
-    "interpretation": "stale_orphaned_heartbeat_registration_requires_owner_decision"
+    "codex_app_view": "automation_card_rendered",
+    "target_thread_id": "019fd91e-67eb-7030-944a-fe9190edc55a",
+    "target_thread_readback": "thread_exists",
+    "interpretation": "codex_app_registration_exists_but_local_supervisor_liveness_source_is_missing"
   },
   "mutation": "read_only",
   "external_action_executed": false,
-  "next_action": "Do not delete or recreate the supervisor registration without explicit scheduler-owner approval; repair the registered automation owner first."
+  "next_action": "Do not delete or recreate the supervisor registration; reconcile the App registration with the local liveness audit owner before claiming scheduler failure."
 }

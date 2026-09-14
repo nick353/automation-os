@@ -63,8 +63,8 @@ AOSの残存業務を、低リスクの内部処理から段階的に実行す�
 ### 2026-09-14 Daily AI scheduler liveness readback
 
 - [x] Daily AIのautomation.tomlとCodex SQLite登録は`ACTIVE`、RRULEは毎日09:00、prompt hash parityは一致した。
-- [ ] 共有registryに旧Heartbeat `automation-2` が残っているが、`/Users/nichikatanaka/.codex/automations/automation-2/` とqueueが存在せず、監督カーソルのlive readbackができない。
-- [ ] この状態はDaily AI登録本体のACTIVE証明ではあるが、supervisor livenessや次回tickの証明ではない。削除・再作成はscheduler-ownerの明示判断後に行う。
+- [ ] 共有registryに旧Heartbeat `automation-2` が残り、Codex App側のautomation cardと対象threadは存在するが、`/Users/nichikatanaka/.codex/automations/automation-2/` とqueueが存在せず、ローカル監督カーソルのlive readbackができない。
+- [ ] この状態はDaily AI登録本体のACTIVE証明ではあるが、supervisor livenessや次回tickの証明ではない。削除・再作成ではなく、App登録とlocal liveness監査のowner境界を照合する工程が必要。
 - 証拠: [aos-daily-ai-scheduler-liveness-readback-20260914.json](outputs/aos-daily-ai-scheduler-liveness-readback-20260914.json)
 
 ### 実行ポリシー
