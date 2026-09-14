@@ -9656,7 +9656,24 @@ function AutomationsPage({ model }: { model: AppModel }) {
       if (!response.ok) throw new Error(result.exact_blocker || result.error || `portable_read_only_preflight_http_${response.status}`);
       const portable = result.portable && typeof result.portable === "object" ? result.portable : {};
       const runId = result.runId ?? result.run?.id ?? "?";
-      const message = `read-only preflight ${result.replayed ? "replay" : "queued"} / run=${runId} / stage=reference_readback / mode=${portable.execution_mode ?? item.portable.execution_mode ?? "canary"} / external_action=false`;
+      let sameRunStatus = String(result.run?.status ?? "queued");
+      let sameRunBlocker = "";
+      let sameRunReadbackLabel = "same-run readback=PENDING_CONFIRMATION";
+      if (runId !== "?") {
+        try {
+          const detail = await fetchApiJson<RunDetail>(`/api/runs/${encodeURIComponent(String(runId))}`);
+          sameRunStatus = String(detail.run?.status ?? sameRunStatus);
+          sameRunBlocker = String(detail.run?.exact_blocker ?? detail.run?.blocker ?? "").trim();
+          sameRunReadbackLabel = `same-run status=${sameRunStatus}${sameRunBlocker ? ` / blocker=${publicBlockerSummary(sameRunBlocker)}` : ""}`;
+        } catch {
+          sameRunReadbackLabel = "same-run readback=PENDING_CONFIRMATION";
+        }
+        setRegisteredRunReadbacks((previous) => ({
+          ...previous,
+          [item.id]: { runId: String(runId), status: sameRunStatus, ...(sameRunBlocker ? { blocker: sameRunBlocker } : {}) }
+        }));
+      }
+      const message = `read-only preflight ${result.replayed ? "replay" : "queued"} / run=${runId} / ${sameRunReadbackLabel} / stage=reference_readback / mode=${portable.execution_mode ?? item.portable.execution_mode ?? "canary"} / external_action=false`;
       setRegisteredReceipts((prev) => ({ ...prev, [item.id]: message }));
       setReceipt(`${name}: ${message}`);
       setPageNote(`${name}: ${message} / ${actionStamp()}`);
