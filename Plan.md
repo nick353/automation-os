@@ -24124,3 +24124,11 @@ Evidence: `data/artifacts/portable-remote-worker/run_mtz1slku_h9ikih/portable-lo
 Evidence: `data/artifacts/portable-remote-worker/run_mu0ib2rx_s2rblp/portable-local-worker-receipt.v1.json`, `portable-protected-readback.v1.json`, `portable-external-admission-fd48de56b2fad98a43ee569b.json`, and `portable-effect-authority.v1.json`.
 
 **Next action:** treat Obsidian as reconciled and do not replay it. Remaining provider-effect lanes are Daily AI, NisenPrints, Job Application Manager, and email reply; keep them gated until their own same-Run provider receipt, source sync, reconciliation, and cleanup are proven.
+
+## 2026-09-14T21:25:00+09:00 — Runtime boundary remains healthy
+
+- [x] Fresh Mac worker status remains `heartbeat_status=ok`, `claim_status=idle`, and `exact_blocker=null`; no active Run was restarted.
+- [x] Fresh Zeabur `/readyz` returned HTTP 200 with `service=automation-os` and `status=ready`.
+- [x] This confirms the execution substrate is available while preserving the no-replay boundary; it does not promote read-only provider canaries to business completion.
+
+**Next action:** proceed with the remaining provider-effect lanes only after an explicit target/account/content/approval is available; otherwise retain the current safe operational state.
