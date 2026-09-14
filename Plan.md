@@ -176,6 +176,14 @@ Evidence: Zeabur deployment `6aa7a0b0f10957ea50bedd5f`、`https://automation-os.
 
 Evidence: Zeabur deployment/status/log readback（2026-09-14）。
 
+### 2026-09-14 AOS transport / deployment continuation readback
+
+- [x] AOS `runtime_readback`、`local_health`、Codex account readback、Companion capability readbackを各1回実行したが、いずれも`Transport closed`で取得不能だった。再送・別transportへのfallback・既存tabのclaimは行っていない。
+- [x] 同時刻のZeabur readbackではdeployment `6aa7a0b0f10957ea50bedd5f`が依然`BUILDING`、公開`/readyz`はHTTP 200だった。
+- [ ] `transport_closed`と`zeabur_deployment_stuck_building_without_build_log`が解消するまで、protected UIのsettled readback、定期実行materialization、workflow業務Run、provider receipt確認へ進めない。
+
+Evidence: AOS/Companion MCP readback and Zeabur CLI/public `/readyz` readback（2026-09-14）。
+
 ## 実行順序
 
 ### Phase 0 — 共通ゲート
