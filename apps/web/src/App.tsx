@@ -9632,15 +9632,22 @@ function AutomationsPage({ model }: { model: AppModel }) {
       registeredRequestInFlight.current = true;
       setRegisteredRequestingId(item.id);
       setRegisteredReceipts((prev) => ({ ...prev, [item.id]: "read-only preflightをAOSへキュー登録中..." }));
-      const response = await mvpFetch(`/api/portable-workflows/${encodeURIComponent(item.id)}/run?project_id=${encodeURIComponent(activeProject)}`, {
+      const localReadOnly = item.portable.execution_mode === "read_only";
+      const endpoint = localReadOnly
+        ? `/api/mvp/registered-automations/${encodeURIComponent(item.id)}/run?project_id=${encodeURIComponent(activeProject)}`
+        : `/api/portable-workflows/${encodeURIComponent(item.id)}/run?project_id=${encodeURIComponent(activeProject)}`;
+      const response = await mvpFetch(endpoint, {
         method: "POST",
         headers: { "content-type": "application/json", "idempotency-key": idempotencyKey },
-        body: JSON.stringify({ project_id: activeProject, idempotency_key: idempotencyKey, read_only_stage: "reference_readback" })
+        body: JSON.stringify(localReadOnly
+          ? { project_id: activeProject, idempotency_key: idempotencyKey, execution_mode: "preflight_no_effect", provider_neutral: true, external_action_allowed: false }
+          : { project_id: activeProject, idempotency_key: idempotencyKey, read_only_stage: "reference_readback" })
       });
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(result.exact_blocker || result.error || `portable_read_only_preflight_http_${response.status}`);
-      const portable = result.portable ?? {};
-      const message = `read-only preflight ${result.replayed ? "replay" : "queued"} / run=${result.runId ?? "?"} / stage=reference_readback / mode=${portable.execution_mode ?? item.portable.execution_mode ?? "canary"} / external_action=false`;
+      const portable = result.portable && typeof result.portable === "object" ? result.portable : {};
+      const runId = result.runId ?? result.run?.id ?? "?";
+      const message = `read-only preflight ${result.replayed ? "replay" : "queued"} / run=${runId} / stage=reference_readback / mode=${portable.execution_mode ?? item.portable.execution_mode ?? "canary"} / external_action=false`;
       setRegisteredReceipts((prev) => ({ ...prev, [item.id]: message }));
       setReceipt(`${name}: ${message}`);
       setPageNote(`${name}: ${message} / ${actionStamp()}`);

@@ -1151,6 +1151,20 @@ test("AOS catalog adopts all six flows and routes browser schedules through the 
   );
   assert.ok(registeredReadback.json.company_registration_projection.every((item: any) => item.companyId === "api_company_aos" && item.automationId && item.revision));
   assert.equal(registeredReadback.json.external_action_executed, false);
+  for (const sourceAutomationId of ["daily-backup-safety-check", "obsidian-project-memory-audit"]) {
+    const sourceIds = sourceAutomationId === "obsidian-project-memory-audit"
+      ? ["obsidian", sourceAutomationId]
+      : [sourceAutomationId];
+    const saved = adopted.json.adopted.find((item: any) => sourceIds.includes(item.sourceAutomationId))?.automation;
+    assert.ok(saved?.id, `missing saved local automation for ${sourceAutomationId}`);
+    const lane = registeredReadback.json.automations.find((item: any) => item.id === saved.id);
+    assert.equal(lane?.can_run, false);
+    assert.equal(lane?.can_preflight, true);
+    assert.equal(lane?.portable?.workflow_id, sourceAutomationId);
+    assert.equal(lane?.portable?.execution_mode, "read_only");
+    assert.equal(lane?.manual_trigger?.available, true);
+    assert.equal(lane?.manual_trigger?.external_action_allowed, false);
+  }
 
   const list = await requestJson("GET", "/api/v1/companies/api_company_aos/automations");
   assert.equal(list.status, 200, list.raw);

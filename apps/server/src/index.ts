@@ -9089,6 +9089,32 @@ async function buildCompanyRegisteredAutomationReadback(projectId: string, optio
       };
     })
     .filter((item) => item.automationId !== null);
+  // The registered-workflow table is the global runner inventory and does not
+  // contain the company-owned local lanes (Gmail, Backup, and Obsidian). The
+  // company automation table is already the source of truth for those saved
+  // definitions. Project them into this read-only response so the UI does not
+  // show a start-guide entry with no corresponding safe inspection control.
+  // These synthetic rows are only an HTTP readback projection; they do not
+  // create schedules, adopt definitions, or authorize an external action.
+  const localCompanyWorkflows: RegisteredWorkflowRow[] = companyAutomations
+    .filter((automation) => portableLocalWorkflowIdForRegisteredAutomation(automation) !== null)
+    .filter((automation) => !workflows.some((workflow) => workflow.id === automation.id))
+    .map((automation) => ({
+      id: automation.id,
+      company_id: projectId,
+      name: automation.name,
+      status: automation.status,
+      runner_status: "company_saved_local_read_only",
+      runner_kind: automation.workerCommandKind,
+      project_root: "",
+      start_command_json: JSON.stringify({ source: "company_saved_automation", workflow_id: portableLocalWorkflowIdForRegisteredAutomation(automation) }),
+      schedule_json: "{}",
+      source_refs_json: "[]",
+      provenance_json: JSON.stringify({ source: "company_saved_automation_projection", scheduleControl: { paused: false } }),
+      created_at: automation.createdAt,
+      updated_at: automation.updatedAt
+    }));
+  const readbackWorkflows = [...workflows, ...localCompanyWorkflows];
   // The normal inventory is used by the UI to choose a provider-neutral
   // no-effect manual trigger.  Do not make that read wait for the historical
   // migration ledger (runs/proofs/approvals across hundreds of rows).  A
@@ -9099,7 +9125,7 @@ async function buildCompanyRegisteredAutomationReadback(projectId: string, optio
     ? await buildScopedRegisteredAutomationLedgerAsync(projectId, workflows)
     : new Map<string, CodexAutomationMigrationLedgerItem>();
   const backendReadbackBlocker = await backendReadbackBlockerPromise;
-  const automations = workflows.map((workflow) => {
+  const automations = readbackWorkflows.map((workflow) => {
     const ledger = ledgerByWorkflowId.get(workflow.id);
     const paused = isRegisteredWorkflowSchedulePaused(workflow);
     const portableWorkflowId = portableWorkflowIdForWorkerAdapter(workflow.runner_kind);
