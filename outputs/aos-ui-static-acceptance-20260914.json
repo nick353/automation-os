@@ -1,0 +1,22 @@
+{
+  "schema": "aos.ui.static_acceptance.v1",
+  "captured_at": "2026-09-14T19:47:14+09:00",
+  "status": "passed",
+  "mode": "static_preflight",
+  "browser_surface": "aos_chrome_companion_profile_instance",
+  "routes": 21,
+  "control_manifest_entries": 408,
+  "rendered_patterns": 529,
+  "native_controls": 94,
+  "custom_controls": 153,
+  "missing_control_ids": 0,
+  "duplicate_ids": 0,
+  "unclassified_rendered": 0,
+  "orphan_entries": 0,
+  "runtime_screen_qa": "unverified",
+  "runtime_exact_blocker": "fresh_selected_browser_authority_required_for_runtime_screen_qa",
+  "test": "node --test scripts/tests/allPageButtonQa.test.mjs",
+  "test_result": "2 passed / 0 failed",
+  "external_action_executed": false,
+  "interpretation": "Static route/control coverage passes for Home, Chat, Projects, Runs, Approvals, Plugins, Admin and project subroutes. This is not proof that every live runtime control was clicked."
+}

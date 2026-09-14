@@ -23873,3 +23873,15 @@ Evidence: `outputs/aos-company1-backup-obsidian-ui-readonly-20260914.json`。
 Evidence: `outputs/aos-company1-gmail-runs-readback-20260914.json`、`outputs/aos-gmail-exact-account-provider-readback-20260914.md`。
 
 **Next action:** Gmailは外部効果なしの接続証拠を保持し、返信を行う場合のみ対象メール・本文・明示承認を同一Runで取得してから一件だけ実行する。並行してschedule promotion境界を確定する。
+
+## 2026-09-14T19:47:14+09:00 — UI static acceptance
+
+- [x] all-page-button static preflight passed for 21 routes, including Home, Chat, Projects, Runs, Approvals, Plugins, Admin and project subroutes.
+- [x] Control manifest has 408 entries / 529 rendered patterns; 94 native and 153 custom interactive controls all have control IDs.
+- [x] duplicate IDs, unclassified rendered controls, and orphan manifest entries are all 0.
+- [x] `node --test scripts/tests/allPageButtonQa.test.mjs` passed 2/2.
+- [ ] Runtime screen QA remains unverified because it requires a fresh selected browser authority and recording per control. Static coverage is not runtime usability proof.
+
+Evidence: `outputs/aos-ui-static-acceptance-20260914.json`、`work/qa/all-page-button-static-preflight-20260914.json`。
+
+**Next action:** Runtime-verify the highest-value screens (Home, Chat, Company 1 Automations, Runs, Plugins) with fresh Companion authority, then expand only if a control fails. Do not treat static coverage as completion.
