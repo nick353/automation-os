@@ -7,6 +7,39 @@ Historical checkpoints below are preserved as dated evidence, not current instru
 
 AOSの残存業務を、低リスクの内部処理から段階的に実行する。各workflowで対象・アカウント・内容・承認を確定し、Provider receipt → source sync → reconciliation → cleanup → 業務完了証跡を同一Runで揃える。外部送信・公開・応募・更新は、明示承認が揃うまで実行しない。
 
+## 正本ルールと全計画の統合
+
+- この冒頭の「Goal」「実行順序」「UI/UX簡素化計画」「完了条件」が、現在の実行判断に使う正本である。
+- 下記の過去日付セクションは履歴・証拠であり、現在の状態を上書きしない。特に、Briefの古い停止記録は、後述の2026-09-14配信証跡で更新されている。
+- 詳細な計画・受入条件は次のMDへ分離し、Plan.mdから参照する。
+  - [UI/UX統合・簡素化計画](outputs/aos-simplification-and-unified-management-plan-20260914.md)
+  - [優先受入れ・停止境界](outputs/aos-priority-acceptance-readback-20260914.md)
+  - [Goal完了ゲート](outputs/aos-goal-completion-gates-20260914.md)
+  - [7 workflow readiness matrix](outputs/aos-seven-workflow-readiness-matrix-20260914.json)
+  - [production readiness readback](outputs/aos-production-readiness-current-20260914.json)
+
+### 統合台帳
+
+| 領域 | 現在の状態 | 次の判定条件 |
+|---|---|---|
+| Control plane / Company 1 | 完了確認済み | canonical Company・scope・runtimeのfresh readbackを維持 |
+| Backup safety | 完了確認済み | 新しいsnapshotやpushは別承認がある場合だけ実行 |
+| Obsidian | read-only監査済み、登録は`runnable=false` | 有効化・Vault/Git同期は別承認後にfresh readback |
+| Morning / Evening Brief | AOS Home内部配信のreceipt chain完了 | 保護設定へのschedule materializationをreadback |
+| Gmail | read-only候補確認まで | 対象1件・本文・送信アカウントを表示し、明示承認後に1回だけ送信 |
+| Daily AI | 未完了 | 対象・公開先・本文・アカウントを固定し、公開承認後にreceipt確認 |
+| NisenPrints | 未完了 | 商品1件・公開先・素材・アカウントを固定し、公開承認後にreceipt確認 |
+| 求人応募 | 未完了 | 企業・求人URL・応募情報・アカウントを固定し、最終確認後に1件送信 |
+| UI/UX | 主要画面のfresh readbackと簡素化方針は確認済み | 日常導線の表示整理と定期実行互換性の最終受入 |
+| 定期実行 | canonical定義・回帰検証あり | 登録ID・schedule・timezone・worker入口のbefore/after機械比較 |
+
+### 実行ポリシー
+
+1. read-only候補確認、内部配信、証跡整理は独立して進める。
+2. 送信・公開・応募・更新・schedule materializationは、対象・account・payload・approvalを同一Runでreadbackするまで開始しない。
+3. `unknown effect`、timeout、未照合receiptは再送せず、fresh readbackとreconciliationを先に行う。
+4. Goalは全ゲートが揃うまで`active`を維持する。人間操作待ちのworkflowがあっても、独立したread-only工程は継続する。
+
 ## 実行順序
 
 ### Phase 0 — 共通ゲート
@@ -21,7 +54,7 @@ AOSの残存業務を、低リスクの内部処理から段階的に実行す�
 
 1. **Backup safety check** — ローカルスナップショット、checksum、manifest、Run receipt、cleanupを確認する。2026-09-14 Run `20260914T145046+0900` は完了し、6ソースOK、snapshot `20260914T145046+0900`、backup commit `9f6b15976a4312b2b49930c34dd49ac36b5e8fd9`、remote `origin/main`一致、dirty=0を確認済み。
 2. **Obsidian project memory audit** — 現在の `runnable=false` 登録をreadbackし、必要なら登録有効化を別承認してからaudit artifactを作成する。Vault/Git同期は別承認。対象のserver buildとlocal adapter/read-only workerテスト43件は全てpassしたが、Company登録ゲートは未変更。
-3. **Morning Brief** — 朝・夜両方を対象にすることを決定済み。canonical sourceのheartbeat定義は朝07:45・夜21:45、Asia/Tokyo。これは意図されたスケジュールの証拠であり、保護されたAOS delivery設定のmaterializationやreceiptを意味しない。保護設定をreadbackできるまで有効化・配信しない。
+3. **Morning Brief** — 朝・夜両方を対象にすることを決定済み。canonical sourceのheartbeat定義は朝07:45・夜21:45、Asia/Tokyo。手動のAOS Home内部配信はreceipt chainまで完了済み。残るのは、定期実行として保護されたAOS設定へmaterializeされたことのreadbackであり、これを確認するまでスケジュール有効化の完了とは扱わない。
 
 ### Phase 2 — 低リスクのProvider操作
 
@@ -48,14 +81,14 @@ AOSの残存業務を、低リスクの内部処理から段階的に実行す�
 - [x] ユーザー選択: 朝・夜両方
 - [x] 外部通知なし、AOS Home内部配信のみ
 - [x] canonical sourceで朝07:45・夜21:45 Asia/Tokyoを確認
-- [ ] 保護されたAOS設定への朝夜時刻materializationをreadback
+- [ ] 保護されたAOS設定への朝夜時刻materializationをreadback（定期実行を本番で有効化する前の残タスク）
 - [x] 朝Briefのdelivery receipt → source sync → reconciliation → cleanup（2026-09-14 fresh UI readback）
 - [x] 夜Briefのdelivery receipt → source sync → reconciliation → cleanup（2026-09-14 fresh UI readback）
-- 現在の正確な停止理由: `brief_delivery_destination_and_morning_evening_time_not_decided`
-- Companion fresh tab readbackではZeabur管理画面と空白タブのみ。AOS管理画面タブがないため、このターンでは配信実行・設定変更を行っていない。
-- AOS canonical UI `https://aos-admin-ingress.zeabur.app/` をCompanion task-owned tabでfresh readbackし、画面上の「朝Brief」「夜Brief」「fresh readback」「AOS Homeに配信」、`source=AOS DB / Home delivery=internal / external notification=false / external_action=false` を確認した。具体的な朝夜時刻とdelivery receiptは画面上で確認できず、配信操作は行っていない。
-- 同一readback後にCompanion profile transportが切断され、current exact blockerは `profile_not_connected`。task-owned tabはledger-onlyで保持され、外部効果・dispatchは0。再接続後にfresh sessionを開始するまで再試行しない。
-- 再接続後のfresh sessionでAOS Homeを再取得し、semantic+visual readbackと `tabs.navigate` の同一Run証跡を確認した。朝Briefボタンの期間切替は `page_execution_timeout` で停止したが `dispatch_count=0`、`external_action_executed=false`。同じ対象を再クリックせず、Companion sessionはtask-owned cleanup receiptで閉じた（closed tab=1980920778）。朝夜のdelivery receiptは未確認のまま維持する。
+- 現在の正確な残タスク: `brief_schedule_materialization_readback_required`
+- 過去のCompanion readbackではZeabur管理画面と空白タブのみで、配信実行・設定変更を行っていない。この記録は後続のfresh delivery証跡により更新済みである。
+- 過去のAOS canonical UI readbackでは、画面上の「朝Brief」「夜Brief」「fresh readback」「AOS Homeに配信」、`source=AOS DB / Home delivery=internal / external notification=false / external_action=false`を確認した。具体的な朝夜時刻とdelivery receiptはその時点では画面上で確認できず、配信操作も行っていなかった。後続のfresh delivery readbackは別証拠として下記に記録する。
+- 過去にはCompanion profile transport切断があり、`profile_not_connected`で停止した。再接続後のfresh sessionで後続の内部配信readbackを完了しており、現在の停止理由ではない。
+- 再接続直後の初回試行は`page_execution_timeout`で停止し、`dispatch_count=0`だった。この試行は再送せず、後続のfresh sessionで朝・夜の内部配信を別Runとして完了確認した。
 - 最新のObsidian read-only artifact（`outputs/aos-backup-obsidian-readonly-audit-20260914.json`）には同一Run receiptとcleanup proofがある一方、保護されたCompany 1 registry readbackは `active / runnable=false` のまま。ローカルread-only証跡を本番business completionへ昇格せず、登録ゲート解消とVault/Git同期承認を別工程として維持する。
 - 朝Brief（07:45）と夜Brief（21:45）を、Company 1のAOS Homeへ内部配信した。両方とも画面fresh readbackで `receipt=verified / source sync=synced / reconciliation=reconciled / cleanup=verified`、`external notification=false`、`external_action=false` を確認し、Companionのtask-owned tabをcleanupした。証拠: `outputs/aos-brief-home-delivery-readback-20260914.json`。これは内部Brief配信の完了であり、外部業務workflowのbusiness completionは別管理とする。
 
