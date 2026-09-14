@@ -23779,3 +23779,15 @@ Evidence: `outputs/aos-portable-worker-profile-readback-20260914.json`。
 Evidence: `outputs/aos-production-operations-monitor-current-20260914.json`。
 
 **Next action:** 認証済みAOS readbackとCompanion runtimeのstatusを同一境界で取得し、worker heartbeatがfreshになったworkflowだけno-effect vertical runへ進める。
+
+## 2026-09-14T10:30:43Z — Gmail選択後のCompanion fresh canary
+
+- [x] Company 1のAOS Plugins画面で、対象Pluginが`gmail (会社接続・Server利用確認済み)`になっていることを確認した。
+- [x] Provider read-only evidenceの指定アカウントは`nichika2000823@gmail.com`。AOS画面のメール文字列はredactされるため、raw addressの表示だけを証拠にしない。
+- [x] Fresh Companion read-only canaryでtask-owned tabの取得、視覚readback、cleanupを確認した。
+- [x] `mutation_dispatch_count=0`、`external_action_executed=false`、provider/business effectは開始していない。
+- [ ] これはGmail接続・選択の証明であり、email-review-replyの業務Run、返信、下書き、送信、schedule materializationの証明ではない。
+
+Evidence: `outputs/aos-gmail-selected-companion-canary-20260914.json`、`outputs/aos-gmail-exact-account-provider-readback-20260914.md`。
+
+**Next action:** Fresh Companion same-run authorityが確保できるworkflowから、まずno-effect vertical preflightを一件だけ開始する。provider receipt、source sync、reconciliation、cleanupが揃うまで外部業務操作は開始しない。
