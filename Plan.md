@@ -24112,3 +24112,15 @@ Evidence: deployed in-app browser AX readbacks for `#/`, `#/chat`, `#/plugins`, 
 Evidence: `data/artifacts/portable-remote-worker/run_mtz1slku_h9ikih/portable-local-worker-receipt.v1.json`, `portable-protected-readback.v1.json`, `portable-external-admission-c9906e39a76d348fff7dc109.json`, and `portable-effect-authority.v1.json`.
 
 **Next action:** treat Daily Backup as reconciled and do not replay it. Keep Daily AI, NisenPrints, Job Application Manager, and email-reply provider effects gated until each has a fresh target/account/content/approval plus provider receipt, source sync, reconciliation, and cleanup.
+
+## 2026-09-14T21:22:00+09:00 — Obsidian business effect reconciled
+
+- [x] Fresh artifact scan found the already-completed business Run `run_mu0ib2rx_s2rblp`; no replay or new approval was issued.
+- [x] Same-Run admission and effect authority show `approval_status=approved`, `external_effects=enabled`, matching approval `app_mu0ib2vj_br5v1f`, target digest, and `external_action_authorized=true`.
+- [x] The local business worker receipt proves `maintenance_export_and_private_git_push` completed with `maintenance_ok=true`, `export_ok=true`, `export_run_state=succeeded`, and `git_sync_ok=true`.
+- [x] Local and remote commit matched at `7bd72a0c1836fe1308f9af702817966157b2da4e`; remote parity and destination cleanliness were verified.
+- [x] Same-Run receipt, source sync, business completion, protected readback, reconciliation, and cleanup are all verified; exact blocker is `null`. Business proofs include Obsidian maintenance, export, Git sync, private remote parity, and cleanup receipt.
+
+Evidence: `data/artifacts/portable-remote-worker/run_mu0ib2rx_s2rblp/portable-local-worker-receipt.v1.json`, `portable-protected-readback.v1.json`, `portable-external-admission-fd48de56b2fad98a43ee569b.json`, and `portable-effect-authority.v1.json`.
+
+**Next action:** treat Obsidian as reconciled and do not replay it. Remaining provider-effect lanes are Daily AI, NisenPrints, Job Application Manager, and email reply; keep them gated until their own same-Run provider receipt, source sync, reconciliation, and cleanup are proven.
