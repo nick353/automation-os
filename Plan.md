@@ -23721,3 +23721,14 @@ Evidence: `outputs/aos-local-project-obsidian-audit-20260914.json`。
 Evidence: `outputs/aos-owner-sso-gmail-selection-readback-20260914.json`、AOS `#/plugins` と Company 1 protected routeの同一Chrome readback（2026-09-14）。
 
 **Next action:** 認証済みCompany 1 routeで、各workflowのread-only preflightを一つずつ確認する。外部効果は対象・内容・明示承認・同一Run証跡が揃うまで開始しない。Daily AI scheduler missing queueはowner boundaryとして、削除・再作成・修復をしない。
+
+## 2026-09-14T10:16:00Z — portable scheduler no-effect canary
+
+- [x] `portableSchedulerCanary`で6 workflow（求人、Daily AI、NisenPrints、Prompt Transfer、SNS、X）の制御経路を確認した。
+- [x] 全件が`manifest_validation → run_binding → readback → cleanup`を完了した。
+- [x] `browser_started=false`、`connector_called=false`、`external_action_executed=false`を確認した。
+- [ ] これは定期実行制御経路のcanaryであり、業務Run、Provider receipt、source sync、公開・送信完了を意味しない。
+
+Evidence: `outputs/aos-portable-scheduler-canary-current-20260914.json`。
+
+**Next action:** 既存の本番認証済みCompany 1 routeでBackup/Obsidian/NisenPrints/Daily AIのread-only preflightを個別確認し、実行可能性と外部効果証跡を分離して更新する。

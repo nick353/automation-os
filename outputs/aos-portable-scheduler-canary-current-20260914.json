@@ -1,0 +1,20 @@
+{
+  "capturedAt": "2026-09-14T10:16:00.118Z",
+  "schema": "automation_os_portable_scheduler_canary_v1",
+  "sourceTrigger": "automation_os_scheduler",
+  "checked": 6,
+  "completed": 6,
+  "workflows": [
+    "job-application-manager",
+    "daily-ai-research-publish-run",
+    "nisenprints-daily-product-canva-printify-etsy-pinterest",
+    "prompt-transfer-ukiyoe",
+    "sns-multi-poster-ukiyoe",
+    "x-authenticated-browser-lane"
+  ],
+  "stages": ["manifest_validation", "run_binding", "readback", "cleanup"],
+  "browserStarted": false,
+  "connectorCalled": false,
+  "externalActionExecuted": false,
+  "interpretation": "The portable scheduler/control-plane no-effect canary passed for all six registered lanes. This is not business completion or provider receipt proof."
+}
