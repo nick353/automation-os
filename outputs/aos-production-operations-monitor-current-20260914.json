@@ -1,0 +1,20 @@
+{
+  "capturedAt": "2026-09-14T10:22:55.631Z",
+  "baseUrl": "https://automation-os.zeabur.app",
+  "monitorStatus": "diagnostic_not_authoritative",
+  "publicReadiness": {
+    "automationOsReadyz": 200,
+    "adminIngressReadyz": 200
+  },
+  "protectedChecks": {
+    "mvpState": 401,
+    "feedback": 401,
+    "registeredAutomations": 401,
+    "interpretation": "unauthenticated monitor cannot establish protected readiness"
+  },
+  "workerBoundary": "unknown_from_unauthenticated_monitor",
+  "rollbackProof": "not_captured",
+  "realExternalAuthEvidence": "not_captured",
+  "externalActionExecuted": false,
+  "nextAction": "Use Owner-authenticated AOS admin ingress/Companion readback as authority; do not treat these 401s as a new company mismatch."
+}

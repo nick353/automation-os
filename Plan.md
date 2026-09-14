@@ -23768,3 +23768,14 @@ Evidence: `outputs/aos-company1-workflow-readonly-preflight-20260914.json`、Com
 Evidence: `outputs/aos-portable-worker-profile-readback-20260914.json`。
 
 **Next action:** Companion task-owned sessionのfresh status/readbackを取得できる境界で、まずread-only workflow一件のsame-run authorityを確立する。取得できなければ、exact blockerを固定して業務Runを開始しない。
+
+## 2026-09-14T10:22:55Z — production operations monitor boundary
+
+- [x] 公開`automation-os.zeabur.app/readyz`と`aos-admin-ingress.zeabur.app/readyz`はHTTP 200を確認した。
+- [x] 旧production operations monitorのprotected APIは401で、未認証のためreadiness authorityにならないことを確認した。
+- [x] 401を新しい会社不一致や本番停止と誤判定せず、Owner-authenticated AOS admin ingressを正本として保持した。
+- [ ] rollback proof、real external auth evidence、業務Provider receiptは未取得。
+
+Evidence: `outputs/aos-production-operations-monitor-current-20260914.json`。
+
+**Next action:** 認証済みAOS readbackとCompanion runtimeのstatusを同一境界で取得し、worker heartbeatがfreshになったworkflowだけno-effect vertical runへ進める。
