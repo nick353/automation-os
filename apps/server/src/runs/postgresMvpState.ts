@@ -162,7 +162,7 @@ export function classifyPostgresMvpStateError(error: unknown): string | null {
 
 function getPool(): pg.Pool {
   if (pool) return pool;
-  const databaseUrl = process.env.AUTOMATION_OS_DATABASE_URL ?? process.env.DATABASE_URL ?? process.env.POSTGRES_URI;
+  const databaseUrl = process.env.AUTOMATION_OS_DATABASE_URL ?? process.env.DATABASE_URL ?? process.env.POSTGRES_URI ?? process.env.POSTGRES_CONNECTION_STRING;
   if (!databaseUrl) throw new Error("postgres_database_url_missing");
   pool = new pg.Pool({
     connectionString: databaseUrl,

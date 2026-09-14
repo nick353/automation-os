@@ -23520,3 +23520,14 @@ Evidence: runtime/local health/account readback（2026-09-14T08:34Z）、Compani
 Evidence: [aos-reference-workflow-canary-20260914.json](outputs/aos-reference-workflow-canary-20260914.json)、Zeabur CLI variable metadata readback（値非表示、2026-09-14）。
 
 **Next action:** Zeaburの既存linked PostgreSQL secretをAOSのproduction startup policyが読む変数名へ割り当てる明示承認が得られるまで、secret mutation・restart・deployは行わない。承認後は変数名と非機密metadataだけをreadbackし、`ready_for_authorized_admission` → protected schedule materializationの順に再確認する。
+
+## 2026-09-14T08:45:00Z — linked PostgreSQL source alias implementation
+
+- [x] Zeaburが既に提供している`POSTGRES_CONNECTION_STRING`を、AOS production startup policyの最後の安全なsource aliasとして受け入れる実装を追加した。既存の`AUTOMATION_OS_DATABASE_URL`、`DATABASE_URL`、`POSTGRES_URI`の優先順位は維持した。
+- [x] DB client、MVP state read pool、registered workflow fast path、production worker pickup proofへ同じaliasを伝播し、startupだけ通って実行時にSQLiteへ落ちる不整合を避けた。
+- [x] server build成功、PostgreSQL URL validation / startup policy 16/16 pass、fake localhost URLによるruntime importで`dbBackend=postgres`を確認した。秘密値は出力していない。
+- [ ] source変更のZeabur deployment、deployment/RUNNING、`/readyz`、protected Company readback、schedule materialization、provider/business proofは未確認。
+
+Evidence: commit前のserver build、focused tests 16/16、runtime alias import readback（2026-09-14）。
+
+**Next action:** clean source preflightを通してから対象service `automation-os`へ1回だけdeployし、deployment → readyz → protected detail → schedule materializationの順でfresh readbackする。

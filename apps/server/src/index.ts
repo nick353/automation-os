@@ -12220,7 +12220,7 @@ function registeredWorkflowStartMetadataFromDefinition(
 }
 
 async function getPostgresRegisteredWorkflowRowFast(id: string): Promise<{ status: string; start_command_json: string } | null> {
-  const databaseUrl = process.env.AUTOMATION_OS_DATABASE_URL ?? process.env.DATABASE_URL ?? process.env.POSTGRES_URI;
+  const databaseUrl = process.env.AUTOMATION_OS_DATABASE_URL ?? process.env.DATABASE_URL ?? process.env.POSTGRES_URI ?? process.env.POSTGRES_CONNECTION_STRING;
   if (!databaseUrl) return null;
   const client = new pg.Client({ connectionString: databaseUrl });
   await client.connect();
@@ -12250,7 +12250,7 @@ async function startRegisteredPostgresRunFast(input: {
   command: string;
   metadata: Record<string, unknown>;
 }): Promise<{ runId: string }> {
-  const databaseUrl = process.env.AUTOMATION_OS_DATABASE_URL ?? process.env.DATABASE_URL ?? process.env.POSTGRES_URI;
+  const databaseUrl = process.env.AUTOMATION_OS_DATABASE_URL ?? process.env.DATABASE_URL ?? process.env.POSTGRES_URI ?? process.env.POSTGRES_CONNECTION_STRING;
   if (!databaseUrl) throw new Error("postgres_database_url_missing");
   const now = nowIso();
   const runId = makeId("run");

@@ -9,6 +9,7 @@ function env(overrides: Record<string, string | undefined> = {}) {
     AUTOMATION_OS_DATABASE_URL: undefined,
     DATABASE_URL: undefined,
     POSTGRES_URI: undefined,
+    POSTGRES_CONNECTION_STRING: undefined,
     ...overrides
   };
   for (const [key, value] of Object.entries(result)) {
@@ -79,6 +80,19 @@ test("production accepts the linked Zeabur PostgreSQL source alias", () => {
     role: "production",
     databaseAuthority: "postgres_required",
     databaseSource: "POSTGRES_URI"
+  });
+});
+
+test("production accepts Zeabur's linked connection-string source alias", () => {
+  const result = evaluateServerStartupPolicy(env({
+    AUTOMATION_OS_ENV_ROLE: "production",
+    POSTGRES_CONNECTION_STRING: "postgresql://linked:password@db.example.invalid:5432/automation_os"
+  }));
+  assert.deepEqual(result, {
+    ok: true,
+    role: "production",
+    databaseAuthority: "postgres_required",
+    databaseSource: "POSTGRES_CONNECTION_STRING"
   });
 });
 
