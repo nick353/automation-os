@@ -1,10 +1,13 @@
 import pg from "pg";
 import { sanitizeDashboardRows } from "../dashboardSanitizer.js";
-import { buildBrowserRuntimeProcessReadbackAsync } from "../browser/liveResourceReadback.js";
+import { automationExecutionContract } from "../automations/executionContract.js";
+import { resolveGmailExecutionTarget } from "./gmailAccountBinding.js";
+import type { CompanyConnectionRefRecord } from "../automations/repository.js";
+import { buildProjectPresentationProfile, restoreProjectPresentationProfile } from "../projects/presentationProfile.js";
+import { buildBrowserRuntimeProcessReadbackAsync, sanitizePortableRemoteWorkerHeartbeat, type PortableRemoteWorkerHeartbeatReadback } from "../browser/liveResourceReadback.js";
 import { buildBrowserUseRuntimeSnapshotAsync, publicBrowserUseLaneBinding } from "../browser/runtimeSnapshot.js";
 import { registeredBrowserLaneForWorkflow } from "./laneManager.js";
 import { classifyPortableWorkerHeartbeat, resolvePortableWorkerHeartbeatAt } from "./portableWorkerHeartbeat.js";
-import type { PortableWorkerChromePluginReadback } from "./portableWorkerHeartbeat.js";
 import { browserSurfaceForWebOperationBackend, resolveWebOperationBackend } from "./webOperationBackendSettings.js";
 import { projectMvpStateForChat, projectMvpStateForUi, type MvpStateProjection } from "./mvpStateProjection.js";
 
@@ -17,6 +20,20 @@ export type PostgresMvpStateOptions = {
   projection?: MvpStateProjection;
   /** Bypass the bounded UI cache for an explicit user refresh or post-write readback. */
   forceFresh?: boolean;
+  /** Optional read-only diagnostics sink used by the HTTP Server-Timing header. */
+  timing?: MvpStateReadTiming;
+};
+
+export type MvpStateReadTiming = {
+  projection?: MvpStateProjection;
+  cacheStatus?: "fresh" | "cached" | "in_flight";
+  membershipMs?: number;
+  dbFanoutMs?: number;
+  mappingMs?: number;
+  runtimeSnapshotMs?: number;
+  totalMs?: number;
+  queryCount?: number;
+  queryTimings?: Array<{ label: string; durationMs: number; rowCount: number; status: "ok" | "error" }>;
 };
 
 /**
@@ -43,6 +60,47 @@ const UI_STATE_CACHE_TTL_MS = 15_000;
 const CHAT_STATE_CACHE_TTL_MS = 15_000;
 const SUMMARY_STATE_CACHE_TTL_MS = 60_000;
 const DEFAULT_STATE_POOL_MAX = 12;
+// The UI list sanitizer keeps only these metadata keys. Project that bounded
+// shape in PostgreSQL so the list read never transfers full receipts and
+// workflow payloads for all 500 rows. Detail/full callers still select the
+// lossless metadata_json column.
+const UI_RUN_METADATA_COLUMN = `(SELECT COALESCE(jsonb_object_agg(entry.key, entry.value), '{}'::jsonb)
+    FROM jsonb_each(jsonb_build_object(
+      'adapter', metadata_json::jsonb -> 'adapter',
+      'approval_required_reason', metadata_json::jsonb -> 'approval_required_reason',
+      'browser_surface', metadata_json::jsonb -> 'browser_surface',
+      'business_completion_verified', metadata_json::jsonb -> 'business_completion_verified',
+      'cleanup_verified', metadata_json::jsonb -> 'cleanup_verified',
+      'dry_run', metadata_json::jsonb -> 'dry_run',
+      'effect_stage', metadata_json::jsonb -> 'effect_stage',
+      'exact_blocker', metadata_json::jsonb -> 'exact_blocker',
+      'execution_mode', metadata_json::jsonb -> 'execution_mode',
+      'external_action_executed', metadata_json::jsonb -> 'external_action_executed',
+      'fallback_allowed', metadata_json::jsonb -> 'fallback_allowed',
+      'proof_gate', metadata_json::jsonb -> 'proof_gate',
+      'read_only_stage', metadata_json::jsonb -> 'read_only_stage',
+      'readback_verified', metadata_json::jsonb -> 'readback_verified',
+      'requires_approval', metadata_json::jsonb -> 'requires_approval',
+      'run_contract', metadata_json::jsonb -> 'run_contract',
+      'run_contract_summary', metadata_json::jsonb -> 'run_contract_summary',
+      'same_run_receipt', metadata_json::jsonb -> 'same_run_receipt',
+      'status', metadata_json::jsonb -> 'status',
+      'stop_reason', metadata_json::jsonb -> 'stop_reason',
+      'web_operation_backend', metadata_json::jsonb -> 'web_operation_backend',
+      'worker_mode', metadata_json::jsonb -> 'worker_mode',
+      'workflow_id', metadata_json::jsonb -> 'workflow_id',
+      'workflowId', metadata_json::jsonb -> 'workflowId'
+    )) AS entry(key, value)
+    WHERE entry.value <> 'null'::jsonb OR metadata_json::jsonb ? entry.key)::text AS metadata_json`;
+// Proof-list sanitization only reads the safe external-action boundary. Keep
+// the nested receipt flag, but never pull the full proof metadata blob into
+// the dashboard fan-out; the detail route remains lossless.
+const UI_PROOF_METADATA_COLUMN = `jsonb_strip_nulls(jsonb_build_object(
+      'external_action_executed', proofs.metadata_json::jsonb -> 'external_action_executed',
+      'receipt', jsonb_strip_nulls(jsonb_build_object(
+        'external_action_executed', proofs.metadata_json::jsonb -> 'receipt' -> 'external_action_executed'
+      ))
+    ))::text AS metadata_json`;
 // A dashboard read must fail closed before the web client gives up. The UI
 // aborts a state request after 30 seconds. A 10-second server bound
 // was shorter than the first cold scoped fan-out on the current Postgres
@@ -142,17 +200,23 @@ export function warmPostgresMvpState(options: PostgresMvpStateOptions = {}): Pro
 }
 
 export async function readPostgresMvpState(options: PostgresMvpStateOptions = {}): Promise<JsonObject> {
+  const startedAt = Date.now();
   const actorUserId = options.actorUserId?.trim() || process.env.AUTOMATION_OS_OWNER_USER_ID?.trim() || "user_local_owner";
   // UI and full projections intentionally select different column sets. Keep
   // their cache/in-flight entries separate so a fast UI warm-up cannot serve
   // a truncated row to a later detail/full readback (or make the UI wait on a
   // heavier full-projection warm-up).
   const projection = options.projection ?? "full";
+  if (options.timing) options.timing.projection = projection;
   const cacheKey = `${actorUserId}\n${options.companyId?.trim() ?? ""}\n${projection}`;
   const cacheTtlMs = postgresMvpStateCacheTtlMs(projection);
   const now = Date.now();
   const cached = stateCache.get(cacheKey);
   if (!options.forceFresh && cached && cached.expiresAt > now) {
+    if (options.timing) {
+      options.timing.cacheStatus = "cached";
+      options.timing.totalMs = Date.now() - startedAt;
+    }
     const state = {
       ...cached.state,
       readback_cache: {
@@ -165,7 +229,9 @@ export async function readPostgresMvpState(options: PostgresMvpStateOptions = {}
   }
   const running = stateInFlight.get(cacheKey);
   if (running) {
+    if (options.timing) options.timing.cacheStatus = "in_flight";
     const state = await running;
+    if (options.timing) options.timing.totalMs = Date.now() - startedAt;
     return options.projection === "ui" ? projectMvpStateForUi(state) : state;
   }
   const promise = readPostgresMvpStateUncachedBounded({ ...options, actorUserId })
@@ -178,6 +244,10 @@ export async function readPostgresMvpState(options: PostgresMvpStateOptions = {}
     });
   stateInFlight.set(cacheKey, promise);
   const state = await promise;
+  if (options.timing) {
+    options.timing.cacheStatus = "fresh";
+    options.timing.totalMs = Date.now() - startedAt;
+  }
   return options.projection === "ui" ? projectMvpStateForUi(state) : state;
 }
 
@@ -206,8 +276,10 @@ function resetPostgresMvpStatePoolAfterTimeout(): void {
 }
 
 async function readPostgresMvpStateUncached(options: PostgresMvpStateOptions = {}): Promise<JsonObject> {
-    const database: PostgresMvpStateQueryClient = options.queryClient ?? getPool() as unknown as PostgresMvpStateQueryClient;
+    const rawDatabase: PostgresMvpStateQueryClient = options.queryClient ?? getPool() as unknown as PostgresMvpStateQueryClient;
+    const database = timedQueryClient(rawDatabase, options.timing);
     const actorUserId = options.actorUserId?.trim() || process.env.AUTOMATION_OS_OWNER_USER_ID?.trim() || "user_local_owner";
+    const membershipStartedAt = Date.now();
     const companiesResult = await database.query(
       `SELECT companies.id, companies.slug, companies.name, companies.status,
               company_memberships.role, companies.created_at, companies.updated_at
@@ -221,6 +293,7 @@ async function readPostgresMvpStateUncached(options: PostgresMvpStateOptions = {
        ORDER BY lower(companies.name), companies.id`,
       [actorUserId]
     );
+    if (options.timing) options.timing.membershipMs = Date.now() - membershipStartedAt;
     const allCompanies = companiesResult.rows as Array<JsonObject & { id: string; role: string }>;
     const requestedCompanyId = options.companyId?.trim() ?? "";
     const companies = requestedCompanyId
@@ -233,7 +306,7 @@ async function readPostgresMvpStateUncached(options: PostgresMvpStateOptions = {
       : "FALSE";
     const params = [companyIds];
     if (options.projection === "summary") {
-      return readPostgresMvpStateSummary({ database, actorUserId, companies, companyIds });
+      return readPostgresMvpStateSummary({ database, actorUserId, companies, companyIds, timing: options.timing });
     }
     if (options.projection === "chat") {
       return readPostgresMvpStateChat({
@@ -241,7 +314,8 @@ async function readPostgresMvpStateUncached(options: PostgresMvpStateOptions = {
         actorUserId,
         companyId: options.companyId,
         companies,
-        companyIds
+        companyIds,
+        timing: options.timing
       });
     }
     // The initial UI only needs the durable row identity/status fields.  The
@@ -251,7 +325,7 @@ async function readPostgresMvpStateUncached(options: PostgresMvpStateOptions = {
     // boundary.  Keep the full projection lossless while making the UI
     // projection bounded and read-only.
     const listRunColumns = options.projection === "ui"
-      ? "id, company_id, automation_id, automation_version_id, name, status, objective, created_at, updated_at, execution_source, quarantined, readback_proof_id, metadata_json"
+      ? `id, company_id, automation_id, automation_version_id, name, status, objective, created_at, updated_at, execution_source, quarantined, readback_proof_id, ${UI_RUN_METADATA_COLUMN}`
       : "*";
     const listStepColumns = options.projection === "ui"
       ? "id, run_id, company_id, name, status, lane_id, started_at, completed_at"
@@ -267,7 +341,7 @@ async function readPostgresMvpStateUncached(options: PostgresMvpStateOptions = {
       ? "approvals.id, approvals.company_id, approvals.run_id, approvals.job_id, approvals.title, approvals.status, approvals.priority, approvals.approval_group_id, approvals.action_kind, approvals.target_account_ref_id, approvals.payload_hash, approvals.policy_version, approvals.expires_at, approvals.decision_revision, approvals.created_at, approvals.decided_at"
       : "approvals.*";
     const listProofColumns = options.projection === "ui"
-      ? "proofs.id, proofs.company_id, proofs.run_id, proofs.step_id, proofs.artifact_id, proofs.attempt_id, proofs.proof_type, proofs.label, proofs.uri, proofs.size_bytes, proofs.created_at, proofs.metadata_json"
+      ? `proofs.id, proofs.company_id, proofs.run_id, proofs.step_id, proofs.artifact_id, proofs.attempt_id, proofs.proof_type, proofs.label, proofs.uri, proofs.size_bytes, proofs.created_at, ${UI_PROOF_METADATA_COLUMN}`
       : "proofs.*";
     const listJobColumns = options.projection === "ui"
       ? "id, company_id, run_id, automation_id, automation_version_id, schedule_occurrence_id, concurrency_key, max_concurrency, kind, execution_mode, status, payload_hash, priority, max_attempts, attempt_count, available_at, heartbeat_at, last_error, created_at, updated_at"
@@ -289,7 +363,8 @@ async function readPostgresMvpStateUncached(options: PostgresMvpStateOptions = {
       : "*";
 
     const uiProjection = options.projection === "ui";
-    const [runs, approvals, proofs, automations, schedules, occurrences, jobs, attempts, steps, lanes, workerEvents, memory, feedbacks, checks, workflows, webOperationSettings] = await Promise.all([
+    const dbFanoutStartedAt = Date.now();
+    const [runs, approvals, proofs, automations, schedules, occurrences, jobs, attempts, steps, lanes, workerEvents, memory, feedbacks, checks, workflows, webOperationSettings, connectionRefs] = await Promise.all([
       rows(database, `SELECT ${listRunColumns} FROM runs WHERE ${scoped()} ORDER BY created_at DESC LIMIT 500`, params),
       rows(database, `SELECT ${listApprovalColumns} FROM approvals LEFT JOIN runs ON runs.id=approvals.run_id AND runs.company_id=approvals.company_id WHERE ${scoped("approvals.company_id")} AND (approvals.run_id IS NULL OR runs.id IS NOT NULL) ORDER BY approvals.created_at DESC LIMIT 500`, params),
       rows(database, `SELECT ${listProofColumns} FROM proofs JOIN runs ON runs.id=proofs.run_id AND runs.company_id=proofs.company_id WHERE ${scoped("proofs.company_id")} ORDER BY proofs.created_at DESC LIMIT 500`, params),
@@ -305,10 +380,35 @@ async function readPostgresMvpStateUncached(options: PostgresMvpStateOptions = {
       uiProjection ? Promise.resolve([]) : rows(database, `SELECT ${listFeedbackColumns} FROM mvp_feedback WHERE ${scoped()} ORDER BY created_at DESC LIMIT 500`, params),
       rows(database, `SELECT ${listCheckColumns} FROM system_checks ORDER BY created_at DESC LIMIT 20`),
       rows(database, `SELECT ${listWorkflowColumns} FROM registered_workflows WHERE company_id IS NULL OR ${scoped()} ORDER BY updated_at DESC`, params),
-      rows(database, "SELECT * FROM web_operation_settings WHERE id='global' LIMIT 1")
+      rows(database, "SELECT * FROM web_operation_settings WHERE id='global' LIMIT 1"),
+      rows(database, `SELECT id, company_id, platform, account_ref, status, scopes_json, expires_at, oauth_state, verification_status, last_verified_at, reconnect_requested_at, revoked_at, revision, created_at, updated_at FROM company_connection_account_refs WHERE ${scoped()} ORDER BY platform, account_ref`, params)
     ]);
+    if (options.timing) options.timing.dbFanoutMs = Date.now() - dbFanoutStartedAt;
+
+    const mappingStartedAt = Date.now();
+    const connectionRefsByCompany = new Map<string, CompanyConnectionRefRecord[]>();
+    for (const row of connectionRefs) {
+      const companyId = String(row.company_id ?? "");
+      const existing = connectionRefsByCompany.get(companyId) ?? [];
+      existing.push({
+        id: String(row.id ?? ""), companyId, platform: String(row.platform ?? ""), accountRef: String(row.account_ref ?? ""),
+        status: String(row.status ?? ""), scopes: Array.isArray(parseJson(row.scopes_json, [])) ? (parseJson(row.scopes_json, []) as unknown[]).filter((value): value is string => typeof value === "string") : [],
+        expiresAt: typeof row.expires_at === "string" ? row.expires_at : null, oauthState: String(row.oauth_state ?? "not_configured"),
+        verificationStatus: String(row.verification_status ?? "unverified"), lastVerifiedAt: typeof row.last_verified_at === "string" ? row.last_verified_at : null,
+        reconnectRequestedAt: typeof row.reconnect_requested_at === "string" ? row.reconnect_requested_at : null, revokedAt: typeof row.revoked_at === "string" ? row.revoked_at : null,
+        revision: Number(row.revision ?? 1), createdAt: String(row.created_at ?? ""), updatedAt: String(row.updated_at ?? "")
+      });
+      connectionRefsByCompany.set(companyId, existing);
+    }
 
     const publicAutomations = automations.map((row) => ({
+      // Keep the UI's execution-target readback company-scoped and derived
+      // from the same connection inventory used at Run admission time.
+      ...(() => {
+        const companyId = String(row.company_id ?? row.project_id ?? "");
+        const builderSpec = parseObject(row.builder_spec_json);
+        return { execution_target: resolveGmailExecutionTarget({ companyId, builderSpec }, connectionRefsByCompany.get(companyId) ?? []) };
+      })(),
       id: String(row.id ?? ""),
       company_id: String(row.company_id ?? row.project_id ?? ""),
       project_id: String(row.project_id ?? row.company_id ?? ""),
@@ -319,8 +419,8 @@ async function readPostgresMvpStateUncached(options: PostgresMvpStateOptions = {
       desc: String(row.description ?? row.desc ?? ""),
       description: String(row.description ?? row.desc ?? ""),
       goal: String(row.goal ?? ""),
-      schedule: String(row.schedule ?? "09:00"),
-      cadence: String(row.cadence ?? "daily"),
+      ...automationScheduleProjection(row, schedules),
+      ...automationExecutionContract(row.worker_command_kind),
       lane: String(row.lane ?? "Lane 1"),
       risk_level: String(row.risk_level ?? "high"),
       approval_policy: String(row.approval_policy ?? "required_before_external_post"),
@@ -345,6 +445,21 @@ async function readPostgresMvpStateUncached(options: PostgresMvpStateOptions = {
     const sanitizedSteps = sanitizeDashboardRows(steps, dashboardListSanitizer);
     const sanitizedLanes = sanitizeDashboardRows(lanes);
     const sanitizedWorkerEvents = sanitizeDashboardRows(workerEvents, dashboardListSanitizer);
+    // The dashboard run list is intentionally bounded and ordered for the
+    // general Runs surface. The five-row start guide needs a complete set of
+    // candidates for the company-scoped saved/registered automation IDs so
+    // its own latest-candidate logic can fail closed on a newer bad run rather
+    // than falling back to an older verified one.
+    const guideAutomationIds = [...new Set([
+      ...publicAutomations.map((automation) => automation.id).filter(Boolean),
+      ...workflows.map((workflow) => String(workflow.id ?? "").trim()).filter(Boolean)
+    ])];
+    const workflowStartGuideRuns = guideAutomationIds.length === 0
+      ? []
+      : sanitizeDashboardRows(
+        await rows(database, `SELECT ${listRunColumns} FROM runs WHERE ${scoped()} AND automation_id=ANY($2::text[]) ORDER BY COALESCE(updated_at, created_at) DESC, id ASC`, [companyIds, guideAutomationIds]),
+        dashboardListSanitizer
+      );
     const queuedJobs = publicJobs.filter((job) => job.status === "queued");
     const queuedCurrentCount = queuedJobs.filter((job) => job.queue_freshness === "fresh").length;
     const queuedHistoricalCount = queuedJobs.filter((job) => job.queue_freshness === "historical").length;
@@ -358,25 +473,18 @@ async function readPostgresMvpStateUncached(options: PostgresMvpStateOptions = {
           : queuedJobs.length > 0 ? "登録済みservice workerのclaimを待っています。" : "待機中のjobはありません。";
     const leasedJobs = publicJobs.filter((job) => job.status === "leased");
     const latestCheck = checks.find((row) => row.id === "local_codex_worker_heartbeat" || row.kind === "local_codex_worker");
-    const portableHeartbeat = checks
-      .filter((row) => row.kind === "portable_mac_worker")
-      .map((row) => ({ row, metadata: parseObject(row.metadata_json) }))
-      .filter(({ metadata }) => metadata.company_id === undefined || companyIds.includes(String(metadata.company_id)))
-      .sort((left, right) => String(right.row.created_at ?? "").localeCompare(String(left.row.created_at ?? "")))
-      .at(0);
-    const portableMetadata = portableHeartbeat?.metadata ?? {};
-    const portableHeartbeatAt = portableHeartbeat
-      ? typeof portableMetadata.heartbeat_at === "string"
-        ? portableMetadata.heartbeat_at
-        : typeof portableHeartbeat.row.created_at === "string" ? portableHeartbeat.row.created_at : null
-      : null;
+    const portableHeartbeat = selectPortableWorkerHeartbeat(checks, companyIds);
+    const portableRemoteHeartbeat = portableHeartbeat?.readback ?? null;
+    const portableHeartbeatAt = portableRemoteHeartbeat?.heartbeatAt
+      ?? (portableHeartbeat && typeof portableHeartbeat.row.created_at === "string" ? portableHeartbeat.row.created_at : null);
     const portableHeartbeatFreshness = portableHeartbeat
       ? classifyPortableWorkerHeartbeat({
         heartbeatAt: portableHeartbeatAt,
         staleAfterSeconds: Number(process.env.AUTOMATION_OS_PORTABLE_WORKER_HEARTBEAT_STALE_SECONDS ?? 300)
       })
       : null;
-    const portableHeartbeatBlocker = portableHeartbeatFreshness?.exactBlocker
+    const portableHeartbeatBlocker = portableRemoteHeartbeat?.exactBlocker
+      ?? portableHeartbeatFreshness?.exactBlocker
       ?? (portableHeartbeat?.row.status === "blocked" ? "portable_worker_heartbeat_blocked" : null);
     const workerStatus = latestCheck?.status === "blocked"
       ? "blocked"
@@ -387,19 +495,22 @@ async function readPostgresMvpStateUncached(options: PostgresMvpStateOptions = {
           : portableHeartbeat && portableHeartbeatFreshness?.heartbeatFresh === false
             ? "blocked"
         : leasedJobs.length > 0 ? "running" : "idle";
-    const workerBlocker = typeof portableMetadata.exact_blocker === "string"
-      ? portableMetadata.exact_blocker
-      : portableHeartbeatBlocker
-        ?? (typeof latestCheck?.metadata_json === "string" ? parseObject(latestCheck.metadata_json).exactBlocker : null);
+    const workerBlocker = portableRemoteHeartbeat?.exactBlocker
+      ?? portableHeartbeatBlocker
+      ?? (typeof latestCheck?.metadata_json === "string" ? parseObject(latestCheck.metadata_json).exactBlocker : null);
     const selectedBackend = resolveWebOperationBackend(webOperationSettings[0]?.backend);
     const selectedProfileSurface = String(webOperationSettings[0]?.chrome_surface ?? "signed_chrome_extension_profile2");
     const selectedBrowserSurface = browserSurfaceForWebOperationBackend(selectedBackend, selectedProfileSurface);
+    if (options.timing) options.timing.mappingMs = Date.now() - mappingStartedAt;
+    const runtimeSnapshotStartedAt = Date.now();
     const browserRuntime = await buildBrowserUseRuntimeSnapshotAsync({
       controlPlaneCompanyIds: companyIds,
       selectedBackend,
       targetScopedReadback: true,
-      remoteChromePluginReadback: (portableMetadata.chrome_plugin_readback as PortableWorkerChromePluginReadback | null | undefined) ?? null,
+      remoteChromePluginReadback: portableRemoteHeartbeat?.chromePluginReadback ?? null,
+      remoteWorkerHeartbeat: portableRemoteHeartbeat,
     });
+    if (options.timing) options.timing.runtimeSnapshotMs = Date.now() - runtimeSnapshotStartedAt;
     const workerScope = browserRuntime.processReadback.portableRemoteWorker.scopeReadback;
     const liveTransport = browserRuntime.processReadback.portableRemoteWorker.transportReadback;
     const projectedPortableHeartbeatAt = resolvePortableWorkerHeartbeatAt({
@@ -413,30 +524,84 @@ async function readPostgresMvpStateUncached(options: PostgresMvpStateOptions = {
         staleAfterSeconds: Number(process.env.AUTOMATION_OS_PORTABLE_WORKER_HEARTBEAT_STALE_SECONDS ?? 300)
       })
       : portableHeartbeatFreshness;
-    const liveHeartbeatHealthy = liveTransport.heartbeatStatus === "ok"
-      && projectedPortableHeartbeatFreshness?.heartbeatFresh === true;
-    const persistedHeartbeatBlockerOnly = workerBlocker === "portable_worker_heartbeat_stale"
-      || workerBlocker === "portable_worker_heartbeat_blocked";
-    const resolvedWorkerBlocker = workerScope.exactBlocker
-      ?? (liveTransport.heartbeatStatus === "blocked" ? liveTransport.heartbeatExactBlocker : null)
-      ?? (liveHeartbeatHealthy && persistedHeartbeatBlockerOnly ? null : typeof workerBlocker === "string" ? workerBlocker : null);
-    const resolvedWorkerStatus = workerScope.exactBlocker
-      ? "blocked"
-      : liveTransport.heartbeatStatus === "blocked"
+    const liveTransportFileFreshness = liveTransport.source === "worker_status_file"
+      && liveTransport.heartbeatStatus === "ok"
+      && (liveTransport.lastSuccessfulHeartbeatAt ?? liveTransport.heartbeatAt)
+      ? classifyPortableWorkerHeartbeat({
+        heartbeatAt: liveTransport.lastSuccessfulHeartbeatAt ?? liveTransport.heartbeatAt,
+        staleAfterSeconds: Number(process.env.AUTOMATION_OS_PORTABLE_WORKER_HEARTBEAT_STALE_SECONDS ?? 300)
+      })
+      : null;
+    const liveHeartbeatHealthy = (liveTransport.heartbeatStatus === "ok"
+      && projectedPortableHeartbeatFreshness?.heartbeatFresh === true)
+      || liveTransportFileFreshness?.heartbeatFresh === true;
+    // A legacy local_codex_worker(_heartbeat) system-check row can remain
+    // blocked after the authenticated portable heartbeat has recovered.  The
+    // full projection already treats a null/staleness-only persisted blocker
+    // as superseded by a fresh live heartbeat; keep the summary projection
+    // identical so Company/Runs cards do not report a stale worker blocker.
+    const persistedHeartbeatBlockerOnly = (
+      workerBlocker === null
+      || workerBlocker === "portable_worker_heartbeat_stale"
+      || workerBlocker === "portable_worker_heartbeat_blocked"
+    ) && (
+      projectedPortableHeartbeatFreshness?.heartbeatFresh === false
+      || latestCheck?.status === "blocked"
+    );
+    const persistedScopeBlockerOnly = workerBlocker === "portable_worker_company_scope_unreadable"
+      && liveHeartbeatHealthy
+      && workerScope.status === "matched"
+      && workerScope.exactBlocker === null;
+    const liveHeartbeatScopeMatches = liveHeartbeatHealthy
+      && Boolean(portableRemoteHeartbeat?.companyId)
+      && companyIds.includes(portableRemoteHeartbeat?.companyId ?? "")
+      && (workerScope.remoteWorkerCompanyIds.includes(portableRemoteHeartbeat?.companyId ?? "")
+        || workerScope.exactBlocker === "portable_worker_company_scope_unreadable");
+    const transientScopeReadbackBlocker = workerScope.exactBlocker === "portable_worker_company_scope_unreadable"
+      && liveHeartbeatScopeMatches;
+    const heartbeatRecoveryClearsBlocker = (liveHeartbeatHealthy && persistedHeartbeatBlockerOnly)
+      || persistedScopeBlockerOnly
+      || (liveTransport.source === "worker_status_file"
+        && liveTransport.heartbeatStatus === "ok"
+        && (workerBlocker === null || workerBlocker === "portable_worker_heartbeat_stale" || workerBlocker === "portable_worker_heartbeat_blocked"));
+    const resolvedWorkerBlocker = heartbeatRecoveryClearsBlocker
+      ? null
+      : transientScopeReadbackBlocker
+        ? ((liveTransport.heartbeatStatus === "blocked" ? liveTransport.heartbeatExactBlocker : null)
+          ?? (typeof workerBlocker === "string" && workerBlocker !== "portable_worker_company_scope_unreadable" ? workerBlocker : null))
+        : workerScope.exactBlocker
+          ?? (liveTransport.heartbeatStatus === "blocked" ? liveTransport.heartbeatExactBlocker : null)
+          ?? (typeof workerBlocker === "string" ? workerBlocker : null);
+    // Status follows the reconciled blocker, not the historical system-check
+    // row. A fresh portable heartbeat therefore clears an old heartbeat-only
+    // blocked row while non-heartbeat blockers remain visible above.
+    const liveTransportFreshness = liveTransport.lastSuccessfulHeartbeatAt ?? liveTransport.heartbeatAt
+      ? classifyPortableWorkerHeartbeat({
+        heartbeatAt: liveTransport.lastSuccessfulHeartbeatAt ?? liveTransport.heartbeatAt,
+        staleAfterSeconds: Number(process.env.AUTOMATION_OS_PORTABLE_WORKER_HEARTBEAT_STALE_SECONDS ?? 300)
+      })
+      : null;
+    const liveTransportRecoversHeartbeatBlocker = liveTransport.heartbeatStatus === "ok"
+      && liveTransportFreshness?.heartbeatFresh === true
+      && (workerBlocker === null
+        || workerBlocker === "portable_worker_heartbeat_stale"
+        || workerBlocker === "portable_worker_heartbeat_blocked");
+    const resolvedWorkerStatus = liveTransportRecoversHeartbeatBlocker
+      ? leasedJobs.length > 0 ? "running" : "idle"
+      : resolvedWorkerBlocker
         ? "blocked"
-        : liveHeartbeatHealthy && persistedHeartbeatBlockerOnly
-          ? leasedJobs.length > 0 ? "running" : "idle"
-          : workerStatus;
+        : leasedJobs.length > 0 ? "running" : "idle";
     const publicWorkflows = workflows.map(publicRegisteredWorkflowRow);
     const capturedAt = new Date().toISOString();
     return {
       projects: companies.map((company) => ({ id: company.id, project_id: company.id, name: company.name, status: company.status, role: company.role })),
       companies,
       automations: publicAutomations,
-      presentation_profiles: companies.map((company) => ({ company_id: company.id, project_id: company.id, source: "postgres_readback" })),
+      presentation_profiles: companies.map((company) => publicPresentationProfile(company, publicAutomations, memory)),
       builder_specs: publicAutomations.map((automation) => ({ automation_id: automation.id, company_id: automation.company_id, project_id: automation.project_id, updated_at: automation.updated_at, spec: automation.builder_spec })),
       schedules: publicSchedules,
       runs: sanitizedRuns,
+      workflowStartGuideRuns,
       jobs: publicJobs,
       job_attempts: publicAttempts,
       schedule_occurrences: publicOccurrences,
@@ -493,6 +658,8 @@ async function readPostgresMvpStateUncached(options: PostgresMvpStateOptions = {
         queue_scope: { source: "postgres_persistent_read_pool", company_ids: companyIds },
         worker_scope: workerScope,
         portable_remote_worker: browserRuntime.processReadback.portableRemoteWorker,
+        heartbeat_metadata: browserRuntime.processReadback.portableRemoteWorker.heartbeatMetadata,
+        remote_report: browserRuntime.processReadback.portableRemoteWorker.remoteReport,
         external_action_executed: false
       },
       browser_use_runtime: browserRuntime,
@@ -530,18 +697,21 @@ async function readPostgresMvpStateSummary({
   database,
   actorUserId,
   companies,
-  companyIds
+  companyIds,
+  timing
 }: {
   database: PostgresMvpStateQueryClient;
   actorUserId: string;
   companies: Array<JsonObject & { id: string; role: string }>;
   companyIds: string[];
+  timing?: MvpStateReadTiming;
 }): Promise<JsonObject> {
   const capturedAt = new Date().toISOString();
   const day = jstDayBoundsIso();
   const scope = companyIds.length > 0 ? "runs.company_id=ANY($1::text[])" : "FALSE";
   const companyScope = companyIds.length > 0 ? "company_id=ANY($1::text[])" : "FALSE";
-  const [runSummaryRows, recentRuns, approvalSummaryRows, proofSummaryRows, jobSummaryRows, queuedJobRows, automations, checks, workflows, webOperationSettings] = await Promise.all([
+  const dbFanoutStartedAt = Date.now();
+  const [runSummaryRows, recentRuns, approvalSummaryRows, proofSummaryRows, jobSummaryRows, queuedJobRows, automations, checks, workflows, webOperationSettings, schedules, profileMemory] = await Promise.all([
     rows(database, `SELECT
         COUNT(*)::int AS total_count,
         COUNT(*) FILTER (WHERE status IN ('blocked', 'failed', 'cancelled', 'canceled', 'timed_out', 'reconciliation_required'))::int AS blocked_count,
@@ -570,9 +740,13 @@ async function readPostgresMvpStateSummary({
     rows(database, `SELECT * FROM mvp_automations WHERE ${companyScope} AND archived_at IS NULL ORDER BY updated_at DESC, id ASC`, [companyIds]),
     rows(database, "SELECT * FROM system_checks ORDER BY created_at DESC LIMIT 20"),
     rows(database, `SELECT * FROM registered_workflows WHERE company_id IS NULL OR ${companyScope} ORDER BY updated_at DESC`, [companyIds]),
-    rows(database, "SELECT * FROM web_operation_settings WHERE id='global' LIMIT 1")
+    rows(database, "SELECT * FROM web_operation_settings WHERE id='global' LIMIT 1"),
+    rows(database, `SELECT * FROM mvp_automation_schedules WHERE ${companyScope} ORDER BY updated_at DESC`, [companyIds]),
+    rows(database, `SELECT company_id, memory_key, body, revision FROM company_memory_entries WHERE ${companyScope} AND memory_key='project_profile' AND status='active'`, [companyIds])
   ]);
+  if (timing) timing.dbFanoutMs = Date.now() - dbFanoutStartedAt;
 
+  const mappingStartedAt = Date.now();
   const publicAutomations = automations.map((row) => ({
     id: String(row.id ?? ""),
     company_id: String(row.company_id ?? row.project_id ?? ""),
@@ -584,8 +758,8 @@ async function readPostgresMvpStateSummary({
     desc: String(row.description ?? row.desc ?? ""),
     description: String(row.description ?? row.desc ?? ""),
     goal: String(row.goal ?? ""),
-    schedule: String(row.schedule ?? "09:00"),
-    cadence: String(row.cadence ?? "daily"),
+    ...automationScheduleProjection(row, schedules),
+    ...automationExecutionContract(row.worker_command_kind),
     lane: String(row.lane ?? "Lane 1"),
     risk_level: String(row.risk_level ?? "high"),
     approval_policy: String(row.approval_policy ?? "required_before_external_post"),
@@ -619,37 +793,32 @@ async function readPostgresMvpStateSummary({
         ? "queued recordの時刻を確認できないためclaimせず、fresh idempotency/readbackを確認してください。"
         : Number(jobSummary.queued_count ?? 0) > 0 ? "登録済みservice workerのclaimを待っています。" : "待機中のjobはありません。";
   const latestCheck = checks.find((row) => row.id === "local_codex_worker_heartbeat" || row.kind === "local_codex_worker");
-  const portableHeartbeat = checks
-    .filter((row) => row.kind === "portable_mac_worker")
-    .map((row) => ({ row, metadata: parseObject(row.metadata_json) }))
-    .filter(({ metadata }) => metadata.company_id === undefined || companyIds.includes(String(metadata.company_id)))
-    .sort((left, right) => String(right.row.created_at ?? "").localeCompare(String(left.row.created_at ?? "")))
-    .at(0);
-  const portableMetadata = portableHeartbeat?.metadata ?? {};
-  const portableHeartbeatAt = portableHeartbeat
-    ? typeof portableMetadata.heartbeat_at === "string"
-      ? portableMetadata.heartbeat_at
-      : typeof portableHeartbeat.row.created_at === "string" ? portableHeartbeat.row.created_at : null
-    : null;
+  const portableHeartbeat = selectPortableWorkerHeartbeat(checks, companyIds);
+  const portableRemoteHeartbeat = portableHeartbeat?.readback ?? null;
+  const portableHeartbeatAt = portableRemoteHeartbeat?.heartbeatAt
+    ?? (portableHeartbeat && typeof portableHeartbeat.row.created_at === "string" ? portableHeartbeat.row.created_at : null);
   const heartbeatFreshness = portableHeartbeat
     ? classifyPortableWorkerHeartbeat({
       heartbeatAt: portableHeartbeatAt,
       staleAfterSeconds: Number(process.env.AUTOMATION_OS_PORTABLE_WORKER_HEARTBEAT_STALE_SECONDS ?? 300)
     })
     : null;
-  const workerBlocker = typeof portableMetadata.exact_blocker === "string"
-    ? portableMetadata.exact_blocker
-    : typeof latestCheck?.metadata_json === "string" ? parseObject(latestCheck.metadata_json).exactBlocker : null;
+  const workerBlocker = portableRemoteHeartbeat?.exactBlocker
+    ?? (typeof latestCheck?.metadata_json === "string" ? parseObject(latestCheck.metadata_json).exactBlocker : null);
   const persistedWorkerBlocker = typeof workerBlocker === "string" ? workerBlocker : null;
+  if (timing) timing.mappingMs = Date.now() - mappingStartedAt;
   // Home intentionally keeps a lightweight summary, but its worker status must
   // not be frozen to an old system_check row.  Read the canonical worker-status
   // artifact without touching process state, then keep any non-heartbeat blocker
   // authoritative.  This only reconciles the heartbeat plane; claims, receipts,
   // source sync, and external effects remain separate readbacks.
+  const runtimeSnapshotStartedAt = Date.now();
   const liveProcessReadback = await buildBrowserRuntimeProcessReadbackAsync({
     controlPlaneCompanyIds: companyIds,
-    readLiveProcessTable: false
+    readLiveProcessTable: false,
+    remoteWorkerHeartbeat: portableRemoteHeartbeat
   });
+  if (timing) timing.runtimeSnapshotMs = Date.now() - runtimeSnapshotStartedAt;
   const liveTransport = liveProcessReadback.portableRemoteWorker.transportReadback;
   const liveHeartbeatAt = resolvePortableWorkerHeartbeatAt({
     liveLastSuccessfulHeartbeatAt: liveTransport.lastSuccessfulHeartbeatAt,
@@ -662,25 +831,51 @@ async function readPostgresMvpStateSummary({
       staleAfterSeconds: Number(process.env.AUTOMATION_OS_PORTABLE_WORKER_HEARTBEAT_STALE_SECONDS ?? 300)
     })
     : null;
-  const liveHeartbeatHealthy = liveTransport.heartbeatStatus === "ok"
-    && liveHeartbeatFreshness?.heartbeatFresh === true;
+  const liveTransportFileFreshness = liveTransport.source === "worker_status_file"
+    && liveTransport.heartbeatStatus === "ok"
+    && (liveTransport.lastSuccessfulHeartbeatAt ?? liveTransport.heartbeatAt)
+    ? classifyPortableWorkerHeartbeat({
+      heartbeatAt: liveTransport.lastSuccessfulHeartbeatAt ?? liveTransport.heartbeatAt,
+      staleAfterSeconds: Number(process.env.AUTOMATION_OS_PORTABLE_WORKER_HEARTBEAT_STALE_SECONDS ?? 300)
+    })
+    : null;
+  const liveHeartbeatHealthy = (liveTransport.heartbeatStatus === "ok"
+    && liveHeartbeatFreshness?.heartbeatFresh === true)
+    || liveTransportFileFreshness?.heartbeatFresh === true;
   const persistedHeartbeatBlockerOnly = (
     persistedWorkerBlocker === null
       || persistedWorkerBlocker === "portable_worker_heartbeat_stale"
       || persistedWorkerBlocker === "portable_worker_heartbeat_blocked"
   ) && (heartbeatFreshness?.heartbeatFresh === false || latestCheck?.status === "blocked");
-  const resolvedWorkerBlocker = liveHeartbeatHealthy && persistedHeartbeatBlockerOnly ? null : persistedWorkerBlocker;
+  const persistedScopeBlockerOnly = persistedWorkerBlocker === "portable_worker_company_scope_unreadable"
+    && liveHeartbeatHealthy
+    && liveProcessReadback.portableRemoteWorker.scopeReadback.status === "matched"
+    && liveProcessReadback.portableRemoteWorker.scopeReadback.exactBlocker === null;
+  const liveHeartbeatScopeMatches = liveHeartbeatHealthy
+    && Boolean(portableRemoteHeartbeat?.companyId)
+    && companyIds.includes(portableRemoteHeartbeat?.companyId ?? "")
+    && (liveProcessReadback.portableRemoteWorker.scopeReadback.remoteWorkerCompanyIds.includes(portableRemoteHeartbeat?.companyId ?? "")
+      || liveProcessReadback.portableRemoteWorker.scopeReadback.exactBlocker === "portable_worker_company_scope_unreadable");
+  const transientScopeReadbackBlocker = liveProcessReadback.portableRemoteWorker.scopeReadback.exactBlocker === "portable_worker_company_scope_unreadable"
+    && liveHeartbeatScopeMatches;
+  const heartbeatRecoveryClearsBlocker = (liveHeartbeatHealthy && persistedHeartbeatBlockerOnly)
+    || persistedScopeBlockerOnly
+    || (liveTransport.source === "worker_status_file"
+      && liveTransport.heartbeatStatus === "ok"
+      && (persistedWorkerBlocker === null || persistedWorkerBlocker === "portable_worker_heartbeat_stale" || persistedWorkerBlocker === "portable_worker_heartbeat_blocked"));
+  const resolvedWorkerBlocker = heartbeatRecoveryClearsBlocker
+    ? null
+    : persistedWorkerBlocker;
   const queuedCount = Number(jobSummary.queued_count ?? 0);
   const leasedCount = Number(jobSummary.leased_count ?? 0);
-  const persistedWorkerStatus = latestCheck?.status === "blocked" || heartbeatFreshness?.heartbeatFresh === false
+  // A fresh worker-status artifact is a live readback of the heartbeat plane.
+  // Do not let the older persisted check keep the summary blocked after that
+  // same-run readback has proved the heartbeat fresh.
+  const effectiveHeartbeatFreshness = liveHeartbeatFreshness ?? heartbeatFreshness;
+  const persistedWorkerStatus = resolvedWorkerBlocker !== null || effectiveHeartbeatFreshness?.heartbeatFresh === false
     ? "blocked"
     : leasedCount > 0 || queuedCurrentCount > 0 ? "running" : "idle";
-  const liveWorkerClearsPersistedState = liveHeartbeatHealthy
-    && resolvedWorkerBlocker === null
-    && (heartbeatFreshness?.heartbeatFresh === false || latestCheck?.status === "blocked");
-  const workerStatus = liveWorkerClearsPersistedState
-    ? leasedCount > 0 || queuedCurrentCount > 0 ? "running" : "idle"
-    : persistedWorkerStatus;
+  const workerStatus = persistedWorkerStatus;
   const resolvedHeartbeatFreshness = liveHeartbeatFreshness ?? heartbeatFreshness;
   const resolvedHeartbeatAt = liveHeartbeatAt ?? portableHeartbeatAt ?? latestCheck?.created_at ?? null;
   const resolvedReadbackStatus = resolvedHeartbeatFreshness?.readbackStatus ?? "summary";
@@ -692,6 +887,10 @@ async function readPostgresMvpStateSummary({
     last_successful_heartbeat_at: liveTransport.lastSuccessfulHeartbeatAt,
     claim_status: liveTransport.claimStatus,
     remote_origin: liveTransport.remoteOrigin,
+    worker_instance_id: liveTransport.workerInstanceId,
+    generation: liveTransport.generation,
+    observed_at: liveTransport.observedAt,
+    identity_status: liveTransport.identityStatus,
     exact_blocker: liveTransport.heartbeatExactBlocker
   };
   const selectedSetting = webOperationSettings[0] ?? {};
@@ -703,9 +902,9 @@ async function readPostgresMvpStateSummary({
     projects: companies.map((company) => ({ id: company.id, project_id: company.id, name: company.name, status: company.status, role: company.role })),
     companies,
     automations: publicAutomations,
-    presentation_profiles: companies.map((company) => ({ company_id: company.id, project_id: company.id, source: "postgres_readback" })),
+    presentation_profiles: companies.map((company) => publicPresentationProfile(company, publicAutomations, profileMemory)),
     builder_specs: publicAutomations.map((automation) => ({ automation_id: automation.id, company_id: automation.company_id, project_id: automation.project_id, updated_at: automation.updated_at, spec: automation.builder_spec })),
-    schedules: [],
+    schedules: schedules.map(publicScheduleRow),
     runs: sanitizedRuns,
     jobs: [],
     job_attempts: [],
@@ -777,6 +976,8 @@ async function readPostgresMvpStateSummary({
         ? "Mac workerのreadbackを確認してください。"
         : queueNextAction,
       live_readback: liveWorkerReadback,
+      heartbeat_metadata: portableRemoteHeartbeat,
+      remote_report: portableRemoteHeartbeat,
       queue_scope: { source: "postgres_persistent_read_pool", company_ids: companyIds },
       external_action_executed: false
     },
@@ -824,19 +1025,22 @@ async function readPostgresMvpStateChat({
   actorUserId,
   companyId,
   companies,
-  companyIds
+  companyIds,
+  timing
 }: {
   database: PostgresMvpStateQueryClient;
   actorUserId: string;
   companyId?: string;
   companies: Array<JsonObject & { id: string; role: string }>;
   companyIds: string[];
+  timing?: MvpStateReadTiming;
 }): Promise<JsonObject> {
   // The Chat route is entered immediately after the UI has rendered the
   // summary projection. Reuse that bounded cache/in-flight read instead of
   // running the entire summary fan-out again under the separate Chat key.
   // This keeps the detail readback scoped to schedules while preserving the
   // same exact company/actor boundary.
+  const fanoutStartedAt = Date.now();
   const [summary, schedules] = await Promise.all([
     readPostgresMvpState({
       actorUserId,
@@ -852,6 +1056,8 @@ async function readPostgresMvpStateChat({
       [companyIds]
     )
   ]);
+  if (timing) timing.dbFanoutMs = Date.now() - fanoutStartedAt;
+  const mappingStartedAt = Date.now();
   const projected = projectMvpStateForChat({
     ...summary,
     schedules: schedules.map(publicScheduleRow),
@@ -865,12 +1071,90 @@ async function readPostgresMvpStateChat({
       "browser_runtime_detail"
     ]
   });
+  if (timing) timing.mappingMs = Date.now() - mappingStartedAt;
   return projected;
 }
 
 async function rows(client: PostgresMvpStateQueryClient, text: string, values: unknown[] = []): Promise<JsonObject[]> {
   const result = await client.query(text, values);
   return result.rows as JsonObject[];
+}
+
+function timedQueryClient(client: PostgresMvpStateQueryClient, timing?: MvpStateReadTiming): PostgresMvpStateQueryClient {
+  if (!timing) return client;
+  timing.queryCount = 0;
+  timing.queryTimings = [];
+  return {
+    async query(text, values = []) {
+      const startedAt = Date.now();
+      const label = sqlQueryLabel(text);
+      try {
+        const result = await client.query(text, values);
+        timing.queryCount = (timing.queryCount ?? 0) + 1;
+        timing.queryTimings!.push({ label, durationMs: Date.now() - startedAt, rowCount: result.rows.length, status: "ok" });
+        return result;
+      } catch (error) {
+        timing.queryCount = (timing.queryCount ?? 0) + 1;
+        timing.queryTimings!.push({ label, durationMs: Date.now() - startedAt, rowCount: 0, status: "error" });
+        throw error;
+      }
+    }
+  };
+}
+
+function sqlQueryLabel(text: string): string {
+  const match = text.match(/\bFROM\s+([A-Za-z0-9_.]+)/iu);
+  const label = match?.[1]?.replace(/^.*\./u, "") ?? "query";
+  return label.replace(/[^A-Za-z0-9_]/gu, "_").slice(0, 48) || "query";
+}
+
+function selectPortableWorkerHeartbeat(checks: JsonObject[], companyIds: string[]): {
+  row: JsonObject;
+  metadata: JsonObject;
+  readback: PortableRemoteWorkerHeartbeatReadback | null;
+} | null {
+  const selected = checks
+    .filter((row) => row.kind === "portable_mac_worker")
+    .map((row) => ({ row, metadata: parseObject(row.metadata_json) }))
+    .filter(({ metadata }) => {
+      const companyId = typeof metadata.company_id === "string" ? metadata.company_id.trim() : "";
+      return Boolean(companyId) && companyIds.includes(companyId);
+    })
+    .sort((left, right) => String(right.row.created_at ?? "").localeCompare(String(left.row.created_at ?? "")))
+    .at(0);
+  if (!selected) return null;
+  const companyId = typeof selected.metadata.company_id === "string" ? selected.metadata.company_id.trim() : null;
+  const readback = sanitizePortableRemoteWorkerHeartbeat(selected.metadata, {
+    fallbackCompanyId: companyId,
+    fallbackHeartbeatAt: typeof selected.row.created_at === "string" ? selected.row.created_at : null
+  });
+  // Older control-plane rows only stored the scoped company and timestamp.
+  // Keep those rows available for freshness/blocker reconciliation, but do
+  // not project them as a modern remote-worker identity readback. Explicitly
+  // schema-tagged or identity-bearing payloads still remain unreadable when
+  // sanitization rejects them.
+  const legacyPartialKeys = new Set(["company_id", "companyId", "heartbeat_at", "heartbeatAt", "exact_blocker", "exactBlocker"]);
+  const isLegacyPartial = Object.keys(selected.metadata).every((key) => legacyPartialKeys.has(key))
+    && !Object.prototype.hasOwnProperty.call(selected.metadata, "schema")
+    && !Object.prototype.hasOwnProperty.call(selected.metadata, "status");
+  return { ...selected, readback: isLegacyPartial ? null : readback };
+}
+
+function automationScheduleProjection(automation: JsonObject, schedules: JsonObject[]) {
+  const schedule = schedules.find((row) => row.automation_id === automation.id && row.company_id === automation.company_id);
+  return {
+    schedule: String(schedule?.expression ?? schedule?.kind ?? "manual"),
+    cadence: String(schedule?.kind ?? "manual"),
+    schedule_id: schedule?.id ?? null,
+    schedule_status: schedule?.status ?? null,
+    schedule_enabled: schedule?.enabled === true || schedule?.enabled === 1,
+    schedule_revision: schedule ? Number(schedule.revision ?? 1) : null,
+    schedule_timezone: schedule?.timezone ?? null,
+    schedule_paused_at: schedule?.paused_at ?? null,
+    pinned_schedule_version_id: schedule?.automation_version_id ?? null,
+    next_run_at: schedule?.next_run_at ?? null,
+    last_run_at: schedule?.last_run_at ?? null
+  };
 }
 
 function publicScheduleRow(row: JsonObject): JsonObject {
@@ -956,6 +1240,15 @@ function publicScheduleOccurrenceRow(row: JsonObject): JsonObject {
     created_at: row.created_at,
     updated_at: row.updated_at
   };
+}
+
+function publicPresentationProfile(company: JsonObject, automations: JsonObject[], memory: JsonObject[]): JsonObject {
+  const companyId = String(company.id ?? "");
+  const saved = memory.find((row) => row.company_id === companyId && row.memory_key === "project_profile");
+  const profile = restoreProjectPresentationProfile(buildProjectPresentationProfile({ id: companyId,
+    name: String(company.name ?? ""), automations: automations.filter((row) => row.company_id === companyId) }),
+  saved ? { body: String(saved.body ?? ""), revision: Number(saved.revision) } : undefined);
+  return { ...profile, company_id: companyId, project_id: companyId };
 }
 
 function publicMemoryRow(row: JsonObject): JsonObject {

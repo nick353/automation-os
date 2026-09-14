@@ -6,13 +6,14 @@ import {
   type CompanyBindingReadinessScheduleInput
 } from "./companyBindingReadiness.js";
 import { classifyPortableWorkerHeartbeat, resolvePortableWorkerHeartbeatAt } from "./portableWorkerHeartbeat.js";
-import { buildBrowserRuntimeProcessReadbackAsync } from "../browser/liveResourceReadback.js";
+import { buildBrowserRuntimeProcessReadbackAsync, sanitizePortableRemoteWorkerHeartbeat } from "../browser/liveResourceReadback.js";
 import { readConfiguredCanonicalCompanyAuthority } from "./companyBindingReconciliation.js";
 
 type CompanyRow = { company_id: string; automation_count: number | string };
 type ScheduleRow = CompanyBindingReadinessScheduleInput & { automation_name: string | null };
 type AccountRow = { id: string; company_id: string; platform: string; status: string; verification_status: string };
 type CountRow = { count: number | string };
+type PortableHeartbeatRow = { status: string; created_at: string; metadata_json: unknown };
 
 const COUNT_TABLES = [
   ["companies", "companies", "id"],
@@ -67,7 +68,7 @@ export async function readCompanyBindingReadinessV1(options: {
   const companyPredicate = companyId ? ` AND company_id=${sqlValue(companyId)}` : "";
   const schedulePredicate = companyId ? ` WHERE schedule.company_id=${sqlValue(companyId)}` : "";
   const accountPredicate = companyId ? ` WHERE company_id=${sqlValue(companyId)}` : "";
-  const [companies, schedules, accountRefs, integrity, countValues] = await Promise.all([
+  const [companies, schedules, accountRefs, integrity, countValues, heartbeatRows] = await Promise.all([
     readRows<CompanyRow>(`
       SELECT company_id, COUNT(*) AS automation_count
       FROM mvp_automations
@@ -94,7 +95,8 @@ export async function readCompanyBindingReadinessV1(options: {
       ORDER BY company_id, id
     `),
     readIntegrity(),
-    Promise.all(COUNT_TABLES.map(async ([key, table, companyColumn]) => [key, await readCount(table, companyColumn, companyId)] as const))
+    Promise.all(COUNT_TABLES.map(async ([key, table, companyColumn]) => [key, await readCount(table, companyColumn, companyId)] as const)),
+    readRows<PortableHeartbeatRow>(`SELECT status, created_at, metadata_json FROM system_checks WHERE kind='portable_mac_worker' ORDER BY created_at DESC LIMIT 100`)
   ]);
   const counts = Object.fromEntries(countValues) as Record<string, number | null>;
   const serviceUserId = process.env.AUTOMATION_OS_DURABLE_SERVICE_USER_ID?.trim() ?? "";
@@ -120,13 +122,30 @@ export async function readCompanyBindingReadinessV1(options: {
   }
   const localCompanyId = companies.length === 1 ? companies[0]?.company_id ?? null : null;
   const canonicalAuthority = readConfiguredCanonicalCompanyAuthority();
+  const persistedHeartbeat = heartbeatRows
+    .map((row) => {
+      const metadata = parseJsonObject(row.metadata_json);
+      const metadataCompanyId = typeof metadata.company_id === "string" ? metadata.company_id.trim() : "";
+      const readback = metadataCompanyId
+        ? sanitizePortableRemoteWorkerHeartbeat(metadata, {
+          fallbackCompanyId: metadataCompanyId,
+          fallbackHeartbeatAt: row.created_at
+        })
+        : null;
+      return { row, metadata, readback, metadataCompanyId };
+    })
+    .find((candidate) => candidate.readback && (!companyId || candidate.metadataCompanyId === companyId)) ?? null;
   const liveProcessReadback = await buildBrowserRuntimeProcessReadbackAsync({
-    controlPlaneCompanyIds: companies.map((row) => row.company_id)
+    controlPlaneCompanyIds: companies.map((row) => row.company_id),
+    remoteWorkerHeartbeat: persistedHeartbeat?.readback ?? null
   });
   const portableWorker = liveProcessReadback.portableRemoteWorker;
   const workerCompanyIds = [...new Set(portableWorker.processes
     .map((row) => row.remoteCompanyId)
     .filter((value): value is string => typeof value === "string" && value.trim() !== ""))];
+  if (portableWorker.remoteReport?.companyId && !workerCompanyIds.includes(portableWorker.remoteReport.companyId)) {
+    workerCompanyIds.push(portableWorker.remoteReport.companyId);
+  }
   const heartbeatAt = resolvePortableWorkerHeartbeatAt({
     liveLastSuccessfulHeartbeatAt: portableWorker.transportReadback.lastSuccessfulHeartbeatAt,
     liveHeartbeatAt: portableWorker.transportReadback.heartbeatAt
@@ -140,7 +159,9 @@ export async function readCompanyBindingReadinessV1(options: {
   const workerCompanyId = workerCompanyIds.length === 1 ? workerCompanyIds[0] : null;
   const workerAuthorityFresh = workerCompanyId !== null
     && heartbeatFresh
-    && portableWorker.scopeReadback.status === "matched";
+    && portableWorker.scopeReadback.status === "matched"
+    && portableWorker.scopeReadback.exactBlocker === null
+    && portableWorker.scopeReadback.identityStatus === "verified";
   const localCanonicalSelection = canonicalAuthority?.applied === true
     && canonicalAuthority.endpoint === "http://localhost:8787"
     && canonicalAuthority.company_id === companyId;
@@ -152,7 +173,7 @@ export async function readCompanyBindingReadinessV1(options: {
     counts,
     stable: null
   };
-  return buildCompanyBindingReadinessV1({
+  const readiness = buildCompanyBindingReadinessV1({
     now,
     trigger_company_id: options.triggerCompanyId ?? process.env.AOS_TRIGGER_PARITY_COMPANY_ID ?? DEFAULT_CODEX_TRIGGER_COMPANY_ID,
     trigger_provenance: "codex_app_registered_trigger_readback",
@@ -190,6 +211,31 @@ export async function readCompanyBindingReadinessV1(options: {
     graph_receipt_status: options.graphReceiptStatus ?? "none",
     database
   });
+  return {
+    ...readiness,
+    worker_identity_readback: {
+      status: portableWorker.scopeReadback.identityStatus,
+      company_id: portableWorker.remoteReport?.companyId ?? workerCompanyId,
+      worker_id: portableWorker.remoteReport?.workerId ?? portableWorker.transportReadback.workerId,
+      worker_instance_id: portableWorker.remoteReport?.workerInstanceId ?? portableWorker.transportReadback.workerInstanceId,
+      generation: portableWorker.remoteReport?.generation ?? portableWorker.transportReadback.generation,
+      observed_at: portableWorker.remoteReport?.observedAt ?? portableWorker.transportReadback.observedAt,
+      heartbeat_at: heartbeatAt,
+      readback_status: portableWorker.remoteReport?.readbackStatus ?? "not_observed",
+      exact_blocker: portableWorker.scopeReadback.exactBlocker
+    }
+  };
+}
+
+function parseJsonObject(value: unknown): Record<string, unknown> {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
+  if (typeof value !== "string") return {};
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
 }
 
 function sqlValue(value: string): string {

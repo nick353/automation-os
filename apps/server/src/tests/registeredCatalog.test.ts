@@ -43,13 +43,13 @@ test("catalog decomposes all six Codex App automations and Identity is candidate
     .map((adapter) => adapter.id), ["canva", "printify", "etsy", "pinterest"]);
 });
 
-test("every registered external Web workflow is bound to canonical Browser Use CLI", () => {
-  const browserEntries = catalog.listRegisteredAutomationCatalog().filter((entry) => entry.browserSurface === "browser_use_cli");
+test("every registered external Web workflow is bound to the canonical AOS Chrome Companion", () => {
+  const browserEntries = catalog.listRegisteredAutomationCatalog().filter((entry) => entry.browserSurface === "aos_chrome_companion_profile_instance");
   assert.equal(browserEntries.length, 3);
-  assert.ok(browserEntries.every((entry) => entry.browserSurface === "browser_use_cli"));
+  assert.ok(browserEntries.every((entry) => entry.browserSurface === "aos_chrome_companion_profile_instance"));
   assert.ok(browserEntries.every((entry) => entry.execution.defaultMode === "preflight_no_effect"));
   assert.ok(browserEntries.every((entry) => entry.execution.externalActionDefault === false));
-  assert.ok(browserEntries.every((entry) => catalog.buildRegisteredAutomationAdoptionSpec(entry).workflowAdapter?.browser_surface === "browser_use_cli"));
+  assert.ok(browserEntries.every((entry) => catalog.buildRegisteredAutomationAdoptionSpec(entry).workflowAdapter?.browser_surface === "aos_chrome_companion_profile_instance"));
 });
 
 test("catalog local entries expose a bound Mac-worker adapter and keep capability gaps explicit", () => {
@@ -96,4 +96,59 @@ test("async registered catalog adoption keeps the same company-scoped records", 
   assert.equal(result.adopted.find((item) => item.sourceAutomationId === "obsidian")?.adoption.unattendedEffectPolicy, "user_authorized_fixed_local_target.v1");
   assert.equal(db.querySql("SELECT id FROM mvp_automations WHERE company_id='company_a'").length, 6);
   assert.equal(db.querySql("SELECT id FROM mvp_automation_schedules WHERE company_id='company_a'").length, 6);
+});
+
+test("adoption upgrades a legacy registered slot in place without changing its schedule", async () => {
+  const now = db.nowIso();
+  db.upsert("companies", { id: "company_legacy", slug: "company-legacy", name: "Company Legacy", status: "active", created_at: now, updated_at: now });
+  db.upsert("company_memberships", { id: "catalog_legacy_membership", company_id: "company_legacy", user_id: "catalog_owner", role: "owner", status: "active", created_at: now, updated_at: now });
+  const sourceId = "automation";
+  const automationId = catalog.deterministicCompanyAutomationId("company_legacy", sourceId);
+  db.upsert("mvp_automations", {
+    id: automationId,
+    company_id: "company_legacy",
+    project_id: "company_legacy",
+    automation_type: "registered_workflow",
+    name: "Legacy email workflow",
+    description: "legacy",
+    goal: "legacy",
+    lane: "local",
+    risk_level: "medium",
+    approval_policy: "required_before_external_action",
+    worker_command_kind: "email_review_registered",
+    create_approval: 0,
+    schedule: "daily",
+    cadence: "daily",
+    builder_spec_json: JSON.stringify({ schema: "legacy.registered_workflow.v0", sourceAutomationId: sourceId }),
+    status: "active",
+    archived_at: null,
+    revision: 1,
+    current_version_id: "legacy_version",
+    created_at: now,
+    updated_at: now
+  });
+  db.upsert("mvp_automation_schedules", {
+    id: "legacy_schedule",
+    company_id: "company_legacy",
+    project_id: "company_legacy",
+    automation_id: automationId,
+    automation_version_id: null,
+    kind: "daily",
+    expression: "06:15",
+    timezone: "Asia/Tokyo",
+    enabled: 1,
+    status: "active",
+    revision: 4,
+    next_run_at: null,
+    last_run_at: null,
+    catch_up_policy: "skip",
+    paused_at: null,
+    created_at: now,
+    updated_at: now
+  });
+  const migrated = catalog.adoptRegisteredAutomationCatalog({ companyId: "company_legacy", actorUserId: "catalog_owner", sourceAutomationIds: [sourceId], enableSchedules: true });
+  assert.equal(migrated.adopted[0].automation.builderSpec.schema, "aos.registered_automation_adoption.v1");
+  assert.equal(migrated.adopted[0].schedule.id, "legacy_schedule");
+  assert.equal(migrated.adopted[0].schedule.expression, "06:15");
+  assert.equal(migrated.adopted[0].schedule.revision, 4);
 });

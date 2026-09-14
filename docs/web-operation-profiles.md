@@ -25,10 +25,11 @@ Minimum path:
    pre-existing user tabs open.
 
 Do not automatically add a Goal, broad UI audit, full-suite E2E, old-receipt
-reconciliation, or a new durable workflow for a UX-TRY. A compact action-time
-confirmation is still required immediately before an external effect, and
-personal contact data must be confirmed before it is entered into a third-party
-form.
+reconciliation, or a new durable workflow for a UX-TRY. Immediately before an
+external effect, read back the target and requested content. Existing user
+authorization covers the same target, account, destination, and effect class;
+ask only when that scope is missing or changes. Use user-provided, confirmed
+personal contact data; never guess an unknown required answer.
 
 Stop with an exact blocker when the target is not unique, the account or
 destination changes, a CAPTCHA/OTP/security code/identity verification is
@@ -64,6 +65,14 @@ This document does not weaken browser-policy requirements for CAPTCHA, OTP,
 identity verification, sensitive-data transmission, or other human approval
 boundaries. It only prevents optional audit machinery from being added to a
 clearly bounded one-off operation.
+
+For an official Chrome Plugin/Profile 2 connection or target-readback failure,
+read the applicable section of
+[chrome-plugin-stability](/Users/nichikatanaka/.codex/skills/chrome-plugin-stability/SKILL.md)
+and its runbook before recovery. That skill owns the `chrome_operation_v1`
+contract, Profile 2 identity and same-run handshake, shared transport owner,
+target parallelism, and the `reopenVisibleChromeProfile2WindowOnce` running-state
+guard. Do not copy those procedures into AGENTS.md.
 
 ## AOS Chrome Companion v0.3.2 operational boundary
 
@@ -101,3 +110,18 @@ When the selected route is the AOS Chrome Companion, keep the runtime small:
 
 This boundary supplements, and does not relax, the `UX-TRY` and `RELEASE`
 proof requirements above.
+
+## Recovery records for RELEASE
+
+Use the common execution policy for diagnosis, one bounded safe recovery,
+no-replay, and independent progress. In a registered/replayable AOS run, record
+the affected operation's `stop_class=must_stop|ask_one_question|warn_and_continue`
+and `progress_attempt_now`, `result`, `next_action_now`, `resume_trigger`, and
+`fallback_or_independent_work`. These belong in that run's existing record, not
+a new global gate or report for every local task.
+
+A temporary timeout, an optional artifact, or a historical reconciliation count
+alone does not force `must_stop`. Read the current target, owner, and effect
+state. Unknown effects are not replayed and foreign resources are not claimed
+or cleaned up. Continue independent safe work; use `none_safe` only when the
+remaining progress actually requires the named human action or external change.

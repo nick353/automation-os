@@ -4,13 +4,13 @@
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-  --focus-ring: #2563eb;
-  --border: #e5e7eb;
+  --focus-ring: #111;
+  --border: #e6e6e6;
   --surface: #ffffff;
-  --surface-muted: #f8fafc;
-  --text-muted: #64748b;
-  --accent: #2563eb;
-  --accent-soft: #eff6ff;
+  --surface-muted: #f7f7f7;
+  --text-muted: #666;
+  --accent: #111;
+  --accent-soft: #f2f2f2;
 }
 
 :focus-visible {
@@ -152,7 +152,7 @@ small {
   flex: 1;
   max-width: 720px;
   display: grid;
-  gap: 2px;
+  gap: 4px;
 }
 
 .search {
@@ -212,6 +212,50 @@ small {
   white-space: nowrap;
 }
 
+.top-status-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 22px;
+  color: #4f4f4f;
+  font-size: 12px;
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #a5a5a5;
+}
+
+.status-dot.ready {
+  background: #111;
+}
+
+.top-diagnostics,
+.chat-context-details {
+  color: #666;
+  font-size: 11px;
+}
+
+.top-diagnostics summary,
+.chat-context-details summary {
+  cursor: pointer;
+  color: #777;
+  list-style-position: inside;
+}
+
+.top-diagnostics-body {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.top-diagnostics-body small {
+  color: #888;
+}
+
 .top-actions,
 .title-actions,
 .button-row,
@@ -223,7 +267,8 @@ small {
 }
 
 section {
-  padding: 24px 28px 36px;
+  /* Keep the final action row clear of the sticky top bar and viewport edge. */
+    padding: 24px 28px 160px;
   min-width: 0;
 }
 
@@ -853,6 +898,23 @@ tr:hover td {
   border-top: 1px solid #f0f0f0;
 }
 
+.chat-mode-summary {
+  display: grid;
+  gap: 3px;
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border: 1px solid #dfe4eb;
+  border-left: 3px solid #7b9bd1;
+  border-radius: 7px;
+  background: #fbfcff;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.chat-mode-summary span {
+  color: var(--text-muted);
+}
+
 .bubble {
   width: fit-content;
   max-width: 68%;
@@ -920,6 +982,35 @@ tr:hover td {
   font-size: 12px;
 }
 
+.chat-context-details {
+  margin-left: auto;
+}
+
+.chat-context-details-body {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  padding-top: 6px;
+}
+
+.home-inline-details,
+.chat-runtime-details {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.home-inline-details summary,
+.chat-runtime-details summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.home-inline-details p {
+  margin: 8px 0 0;
+}
+
 .chat-progress {
   border: 1px solid #dfe7f4;
   background: #f7faff;
@@ -981,6 +1072,35 @@ tr:hover td {
   font-size: 11px;
 }
 
+.builder-step-row {
+  flex-wrap: wrap;
+  align-items: flex-end;
+}
+
+.builder-step-row .builder-step-title {
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
+.builder-step-title textarea {
+  width: 100%;
+  min-height: 64px;
+}
+
+.builder-step-row .checkbox-label {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.builder-step-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin: 8px 0;
+}
+
 .side-panel {
   padding: 16px;
   position: sticky;
@@ -992,6 +1112,65 @@ tr:hover td {
 
 .side-panel.wide {
   min-height: 420px;
+}
+
+.split.approvals-layout {
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+}
+
+.approvals-detail.side-panel {
+  position: static;
+  max-height: none;
+  overflow: visible;
+  overflow-wrap: anywhere;
+}
+
+.approvals-detail > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.approvals-detail table {
+  min-width: 0;
+  table-layout: fixed;
+}
+
+.approvals-detail th,
+.approvals-detail td {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+[data-control-id="truthful.recovery.portable.panel"] select {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  margin: 8px 0;
+}
+
+[data-control-id="truthful.recovery.portable.table"] table {
+  min-width: 0;
+  table-layout: fixed;
+}
+
+[data-control-id="truthful.recovery.portable.table"] th:first-child {
+  width: 22%;
+}
+
+[data-control-id="truthful.recovery.portable.table"] td {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.approvals-detail th:first-child,
+.approvals-detail td:first-child {
+  width: 28%;
+}
+
+@media (max-width: 1100px) {
+  .split.approvals-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .form-grid {
@@ -1385,7 +1564,14 @@ label textarea {
   box-shadow: 0 16px 40px rgba(0,0,0,.22);
   padding: 14px;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
+  overflow-wrap: anywhere;
+}
+
+.feedback-panel > * {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .feedback-panel-head {
@@ -1393,6 +1579,14 @@ label textarea {
   align-items: start;
   justify-content: space-between;
   gap: 12px;
+}
+
+.feedback-panel-head > div {
+  min-width: 0;
+}
+
+.feedback-panel-head > button {
+  flex: 0 0 auto;
 }
 
 .feedback-panel-head strong,
@@ -2013,6 +2207,10 @@ label textarea {
   background: #fbfefb;
 }
 
+.home-priority-panel + .panel {
+  scroll-margin-top: 12px;
+}
+
 .today-digest-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -2305,6 +2503,23 @@ label textarea {
 
 .admin-diagnostic-details pre {
   margin-top: 10px;
+}
+
+.production-technical-details {
+  margin-top: 12px;
+  border-top: 1px solid #ececec;
+  padding-top: 10px;
+}
+
+.production-technical-details summary {
+  cursor: pointer;
+  color: #59616c;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.production-technical-details[open] summary {
+  margin-bottom: 12px;
 }
 
 .state-chip {
@@ -2931,6 +3146,15 @@ label textarea {
   font-size: 12px;
 }
 
+.settings-section-kicker {
+  margin: 0 0 4px;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
 .plugin-auth-wizard-header {
   display: grid;
   grid-template-columns: minmax(220px, 0.9fr) minmax(260px, 1.1fr);
@@ -3125,6 +3349,97 @@ label textarea {
   border-color: var(--accent);
   background: var(--accent-soft);
   color: var(--text);
+}
+
+.plugin-catalog-details {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+
+.plugin-catalog-details > summary {
+  display: inline-flex;
+  min-height: 36px;
+  align-items: center;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 650;
+  list-style-position: inside;
+}
+
+.plugin-catalog-details[open] > summary {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.plugin-advanced-details {
+  margin: 14px 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.plugin-advanced-details > summary {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 2px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 650;
+  list-style-position: inside;
+}
+
+.plugin-advanced-details > summary::after {
+  content: "表示";
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.plugin-advanced-details[open] > summary {
+  color: var(--text);
+}
+
+.plugin-advanced-details[open] > summary::after {
+  content: "閉じる";
+}
+
+.plugin-advanced-details > .panel:first-of-type {
+  margin-top: 6px;
+}
+
+.workflow-guide-details {
+  margin-top: 14px;
+}
+
+.workflow-guide-details > summary {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 650;
+  list-style-position: inside;
+}
+
+.workflow-guide-details[open] > summary {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.plugin-catalog-details > .plugin-grid {
+  margin-top: 12px;
 }
 
 .plugin-grid {

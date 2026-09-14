@@ -18,6 +18,24 @@ Worker receipts use the local Automation OS worker contract. The production stor
 
 `npm run worker:loop:stored` is the local Mac bridge for production control-plane use. Save the same production PostgreSQL `DATABASE_URL` used by Zeabur into Automation OS once, keep the Codex CLI logged in with the ChatGPT subscription, and run the loop on the Mac instead of putting `~/.codex/auth.json` on Zeabur. The portable registered-worker path uses `scripts/portable-worker-profile.mjs`: repo root, Browser Use CLI paths, project roots, `CODEX_HOME`, and the account label are machine-local configuration, while the AOS token remains in Keychain or a protected token file. The profile intentionally does not copy an inherited `CODEX_CLI_PATH` unless an explicit `AUTOMATION_OS_CODEX_BIN` is supplied, so a new machine can resolve its own official CLI. The loop calls `runWorkerOnce()` repeatedly and prints JSON cycle receipts. It does not require `OPENAI_API_KEY`; if API keys are present, the startup receipt says so.
 
+## Codex account and environment boundary
+
+The local Mac worker and a server Codex App Server use separate `CODEX_HOME`
+authentication stores. The same Codex account may be selected in both, or a
+different account may be selected, while the AOS company ID, workflow ID,
+provider account, approval binding, run identity, and worker contract stay
+unchanged. `codex_account_ref` is only a non-secret capability label; it is
+not an AOS identity or ownership binding.
+
+Never copy `auth.json`, cookies, access tokens, or refresh tokens between the
+local and server environments. Local Codex logout normally does not log out
+the server. Server auth expiry blocks only the server Codex lane. Switching
+accounts creates a new attempt boundary: delayed or unknown-effect results
+from the old attempt are not resent. After a switch, independently re-check
+auth, readiness, and the read-only canary in each environment. Provider
+accounts and browser sessions are separate from the Codex account and are not
+silently migrated.
+
 Production Replay QA treats this split as a hard operating boundary. Zeabur is the control plane for UI, API, PostgreSQL state, write guard, and readback. Subscription-backed planning, canonical local Browser Use CLI/browser automation, workflow-owned compatibility lanes, screenshots, cleanup, and external-service proof capture stay on the Mac worker. Do not describe Zeabur as a standalone hosted AI planner or hosted browser runner unless a separate hosted planner/browser lane is explicitly configured and verified.
 
 For production, the preferred safe path is to store the PostgreSQL connection in the local Automation OS secret store, then use the stored-secret wrappers:

@@ -24,8 +24,8 @@ export type PortableWorkflowManifestV1 = {
   };
   execution: {
     backend: "automation_os_worker";
-    browser_surface: "browser_use_cli";
-    browser_runtime: "browser_use_cli";
+    browser_surface: "aos_chrome_companion_profile_instance";
+    browser_runtime: "aos_chrome_companion";
     connector_gateway: "mcp";
     connector_execution_owner: PortableConnectorExecutionOwner;
     app_dependency: false;
@@ -44,7 +44,7 @@ export type PortableRunManifestV1 = {
   idempotency_key: string;
   external_action_allowed: false;
   app_dependency: false;
-  browser_runtime?: "browser_use_cli";
+  browser_runtime?: "aos_chrome_companion";
   connector_execution_owner?: PortableConnectorExecutionOwner;
 };
 
@@ -102,8 +102,8 @@ export function validatePortableWorkflowManifestV1(value: PortableWorkflowManife
   if (!value.name.trim()) fail("name_empty");
   if (!value.schedule.rrule.trim() || !value.schedule.timezone.trim()) fail("schedule_invalid");
   if (value.execution.backend !== "automation_os_worker") fail("backend_invalid");
-  if (value.execution.browser_surface !== "browser_use_cli") fail("browser_surface_invalid");
-  if (value.execution.browser_runtime !== "browser_use_cli") fail("browser_runtime_invalid");
+  if (value.execution.browser_surface !== "aos_chrome_companion_profile_instance") fail("browser_surface_invalid");
+  if (value.execution.browser_runtime !== "aos_chrome_companion") fail("browser_runtime_invalid");
   if (value.execution.connector_gateway !== "mcp") fail("connector_gateway_invalid");
   if (value.execution.connector_execution_owner !== "zeabur_codex_app_server" && value.execution.connector_execution_owner !== "mac_worker_explicit_connector_fallback") fail("connector_execution_owner_invalid");
   if (value.execution.app_dependency !== false) fail("app_dependency_invalid");
@@ -149,7 +149,7 @@ export function createPortableRunManifestV1(input: {
     idempotency_key: input.idempotencyKey,
     external_action_allowed: false,
     app_dependency: false,
-    browser_runtime: "browser_use_cli",
+    browser_runtime: "aos_chrome_companion",
     connector_execution_owner: "zeabur_codex_app_server"
   });
 }
@@ -161,7 +161,7 @@ export const portableWorkflowManifests: Record<PortableWorkflowId, PortableWorkf
     version: 1,
     name: "求人応募管理",
     schedule: { rrule: "RRULE:FREQ=WEEKLY;BYHOUR=7;BYMINUTE=30;BYDAY=SU,MO,TU,WE,TH,FR,SA", timezone: "Asia/Tokyo" },
-    execution: { backend: "automation_os_worker", browser_surface: "browser_use_cli", browser_runtime: "browser_use_cli", connector_gateway: "mcp", connector_execution_owner: "zeabur_codex_app_server", app_dependency: false },
+    execution: { backend: "automation_os_worker", browser_surface: "aos_chrome_companion_profile_instance", browser_runtime: "aos_chrome_companion", connector_gateway: "mcp", connector_execution_owner: "zeabur_codex_app_server", app_dependency: false },
     stages: ["mail_intake", "job_discovery", "candidate_review", "external_submit"],
     external_effect_policy: "approval_required",
     source_refs: ["/Users/nichikatanaka/.codex/automations/automation-3/automation.toml", "job-application-manager-automation"]
@@ -172,7 +172,7 @@ export const portableWorkflowManifests: Record<PortableWorkflowId, PortableWorkf
     version: 1,
     name: "Daily AI Research + Publish Run",
     schedule: { rrule: "FREQ=DAILY;BYHOUR=9;BYMINUTE=0;BYSECOND=0", timezone: "Asia/Tokyo" },
-    execution: { backend: "automation_os_worker", browser_surface: "browser_use_cli", browser_runtime: "browser_use_cli", connector_gateway: "mcp", connector_execution_owner: "zeabur_codex_app_server", app_dependency: false },
+    execution: { backend: "automation_os_worker", browser_surface: "aos_chrome_companion_profile_instance", browser_runtime: "aos_chrome_companion", connector_gateway: "mcp", connector_execution_owner: "zeabur_codex_app_server", app_dependency: false },
     stages: ["research", "draft", "approval", "external_publish"],
     external_effect_policy: "approval_required",
     source_refs: ["/Users/nichikatanaka/.codex/automations/daily-ai-research-publish-run/automation.toml", "daily-ai-research-publish-run"]
@@ -183,7 +183,7 @@ export const portableWorkflowManifests: Record<PortableWorkflowId, PortableWorkf
     version: 1,
     name: "NisenPrints Daily Product + Canva + Printify + Etsy + Pinterest",
     schedule: { rrule: "FREQ=DAILY;BYHOUR=8;BYMINUTE=30;BYSECOND=0", timezone: "Asia/Tokyo" },
-    execution: { backend: "automation_os_worker", browser_surface: "browser_use_cli", browser_runtime: "browser_use_cli", connector_gateway: "mcp", connector_execution_owner: "zeabur_codex_app_server", app_dependency: false },
+    execution: { backend: "automation_os_worker", browser_surface: "aos_chrome_companion_profile_instance", browser_runtime: "aos_chrome_companion", connector_gateway: "mcp", connector_execution_owner: "zeabur_codex_app_server", app_dependency: false },
     stages: ["product_prepare", "asset_prepare", "approval", "external_publish"],
     external_effect_policy: "approval_required",
     source_refs: ["/Users/nichikatanaka/.codex/automations/nisenprints-daily-product-canva-printify-etsy-pinterest/automation.toml", "etsy-pinterest-poster"]
@@ -194,7 +194,7 @@ export const portableWorkflowManifests: Record<PortableWorkflowId, PortableWorkf
     version: 1,
     name: "Prompt Transfer Ukiyoe",
     schedule: { rrule: "FREQ=DAILY;BYHOUR=7;BYMINUTE=45;BYSECOND=0", timezone: "Asia/Tokyo" },
-    execution: { backend: "automation_os_worker", browser_surface: "browser_use_cli", browser_runtime: "browser_use_cli", connector_gateway: "mcp", connector_execution_owner: "zeabur_codex_app_server", app_dependency: false },
+    execution: { backend: "automation_os_worker", browser_surface: "aos_chrome_companion_profile_instance", browser_runtime: "aos_chrome_companion", connector_gateway: "mcp", connector_execution_owner: "zeabur_codex_app_server", app_dependency: false },
     stages: ["prompt_read", "sheets_write", "readback"],
     external_effect_policy: "approval_required",
     source_refs: ["prompt-transfer-ukiyoe", "prompt-transfer"]
@@ -205,7 +205,7 @@ export const portableWorkflowManifests: Record<PortableWorkflowId, PortableWorkf
     version: 1,
     name: "SNS Multi Poster Ukiyoe",
     schedule: { rrule: "FREQ=DAILY;BYHOUR=18;BYMINUTE=0;BYSECOND=0", timezone: "Asia/Tokyo" },
-    execution: { backend: "automation_os_worker", browser_surface: "browser_use_cli", browser_runtime: "browser_use_cli", connector_gateway: "mcp", connector_execution_owner: "zeabur_codex_app_server", app_dependency: false },
+    execution: { backend: "automation_os_worker", browser_surface: "aos_chrome_companion_profile_instance", browser_runtime: "aos_chrome_companion", connector_gateway: "mcp", connector_execution_owner: "zeabur_codex_app_server", app_dependency: false },
     stages: ["content_prepare", "approval", "external_post", "readback"],
     external_effect_policy: "approval_required",
     source_refs: ["sns-multi-poster-ukiyoe", "sns-multi-poster"]
@@ -216,7 +216,7 @@ export const portableWorkflowManifests: Record<PortableWorkflowId, PortableWorkf
     version: 1,
     name: "X Authenticated Browser Lane",
     schedule: { rrule: "FREQ=DAILY;BYHOUR=8;BYMINUTE=0;BYSECOND=0", timezone: "Asia/Tokyo" },
-    execution: { backend: "automation_os_worker", browser_surface: "browser_use_cli", browser_runtime: "browser_use_cli", connector_gateway: "mcp", connector_execution_owner: "zeabur_codex_app_server", app_dependency: false },
+    execution: { backend: "automation_os_worker", browser_surface: "aos_chrome_companion_profile_instance", browser_runtime: "aos_chrome_companion", connector_gateway: "mcp", connector_execution_owner: "zeabur_codex_app_server", app_dependency: false },
     stages: ["authenticated_read", "approval", "external_post", "readback"],
     external_effect_policy: "approval_required",
     source_refs: ["automation-os:native:x-authenticated-browser-lane"]

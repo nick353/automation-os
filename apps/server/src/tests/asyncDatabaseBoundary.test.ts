@@ -289,8 +289,9 @@ test("portable approval PATCH keeps PostgreSQL decision and target sync asynchro
   assert.ok(helperStart >= 0);
   assert.ok(helperEnd > helperStart);
   const helper = source.slice(helperStart, helperEnd);
-  assert.match(helper, /await execSqlAsync/);
-  assert.match(helper, /await syncTargetAdmissionApprovalAsync/);
+  assert.match(helper, /await runSqlTransactionAsync\(/);
+  assert.match(helper, /storedApprovalDecisionSql\(/);
+  assert.match(helper, /await getTargetAdmissionAsync\(/);
   assert.match(helper, /await jobApplicationApprovalConnectionGateAsync/);
   assert.match(source, /job_application_account_connection_inventory_empty/u);
   assert.doesNotMatch(helper, /\bexecSql\(/u);

@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { once } from "node:events";
 import { spawn } from "node:child_process";
 import test from "node:test";
-import { bindBusinessReceiptToClaim, buildPortableProtectedReadback, buildZeaburConnectorRegistryReadback, claimBrowserEnvironment, createAdmission, createEffectAuthorityFile, createInputBundle, effectAuthorityFromClaim, fixedChromePluginProfile2BlockerForClaim, initialPortableWorkerTargetStatuses, mergePortableRemoteWorkerStatus, normalizePortableRemoteRunnerReceipt, persistPortableProtectedReadback, portableQueueTargets, portableRemoteErrorCode, portableRemoteHttpTimeoutMs, readChromePluginWorkerReadback, requestPortableRemoteJson, runCodexAppListReadback, runZeaburServiceExec, shouldEmitPortableRemoteResult } from "../aos-portable-remote-worker.mjs";
+import { bindBusinessReceiptToClaim, buildPortableProtectedReadback, buildPortableWorkerHeartbeatBody, buildPortableWorkerRuntimeObservation, buildZeaburConnectorRegistryReadback, claimBrowserEnvironment, createAdmission, createEffectAuthorityFile, createInputBundle, effectAuthorityFromClaim, fixedChromePluginProfile2BlockerForClaim, initialPortableWorkerTargetStatuses, mergePortableRemoteWorkerStatus, normalizePortableRemoteRunnerReceipt, normalizePortableWorkerHeartbeatAck, persistPortableProtectedReadback, portableQueueTargets, portableRemoteErrorCode, portableRemoteHttpTimeoutMs, readChromePluginWorkerReadback, requestPortableRemoteJson, runCodexAppListReadback, runZeaburServiceExec, shouldEmitPortableRemoteResult } from "../aos-portable-remote-worker.mjs";
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
@@ -26,6 +26,69 @@ function runWorker(env, args) {
     child.stderr.on("data", (chunk) => { stderr += chunk; });
     child.once("error", reject);
     child.once("close", (code, signal) => resolve({ code, signal, stdout, stderr }));
+  });
+}
+
+for (const scenario of ["complete", "wrong_run", "unexpected_write"]) {
+  test(`Gmail review uses the company-bound Server route: ${scenario}`, async () => {
+    const artifactRoot = mkdtempSync(join(tmpdir(), "aos-gmail-worker-test-"));
+    const runId = `run_gmail_worker_${scenario}`;
+    const claim = {
+      run_id: runId, company_id: "company_gmail_worker_test", workflow_id: "email-review-reply",
+      step_id: `${runId}_step_1`, source_trigger: "automation_os_scheduler",
+      idempotency_key: `gmail-worker-${scenario}`, read_only_stage: "reference_readback", execution_mode: "read_only",
+      business_effect_stage: null, input_bundle: null, input_bundle_sha256: null, target_digest: null,
+      worker_id: "mac-gmail-worker-test", lease_expires_at: new Date(Date.now() + 600_000).toISOString(),
+      external_action_executed: false, browser_surface: "local_worker",
+    };
+    let receipt;
+    let reviewCalls = 0;
+    const server = createServer(async (request, response) => {
+      let body = "";
+      for await (const chunk of request) body += chunk;
+      response.setHeader("content-type", "application/json");
+      if (request.url === "/api/portable-worker/claim") {
+        response.end(JSON.stringify({ ok: true, claimed: true, run: claim }));
+      } else if (request.url === `/api/v1/companies/${claim.company_id}/connectors/gmail/review-read-only`) {
+        reviewCalls += 1;
+        assert.equal(JSON.parse(body).run_id, runId);
+        assert.equal(request.headers["x-automation-os-company-id"], claim.company_id);
+        response.end(JSON.stringify({ ok: true, review: {
+          status: "complete", exact_blocker: null, run_id: scenario === "wrong_run" ? "foreign_run" : runId,
+          company_id: claim.company_id, external_action_executed: scenario === "unexpected_write",
+          review: { fetched_count: 1, items: [{ message_id: "mail-1", summary: "fixture" }] },
+        } }));
+      } else if (request.url === `/api/portable-worker/${runId}/receipt`) {
+        receipt = JSON.parse(body).receipt;
+        response.end(JSON.stringify({ ok: true, replayed: false, receipt }));
+      } else {
+        response.statusCode = 404;
+        response.end("{}");
+      }
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    try {
+      const result = await runWorker({
+        AUTOMATION_OS_PORTABLE_REMOTE_TOKEN: "test-token-not-logged",
+        AUTOMATION_OS_PORTABLE_REMOTE_URL: `http://127.0.0.1:${server.address().port}`,
+        AUTOMATION_OS_PORTABLE_REMOTE_COMPANY_ID: claim.company_id,
+        AUTOMATION_OS_PORTABLE_REMOTE_WORKER_ID: claim.worker_id,
+        AUTOMATION_OS_PORTABLE_REMOTE_ARTIFACT_ROOT: artifactRoot,
+        AUTOMATION_OS_WORKER_ROLE: "mac",
+      }, ["--once"]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(reviewCalls, 1);
+      assert.equal(receipt.status, scenario === "complete" ? "complete" : "blocked");
+      assert.equal(receipt.external_action_executed, scenario === "unexpected_write");
+      assert.equal(receipt.business_proof_verified, false);
+      assert.equal(receipt.read_only_proof_verified, scenario === "complete");
+      if (scenario === "wrong_run") assert.equal(receipt.exact_blocker, "gmail_review_response_binding_invalid");
+      if (scenario === "unexpected_write") assert.equal(receipt.exact_blocker, "gmail_review_read_only_boundary_violation");
+    } finally {
+      server.close();
+      await once(server, "close").catch(() => {});
+    }
   });
 }
 
@@ -100,6 +163,21 @@ test("Official Google Drive app display name matches the hyphenated plugin name"
   });
   assert.equal(registry.connectorAuth["google-drive"], "verified");
   assert.equal(registry.pluginRegistry.installed[0].authStatus, "verified");
+});
+
+test("Codex Server catalog preserves exact Plugin identity and auth policy", () => {
+  const registry = buildZeaburConnectorRegistryReadback({
+    login: "logged_in",
+    installed: [{ pluginId: "gmail@openai-curated", name: "gmail", marketplaceName: "openai-curated", installed: true, authPolicy: "ON_INSTALL" }],
+    available: [{ pluginId: "linear@openai-curated", name: "linear", marketplaceName: "openai-curated", installed: false, authPolicy: "ON_INSTALL" }, { pluginId: "build-web-apps@openai-curated", name: "build-web-apps", marketplaceName: "openai-curated", installed: false, authPolicy: "ON_USE" }],
+    mcp: [],
+    appReadback: { ok: true, apps: [{ id: "gmail-app", name: "Gmail", isAccessible: true, isEnabled: true }] },
+  });
+  assert.deepEqual(registry.pluginRegistry.available, [
+    { id: "linear@openai-curated", name: "linear", installed: false, authStatus: "unknown", marketplaceName: "openai-curated", authPolicy: "ON_INSTALL" },
+    { id: "build-web-apps@openai-curated", name: "build-web-apps", installed: false, authStatus: "unknown", marketplaceName: "openai-curated", authPolicy: "ON_USE" },
+  ]);
+  assert.equal(registry.pluginRegistry.installed[0].authPolicy, "ON_INSTALL");
 });
 
 test("Unavailable official app access fails closed before connector auth", () => {
@@ -401,16 +479,15 @@ test("resident remote worker dispatches registered local workflows to the Mac lo
       AUTOMATION_OS_PORTABLE_REMOTE_COMPANY_ID: claim.company_id,
       AUTOMATION_OS_PORTABLE_REMOTE_WORKER_ID: claim.worker_id,
       AUTOMATION_OS_PORTABLE_REMOTE_ARTIFACT_ROOT: artifactRoot,
+      // Routing is an isolated test, not a live backup integrity/remote check.
+      AUTOMATION_OS_BACKUP_RUNNER_PATH: join(artifactRoot, "absent-backup-runner"),
       AUTOMATION_OS_WORKER_ROLE: "mac",
     }, ["--once"]);
     assert.equal(result.code, 0);
     assert.equal(result.stderr, "");
     const output = JSON.parse(result.stdout.trim());
     assert.equal(output.workflow_id, claim.workflow_id);
-    // The fixed runner is present in the real worker environment, so the
-    // read-only adapter may legitimately complete its preflight.  Keep the
-    // fallback blockers for isolated fixtures where that runner is absent.
-    assert.ok([null, "local_backup_runner_missing", "local_backup_effect_requires_explicit_approval"].includes(output.exact_blocker));
+    assert.equal(output.exact_blocker, "local_backup_runner_missing");
     assert.equal(output.external_action_executed, false);
     assert.equal(output.browser_surface, "local_worker");
     assert.equal(receiptBody?.receipt?.browser_surface, "local_worker");
@@ -543,9 +620,153 @@ test("worker heartbeat Chrome projection separates foreground lease from target-
   assert.equal(readback?.bridge_owner?.status, "bridge_only");
 });
 
+test("idle heartbeat runtime observation is explicitly unobserved and redacts local process details", () => {
+  const observedAt = "2026-09-08T01:02:03.000Z";
+  const observation = buildPortableWorkerRuntimeObservation({
+    workerStatus: "idle",
+    runId: "run-must-not-bind-while-idle",
+    observedAt,
+    psOutput: "123 1 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-port=9222 --user-data-dir=/Users/private/.browser-use-cli/profiles/profile-1 --token=must-not-cross\n",
+    roomRegistryOutput: JSON.stringify({ schema: "browser-use-room-registry.v1", rooms: [] })
+  });
+  assert.deepEqual(observation, {
+    schema: "aos.portable_worker_runtime_observation.v1",
+    status: "idle",
+    observed_at: observedAt,
+    run_id: null,
+    room_id: null,
+    browser_use: {
+      runtime_status: "unobserved",
+      process: { status: "unobserved", pid: null, process_count: null, profile_ref: null, port: null },
+      room: null,
+      transport: { status: "unobserved", last_seen_at: null }
+    }
+  });
+  assert.doesNotMatch(JSON.stringify(observation), /Users|remote-debugging|must-not-cross/u);
+});
+
+test("bound heartbeat runtime observation reports only the safe process, room, and transport projection", () => {
+  const observedAt = "2026-09-08T01:02:03.000Z";
+  const observation = buildPortableWorkerRuntimeObservation({
+    workerStatus: "running",
+    runId: "run-bound-1",
+    observedAt,
+    psOutput: [
+      "100 1 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-port=9222 --user-data-dir=/Users/private/.browser-use-cli/profiles/profile-1",
+      "101 100 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-port=9222 --user-data-dir=/Users/private/.browser-use-cli/profiles/profile-1"
+    ].join("\n"),
+    roomRegistryOutput: JSON.stringify({
+      schema: "browser-use-room-registry.v1",
+      rooms: [{
+        room_id: "room-bound-1",
+        state: "active",
+        lifecycle: "single-use",
+        profile: "/Users/private/.browser-use-cli/profiles/profile-1",
+        port: 9222,
+        owner: { kind: "task", id: "task-bound-1" },
+        task_id: "task-bound-1",
+        automation_id: "automation-bound-1",
+        current_activity: "claim",
+        updated_at: observedAt
+      }]
+    })
+  });
+  assert.equal(observation.status, "observed");
+  assert.equal(observation.run_id, "run-bound-1");
+  assert.equal(observation.room_id, "room-bound-1");
+  assert.deepEqual(observation.browser_use?.process, {
+    status: "present", pid: 100, process_count: 2, profile_ref: "profile-1", port: 9222
+  });
+  assert.equal(observation.browser_use?.room?.room_id, "room-bound-1");
+  assert.deepEqual(observation.browser_use?.transport, { status: "connected", last_seen_at: observedAt });
+  assert.doesNotMatch(JSON.stringify(observation), /Users|Contents|MacOS/u);
+});
+
+test("heartbeat payload binds the selected target company and preserves generation metadata", () => {
+  const observedAt = "2026-09-08T01:02:03.000Z";
+  const runtimeObservation = buildPortableWorkerRuntimeObservation({ workerStatus: "idle", observedAt, psOutput: "" });
+  const body = buildPortableWorkerHeartbeatBody({
+    companyId: "company-selected-target",
+    status: "idle",
+    queueDepth: null,
+    exactBlocker: null,
+    runId: "run-ignored-while-idle",
+    observedAt,
+    runtimeObservation,
+    chromePluginReadback: null
+  });
+  assert.equal(body.schema, "aos.portable_worker_heartbeat.v2");
+  assert.equal(body.company_id, "company-selected-target");
+  assert.match(body.worker_id, /^-?[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u);
+  assert.match(body.worker_instance_id, /^-?[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u);
+  assert.match(body.generation, /^-?[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u);
+  assert.equal(body.observed_at, observedAt);
+  assert.equal(body.run_id, null);
+  assert.equal(body.runtime_observation?.room_id, null);
+  assert.equal(body.chrome_plugin_readback, null);
+});
+
+test("heartbeat ACK requires a server timestamp and verifies a complete binding echo", () => {
+  const options = {
+    companyId: "company-selected-target",
+    workerId: "worker-bound-1",
+    workerInstanceId: "instance-bound-1",
+    generation: "generation-bound-1"
+  };
+  const observedAt = "2026-09-08T01:02:04.000Z";
+  const heartbeatAt = "2026-09-08T01:02:03.500Z";
+  assert.deepEqual(normalizePortableWorkerHeartbeatAck({
+    ok: true,
+    heartbeat_at: heartbeatAt,
+    company_id: options.companyId,
+    worker_id: options.workerId,
+    worker_instance_id: options.workerInstanceId,
+    generation: options.generation
+  }, options, observedAt), {
+    schema: "aos.portable_worker_heartbeat_transport_ack.v1",
+    status: "acknowledged",
+    observed_at: observedAt,
+    ack_at: heartbeatAt,
+    worker_instance_id: options.workerInstanceId,
+    generation: options.generation,
+    binding_status: "verified"
+  });
+  assert.equal(normalizePortableWorkerHeartbeatAck({
+    ok: true,
+    transport_ack: {
+      schema: "aos.portable_worker_heartbeat_transport_ack.v1",
+      status: "acknowledged",
+      ack_at: heartbeatAt,
+      worker_instance_id: options.workerInstanceId,
+      generation: options.generation,
+      binding_status: "verified"
+    }
+  }, options, observedAt).binding_status, "verified");
+  const missingTimestamp = normalizePortableWorkerHeartbeatAck({ ok: true }, options, observedAt);
+  assert.equal(missingTimestamp.status, "blocked");
+  assert.equal(missingTimestamp.ack_at, null);
+  assert.equal(missingTimestamp.binding_status, "legacy_unbound");
+  assert.equal(normalizePortableWorkerHeartbeatAck({
+    ok: true,
+    heartbeat_at: heartbeatAt,
+    transport_ack: { secret: "must-not-cross" }
+  }, options, observedAt).status, "blocked");
+  const mismatch = normalizePortableWorkerHeartbeatAck({
+    ok: true,
+    heartbeat_at: heartbeatAt,
+    company_id: options.companyId,
+    worker_id: options.workerId,
+    worker_instance_id: "instance-other",
+    generation: options.generation
+  }, options, observedAt);
+  assert.equal(mismatch.status, "acknowledged");
+  assert.equal(mismatch.binding_status, "mismatch");
+});
+
 test("remote HTTP requests are bounded and convert an abort into an exact blocker", async () => {
   assert.equal(portableRemoteHttpTimeoutMs(0), 1_000);
-  assert.equal(portableRemoteHttpTimeoutMs(999_999), 120_000);
+  assert.equal(portableRemoteHttpTimeoutMs(300_000), 300_000);
+  assert.equal(portableRemoteHttpTimeoutMs(999_999), 300_000);
   assert.equal(portableRemoteHttpTimeoutMs("invalid"), 15_000);
   const server = createServer((_request, _response) => {
     // Deliberately never complete this response; the worker must not hang.
@@ -656,6 +877,9 @@ test("fresh worker generations reset target readback to the configured authoriti
     "local:http://127.0.0.1:8787:company_local_current",
   ]);
   assert.equal(merged.target_statuses["local:http://127.0.0.1:8787:company_local_current"].claim_status, "unknown");
+  assert.equal(merged.target_statuses["remote:https://automation.example:company_remote"].heartbeat_transport_status, "unobserved");
+  assert.equal(merged.target_statuses["remote:https://automation.example:company_remote"].heartbeat_ack_binding_status, "unverified");
+  assert.equal(merged.target_statuses["remote:https://automation.example:company_remote"].heartbeat_ack_at, null);
 });
 
 test("same portable worker claim reuses a valid admission instead of rewriting its time-bound receipt", () => {

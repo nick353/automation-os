@@ -13,6 +13,26 @@ process.env.AUTOMATION_OS_SECRET_DIR = join(tempRoot, "secrets");
 const { app } = await import("../index.js");
 const db = await import("../db/client.js");
 
+test("planner turn timeout configuration uses the default, cap, and fail-closed invalid-value behavior", async () => {
+  const { resolvePlannerTurnTimeoutMs } = await import("../planner/createPlannerJobs.js");
+  const previous = process.env.AUTOMATION_OS_CREATE_PLANNER_TURN_TIMEOUT_MS;
+  try {
+    delete process.env.AUTOMATION_OS_CREATE_PLANNER_TURN_TIMEOUT_MS;
+    assert.equal(resolvePlannerTurnTimeoutMs(), 120_000);
+    process.env.AUTOMATION_OS_CREATE_PLANNER_TURN_TIMEOUT_MS = "300000";
+    assert.equal(resolvePlannerTurnTimeoutMs(), 300_000);
+    process.env.AUTOMATION_OS_CREATE_PLANNER_TURN_TIMEOUT_MS = "300001";
+    assert.equal(resolvePlannerTurnTimeoutMs(), 300_000);
+    for (const value of ["", "0", "-1", "not-a-duration", "Infinity"]) {
+      process.env.AUTOMATION_OS_CREATE_PLANNER_TURN_TIMEOUT_MS = value;
+      assert.equal(resolvePlannerTurnTimeoutMs(), 120_000, `invalid planner timeout ${JSON.stringify(value)} must use the default`);
+    }
+  } finally {
+    if (previous === undefined) delete process.env.AUTOMATION_OS_CREATE_PLANNER_TURN_TIMEOUT_MS;
+    else process.env.AUTOMATION_OS_CREATE_PLANNER_TURN_TIMEOUT_MS = previous;
+  }
+});
+
 test("POST /api/create/chat queues a project-scoped Codex App Server turn without exposing snapshot internals", async () => {
   db.initDb();
   db.resetDemoData();
@@ -115,6 +135,25 @@ test("GET /api/create/chat/threads returns only the actor/company-scoped redacte
   assert.equal(JSON.stringify(body).includes("project_b_history"), false);
   assert.equal(JSON.stringify(body).includes("thread_legacy_without_actor"), false);
   assert.equal(job.status, "queued");
+
+  const reply = "今回の保存済み回答 token=reply-secret-value";
+  db.execSql(`UPDATE create_planner_jobs SET status='completed', result_json=${db.sqlValue({ reply, title: "保存済み回答" })} WHERE id=${db.sqlValue(job.id)}`);
+  const completedResponse = await requestJson("GET", "/api/create/chat/threads?project_id=project-a");
+  const completed = JSON.parse(completedResponse.body).threads[0];
+  assert.equal(completed.messages.length, 3);
+  assert.equal(completed.messages.at(-1).role, "assistant");
+  assert.equal(completed.messages.at(-1).text, completed.serverReply);
+  assert.equal(JSON.stringify(completed).includes("reply-secret-value"), false);
+
+  db.execSql(`UPDATE create_planner_jobs SET messages_json=${db.sqlValue(completed.messages)} WHERE id=${db.sqlValue(job.id)}`);
+  const repeatedResponse = await requestJson("GET", "/api/create/chat/threads?project_id=project-a");
+  assert.equal(JSON.parse(repeatedResponse.body).threads[0].messages.length, 3, "repeated projection must not append the same reply twice");
+
+  db.execSql(`UPDATE create_planner_jobs SET status='blocked', messages_json=${db.sqlValue([{ role: "user", text: "未完了" }])} WHERE id=${db.sqlValue(job.id)}`);
+  const blockedResponse = await requestJson("GET", "/api/create/chat/threads?project_id=project-a");
+  const blocked = JSON.parse(blockedResponse.body).threads[0];
+  assert.equal(blocked.messages.length, 1);
+  assert.equal(blocked.serverReply, undefined, "blocked jobs must not expose an unconfirmed answer");
 });
 
 test("chat planner cancellation fences a queued job and preserves actor scope", async () => {
@@ -350,8 +389,11 @@ test("Mac worker preserves a safe Codex App Server blocker for chat readback", a
     messages: [{ role: "user", text: "App Serverの接続状態を確認" }],
     metadata: { transport: "codex_app_server", actorUserId: "user_local_owner", companyIds: ["project-a"] }
   });
+  let turnCalls = 0;
   const failingClient = {
-    startOrResumeThread: async () => {
+    startOrResumeThread: async () => "thread_blocked",
+    startTurn: async () => {
+      turnCalls += 1;
       throw new Error("codex_app_server_turn_timeout secret=must-not-escape");
     }
   } as unknown as CodexAppServerClient;
@@ -360,6 +402,13 @@ test("Mac worker preserves a safe Codex App Server blocker for chat readback", a
   assert.equal(processed[0]?.id, job.id);
   assert.equal(processed[0]?.status, "blocked");
   assert.equal(processed[0]?.exactBlocker, "codex_app_server_turn_timeout");
+  assert.equal(turnCalls, 1);
+  const lease = db.querySql<{ status: string; lease_owner: string | null; lease_expires_at: string | null }>(
+    `SELECT status, lease_owner, lease_expires_at FROM create_planner_jobs WHERE id=${db.sqlValue(job.id)}`
+  )[0];
+  assert.deepEqual(lease, { status: "blocked", lease_owner: null, lease_expires_at: null });
+  assert.deepEqual(await processQueuedCreatePlannerJobs(1, { workerId: "worker-replay", appServerClient: failingClient }), []);
+  assert.equal(turnCalls, 1, "a blocked planner job must not replay the App Server turn");
   assert.doesNotMatch(JSON.stringify(processed[0]), /must-not-escape/u);
 });
 

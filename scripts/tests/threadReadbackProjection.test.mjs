@@ -39,6 +39,7 @@ test("does not synthesize an active task when the root omits task state", () => 
     lightweight: [{ alias, outcome: "success" }],
   }));
   assert.equal(bridged.tasks.length, 1);
+  assert.equal(bridged.tasks[0].hostId, "local");
   assert.equal(bridged.tasks[0].status, "unknown");
   assert.equal(bridged.tasks[0].userOwned, null);
   assert.equal(bridged.tasks[0].goalStatus, "unknown");
@@ -83,6 +84,27 @@ test("preserves root task, Goal, Plan, owner, and blocker state", async () => {
   assert.deepEqual(readback.softAnomalyTypes, state.softAnomalyTypes);
 });
 
+test("preserves a secret-free exact blocker for a bounded readback failure", async () => {
+  const alias = createThreadAlias("readback-failed");
+  const bridged = projectionCallbacks(baseProjection({
+    lightweight: [{
+      alias,
+      outcome: "bounded_error",
+      state: {
+        taskStatus: "active",
+        latestTurnStatus: "unknown",
+        goalStatus: "unknown",
+        planStatus: "unknown",
+        owner: "user",
+        exactBlocker: "thread_readback_unavailable",
+      },
+    }],
+  }));
+  const readback = await bridged.inspectThread({ threadId: alias });
+  assert.equal(readback.status, "failed");
+  assert.equal(readback.exact_blocker, "thread_readback_unavailable");
+});
+
 test("normalizes the official App read_thread envelope into current task and turn state", () => {
   const readback = {
     schemaVersion: 1,
@@ -115,6 +137,55 @@ test("normalizes the official App read_thread envelope into current task and tur
   });
 });
 
+test("normalizes the current App Server response with turns nested in thread", () => {
+  const normalized = normalizeOfficialThreadReadback({
+    thread: {
+      id: "thread-1",
+      status: { type: "idle" },
+      updatedAt: 1788417000,
+      turns: [{ id: "turn-1", status: "completed" }],
+    },
+  }, { fallbackState: { owner: "user", userOwned: true } });
+  assert.equal(normalized.status, "observed");
+  assert.equal(normalized.taskStatus, "idle");
+  assert.equal(normalized.latestTurnStatus, "completed");
+  assert.equal(normalized.updatedAt, "1788417000");
+});
+
+test("uses the declared oldest-first order instead of assuming turns[0] is latest", () => {
+  const normalized = normalizeOfficialThreadReadback({
+    thread: { id: "thread-ordered", status: "idle" },
+    page: { order: "oldest_first" },
+    turns: [
+      { id: "turn-old", status: "completed" },
+      { id: "turn-new", status: "inProgress" },
+    ],
+  }, { fallbackState: { owner: "user" } });
+  assert.equal(normalized.latestTurnStatus, "inProgress");
+});
+
+test("keeps latest turn unknown when order and timestamps are both absent", () => {
+  const normalized = normalizeOfficialThreadReadback({
+    thread: { id: "thread-ambiguous", status: "idle" },
+    turns: [
+      { id: "turn-old", status: "completed" },
+      { id: "turn-new", status: "inProgress" },
+    ],
+  }, { fallbackState: { owner: "user" } });
+  assert.equal(normalized.latestTurnStatus, "unknown");
+});
+
+test("uses the newest turn timestamp when the official response omits ordering", () => {
+  const normalized = normalizeOfficialThreadReadback({
+    thread: { id: "thread-timestamped", status: "idle" },
+    turns: [
+      { id: "turn-new", status: "inProgress", updatedAt: "2026-09-04T00:00:02.000Z" },
+      { id: "turn-old", status: "completed", updatedAt: "2026-09-04T00:00:01.000Z" },
+    ],
+  }, { fallbackState: { owner: "user" } });
+  assert.equal(normalized.latestTurnStatus, "inProgress");
+});
+
 test("finds a read_thread payload nested in a functionCallOutput text block", () => {
   const readback = {
     content: [{
@@ -130,6 +201,24 @@ test("finds a read_thread payload nested in a functionCallOutput text block", ()
   assert.equal(normalized.taskStatus, "notLoaded");
   assert.equal(normalized.latestTurnStatus, "completed");
   assert.equal(normalized.owner, "user");
+});
+
+test("extracts Goal and Plan status from structured output in the newest turn", () => {
+  const normalized = normalizeOfficialThreadReadback({
+    thread: { status: { type: "idle" } },
+    turns: [{
+      status: "completed",
+      items: [{
+        type: "mcpToolCall",
+        result: {
+          goal: { status: "blocked" },
+          plan: { status: "active" },
+        },
+      }],
+    }],
+  }, { fallbackState: { owner: "user" } });
+  assert.equal(normalized.goalStatus, "blocked");
+  assert.equal(normalized.planStatus, "active");
 });
 
 test("keeps missing Goal and Plan state unknown instead of inventing a blocker", () => {

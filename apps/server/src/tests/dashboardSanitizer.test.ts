@@ -376,7 +376,7 @@ test("frontend sends only sanitized planning text to the server planner", () => 
   assert.doesNotMatch(chatSource, /requestChatPlan\(redactedActivePrompt, selectedPlatforms/);
   assert.match(chatSource, /const safePrompt = secretReadback\.sanitizedText\.trim\(\)/);
   assert.match(chatSource, /external_action_allowed: false/);
-  assert.match(chatSource, /create_approval: true/);
+  assert.match(chatSource, /create_approval: false/);
 });
 
 test("frontend planner uses the supported server contract and never turns API failure into success", () => {
@@ -505,9 +505,10 @@ test("frontend fails closed instead of rendering unknown automation types as SNS
   assert.match(builderSource, /kindLabel: "未確認"/);
   assert.match(builderSource, /riskBoundary: "未認識の自動化タイプは保存・承認・定期実行更新を行いません。"/);
   assert.match(pageSource, /const builderTypeSupported = isSupportedAutomationType\(builderType\)/);
-  assert.match(pageSource, /if \(!builderTypeSupported\)/);
-  assert.match(pageSource, /disabled=\{saving \|\| !builderTypeSupported\}/);
-  assert.match(pageSource, /SNSとして表示・保存せず/);
+  assert.match(pageSource, /if \(!builderEditable\)/);
+  assert.match(pageSource, /disabled=\{saving \|\| !builderEditable\}/);
+  assert.match(pageSource, /SNSとして置き換えず/);
+  assert.match(pageSource, /未確認のまま保存しません/);
 });
 
 test("frontend company pages and successful empty states use canonical API truth", () => {
@@ -729,6 +730,22 @@ test("frontend bootstraps a server-issued session and fails closed without priva
   assert.doesNotMatch(appSource, /shell\.operator\.token-input|管理者用APIキーの入力/);
 });
 
+test("frontend routes exact protected auth blockers through the auth gate on bootstrap and retry", () => {
+  const source = readAppSource();
+  const appSource = appSection(source, "function App()", "function Sidebar");
+
+  assert.match(source, /const PROTECTED_AUTH_BLOCKERS = new Set\(\[/);
+  for (const blocker of [
+    "owner_sso_required",
+    "owner_sso_required_on_fresh_task_owned_ingress_session",
+    "private_ingress_or_sso_required",
+    "server_auth_session_secret_missing"
+  ]) assert.match(source, new RegExp(`"${blocker}"`));
+  assert.equal((appSource.match(/getProtectedAuthBlocker\(error\)/g) ?? []).length, 2);
+  assert.equal((appSource.match(/setApiAccessRequired\(true\)/g) ?? []).length, 1);
+  assert.match(appSource, /publicBlockerSummary\(protectedAuthBlocker\)/);
+});
+
 test("first-use documentation keeps server-side auth and token boundaries truthful", () => {
   const readme = readFileSync(resolve(process.cwd(), "README.md"), "utf8");
   const envExample = readFileSync(resolve(process.cwd(), ".env.example"), "utf8");
@@ -814,7 +831,7 @@ test("frontend history uses public status and blocker labels", () => {
   assert.match(source, /function publicRunStatus/);
   assert.match(source, /function publicRunStatusForRun/);
   assert.match(source, /function publicBlockerSummary/);
-  assert.match(runsSource, /label=\{publicRunStatusForRun\(run, mvpState\)\}/);
+  assert.match(runsSource, /label=\{publicRunStatusForRun\(run, (?:mvpState|viewState)\)\}/);
   assert.match(runsSource, /publicRunBlockerSummary\(run\)/);
   assert.doesNotMatch(runsSource, /label=\{run\.status\}/);
   assert.doesNotMatch(runsSource, /\{run\.exact_blocker \?\? "-"/);
@@ -835,8 +852,8 @@ test("frontend approval screen preserves the human decision boundary", () => {
   const source = readAppSource();
   const approvalsSource = appSection(source, "function ApprovalsPage", "function RunsPage");
 
-  assert.match(approvalsSource, /送信前に人間が承認/);
-  assert.match(approvalsSource, /外部投稿・送信・応募・公開は承認と証跡なしに実行しません/);
+  assert.match(approvalsSource, /承認は表示されたRun・対象・内容だけに適用します。/);
+  assert.match(approvalsSource, /対象を確認できるまで承認・実行は開始しません。/);
   assert.match(approvalsSource, /approveSelected/);
   assert.match(approvalsSource, /rejectSelected/);
   assert.match(approvalsSource, /const portableBound =/);

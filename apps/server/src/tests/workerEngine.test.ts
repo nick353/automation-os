@@ -921,44 +921,42 @@ test("builds worker commands without OpenAI API keys", () => {
       lane: { cdp_port: 9335, profile_dir: "/tmp/profile-a", workdir: "/tmp/work-a" }
     });
 
-    assert.match(dailyAiCommand.display, /browser-use-cli-stage-adapter\.mjs/);
-    assert.equal(dailyAiCommand.env?.AUTOMATION_OS_BROWSER_SURFACE, "browser_use_cli");
+    assert.match(dailyAiCommand.display, /aos-portable-browser-use-runner\.mjs/);
+    assert.equal(dailyAiCommand.env?.AUTOMATION_OS_BROWSER_SURFACE, "aos_chrome_companion_profile_instance");
     assert.equal(dailyAiCommand.env?.AUTOMATION_OS_BROWSER_NO_FALLBACK, "1");
     assert.equal(dailyAiCommand.env?.AUTOMATION_OS_BROWSER_WORKFLOW_ID, "daily-ai-research-publish-run");
     assert.equal(dailyAiCommand.env?.AUTOMATION_OS_BROWSER_REQUIREMENT, "current_run_authority_and_same_session_readback_required");
     assert.equal(Object.keys(dailyAiCommand.env ?? {}).some((key) => key.includes("CDP") || key.includes("PROFILE_DIR")), false);
-    assert.equal(classifyWorkerCommandSpec(dailyAiCommand).classification, "browser_use_cli");
-    assert.ok(classifyWorkerCommandSpec(dailyAiCommand).signals.includes("browser-use"));
-    assert.ok(classifyWorkerCommandSpec(dailyAiCommand).signals.includes("browser-use"));
+    assert.equal(classifyWorkerCommandSpec(dailyAiCommand).classification, "aos_chrome_companion");
+    assert.ok(classifyWorkerCommandSpec(dailyAiCommand).signals.includes("aos-chrome-companion"));
     assert.equal(nisenprintsCommand.bin, "/usr/local/bin/node");
-    assert.deepEqual(nisenprintsCommand.args, ["/Users/nichikatanaka/.codex/skills/automation-kernel-run/scripts/browser-use-cli-stage-adapter.mjs"]);
-    assert.equal(nisenprintsCommand.env?.AUTOMATION_OS_BROWSER_SURFACE, "browser_use_cli");
+    assert.match(nisenprintsCommand.args[0], /aos-portable-browser-use-runner\.mjs/);
+    assert.equal(nisenprintsCommand.env?.AUTOMATION_OS_BROWSER_SURFACE, "aos_chrome_companion_profile_instance");
     assert.equal(nisenprintsCommand.env?.AUTOMATION_OS_BROWSER_NO_FALLBACK, "1");
     assert.equal(nisenprintsCommand.env?.AUTOMATION_OS_BROWSER_WORKFLOW_ID, "nisenprints-daily-product-canva-printify-etsy-pinterest");
     assert.equal(nisenprintsCommand.env?.AUTOMATION_OS_BROWSER_REQUIREMENT, "current_run_authority_and_same_session_readback_required");
-    assert.equal(resolveWorkerAdapterPolicy("nisenprints_registered").classification, "browser_use_cli");
+    assert.equal(resolveWorkerAdapterPolicy("nisenprints_registered").classification, "aos_chrome_companion");
     assert.equal(resolveWorkerAdapterPolicy("nisenprints_registered").exactBlocker, null);
     assert.ok(resolveWorkerAdapterPolicy("nisenprints_registered").evidence.some((item) => item.includes("workflow_adapter_registry:aos.workflow_adapter_registry.v1")));
     assert.equal(resolveWorkerAdapterPolicy("daily_ai_registered").exactBlocker, null);
     assert.ok(resolveWorkerAdapterPolicy("daily_ai_registered").evidence.some((item) => item.includes("workflow_adapter:daily-ai-research-publish-run")));
     assert.match(jobSubmitCommand.display, /job-application-manager/);
-    assert.equal(jobSubmitCommand.env?.AUTOMATION_OS_BROWSER_SURFACE, "browser_use_cli");
+    assert.equal(jobSubmitCommand.env?.AUTOMATION_OS_BROWSER_SURFACE, "aos_chrome_companion_profile_instance");
     assert.equal(jobSubmitCommand.env?.AUTOMATION_OS_BROWSER_NO_FALLBACK, "1");
     assert.equal(jobSubmitCommand.env?.AUTOMATION_OS_BROWSER_WORKFLOW_ID, "job-application-manager");
-    assert.doesNotMatch(jobSubmitCommand.display, /codex exec|playwright|cdp|chrome/i);
+    assert.doesNotMatch(jobSubmitCommand.display, /codex exec|playwright|cdp/i);
     assert.match(jobFollowupCommand.display, /job-application-manager/);
-    assert.equal(jobFollowupCommand.env?.AUTOMATION_OS_BROWSER_SURFACE, "browser_use_cli");
+    assert.equal(jobFollowupCommand.env?.AUTOMATION_OS_BROWSER_SURFACE, "aos_chrome_companion_profile_instance");
     assert.equal(jobFollowupCommand.env?.AUTOMATION_OS_BROWSER_NO_FALLBACK, "1");
     assert.equal(jobFollowupCommand.env?.AUTOMATION_OS_BROWSER_WORKFLOW_ID, "job-application-manager");
-    assert.doesNotMatch(jobFollowupCommand.display, /codex exec|playwright|cdp|chrome/i);
+    assert.doesNotMatch(jobFollowupCommand.display, /codex exec|playwright|cdp/i);
     assert.equal(promptTransferCommand.bin, "/usr/local/bin/node");
-    assert.match(promptTransferCommand.display, /browser-use-cli-stage-adapter\.mjs/);
+    assert.match(promptTransferCommand.display, /aos-portable-browser-use-runner\.mjs/);
     assert.equal(promptTransferCommand.env?.AUTOMATION_OS_BROWSER_WORKFLOW_ID, "prompt-transfer-ukiyoe");
-    assert.equal(promptTransferCommand.env?.AUTOMATION_OS_BROWSER_REQUIREMENT, "browser_use_cli_workflow_adapter_missing");
-    assert.equal(resolveWorkerAdapterPolicy("prompt_transfer_registered").classification, "browser_use_cli");
-    assert.ok(resolveWorkerAdapterPolicy("prompt_transfer_registered").evidence.some((item) => item.includes("legacy_prompt_transfer_runner:disabled")));
-    assert.equal(resolveWorkerAdapterPolicy("sns_multi_poster_registered").classification, "browser_use_cli");
-    assert.equal(classifyWorkerCommandSpec(snsCommand).classification, "browser_use_cli");
+    assert.equal(promptTransferCommand.env?.AUTOMATION_OS_BROWSER_REQUIREMENT, "current_run_authority_and_same_session_readback_required");
+    assert.equal(resolveWorkerAdapterPolicy("prompt_transfer_registered").classification, "aos_chrome_companion");
+    assert.equal(resolveWorkerAdapterPolicy("sns_multi_poster_registered").classification, "aos_chrome_companion");
+    assert.equal(classifyWorkerCommandSpec(snsCommand).classification, "aos_chrome_companion");
     assert.match(browserUseCommand.display, /browser-use-cli-stage-adapter\.mjs/);
     assert.equal(browserUseCommand.env?.AUTOMATION_OS_BROWSER_SURFACE, "browser_use_cli");
     assert.equal(browserUseCommand.env?.AUTOMATION_OS_BROWSER_NO_FALLBACK, "1");
@@ -978,8 +976,8 @@ test("builds worker commands without OpenAI API keys", () => {
     assert.equal(Object.keys(snsCommand.env ?? {}).some((key) => key.startsWith("OPENAI_")), false);
     assert.equal(Object.keys(browserUseCommand.env ?? {}).some((key) => key.startsWith("OPENAI_")), false);
     assert.equal(Object.keys(playwrightCommand.env ?? {}).some((key) => key.startsWith("OPENAI_")), false);
-    assert.equal(resolveWorkerAdapterPolicy("job_submit_registered").classification, "browser_use_cli");
-    assert.equal(resolveWorkerAdapterPolicy("job_followup_registered").classification, "browser_use_cli");
+    assert.equal(resolveWorkerAdapterPolicy("job_submit_registered").classification, "aos_chrome_companion");
+    assert.equal(resolveWorkerAdapterPolicy("job_followup_registered").classification, "aos_chrome_companion");
     assert.equal(resolveWorkerAdapterPolicy("child_codex").classification, "non_browser");
     assert.equal(resolveWorkerAdapterPolicy("codex_cli").classification, "non_browser");
     assert.equal(resolveWorkerAdapterPolicy("local_worker").classification, "non_browser");
@@ -1060,7 +1058,7 @@ test("classifies worker adapter policies exhaustively and preserves the Browser 
 
   for (const adapter of browserAdapters) {
     const policy = resolveWorkerAdapterPolicy(adapter);
-    assert.equal(policy.classification, "browser_use_cli");
+    assert.equal(policy.classification, adapter === "playwright_cli" ? "browser_use_cli" : "aos_chrome_companion");
     assert.ok(policy.evidence.length > 0);
   }
 
@@ -1070,7 +1068,7 @@ test("classifies worker adapter policies exhaustively and preserves the Browser 
   assert.ok(browserUsePolicy.evidence.some((item) => item.includes("browser-use-cli-stage-adapter.mjs")));
 
   const extensionPolicy = resolveWorkerAdapterPolicy("x_authenticated_browser_lane_registered");
-  assert.equal(extensionPolicy.classification, "browser_use_cli");
+  assert.equal(extensionPolicy.classification, "aos_chrome_companion");
   assert.equal(extensionPolicy.exactBlocker, null);
   assert.ok(extensionPolicy.evidence.some((item) => item.includes("legacy_extension_surface:disabled")));
 
@@ -1299,11 +1297,11 @@ test("SNS Multi Poster registered workflow does not execute the runner before ap
   });
   await withSnsMultiPosterEnv("worker-sns-approved-post", { imagePath, caption: "浮世絵猫の投稿文", runner: fakeRunner }, async () => {
     const command = buildWorkerCommand({ adapter: "sns_multi_poster_registered", taskName: "SNS Multi Poster" });
-    assert.match(command.display, /browser-use-cli-stage-adapter\.mjs/);
-    assert.equal(command.env?.AUTOMATION_OS_BROWSER_SURFACE, "browser_use_cli");
+    assert.match(command.display, /aos-portable-browser-use-runner\.mjs/);
+    assert.equal(command.env?.AUTOMATION_OS_BROWSER_SURFACE, "aos_chrome_companion_profile_instance");
     assert.equal(command.env?.AUTOMATION_OS_BROWSER_NO_FALLBACK, "1");
     assert.equal(command.env?.AUTOMATION_OS_BROWSER_WORKFLOW_ID, "sns-multi-poster-ukiyoe");
-    assert.equal(command.env?.AUTOMATION_OS_BROWSER_REQUIREMENT, "browser_use_cli_workflow_adapter_missing");
+    assert.equal(command.env?.AUTOMATION_OS_BROWSER_REQUIREMENT, "current_run_authority_and_same_session_readback_required");
 
     const created = await startCommandRun("SNS Multi Poster Ukiyoe registered workflow billing-only post publish", {
       metadata: {
@@ -1557,9 +1555,11 @@ test("Prompt Transfer registered workflow does not save Sheets before approval",
   }
 });
 
-test("Prompt Transfer legacy runner pre-blocks when Playwright/Sheets runner is missing", async () => {
+test("Prompt Transfer requires current approval binding before Companion execution", async () => {
   initDb();
   resetDemoData();
+  const currentBackend = (await import("../runs/webOperationBackendSettings.js")).readWebOperationBackendSetting();
+  writeWebOperationBackendSetting({ backend: "aos_chrome_companion", actorUserId: "worker-engine-prompt-transfer-companion", expectedRevision: currentBackend.revision });
   const previousRunner = process.env.AUTOMATION_OS_PROMPT_TRANSFER_UKIYOE_RUNNER;
   process.env.AUTOMATION_OS_PROMPT_TRANSFER_UKIYOE_RUNNER = join(tempRoot, "missing-prompt-transfer-playwright-sheets.py");
   try {
@@ -1576,7 +1576,7 @@ test("Prompt Transfer legacy runner pre-blocks when Playwright/Sheets runner is 
     const step = querySql<{ status: string; metadata_json: string }>(`SELECT status, metadata_json FROM run_steps WHERE run_id=${sqlValue(created.runId)} LIMIT 1`)[0];
     const runMetadata = JSON.parse(run.metadata_json);
     const stepMetadata = JSON.parse(step.metadata_json);
-    const expectedCommandDisplay = /browser-use-cli-stage-adapter\.mjs/;
+    const expectedCommandDisplay = /aos-portable-browser-use-runner\.mjs/;
 
     assert.equal(run.status, "blocked");
     assert.equal(step.status, "blocked");
@@ -1584,10 +1584,7 @@ test("Prompt Transfer legacy runner pre-blocks when Playwright/Sheets runner is 
     assert.equal(stepMetadata.execution_mode, "execute_prompt_transfer_registered");
     assert.match(runMetadata.command_display, expectedCommandDisplay);
     assert.match(stepMetadata.command_display, expectedCommandDisplay);
-    assert.equal(runMetadata.stop_reason, "browser_use_cli_workflow_adapter_missing");
-    assert.equal(runMetadata.route_readback?.exactBlocker, "browser_use_cli_workflow_adapter_missing");
-    assert.equal(runMetadata.proof_gate.ok, false);
-    assert.deepEqual(runMetadata.proof_gate.missing, ["browser_use_cli_workflow_adapter_missing"]);
+    assert.equal(stepMetadata.exact_blocker, "registered_browser_workflow_common_boundary_required");
     assert.equal(runMetadata.external_action_executed, false);
   } finally {
     if (previousRunner === undefined) delete process.env.AUTOMATION_OS_PROMPT_TRANSFER_UKIYOE_RUNNER;
@@ -1595,7 +1592,7 @@ test("Prompt Transfer legacy runner pre-blocks when Playwright/Sheets runner is 
   }
 });
 
-test("Prompt Transfer legacy runner pre-blocks when runner exits nonzero even with plan summary", async () => {
+test("Prompt Transfer remains blocked without current approval binding", async () => {
   initDb();
   resetDemoData();
   const restoreRunner = installFakePromptTransferRunner("worker-prompt-transfer-nonzero", 7);
@@ -1622,9 +1619,7 @@ test("Prompt Transfer legacy runner pre-blocks when runner exits nonzero even wi
     assert.equal(runMetadata.worker_mode, "execute_prompt_transfer_registered");
     assert.equal(stepMetadata.execution_mode, "execute_prompt_transfer_registered");
     assert.equal(runMetadata.command_display, stepMetadata.command_display);
-    assert.equal(runMetadata.stop_reason, "browser_use_cli_workflow_adapter_missing");
-    assert.equal(runMetadata.route_readback?.exactBlocker, "browser_use_cli_workflow_adapter_missing");
-    assert.deepEqual(runMetadata.proof_gate.missing, ["browser_use_cli_workflow_adapter_missing"]);
+    assert.equal(stepMetadata.exact_blocker, "registered_browser_workflow_common_boundary_required");
     assert.equal(proofs.length, 0);
     assert.equal(events.some((event) => event.event_type === "worker_started"), false);
     assert.equal(events.some((event) => event.event_type === "worker_completed"), false);
@@ -1939,8 +1934,6 @@ test("blocks every legacy browser-backed adapter before worker command spawn and
       taskName: "Playwright legacy browser block",
       lane: { cdp_port: 9338, profile_dir: "/tmp/playwright-profile", workdir: "/tmp/playwright-workdir" }
     },
-    { adapter: "prompt_transfer_registered" as const, taskName: "Prompt Transfer legacy browser block" },
-    { adapter: "sns_multi_poster_registered" as const, taskName: "SNS legacy browser block" }
   ];
 
   for (const chromeConnected of [false, true]) {
@@ -2011,10 +2004,11 @@ test("blocks every legacy browser-backed adapter before worker command spawn and
       assert.equal(runMetadata.command_display, command.display, `${item.adapter} connected=${chromeConnected}`);
       assert.equal(stepMetadata.execution_mode, workerModeForAdapter(item.adapter), `${item.adapter} connected=${chromeConnected}`);
       assert.equal(stepMetadata.command_display, command.display, `${item.adapter} connected=${chromeConnected}`);
-      const expectedRouteBlocker = item.adapter === "playwright_cli" ? "browser_use_cli_required" : "browser_use_cli_workflow_adapter_missing";
+      const expectedRouteBlocker = item.adapter === "playwright_cli" ? "browser_use_cli_required" : null;
       const expectedBlocker = expectedRouteBlocker;
-      assert.equal(runMetadata.adapter_policy?.classification, "browser_use_cli", `${item.adapter} connected=${chromeConnected}`);
-      assert.equal(stepMetadata.adapter_policy?.classification, "browser_use_cli", `${item.adapter} connected=${chromeConnected}`);
+      const expectedClassification = item.adapter === "playwright_cli" ? "browser_use_cli" : "aos_chrome_companion";
+      assert.equal(runMetadata.adapter_policy?.classification, expectedClassification, `${item.adapter} connected=${chromeConnected}`);
+      assert.equal(stepMetadata.adapter_policy?.classification, expectedClassification, `${item.adapter} connected=${chromeConnected}`);
       assert.equal(runMetadata.adapter_policy?.exactBlocker, expectedRouteBlocker, `${item.adapter} connected=${chromeConnected}`);
       assert.equal(stepMetadata.adapter_policy?.exactBlocker, expectedRouteBlocker, `${item.adapter} connected=${chromeConnected}`);
       assert.ok((runMetadata.adapter_policy?.evidence ?? []).length > 0, `${item.adapter} connected=${chromeConnected}`);
@@ -2168,7 +2162,7 @@ test("worker adapter policy keeps every browser-backed X lane on the Browser Use
 
     assert.equal(routing.selectedRouteId, "x_authenticated_capture", `connected=${chromeConnected}`);
     assert.equal(routing.routeAuthority, "connected", `connected=${chromeConnected}`);
-    assert.equal(resolveWorkerAdapterPolicy("x_authenticated_browser_lane_registered").classification, "browser_use_cli");
+    assert.equal(resolveWorkerAdapterPolicy("x_authenticated_browser_lane_registered").classification, "aos_chrome_companion");
     assert.equal(resolveWorkerAdapterPolicy("x_authenticated_browser_lane_registered").exactBlocker, null);
   }
 
@@ -2658,6 +2652,8 @@ for (const scenario of [
     withCodexExecutionEnv(async () => {
       initDb();
       resetDemoData();
+      const currentBackend = (await import("../runs/webOperationBackendSettings.js")).readWebOperationBackendSetting();
+      writeWebOperationBackendSetting({ backend: "browser_use_cli", actorUserId: `worker-engine-${scenario.name.toLowerCase()}-browser-use`, expectedRevision: currentBackend.revision });
       setFakeCodexBehavior({
         exitStatus: 7,
         registeredSummary: JSON.stringify({
@@ -2682,7 +2678,7 @@ for (const scenario of [
       const events = querySql<{ event_type: string }>(`SELECT event_type FROM worker_events WHERE run_id=${sqlValue(summary.runId)} ORDER BY created_at ASC`);
       const selectedAdapter = scenario.name === "Job Submit" ? "job_submit_registered" : "job_followup_registered";
       const expectedWorkerMode = workerModeForAdapter(selectedAdapter);
-      const expectedCommandDisplay = buildWorkerCommand({ adapter: selectedAdapter, taskName: scenario.command }).display;
+      const expectedCommandDisplay = buildWorkerCommand({ adapter: selectedAdapter, taskName: scenario.command, webOperationBackend: "browser_use_cli" }).display;
       const expectedProofType = "registered_browser_workflow_common_boundary_required";
       const observedBlocker = String(stepMetadata.exact_blocker ?? "");
       assert.ok([expectedProofType, "registered_external_approval_required"].includes(observedBlocker));
@@ -2724,7 +2720,7 @@ for (const scenario of [
 
 test("Job Followup registered workflow uses Browser Use CLI and records blocked runner proof", async () =>
   withCodexExecutionEnv(async () => {
-    const { command, stepId } = seedLegacyAdapterRouteBlockRun({
+    const { stepId } = seedLegacyAdapterRouteBlockRun({
       runId: "run_job_followup_direct_block",
       adapter: "job_followup_registered",
       taskName: "Job Application Post-Application Manager registered workflow billing-only send follow-up"
@@ -2745,6 +2741,11 @@ test("Job Followup registered workflow uses Browser Use CLI and records blocked 
     });
 
     await runWorkerOnce("run_job_followup_direct_block");
+    const command = buildWorkerCommand({
+      adapter: "job_followup_registered",
+      taskName: "Job Application Post-Application Manager registered workflow billing-only send follow-up",
+      webOperationBackend: "browser_use_cli"
+    });
 
   const run = querySql<{ status: string; metadata_json: string }>(`SELECT status, metadata_json FROM runs WHERE id='run_job_followup_direct_block' LIMIT 1`)[0];
   const step = querySql<{ status: string; metadata_json: string }>(`SELECT status, metadata_json FROM run_steps WHERE id=${sqlValue(stepId)} LIMIT 1`)[0];
@@ -2759,7 +2760,7 @@ test("Job Followup registered workflow uses Browser Use CLI and records blocked 
     assert.equal(runMetadata.command_display, command.display);
     assert.equal(stepMetadata.execution_mode, "execute_job_followup_registered");
     assert.equal(stepMetadata.command_display, command.display);
-    assert.equal(runMetadata.adapter_policy?.classification, "browser_use_cli");
+  assert.equal(runMetadata.adapter_policy?.classification, "browser_use_cli");
     assert.equal(runMetadata.adapter_policy?.exactBlocker, null);
     assert.equal(runMetadata.route_readback?.exactBlocker, null);
     assert.equal(runMetadata.route_readback?.fallbackReason, "route=skill_factory surface=codex_cli");

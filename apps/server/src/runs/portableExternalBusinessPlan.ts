@@ -21,8 +21,8 @@ export type PortableExternalBusinessPlanV1 = {
   schema: typeof PORTABLE_EXTERNAL_BUSINESS_PLAN_SCHEMA_V1;
   workflow_id: PortableWorkflowId;
   runner_key: "job_application" | "daily_ai" | "nisenprints" | "prompt_transfer" | "sns_multi_poster" | "x_authenticated_browser_lane";
-  browser_surface: "browser_use_cli";
-  browser_runtime: "browser_use_cli";
+  browser_surface: "aos_chrome_companion_profile_instance";
+  browser_runtime: "aos_chrome_companion";
   connector_priority: readonly PortableConnectorKind[];
   connector_fallback_policy: "no_implicit_fallback";
   llm_provider_neutral: true;
@@ -43,7 +43,7 @@ export type PortableExternalBusinessPlanV1 = {
 };
 
 const commonHardStops = [
-  "browser_use_cli_authority_missing",
+  "aos_chrome_companion_authority_missing",
   "authentication_required",
   "captcha_otp_security_code",
   "ambiguous_external_effect",
@@ -56,7 +56,7 @@ const commonRunnerContract = Object.freeze({
   same_run_idempotency: true as const,
   same_run_receipt: true as const,
   cleanup_readback: true as const,
-  web_operation_contract: getWebOperationContractForSurface("browser_use_cli"),
+  web_operation_contract: getWebOperationContractForSurface("aos_chrome_companion_profile_instance"),
 });
 
 const commonAccountTargetPayloadReceiptContract = Object.freeze({
@@ -73,8 +73,8 @@ export const portableExternalBusinessPlans: Record<PortableExternalBusinessPlanV
     schema: PORTABLE_EXTERNAL_BUSINESS_PLAN_SCHEMA_V1,
     workflow_id: "job-application-manager",
     runner_key: "job_application",
-    browser_surface: "browser_use_cli",
-    browser_runtime: "browser_use_cli",
+    browser_surface: "aos_chrome_companion_profile_instance",
+    browser_runtime: "aos_chrome_companion",
     connector_priority: PORTABLE_CONNECTOR_PRIORITY_V1,
     connector_fallback_policy: "no_implicit_fallback",
     llm_provider_neutral: true,
@@ -93,8 +93,8 @@ export const portableExternalBusinessPlans: Record<PortableExternalBusinessPlanV
     schema: PORTABLE_EXTERNAL_BUSINESS_PLAN_SCHEMA_V1,
     workflow_id: "daily-ai-research-publish-run",
     runner_key: "daily_ai",
-    browser_surface: "browser_use_cli",
-    browser_runtime: "browser_use_cli",
+    browser_surface: "aos_chrome_companion_profile_instance",
+    browser_runtime: "aos_chrome_companion",
     connector_priority: PORTABLE_CONNECTOR_PRIORITY_V1,
     connector_fallback_policy: "no_implicit_fallback",
     llm_provider_neutral: true,
@@ -113,8 +113,8 @@ export const portableExternalBusinessPlans: Record<PortableExternalBusinessPlanV
     schema: PORTABLE_EXTERNAL_BUSINESS_PLAN_SCHEMA_V1,
     workflow_id: "nisenprints-daily-product-canva-printify-etsy-pinterest",
     runner_key: "nisenprints",
-    browser_surface: "browser_use_cli",
-    browser_runtime: "browser_use_cli",
+    browser_surface: "aos_chrome_companion_profile_instance",
+    browser_runtime: "aos_chrome_companion",
     connector_priority: PORTABLE_CONNECTOR_PRIORITY_V1,
     connector_fallback_policy: "no_implicit_fallback",
     llm_provider_neutral: true,
@@ -133,8 +133,8 @@ export const portableExternalBusinessPlans: Record<PortableExternalBusinessPlanV
     schema: PORTABLE_EXTERNAL_BUSINESS_PLAN_SCHEMA_V1,
     workflow_id: "prompt-transfer-ukiyoe",
     runner_key: "prompt_transfer",
-    browser_surface: "browser_use_cli",
-    browser_runtime: "browser_use_cli",
+    browser_surface: "aos_chrome_companion_profile_instance",
+    browser_runtime: "aos_chrome_companion",
     connector_priority: PORTABLE_CONNECTOR_PRIORITY_V1,
     connector_fallback_policy: "no_implicit_fallback",
     llm_provider_neutral: true,
@@ -153,8 +153,8 @@ export const portableExternalBusinessPlans: Record<PortableExternalBusinessPlanV
     schema: PORTABLE_EXTERNAL_BUSINESS_PLAN_SCHEMA_V1,
     workflow_id: "sns-multi-poster-ukiyoe",
     runner_key: "sns_multi_poster",
-    browser_surface: "browser_use_cli",
-    browser_runtime: "browser_use_cli",
+    browser_surface: "aos_chrome_companion_profile_instance",
+    browser_runtime: "aos_chrome_companion",
     connector_priority: PORTABLE_CONNECTOR_PRIORITY_V1,
     connector_fallback_policy: "no_implicit_fallback",
     llm_provider_neutral: true,
@@ -173,8 +173,8 @@ export const portableExternalBusinessPlans: Record<PortableExternalBusinessPlanV
     schema: PORTABLE_EXTERNAL_BUSINESS_PLAN_SCHEMA_V1,
     workflow_id: "x-authenticated-browser-lane",
     runner_key: "x_authenticated_browser_lane",
-    browser_surface: "browser_use_cli",
-    browser_runtime: "browser_use_cli",
+    browser_surface: "aos_chrome_companion_profile_instance",
+    browser_runtime: "aos_chrome_companion",
     connector_priority: PORTABLE_CONNECTOR_PRIORITY_V1,
     connector_fallback_policy: "no_implicit_fallback",
     llm_provider_neutral: true,
@@ -200,15 +200,15 @@ export function getPortableExternalBusinessPlan(workflowId: string): PortableExt
     hard_stops: [...plan.hard_stops],
     required_runner_contract: {
       ...plan.required_runner_contract,
-      web_operation_contract: getWebOperationContractForSurface("browser_use_cli"),
+      web_operation_contract: getWebOperationContractForSurface("aos_chrome_companion_profile_instance"),
     },
   } : null;
 }
 
 export function validatePortableExternalBusinessPlan(plan: PortableExternalBusinessPlanV1): PortableExternalBusinessPlanV1 {
   if (plan.schema !== PORTABLE_EXTERNAL_BUSINESS_PLAN_SCHEMA_V1) throw new Error("portable_external_business_plan_schema_invalid");
-  if (plan.browser_surface !== "browser_use_cli") throw new Error("portable_external_business_plan_browser_surface_invalid");
-  if (plan.browser_runtime !== "browser_use_cli") throw new Error("portable_external_business_plan_browser_runtime_invalid");
+  if (plan.browser_surface !== "aos_chrome_companion_profile_instance") throw new Error("portable_external_business_plan_browser_surface_invalid");
+  if (plan.browser_runtime !== "aos_chrome_companion") throw new Error("portable_external_business_plan_browser_runtime_invalid");
   if (JSON.stringify(plan.connector_priority) !== JSON.stringify(PORTABLE_CONNECTOR_PRIORITY_V1)) throw new Error("portable_external_business_plan_connector_priority_invalid");
   if (plan.connector_fallback_policy !== "no_implicit_fallback") throw new Error("portable_external_business_plan_connector_fallback_invalid");
   if (plan.llm_provider_neutral !== true || plan.app_dependency !== false) throw new Error("portable_external_business_plan_dependency_invalid");
@@ -231,8 +231,8 @@ export function validatePortableExternalBusinessPlan(plan: PortableExternalBusin
   const webContract = plan.required_runner_contract.web_operation_contract;
   if (webContract.browser_surface !== plan.browser_surface
     || JSON.stringify(webContract.browser_kernel.supported_surfaces) !== JSON.stringify([plan.browser_surface])
-    || (plan.browser_surface === "browser_use_cli" && !webContract.fixed_kernel.forbidden_surfaces.includes("extension"))) {
-    throw new Error("browser_use_cli_web_operation_contract_mismatch");
+    || webContract.fixed_kernel.forbidden_surfaces.includes(plan.browser_surface)) {
+    throw new Error("aos_chrome_companion_web_operation_contract_mismatch");
   }
   validateWebOperationContract(plan.required_runner_contract.web_operation_contract);
   return plan;

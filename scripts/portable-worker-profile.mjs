@@ -45,12 +45,12 @@ export function defaultPortableWorkerProfile(env = process.env, platformHome = h
     // explicitly sets AUTOMATION_OS_CODEX_BIN or --codex-bin.
     codex_bin: valueOr(env.AUTOMATION_OS_CODEX_BIN, ""),
     codex_account_ref: valueOr(env.AUTOMATION_OS_CODEX_ACCOUNT_REF, ""),
-    web_operation_backend: valueOr(env.AOS_WEB_OPERATION_BACKEND, "browser_use_cli").toLowerCase().replaceAll("-", "_"),
+    web_operation_backend: valueOr(env.AOS_WEB_OPERATION_BACKEND, "aos_chrome_companion").toLowerCase().replaceAll("-", "_"),
     chrome_plugin_project_root: absolutePath(env.AUTOMATION_OS_CHROME_PLUGIN_PROJECT_ROOT, browserProjectRoot),
     chrome_profile_id: valueOr(env.AOS_CHROME_PROFILE_ID, "profile2"),
     chrome_profile_name: valueOr(env.AOS_CHROME_PROFILE_NAME, "Profile 2"),
     chrome_profile_directory: valueOr(env.AOS_CHROME_PROFILE_DIRECTORY, "Profile 2"),
-    chrome_profile_surface: valueOr(env.AOS_CHROME_PROFILE_SURFACE, "signed_chrome_extension_profile2"),
+    chrome_profile_surface: valueOr(env.AOS_CHROME_PROFILE_SURFACE, "aos_chrome_companion_profile_instance"),
     browser_use_project_root: browserProjectRoot,
     nisenprints_project_root: nisenprintsProjectRoot,
     browser_use_home: absolutePath(env.AUTOMATION_OS_BROWSER_USE_HOME || env.BROWSER_USE_HOME, join(home, ".browser-use-cli")),
@@ -96,13 +96,13 @@ export function validatePortableWorkerProfile(input) {
   try { url = new URL(profile.remote_url); } catch { throw new Error("portable_worker_profile_remote_url_invalid"); }
   if (!/^https?:$/u.test(url.protocol) || !url.hostname) throw new Error("portable_worker_profile_remote_url_invalid");
   profile.remote_url = profile.remote_url.replace(/\/+$/u, "");
-  profile.web_operation_backend = valueOr(profile.web_operation_backend, "chrome_plugin").toLowerCase().replaceAll("-", "_");
+  profile.web_operation_backend = valueOr(profile.web_operation_backend, "aos_chrome_companion").toLowerCase().replaceAll("-", "_");
   if (!WEB_OPERATION_BACKENDS.has(profile.web_operation_backend)) throw new Error("portable_worker_profile_web_operation_backend_invalid");
   profile.chrome_plugin_project_root = absolutePath(profile.chrome_plugin_project_root, profile.browser_use_project_root);
   profile.chrome_profile_id = valueOr(profile.chrome_profile_id, "profile2");
   profile.chrome_profile_name = valueOr(profile.chrome_profile_name, "Profile 2");
   profile.chrome_profile_directory = valueOr(profile.chrome_profile_directory, "Profile 2");
-  profile.chrome_profile_surface = valueOr(profile.chrome_profile_surface, "signed_chrome_extension_profile2");
+  profile.chrome_profile_surface = valueOr(profile.chrome_profile_surface, "aos_chrome_companion_profile_instance");
   for (const key of [
     "repo_root", "artifact_root", "codex_home", "agents_home", "browser_use_project_root", "chrome_plugin_project_root", "browser_use_home",
     "nisenprints_project_root", "browser_use_helper", "browser_use_stage_adapter", "browser_use_runtime_config",

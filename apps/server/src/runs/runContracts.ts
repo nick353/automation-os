@@ -54,6 +54,8 @@ const nisenPrintsIntent = /nisenprints|nisen prints/i;
 const codeMaintenanceIntent = /contract routing|workerengine|runcontracts|コード|実装|修正|設計|docs?|ドキュメント|テスト|test/i;
 
 export function resolveRunContract(command: string): RunContract | undefined {
+  // Existing-product audits have their own local receipt, not publish/recovery proof.
+  if (command.trim() === "nisenprints-existing-product-audit") return undefined;
   if (!nisenPrintsIntent.test(command)) return undefined;
   if (codeMaintenanceIntent.test(command)) return undefined;
 

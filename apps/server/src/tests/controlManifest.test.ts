@@ -8,7 +8,7 @@ import ts from "typescript";
 type ControlManifestEntry = {
   id: string;
   label: string;
-  disposition: "real_read" | "real_action" | "justified_human_gate" | "remove";
+  disposition: "real_read" | "real_action" | "justified_human_gate" | "safe_local_action" | "remove";
   source: string;
   mutation: string;
   readback: string;
@@ -119,6 +119,7 @@ test("control manifest matches rendered ownership and evidence", () => {
       real_read: "real_read",
       real_action: "real_action",
       justified_human_gate: "justified_human_gate",
+      safe_local_action: "safe_local_action",
       remove: "remove"
     }).includes(entry.disposition), `invalid disposition: ${entry.id}`);
     assert.ok(entry.source.trim(), `missing source: ${entry.id}`);

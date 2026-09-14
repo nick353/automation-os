@@ -152,6 +152,7 @@ export function runnerFor(workflowId, environment = process.env) {
   const backend = selectedBackend(environment);
   if (!["chrome_plugin", "browser_use_cli", "playwright", "aos_chrome_companion"].includes(backend)) return "";
   if (backend === "aos_chrome_companion") {
+    if (workflowId === "daily-ai-research-publish-run") return path.join(aosRoot(environment), "scripts", "aos-daily-ai-business-runner.mjs");
     return path.join(aosRoot(environment), "scripts", "aos-portable-browser-use-runner.mjs");
   }
   if (backend === "playwright") {
@@ -280,6 +281,74 @@ function parseLastJson(stdout) {
     try { const parsed = JSON.parse(line); if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed; } catch (_) { /* progress output */ }
   }
   return null;
+}
+
+function nestedReceiptValidation(receipt, input, browserSurface) {
+  const reasons = [];
+  if (!receipt) reasons.push("receipt_missing_or_unparseable");
+  else {
+    if (typeof receipt.external_action_executed !== "boolean") reasons.push("external_action_executed_not_boolean");
+    if (receipt.browser_surface !== browserSurface) reasons.push("browser_surface_mismatch");
+    if (receipt.run_id !== input.run_id) reasons.push("run_id_mismatch");
+    const lifecycle = receipt.web_operation_lifecycle && typeof receipt.web_operation_lifecycle === "object" ? receipt.web_operation_lifecycle : null;
+    const effectUnknown = lifecycle?.state === "effect_unknown" && lifecycle?.no_replay === true;
+    if (receipt.external_action_executed === true && (!receipt.same_run_receipt || receipt.cleanup_verified !== true) && !effectUnknown) {
+      reasons.push("executed_receipt_missing_same_run_receipt_or_cleanup_verified");
+    }
+  }
+  return {
+    failed_predicates: reasons,
+    receipt_present: Boolean(receipt),
+    receipt_keys: receipt ? Object.keys(receipt).sort() : [],
+    parsed_summary: receipt ? {
+      status: receipt.status ?? null,
+      exact_blocker: receipt.exact_blocker ?? null,
+      browser_surface: receipt.browser_surface ?? null,
+      run_id: receipt.run_id ?? null,
+      external_action_executed: typeof receipt.external_action_executed === "boolean" ? receipt.external_action_executed : null,
+      same_run_receipt: receipt.same_run_receipt ?? null,
+      cleanup_verified: receipt.cleanup_verified ?? null,
+    } : null,
+  };
+}
+
+function sanitizeNestedOutput(value) {
+  return String(value ?? "")
+    .replace(/Bearer\s+\S+/giu, "Bearer [REDACTED]")
+    .replace(/((?:token|secret|password|authorization|cookie)["']?\s*[:=]\s*)[^\s,}]+/giu, "$1[REDACTED]")
+    .slice(-16_000);
+}
+
+function captureDailyAiNestedRunnerDiagnostic({ input, command, child, stdout, stderr }) {
+  if (input.workflow_id !== "daily-ai-research-publish-run") return null;
+  try {
+    const root = path.resolve(String(process.env.AUTOMATION_OS_ARTIFACT_ROOT || path.join(process.cwd(), "data", "artifacts")));
+    const directory = path.join(root, input.run_id, "business-run", "daily-ai");
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const receipt = parseLastJson(stdout);
+    const diagnostic = {
+      schema: "aos.daily_ai.nested_runner_diagnostic.v1",
+      captured_at: new Date().toISOString(),
+      run_id: input.run_id,
+      step_id: input.step_id,
+      command_path: path.resolve(command),
+      command_basename: path.basename(command),
+      cwd: process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_WORKDIR || process.cwd(),
+      child_pid: child.pid ?? null,
+      parent_pid: process.pid,
+      stdout_bytes: Buffer.byteLength(String(stdout || "")),
+      stderr_bytes: Buffer.byteLength(String(stderr || "")),
+      stdout: sanitizeNestedOutput(stdout),
+      stderr: sanitizeNestedOutput(stderr),
+      receipt_validation: nestedReceiptValidation(receipt, input, selectedBrowserSurface()),
+    };
+    const filename = `nested-runner-diagnostic-${Date.now()}-${child.pid ?? "unknown"}.json`;
+    const diagnosticPath = path.join(directory, filename);
+    fs.writeFileSync(diagnosticPath, `${JSON.stringify(diagnostic, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+    return diagnosticPath;
+  } catch (_) {
+    return null;
+  }
 }
 
 function businessOperationKind(workflowId) {
@@ -426,7 +495,10 @@ export function runChild(command, input) {
     const cleanup = (graceMs, timeout, code, signal, extra = {}) => {
       if (cleanupStarted) return;
       cleanupStarted = true;
-      void cleanupOwnedProcessGroup(child, graceMs).then((processGroupCleanup) => finish({ code: child.exitCode ?? code, signal: child.signalCode || signal, timeout, stdout, stderr, processGroupCleanup, ...extra }));
+      void cleanupOwnedProcessGroup(child, graceMs).then((processGroupCleanup) => {
+        const nestedDiagnosticPath = captureDailyAiNestedRunnerDiagnostic({ input, command, child, stdout, stderr });
+        finish({ code: child.exitCode ?? code, signal: child.signalCode || signal, timeout, stdout, stderr, processGroupCleanup, nestedDiagnosticPath, ...extra });
+      });
     };
     const timeoutMs = Math.min(3_600_000, Math.max(1_000, Number(process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_TIMEOUT_MS || 900_000)));
     const timer = setTimeout(() => { cleanup(5_000, true, null, "SIGTERM"); }, timeoutMs);
@@ -472,7 +544,7 @@ async function main(argv = process.argv.slice(2)) {
     });
     const genericWebOperation = Boolean(String(process.env.AUTOMATION_OS_PORTABLE_WEB_OPERATION_INTENT_PATH || "").trim());
     if (genericWebOperation && !["browser_use_cli", "aos_chrome_companion"].includes(backend)) return output({ exact_blocker: `web_operation_backend_adapter_not_bound:${backend}:generic_web_operation`, browser_surface: selectedBrowserSurface(), workflow_id: input.workflow_id, run_id: input.run_id, step_id: input.step_id });
-    const command = genericWebOperation
+    const command = genericWebOperation && input.workflow_id !== "daily-ai-research-publish-run"
       ? path.join(aosRoot(), "scripts", "aos-portable-browser-use-runner.mjs")
       : runnerFor(input.workflow_id);
     if (!command) return output({
@@ -496,7 +568,7 @@ async function main(argv = process.argv.slice(2)) {
     const effectUnknownReceipt = receiptLifecycle?.state === "effect_unknown" && receiptLifecycle?.no_replay === true;
     if (child.timeout) return output({ exact_blocker: BLOCKERS.timeout, external_action_executed: externalActionExecuted, workflow_id: input.workflow_id, run_id: input.run_id, step_id: input.step_id, runner_receipt: { process_group_cleanup: child.processGroupCleanup || null } });
     if (child.processGroupCleanup?.verified !== true) return output({ exact_blocker: BLOCKERS.processGroupCleanup, external_action_executed: externalActionExecuted, workflow_id: input.workflow_id, run_id: input.run_id, step_id: input.step_id, runner_receipt: { process_group_cleanup: child.processGroupCleanup || null } });
-    if (!receipt || typeof receipt.external_action_executed !== "boolean" || receipt.browser_surface !== selectedBrowserSurface() || receipt.run_id !== input.run_id || (externalActionExecuted && (!receipt.same_run_receipt || receipt.cleanup_verified !== true) && !effectUnknownReceipt)) return output({ exact_blocker: BLOCKERS.receipt, external_action_executed: externalActionExecuted, browser_surface: selectedBrowserSurface(), workflow_id: input.workflow_id, run_id: input.run_id, step_id: input.step_id });
+    if (!receipt || typeof receipt.external_action_executed !== "boolean" || receipt.browser_surface !== selectedBrowserSurface() || receipt.run_id !== input.run_id || (externalActionExecuted && (!receipt.same_run_receipt || receipt.cleanup_verified !== true) && !effectUnknownReceipt)) return output({ exact_blocker: BLOCKERS.receipt, external_action_executed: externalActionExecuted, browser_surface: selectedBrowserSurface(), workflow_id: input.workflow_id, run_id: input.run_id, step_id: input.step_id, runner_receipt: { nested_diagnostic_path: child.nestedDiagnosticPath } });
     if (genericWebOperation) {
       const lifecycle = receipt.web_operation_lifecycle && typeof receipt.web_operation_lifecycle === "object" ? receipt.web_operation_lifecycle : null;
       const status = receipt.status === "complete" && lifecycle?.status === "complete" && receipt.same_run_receipt === true && receipt.cleanup_verified === true

@@ -23,6 +23,40 @@ import {
   type PostgresMvpStateQueryClient
 } from "../runs/postgresMvpState.js";
 
+test("full, UI and summary profiles contain usable fields and exact-company persisted overrides", async () => {
+  const companyId = "profile_projection_company";
+  let memory: Array<Record<string, unknown>> = [];
+  const calls: string[] = [];
+  const queryClient: PostgresMvpStateQueryClient = { async query(text) {
+    calls.push(text);
+    if (text.includes("FROM company_memberships")) return { rows: [{ id: companyId, name: "Company", status: "active", role: "owner" }] };
+    if (text.includes("FROM mvp_automations")) return { rows: [{ id: "own", company_id: companyId, name: "Daily AI" }, { id: "foreign", company_id: "other", name: "Jobs" }] };
+    if (text.includes("FROM company_memory_entries")) return { rows: memory };
+    return { rows: [] };
+  } };
+  for (const projection of ["full", "ui", "summary"] as const) {
+    const read = async () => (await readPostgresMvpState({ companyId, actorUserId: "profile_actor", projection, queryClient, forceFresh: true })).presentation_profiles as any[];
+    memory = [{ company_id: "other", memory_key: "project_profile", body: JSON.stringify({ label: "Foreign" }), revision: 8 }];
+    let profile = (await read())[0];
+    assert.equal(profile.id, companyId);
+    assert.equal(profile.company_id, companyId);
+    assert.equal(profile.kind, "social", "foreign catalog must not influence this company");
+    assert.ok(profile.widgets.length);
+    assert.equal(profile.source, "derived_from_project_automation_catalog");
+    memory.push({ company_id: companyId, memory_key: "project_profile", body: JSON.stringify({ label: "Saved", kind: "research", preferredGrouping: "week" }), revision: 3 });
+    profile = (await read())[0];
+    assert.equal(profile.label, "Saved");
+    assert.equal(profile.revision, 3);
+    assert.equal(profile.preferredGrouping, "week");
+    memory[1].body = "broken-json";
+    profile = (await read())[0];
+    assert.ok(profile.exactBlocker);
+    assert.equal(profile.revision, 3);
+  }
+  assert.ok(calls.every((query) => !/\b(INSERT|UPDATE|DELETE|ALTER)\b/u.test(query)));
+  assert.ok(calls.some((query) => query.includes("memory_key='project_profile'") && query.includes("company_id=ANY($1::text[])")));
+});
+
 test("startup MVP state warm-up follows the dashboard's default company scope", () => {
   assert.deepEqual(startupMvpStateWarmupOptions({}), {});
   assert.deepEqual(startupMvpStateWarmupOptions({ AUTOMATION_OS_COMPANY_ID: "  company_boot  " }), { companyId: "company_boot" });
@@ -109,6 +143,51 @@ class ReadOnlyQueryClient implements PostgresMvpStateQueryClient {
   }
 }
 
+test("all Postgres projections show the saved schedule and shared execution contract instead of legacy manual fields", async () => {
+  const companyId = "company_schedule_projection";
+  const calls: string[] = [];
+  const queryClient: PostgresMvpStateQueryClient = {
+    async query(text) {
+      calls.push(text);
+      if (text.includes("FROM company_memberships")) return { rows: [{ id: companyId, name: "Company", status: "active", role: "owner" }] };
+      if (text.includes("FROM mvp_automations")) return { rows: [
+        { id: "scheduled", company_id: companyId, name: "Gmail", worker_command_kind: "gmail_registered", status: "active", schedule: "manual", cadence: "manual", revision: 5, current_version_id: "version-5" },
+        { id: "manual", company_id: companyId, name: "Draft", worker_command_kind: "safe_local_demo", status: "draft", schedule: "09:00", cadence: "daily" },
+        { id: "portable", company_id: companyId, name: "Daily AI", worker_command_kind: "daily_ai_registered", status: "active" }
+      ] };
+      if (text.includes("FROM mvp_automation_schedules")) return { rows: [
+        { id: "foreign-schedule", automation_id: "manual", company_id: "foreign", kind: "daily", expression: "12:00", enabled: 1 },
+        { id: "schedule-7", automation_id: "scheduled", company_id: companyId, kind: "daily", expression: "07:30", timezone: "Asia/Tokyo", status: "active", enabled: 1, revision: 7, automation_version_id: "version-5", next_run_at: "2026-09-06T22:30:00Z", last_run_at: "2026-09-05T22:30:00Z" }
+      ] };
+      return { rows: [] };
+    }
+  };
+  for (const projection of ["summary", "ui", "chat", "full"] as const) {
+    const state = await readPostgresMvpState({ actorUserId: "actor_schedule_projection", companyId, queryClient, projection, forceFresh: true });
+    const automations = state.automations as Array<Record<string, unknown>>;
+    const scheduled = automations.find((row) => row.id === "scheduled")!;
+    assert.equal(scheduled.schedule, "07:30", projection);
+    assert.equal(scheduled.cadence, "daily");
+    assert.equal(scheduled.schedule_enabled, true);
+    assert.equal(scheduled.schedule_revision, 7);
+    assert.equal(scheduled.schedule_timezone, "Asia/Tokyo");
+    assert.equal(scheduled.pinned_schedule_version_id, "version-5");
+    assert.equal(scheduled.next_run_at, "2026-09-06T22:30:00Z");
+    assert.equal(scheduled.last_run_at, "2026-09-05T22:30:00Z");
+    assert.equal(scheduled.execution_mode, "registered_workflow_readback");
+    assert.equal(scheduled.status, "active");
+    const manual = automations.find((row) => row.id === "manual")!;
+    assert.equal(manual.schedule, "manual", "neither a legacy hint nor foreign schedule is an enabled schedule");
+    assert.equal(manual.schedule_enabled, false);
+    assert.equal(manual.next_run_at, null);
+    assert.equal(manual.execution_mode, "control_plane_dry_run");
+    const portable = automations.find((row) => row.id === "portable")!;
+    assert.equal(portable.execution_mode, "portable_mac_worker_queue");
+    assert.equal(portable.external_action_allowed, false);
+  }
+  assert.ok(calls.every((text) => !/\b(INSERT|UPDATE|DELETE|ALTER)\b/u.test(text)));
+});
+
 test("Postgres MVP readback enforces company scope and remains read-only", async () => {
   const client = new ReadOnlyQueryClient();
   const first = await readPostgresMvpState({
@@ -144,6 +223,29 @@ test("Postgres MVP readback enforces company scope and remains read-only", async
   );
 });
 
+test("Postgres MVP diagnostics separate membership, fan-out, mapping, and runtime timing", async () => {
+  const timing: import("../runs/postgresMvpState.js").MvpStateReadTiming = {};
+  const state = await readPostgresMvpState({
+    actorUserId: "actor_postgres_timing_test",
+    companyId: "company_test",
+    projection: "ui",
+    forceFresh: true,
+    queryClient: new ReadOnlyQueryClient(),
+    timing
+  });
+  assert.equal((state.company_scope as { company_ids?: string[] })?.company_ids?.[0], "company_test");
+  assert.equal(timing.projection, "ui");
+  assert.equal(timing.cacheStatus, "fresh");
+  assert.equal(typeof timing.membershipMs, "number");
+  assert.equal(typeof timing.dbFanoutMs, "number");
+  assert.equal(typeof timing.mappingMs, "number");
+  assert.equal(typeof timing.runtimeSnapshotMs, "number");
+  assert.equal(typeof timing.totalMs, "number");
+  assert.ok((timing.queryCount ?? 0) > 0);
+  assert.ok((timing.queryTimings ?? []).some((query) => query.label === "company_memberships"));
+  assert.ok((timing.queryTimings ?? []).every((query) => query.durationMs >= 0 && query.rowCount >= 0));
+});
+
 test("Postgres UI projection avoids detail-only query fan-out while keeping blocker metadata", async () => {
   const client = new ReadOnlyQueryClient();
   await readPostgresMvpState({
@@ -160,6 +262,35 @@ test("Postgres UI projection avoids detail-only query fan-out while keeping bloc
   assert.equal(eventsQuery, undefined);
   assert.doesNotMatch(runsQuery.text, /SELECT \* FROM runs/u);
   assert.match(runsQuery.text, /metadata_json/u);
+});
+
+test("Postgres UI projection keeps a complete company-scoped guide-run candidate set separate from dashboard runs", async () => {
+  const companyId = "company_guide_runs";
+  const client: PostgresMvpStateQueryClient = {
+    async query(text) {
+      if (text.includes("FROM company_memberships")) {
+        return { rows: [{ id: companyId, name: "Guide company", status: "active", role: "owner" }] };
+      }
+      if (text.includes("FROM mvp_automations")) {
+        return { rows: [{ id: "guide-automation", company_id: companyId, name: "Backup", builder_spec_json: JSON.stringify({ canonicalWorkflowId: "daily-backup-safety-check" }) }] };
+      }
+      if (text.includes("automation_id=ANY($2::text[])")) {
+        return {
+          rows: [
+            { id: "guide-newer-running", company_id: companyId, automation_id: "guide-automation", status: "running", created_at: "2026-09-09T02:00:00.000Z", updated_at: "2026-09-09T02:00:00.000Z", metadata_json: JSON.stringify({ workflow_id: "daily-backup-safety-check" }) },
+            { id: "guide-older-complete", company_id: companyId, automation_id: "guide-automation", status: "complete", created_at: "2026-09-09T01:00:00.000Z", updated_at: "2026-09-09T01:00:00.000Z", metadata_json: JSON.stringify({ workflow_id: "daily-backup-safety-check" }) }
+          ]
+        };
+      }
+      if (text.includes("FROM runs WHERE")) {
+        return { rows: [{ id: "dashboard-run", company_id: companyId, automation_id: "other", status: "complete", created_at: "2026-09-09T03:00:00.000Z", updated_at: "2026-09-09T03:00:00.000Z" }] };
+      }
+      return { rows: [] };
+    }
+  };
+  const state = await readPostgresMvpState({ actorUserId: "guide-actor", companyId, queryClient: client, projection: "ui", forceFresh: true });
+  assert.deepEqual((state.workflowStartGuideRuns as Array<Record<string, unknown>>).map((run) => run.id), ["guide-newer-running", "guide-older-complete"]);
+  assert.deepEqual((state.runs as Array<Record<string, unknown>>).map((run) => run.id), ["dashboard-run"]);
 });
 
 test("Postgres summary projection returns exact counters without detail fan-out", async () => {
@@ -284,6 +415,69 @@ test("Postgres summary projection reconciles a stale worker check from the fresh
   }
 });
 
+test("Postgres summary projection ignores a legacy blocked worker check after fresh portable heartbeat", async () => {
+  const liveHeartbeat = new Date(Date.now() - 1_000).toISOString();
+  const legacyBlockedAt = "2026-08-11T00:00:00.000Z";
+  const statusPath = join(isolatedPortableArtifactRoot, "worker-status.v1.json");
+  writeFileSync(statusPath, JSON.stringify({
+    schema: "aos.portable_remote_worker_status.v1",
+    heartbeat_status: "ok",
+    heartbeat_exact_blocker: null,
+    heartbeat_at: liveHeartbeat,
+    last_successful_heartbeat_at: liveHeartbeat,
+    last_attempt_at: liveHeartbeat,
+    claim_status: "idle",
+    remote_origin: "https://automation-os.zeabur.app",
+    updated_at: liveHeartbeat
+  }) + "\n", { mode: 0o600 });
+  chmodSync(statusPath, 0o600);
+  const client: PostgresMvpStateQueryClient = {
+    async query(text) {
+      if (text.includes("FROM company_memberships")) {
+        return { rows: [{ id: "company_summary_legacy_check", slug: "legacy-check", name: "Legacy Check", status: "active", role: "owner" }] };
+      }
+      if (text.includes("FROM system_checks")) {
+        return {
+          rows: [
+            {
+              id: "local-codex-worker-legacy",
+              kind: "local_codex_worker",
+              status: "blocked",
+              created_at: legacyBlockedAt,
+              metadata_json: JSON.stringify({ company_id: "company_summary_legacy_check" })
+            },
+            {
+              id: "portable-worker-summary-live",
+              kind: "portable_mac_worker",
+              status: "idle",
+              created_at: liveHeartbeat,
+              metadata_json: JSON.stringify({ company_id: "company_summary_legacy_check", heartbeat_at: liveHeartbeat })
+            }
+          ]
+        };
+      }
+      return { rows: [] };
+    }
+  };
+  try {
+    const summary = await readPostgresMvpState({
+      actorUserId: "actor_summary_legacy_check",
+      companyId: "company_summary_legacy_check",
+      queryClient: client,
+      projection: "summary",
+      forceFresh: true
+    });
+    const worker = summary.worker as Record<string, unknown>;
+    assert.equal(worker.status, "idle");
+    assert.equal(worker.readback_status, "fresh_portable_worker_heartbeat");
+    assert.equal(worker.heartbeat_fresh, true);
+    assert.equal(worker.exact_blocker, null);
+    assert.equal(summary.external_action_executed, false);
+  } finally {
+    rmSync(statusPath, { force: true });
+  }
+});
+
 test("Postgres Chat projection keeps exact company/schedule scope without detail fan-out", async () => {
   const calls: Array<{ text: string; values: unknown[] }> = [];
   const client: PostgresMvpStateQueryClient = {
@@ -395,7 +589,11 @@ test("Postgres UI and full projections do not share truncated cache entries", as
   assert.equal((full.readback_cache as { status: string }).status, "fresh");
   const runCalls = calls.filter((call) => call.text.includes("FROM runs WHERE"));
   assert.equal(runCalls.length, 2);
+  assert.match(runCalls[0].text, /jsonb_build_object/u);
   assert.match(runCalls[0].text, /metadata_json/u);
+  const proofCalls = calls.filter((call) => call.text.includes("FROM proofs JOIN runs"));
+  assert.equal(proofCalls.length, 2);
+  assert.match(proofCalls[0].text, /jsonb_build_object/u);
   assert.match(runCalls[1].text, /SELECT \* FROM runs/u);
 });
 

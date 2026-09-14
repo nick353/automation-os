@@ -38,7 +38,7 @@ export type RegisteredAutomationCatalogEntry = {
   goal: string;
   workerCommandKind: string;
   schedule: { kind: "daily" | "weekly"; expression: string; timezone: "Asia/Tokyo" };
-  browserSurface: "none" | "browser_use_cli";
+  browserSurface: "none" | "aos_chrome_companion_profile_instance";
   effectClass: "local_only" | "connector_review" | "authenticated_submit" | "authenticated_publish";
   providerPolicy: {
     schema: "aos.execution_provider.v1";
@@ -95,7 +95,7 @@ const identityStages: RegisteredAutomationStage[] = [
   { id: "source_snapshot", kind: "read", externalEffect: false, requiredProof: ["source_snapshot.v1"] },
   { id: "candidate_supply", kind: "read", externalEffect: false, requiredProof: ["candidate_supply.v1", "dedupe_readback"] },
   { id: "identity_admission", kind: "admission", externalEffect: false, requiredProof: ["applicant_profile_hash", "identity_capability_readback", "current_run_binding"] },
-  { id: "browser_admission", kind: "admission", externalEffect: false, requiredProof: ["browser_use_cli_authority", "profile_port_lease", "same_run_readback"] },
+  { id: "browser_admission", kind: "admission", externalEffect: false, requiredProof: ["aos_chrome_companion_authority", "task_session_lease", "same_run_readback"] },
   { id: "candidate_submit", kind: "effect", externalEffect: true, requiredProof: ["approval_binding", "one_candidate_idempotency", "visible_submission_confirmation"] },
   { id: "submit_readback", kind: "readback", externalEffect: false, requiredProof: ["source_of_truth_readback", "same_run_receipt"] },
   { id: "ledger_sync", kind: "readback", externalEffect: false, requiredProof: ["opportunity_ledger_append", "submitted_confirmed_or_pending_confirmation"] },
@@ -111,12 +111,12 @@ export const registeredAutomationCatalog: readonly RegisteredAutomationCatalogEn
     goal: "Fresh candidate supplyから、Identity capabilityと同一runの可視submit/readbackが揃った候補だけを重複なく処理する。",
     workerCommandKind: "job_submit_registered",
     schedule: { kind: "daily", expression: "07:30", timezone: "Asia/Tokyo" },
-    browserSurface: "browser_use_cli",
+    browserSurface: "aos_chrome_companion_profile_instance",
     effectClass: "authenticated_submit",
     providerPolicy: { schema: "aos.execution_provider.v1", authority: "automation_os_control_plane", providerSelectable: true, codexIsNotAuthority: true },
     execution: { defaultMode: "preflight_no_effect", externalActionDefault: false, adapterStatus: "identity_capability_pending" },
     stages: identityStages,
-    exactBlockers: ["identity_capability_unavailable", "browser_use_cli_authority_missing", "applicant_profile_drift", "applicant_unknown_required_fact", "captcha_or_otp_required", "assessment_or_test_required", "submit_readback_missing", "opportunity_ledger_conflict"]
+    exactBlockers: ["identity_capability_unavailable", "aos_chrome_companion_authority_missing", "applicant_profile_drift", "applicant_unknown_required_fact", "captcha_or_otp_required", "assessment_or_test_required", "submit_readback_missing", "opportunity_ledger_conflict"]
   },
   {
     sourceAutomationId: "automation",
@@ -149,20 +149,20 @@ export const registeredAutomationCatalog: readonly RegisteredAutomationCatalogEn
     goal: "研究結果をローカルqueueへ確定し、公開前QA・承認・同一runの公開readbackを満たす。",
     workerCommandKind: "daily_ai_registered",
     schedule: { kind: "daily", expression: "09:00", timezone: "Asia/Tokyo" },
-    browserSurface: "browser_use_cli",
+    browserSurface: "aos_chrome_companion_profile_instance",
     effectClass: "authenticated_publish",
     providerPolicy: { schema: "aos.execution_provider.v1", authority: "automation_os_control_plane", providerSelectable: true, codexIsNotAuthority: true },
     execution: { defaultMode: "preflight_no_effect", externalActionDefault: false, adapterStatus: "runner_pending" },
     stages: [
       { id: "research_queue_refresh", kind: "read", externalEffect: false, requiredProof: ["local_queue_readback", "source_snapshot"] },
       { id: "media_readiness", kind: "admission", externalEffect: false, requiredProof: ["provider_media_receipt"] },
-      { id: "browser_no_post_qa", kind: "admission", externalEffect: false, requiredProof: ["browser_use_cli_canary", "visual_qa_pass"] },
+      { id: "browser_no_post_qa", kind: "admission", externalEffect: false, requiredProof: ["aos_chrome_companion_canary", "visual_qa_pass"] },
       { id: "publish", kind: "effect", externalEffect: true, requiredProof: ["approval_binding", "same_run_publish_receipt"] },
       { id: "feed_study_and_engagement", kind: "effect", externalEffect: true, requiredProof: ["platform_readback", "bounded_action_receipts"] },
       { id: "queue_and_sheets_sync", kind: "readback", externalEffect: false, requiredProof: ["source_of_truth_sync"] },
       { id: "cleanup", kind: "cleanup", externalEffect: false, requiredProof: ["browser_cleanup"] }
     ],
-    exactBlockers: ["browser_use_cli_authority_missing", "runway_mcp_result_handoff_missing", "publish_visual_qa_failed", "publish_readback_missing", "sheets_sync_unavailable", "ambiguous_external_effect"]
+    exactBlockers: ["aos_chrome_companion_authority_missing", "runway_mcp_result_handoff_missing", "publish_visual_qa_failed", "publish_readback_missing", "sheets_sync_unavailable", "ambiguous_external_effect"]
   },
   {
     sourceAutomationId: "daily-backup-safety-check",
@@ -193,7 +193,7 @@ export const registeredAutomationCatalog: readonly RegisteredAutomationCatalogEn
     goal: "商品単位のidempotencyとprovider readbackを満たすものだけを次段へ進める。",
     workerCommandKind: "nisenprints_registered",
     schedule: { kind: "daily", expression: "08:30", timezone: "Asia/Tokyo" },
-    browserSurface: "browser_use_cli",
+    browserSurface: "aos_chrome_companion_profile_instance",
     effectClass: "authenticated_publish",
     providerPolicy: { schema: "aos.execution_provider.v1", authority: "automation_os_control_plane", providerSelectable: true, codexIsNotAuthority: true },
     execution: { defaultMode: "preflight_no_effect", externalActionDefault: false, adapterStatus: "runner_pending" },
@@ -206,7 +206,7 @@ export const registeredAutomationCatalog: readonly RegisteredAutomationCatalogEn
       { id: "source_sync", kind: "readback", externalEffect: false, requiredProof: ["queue_status_sync"] },
       { id: "cleanup", kind: "cleanup", externalEffect: false, requiredProof: ["browser_cleanup"] }
     ],
-    exactBlockers: ["browser_use_cli_stage_adapter_pending:nisenprints", "provider_auth_missing", "provider_idempotency_missing", "publish_readback_missing", "etsy_url_mismatch"]
+    exactBlockers: ["aos_chrome_companion_authority_missing", "provider_auth_missing", "provider_idempotency_missing", "publish_readback_missing", "etsy_url_mismatch"]
   },
   {
     sourceAutomationId: "obsidian",
@@ -291,7 +291,7 @@ export function adoptRegisteredAutomationCatalog(input: {
       name: entry.name,
       description: entry.description,
       goal: entry.goal,
-      lane: entry.browserSurface === "browser_use_cli" ? "browser_use_cli" : "local",
+      lane: entry.browserSurface === "aos_chrome_companion_profile_instance" ? "aos_chrome_companion" : "local",
       riskLevel: entry.stages.some((stage) => stage.externalEffect) ? "high" : "medium",
       approvalPolicy: entry.effectClass === "local_only" ? "required_before_external_action" : "required_before_external_action",
       workerCommandKind: entry.workerCommandKind,
@@ -344,7 +344,7 @@ export async function adoptRegisteredAutomationCatalogAsync(input: {
       name: entry.name,
       description: entry.description,
       goal: entry.goal,
-      lane: entry.browserSurface === "browser_use_cli" ? "browser_use_cli" : "local",
+      lane: entry.browserSurface === "aos_chrome_companion_profile_instance" ? "aos_chrome_companion" : "local",
       riskLevel: entry.stages.some((stage) => stage.externalEffect) ? "high" : "medium",
       approvalPolicy: "required_before_external_action",
       workerCommandKind: entry.workerCommandKind,
@@ -375,7 +375,14 @@ export async function adoptRegisteredAutomationCatalogAsync(input: {
 
 function synchronizeExistingAutomation(existing: AutomationRecord, adoption: RegisteredAutomationAdoptionSpec, actorUserId: string): AutomationRecord {
   const current = existing.builderSpec as Partial<RegisteredAutomationAdoptionSpec>;
-  if (current.schema !== adoption.schema || current.sourceAutomationId !== adoption.sourceAutomationId || current.canonicalWorkflowId !== adoption.canonicalWorkflowId) {
+  // Deterministic catalog IDs are migration slots. Older registered_workflow
+  // records may carry a pre-adoption builder spec or stale catalog identity;
+  // upgrade only the matching company/source slot in place. Other records
+  // retain the identity conflict guard so one catalog entry cannot overwrite
+  // another.
+  const isCatalogOwnedSlot = existing.automationType === "registered_workflow"
+    && existing.id === deterministicCompanyAutomationId(existing.companyId, adoption.sourceAutomationId);
+  if (!isCatalogOwnedSlot && (current.sourceAutomationId !== adoption.sourceAutomationId || current.canonicalWorkflowId !== adoption.canonicalWorkflowId)) {
     throw new Error(`registered_automation_adoption_conflict:${adoption.sourceAutomationId}`);
   }
   if (JSON.stringify(current) === JSON.stringify(adoption)) return existing;
@@ -383,13 +390,27 @@ function synchronizeExistingAutomation(existing: AutomationRecord, adoption: Reg
     companyId: existing.companyId,
     actorUserId,
     automationId: existing.id,
-    patch: { expectedRevision: existing.revision, builderSpec: adoption as unknown as Record<string, unknown> }
+    patch: {
+      expectedRevision: existing.revision,
+      automationType: "registered_workflow",
+      name: existing.name,
+      description: existing.description,
+      goal: existing.goal,
+      lane: adoption.browserSurface === "aos_chrome_companion_profile_instance" ? "aos_chrome_companion" : "local",
+      riskLevel: adoption.stages.some((stage) => stage.externalEffect) ? "high" : "medium",
+      approvalPolicy: "required_before_external_action",
+      workerCommandKind: existing.workerCommandKind,
+      createApproval: adoption.stages.some((stage) => stage.externalEffect),
+      builderSpec: adoption as unknown as Record<string, unknown>
+    }
   });
 }
 
 async function synchronizeExistingAutomationAsync(existing: AutomationRecord, adoption: RegisteredAutomationAdoptionSpec, actorUserId: string): Promise<AutomationRecord> {
   const current = existing.builderSpec as Partial<RegisteredAutomationAdoptionSpec>;
-  if (current.schema !== adoption.schema || current.sourceAutomationId !== adoption.sourceAutomationId || current.canonicalWorkflowId !== adoption.canonicalWorkflowId) {
+  const isCatalogOwnedSlot = existing.automationType === "registered_workflow"
+    && existing.id === deterministicCompanyAutomationId(existing.companyId, adoption.sourceAutomationId);
+  if (!isCatalogOwnedSlot && (current.sourceAutomationId !== adoption.sourceAutomationId || current.canonicalWorkflowId !== adoption.canonicalWorkflowId)) {
     throw new Error(`registered_automation_adoption_conflict:${adoption.sourceAutomationId}`);
   }
   if (JSON.stringify(current) === JSON.stringify(adoption)) return existing;
@@ -397,13 +418,25 @@ async function synchronizeExistingAutomationAsync(existing: AutomationRecord, ad
     companyId: existing.companyId,
     actorUserId,
     automationId: existing.id,
-    patch: { expectedRevision: existing.revision, builderSpec: adoption as unknown as Record<string, unknown> }
+    patch: {
+      expectedRevision: existing.revision,
+      automationType: "registered_workflow",
+      name: existing.name,
+      description: existing.description,
+      goal: existing.goal,
+      lane: adoption.browserSurface === "aos_chrome_companion_profile_instance" ? "aos_chrome_companion" : "local",
+      riskLevel: adoption.stages.some((stage) => stage.externalEffect) ? "high" : "medium",
+      approvalPolicy: "required_before_external_action",
+      workerCommandKind: existing.workerCommandKind,
+      createApproval: adoption.stages.some((stage) => stage.externalEffect),
+      builderSpec: adoption as unknown as Record<string, unknown>
+    }
   });
 }
 
 function verifyExistingSchedule(existing: AutomationScheduleRecord, entry: RegisteredAutomationCatalogEntry): AutomationScheduleRecord {
-  if (existing.kind !== entry.schedule.kind || existing.expression !== entry.schedule.expression || existing.timezone !== entry.schedule.timezone) {
-    throw new Error(`registered_automation_schedule_conflict:${entry.sourceAutomationId}`);
-  }
+  // Adoption is a definition migration, not a schedule mutation. Existing
+  // schedules may intentionally differ from the catalog defaults; return the
+  // persisted row unchanged so the receipt can prove preservation.
   return existing;
 }

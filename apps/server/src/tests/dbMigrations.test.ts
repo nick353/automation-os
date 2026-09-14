@@ -246,6 +246,7 @@ test("initDb adds Browser Use lane columns to an existing lanes table", () => {
     skills: db.querySql<{ name: string }>("PRAGMA index_list(skills)").map((row) => row.name)
   };
   assert.ok(tenancyIndexes.runs.includes("idx_runs_company"));
+  assert.ok(tenancyIndexes.runs.includes("idx_runs_company_created_at"));
   assert.ok(tenancyIndexes.approvals.includes("idx_approvals_company_status"));
   assert.ok(tenancyIndexes.approvals.includes("idx_approvals_bound_action"));
   assert.ok(tenancyIndexes.proofs.includes("idx_proofs_company_run"));

@@ -107,6 +107,49 @@ test("company approval inbox includes portable approvals without making them con
   assert.equal(approvals.getBoundApproval(fixture.companyId, "approval_portable_inbox"), undefined);
 });
 
+test("company approval inbox supports exact read-only run and status filters", () => {
+  const fixture = seedFixture("company_approval_filter", "owner_approval_filter", "service_approval_filter");
+  const now = "2029-01-01T00:00:00.000Z";
+  for (const [id, runId, status] of [
+    ["approval_filter_target", "run_filter_target", "pending"],
+    ["approval_filter_other", "run_filter_other", "approved"]
+  ] as const) {
+    db.insert("approvals", {
+      id,
+      company_id: fixture.companyId,
+      run_id: runId,
+      job_id: null,
+      step_id: null,
+      title: id,
+      requested_by: fixture.serviceUserId,
+      status,
+      priority: "normal",
+      approval_group_id: `portable:${runId}`,
+      action_kind: "business_execute",
+      target_account_ref_id: "auth:profile2",
+      payload_hash: "e".repeat(64),
+      policy_version: "policy-v1",
+      expires_at: "2030-01-01T00:00:00.000Z",
+      decided_by_user_id: null,
+      decision_revision: 1,
+      consumed_at: null,
+      consumed_by_attempt_id: null,
+      resource_locks_json: "[]",
+      created_at: now,
+      decided_at: null,
+      decision_note: null
+    });
+  }
+  const filtered = approvals.listCompanyApprovals(fixture.companyId, {
+    runId: "run_filter_target",
+    status: "pending",
+    actionKind: "business_execute",
+    limit: 10
+  });
+  assert.deepEqual(filtered.map((approval) => approval.id), ["approval_filter_target"]);
+  assert.deepEqual(approvals.listCompanyApprovals(fixture.companyId, { runId: "missing-run" }), []);
+});
+
 test("approval consume requires an exact live attempt binding and succeeds once", () => {
   const fixture = seedFixture("company_approval_b", "owner_approval_b", "service_approval_b");
   const job = enqueue(fixture, "approval-consume-job");

@@ -90,3 +90,90 @@ test("brief surfaces the same-run blocker and a blocker-specific next action", (
   assert.match(blocked?.next_action ?? "", /Gmail provider canary/u);
   assert.match(blocked?.summary ?? "", /read-only/u);
 });
+
+test("Brief never labels a lost business receipt read-only, including legacy false metadata", async () => {
+  const originalStep = db.querySql<Record<string, string | number | null>>("SELECT * FROM run_steps WHERE id='brief-step-c'")[0]!;
+  const originalRun = db.querySql<Record<string, string | number | null>>("SELECT * FROM runs WHERE id='brief-run-c'")[0]!;
+  const input = { companyId: "brief-company-a", briefType: "morning" as const, businessDate: "2026-09-06", timezone: "Asia/Tokyo" };
+  try {
+    for (const executionMode of ["business_effect", "missing", "read_only"]) {
+      const metadata = { exact_blocker: "portable_remote_claim_expired_without_receipt", external_action_executed: false };
+      db.upsert("run_steps", { ...originalStep, metadata_json: metadata });
+      db.upsert("runs", { ...originalRun, metadata_json: { ...metadata, remote_worker_claim: executionMode === "missing" ? {} : { execution_mode: executionMode } } });
+      const result = buildCompanyBriefReadback(input);
+      const item = result.companies[0]?.items.find((row) => row.record_id === "mvp_automation:brief-automation-c");
+      if (executionMode === "read_only") assert.match(item?.summary ?? "", /read-only/u);
+      else {
+        assert.match(item?.summary ?? "", /外部結果未確認/u);
+        assert.doesNotMatch(item?.summary ?? "", /read-only/u);
+      }
+      assert.match(item?.next_action ?? "", /同じRun.*再実行・再送しない/u);
+      assert.equal((await buildCompanyBriefReadbackAsync(input)).output_fingerprint, result.output_fingerprint);
+    }
+  } finally {
+    db.upsert("run_steps", originalStep);
+    db.upsert("runs", originalRun);
+  }
+});
+
+test("future UTC and American schedules are compared with the Brief business date in its timezone", async () => {
+  const original = db.querySql<Record<string, string | number | null>>("SELECT * FROM mvp_automation_schedules WHERE id='brief-schedule-a'")[0]!;
+  const input = { companyId: "brief-company-a", briefType: "morning" as const, businessDate: "2026-09-06", timezone: "Asia/Tokyo" };
+  try {
+    for (const timezone of ["UTC", "America/Los_Angeles"]) {
+      db.upsert("mvp_automation_schedules", { ...original, timezone, next_run_at: "2026-09-05T21:05:00.000Z" });
+      const current = buildCompanyBriefReadback(input);
+      const item = current.companies[0]?.items.find((row) => row.record_id === "mvp_automation:brief-automation-a");
+      assert.doesNotMatch(item?.summary ?? "", /過去のため再計算が必要/u, timezone);
+      assert.doesNotMatch(item?.next_action ?? "", /scheduler・queue・worker/u, timezone);
+      assert.equal((await buildCompanyBriefReadbackAsync(input)).output_fingerprint, current.output_fingerprint);
+    }
+    db.upsert("mvp_automation_schedules", { ...original, timezone: "UTC", next_run_at: "2026-09-05T14:59:00.000Z" });
+    const stale = buildCompanyBriefReadback(input).companies[0]?.items.find((row) => row.record_id === "mvp_automation:brief-automation-a");
+    assert.match(stale?.summary ?? "", /過去のため再計算が必要/u);
+  } finally {
+    db.upsert("mvp_automation_schedules", original);
+  }
+});
+
+test("Company1 excludes only the requested job display records and does not mutate schedules", async () => {
+  const companyId = "company_2560580981cedfd106b66245";
+  const jobId = "automation_c304872764579ce2db1c5c90";
+  db.upsert("companies", { id: companyId, slug: companyId, name: "Company1", status: "active", created_at: now, updated_at: now });
+  const sourceAutomation = db.querySql<Record<string, unknown>>("SELECT * FROM mvp_automations WHERE id='brief-automation-a'")[0]!;
+  db.upsert("mvp_automations", { ...sourceAutomation, id: jobId, company_id: companyId, project_id: companyId, name: "Excluded jobs" });
+  db.upsert("mvp_automations", { ...sourceAutomation, id: "personal-daily-ai", company_id: companyId, project_id: companyId, name: "Daily AI non-Runway work" });
+  const sourceSchedule = db.querySql<Record<string, unknown>>("SELECT * FROM mvp_automation_schedules WHERE id='brief-schedule-a'")[0]!;
+  db.upsert("mvp_automation_schedules", { ...sourceSchedule, id: "personal-job-schedule", company_id: companyId, project_id: companyId, automation_id: jobId });
+  const before = db.querySql("SELECT * FROM mvp_automation_schedules WHERE id='personal-job-schedule'");
+  const input = { companyId, briefType: "evening" as const, businessDate: "2026-09-05", timezone: "Asia/Tokyo" };
+  const result = buildCompanyBriefReadback(input);
+  assert.equal(result.status, "complete");
+  assert.equal(result.counts.scope_excluded_records, 2);
+  assert.equal(result.counts.excluded_records, 0);
+  assert.match(result.scope_note ?? "", /Runway/u);
+  assert.deepEqual(result.companies[0]?.items.map((item) => item.record_id), ["mvp_automation:personal-daily-ai"]);
+  assert.deepEqual(db.querySql("SELECT * FROM mvp_automation_schedules WHERE id='personal-job-schedule'"), before);
+  assert.equal((await buildCompanyBriefReadbackAsync(input)).output_fingerprint, result.output_fingerprint);
+  assert.equal(buildCompanyBriefReadback({ ...input, companyId: "brief-company-a" }).scope_note, undefined);
+});
+
+test("archived automations and their schedules stay in history without becoming current Brief work", async () => {
+  const companyId = "brief-company-archived";
+  db.upsert("companies", { id: companyId, slug: companyId, name: "Archived fixture", status: "active", created_at: now, updated_at: now });
+  const automation = db.querySql<Record<string, unknown>>("SELECT * FROM mvp_automations WHERE id='brief-automation-a'")[0]!;
+  db.upsert("mvp_automations", { ...automation, id: "archived-test", company_id: companyId, project_id: companyId, status: "archived", archived_at: now });
+  db.upsert("mvp_automations", { ...automation, id: "active-test", company_id: companyId, project_id: companyId });
+  const schedule = db.querySql<Record<string, unknown>>("SELECT * FROM mvp_automation_schedules WHERE id='brief-schedule-a'")[0]!;
+  db.upsert("mvp_automation_schedules", { ...schedule, id: "archived-test-schedule", company_id: companyId, project_id: companyId, automation_id: "archived-test", enabled: 0, status: "paused" });
+  const before = db.querySql("SELECT * FROM mvp_automations WHERE company_id='brief-company-archived' ORDER BY id");
+  const input = { companyId, briefType: "evening" as const, businessDate: "2026-09-05", timezone: "Asia/Tokyo" };
+  const result = buildCompanyBriefReadback(input);
+  assert.equal(result.status, "complete");
+  assert.equal(result.counts.excluded_records, 0);
+  assert.equal(result.counts.scope_excluded_records, 2);
+  assert.deepEqual(result.companies[0]?.items.map((item) => item.record_id), ["mvp_automation:active-test"]);
+  assert.match(JSON.stringify(result.scope_exclusions), /archived_automation_history/u);
+  assert.deepEqual(db.querySql("SELECT * FROM mvp_automations WHERE company_id='brief-company-archived' ORDER BY id"), before);
+  assert.equal((await buildCompanyBriefReadbackAsync(input)).output_fingerprint, result.output_fingerprint);
+});

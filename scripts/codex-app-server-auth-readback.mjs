@@ -10,9 +10,10 @@
  */
 
 import { spawn } from "node:child_process";
+import fs from "node:fs/promises";
+import path from "node:path";
 
-const workspace = "/Users/nichikatanaka/Documents/Codex/automation-os";
-const command = process.env.CODEX_CLI_PATH?.trim() || "/Users/nichikatanaka/.local/bin/codex";
+const workspace = path.resolve(process.env.CODEX_APP_SERVER_READBACK_CWD?.trim() || process.cwd());
 const timeoutMs = 60_000;
 const allowedEnvironment = new Set([
   "PATH", "HOME", "CODEX_HOME", "CODEX_CLI_PATH", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "TERM",
@@ -25,70 +26,39 @@ for (const [key, value] of Object.entries(process.env)) {
 }
 childEnvironment.AUTOMATION_OS_CODEX_APP_SERVER_CHILD = "1";
 
-const child = spawn(command, ["app-server", "--listen", "stdio://"], {
-  cwd: workspace,
-  env: childEnvironment,
-  stdio: ["pipe", "pipe", "pipe"]
-});
-
 let lineBuffer = "";
 let nextId = 1;
 let closed = false;
 const pending = new Map();
-const notifications = [];
 
-child.stderr.on("data", () => {
-  // stderr can contain implementation details or sensitive diagnostics.
-});
+async function isExecutable(filePath) {
+  try {
+    const stat = await fs.stat(filePath);
+    await fs.access(filePath, fs.constants.X_OK);
+    return stat.isFile();
+  } catch {
+    return false;
+  }
+}
 
-child.stdout.on("data", (chunk) => {
-  lineBuffer += String(chunk);
-  while (true) {
-    const newline = lineBuffer.indexOf("\n");
-    if (newline < 0) return;
-    const line = lineBuffer.slice(0, newline).trim();
-    lineBuffer = lineBuffer.slice(newline + 1);
-    if (!line) continue;
-    let message;
-    try {
-      message = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (typeof message.id === "number") {
-      const waiter = pending.get(message.id);
-      if (!waiter) continue;
-      pending.delete(message.id);
-      clearTimeout(waiter.timer);
-      if (message.error) {
-        // Keep only the numeric JSON-RPC code. The server message may contain
-        // paths, URLs, provider data, or credential-like text.
-        const code = Number.isSafeInteger(message.error.code) ? String(message.error.code) : "unknown";
-        const error = new Error(`rpc_rejected_code_${code}`);
-        error.rpcErrorCode = code;
-        error.rpcErrorDataKeys = message.error.data && typeof message.error.data === "object"
-          ? Object.keys(message.error.data).slice(0, 20)
-          : [];
-        waiter.reject(error);
-      }
-      else waiter.resolve(message);
-      continue;
-    }
-    if (typeof message.method === "string") notifications.push(message);
+async function resolveCodexCommand() {
+  const configuredPath = process.env.CODEX_CLI_PATH?.trim();
+  if (configuredPath) {
+    const candidate = path.resolve(configuredPath);
+    if (await isExecutable(candidate)) return candidate;
+    throw new Error("configured_codex_cli_not_executable");
   }
-});
 
-child.on("close", (code, signal) => {
-  closed = true;
-  for (const waiter of pending.values()) {
-    clearTimeout(waiter.timer);
-    waiter.reject(new Error("process_closed"));
+  const bundledPath = "/usr/local/bin/codex";
+  if (await isExecutable(bundledPath)) return bundledPath;
+
+  for (const entry of (process.env.PATH || "").split(path.delimiter)) {
+    if (!entry) continue;
+    const candidate = path.resolve(entry, "codex");
+    if (await isExecutable(candidate)) return candidate;
   }
-  pending.clear();
-  if (!completed) {
-    output({ stage: "process_closed", code, signal });
-  }
-});
+  throw new Error("codex_cli_not_found");
+}
 
 function output(value) {
   process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -123,9 +93,81 @@ function accountReadback(response) {
   };
 }
 
+let child = null;
 let completed = false;
 let exitCode = 0;
 try {
+  const command = await resolveCodexCommand();
+  child = spawn(command, ["app-server", "--listen", "stdio://"], {
+    cwd: workspace,
+    env: childEnvironment,
+    stdio: ["pipe", "pipe", "pipe"]
+  });
+
+  child.stderr.on("data", () => {
+    // stderr can contain implementation details or sensitive diagnostics.
+  });
+
+  const completedTurns = new Map();
+  child.stdout.on("data", (chunk) => {
+    lineBuffer += String(chunk);
+    while (true) {
+      const newline = lineBuffer.indexOf("\n");
+      if (newline < 0) return;
+      const line = lineBuffer.slice(0, newline).trim();
+      lineBuffer = lineBuffer.slice(newline + 1);
+      if (!line) continue;
+      let message;
+      try {
+        message = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (typeof message.id === "number") {
+        const waiter = pending.get(message.id);
+        if (!waiter) continue;
+        pending.delete(message.id);
+        clearTimeout(waiter.timer);
+        if (message.error) {
+          // Keep only the numeric JSON-RPC code. The server message may contain
+          // paths, URLs, provider data, or credential-like text.
+          const code = Number.isSafeInteger(message.error.code) ? String(message.error.code) : "unknown";
+          const error = new Error(`rpc_rejected_code_${code}`);
+          error.rpcErrorCode = code;
+          error.rpcErrorDataKeys = message.error.data && typeof message.error.data === "object"
+            ? Object.keys(message.error.data).slice(0, 20)
+            : [];
+          waiter.reject(error);
+        }
+        else waiter.resolve(message);
+        continue;
+      }
+      if (message.method === "turn/completed" && typeof message.params?.turn?.id === "string") {
+        completedTurns.set(message.params.turn.id, {
+          status: typeof message.params.turn.status === "string" ? message.params.turn.status : "unknown"
+        });
+      }
+    }
+  });
+
+  child.on("error", () => {
+    closed = true;
+    for (const waiter of pending.values()) {
+      clearTimeout(waiter.timer);
+      waiter.reject(new Error("process_error"));
+    }
+    pending.clear();
+  });
+
+  child.on("close", () => {
+    closed = true;
+    for (const waiter of pending.values()) {
+      clearTimeout(waiter.timer);
+      waiter.reject(new Error("process_closed"));
+    }
+    pending.clear();
+  });
+
   const initialize = await rpc("initialize", {
     clientInfo: { name: "automation_os_auth_readback", title: "Automation OS Auth Readback", version: "0.1.0" },
     capabilities: {}
@@ -172,9 +214,7 @@ try {
     const deadline = Date.now() + timeoutMs;
     let completion;
     while (Date.now() < deadline) {
-      completion = notifications.find((message) =>
-        message.method === "turn/completed" && message.params?.turn?.id === turnId
-      );
+      completion = completedTurns.get(turnId);
       if (completion) break;
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
@@ -182,7 +222,7 @@ try {
     output({
       stage: "turn/completed",
       completion_observed: true,
-      status: typeof completion.params?.turn?.status === "string" ? completion.params.turn.status : "unknown"
+      status: completion.status
     });
   }
 } catch (error) {
@@ -195,7 +235,7 @@ try {
   exitCode = 1;
 } finally {
   completed = true;
-  child.kill("SIGTERM");
+  if (child && !child.killed) child.kill("SIGTERM");
 }
 
 process.exitCode = exitCode;

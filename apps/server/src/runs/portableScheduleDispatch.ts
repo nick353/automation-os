@@ -9,10 +9,10 @@ export type PortableScheduleDispatch = {
   queue: "aos_portable_workflow_run_queue";
   worker_protocol: "mac_worker_polling_required";
   execution_backend: "automation_os_worker";
-  browser_surface: "none" | "browser_use_cli";
-  browser_runtime: "none" | "browser_use_cli";
+  browser_surface: "none" | "aos_chrome_companion_profile_instance";
+  browser_runtime: "none" | "aos_chrome_companion";
   connector_execution_owner: "none" | "zeabur_codex_app_server" | "mac_worker_explicit_connector_fallback";
-  operation_surface: "mac_local_worker" | "browser_use_cli";
+  operation_surface: "mac_local_worker" | "aos_chrome_companion_profile_instance";
   app_dependency: false;
   codex_is_not_authority: true;
   external_action_default: false;
@@ -60,21 +60,25 @@ export function connectorExecutionOwnerForRegisteredAutomation(input: Registered
 }
 
 /**
- * Preserve an explicitly registered extension requirement across the scheduler
- * boundary. An omitted requirement remains omitted so the run entrypoint can
- * apply its own normal-route policy; the scheduler must not invent a default
- * or silently translate one extension into the other.
+ * Registered definitions may carry an explicit surface requirement, but an
+ * automatic requirement must remain automatic so the current AOS UI backend
+ * setting is resolved for every scheduled run. The catalog's historical
+ * Companion surface is descriptive metadata, not an execution override.
  */
 export function browserSurfaceRequirementForRegisteredAutomation(
   input: RegisteredAutomationLike,
 ): PortableBrowserSurfaceRequirement | undefined {
   const direct = normalizedBrowserSurfaceRequirement(input.browserSurfaceRequirement);
-  if (direct !== undefined) return direct;
+  if (direct !== undefined) {
+    return direct;
+  }
   const fromBuilderSpec = normalizedBrowserSurfaceRequirement(input.builderSpec?.browserSurfaceRequirement);
-  if (fromBuilderSpec !== undefined) return fromBuilderSpec;
+  if (fromBuilderSpec !== undefined) {
+    return fromBuilderSpec;
+  }
   const browserSurface = input.builderSpec?.browserSurface;
   if (browserSurface === undefined || browserSurface === null || browserSurface === "none") return undefined;
-  if (browserSurface === "browser_use_cli") return browserSurface;
+  if (browserSurface === "aos_chrome_companion_profile_instance" || browserSurface === "browser_use_cli") return "automatic";
   throw new Error("portable_registered_browser_surface_invalid");
 }
 
@@ -89,10 +93,13 @@ function normalizedBrowserSurfaceRequirement(value: unknown): PortableBrowserSur
  * Caller-supplied workflow ids are never accepted as a schedule authority.
  */
 export function portableWorkflowIdForRegisteredAutomation(input: RegisteredAutomationLike): PortableWorkflowId | null {
+  // An explicit inventory worker is local even when an older definition still
+  // carries the publication canonical workflow in its builder spec.
+  if (input.workerCommandKind?.trim() === "nisenprints_inventory_registered") return null;
   const workflowId = workflowIdFromRegisteredAutomation(input);
   if (!workflowId || !Object.prototype.hasOwnProperty.call(portableWorkflowManifests, workflowId)) return null;
   const manifest = portableWorkflowManifests[workflowId as PortableWorkflowId];
-  if (manifest.execution.browser_surface !== "browser_use_cli" || manifest.execution.browser_runtime !== "browser_use_cli" || manifest.execution.app_dependency !== false) return null;
+  if (manifest.execution.browser_surface !== "aos_chrome_companion_profile_instance" || manifest.execution.browser_runtime !== "aos_chrome_companion" || manifest.execution.app_dependency !== false) return null;
   return workflowId as PortableWorkflowId;
 }
 

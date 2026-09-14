@@ -4,6 +4,51 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { finalizeHourlyControllerReceipt } from "../lib/hourly-controller-finalizer.mjs";
+import { finalizeCurrentRootHourlyController } from "/Users/nichikatanaka/.codex/skills/automation-kernel-run/scripts/current-root-execute-adapter.mjs";
+
+test("does not depend on an undeclared process global in the Root callback boundary", () => {
+  const source = fs.readFileSync(path.join(import.meta.dirname, "../lib/hourly-controller-finalizer.mjs"), "utf8");
+  assert.match(source, /const currentProcess = globalThis\.process;/u);
+  assert.doesNotMatch(source, /process\.pid/u);
+});
+
+test("finalizes through the current-root adapter when the process global is absent", async () => {
+  const fixtureData = fixture();
+  const originalProcess = globalThis.process;
+  try {
+    delete globalThis.process;
+    const result = await finalizeCurrentRootHourlyController({
+      auditPath: fixtureData.auditPath,
+      globals: fixtureData.globals,
+      controllerOutcome: {
+        schema: "aos.companion_hourly_controller.v1",
+        status: "deferred",
+        auditFingerprint: "a".repeat(64),
+        exact_blocker: "send_result_unknown",
+        actions: ["blocker_progress"],
+        freshStatus: { connected: true, generation: "gen-test", activeLeaseCount: 0, pendingCount: 0, queueCount: 0 },
+        blockerProgress: { reason: "send_result_unknown", status: "deferred", attempted: true, resumeAllowed: false, exact_blocker: "send_result_unknown" },
+        next_action_now: "retain the idempotency key and do not resend",
+        resume_trigger: "same-task readback exposes accepted delivery or definitive no-delivery",
+        external_action_executed: false,
+      },
+      callbackEvidence: [{
+        stage: "blocker_progress",
+        tool: "mcp__codex_app__read_thread",
+        threadId: "thread-target",
+        status: "observed",
+        exact_blocker: "send_result_unknown",
+        result: { status: "observed", external_action_executed: false },
+      }],
+    });
+    assert.equal(result.created, true);
+    assert.equal(result.executionReceipt.status, "deferred");
+    assert.equal(typeof globalThis.process, "undefined");
+  } finally {
+    globalThis.process = originalProcess;
+    fs.rmSync(fixtureData.root, { recursive: true, force: true });
+  }
+});
 
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "aos-controller-finalizer-"));
@@ -43,12 +88,32 @@ function fixture() {
           session_id: "session-test",
           thread_id: "thread-test",
           turn_id: "turn-test",
+          turn_trigger: "automation",
         },
       },
     },
   };
   return { root, auditPath, verifierPath, statePath, globals };
 }
+
+test("natural deferred verification remains deferred through compacting and finalization", () => {
+  for (const activeLeaseCount of [2, 0]) {
+    const data = fixture();
+    try {
+      const result = finalizeHourlyControllerReceipt({ ...data,
+        controllerOutcome: { status: "deferred", actions: ["verification"], auditFingerprint: "a".repeat(64),
+          exact_blocker: "companion_installed_artifact_drift", external_action_executed: false,
+          freshStatus: { connected: true, generation: "gen-test", activeLeaseCount, pendingCount: 0, queueCount: 0, activeReconciliationCount: null },
+          verification: { status: "deferred", continuationAllowed: false } },
+        callbackEvidence: [{ stage: "diagnostic_readback", tool: "read_only_audit", status: "observed" }] });
+      const receipt = JSON.parse(fs.readFileSync(result.path));
+      assert.equal(receipt.controller.freshStatus.activeReconciliationCount, null);
+      assert.equal(receipt.executionReceipt.stageReceipts.focused_verification.status, "deferred");
+      assert.equal(receipt.executionReceipt.stageReceipts.idle_reconciled_check.status, "deferred");
+      assert.equal(receipt.executionReceipt.complete, false);
+    } finally { fs.rmSync(data.root, { recursive: true, force: true }); }
+  }
+});
 
 test("finalizes a completed controller from actual callback/readback evidence", () => {
   const fixtureData = fixture();
@@ -63,7 +128,21 @@ test("finalizes a completed controller from actual callback/readback evidence", 
       continuations: [{
         threadId: "thread-target",
         idempotencyKey: "aos-hourly:test",
-        result: { status: "sent", readback: { status: "observed", goal_plan_state: "active" }, external_action_executed: false },
+        result: {
+          status: "sent",
+          readback: {
+            status: "observed",
+            goal_plan_state: "active",
+            deliveryProof: {
+              kind: "same_task_new_turn_completed",
+              beforeTurnId: "turn-before",
+              afterTurnId: "turn-after",
+              afterTurnStatus: "completed",
+              markerVisible: false,
+            },
+          },
+          external_action_executed: false,
+        },
       }],
       external_action_executed: false,
     },
@@ -79,7 +158,10 @@ test("finalizes a completed controller from actual callback/readback evidence", 
   assert.equal(result.executionReceipt.complete, true);
   const receipt = JSON.parse(fs.readFileSync(result.path, "utf8"));
   assert.equal(receipt.root.turnId, "turn-test");
+  assert.equal(receipt.root.turnTrigger, "automation");
   assert.equal(receipt.callbackEvidence[0].tool, "mcp__codex_app__send_message_to_thread");
+  assert.equal(receipt.controller.continuations[0].result.deliveryProof.kind, "same_task_new_turn_completed");
+  assert.equal(receipt.controller.continuations[0].result.deliveryProof.markerVisible, false);
   assert.equal(receipt.executionReceipt.stageReceipts.thread_inventory.status, "completed");
   assert.equal(receipt.executionReceipt.stageReceipts.lightweight_thread_inspection.readbackCount, 2);
   assert.equal(receipt.executionReceipt.stageReceipts.deep_read_selection.readCount, 1);
@@ -189,7 +271,48 @@ test("does not claim Goal/Plan reactivation from delivery proof alone", () => {
       status: "sent",
       result: { status: "sent", readback: { status: "observed" }, external_action_executed: false },
     }],
-  }), /hourly_controller_goal_plan_readback_required/u);
+}), /hourly_controller_goal_plan_readback_required/u);
+});
+
+test("preserves direct scheduled-controller continuation results", () => {
+  const fixtureData = fixture();
+  const result = finalizeHourlyControllerReceipt({
+    ...fixtureData,
+    controllerOutcome: {
+      schema: "aos.companion_hourly_controller.v1",
+      status: "completed",
+      auditFingerprint: "a".repeat(64),
+      actions: ["continuation"],
+      freshStatus: { connected: true, generation: "gen-test", activeLeaseCount: 0, pendingCount: 0, queueCount: 0 },
+      // This is the shape returned by scheduled-companion-controller.mjs.
+      continuations: [{
+        threadId: "thread-target",
+        idempotencyKey: "aos-hourly:direct",
+        status: "sent",
+        readback: {
+          status: "observed",
+          goal_plan_state: "active",
+          deliveryProof: { kind: "same_task_new_turn_completed", markerVisible: false },
+        },
+        external_action_executed: false,
+      }],
+      external_action_executed: false,
+    },
+    callbackEvidence: [{
+      stage: "continuation",
+      tool: "mcp__codex_app__send_message_to_thread",
+      threadId: "thread-target",
+      status: "sent",
+      result: { status: "sent", readback: { status: "observed", goal_plan_state: "active" }, external_action_executed: false },
+    }],
+  });
+  const receipt = JSON.parse(fs.readFileSync(result.path, "utf8"));
+  assert.equal(result.executionReceipt.complete, true);
+  assert.equal(receipt.controller.continuations[0].threadId, "thread-target");
+  assert.equal(receipt.controller.continuations[0].idempotencyKey, "aos-hourly:direct");
+  assert.equal(receipt.controller.continuations[0].result.status, "sent");
+  assert.equal(receipt.controller.continuations[0].result.goalPlanState, "active");
+  assert.equal(receipt.controller.continuations[0].result.deliveryProof.kind, "same_task_new_turn_completed");
 });
 
 test("does not finalize a callback gap while an official-App-only candidate is exposed", () => {

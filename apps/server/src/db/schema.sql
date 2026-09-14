@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_runs_company ON runs(company_id);
+CREATE INDEX IF NOT EXISTS idx_runs_company_created_at ON runs(company_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_runs_automation ON runs(automation_id);
 CREATE INDEX IF NOT EXISTS idx_runs_automation_version ON runs(automation_version_id);
 CREATE INDEX IF NOT EXISTS idx_runs_worker_claim ON runs(execution_source, quarantined, status, created_at);
@@ -637,6 +638,34 @@ CREATE TABLE IF NOT EXISTS mvp_idempotency_keys (
 );
 
 CREATE INDEX IF NOT EXISTS mvp_idempotency_keys_company_idx ON mvp_idempotency_keys(company_id, scope, status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS brief_deliveries (
+  id TEXT PRIMARY KEY,
+  company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+  brief_type TEXT NOT NULL CHECK (brief_type IN ('morning', 'evening')),
+  business_date TEXT NOT NULL,
+  timezone TEXT NOT NULL,
+  template_version TEXT NOT NULL,
+  delivery_target TEXT NOT NULL CHECK (delivery_target = 'aos_home'),
+  input_fingerprint TEXT NOT NULL CHECK (length(input_fingerprint) = 64),
+  output_fingerprint TEXT NOT NULL CHECK (length(output_fingerprint) = 64),
+  item_count INTEGER NOT NULL,
+  included_records INTEGER NOT NULL,
+  excluded_records INTEGER NOT NULL,
+  delivery_status TEXT NOT NULL CHECK (delivery_status IN ('delivered', 'reconciled')),
+  source_sync_status TEXT NOT NULL CHECK (source_sync_status = 'synced'),
+  reconciliation_status TEXT NOT NULL CHECK (reconciliation_status = 'reconciled'),
+  cleanup_status TEXT NOT NULL CHECK (cleanup_status = 'verified'),
+  receipt_hash TEXT NOT NULL CHECK (length(receipt_hash) = 64),
+  idempotency_key TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(company_id, idempotency_key)
+);
+
+CREATE INDEX IF NOT EXISTS brief_deliveries_company_period_idx
+  ON brief_deliveries(company_id, brief_type, business_date, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS portable_workflow_invocations (
   id TEXT PRIMARY KEY,

@@ -1,6 +1,7 @@
 import { execSqlAsync, nowIso, querySqlAsync, runSqlTransactionAsync, sqlValue } from "../db/client.js";
 import { requeuePortableMacWorkerAfterApprovalAsync } from "./portableRemoteWorker.js";
-import { UNATTENDED_FIXED_LOCAL_EFFECT_POLICY, isPortableLocalWorkflowId } from "./portableLocalWorkflow.js";
+import { UNATTENDED_FIXED_LOCAL_EFFECT_POLICY, isPortableLocalWorkflowId, isDelegatedBackupSourceReadback } from "./portableLocalWorkflow.js";
+import { DAILY_AI_RESEARCH_SYNC_WORKFLOW, DAILY_AI_RESEARCH_SYNC_POLICY, isDelegatedDailyAiResearchSyncSource } from "./dailyAiResearchSourceSync.js";
 
 export type ScheduledLocalEffectAuthorizationResult = {
   authorized: boolean;
@@ -22,7 +23,8 @@ type RunRow = {
  * registered workflows into the ordinary, target-bound approval that the Mac
  * worker already understands.  This is intentionally narrow: it accepts only
  * a scheduler-owned run, the explicit policy marker, and a fixed local bundle.
- * Browser/provider runs never enter this function.
+ * The separately authorized Daily AI mirror uses its own exact-account/Sheet
+ * policy. Arbitrary browser/provider targets never enter this function.
  */
 export async function authorizeScheduledLocalBusinessRun(input: {
   runId: string;
@@ -38,11 +40,13 @@ export async function authorizeScheduledLocalBusinessRun(input: {
     return blocked("scheduled_local_run_scope_invalid");
   }
   if (!isPortableLocalWorkflowId(input.workflowId)
-    || (input.workflowId !== "daily-backup-safety-check" && input.workflowId !== "obsidian-project-memory-audit")) {
+    || (input.workflowId !== "daily-backup-safety-check" && input.workflowId !== "obsidian-project-memory-audit"
+      && input.workflowId !== DAILY_AI_RESEARCH_SYNC_WORKFLOW)) {
     return blocked("scheduled_local_workflow_not_enabled");
   }
   const metadata = parseRecord(run.metadata_json);
-  if (metadata.unattended_effect_policy !== UNATTENDED_FIXED_LOCAL_EFFECT_POLICY) {
+  const expectedPolicy = input.workflowId === DAILY_AI_RESEARCH_SYNC_WORKFLOW ? DAILY_AI_RESEARCH_SYNC_POLICY : UNATTENDED_FIXED_LOCAL_EFFECT_POLICY;
+  if (metadata.unattended_effect_policy !== expectedPolicy) {
     return blocked("scheduled_local_unattended_policy_missing");
   }
   const invocation = isObject(metadata.portable_workflow_invocation)
@@ -58,7 +62,12 @@ export async function authorizeScheduledLocalBusinessRun(input: {
     return blocked("scheduled_local_business_bundle_missing");
   }
   const sourceSnapshot = isObject(metadata.source_snapshot) ? metadata.source_snapshot : null;
-  if (!sourceSnapshot || sourceSnapshot.status !== "ready" || sourceSnapshot.readback_verified !== true
+  const delegatedBackup = input.workflowId === "daily-backup-safety-check" && sourceSnapshot
+    && isDelegatedBackupSourceReadback(sourceSnapshot, inputBundle.input, input.companyId);
+  const delegatedDailyAi = input.workflowId === DAILY_AI_RESEARCH_SYNC_WORKFLOW && sourceSnapshot
+    && isDelegatedDailyAiResearchSyncSource(sourceSnapshot, inputBundle.input, input.companyId);
+  if ((input.workflowId === DAILY_AI_RESEARCH_SYNC_WORKFLOW && !delegatedDailyAi)
+    || !sourceSnapshot || sourceSnapshot.status !== "ready" || (!delegatedBackup && !delegatedDailyAi && sourceSnapshot.readback_verified !== true)
     || sourceSnapshot.external_action_executed !== false) {
     return blocked("scheduled_local_source_snapshot_not_ready");
   }
@@ -72,7 +81,9 @@ export async function authorizeScheduledLocalBusinessRun(input: {
       await runSqlTransactionAsync([{
         sql: `UPDATE approvals
                  SET status='approved', decided_at=${sqlValue(decidedAt)},
-                     decision_note=${sqlValue("User-authorized unattended fixed local target")},
+                     decision_note=${sqlValue(input.workflowId === DAILY_AI_RESEARCH_SYNC_WORKFLOW
+                       ? "User-authorized Daily AI research and fixed existing Sheet mirror; no generation or publication"
+                       : "User-authorized unattended fixed local target")},
                      decision_revision=decision_revision+1
                WHERE id=${sqlValue(approval.id)} AND run_id=${sqlValue(input.runId)}
                  AND company_id=${sqlValue(input.companyId)} AND status='pending'

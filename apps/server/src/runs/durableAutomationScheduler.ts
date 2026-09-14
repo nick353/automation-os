@@ -18,6 +18,7 @@ export type DurableAutomationSchedulerOnceResult = {
   portableWorkflowIds: string[];
   localWorkflowIds: string[];
   skippedCompanyIds: string[];
+  serviceUserSource: "configured" | "sole_company_operator" | "missing";
   exactBlocker: string | null;
   externalActionExecuted: false;
   nextAction: string;
@@ -29,7 +30,8 @@ export function durableSchedulerOwner(env: NodeJS.ProcessEnv = process.env): Dur
   return env.AUTOMATION_OS_DURABLE_SCHEDULER_OWNER?.trim().toLowerCase() === "worker" ? "worker" : "server";
 }
 
-type SchedulerInput = {
+export type DurableSchedulerInput = {
+  companyId?: string;
   serviceUserId?: string;
   now?: string;
   limit?: number;
@@ -39,10 +41,12 @@ type SchedulerInput = {
  * AOS-owned scheduler tick. It only materializes due work into the durable
  * queue; a worker/provider is a separate consumer and is never called here.
  */
-export async function runDurableAutomationSchedulerOnce(input: SchedulerInput = {}): Promise<DurableAutomationSchedulerOnceResult> {
+export async function runDurableAutomationSchedulerOnce(input: DurableSchedulerInput = {}): Promise<DurableAutomationSchedulerOnceResult> {
   const checkedAt = normalizedTime(input.now ?? nowIso());
-  const companyIds = await listActiveScheduledCompanyIds();
-  const configuredServiceUserId = (input.serviceUserId ?? process.env.AUTOMATION_OS_DURABLE_SERVICE_USER_ID ?? "").trim();
+  const companyIds = await listActiveScheduledCompanyIds(input.companyId);
+  const explicitServiceUserId = (input.serviceUserId ?? process.env.AUTOMATION_OS_DURABLE_SERVICE_USER_ID ?? "").trim();
+  const inferredServiceUserId = explicitServiceUserId ? "" : await inferSoleCompanyOperatorServiceUserId(companyIds);
+  const configuredServiceUserId = explicitServiceUserId || inferredServiceUserId;
   const base = {
     schema: "aos.durable_scheduler_tick.v1" as const,
     checkedAt,
@@ -56,6 +60,7 @@ export async function runDurableAutomationSchedulerOnce(input: SchedulerInput = 
     portableWorkflowIds: [] as string[],
     localWorkflowIds: [] as string[],
     skippedCompanyIds: [] as string[],
+    serviceUserSource: explicitServiceUserId ? "configured" as const : inferredServiceUserId ? "sole_company_operator" as const : "missing" as const,
     externalActionExecuted: false as const
   };
   if (companyIds.length === 0) {
@@ -148,7 +153,8 @@ export async function runDurableAutomationSchedulerOnce(input: SchedulerInput = 
   };
 }
 
-async function listActiveScheduledCompanyIds(): Promise<string[]> {
+async function listActiveScheduledCompanyIds(companyId?: string): Promise<string[]> {
+  const companyPredicate = companyId?.trim() ? ` AND schedule.company_id=${sqlValue(companyId.trim())}` : "";
   return (await querySqlAsync<{ company_id: string }>(`
     SELECT DISTINCT schedule.company_id
     FROM mvp_automation_schedules schedule
@@ -156,8 +162,30 @@ async function listActiveScheduledCompanyIds(): Promise<string[]> {
       ON automation.id=schedule.automation_id AND automation.company_id=schedule.company_id
     WHERE schedule.enabled=1 AND schedule.status='active' AND schedule.kind!='manual'
       AND automation.status='active'
+      ${companyPredicate}
     ORDER BY schedule.company_id
   `)).map((row) => row.company_id);
+}
+
+/**
+ * In the single-company deployment the durable operator membership is already
+ * the scheduler authority. Infer it only when the result is unambiguous;
+ * multiple companies or multiple service users still require explicit config.
+ */
+async function inferSoleCompanyOperatorServiceUserId(companyIds: string[]): Promise<string> {
+  if (companyIds.length !== 1) return "";
+  const rows = await querySqlAsync<{ user_id: string }>(`
+    SELECT membership.user_id
+    FROM company_memberships membership
+    JOIN users ON users.id=membership.user_id
+    JOIN companies ON companies.id=membership.company_id
+    WHERE membership.company_id=${sqlValue(companyIds[0])}
+      AND membership.role='operator' AND membership.status='active'
+      AND users.status='active' AND users.kind='service'
+      AND companies.status!='archived'
+    ORDER BY membership.user_id
+  `);
+  return rows.length === 1 ? rows[0].user_id : "";
 }
 
 async function listServiceUserCompanyIds(serviceUserId: string): Promise<string[]> {

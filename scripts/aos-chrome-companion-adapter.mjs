@@ -3,8 +3,9 @@
 import { createHash } from "node:crypto";
 import { lstat, mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
+import { validateCompanionIsolationBinding } from "./lib/companion-isolation-binding.mjs";
 import {
   AOS_EXECUTION_CONTEXT_SCHEMA,
   buildAosExecutionContext,
@@ -32,17 +33,6 @@ export const AOS_CHROME_COMPANION_STANDARD_ROOT = join(homedir(), "Library", "Ap
 // structured receipt instead of timing out the client while the broker is
 // still finishing the same non-replayable transaction.
 const AUTHORIZED_TRANSACTION_TIMEOUT_MS = 180_000;
-const MAX_UPLOAD_BYTES = 512 * 1024;
-const MIME_BY_EXTENSION = Object.freeze({
-  ".doc": "application/msword",
-  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  ".jpeg": "image/jpeg",
-  ".jpg": "image/jpeg",
-  ".pdf": "application/pdf",
-  ".png": "image/png",
-  ".txt": "text/plain",
-  ".webp": "image/webp",
-});
 
 function requiredString(value, field) {
   const normalized = String(value ?? "").trim();
@@ -128,26 +118,33 @@ function validateCapabilityHandshake(handshake, expected) {
   return handshake;
 }
 
-async function materializeCompanionActions(actions) {
-  return Promise.all(actions.map(async (action) => {
-    if (action?.method !== "page.upload") return { ...action, params: action?.params ?? {} };
-    const filePath = action.params?.filePath;
-    if (typeof filePath !== "string" || !isAbsolute(filePath)) throw companionAdapterError("upload_absolute_path_required", "page.upload requires an absolute filePath");
-    const fileStat = await lstat(filePath).catch((error) => { throw companionAdapterError("upload_file_unavailable", "Upload file is unavailable", { cause: error?.code ?? "unknown" }); });
-    if (fileStat.isSymbolicLink() || !fileStat.isFile()) throw companionAdapterError("upload_regular_file_required", "Upload source must be a regular non-symlink file");
-    if (fileStat.size > MAX_UPLOAD_BYTES) throw companionAdapterError("upload_file_too_large", "Upload file exceeds the bounded size", { size: fileStat.size, maxBytes: MAX_UPLOAD_BYTES });
-    const mimeType = MIME_BY_EXTENSION[extname(filePath).toLowerCase()];
-    if (!mimeType) throw companionAdapterError("upload_file_type_not_allowed", "Upload file type is not allowed");
-    const bytes = await readFile(filePath);
-    if (bytes.byteLength !== fileStat.size) throw companionAdapterError("upload_file_changed", "Upload file changed while it was being read");
-    return {
-      ...action,
-      params: {
-        ...action.params,
-        file: { name: basename(filePath), mimeType, size: bytes.byteLength, sha256: createHash("sha256").update(bytes).digest("hex"), dataBase64: bytes.toString("base64") },
-      },
-    };
-  }));
+async function materializeCompanionActions(actions, materialize) {
+  const needsHostFiles = actions.some(action => ["page.upload", "page.uploadMultiple"].includes(action?.method)
+    || (action?.method === "clipboard.write" && action.params?.formats !== undefined));
+  if (!needsHostFiles) return actions.map(action => ({ ...action, params: action?.params ?? {} }));
+  if (typeof materialize !== "function") {
+    throw companionAdapterError("companion_file_materializer_unavailable", "Use the installed Companion client materializer for uploads and clipboard files", {
+      operationEffectState: "none", mutationDispatchAttempted: false,
+    });
+  }
+  const materialized = await materialize(actions);
+  return materialized.map((action, index) => {
+    if (["page.upload", "page.uploadMultiple"].includes(action?.method)) {
+      // Installed versions before the shared materializer update dropped
+      // these transaction-level fields while reading the file bytes.
+      const original = actions[index]?.params ?? {};
+      return { ...action, params: { ...action.params,
+        ...(original.confirmationLocator !== undefined ? { confirmationLocator: original.confirmationLocator } : {}),
+        ...(original.confirmationTimeoutMs !== undefined ? { confirmationTimeoutMs: original.confirmationTimeoutMs } : {}),
+      } };
+    }
+    if (action?.method === "clipboard.write" && action.params?.formats?.some(format => format.filePath !== undefined)) {
+      throw companionAdapterError("companion_file_materializer_outdated", "The installed materializer does not yet support clipboard files", {
+        operationEffectState: "none", mutationDispatchAttempted: false,
+      });
+    }
+    return action;
+  });
 }
 
 function normalizedError(error) {
@@ -324,10 +321,168 @@ function readOnlyReceiptFromProvisionedTransaction(transaction, validated, start
     target_provision: {
       attempted: true,
       signed_transaction: true,
-      action_methods: ["page.delay"],
+      action_methods: ["page.delay", "page.screenshot"],
       external_action_executed: false,
     },
   };
+}
+
+async function captureActiveProvisionedVisual({ client, session, validated, transaction }) {
+  const status = await client.request("status.get");
+  const connectedProfiles = (status?.profiles || []).filter((profile) => profile.connected === true);
+  const selectedProfiles = validated.profileInstanceId
+    ? connectedProfiles.filter((profile) => profile.profileInstanceId === validated.profileInstanceId)
+    : connectedProfiles;
+  if (selectedProfiles.length !== 1) throw companionAdapterError("companion_profile_selection_ambiguous", "Expected one connected Companion profile for visual readback");
+  const profile = selectedProfiles[0];
+  const tabs = await client.request("operation.execute", {
+    sessionId: session.sessionId,
+    method: "tabs.list",
+    params: {},
+  });
+  const transactionTabId = Number.isSafeInteger(transaction?.tab?.id) ? transaction.tab.id : null;
+  const tab = transactionTabId !== null
+    ? tabs.find((candidate) => Number(candidate?.id) === transactionTabId)
+      || await client.request("operation.execute", {
+        sessionId: session.sessionId,
+        method: "tabs.get",
+        params: { tabId: transactionTabId },
+      })
+    : resolveCompanionTargetTab(tabs, validated.target, [...validated.allowedOrigins], {
+      taskId: validated.taskId,
+      taskTabs: status?.taskTabs,
+    });
+  if (!tab || !Number.isSafeInteger(tab.id)) throw companionAdapterError("companion_adapter_target_not_found", "The signed provisioned tab was not available for fresh readback");
+  if (transactionTabId === null) resolveCurrentTaskOwnedTabRecord(tab, profile, validated.taskId, status?.taskTabs);
+  const lease = await client.request("lease.acquire", { sessionId: session.sessionId, tabId: tab.id });
+  const snapshot = await client.request("operation.execute", {
+    sessionId: session.sessionId,
+    leaseId: lease.leaseId,
+    method: "page.snapshot",
+    params: { tabId: tab.id, maxTextChars: validated.maxTextChars },
+  });
+  assertSnapshotOrigin(snapshot, new Set(validated.allowedOrigins));
+  const screenshot = await client.request("operation.execute", {
+    sessionId: session.sessionId,
+    leaseId: lease.leaseId,
+    method: "page.screenshot",
+    params: { tabId: tab.id, format: "jpeg", quality: 72, restoreActive: true },
+  });
+  assertSnapshotOrigin(screenshot, new Set(validated.allowedOrigins));
+  const visual = publicVisualReadback(screenshot);
+  const readback = publicSnapshot(snapshot);
+  if ((visual.tab_id !== null && visual.tab_id !== tab.id) || visual.url !== readback.url) {
+    throw companionAdapterError("companion_visual_semantic_mismatch", "Companion visual evidence and semantic readback do not identify the same page");
+  }
+  return {
+    result: "verified",
+    exact_blocker: null,
+    target: {
+      tab_id: tab.id,
+      window_id: tab.windowId,
+      url: tab.url,
+      title: String(tab.title || "").slice(0, 300),
+      lease_id: lease.leaseId,
+      task_owned: true,
+    },
+    readback,
+    visual_readback: visual,
+    visual_readback_verified: true,
+  };
+}
+
+async function readBackProvisionedTaskTab(validated, { client }) {
+  let session = null;
+  let lease = null;
+  const receipt = {
+    profile: null,
+    session: null,
+    target: null,
+    readback: null,
+    visual_readback: null,
+    visual_readback_verified: false,
+    cleanup: { session_closed: false, lease_released_by_session_close: false },
+  };
+  try {
+    const status = await client.request("status.get");
+    const connectedProfiles = (status?.profiles || []).filter((profile) => profile.connected === true);
+    const selectedProfiles = validated.profileInstanceId
+      ? connectedProfiles.filter((profile) => profile.profileInstanceId === validated.profileInstanceId)
+      : connectedProfiles;
+    if (selectedProfiles.length !== 1) {
+      throw companionAdapterError(
+        selectedProfiles.length === 0 ? "companion_profile_not_connected" : "companion_profile_selection_ambiguous",
+        `Expected one connected Companion profile; received ${selectedProfiles.length}`,
+      );
+    }
+    const profile = selectedProfiles[0];
+    receipt.profile = {
+      profile_instance_id: profile.profileInstanceId,
+      generation: profile.generation,
+      extension_runtime_id: profile.extensionRuntimeId,
+      connected: true,
+    };
+    session = await client.request("session.open", {
+      label: `aos:${validated.runId}:${validated.taskId}:readback`.slice(0, 128),
+      taskId: validated.taskId,
+      ...(validated.profileInstanceId ? { profileInstanceId: validated.profileInstanceId } : {}),
+    });
+    receipt.session = { session_id: session.sessionId, generation: session.generation };
+    const tabs = await client.request("operation.execute", {
+      sessionId: session.sessionId,
+      method: "tabs.list",
+      params: {},
+    });
+    const tab = resolveCompanionTargetTab(tabs, validated.target, [...validated.allowedOrigins], {
+      taskId: validated.taskId,
+      taskTabs: status?.taskTabs,
+    });
+    resolveCurrentTaskOwnedTabRecord(tab, profile, validated.taskId, status?.taskTabs);
+    lease = await client.request("lease.acquire", { sessionId: session.sessionId, tabId: tab.id });
+    receipt.target = {
+      tab_id: tab.id,
+      window_id: tab.windowId,
+      url: tab.url,
+      title: String(tab.title || "").slice(0, 300),
+      lease_id: lease.leaseId,
+      task_owned: true,
+    };
+    const snapshot = await client.request("operation.execute", {
+      sessionId: session.sessionId,
+      leaseId: lease.leaseId,
+      method: "page.snapshot",
+      params: { tabId: tab.id, maxTextChars: validated.maxTextChars },
+    });
+    assertSnapshotOrigin(snapshot, new Set(validated.allowedOrigins));
+    receipt.readback = publicSnapshot(snapshot);
+    const screenshot = await client.request("operation.execute", {
+      sessionId: session.sessionId,
+      leaseId: lease.leaseId,
+      method: "page.screenshot",
+      params: { tabId: tab.id, format: "jpeg", quality: 72, restoreActive: true },
+    });
+    assertSnapshotOrigin(screenshot, new Set(validated.allowedOrigins));
+    receipt.visual_readback = publicVisualReadback(screenshot);
+    if (receipt.visual_readback.tab_id !== null && receipt.visual_readback.tab_id !== tab.id) {
+      throw companionAdapterError("companion_visual_readback_target_mismatch", "Screenshot evidence came from a different tab");
+    }
+    receipt.visual_readback_verified = receipt.visual_readback.url === receipt.readback.url;
+    if (!receipt.visual_readback_verified) {
+      throw companionAdapterError("companion_visual_semantic_mismatch", "Companion visual evidence and semantic readback do not identify the same page");
+    }
+    return receipt;
+  } finally {
+    if (session) {
+      try {
+        const closed = await client.request("session.close", { sessionId: session.sessionId, taskTerminal: true });
+        receipt.cleanup.session_closed = closed?.closed === true;
+        receipt.cleanup.lease_released_by_session_close = Boolean(lease && closed?.closed === true);
+        receipt.cleanup.terminal_tab_cleanup = closed?.terminal_tab_cleanup?.status || "not_confirmed";
+      } catch (error) {
+        receipt.cleanup.error = normalizedError(error);
+      }
+    }
+  }
 }
 
 function canProvisionReadOnlyTarget(error, validated, client) {
@@ -534,7 +689,7 @@ function validateTransactionInput(input) {
   };
 }
 
-export async function executeAosChromeCompanionAuthorized(input, { client }) {
+export async function executeAosChromeCompanionAuthorized(input, { client, materializeActions, afterTransaction }) {
   const validated = validateTransactionInput({ ...input, mode: "authorized" });
   const startedAt = new Date().toISOString();
   let session = null;
@@ -562,7 +717,7 @@ export async function executeAosChromeCompanionAuthorized(input, { client }) {
     session_recovery: { attempted: false, retried: false },
   };
   try {
-    const actions = await materializeCompanionActions(validated.actions);
+    const actions = await materializeCompanionActions(validated.actions, materializeActions ?? client.materializeTransactionActions?.bind(client));
     const expectedHandshake = validated.capabilityHandshake && typeof validated.capabilityHandshake === "object"
       ? validated.capabilityHandshake
       : taskCapabilityHandshake({ taskId: validated.taskId, actions });
@@ -635,9 +790,28 @@ export async function executeAosChromeCompanionAuthorized(input, { client }) {
       execution_surface: AOS_CHROME_COMPANION_SURFACE,
       provider_receipt_trusted: false,
       external_action_executed: result.external_action_executed === true,
-      visual_readback: publicVisualReadback(rawVisualReadback),
-      visual_readback_verified: true,
     });
+    // Preserve the known partial result before validating optional visual
+    // evidence. A target-provision caller may perform one fresh, same-session
+    // read-only capture while the transaction's task tab is still retained.
+    if (rawVisualReadback) {
+      receipt.visual_readback = publicVisualReadback(rawVisualReadback);
+      receipt.visual_readback_verified = true;
+    } else {
+      receipt.visual_readback = null;
+      receipt.visual_readback_verified = false;
+      receipt.result = "blocked";
+      receipt.exact_blocker = companionAdapterError(
+        "companion_visual_readback_missing",
+        "Companion did not return screenshot evidence for the authorized transaction",
+      );
+    }
+    if (typeof afterTransaction === "function") {
+      const callbackResult = await afterTransaction({ client, session, validated, result, receipt });
+      if (callbackResult && typeof callbackResult === "object" && !Array.isArray(callbackResult)) {
+          Object.assign(receipt, callbackResult);
+      }
+    }
     return receipt;
   } catch (error) {
     receipt.result = "blocked";
@@ -651,9 +825,11 @@ export async function executeAosChromeCompanionAuthorized(input, { client }) {
           taskId: validated.taskId,
           idempotencyKey: validated.idempotencyKey,
         });
-        receipt.reconciliation.verified = true;
         receipt.reconciliation.status = status;
-        receipt.external_action_executed = status?.external_action_executed === true;
+        receipt.reconciliation.verified = status?.reconciliation_required === false
+          || status?.reconciliation?.required === false
+          || status?.reconciliation_state === "resolved";
+        if (status?.external_action_executed === true) receipt.external_action_executed = true;
       } catch (statusError) {
         receipt.reconciliation.error = normalizedError(statusError);
       }
@@ -662,10 +838,14 @@ export async function executeAosChromeCompanionAuthorized(input, { client }) {
   } finally {
     if (session) {
       try {
+        const progress = receipt.outcome ?? receipt.action_progress;
+        const retainRemaining = (progress?.applied_action_indices?.length > 0 && progress?.remaining_action_indices?.length > 0)
+          || progress?.uncertain_action_indices?.length > 0 || progress?.reconciliation_required === true;
         const closed = await client.request("session.close", {
           sessionId: session.sessionId,
-          taskTerminal: true,
+          taskTerminal: !retainRemaining,
         });
+        receipt.cleanup.remaining_work_retained = Boolean(retainRemaining);
         receipt.cleanup.session_closed = closed?.closed === true;
         receipt.cleanup.lease_released_by_session_close = closed?.closed === true;
         receipt.cleanup.terminal_tab_cleanup = closed?.terminal_tab_cleanup?.status
@@ -679,12 +859,19 @@ export async function executeAosChromeCompanionAuthorized(input, { client }) {
     const actionReceiptsValid = Array.isArray(receipt.actions)
       && receipt.actions.length === validated.actions.length
       && receipt.actions.every((action) => action?.result?.ok === true);
-    receipt.provider_receipt_trusted = receipt.result === "verified"
+    receipt.browser_receipt_verified = receipt.result === "verified"
       && actionReceiptsValid
       && receipt.visual_readback_verified === true
       && receipt.cleanup.session_closed === true
       && receipt.cleanup.lease_released_by_session_close === true
       && cleanupTerminal;
+    // New broker outcomes explicitly separate browser work from provider
+    // completion. Never promote unverified provider state from a screenshot.
+    receipt.provider_receipt_trusted = receipt.browser_receipt_verified
+      && (receipt.outcome?.schema === "aos.chrome_companion.transaction_outcome.v1"
+        ? receipt.outcome.provider_completion === "verified"
+        : true);
+    receipt.provider_evidence_source = receipt.outcome ? "transaction_outcome" : "legacy_browser_receipt_unclassified";
     receipt.same_run_receipt = receipt.provider_receipt_trusted;
     receipt.cleanup_verified = receipt.cleanup.session_closed === true
       && receipt.cleanup.lease_released_by_session_close === true
@@ -724,6 +911,10 @@ export async function executeAosChromeCompanionTransactionStatus(input, { client
       taskId,
       idempotencyKey,
     });
+    if (status?.schema !== "aos.chrome_companion.task_status.v1"
+      || status.run_id !== runId || status.task_id !== taskId || status.idempotency_key !== idempotencyKey) {
+      throw companionAdapterError("companion_status_binding_invalid", "Companion status response does not bind to the requested run, task, and operation");
+    }
     Object.assign(receipt, status, { result: "verified" });
     return receipt;
   } catch (error) {
@@ -881,20 +1072,71 @@ export async function executeAosChromeCompanionReadOnly(input, { client }) {
           startUrl: readOnlyProvisionStartUrl(validated),
           allowedOrigins: [...validated.allowedOrigins],
           profileInstanceId: validated.profileInstanceId,
-          actions: [{ method: "page.delay", params: { milliseconds: 1_000 } }],
+          // A newly provisioned tab does not always receive the broker's
+          // implicit visual receipt. Request the screenshot explicitly in
+          // the same signed, no-effect transaction so target provisioning
+          // has the same visual proof contract as an already-owned tab.
+          actions: [
+            { method: "page.delay", params: { milliseconds: 1_000 } },
+            { method: "page.screenshot", params: { format: "jpeg", quality: 72 } },
+          ],
           idempotencyKey,
           intent: "read_only_target_provision",
           reuseTaskTab: false,
-          keepTaskTab: false,
+          // Keep the newly created tab long enough for a separate, fresh
+          // read-only session to capture the exact semantic and visual
+          // proof. The tab is terminally cleaned up by that session.
+          keepTaskTab: true,
           retainOnUnknown: false,
           effectState: "none",
           executionContext: validated.executionContext,
-        }, { client });
+        }, {
+          client,
+          afterTransaction: async ({ client: transactionClient, session: transactionSession, result }) => {
+            if (result?.visual_readback?.dataBase64
+              || result?.external_action_executed === true
+              || ["unknown", "unknown_effect", "dispatched", "applied"].includes(String(result?.effect_state || ""))) {
+              return {};
+            }
+            return captureActiveProvisionedVisual({
+              client: transactionClient,
+              session: transactionSession,
+              validated,
+              transaction: result,
+            });
+          },
+        });
         let provisionedReceipt = readOnlyReceiptFromProvisionedTransaction(
           await provisionTarget(`${validated.runId}:read-only-target-provision`),
           validated,
           startedAt,
         );
+        if (provisionedReceipt.result !== "verified"
+          && provisionedReceipt.external_action_executed === false
+          && provisionedReceipt.cleanup.session_closed === true
+          && provisionedReceipt.cleanup.lease_released_by_session_close === true) {
+          try {
+            const freshReadback = await readBackProvisionedTaskTab(validated, { client });
+            if (freshReadback.visual_readback_verified === true
+              && freshReadback.cleanup.session_closed === true
+              && freshReadback.cleanup.lease_released_by_session_close === true) {
+              provisionedReceipt = {
+                ...provisionedReceipt,
+                ...freshReadback,
+                result: "verified",
+                exact_blocker: null,
+                target_provision: {
+                  ...provisionedReceipt.target_provision,
+                  attempts: 1,
+                  fresh_readback_session: true,
+                },
+              };
+            }
+          } catch {
+            // Preserve the bounded no-effect transaction failure below. A
+            // fresh readback failure is not permission to replay an effect.
+          }
+        }
         // Visual capture can transiently miss while another profile-global
         // operation is draining. Retry once only after the first signed
         // transaction has proved no effect and completed session cleanup.
@@ -932,7 +1174,7 @@ export async function executeAosChromeCompanionReadOnly(input, { client }) {
         receipt.target_provision = {
           attempted: true,
           signed_transaction: true,
-          action_methods: ["page.delay"],
+          action_methods: ["page.delay", "page.screenshot"],
           external_action_executed: false,
         };
         return receipt;
@@ -1006,13 +1248,90 @@ export async function resolveCompanionInstallRoot(environment = process.env) {
 }
 
 export async function loadCompanionBrokerClient(environment = process.env) {
+  const isolated = environment.AOS_CHROME_COMPANION_REQUIRE_ISOLATED_PATHS === "1";
+  if (!isolated && (environment.AOS_CHROME_COMPANION_ISOLATION_BINDING_PATH || environment.AOS_CHROME_COMPANION_ISOLATION_BINDING_SHA256)) {
+    throw companionAdapterError("companion_isolation_mode_missing", "An isolation binding requires explicit isolated mode");
+  }
+  const isolationBinding = isolated ? await validateCompanionIsolationBinding(environment) : null;
+  if (isolated) {
+    const required = [
+      "AOS_CHROME_COMPANION_ROOT",
+      "AOS_CHROME_COMPANION_DATA_DIR",
+      "AOS_CHROME_COMPANION_SOCKET",
+      "AOS_CHROME_COMPANION_SECRET_FILE",
+      "AOS_CHROME_COMPANION_AOS_ISSUER_SECRET_FILE",
+    ];
+    if (required.some((key) => !String(environment[key] || "").trim())) {
+      throw companionAdapterError("companion_isolated_path_binding_missing", "Isolated Companion execution requires explicit root, data, socket, secret, and issuer paths");
+    }
+  }
   const root = await resolveCompanionInstallRoot(environment);
   const modulePath = join(root, "src", "client", "broker-client.mjs");
+  if (isolated) {
+    const paths = await import(pathToFileURL(join(root, "src", "shared", "paths.mjs")).href);
+    const runtime = await import(pathToFileURL(join(root, "src", "shared", "task-runtime.mjs")).href);
+    const expected = {
+      root: resolve(String(environment.AOS_CHROME_COMPANION_ROOT)),
+      dataDir: resolve(String(environment.AOS_CHROME_COMPANION_DATA_DIR)),
+      socketPath: resolve(String(environment.AOS_CHROME_COMPANION_SOCKET)),
+      secretPath: resolve(String(environment.AOS_CHROME_COMPANION_SECRET_FILE)),
+      issuerSecretPath: resolve(String(environment.AOS_CHROME_COMPANION_AOS_ISSUER_SECRET_FILE)),
+    };
+    const contained = (parent, candidate) => {
+      const rel = relative(parent, candidate);
+      return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+    };
+    if (!contained(expected.dataDir, expected.socketPath)
+      || !contained(expected.dataDir, expected.secretPath)
+      || !contained(expected.dataDir, expected.issuerSecretPath)) {
+      throw companionAdapterError("companion_isolated_transport_path_escape", "Companion transport paths must remain inside the explicit isolated data directory", { expected });
+    }
+    const resolved = {
+      root,
+      dataDir: resolve(paths.resolveDataDir(environment)),
+      socketPath: resolve(paths.resolveBrokerSocketPath(environment)),
+      secretPath: resolve(paths.resolveSecretPath(environment)),
+      issuerSecretPath: resolve(runtime.resolveIssuerSecretPath("aos", environment)),
+    };
+    if (Object.entries(expected).some(([key, value]) => resolved[key] !== value)) {
+      throw companionAdapterError("companion_isolated_path_binding_mismatch", "Resolved Companion paths do not match the explicit isolated binding", { expected, resolved });
+    }
+  }
   const module = await import(pathToFileURL(modulePath).href);
   if (typeof module.BrokerClient?.connect !== "function") {
     throw companionAdapterError("companion_broker_client_invalid", "Installed Companion broker client is invalid");
   }
-  return module.BrokerClient.connect({ issuer: "aos", env: environment });
+  const client = await module.BrokerClient.connect({ issuer: "aos", env: environment, ...(isolated ? { autoStart: false } : {}) });
+  if (isolated) {
+    let identity;
+    try {
+      identity = await client.request("status.get", {}, { timeoutMs: 5_000 });
+      const build = await import(pathToFileURL(join(root, "src", "shared", "build-info.mjs")).href);
+      if (identity?.brokerInstanceId !== isolationBinding.instanceId || identity?.expectedBuildId !== build.INSTALL_BUILD_ID || identity?.runtimeAttestation?.buildId !== build.INSTALL_BUILD_ID) {
+        throw companionAdapterError("companion_isolated_broker_identity_mismatch", "Companion broker handshake identity does not match the selected installation", { expectedBuildId: build.INSTALL_BUILD_ID, receivedBuildId: identity?.runtimeAttestation?.buildId || identity?.expectedBuildId || null });
+      }
+      client.companionBrokerIdentity = Object.freeze({
+        schema: "aos.chrome_companion.broker_identity.v1",
+        expected_instance_id: isolationBinding.instanceId,
+        observed_instance_id: identity.brokerInstanceId,
+        expected_build_id: build.INSTALL_BUILD_ID,
+        observed_build_id: identity.runtimeAttestation?.buildId || identity.expectedBuildId,
+        build_match: true,
+        observed_at: new Date().toISOString(),
+      });
+    } catch (error) {
+      client.close();
+      throw error;
+    }
+  }
+  client.materializeTransactionActions = async actions => {
+    const materializerPath = join(root, "src", "mcp", "action-materializer.mjs");
+    await assertNoSymlinkComponents(materializerPath);
+    const materializer = await import(pathToFileURL(materializerPath).href);
+    if (typeof materializer.materializeTransactionActions !== "function") throw companionAdapterError("companion_file_materializer_unavailable", "Installed Companion does not expose its shared file materializer");
+    return materializer.materializeTransactionActions(actions);
+  };
+  return client;
 }
 
 async function readStdinJson() {

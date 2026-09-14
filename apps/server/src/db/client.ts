@@ -24,7 +24,7 @@ const postgresWorkerTimeoutMs = Number(process.env.AUTOMATION_OS_POSTGRES_WORKER
 const postgresSchemaAssumedCurrent = process.env.AUTOMATION_OS_POSTGRES_SCHEMA_ASSUMED_CURRENT === "1";
 // Bump when an idempotent migration adds a durable schema object that must be
 // applied to already-bootstrapped PostgreSQL databases.
-export const postgresSchemaBootstrapVersion = 12;
+export const postgresSchemaBootstrapVersion = 15;
 
 export const dbPath = process.env.AUTOMATION_OS_DB ?? defaultDbPath;
 export const dbBackend = postgresUrl ? "postgres" : "sqlite";
@@ -42,6 +42,15 @@ let dbConnection: Database.Database | undefined;
 let postgresAsyncPool: pg.Pool | undefined;
 let postgresAsyncPoolErrorCount = 0;
 let postgresAsyncPoolLastErrorCode: string | null = null;
+let postgresBootstrapColumnCache: Map<string, Set<string>> | null = null;
+let postgresBootstrapColumnCacheLoaded = false;
+let postgresBootstrapSchemaName: string | null = null;
+let postgresBootstrapWorkerCalls = 0;
+let postgresBootstrapColumnLookups = 0;
+let postgresBootstrapColumnCacheHits = 0;
+let postgresBootstrapSchemaLookups = 0;
+let postgresBootstrapAlterCount = 0;
+let postgresBootstrapStartedAt = 0;
 
 export function sqlValue(value: SqlValue): string {
   if (value === null || value === undefined) return "NULL";
@@ -68,6 +77,9 @@ export function execSql(sql: string): void {
   }
   if (!dbInitializing && affectsSchema(sql)) {
     dbInitialized = false;
+  }
+  if (dbBackend === "postgres" && dbInitializing && affectsPostgresColumnCache(sql)) {
+    invalidatePostgresBootstrapColumnCache();
   }
 }
 
@@ -371,12 +383,14 @@ function initializeDatabaseSchema(): void {
   if (dbInitialized) return;
   if (dbBackend === "postgres" && process.env.AUTOMATION_OS_ASSUME_EXISTING_POSTGRES_SCHEMA === "1") {
     dbInitializing = true;
+    beginPostgresBootstrapColumnCache();
     try {
       runIdempotentMigrations();
       recordPostgresSchemaBootstrap();
       dbInitialized = true;
       dbInitRunCount += 1;
     } finally {
+      endPostgresBootstrapColumnCache();
       dbInitializing = false;
     }
     return;
@@ -388,6 +402,7 @@ function initializeDatabaseSchema(): void {
     throw new Error(`Missing schema at ${schemaPath}`);
   }
   dbInitializing = true;
+  if (dbBackend === "postgres") beginPostgresBootstrapColumnCache();
   try {
     const schemaSql = readFileSync(schemaPath, "utf8");
     execSql(schemaSqlForCurrentDatabase(schemaSql));
@@ -397,8 +412,70 @@ function initializeDatabaseSchema(): void {
     dbInitialized = true;
     dbInitRunCount += 1;
   } finally {
+    if (dbBackend === "postgres") endPostgresBootstrapColumnCache();
     dbInitializing = false;
   }
+}
+
+function beginPostgresBootstrapColumnCache(): void {
+  postgresBootstrapColumnCache = new Map();
+  postgresBootstrapColumnCacheLoaded = false;
+  postgresBootstrapSchemaName = null;
+  postgresBootstrapWorkerCalls = 0;
+  postgresBootstrapColumnLookups = 0;
+  postgresBootstrapColumnCacheHits = 0;
+  postgresBootstrapSchemaLookups = 0;
+  postgresBootstrapAlterCount = 0;
+  postgresBootstrapStartedAt = Date.now();
+}
+
+function endPostgresBootstrapColumnCache(): void {
+  if (postgresBootstrapStartedAt > 0 && process.env.AUTOMATION_OS_POSTGRES_BOOTSTRAP_TRACE === "1") {
+    process.stderr.write(`${JSON.stringify({
+      schema_bootstrap_metrics: {
+        elapsed_ms: Date.now() - postgresBootstrapStartedAt,
+        worker_calls: postgresBootstrapWorkerCalls,
+        column_lookup_queries: postgresBootstrapColumnLookups,
+        column_cache_hits: postgresBootstrapColumnCacheHits,
+        schema_lookup_queries: postgresBootstrapSchemaLookups,
+        alter_columns_applied: postgresBootstrapAlterCount
+      }
+    })}\n`);
+  }
+  postgresBootstrapColumnCache = null;
+  postgresBootstrapColumnCacheLoaded = false;
+  postgresBootstrapSchemaName = null;
+  postgresBootstrapStartedAt = 0;
+}
+
+function invalidatePostgresBootstrapColumnCache(): void {
+  if (postgresBootstrapColumnCache) postgresBootstrapColumnCacheLoaded = false;
+}
+
+function loadPostgresBootstrapColumnCache(): void {
+  if (!postgresBootstrapColumnCache || postgresBootstrapColumnCacheLoaded) return;
+  const rows = runPostgresWorker("query", `
+    SELECT table_name, column_name
+    FROM information_schema.columns
+    WHERE table_schema=current_schema()
+    ORDER BY table_name, ordinal_position;
+  `) as Array<{ table_name?: string; column_name?: string }>;
+  for (const row of rows) {
+    if (typeof row.table_name !== "string" || typeof row.column_name !== "string") continue;
+    const columns = postgresBootstrapColumnCache.get(row.table_name) ?? new Set<string>();
+    columns.add(row.column_name);
+    postgresBootstrapColumnCache.set(row.table_name, columns);
+  }
+  postgresBootstrapColumnCacheLoaded = true;
+}
+
+function recordPostgresBootstrapColumn(table: string, column: string): void {
+  if (!postgresBootstrapColumnCache) return;
+  const columns = postgresBootstrapColumnCache.get(table) ?? new Set<string>();
+  columns.add(column);
+  postgresBootstrapColumnCache.set(table, columns);
+  postgresBootstrapColumnCacheLoaded = true;
+  postgresBootstrapAlterCount += 1;
 }
 
 function repairLegacyDurableJobAttemptForeignKey(): void {
@@ -534,6 +611,10 @@ function affectsSchema(sql: string): boolean {
   return /\b(?:CREATE|DROP|ALTER)\s+(?:TEMP(?:ORARY)?\s+)?(?:TABLE|INDEX|VIEW|TRIGGER)\b/i.test(sql);
 }
 
+function affectsPostgresColumnCache(sql: string): boolean {
+  return /\b(?:ALTER\s+TABLE|CREATE\s+(?:TEMP(?:ORARY)?\s+)?TABLE|DROP\s+(?:TEMP(?:ORARY)?\s+)?TABLE)\b/i.test(sql);
+}
+
 function runIdempotentMigrations(): void {
   execSql(`
     CREATE TABLE IF NOT EXISTS users (
@@ -641,6 +722,7 @@ function runIdempotentMigrations(): void {
   ensureColumn("research_plans", "run_id", "TEXT");
   execSql(`
     CREATE INDEX IF NOT EXISTS idx_runs_company ON runs(company_id);
+    CREATE INDEX IF NOT EXISTS idx_runs_company_created_at ON runs(company_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_runs_worker_claim ON runs(execution_source, quarantined, status, created_at);
     CREATE INDEX IF NOT EXISTS idx_approvals_company_status ON approvals(company_id, status);
     CREATE INDEX IF NOT EXISTS idx_approvals_bound_action ON approvals(company_id, job_id, status, expires_at);
@@ -731,6 +813,7 @@ function runIdempotentMigrations(): void {
     CREATE INDEX IF NOT EXISTS mvp_automations_project_idx ON mvp_automations(project_id);
     CREATE INDEX IF NOT EXISTS mvp_automations_updated_at_idx ON mvp_automations(updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_runs_company ON runs(company_id);
+    CREATE INDEX IF NOT EXISTS idx_runs_company_created_at ON runs(company_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_runs_automation ON runs(automation_id);
     CREATE INDEX IF NOT EXISTS idx_runs_automation_version ON runs(automation_version_id);
   `);
@@ -931,6 +1014,33 @@ function runIdempotentMigrations(): void {
     );
 
     CREATE INDEX IF NOT EXISTS mvp_idempotency_keys_company_idx ON mvp_idempotency_keys(company_id, scope, status, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS brief_deliveries (
+      id TEXT PRIMARY KEY,
+      company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+      run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+      brief_type TEXT NOT NULL CHECK (brief_type IN ('morning', 'evening')),
+      business_date TEXT NOT NULL,
+      timezone TEXT NOT NULL,
+      template_version TEXT NOT NULL,
+      delivery_target TEXT NOT NULL CHECK (delivery_target = 'aos_home'),
+      input_fingerprint TEXT NOT NULL CHECK (length(input_fingerprint) = 64),
+      output_fingerprint TEXT NOT NULL CHECK (length(output_fingerprint) = 64),
+      item_count INTEGER NOT NULL,
+      included_records INTEGER NOT NULL,
+      excluded_records INTEGER NOT NULL,
+      delivery_status TEXT NOT NULL CHECK (delivery_status IN ('delivered', 'reconciled')),
+      source_sync_status TEXT NOT NULL CHECK (source_sync_status = 'synced'),
+      reconciliation_status TEXT NOT NULL CHECK (reconciliation_status = 'reconciled'),
+      cleanup_status TEXT NOT NULL CHECK (cleanup_status = 'verified'),
+      receipt_hash TEXT NOT NULL CHECK (length(receipt_hash) = 64),
+      idempotency_key TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(company_id, idempotency_key)
+    );
+    CREATE INDEX IF NOT EXISTS brief_deliveries_company_period_idx
+      ON brief_deliveries(company_id, brief_type, business_date, created_at DESC);
 
     CREATE TABLE IF NOT EXISTS portable_workflow_invocations (
       id TEXT PRIMARY KEY,
@@ -1307,11 +1417,18 @@ function ensureColumn(table: string, column: string, definition: string): void {
       ? `ALTER TABLE ${qualifiedPostgresTable(table)} ADD COLUMN IF NOT EXISTS ${quotePostgresIdentifier(column)} ${definition};`
       : `ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`
   );
+  if (dbBackend === "postgres") recordPostgresBootstrapColumn(table, column);
 }
 
 function qualifiedPostgresTable(table: string): string {
-  const schema = queryPostgresSql("SELECT current_schema() AS schema_name;")[0]?.schema_name;
+  const schema = postgresBootstrapColumnCache && postgresBootstrapSchemaName
+    ? postgresBootstrapSchemaName
+    : queryPostgresSql("SELECT current_schema() AS schema_name;")[0]?.schema_name;
   if (typeof schema !== "string" || !schema.trim()) throw new Error("postgres_current_schema_missing");
+  if (postgresBootstrapColumnCache && !postgresBootstrapSchemaName) {
+    postgresBootstrapSchemaName = schema;
+    postgresBootstrapSchemaLookups += 1;
+  }
   return `${quotePostgresIdentifier(schema)}.${quotePostgresIdentifier(table)}`;
 }
 
@@ -1330,6 +1447,7 @@ function schemaSqlForCurrentDatabase(schemaSql: string): string {
   if (needsLegacyCompat) {
     compatible = compatible
       .replace(/^CREATE INDEX IF NOT EXISTS idx_runs_company ON runs\(company_id\);\s*$/gim, "")
+      .replace(/^CREATE INDEX IF NOT EXISTS idx_runs_company_created_at ON runs\(company_id, created_at DESC\);\s*$/gim, "")
       .replace(/^CREATE INDEX IF NOT EXISTS idx_runs_worker_claim ON runs\(execution_source, quarantined, status, created_at\);\s*$/gim, "")
       .replace(/^CREATE INDEX IF NOT EXISTS idx_approvals_company_status ON approvals\(company_id, status\);\s*$/gim, "")
       .replace(/^CREATE INDEX IF NOT EXISTS idx_proofs_company_run ON proofs\(company_id, run_id\);\s*$/gim, "")
@@ -1367,6 +1485,12 @@ function schemaSqlForCurrentDatabase(schemaSql: string): string {
 
 function listTableColumns(table: string): Set<string> {
   if (dbBackend === "postgres") {
+    if (postgresBootstrapColumnCache) {
+      postgresBootstrapColumnLookups += 1;
+      loadPostgresBootstrapColumnCache();
+      postgresBootstrapColumnCacheHits += 1;
+      return postgresBootstrapColumnCache.get(table) ?? new Set<string>();
+    }
     const rows = queryPostgresSql(
       `SELECT column_name AS name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=${sqlValue(table)} ORDER BY ordinal_position;`
     ) as Array<{ name?: string }>;
@@ -1535,6 +1659,47 @@ async function runAssumedExistingPostgresMigrationsAsync(): Promise<void> {
   if (databaseVersion !== null && Number.isFinite(databaseVersion) && databaseVersion > postgresSchemaBootstrapVersion) {
     throw new Error(`postgres_schema_version_newer_than_binary:${databaseVersion}:${postgresSchemaBootstrapVersion}`);
   }
+
+  // The assumed-existing startup path historically only applied a narrow
+  // catch-up migration. Keep new additive tables self-healing even when the
+  // bootstrap marker was already advanced by an older binary.
+  await getPostgresAsyncPool().query(`
+    CREATE TABLE IF NOT EXISTS brief_deliveries (
+      id TEXT PRIMARY KEY,
+      company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+      run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+      brief_type TEXT NOT NULL CHECK (brief_type IN ('morning', 'evening')),
+      business_date TEXT NOT NULL,
+      timezone TEXT NOT NULL,
+      template_version TEXT NOT NULL,
+      delivery_target TEXT NOT NULL CHECK (delivery_target = 'aos_home'),
+      input_fingerprint TEXT NOT NULL CHECK (length(input_fingerprint) = 64),
+      output_fingerprint TEXT NOT NULL CHECK (length(output_fingerprint) = 64),
+      item_count INTEGER NOT NULL,
+      included_records INTEGER NOT NULL,
+      excluded_records INTEGER NOT NULL,
+      delivery_status TEXT NOT NULL CHECK (delivery_status IN ('delivered', 'reconciled')),
+      source_sync_status TEXT NOT NULL CHECK (source_sync_status = 'synced'),
+      reconciliation_status TEXT NOT NULL CHECK (reconciliation_status = 'reconciled'),
+      cleanup_status TEXT NOT NULL CHECK (cleanup_status = 'verified'),
+      receipt_hash TEXT NOT NULL CHECK (length(receipt_hash) = 64),
+      idempotency_key TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(company_id, idempotency_key)
+    );
+  `);
+  await getPostgresAsyncPool().query(`
+    CREATE INDEX IF NOT EXISTS brief_deliveries_company_period_idx
+      ON brief_deliveries(company_id, brief_type, business_date, created_at DESC);
+  `);
+  // The UI projection orders the company-scoped run list by created_at. Keep
+  // this additive index self-healing on the assumed-existing startup path,
+  // which intentionally does not replay the full schema bootstrap.
+  await getPostgresAsyncPool().query(`
+    CREATE INDEX IF NOT EXISTS idx_runs_company_created_at
+      ON runs(company_id, created_at DESC);
+  `);
   if (databaseVersion !== postgresSchemaBootstrapVersion) {
     await getPostgresAsyncPool().query(
       `ALTER TABLE mvp_automation_schedules ADD COLUMN IF NOT EXISTS catch_up_policy TEXT DEFAULT 'skip';`
@@ -1558,6 +1723,7 @@ async function runAssumedExistingPostgresMigrationsAsync(): Promise<void> {
 function runPostgresWorker(operation: "exec" | "query", sql: string): Array<Record<string, unknown>> {
   if (!postgresUrl) throw new Error("PostgreSQL backend selected but DATABASE_URL/AUTOMATION_OS_DATABASE_URL is missing");
   const command = resolvePostgresWorkerCommand();
+  if (postgresBootstrapColumnCache) postgresBootstrapWorkerCalls += 1;
   try {
     const stdout = execFileSync(command.bin, command.args, {
       cwd: process.cwd(),
@@ -1679,6 +1845,10 @@ async function runPostgresWorkerInitializeAsync(): Promise<void> {
       if (settled) return;
       settled = true;
       child.kill("SIGTERM");
+      if (process.env.AUTOMATION_OS_POSTGRES_BOOTSTRAP_TRACE === "1") {
+        const metrics = stderr.split("\n").filter((line) => line.includes("schema_bootstrap_metrics"));
+        if (metrics.length) process.stderr.write(`${metrics.join("\n")}\n`);
+      }
       rejectPromise(new Error("postgres_schema_bootstrap_timeout"));
     }, timeoutMs + 1000);
     child.stdout.on("data", (chunk) => { stdout += String(chunk); });
@@ -1701,6 +1871,10 @@ async function runPostgresWorkerInitializeAsync(): Promise<void> {
       try {
         const parsed = JSON.parse(stdout) as { ok?: boolean; error?: string };
         if (parsed.ok !== true) throw new Error(parsed.error ?? "postgres_schema_bootstrap_failed");
+        if (process.env.AUTOMATION_OS_POSTGRES_BOOTSTRAP_TRACE === "1") {
+          const metrics = stderr.split("\n").filter((line) => line.includes("schema_bootstrap_metrics"));
+          if (metrics.length) process.stderr.write(`${metrics.join("\n")}\n`);
+        }
         resolvePromise();
       } catch (error) {
         rejectPromise(error);

@@ -1,4 +1,5 @@
 import { spawn, type SpawnOptionsWithoutStdio } from "node:child_process";
+import { createHash } from "node:crypto";
 import WebSocket from "ws";
 import { redactSensitiveText } from "../obsidian/redaction.js";
 import { resolveBoundedWorkspacePath } from "../security/processEnvironment.js";
@@ -53,6 +54,10 @@ export type CodexAppServerEvent = {
   threadId?: string;
   turnId?: string;
   itemId?: string;
+  toolArguments?: Record<string, unknown>;
+  itemType?: string;
+  toolName?: string;
+  serverName?: string;
   delta?: string;
   status?: string;
   capturedAt: string;
@@ -64,6 +69,14 @@ export type CodexAppServerTurnResult = {
   status: "completed" | "interrupted" | "failed" | "blocked";
   text: string;
   structured: Record<string, unknown> | null;
+  /** Hash of the declared provider account before public-output redaction.
+   * Not provider proof by itself: callers must verify the corresponding tool event. */
+  providerAccountHash?: string;
+  providerAccountHashSource?: "gmail_profile_tool" | "declared_output";
+  /** Actual, bounded search metadata. Pagination token is transient only. */
+  gmailSummaryPage?: { messages: Array<{ id: string; subject: string; snippet: string }>; nextPageToken: string | null; unfiltered: boolean };
+  /** Actual structured result from one Gmail metadata message read. */
+  gmailSourceMessage?: { id: string; thread_id: string; payload: { headers: Array<{ name: string; value: string }> }; history_id?: string; label_ids?: string[] };
   events: CodexAppServerEvent[];
   exactBlocker?: string;
 };
@@ -152,7 +165,12 @@ type JsonRpcMessage = {
 
 const defaultTimeoutMs = 45_000;
 const maxTimeoutMs = 120_000;
-const maxLineBytes = 512 * 1024;
+const maxTurnTimeoutMs = 300_000;
+// Planner turns can contain a single JSONL notification with a large
+// connector/tool payload (notably Gmail's structured envelope). The parsed
+// event/text surfaces below remain bounded, so allow a larger protocol frame
+// while retaining a hard memory ceiling.
+const maxLineBytes = 64 * 1024 * 1024;
 const maxEventsPerTurn = 160;
 
 /**
@@ -174,6 +192,10 @@ export class CodexAppServerClient {
   private readonly recentCompletions = new Map<string, Record<string, unknown>>();
   private readonly turnEvents = new Map<string, CodexAppServerEvent[]>();
   private readonly turnText = new Map<string, string>();
+  private readonly turnProviderAccountHashes = new Map<string, string>();
+  private readonly turnProviderAccountToolProof = new Set<string>();
+  private readonly turnGmailSummaryPages = new Map<string, NonNullable<CodexAppServerTurnResult["gmailSummaryPage"]>>();
+  private readonly turnGmailSourceMessages = new Map<string, NonNullable<CodexAppServerTurnResult["gmailSourceMessage"]>>();
   private readonly turnToThread = new Map<string, string>();
   private readonly turnListeners = new Map<string, (event: CodexAppServerEvent) => void>();
   private readonly pendingTurnListeners = new Map<string, (event: CodexAppServerEvent) => void>();
@@ -185,6 +207,7 @@ export class CodexAppServerClient {
     cwd?: string;
     workspaceRoot?: string;
     timeoutMs?: number;
+    turnTimeoutMs?: number;
     processFactory?: AppServerProcessFactory;
     webSocketFactory?: AppServerWebSocketFactory;
     remoteUrl?: string;
@@ -320,6 +343,71 @@ export class CodexAppServerClient {
     };
   }
 
+  /** app/read is display metadata, not access state. Resolve exact IDs from
+   * the paginated app/list and independently read effective runtime state. */
+  async readPluginAccess(input: { pluginName: string; remoteMarketplaceName?: string }) {
+    const plugin = await this.readPluginApps(input);
+    const remaining = new Set(plugin.apps.map((app) => app.id));
+    const apps: CodexAppServerAppReadback[] = [];
+    const cursors = new Set<string>();
+    let cursor: string | null = null;
+    let page = 0;
+    let appListBlocker: string | null = null;
+    while (remaining.size) {
+      let response: Record<string, unknown>;
+      try {
+        response = await this.request("app/list", { cursor, limit: 100, forceRefetch: page === 0 });
+      } catch (error) {
+        // Older dedicated servers can reject catalog refresh while the
+        // official effective-runtime read still works. Keep the diagnostic;
+        // only a positive exact-ID enabled+callable result can verify access.
+        const code = error instanceof Error ? error.message : "";
+        if (!/^codex_app_server_request_rejected_code_-3260[13]$/.test(code)) throw error;
+        appListBlocker = code;
+        break;
+      }
+      const result = response.result as Record<string, unknown> | undefined;
+      if (!Array.isArray(result?.data)) throw new Error("codex_app_server_app_list_invalid");
+      for (const value of result.data) {
+        if (!value || typeof value !== "object") continue;
+        const app = value as Record<string, unknown>;
+        const id = stringValue(app.id);
+        if (!id || !remaining.has(id)) continue;
+        remaining.delete(id);
+        apps.push({ id, name: stringValue(app.name) ?? null,
+          isAccessible: app.isAccessible === true, isEnabled: app.isEnabled === true,
+          accessStateAvailable: typeof app.isAccessible === "boolean" && typeof app.isEnabled === "boolean",
+          installUrl: safeAuthUrl(app.installUrl) });
+      }
+      cursor = stringValue(result.nextCursor) ?? null;
+      if (!cursor || !remaining.size) break;
+      if (cursors.has(cursor) || ++page >= 50) throw new Error("codex_app_server_app_list_pagination_invalid");
+      cursors.add(cursor);
+    }
+    // Missing entries remain explicitly unknown; an empty result never proves
+    // that a plugin has no authentication requirements (it may contain MCP).
+    for (const app of plugin.apps) {
+      if (!remaining.has(app.id)) continue;
+      const metadata = await this.readApp({ appId: app.id });
+      apps.push({ id: app.id, name: app.name, isAccessible: false, isEnabled: false,
+        accessStateAvailable: false, installUrl: metadata?.installUrl ?? null });
+    }
+    const installed = await this.readInstalledApps({ forceRefresh: true });
+    return {
+      pluginName: plugin.pluginName,
+      apps: apps.map((app) => {
+        const callable = installed.some((entry) => entry.id === app.id && entry.enabled && entry.callable);
+        const effectiveAccess = Boolean(appListBlocker && callable && !app.accessStateAvailable);
+        return { ...app, callable,
+          ...(effectiveAccess ? { isAccessible: true, isEnabled: true, accessStateAvailable: true } : {}),
+          accessStateSource: effectiveAccess ? "app/installed" : app.accessStateAvailable ? "app/list" : "unverified"
+        };
+      }),
+      appListBlocker,
+      checkedAt: new Date().toISOString()
+    };
+  }
+
   async readPluginApps(input: {
     pluginName: string;
     remoteMarketplaceName?: string;
@@ -369,11 +457,23 @@ export class CodexAppServerClient {
       ? boundedPluginName(input.installAttemptId, "codex_app_server_install_attempt_id_invalid")
       : null;
     await this.start();
-    const response = await this.request("plugin/install", {
-      pluginName,
-      ...(marketplaceName ? { remoteMarketplaceName: marketplaceName } : {}),
-      ...(installAttemptId ? { installAttemptId } : {})
-    });
+    let response: Record<string, unknown>;
+    try {
+      response = await this.request("plugin/install", {
+        pluginName,
+        ...(marketplaceName ? { remoteMarketplaceName: marketplaceName } : {}),
+        ...(installAttemptId ? { installAttemptId } : {})
+      });
+    } catch (error) {
+      // The current remote App Server exposes plugin/install as an
+      // experimental RPC and may reject it with -32600 even though the
+      // underlying Codex CLI has the stable `plugin add` command.  Use one
+      // bounded command/exec compatibility bridge for that exact protocol
+      // mismatch.  We deliberately do not retry after command/exec: an
+      // unknown result must not become a duplicate external action.
+      if (!isUnsupportedPluginInstallError(error)) throw error;
+      response = await this.installPluginThroughCli(pluginName, marketplaceName);
+    }
     const result = response.result && typeof response.result === "object"
       ? (response.result as Record<string, unknown>)
       : {};
@@ -396,7 +496,82 @@ export class CodexAppServerClient {
     const authPolicy = result.authPolicy === "ON_INSTALL" || result.authPolicy === "ON_USE"
       ? result.authPolicy
       : null;
+    if (result.__aosCliInstall === true) {
+      const cliAuth = await this.readPluginAppsNeedingAuth(pluginName, marketplaceName);
+      return {
+        pluginName,
+        marketplaceName,
+        authPolicy,
+        appsNeedingAuth: cliAuth
+      };
+    }
     return { pluginName, marketplaceName, authPolicy, appsNeedingAuth };
+  }
+
+  private async installPluginThroughCli(
+    pluginName: string,
+    marketplaceName: string | null
+  ): Promise<Record<string, unknown>> {
+    const pluginSpecifier = marketplaceName ? `${pluginName}@${marketplaceName}` : pluginName;
+    const params: Record<string, unknown> = {
+      // Keep this an argv array.  No shell is involved and the two dynamic
+      // values have already passed bounded identifier validation above.
+      command: ["codex", "plugin", "add", pluginSpecifier, "--json"],
+      sandboxPolicy: { type: "externalSandbox", networkAccess: "enabled" }
+    };
+    this.applyCwd(params);
+    const response = await this.request("command/exec", params);
+    const result = response.result && typeof response.result === "object"
+      ? response.result as Record<string, unknown>
+      : {};
+    const exitCode = typeof result.exitCode === "number" && Number.isSafeInteger(result.exitCode)
+      ? result.exitCode
+      : null;
+    if (exitCode !== 0) {
+      throw new Error(`codex_app_server_plugin_add_failed_code_${exitCode === null ? "unknown" : exitCode}`);
+    }
+    const stdout = typeof result.stdout === "string" ? result.stdout : "";
+    const metadata = parseJsonObjectFromCommandOutput(stdout);
+    const returnedName = stringValue(metadata?.name);
+    const returnedPluginId = stringValue(metadata?.pluginId);
+    const returnedMarketplace = stringValue(metadata?.marketplaceName);
+    const returnedAuthPolicy = metadata?.authPolicy === "ON_INSTALL" || metadata?.authPolicy === "ON_USE"
+      ? metadata.authPolicy
+      : null;
+    if (returnedName !== pluginName || (marketplaceName && returnedMarketplace !== marketplaceName)) {
+      throw new Error("codex_app_server_plugin_add_readback_mismatch");
+    }
+    if (returnedPluginId && returnedPluginId !== pluginSpecifier) {
+      throw new Error("codex_app_server_plugin_add_readback_mismatch");
+    }
+    return {
+      result: {
+        __aosCliInstall: true,
+        authPolicy: returnedAuthPolicy,
+        // The CLI response is reduced to auth metadata only. Do not pass
+        // installed paths, stderr, or arbitrary command output to the API.
+        appsNeedingAuth: []
+      }
+    };
+  }
+
+  private async readPluginAppsNeedingAuth(
+    pluginName: string,
+    marketplaceName: string | null
+  ): Promise<CodexAppServerPluginInstallResult["appsNeedingAuth"]> {
+    const access = await this.readPluginAccess({
+      pluginName,
+      ...(marketplaceName ? { remoteMarketplaceName: marketplaceName } : {})
+    });
+    return access.apps
+      .filter((app) => !app.accessStateAvailable || !app.isAccessible || !app.isEnabled)
+      .map((app) => ({
+        id: app.id,
+        name: app.name ?? pluginName,
+        category: null,
+        description: null,
+        installUrl: app.installUrl
+      }));
   }
 
   async startTurn(input: {
@@ -454,11 +629,19 @@ export class CodexAppServerClient {
         status,
         text: redactSensitiveText(textOutput).slice(0, 24_000),
         structured: parseStructuredText(textOutput),
+        ...(this.turnProviderAccountHashes.has(key) ? { providerAccountHash: this.turnProviderAccountHashes.get(key)! } : {}),
+        ...(this.turnProviderAccountHashes.has(key) ? { providerAccountHashSource: this.turnProviderAccountToolProof.has(key) ? "gmail_profile_tool" as const : "declared_output" as const } : {}),
+      ...(this.turnGmailSummaryPages.has(key) ? { gmailSummaryPage: this.turnGmailSummaryPages.get(key)! } : {}),
+        ...(this.turnGmailSourceMessages.has(key) ? { gmailSourceMessage: this.turnGmailSourceMessages.get(key)! } : {}),
         events: turnEvents.slice(-maxEventsPerTurn),
         exactBlocker
       };
     } finally {
       this.turnListeners.delete(key);
+      this.turnProviderAccountHashes.delete(key);
+      this.turnProviderAccountToolProof.delete(key);
+      this.turnGmailSummaryPages.delete(key);
+      this.turnGmailSourceMessages.delete(key);
     }
   }
 
@@ -561,7 +744,7 @@ export class CodexAppServerClient {
       const timer = setTimeout(() => {
         this.completions.delete(key);
         reject(new Error("codex_app_server_turn_timeout"));
-      }, boundedTimeout(this.options.timeoutMs));
+      }, boundedTurnTimeout(this.options.turnTimeoutMs, this.options.timeoutMs));
       timer.unref?.();
       this.completions.set(key, { resolve, reject, timer });
     });
@@ -575,15 +758,24 @@ export class CodexAppServerClient {
 
   private consumeStdout(chunk: Buffer | string): void {
     this.lineBuffer += String(chunk);
-    if (Buffer.byteLength(this.lineBuffer, "utf8") > maxLineBytes) {
-      this.failConnection(new Error("codex_app_server_protocol_line_too_large"));
-      return;
-    }
     while (true) {
       const newline = this.lineBuffer.indexOf("\n");
-      if (newline < 0) return;
-      const line = this.lineBuffer.slice(0, newline).trim();
+      if (newline < 0) {
+        // The buffer may contain several valid JSONL messages in one stdout
+        // chunk. Enforce the limit on an incomplete *single* line only; the
+        // total size of multiple complete lines is not a protocol violation.
+        if (Buffer.byteLength(this.lineBuffer, "utf8") > maxLineBytes) {
+          this.failConnection(new Error("codex_app_server_protocol_line_too_large"));
+        }
+        return;
+      }
+      const rawLine = this.lineBuffer.slice(0, newline);
       this.lineBuffer = this.lineBuffer.slice(newline + 1);
+      if (Buffer.byteLength(rawLine, "utf8") > maxLineBytes) {
+        this.failConnection(new Error("codex_app_server_protocol_line_too_large"));
+        return;
+      }
+      const line = rawLine.trim();
       if (!line) continue;
       let message: JsonRpcMessage;
       try {
@@ -639,21 +831,79 @@ export class CodexAppServerClient {
     const notificationTurnId = stringValue(params.turnId) ?? nestedString(params.turn, "id");
     const threadId = stringValue(params.threadId) ?? (notificationTurnId ? this.turnToThread.get(notificationTurnId) : undefined);
     const turnId = notificationTurnId;
+    const eventItem = params.item && typeof params.item === "object" ? params.item as Record<string, unknown> : undefined;
     const itemId = stringValue(params.itemId) ?? nestedString(params.item, "id");
+    const itemType = nestedString(eventItem, "type");
+    const toolName = nestedString(eventItem, "tool")
+      ?? nestedString(eventItem, "name")
+      ?? nestedString(eventItem, "toolName")
+      ?? nestedString(eventItem, "tool_name")
+      ?? nestedString(eventItem, "serverName")
+      ?? nestedString(eventItem, "server_name");
     const event: CodexAppServerEvent = {
       method: message.method!,
       ...(threadId ? { threadId } : {}),
       ...(turnId ? { turnId } : {}),
       ...(itemId ? { itemId } : {}),
+      ...(eventItem?.arguments && typeof eventItem.arguments === "object" && !Array.isArray(eventItem.arguments) ? { toolArguments: eventItem.arguments as Record<string, unknown> } : {}),
+      ...(itemType ? { itemType } : {}),
+      ...(toolName ? { toolName: redactSensitiveText(toolName).slice(0, 120) } : {}),
+      ...(nestedString(eventItem, "server") ? { serverName: redactSensitiveText(nestedString(eventItem, "server")!).slice(0, 120) } : {}),
       ...(message.method === "item/agentMessage/delta" && stringValue(params.delta)
         ? { delta: redactSensitiveText(stringValue(params.delta)!).slice(0, 4_000) }
         : {}),
-      ...(nestedString(params.turn, "status") ? { status: nestedString(params.turn, "status") } : {}),
+      ...(nestedString(eventItem, "status") || nestedString(params.turn, "status") ? { status: nestedString(eventItem, "status") ?? nestedString(params.turn, "status") } : {}),
       capturedAt
     };
     const key = threadId && turnId ? turnKey(threadId, turnId) : undefined;
     if (key) {
+      // MCP content can be only "Success" while the authenticated identity is
+      // in structuredContent, which is not necessarily shown to the model.
+      // Compare the actual profile result, never ask the model to invent it.
+      if (message.method === "item/completed" && isToolCallItemType(itemType)
+        && event.status === "completed" && eventItem?.error == null
+        && `${event.serverName ?? ""} ${toolName ?? ""}`.toLowerCase().includes("gmail")
+        && /(?:get_)?profile$/i.test(toolName ?? "")) {
+        const result = eventItem?.result as Record<string, unknown> | undefined;
+        const profile = (result?.structuredContent ?? result?.structured_content) as Record<string, unknown> | undefined;
+        const email = profile?.email ?? profile?.emailAddress ?? profile?.email_address;
+        if (typeof email === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+          this.turnProviderAccountHashes.set(key, createHash("sha256").update(email.trim().toLowerCase(), "utf8").digest("hex"));
+          this.turnProviderAccountToolProof.add(key);
+        }
+      }
       const events = this.turnEvents.get(key) ?? [];
+      if (message.method === "item/completed" && isToolCallItemType(itemType) && event.status === "completed"
+        && eventItem?.error == null && toolName === "gmail.search_emails") {
+        const result = eventItem?.result as Record<string, unknown> | undefined;
+        const page = (result?.structuredContent ?? result?.structured_content) as Record<string, unknown> | undefined;
+        const args = eventItem?.arguments as Record<string, unknown> | undefined;
+        if (Array.isArray(page?.emails) && page.emails.every((mail: any) => typeof mail?.id === "string" && mail.id.trim())) {
+          this.turnGmailSummaryPages.set(key, {
+            messages: page.emails.slice(0, 100).map((mail: any) => ({ id: mail.id.trim().slice(0, 200), subject: redactSensitiveText(String(mail.subject ?? "")).slice(0, 140), snippet: redactSensitiveText(String(mail.snippet ?? "")).slice(0, 240) })),
+            nextPageToken: typeof page.next_page_token === "string" && page.next_page_token ? page.next_page_token : null,
+            unfiltered: (!args?.query || args.query === "") && (!Array.isArray(args?.label_ids) || args.label_ids.length === 0)
+          });
+        }
+      }
+      if (message.method === "item/completed" && itemType === "mcpToolCall" && event.status === "completed"
+        && eventItem?.error == null && /gmail[._]read_email$/i.test(toolName ?? "")) {
+        const result = eventItem?.result as Record<string, unknown> | undefined;
+        const structured = result?.structuredContent as Record<string, unknown> | undefined;
+        const messageResult = structured?.result as Record<string, unknown> | undefined;
+        const payload = messageResult?.payload as Record<string, unknown> | undefined;
+        const headers = Array.isArray(payload?.headers) ? payload.headers.flatMap((header) => {
+          if (!header || typeof header !== "object") return [];
+          const value = header as Record<string, unknown>;
+          return typeof value.name === "string" && typeof value.value === "string"
+            ? [{ name: value.name, value: value.value }] : [];
+        }) : [];
+        if (typeof messageResult?.id === "string" && typeof messageResult.thread_id === "string" && headers.length > 0) {
+          this.turnGmailSourceMessages.set(key, { id: messageResult.id.trim(), thread_id: messageResult.thread_id.trim(), payload: { headers },
+            ...(typeof messageResult.history_id === "string" ? { history_id: messageResult.history_id } : {}),
+            ...(Array.isArray(messageResult.label_ids) && messageResult.label_ids.every((label) => typeof label === "string") ? { label_ids: messageResult.label_ids as string[] } : {}) });
+        }
+      }
       events.push(event);
       this.turnEvents.set(key, events.slice(-maxEventsPerTurn));
       if (message.method === "item/agentMessage/delta" && event.delta) {
@@ -663,7 +913,13 @@ export class CodexAppServerClient {
         const item = params.item;
         if (item && typeof item === "object" && nestedString(item as Record<string, unknown>, "type") === "agentMessage") {
           const finalText = nestedString(item as Record<string, unknown>, "text");
-          if (finalText) this.turnText.set(key, redactSensitiveText(finalText).slice(-24_000));
+          if (finalText) {
+            const account = parseStructuredText(finalText)?.provider_account;
+            if (!this.turnProviderAccountToolProof.has(key) && typeof account === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(account.trim())) {
+              this.turnProviderAccountHashes.set(key, createHash("sha256").update(account.trim().toLowerCase(), "utf8").digest("hex"));
+            }
+            this.turnText.set(key, redactSensitiveText(finalText).slice(-24_000));
+          }
         }
       }
       if (message.method === "turn/completed") {
@@ -931,6 +1187,12 @@ function boundedTimeout(value: number | undefined): number {
   return Math.min(Math.floor(value), maxTimeoutMs);
 }
 
+function boundedTurnTimeout(turnTimeoutMs: number | undefined, rpcTimeoutMs: number | undefined): number {
+  if (turnTimeoutMs === undefined) return boundedTimeout(rpcTimeoutMs);
+  if (!Number.isFinite(turnTimeoutMs) || !turnTimeoutMs || turnTimeoutMs <= 0) return defaultTimeoutMs;
+  return Math.min(Math.floor(turnTimeoutMs), maxTurnTimeoutMs);
+}
+
 function appServerCwd(value: string | undefined, workspaceRootValue: string | undefined): string {
   return resolveBoundedWorkspacePath(value, workspaceRootValue, {
     rootInvalid: "codex_app_server_workspace_root_invalid",
@@ -947,6 +1209,11 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+function isToolCallItemType(value: string | undefined): boolean {
+  const normalized = value?.toLowerCase().replace(/[^a-z0-9]/g, "") ?? "";
+  return normalized === "mcptoolcall" || normalized === "dynamictoolcall";
+}
+
 function boundedPluginName(value: string, requiredCode: string): string {
   const normalized = typeof value === "string" ? value.trim() : "";
   if (!normalized) throw new Error(requiredCode);
@@ -956,7 +1223,41 @@ function boundedPluginName(value: string, requiredCode: string): string {
 
 export function normalizeMarketplaceName(value: string): string {
   const normalized = boundedPluginName(value, "codex_app_server_marketplace_name_invalid");
-  return normalized === "openai-curated" ? "openai-curated-remote" : normalized;
+  // The dedicated App Server's configured marketplace is the canonical
+  // `openai-curated` name.  Do not rewrite it to the historical
+  // `openai-curated-remote` alias: the remote protocol validates the exact
+  // configured marketplace name and rejects the alias as an invalid request.
+  return normalized === "openai-curated-remote" ? "openai-curated" : normalized;
+}
+
+function isUnsupportedPluginInstallError(error: unknown): boolean {
+  return error instanceof Error && error.message === "codex_app_server_request_rejected_code_-32600";
+}
+
+function parseJsonObjectFromCommandOutput(value: string): Record<string, unknown> | null {
+  const bounded = value.trim().slice(0, 64 * 1024);
+  if (!bounded) return null;
+  try {
+    const parsed = JSON.parse(bounded) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    // Some CLI wrappers prepend a short informational line even with
+    // --json. Parse only the first bounded JSON object and never expose the
+    // surrounding output.
+    const start = bounded.indexOf("{");
+    const end = bounded.lastIndexOf("}");
+    if (start < 0 || end <= start) return null;
+    try {
+      const parsed = JSON.parse(bounded.slice(start, end + 1)) as unknown;
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? parsed as Record<string, unknown>
+        : null;
+    } catch {
+      return null;
+    }
+  }
 }
 
 function boundedDeviceCode(value: unknown): string | undefined {
@@ -998,11 +1299,22 @@ function completionError(params: Record<string, unknown>): string | undefined {
 
 function parseStructuredText(text: string): Record<string, unknown> | null {
   const trimmed = text.trim().replace(/^```(?:json)?\s*/iu, "").replace(/\s*```$/iu, "").trim();
-  if (!trimmed.startsWith("{")) return null;
-  try {
-    const parsed = JSON.parse(trimmed) as unknown;
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
-  } catch {
-    return null;
+  const candidates = [trimmed];
+  // Some App Server/model combinations add a short preamble or trailing
+  // sentence even when an output schema was requested. Recover only the
+  // first balanced JSON object; callers still validate its complete shape.
+  const firstBrace = trimmed.indexOf("{");
+  const lastBrace = trimmed.lastIndexOf("}");
+  if (firstBrace >= 0 && lastBrace > firstBrace && (firstBrace > 0 || lastBrace < trimmed.length - 1)) {
+    candidates.push(trimmed.slice(firstBrace, lastBrace + 1));
   }
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
+    } catch {
+      // Try the next bounded candidate.
+    }
+  }
+  return null;
 }

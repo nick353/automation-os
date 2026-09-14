@@ -102,6 +102,22 @@ export function normalizeCompanyCodexRegistryReadback(value: unknown): ZeaburCon
   return normalizeRegistry(value);
 }
 
+/** Merge only the confirmed install; an install is not provider authentication. */
+export function registryAfterPluginInstall(registry: ZeaburConnectorRegistryReadback, pluginId: string): ZeaburConnectorRegistryReadback {
+  const matches = (entry: { id: string }) => entry.id.toLowerCase() === pluginId.toLowerCase();
+  if (registry.pluginRegistry.installed.some(matches)) return registry;
+  const plugin = registry.pluginRegistry.available.find(matches);
+  if (!plugin) throw new ConnectorRegistryRepositoryError("zeabur_plugin_not_in_company_registry");
+  return {
+    ...registry,
+    // Do not refresh the observation timestamp of unrelated cached entries.
+    pluginRegistry: {
+      installed: [...registry.pluginRegistry.installed, { ...plugin, installed: true, authStatus: "unknown" }],
+      available: registry.pluginRegistry.available.filter((entry) => !matches(entry))
+    }
+  };
+}
+
 function normalizeRegistry(value: unknown): ZeaburConnectorRegistryReadback {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new ConnectorRegistryRepositoryError("zeabur_registry_readback_invalid");
   const raw = value as Record<string, unknown>;

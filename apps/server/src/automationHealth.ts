@@ -133,6 +133,18 @@ const AOS_NO_EFFECT_BRIDGE_BROWSER_PROSE_MARKERS = [
   "never use browser use"
 ];
 
+// Registered AOS automations are thin scheduler triggers.  Their prompts
+// intentionally contain the business effect vocabulary so the scheduler can
+// describe the workflow, but they prohibit direct dispatch and hand the
+// effect to the AOS worker.  The durable visual-audit contract is enforced by
+// the registered runner, not by duplicating its wording in the trigger prompt.
+const AOS_REGISTERED_TRIGGER_MARKERS = [
+  "aos_single_control_plane_v1",
+  "direct_dispatch_forbidden_v2",
+  "aos_official_bridge_v1"
+];
+const AOS_REGISTERED_WORKER_OWNERSHIP_MARKERS = ["aos worker only", "aos workerだけ"];
+
 const BROWSER_LANE_TERMS = [
   "19881",
   "19882",
@@ -598,6 +610,9 @@ function detectVideoQa(automation: AutomationTomlRecord): AutomationHealthEntry[
     && AOS_NO_EFFECT_BRIDGE_PROSE_MARKERS.some((marker) => lower.includes(marker))
     && AOS_NO_EFFECT_BRIDGE_BROWSER_PROSE_MARKERS.some((marker) => lower.includes(marker));
   if (isAosNoEffectBridge) return { likely_required: false, wording_found: wordingFound, status: "not_required" };
+  const isAosRegisteredThinTrigger = AOS_REGISTERED_TRIGGER_MARKERS.every((marker) => lower.includes(marker))
+    && AOS_REGISTERED_WORKER_OWNERSHIP_MARKERS.some((marker) => lower.includes(marker));
+  if (isAosRegisteredThinTrigger) return { likely_required: false, wording_found: wordingFound, status: "not_required" };
   const hasPositiveEffectInstruction = prompt.split(/\r?\n/u).some((line) => {
     const normalized = line.toLowerCase();
     const effectTerm = /(publish|pinterest|etsy|printify|linkedin|direct_publish|write|writes|send|submit|calendar|sheets)/.test(normalized)

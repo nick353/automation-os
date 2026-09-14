@@ -5,11 +5,11 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { WEB_OPERATION_CONTRACT, readPortableBusinessActionPlan } from "../portable-business-action-plan.mjs";
+import { WEB_OPERATION_CONTRACT, getWebOperationContractForSurface, readPortableBusinessActionPlan } from "../portable-business-action-plan.mjs";
 
 const runnerPath = new URL("../aos-daily-ai-business-runner.mjs", import.meta.url);
 
-function admission(root, runId, stepId) {
+function admission(root, runId, stepId, browserSurface = "browser_use_cli") {
   const payload = {
     schema: "automation_os_portable_external_admission.v1",
     workflow_id: "daily-ai-research-publish-run",
@@ -18,7 +18,7 @@ function admission(root, runId, stepId) {
     source_trigger: "automation_os_scheduler",
     idempotency_key: `${runId}-idempotency`,
     audience: "portable_external_runner",
-    browser_surface: "browser_use_cli",
+    browser_surface: browserSurface,
     approval_status: "approved",
     expires_at: new Date(Date.now() + 60_000).toISOString(),
   };
@@ -74,7 +74,7 @@ function inputBundle(root, runId) {
   return { file, sha256: createHash("sha256").update(bytes).digest("hex"), input: value.input };
 }
 
-function actionPlan(root, runId, stepId, inputBundleSha256) {
+function actionPlan(root, runId, stepId, inputBundleSha256, browserSurface = "browser_use_cli") {
   const runRoot = join(root, runId);
   mkdirSync(runRoot, { recursive: true, mode: 0o700 });
   const payload = {
@@ -86,12 +86,12 @@ function actionPlan(root, runId, stepId, inputBundleSha256) {
     step_id: stepId,
     source_trigger: "automation_os_scheduler",
     idempotency_key: `${runId}-idempotency`,
-    browser_surface: "browser_use_cli",
+    browser_surface: browserSurface,
     external_effect_policy: "approved",
     approval_status: "approved",
     allowed_stages: ["research_queue_refresh", "pre_entry_readiness", "browser_preflight", "publish", "feed_study", "engagement", "postflight_sync", "cleanup"],
     required_business_proofs: ["publish_url_or_exact_blocker", "feed_study_or_exact_blocker", "engagement_or_no_candidate_proof", "queue_sync", "cleanup_receipt"],
-    web_operation_contract: WEB_OPERATION_CONTRACT,
+    web_operation_contract: browserSurface === "aos_chrome_companion_profile_instance" ? getWebOperationContractForSurface(browserSurface) : WEB_OPERATION_CONTRACT,
     input_bundle_sha256: inputBundleSha256,
     issued_at: new Date().toISOString(),
     expires_at: new Date(Date.now() + 60_000).toISOString(),
@@ -168,4 +168,34 @@ test("Daily AI wrapper propagates summary business proofs and same-run source sy
     cleanup_receipt: true,
   });
   assert.equal(receipt.runner_receipt.same_run_source_sync, true);
+});
+
+test("registered Daily AI Companion branch is selected without CLI fallthrough", () => {
+  const root = mkdtempSync(join(tmpdir(), "aos-daily-ai-companion-route-"));
+  const runId = "run_daily_ai_companion_route";
+  const stepId = "step_daily_ai_companion_route";
+  const current = admission(root, runId, stepId, "aos_chrome_companion_profile_instance");
+  const result = spawnSync(process.execPath, [
+    runnerPath.pathname,
+    "--workflow-id", "daily-ai-research-publish-run",
+    "--run-id", runId,
+    "--step-id", stepId,
+    "--source-trigger", "automation_os_scheduler",
+    "--idempotency-key", `${runId}-idempotency`,
+  ], {
+    encoding: "utf8",
+    env: {
+      PATH: process.env.PATH,
+      AOS_WEB_OPERATION_BACKEND: "aos_chrome_companion",
+      AUTOMATION_OS_PORTABLE_BUSINESS_NO_LAUNCH: "1",
+      AUTOMATION_OS_PORTABLE_BUSINESS_ADMISSION_PATH: current.file,
+      AUTOMATION_OS_PORTABLE_BUSINESS_ADMISSION_SHA256: current.sha256,
+      AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER: join(root, "must-not-be-inspected-or-run.mjs"),
+    },
+  });
+  assert.equal(result.status, 1, `${result.stderr}\n${result.stdout}`);
+  const receipt = JSON.parse(result.stdout.trim());
+  assert.equal(receipt.browser_surface, "aos_chrome_companion_profile_instance");
+  assert.equal(receipt.exact_blocker, "daily_ai_browser_use_cli_no_launch_canary");
+  assert.equal(receipt.external_action_executed, false);
 });

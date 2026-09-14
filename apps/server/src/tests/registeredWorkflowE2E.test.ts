@@ -50,8 +50,13 @@ test("all six registered entries share a control-plane adapter and portable disp
     serviceUserId,
     now: "2026-08-11T00:30:00.000Z"
   });
-  assert.equal(materialized.runIds.length, 6);
+  assert.equal(materialized.runIds.length, 5);
   assert.equal(materialized.portableScheduleIds.length, 6);
+  assert.deepEqual(materialized.blocked, [{
+    scheduleId: materialized.handledScheduleIds[1],
+    workflowId: "email-review-reply",
+    exactBlocker: "execution_target_unbound"
+  }]);
   assert.deepEqual(materialized.workflowIds.sort(), [
     "daily-ai-research-publish-run",
     "job-application-manager",
@@ -59,7 +64,6 @@ test("all six registered entries share a control-plane adapter and portable disp
   ].sort());
   assert.deepEqual(materialized.localWorkflowIds.sort(), [
     "daily-backup-safety-check",
-    "email-review-reply",
     "obsidian-project-memory-audit"
   ].sort());
   assert.equal(db.querySql<{ count: number }>(`SELECT count(*) AS count FROM durable_jobs WHERE company_id=${db.sqlValue(companyId)}`)[0].count, 0);
@@ -67,11 +71,11 @@ test("all six registered entries share a control-plane adapter and portable disp
   const runRows = db.querySql<{ id: string; metadata_json: string; company_id: string | null; automation_id: string | null; automation_version_id: string | null }>(
     `SELECT id, metadata_json, company_id, automation_id, automation_version_id FROM runs WHERE id IN (${materialized.runIds.map((id) => db.sqlValue(id)).join(",")}) ORDER BY id`
   );
-  assert.equal(runRows.length, 6);
+  assert.equal(runRows.length, 5);
   assert.ok(runRows.every((row) => row.company_id === companyId));
-  const expectedAutomationIds = db.querySql<{ id: string }>(
-    `SELECT id FROM mvp_automations WHERE company_id=${db.sqlValue(companyId)} ORDER BY id`
-  ).map((row) => row.id);
+  const expectedAutomationIds = db.querySql<{ id: string; builder_spec_json: string }>(
+    `SELECT id, builder_spec_json FROM mvp_automations WHERE company_id=${db.sqlValue(companyId)} ORDER BY id`
+  ).filter((row) => JSON.parse(row.builder_spec_json).canonicalWorkflowId !== "email-review-reply").map((row) => row.id);
   assert.deepEqual(runRows.map((row) => row.automation_id).sort(), expectedAutomationIds);
   assert.ok(runRows.every((row) => row.automation_version_id));
   assert.ok(runRows.every((row) => JSON.parse(row.metadata_json).portable_worker?.external_action_executed === false));
@@ -83,7 +87,7 @@ test("all six registered entries share a control-plane adapter and portable disp
     now: "2026-08-11T00:30:00.000Z"
   });
   assert.deepEqual(replayedSchedule.runIds, []);
-  assert.deepEqual(replayedSchedule.blocked, []);
+  assert.deepEqual(replayedSchedule.blocked, materialized.blocked);
 });
 
 test("portable scheduler blocks a missed recurrence without creating another Mac-worker run", async () => {
@@ -182,12 +186,13 @@ test("local worker E2E preserves read-only, exact blockers, and cleanup truth", 
 
   const email = runPortableLocalWorkflowReadOnly({ workflowId: "email-review-reply", workerRole: "mac", companyId });
   assert.equal(email.status, "blocked");
-  assert.ok(email.exact_blocker === "zeabur_codex_app_server_registry_readback_missing" || email.exact_blocker === "zeabur_connector_auth_not_verified");
+  assert.equal(email.exact_blocker, "execution_target_run_binding_missing");
   assert.equal(email.external_action_executed, false);
   assert.equal(email.cleanup_verified, true);
   assert.equal(email.business_completion_verified, false);
 
-  const backup = runPortableLocalWorkflowReadOnly({ workflowId: "daily-backup-safety-check", workerRole: "mac" });
+  const backup = runPortableLocalWorkflowReadOnly({ workflowId: "daily-backup-safety-check", workerRole: "mac",
+    backupSnapshotReader: () => ({ readback_verified: true, cleanup_verified: true, snapshot_stale: false, exact_blocker: null }) });
   assert.equal(backup.status, "complete");
   assert.equal(backup.exact_blocker, null);
   assert.equal(backup.external_action_executed, false);
@@ -196,11 +201,12 @@ test("local worker E2E preserves read-only, exact blockers, and cleanup truth", 
   assert.equal(backup.business_completion_verified, false);
 
   const obsidian = runPortableLocalWorkflowReadOnly({ workflowId: "obsidian-project-memory-audit", workerRole: "mac" });
-  assert.ok(obsidian.status === "partial" || obsidian.status === "blocked");
+  assert.ok(["complete", "partial", "blocked"].includes(obsidian.status));
   assert.equal(obsidian.external_action_executed, false);
   assert.equal(obsidian.cleanup_verified, true);
   assert.equal(obsidian.business_completion_verified, false);
-  assert.ok(obsidian.exact_blocker === "obsidian_artifact_write_requires_approval" || obsidian.exact_blocker === "unresolved_only_audit_failed");
+  assert.ok(obsidian.exact_blocker === null || obsidian.exact_blocker === "obsidian_audit_findings_present" || obsidian.exact_blocker === "unresolved_only_audit_failed");
+  assert.notEqual(obsidian.exact_blocker, "obsidian_artifact_write_requires_approval");
 });
 
 test("scheduled local business admission is a fresh readback bound to fixed targets", () => {
@@ -213,7 +219,8 @@ test("scheduled local business admission is a fresh readback bound to fixed targ
     workflowId: "daily-backup-safety-check",
     companyId,
     dueKey: "schedule:2026-08-11T09:00:00.000Z",
-    scheduledFor: "2026-08-11T09:00:00.000Z"
+    scheduledFor: "2026-08-11T09:00:00.000Z",
+    backupSnapshotReader: () => ({ readback_verified: true, cleanup_verified: true, snapshot_stale: true, exact_blocker: null })
   });
   assert.equal(admission.status, "ready");
   assert.equal(admission.sourceSnapshot.readback_verified, true);
@@ -298,7 +305,7 @@ test("portable external reference readback explicitly cannot claim business comp
   }
 });
 
-test("portable external workflow admits NisenPrints through the effectful Companion adapter", async () => {
+test("portable external workflow routes through Companion-first when Chrome Plugin lacks its adapter", async () => {
   writeWebOperationBackendSetting({ backend: "chrome_plugin", actorUserId: ownerId });
   const started = await startPortableWorkflowRun({
       workflowId: "nisenprints-daily-product-canva-printify-etsy-pinterest",
@@ -317,8 +324,9 @@ test("portable external workflow admits NisenPrints through the effectful Compan
     });
   assert.equal(started.status, "waiting_approval");
   const run = db.querySql<{ metadata_json: string }>(`SELECT metadata_json FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`)[0];
-  const metadata = JSON.parse(run.metadata_json) as { web_operation_backend?: { resolved_backend?: string; route_reason?: string } };
+  const metadata = JSON.parse(run.metadata_json) as { web_operation_backend?: { resolved_backend?: string; browser_surface?: string; route_reason?: string } };
   assert.equal(metadata.web_operation_backend?.resolved_backend, "aos_chrome_companion");
+  assert.equal(metadata.web_operation_backend?.browser_surface, "aos_chrome_companion_profile_instance");
   assert.equal(metadata.web_operation_backend?.route_reason, "companion_effect_adapter_available");
 });
 

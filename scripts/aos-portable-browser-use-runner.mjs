@@ -501,7 +501,7 @@ function readAdaptiveWebOperationIntent(input, environment = process.env) {
   return { path: resolvedPath, sha256: expectedSha256, intent };
 }
 
-function readAdmission(input, environment = process.env) {
+export function readAdmission(input, environment = process.env) {
   const admissionPath = String(environment.AUTOMATION_OS_PORTABLE_EXTERNAL_ADMISSION_PATH || "").trim();
   const expectedSha256 = String(environment.AUTOMATION_OS_PORTABLE_EXTERNAL_ADMISSION_SHA256 || "").trim();
   if (!path.isAbsolute(admissionPath) || !/^[a-f0-9]{64}$/u.test(expectedSha256)) throw new Error(PORTABLE_EXTERNAL_ADMISSION_INVALID);
@@ -517,9 +517,14 @@ function readAdmission(input, environment = process.env) {
   let value;
   try { value = JSON.parse(bytes.toString("utf8")); } catch { throw new Error(PORTABLE_EXTERNAL_ADMISSION_INVALID); }
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(PORTABLE_EXTERNAL_ADMISSION_INVALID);
+  const readOnlyStage = [JOB_CANDIDATE_SUPPLY_STAGE, REFERENCE_READBACK_STAGE].includes(
+    String(environment.AUTOMATION_OS_PORTABLE_EXTERNAL_READ_ONLY_STAGE || "").trim(),
+  );
+  const approvalStatusAccepted = value.approval_status === "approved"
+    || (readOnlyStage && value.approval_status === "not_required");
   if (value.workflow_id !== input.workflow_id || value.run_id !== input.run_id || value.step_id !== input.step_id
     || value.source_trigger !== input.source_trigger || value.idempotency_key !== input.idempotency_key
-    || value.approval_status !== "approved" || value.effect_class !== "external_non_idempotent"
+    || !approvalStatusAccepted || value.effect_class !== "external_non_idempotent"
     || value.browser_surface !== selectedBrowserSurface(environment)) throw new Error(PORTABLE_EXTERNAL_ADMISSION_INVALID);
   if (Date.parse(String(value.expires_at || "")) <= Date.now()) throw new Error(PORTABLE_EXTERNAL_ADMISSION_EXPIRED);
   return Object.freeze({ path: admissionPath, sha256: expectedSha256, value });
@@ -1126,7 +1131,14 @@ async function runChromePluginReadOnlyWorkflow(input, environment = process.env,
       browser_surface: CHROME_PLUGIN_BROWSER_SURFACE,
     };
   }
-  const backendBinding = chromePluginBackendSnapshotFromEnvironment(environment);
+  // The Chrome Plugin backend snapshot is only authoritative for the Chrome
+  // Plugin lane. Companion and Browser Use CLI have their own admission
+  // contracts; requiring a Chrome Plugin snapshot here made a valid Companion
+  // read-only claim fail closed with a misleading
+  // `chrome_plugin_backend_snapshot_missing` blocker.
+  const backendBinding = chromePluginSelected(environment)
+    ? chromePluginBackendSnapshotFromEnvironment(environment)
+    : { snapshot: null, exact_blocker: null };
   if (backendBinding.exact_blocker) {
     return {
       status: "blocked",

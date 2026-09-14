@@ -20,6 +20,7 @@ import {
   assertChromePluginBridgeReadbackValue,
   refreshChromePluginBridgeReadback,
   issueReadOnlyAuthority,
+  readAdmission,
   routeForWorkflow,
   runChromePluginBridgeClient,
   runAosChromeCompanionReadOnlyWorkflow,
@@ -306,6 +307,42 @@ test("read-only authority uses the canonical Browser Use approval token", () => 
   assert.doesNotMatch(source, /approval: "approved_read_only"/u);
 });
 
+test("read-only admission accepts not_required while effect admission still requires approved", () => {
+  const root = mkdtempSync(join(tmpdir(), "aos-read-only-admission-test-"));
+  const admissionPath = join(root, "admission.json");
+  const base = {
+    schema: "automation_os_portable_external_admission.v1",
+    workflow_id: "daily-ai-research-publish-run",
+    run_id: "run-read-only-admission",
+    step_id: "step-read-only-admission",
+    source_trigger: "automation_os_ui",
+    idempotency_key: "read-only-admission",
+    effect_class: "external_non_idempotent",
+    browser_surface: "aos_chrome_companion_profile_instance",
+    expires_at: new Date(Date.now() + 60_000).toISOString(),
+  };
+  const bytes = `${JSON.stringify({ ...base, approval_status: "not_required" }, null, 2)}\n`;
+  writeFileSync(admissionPath, bytes, { mode: 0o600 });
+  const input = {
+    workflow_id: base.workflow_id,
+    run_id: base.run_id,
+    step_id: base.step_id,
+    source_trigger: base.source_trigger,
+    idempotency_key: base.idempotency_key,
+  };
+  const environment = {
+    AUTOMATION_OS_PORTABLE_EXTERNAL_ADMISSION_PATH: admissionPath,
+    AUTOMATION_OS_PORTABLE_EXTERNAL_ADMISSION_SHA256: createHash("sha256").update(bytes).digest("hex"),
+    AUTOMATION_OS_PORTABLE_EXTERNAL_READ_ONLY_STAGE: "reference_readback",
+    AOS_WEB_OPERATION_BACKEND: "aos_chrome_companion",
+  };
+  assert.equal(readAdmission(input, environment).value.approval_status, "not_required");
+  assert.throws(
+    () => readAdmission(input, { ...environment, AUTOMATION_OS_PORTABLE_EXTERNAL_READ_ONLY_STAGE: "" }),
+    /portable_external_admission_invalid/u,
+  );
+});
+
 test("read-only authority uses the Goal session binding instead of a separate preflight session", () => {
   const source = readFileSync(fileURLToPath(new URL("../aos-portable-browser-use-runner.mjs", import.meta.url)), "utf8");
   assert.match(source, /session: goalSessionFor\(input, route\)/u);
@@ -564,6 +601,43 @@ test("Chrome Plugin read-only refuses to synthesize a run snapshot from incomple
   assert.equal(result.status, "blocked");
   assert.equal(result.exact_blocker, "chrome_plugin_backend_snapshot_missing");
   assert.equal(result.external_action_executed, false);
+});
+
+test("Companion read-only does not require a Chrome Plugin backend snapshot", async () => {
+  let companionCalls = 0;
+  let officialCalls = 0;
+  const result = await runReadOnlyWorkflow({
+    workflow_id: "job-application-manager",
+    run_id: "run-companion-without-plugin-snapshot",
+    step_id: "reference_readback",
+    source_trigger: "test",
+    idempotency_key: "companion-without-plugin-snapshot",
+  }, {
+    AOS_WEB_OPERATION_BACKEND: "aos_chrome_companion",
+  }, {
+    companionWorkflow: async () => {
+      companionCalls += 1;
+      return {
+        status: "complete",
+        browser_backend: "aos_chrome_companion",
+        browser_surface: "aos_chrome_companion_profile_instance",
+        external_action_executed: false,
+        cleanup_verified: true,
+        readback_verified: true,
+        read_only_stage_bound: true,
+        same_run_receipt: true,
+      };
+    },
+    officialWorkflow: async () => {
+      officialCalls += 1;
+      return { status: "blocked", exact_blocker: "must_not_handoff" };
+    },
+  });
+  assert.equal(result.status, "complete");
+  assert.equal(result.exact_blocker, undefined);
+  assert.equal(result.external_action_executed, false);
+  assert.equal(companionCalls, 1);
+  assert.equal(officialCalls, 0);
 });
 
 test("AOS Chrome Companion read-only runner uses the exact task id and closes the broker client", async () => {

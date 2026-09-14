@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   classifyPortableWorkerHeartbeat,
+  matchesPortableWorkerHeartbeatBinding,
   portableWorkerHeartbeatId,
   resolvePortableWorkerHeartbeatAt,
   validatePortableWorkerHeartbeat
@@ -13,6 +14,17 @@ test("portable worker heartbeat validates bounded identity and no-effect fields"
   if (result.ok) {
     assert.deepEqual(result.value, { workerId: "mac-test.local", status: "running", queueDepth: 7, exactBlocker: null, chromePluginReadback: null });
   }
+  assert.equal(validatePortableWorkerHeartbeat({
+    schema: "aos.portable_worker_heartbeat.v1",
+    worker_id: "mac-test.local",
+    status: "idle",
+    queue_depth: null,
+    exact_blocker: "",
+    company_id: "",
+    worker_instance_id: "",
+    generation_id: "",
+    observed_at: ""
+  }).ok, true);
   assert.match(portableWorkerHeartbeatId("company_test", "mac-test.local"), /^portable_mac_worker_heartbeat_[a-f0-9]{40}$/u);
 });
 
@@ -106,4 +118,175 @@ test("live worker transport heartbeat takes precedence over stale persisted stat
     liveHeartbeatAt: null,
     persistedHeartbeatAt: null
   }), null);
+});
+
+test("portable worker heartbeat preserves a bound generation and safe runtime observation", () => {
+  const observedAt = "2026-09-08T01:02:03.000Z";
+  const result = validatePortableWorkerHeartbeat({
+    schema: "aos.portable_worker_heartbeat.v2",
+    company_id: "company_heartbeat_contract",
+    worker_id: "mac-heartbeat-contract",
+    worker_instance_id: "instance-heartbeat-contract",
+    generation: "generation-heartbeat-contract",
+    observed_at: observedAt,
+    status: "idle",
+    queue_depth: 0,
+    exact_blocker: null,
+    run_id: null,
+    runtime_observation: {
+      schema: "aos.portable_worker_runtime_observation.v1",
+      status: "idle",
+      observed_at: observedAt,
+      run_id: null,
+      browser_use: {
+        runtime_status: "unobserved",
+        process: { status: "unobserved", pid: null, process_count: null, profile_ref: null, port: null },
+        room: null,
+        transport: { status: "unobserved", last_seen_at: null }
+      }
+    },
+    transport_ack: {
+      schema: "aos.portable_worker_heartbeat_transport_ack.v1",
+      status: "acknowledged",
+      observed_at: observedAt,
+      ack_at: observedAt,
+      worker_instance_id: "instance-heartbeat-contract",
+      generation: "generation-heartbeat-contract",
+      binding_status: "verified"
+    }
+  }, {
+    expectedCompanyId: "company_heartbeat_contract",
+    expectedWorkerId: "mac-heartbeat-contract",
+    expectedWorkerInstanceId: "instance-heartbeat-contract",
+    expectedGeneration: "generation-heartbeat-contract"
+  });
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.value.companyId, "company_heartbeat_contract");
+    assert.equal(result.value.workerInstanceId, "instance-heartbeat-contract");
+    assert.equal(result.value.generation, "generation-heartbeat-contract");
+    assert.equal(result.value.observedAt, observedAt);
+    assert.equal(result.value.runtimeObservation?.status, "idle");
+    assert.equal(result.value.runtimeObservation?.runId, null);
+    assert.equal(result.value.runtimeObservation?.browserUse?.room, null);
+    assert.equal(result.value.transportAck?.bindingStatus, "verified");
+  }
+});
+
+test("portable worker heartbeat requires company scope for v2 and supports partial binding checks", () => {
+  const observedAt = "2026-09-08T01:02:03.000Z";
+  assert.deepEqual(validatePortableWorkerHeartbeat({
+    schema: "aos.portable_worker_heartbeat.v2",
+    worker_id: "mac-heartbeat-contract",
+    worker_instance_id: "instance-heartbeat-contract",
+    generation: "generation-heartbeat-contract",
+    observed_at: observedAt,
+    status: "idle",
+    queue_depth: null,
+    run_id: null
+  }), {
+    ok: false,
+    exactBlocker: "portable_worker_heartbeat_observation_metadata_incomplete"
+  });
+  assert.equal(validatePortableWorkerHeartbeat({
+    worker_id: "mac-heartbeat-contract",
+    status: "running",
+    queue_depth: 0
+  }, { expectedWorkerId: "mac-heartbeat-contract" }).ok, true);
+  assert.equal(validatePortableWorkerHeartbeat({
+    worker_id: "mac-heartbeat-contract",
+    status: "running",
+    queue_depth: 0
+  }, { expectedWorkerId: "other-worker" }).ok, false);
+  assert.equal(matchesPortableWorkerHeartbeatBinding({
+    companyId: "company-1",
+    workerId: "worker-1",
+    workerInstanceId: "instance-1",
+    generation: "generation-1"
+  }, {
+    company_id: "company-1",
+    worker_id: "worker-1",
+    worker_instance_id: "instance-1",
+    generation_id: "generation-1"
+  }), true);
+});
+
+test("portable worker heartbeat rejects idle run bindings and arbitrary or secret-like fields", () => {
+  const base = {
+    worker_id: "mac-heartbeat-contract",
+    worker_instance_id: "instance-heartbeat-contract",
+    generation: "generation-heartbeat-contract",
+    observed_at: "2026-09-08T01:02:03.000Z",
+    status: "idle",
+    queue_depth: 0,
+    run_id: null
+  } as const;
+  assert.deepEqual(validatePortableWorkerHeartbeat({ ...base, run_id: "run-must-be-null-while-idle" }), {
+    ok: false,
+    exactBlocker: "portable_worker_heartbeat_idle_run_binding_invalid"
+  });
+  assert.deepEqual(validatePortableWorkerHeartbeat({ ...base, path: "/Users/private" }), {
+    ok: false,
+    exactBlocker: "portable_worker_heartbeat_field_invalid"
+  });
+  assert.deepEqual(validatePortableWorkerHeartbeat({
+    ...base,
+    runtime_observation: {
+      schema: "aos.portable_worker_runtime_observation.v1",
+      status: "idle",
+      observed_at: base.observed_at,
+      run_id: null,
+      browser_use: {
+        runtime_status: "absent",
+        process: { status: "absent", pid: null, process_count: 0, profile_ref: null, port: null, url: "https://private" },
+        room: null
+      }
+    }
+  }), {
+    ok: false,
+    exactBlocker: "portable_worker_heartbeat_runtime_observation_invalid"
+  });
+  assert.deepEqual(validatePortableWorkerHeartbeat({
+    ...base,
+    transport_ack: {
+      schema: "aos.portable_worker_heartbeat_transport_ack.v1",
+      status: "acknowledged",
+      observed_at: base.observed_at,
+      ack_at: base.observed_at,
+      worker_instance_id: base.worker_instance_id,
+      generation: base.generation,
+      binding_status: "verified",
+      secret: "must-not-cross"
+    }
+  }), {
+    ok: false,
+    exactBlocker: "portable_worker_heartbeat_transport_ack_invalid"
+  });
+});
+
+test("portable worker heartbeat binding is a pure company, worker, instance, and generation match", () => {
+  const expected = {
+    companyId: "company-1",
+    workerId: "worker-1",
+    workerInstanceId: "instance-1",
+    generation: "generation-1"
+  };
+  assert.equal(matchesPortableWorkerHeartbeatBinding(expected, {
+    company_id: "company-1",
+    worker_id: "worker-1",
+    worker_instance_id: "instance-1",
+    generation: "generation-1"
+  }), true);
+  assert.equal(matchesPortableWorkerHeartbeatBinding(expected, {
+    company_id: "company-1",
+    worker_id: "worker-1",
+    worker_instance_id: "instance-2",
+    generation: "generation-1"
+  }), false);
+  assert.equal(matchesPortableWorkerHeartbeatBinding(expected, {
+    companyId: "company-1",
+    workerId: "worker-1",
+    workerInstanceId: "instance-1",
+    generation: "generation-2"
+  }), false);
 });

@@ -458,6 +458,22 @@ export async function listAutomationSchedulesAsync(companyId: string, automation
   return rows.map(toScheduleRecord);
 }
 
+// Enabling a recurring draft is an explicit activation. Keep the immutable
+// version, automation revision, schedule pin, and audits in the same transaction.
+// A paused/manual save must remain an inert draft; this never creates a Run.
+function scheduledDraftActivation(current: AutomationRecord, enabled: boolean, actorUserId: string, timestamp: string): { automation: AutomationRecord; steps: SqlTransactionStep[] } {
+  if (!enabled || current.status !== "draft") return { automation: current, steps: [] };
+  const next: AutomationRecord = {
+    ...current, status: "active", revision: current.revision + 1,
+    currentVersionId: makeId("automation_version"), updatedAt: timestamp
+  };
+  return { automation: next, steps: [
+    insertVersionStep(next),
+    updateAutomationStep(next, current.revision),
+    auditStep(next.companyId, actorUserId, "automation.activated", "automation", next.id, current, next, timestamp)
+  ] };
+}
+
 export function saveAutomationSchedule(input: {
   companyId: string;
   actorUserId: string;
@@ -471,26 +487,29 @@ export function saveAutomationSchedule(input: {
   if (existing && existing.revision !== input.schedule.expectedRevision) throw new AutomationRepositoryError("automation_schedule_revision_conflict");
   if (!existing && input.schedule.expectedRevision !== 1) throw new AutomationRepositoryError("automation_schedule_revision_conflict");
   const timestamp = nowIso();
+  const enabled = input.schedule.enabled && input.schedule.kind !== "manual";
+  const activation = scheduledDraftActivation(automation, enabled, input.actorUserId, timestamp);
   const next: AutomationScheduleRecord = {
     id: existing?.id ?? makeId("automation_schedule"),
     companyId: automation.companyId,
     automationId: automation.id,
-    automationVersionId: automation.currentVersionId,
+    automationVersionId: activation.automation.currentVersionId,
     kind: input.schedule.kind,
     expression: input.schedule.expression,
     timezone: input.schedule.timezone,
-    enabled: input.schedule.enabled,
-    status: input.schedule.enabled ? "active" : "paused",
+    enabled,
+    status: enabled ? "active" : "paused",
     revision: existing ? existing.revision + 1 : 1,
-    nextRunAt: input.nextRunAt ?? null,
+    nextRunAt: enabled ? input.nextRunAt ?? null : null,
     lastRunAt: existing?.lastRunAt ?? null,
     catchUpPolicy: existing?.catchUpPolicy ?? "skip",
-    pausedAt: input.schedule.enabled ? null : timestamp,
+    pausedAt: enabled ? null : timestamp,
     createdAt: existing?.createdAt ?? timestamp,
     updatedAt: timestamp
   };
   const mutation = existing ? updateScheduleStep(next, existing.revision) : insertScheduleStep(next);
   runSqlTransaction([
+    ...activation.steps,
     mutation,
     auditStep(next.companyId, required(input.actorUserId, "actor_user_id_required"), existing ? "automation.schedule_updated" : "automation.schedule_created", "automation_schedule", next.id, existing ?? {}, next, timestamp)
   ]);
@@ -510,26 +529,29 @@ export async function saveAutomationScheduleAsync(input: {
   if (existing && existing.revision !== input.schedule.expectedRevision) throw new AutomationRepositoryError("automation_schedule_revision_conflict");
   if (!existing && input.schedule.expectedRevision !== 1) throw new AutomationRepositoryError("automation_schedule_revision_conflict");
   const timestamp = nowIso();
+  const enabled = input.schedule.enabled && input.schedule.kind !== "manual";
+  const activation = scheduledDraftActivation(automation, enabled, input.actorUserId, timestamp);
   const next: AutomationScheduleRecord = {
     id: existing?.id ?? makeId("automation_schedule"),
     companyId: automation.companyId,
     automationId: automation.id,
-    automationVersionId: automation.currentVersionId,
+    automationVersionId: activation.automation.currentVersionId,
     kind: input.schedule.kind,
     expression: input.schedule.expression,
     timezone: input.schedule.timezone,
-    enabled: input.schedule.enabled,
-    status: input.schedule.enabled ? "active" : "paused",
+    enabled,
+    status: enabled ? "active" : "paused",
     revision: existing ? existing.revision + 1 : 1,
-    nextRunAt: input.nextRunAt ?? null,
+    nextRunAt: enabled ? input.nextRunAt ?? null : null,
     lastRunAt: existing?.lastRunAt ?? null,
     catchUpPolicy: existing?.catchUpPolicy ?? "skip",
-    pausedAt: input.schedule.enabled ? null : timestamp,
+    pausedAt: enabled ? null : timestamp,
     createdAt: existing?.createdAt ?? timestamp,
     updatedAt: timestamp
   };
   const mutation = existing ? updateScheduleStep(next, existing.revision) : insertScheduleStep(next);
   await runSqlTransactionAsync([
+    ...activation.steps,
     mutation,
     auditStep(next.companyId, required(input.actorUserId, "actor_user_id_required"), existing ? "automation.schedule_updated" : "automation.schedule_created", "automation_schedule", next.id, existing ?? {}, next, timestamp)
   ]);
@@ -545,15 +567,22 @@ export function setAutomationSchedulePaused(input: {
   paused: boolean;
 }): AutomationScheduleRecord {
   requireCompanyAccess(required(input.companyId, "company_id_required"), ["owner", "admin", "operator"], required(input.actorUserId, "actor_user_id_required"));
-  requiredAutomation(input.companyId, input.automationId, false);
+  const automation = requiredAutomation(input.companyId, input.automationId, false);
   const current = listAutomationSchedules(input.companyId, input.automationId).find((item) => item.id === input.scheduleId);
   if (!current) throw new AutomationRepositoryError("automation_schedule_not_found");
   if (current.revision !== input.expectedRevision) throw new AutomationRepositoryError("automation_schedule_revision_conflict");
   const timestamp = nowIso();
-  const next = { ...current, revision: current.revision + 1, enabled: !input.paused, status: input.paused ? "paused" : "active", nextRunAt: input.paused ? current.nextRunAt : null, pausedAt: input.paused ? timestamp : null, updatedAt: timestamp };
+  const enabled = !input.paused && current.kind !== "manual";
+  const activation = scheduledDraftActivation(automation, enabled, input.actorUserId, timestamp);
+  const next: AutomationScheduleRecord = {
+    ...current, revision: current.revision + 1, enabled, status: enabled ? "active" : "paused",
+    automationVersionId: activation.steps.length ? activation.automation.currentVersionId : current.automationVersionId,
+    nextRunAt: null, pausedAt: enabled ? null : timestamp, updatedAt: timestamp
+  };
   runSqlTransaction([
+    ...activation.steps,
     updateScheduleStep(next, current.revision),
-    auditStep(next.companyId, required(input.actorUserId, "actor_user_id_required"), input.paused ? "automation.schedule_paused" : "automation.schedule_resumed", "automation_schedule", next.id, current, next, timestamp)
+    auditStep(next.companyId, required(input.actorUserId, "actor_user_id_required"), enabled ? "automation.schedule_resumed" : "automation.schedule_paused", "automation_schedule", next.id, current, next, timestamp)
   ]);
   return listAutomationSchedules(next.companyId, next.automationId).find((item) => item.id === next.id)!;
 }
@@ -583,6 +612,38 @@ export function saveCompanyMemory(input: { companyId: string; actorUserId: strin
     auditStep(companyId, required(input.actorUserId, "actor_user_id_required"), existing ? "company_memory.updated" : "company_memory.created", "company_memory", next.id, existing ?? {}, next, timestamp)
   ]);
   return listCompanyMemory(companyId).find((item) => item.id === next.id)!;
+}
+
+export async function saveCompanyMemoryAsync(input: { companyId: string; actorUserId: string; memory: CompanyMemoryInput }): Promise<CompanyMemoryRecord> {
+  const companyId = required(input.companyId, "company_id_required");
+  const actorUserId = required(input.actorUserId, "actor_user_id_required");
+  await requireCompanyAccessAsync(companyId, ["owner", "admin", "operator"], actorUserId);
+  const current = (await querySqlAsync<any>(`SELECT * FROM company_memory_entries WHERE company_id=${sqlValue(companyId)} AND memory_key=${sqlValue(input.memory.key)} LIMIT 1`))[0];
+  const existing = current ? toMemoryRecord(current) : undefined;
+  if (existing ? input.memory.expectedRevision !== existing.revision : input.memory.expectedRevision !== null) {
+    throw new AutomationRepositoryError("company_memory_revision_conflict");
+  }
+  const timestamp = nowIso();
+  const next: CompanyMemoryRecord = { id: existing?.id ?? makeId("company_memory"), companyId, key: input.memory.key,
+    kind: input.memory.kind, title: input.memory.title, body: input.memory.body, revision: existing ? existing.revision + 1 : 1,
+    status: "active", archivedAt: null, createdAt: existing?.createdAt ?? timestamp, updatedAt: timestamp };
+  try {
+    await runSqlTransactionAsync([
+      existing ? updateMemoryStep(next, existing.revision) : insertMemoryStep(next),
+      auditStep(companyId, actorUserId, existing ? "company_memory.updated" : "company_memory.created", "company_memory", next.id, existing ?? {}, next, timestamp)
+    ]);
+  } catch (error) {
+    const detail = error as { code?: string; constraint?: string; message?: string };
+    if (detail.message === "sql_transaction_expected_changes:1:actual:0"
+      || (detail.code === "23505" && detail.constraint === "company_memory_entries_company_id_memory_key_key")) {
+      throw new AutomationRepositoryError("company_memory_revision_conflict");
+    }
+    throw error;
+  }
+  const saved = (await listCompanyMemoryAsync(companyId)).find((item) => item.id === next.id);
+  if (!saved) throw new AutomationRepositoryError("company_memory_readback_missing");
+  if (saved.revision !== next.revision || saved.body !== next.body) throw new AutomationRepositoryError("company_memory_readback_conflict");
+  return saved;
 }
 
 export type CompanyConnectionRefRecord = { id: string; companyId: string; platform: string; accountRef: string; status: string; scopes: string[]; expiresAt: string | null; oauthState: string; verificationStatus: string; lastVerifiedAt: string | null; reconnectRequestedAt: string | null; revokedAt: string | null; revision: number; createdAt: string; updatedAt: string };

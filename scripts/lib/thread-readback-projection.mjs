@@ -7,9 +7,14 @@ export const THREAD_READBACK_PROJECTION_VERSION = 2;
 // projection remains field-allowlisted and record-bounded, but 64 KiB was
 // smaller than the valid 54-lightweight/50-deep-read envelope and caused a
 // false startup blocker before the Runner could inspect it.
-export const THREAD_READBACK_PROJECTION_MAX_BYTES = 128 * 1024;
-export const THREAD_READBACK_PROJECTION_MAX_RECORDS = 128;
-export const THREAD_READBACK_PROJECTION_MAX_DEEP_READS = 50;
+export const THREAD_READBACK_PROJECTION_MAX_BYTES = 256 * 1024;
+// Keep one allowlisted lightweight record and one official deep-read record
+// per task.  The previous 128-record envelope could represent only 78 tasks
+// plus 50 deep reads, leaving the remaining listed tasks without a fresh
+// read_thread state.  A 256-record envelope covers the current App page while
+// retaining bounded input and explicit per-task read outcomes.
+export const THREAD_READBACK_PROJECTION_MAX_RECORDS = 256;
+export const THREAD_READBACK_PROJECTION_MAX_DEEP_READS = 128;
 
 const ROOT_KEYS = new Set([
   "schema",
@@ -220,7 +225,9 @@ function officialReadbackPayload(value, seen = new Set(), depth = 0) {
   }
   if (!isPlainRecord(value) || seen.has(value)) return null;
   seen.add(value);
-  if (isPlainRecord(value.thread) && Array.isArray(value.turns)) return value;
+  if (isPlainRecord(value.thread) && (Array.isArray(value.turns) || Array.isArray(value.thread.turns))) {
+    return Array.isArray(value.turns) ? value : { ...value, turns: value.thread.turns };
+  }
   for (const key of ["structuredContent", "content", "output", "functionCallOutput", "result", "data", "text"]) {
     if (value[key] === undefined) continue;
     const found = officialReadbackPayload(value[key], seen, depth + 1);
@@ -270,6 +277,134 @@ function firstDefined(...values) {
   return values.find((value) => value !== undefined && value !== null);
 }
 
+const STRUCTURED_STATE_CHILD_KEYS = new Set([
+  "structuredContent",
+  "structured_content",
+  "functionCallOutput",
+  "function_call_output",
+  "toolOutput",
+  "tool_output",
+  "toolResult",
+  "tool_result",
+  "result",
+  "output",
+  "data",
+]);
+const STRUCTURED_STATE_ITEM_TYPES = new Set([
+  "functioncalloutput",
+  "function_call_output",
+  "mcptoolcall",
+  "mcp_tool_call",
+  "tooloutput",
+  "tool_output",
+  "toolresult",
+  "tool_result",
+]);
+
+function parseStructuredStateText(value, depth) {
+  if (typeof value !== "string" || depth > 8) return null;
+  const trimmed = value.trim();
+  if (!trimmed || (!trimmed.startsWith("{") && !trimmed.startsWith("["))) return null;
+  try { return structuredGoalPlanState(JSON.parse(trimmed), new Set(), depth + 1); } catch { return null; }
+}
+
+/**
+ * Read Goal/Plan status only from structured tool-output branches in the
+ * newest official turn.  Ordinary user/agent text is intentionally excluded
+ * so a quoted instruction cannot become false Goal authority.
+ */
+function structuredGoalPlanState(value, seen = new Set(), depth = 0) {
+  if (depth > 8 || value === null || value === undefined) return null;
+  const parsed = parseStructuredStateText(value, depth);
+  if (parsed) return parsed;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = structuredGoalPlanState(item, seen, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (!isPlainRecord(value) || seen.has(value)) return null;
+  seen.add(value);
+  const type = String(value.type ?? "").trim().toLowerCase();
+  const structuredItem = STRUCTURED_STATE_ITEM_TYPES.has(type);
+  const result = {};
+  const goal = value.goal;
+  const plan = value.plan;
+  const goalStatus = firstDefined(
+    value.goalStatus,
+    value.goal_status,
+    goal && typeof goal === "object" ? goal.status : Object.hasOwn(value, "goal") && goal === null ? "unknown" : null,
+  );
+  const planStatus = firstDefined(
+    value.planStatus,
+    value.plan_status,
+    plan && typeof plan === "object" ? plan.status : null,
+  );
+  if (goalStatus !== undefined && goalStatus !== null) result.goalStatus = goalStatus;
+  if (planStatus !== undefined && planStatus !== null) result.planStatus = planStatus;
+  if (Object.keys(result).length > 0) return result;
+  if (!structuredItem && !STRUCTURED_STATE_CHILD_KEYS.has(type)) return null;
+  for (const key of STRUCTURED_STATE_CHILD_KEYS) {
+    if (value[key] === undefined) continue;
+    const found = structuredGoalPlanState(value[key], seen, depth + 1);
+    if (found) return found;
+  }
+  return null;
+}
+
+function structuredLatestTurnGoalPlanState(turn) {
+  if (!turn || typeof turn !== "object") return null;
+  const items = Array.isArray(turn.items) ? turn.items : [];
+  for (const item of [...items].reverse()) {
+    const found = structuredGoalPlanState(item);
+    if (found) return found;
+  }
+  return structuredGoalPlanState(turn);
+}
+
+function turnTimestamp(turn) {
+  if (!turn || typeof turn !== "object") return null;
+  for (const key of [
+    "updatedAt", "updated_at", "completedAt", "completed_at", "startedAt", "started_at",
+    "createdAt", "created_at",
+  ]) {
+    const raw = turn[key];
+    if (typeof raw === "number" && Number.isFinite(raw)) return raw;
+    if (typeof raw === "string" && raw.trim()) {
+      const numeric = Number(raw);
+      if (Number.isFinite(numeric)) return numeric;
+      const parsed = Date.parse(raw);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+  }
+  return null;
+}
+
+function latestTurnSelection(payload, turns) {
+  if (turns.length <= 1) return { turn: turns[0] ?? {}, ambiguous: false };
+  const order = String(firstDefined(
+    payload.order,
+    payload.page?.order,
+    payload.turnPage?.order,
+  ) ?? "").trim().toLowerCase();
+  if (["newest_first", "descending", "desc"].includes(order)) {
+    return { turn: turns[0], ambiguous: false };
+  }
+  if (["oldest_first", "ascending", "asc"].includes(order)) {
+    return { turn: turns[turns.length - 1], ambiguous: false };
+  }
+  const stamped = turns.map((turn, index) => ({ turn, index, timestamp: turnTimestamp(turn) }));
+  if (stamped.every((entry) => entry.timestamp !== null)) {
+    stamped.sort((left, right) => right.timestamp - left.timestamp || right.index - left.index);
+    return { turn: stamped[0].turn, ambiguous: false };
+  }
+  // When the official response omits both ordering and timestamps, selecting
+  // turns[0] would make an old completed turn look like the current turn.  A
+  // conservative unknown keeps the controller from resuming on weak evidence.
+  return { turn: turns[0], ambiguous: true };
+}
+
 function boundedOfficialStateValue(value, max = 160) {
   if (value === null || value === undefined) return null;
   const result = String(value).replace(/[\u0000\r\n]+/gu, " ").replace(/\s+/gu, " ").trim();
@@ -288,16 +423,20 @@ export function normalizeOfficialThreadReadback(readback, { fallbackState = {} }
   const thread = payload.thread ?? {};
   const turns = Array.isArray(payload.turns)
     ? payload.turns
-    : Array.isArray(payload.page?.turns) ? payload.page.turns : [];
-  const latestTurn = turns[0] ?? {};
-  const goal = firstDefined(payload.goal, thread.goal, latestTurn.goal);
-  const plan = firstDefined(payload.plan, thread.plan, latestTurn.plan);
+    : Array.isArray(payload.thread?.turns)
+      ? payload.thread.turns
+      : Array.isArray(payload.page?.turns) ? payload.page.turns : [];
+  const latestTurnSelectionResult = latestTurnSelection(payload, turns);
+  const latestTurn = latestTurnSelectionResult.turn;
+  const structuredState = structuredLatestTurnGoalPlanState(latestTurn) ?? {};
+  const goal = firstDefined(payload.goal, thread.goal, latestTurn.goal, structuredState.goal);
+  const plan = firstDefined(payload.plan, thread.plan, latestTurn.plan, structuredState.plan);
   const goalStatus = normalizeStatus(
-    firstDefined(payload.goalStatus, payload.goal_status, goal?.status, fallbackState.goalStatus),
+    firstDefined(payload.goalStatus, payload.goal_status, goal?.status, structuredState.goalStatus, fallbackState.goalStatus),
     OFFICIAL_GOAL_PLAN_STATUS_ALIASES,
   );
   const planStatus = normalizeStatus(
-    firstDefined(payload.planStatus, payload.plan_status, plan?.status, fallbackState.planStatus),
+    firstDefined(payload.planStatus, payload.plan_status, plan?.status, structuredState.planStatus, fallbackState.planStatus),
     OFFICIAL_GOAL_PLAN_STATUS_ALIASES,
   );
   const ownerRaw = firstDefined(payload.owner, thread.owner, fallbackState.owner);
@@ -305,7 +444,9 @@ export function normalizeOfficialThreadReadback(readback, { fallbackState = {} }
   return {
     status: "observed",
     taskStatus: normalizeStatus(firstDefined(statusText(thread.status), thread.taskStatus, fallbackState.taskStatus), OFFICIAL_TASK_STATUS_ALIASES),
-    latestTurnStatus: normalizeStatus(firstDefined(latestTurn.status, latestTurn.turnStatus, fallbackState.latestTurnStatus), OFFICIAL_TURN_STATUS_ALIASES),
+    latestTurnStatus: latestTurnSelectionResult.ambiguous
+      ? "unknown"
+      : normalizeStatus(firstDefined(latestTurn.status, latestTurn.turnStatus, fallbackState.latestTurnStatus), OFFICIAL_TURN_STATUS_ALIASES),
     goalStatus,
     planStatus,
     owner: OFFICIAL_OWNER_ALIASES[ownerKey] ?? (ownerKey ? "unknown" : (fallbackState.owner ?? "unknown")),
@@ -503,6 +644,10 @@ export function projectionCallbacks(projection) {
       || state.planStatus === "blocked";
     return {
       threadId: alias,
+      // This projection is produced by the local official App Server. Keep
+      // its transport host alongside the opaque task alias so the Root can
+      // perform a same-task readback without guessing the host later.
+      hostId: "local",
       owner: state.owner,
       userOwned: state.userOwned,
       status: state.taskStatus,
@@ -542,7 +687,14 @@ export function projectionCallbacks(projection) {
         softAnomalyTypes: record.state.softAnomalyTypes,
         softAnomalyConfirmed: false,
       }
-    : { status: "failed", exact_blocker: "thread_readback_projection_bounded_error" };
+    : {
+        status: "failed",
+        // The Root may provide one normalized, secret-free exact blocker in
+        // the allowlisted state. Preserve it so a partial official-App
+        // list/read failure remains actionable instead of collapsing into a
+        // generic silent deferred record.
+        exact_blocker: record?.state?.exactBlocker || "thread_readback_projection_bounded_error",
+      };
   return {
     projection: normalized,
     tasks,

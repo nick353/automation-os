@@ -2,19 +2,27 @@ import { existsSync, accessSync, constants, readFileSync, statSync } from "node:
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { initDb, nowIso } from "../db/client.js";
-import { auditProjects } from "../projects/projectAuditor.js";
+import { auditProjects, type ProjectAuditResult } from "../projects/projectAuditor.js";
+import { redactSensitiveText } from "../obsidian/redaction.js";
 import { buildConnectorExecutionPlacement, readZeaburConnectorRegistryReadback } from "../codex/zeaburConnectorRouting.js";
 import { runObsidianExportNow } from "../obsidian/autoExport.js";
 import { runObsidianMaintenance } from "../obsidian/maintenance.js";
 import { defaultObsidianVaultPath } from "../obsidian/vaultGuard.js";
 import { runObsidianGitSync } from "../obsidian/vaultGitSync.js";
+import { readBackupSnapshot } from "./backupSnapshotReadback.js";
+import { listCompanyConnectionRefs } from "../automations/repository.js";
+import { runGmailProviderReadOnlyCanary, type GmailProviderReadOnlyCanaryReadback } from "../connectors/gmailProviderReadOnlyCanary.js";
+import { requireGmailRunConnectionRef } from "./gmailExecutionTargetPropagation.js";
 
 export const PORTABLE_LOCAL_WORKFLOW_SCHEMA = "aos.portable_local_workflow.v1" as const;
 
 export type PortableLocalWorkflowId =
   | "email-review-reply"
   | "daily-backup-safety-check"
+  | "nisenprints-existing-product-audit"
+  | "daily-ai-research-source-sync"
   | "obsidian-project-memory-audit";
 
 export type PortableLocalWorkflowReceipt = {
@@ -24,7 +32,7 @@ export type PortableLocalWorkflowReceipt = {
   workflow_id: PortableLocalWorkflowId;
   read_only_stage_bound: true;
   readback_verified: boolean;
-  cleanup_verified: true;
+  cleanup_verified: boolean;
   business_completion_verified: false;
   adapter_result: Record<string, unknown>;
 };
@@ -99,7 +107,7 @@ export function obsidianBusinessPayloadHash(): string {
 const manifests: Record<PortableLocalWorkflowId, {
   name: string;
   command: string;
-  workerCommandKind: "email_review_registered" | "local_backup_registered" | "obsidian_audit_registered";
+  workerCommandKind: "email_review_registered" | "local_backup_registered" | "obsidian_audit_registered" | "nisenprints_inventory_registered" | "daily_ai_research_sync_registered";
 }> = {
   "email-review-reply": {
     name: "Email review/reply read-only worker",
@@ -115,6 +123,16 @@ const manifests: Record<PortableLocalWorkflowId, {
     name: "Obsidian project memory read-only audit",
     command: "Obsidian project memory audit registered workflow read-only",
     workerCommandKind: "obsidian_audit_registered"
+  },
+  "nisenprints-existing-product-audit": {
+    name: "NisenPrints existing product inventory audit (no generation or publication)",
+    command: "nisenprints-existing-product-audit",
+    workerCommandKind: "nisenprints_inventory_registered"
+  },
+  "daily-ai-research-source-sync": {
+    name: "Daily AI research and existing Sheet mirror (no generation or publication)",
+    command: "daily-ai-research-source-sync",
+    workerCommandKind: "daily_ai_research_sync_registered"
   }
 };
 
@@ -140,6 +158,8 @@ export function localWorkflowIdForRegisteredAutomation(input: {
     case "email_review_registered": return "email-review-reply";
     case "local_backup_registered": return "daily-backup-safety-check";
     case "obsidian_audit_registered": return "obsidian-project-memory-audit";
+    case "nisenprints_inventory_registered": return "nisenprints-existing-product-audit";
+    case "daily_ai_research_sync_registered": return "daily-ai-research-source-sync";
     default: return null;
   }
 }
@@ -149,6 +169,8 @@ export function localWorkflowIdForWorkerAdapter(adapter: string): PortableLocalW
     case "email_review_registered": return "email-review-reply";
     case "local_backup_registered": return "daily-backup-safety-check";
     case "obsidian_audit_registered": return "obsidian-project-memory-audit";
+    case "nisenprints_inventory_registered": return "nisenprints-existing-product-audit";
+    case "daily_ai_research_sync_registered": return "daily-ai-research-source-sync";
     default: return null;
   }
 }
@@ -161,23 +183,124 @@ export function portableLocalReadOnlyStageForScheduledWorkflow(_workflowId: Port
   return "reference_readback";
 }
 
+/** Flat bounded rows survive the ordinary diagnostic receipt depth limit. */
+export function buildObsidianAuditReadback(result: ProjectAuditResult, scope: { runId?: string; companyId?: string }) {
+  const labels: Record<string, string> = {
+    state_stale: "STATE.mdより新しい活動があるため、現在の状態を再確認してください。",
+    state_missing: "プロジェクト正本のSTATE.mdがありません。",
+    project_root_missing: "登録したプロジェクトの保存先がありません。",
+    authority_file_missing: "登録済みの正本ファイルに欠落があります。",
+    context_pack_missing: "Obsidianの案内ページがありません。",
+    context_pack_boundary_missing: "案内ページに正本との区別がありません。",
+    approval_boundary_missing: "承認が必要な操作の登録を確認してください。",
+    human_only_boundary_missing: "本人操作が必要な範囲の登録を確認してください。",
+    auto_discovered_locator_requires_registration_review: "自動発見した参照先の登録内容を確認してください。",
+    state_aged_without_newer_project_activity: "STATE.mdは古いものの、それより新しい活動は検出されていません。"
+  };
+  const clean = (text: string, max: number) => redactSensitiveText(text).slice(0, max);
+  const rank = { blocked: 0, attention: 1, ok: 2 };
+  // Only the table is bounded. The full audit count remains explicit, and a
+  // larger registry is labelled truncated rather than reported as all shown.
+  const projects = [...result.projects].sort((a, b) => rank[a.status] - rank[b.status] || a.project.id.localeCompare(b.project.id));
+  return {
+    audit_ok: result.ok,
+    audit_summary: result.summary,
+    audit_run_id: scope.runId ?? null,
+    audit_company_id: scope.companyId ?? null,
+    audit_generated_at: result.generatedAt,
+    audit_projects_truncated: projects.length > 20,
+    audit_projects: projects.slice(0, 20).map((item) => {
+      const issues = item.issues.filter((issue) => issue.severity !== "info");
+      const latest = [...item.authority.map((file) => file.mtime), ...item.artifacts.map((file) => file.latestMtime)]
+        .filter((date): date is string => typeof date === "string" && Number.isFinite(Date.parse(date))).sort().at(-1) ?? null;
+      return {
+        project_id: clean(item.project.id, 120), project_label: clean(item.project.label, 160), status: item.status,
+        issue_codes: issues.map((issue) => issue.code).join(", ").slice(0, 300),
+        finding: clean(issues.map((issue) => labels[issue.code] ?? issue.message).join(" ") || "要対応事項は検出されませんでした。", 900),
+        state_updated_at: item.stateMtime, latest_activity_at: latest,
+        next_action: item.status === "ok" ? "操作前にプロジェクトのSTATE.mdと最新成果物を確認してください。"
+          : issues.some((issue) => issue.code === "state_stale") ? "最新成果物とSTATE.mdを照合し、プロジェクト側で現在の状態を更新してください。"
+          : "表示した欠落・登録内容をプロジェクトの正本で確認してください。修正やVault更新は別の操作です。"
+      };
+    }),
+    registry_readback: true, vault_readback: true, write_performed: false, audit_only: true,
+    maintenance_performed: false, git_sync_performed: false
+  };
+}
+
 export function runPortableLocalWorkflowReadOnly(input: {
   workflowId: PortableLocalWorkflowId;
+  runId?: string;
   workerRole?: string;
   companyId?: string;
-  companyConnectionVerified?: boolean;
+  gmailExecutionTarget?: { connectionRefId: string; accountRef: string };
+  backupSnapshotReader?: typeof readBackupSnapshot;
 }): PortableLocalWorkflowReceipt {
   if (input.workerRole !== "mac") {
     return blocked(input.workflowId, "mac_worker_required", { execution_surface: "mac_local_worker", worker_role: input.workerRole ?? "unset" });
   }
+  if (input.workflowId === "daily-ai-research-source-sync") {
+    return blocked(input.workflowId, "daily_ai_research_sync_business_admission_required", {
+      research_executed: false, sheets_write_executed: false, full_publish_completed: false
+    });
+  }
+  if (input.workflowId === "nisenprints-existing-product-audit") {
+    if (!input.runId) return blocked(input.workflowId, "nisen_inventory_run_id_invalid", {});
+    const runnerPath = fileURLToPath(new URL("../../../../scripts/nisenprints-inventory-readback.mjs", import.meta.url));
+    let stdout = "";
+    try {
+      stdout = execFileSync(process.execPath, [runnerPath, input.runId, input.companyId ?? ""], {
+        encoding: "utf8", timeout: 60_000, maxBuffer: 256_000, stdio: ["ignore", "pipe", "ignore"]
+      });
+    } catch (error) {
+      stdout = String((error as { stdout?: string }).stdout ?? "");
+    }
+    try {
+      const result = JSON.parse(stdout) as Record<string, unknown>;
+      if (result.workflow_id !== input.workflowId || result.run_id !== input.runId || result.external_action_executed !== false) {
+        return blocked(input.workflowId, "nisen_inventory_receipt_binding_invalid", {});
+      }
+      return result.status === "complete" && result.readback_verified === true && result.same_run_source_sync === true
+        ? completeReadOnly(input.workflowId, result)
+        : blocked(input.workflowId, String(result.exact_blocker ?? "nisen_inventory_read_failed"), result);
+    } catch { return blocked(input.workflowId, "nisen_inventory_read_failed", {}); }
+  }
   if (input.workflowId === "email-review-reply") {
     const companyId = input.companyId?.trim() ?? "";
     if (!companyId) return blocked(input.workflowId, "company_scope_required", { connector: "gmail", intended_stage: "newest_100_snapshot" });
+    if (!input.gmailExecutionTarget?.connectionRefId || !input.gmailExecutionTarget.accountRef) {
+      return blocked(input.workflowId, "execution_target_run_binding_missing", {
+        connector: "gmail",
+        company_id: companyId,
+        intended_stage: "newest_100_snapshot",
+        data_read: false,
+        data_persisted: false
+      });
+    }
+    let boundRef;
+    try {
+      boundRef = requireGmailRunConnectionRef({
+        companyId,
+        inputBundle: {
+          connection_ref_id: input.gmailExecutionTarget.connectionRefId,
+          account_ref: input.gmailExecutionTarget.accountRef
+        },
+        connectionRefs: listCompanyConnectionRefs(companyId)
+      });
+    } catch (error) {
+      return blocked(input.workflowId, error instanceof Error ? error.message : "execution_target_run_binding_invalid", {
+        connector: "gmail",
+        company_id: companyId,
+        intended_stage: "newest_100_snapshot",
+        data_read: false,
+        data_persisted: false
+      });
+    }
     const registry = readZeaburConnectorRegistryReadback();
     const placement = buildConnectorExecutionPlacement({
       connector: "gmail",
       zeabur: registry,
-      companyConnectionVerified: input.companyConnectionVerified === true
+      companyConnectionVerified: Boolean(boundRef)
     });
     if (placement.status !== "ready") {
       return blocked(input.workflowId, placement.exactBlocker ?? "gmail_connector_execution_not_ready", {
@@ -210,34 +333,96 @@ export function runPortableLocalWorkflowReadOnly(input: {
     } catch {
       return blocked(input.workflowId, "local_backup_runner_missing", { runner_configured: false });
     }
-    // A read-only preflight verifies that the fixed, registered runner is
-    // present.  Approval belongs to the later business-effect admission; it
-    // must not turn an otherwise successful no-effect canary into a blocked
-    // Run or make the scheduler look unhealthy.
-    return completeReadOnly(input.workflowId, {
+    const snapshot = (input.backupSnapshotReader ?? readBackupSnapshot)();
+    const adapterResult = {
+      ...snapshot,
       runner_configured: true,
       runner_path_configured: true,
       external_effect: "snapshot_and_private_git_push",
-      preflight_only: true,
       approval_required_for_business_effect: true,
       business_effect_started: false
-    });
+    };
+    const receipt = snapshot.readback_verified !== true
+      ? blocked(input.workflowId, String(snapshot.exact_blocker), adapterResult)
+      : snapshot.snapshot_stale === true
+        ? partial(input.workflowId, "backup_snapshot_outdated", adapterResult, true)
+        : completeReadOnly(input.workflowId, adapterResult);
+    return { ...receipt, cleanup_verified: snapshot.cleanup_verified === true };
   }
   try {
     const result = auditProjects({
       registryPath: process.env.AUTOMATION_OS_PROJECT_REGISTRY?.trim() || undefined,
       obsidianVaultPath: process.env.AUTOMATION_OS_OBSIDIAN_VAULT?.trim() || undefined
     });
-    return partial(input.workflowId, "obsidian_artifact_write_requires_approval", {
-      audit_ok: result.ok,
-      audit_summary: result.summary,
-      registry_readback: true,
-      vault_readback: true,
-      write_performed: false
-    }, result.ok);
+    // The audit result is persisted by the caller in its run-owned receipt.
+    // Vault maintenance and Git sync are separate, authorized business stages.
+    const auditReadback = buildObsidianAuditReadback(result, input);
+    return result.ok ? completeReadOnly(input.workflowId, auditReadback)
+      : partial(input.workflowId, "obsidian_audit_findings_present", auditReadback, false);
   } catch (error) {
     return blocked(input.workflowId, "unresolved_only_audit_failed", { error: error instanceof Error ? error.message.slice(0, 160) : "audit_failed" });
   }
+}
+
+/**
+ * Async Mac-worker seam for the bounded Gmail profile read.  The synchronous
+ * adapter above is intentionally left as the legacy no-canary boundary.
+ */
+export async function runPortableLocalWorkflowAsync(input: {
+  workflowId: PortableLocalWorkflowId;
+  runId?: string;
+  workerRole?: string;
+  companyId?: string;
+  gmailExecutionTarget?: { connectionRefId: string; accountRef: string };
+  gmailProviderReadOnlyCanary?: typeof runGmailProviderReadOnlyCanary;
+}): Promise<PortableLocalWorkflowReceipt> {
+  const validated = runPortableLocalWorkflowReadOnly(input);
+  if (input.workflowId !== "email-review-reply" || validated.status !== "partial") return validated;
+  const runId = input.runId?.trim() ?? "";
+  const companyId = input.companyId?.trim() ?? "";
+  const accountRef = input.gmailExecutionTarget?.accountRef?.trim() ?? "";
+  if (!runId || !companyId || !accountRef) return validated;
+
+  let canary: GmailProviderReadOnlyCanaryReadback;
+  try {
+    canary = await (input.gmailProviderReadOnlyCanary ?? runGmailProviderReadOnlyCanary)({
+      runId,
+      companyId,
+      accountRef
+    });
+  } catch (error) {
+    return blocked(input.workflowId, error instanceof Error ? error.message.slice(0, 160) : "gmail_provider_read_only_canary_failed", {
+      ...validated.adapter_result,
+      gmail_provider_read_only_canary: {
+        status: "blocked",
+        exact_blocker: error instanceof Error ? error.message.slice(0, 160) : "gmail_provider_read_only_canary_failed",
+        externalActionExecuted: false,
+        secretMaterialIncluded: false
+      }
+    });
+  }
+  const adapterResult = {
+    ...validated.adapter_result,
+    gmail_provider_read_only_canary: canary
+  };
+  if (canary.status !== "completed" || canary.providerReceipt === null || canary.exactBlocker !== null) {
+    return {
+      ...validated,
+      status: "blocked",
+      exact_blocker: canary.exactBlocker ?? "gmail_provider_read_only_canary_not_completed",
+      readback_verified: false,
+      cleanup_verified: canary.cleanup.status === "verified",
+      adapter_result: adapterResult
+    };
+  }
+  return {
+    ...validated,
+    status: "partial",
+    exact_blocker: null,
+    readback_verified: true,
+    cleanup_verified: canary.cleanup.status === "verified",
+    adapter_result: adapterResult
+  };
 }
 
 /**
@@ -251,6 +436,7 @@ export function preparePortableLocalBusinessAdmission(input: {
   companyId: string;
   dueKey: string;
   scheduledFor: string;
+  backupSnapshotReader?: typeof readBackupSnapshot;
 }): PortableLocalBusinessAdmission {
   const companyId = input.companyId.trim();
   const dueKey = input.dueKey.trim();
@@ -264,7 +450,8 @@ export function preparePortableLocalBusinessAdmission(input: {
   const readback = runPortableLocalWorkflowReadOnly({
     workflowId: input.workflowId,
     workerRole: "mac",
-    companyId
+    companyId,
+    backupSnapshotReader: input.backupSnapshotReader
   });
   const capturedAt = nowIso();
   const readbackPayload = {
@@ -311,6 +498,136 @@ export function preparePortableLocalBusinessAdmission(input: {
         source_snapshot_id: sourceSnapshotId
       };
   return { status: "ready", exact_blocker: null, sourceSnapshot, inputBundle };
+}
+
+/** The cloud may dispatch the fixed backup; only the Mac can verify its source. */
+export function preparePortableLocalBackupBusinessAdmission(input: {
+  companyId: string;
+  dueKey: string;
+  scheduledFor: string;
+}): PortableLocalBusinessAdmission {
+  const binding = { ...input, workflowId: "daily-backup-safety-check" as const };
+  if (input.companyId !== "company_2560580981cedfd106b66245") {
+    return blockedBusinessAdmission(binding, "local_backup_company_not_allowed");
+  }
+  const admission = preparePortableLocalBusinessAdmission(binding);
+  if (admission.exact_blocker !== "local_backup_runner_missing") return admission;
+  const adapterResult = {
+    control_plane_exact_blocker: admission.exact_blocker,
+    control_plane_readback_verified: false,
+    source_readback_scope: "mac_worker_pre_effect",
+    pre_effect_backup_readback_required: true,
+    snapshot_created: false,
+    git_push_performed: false
+  };
+  const sourceSnapshotId = createHash("sha256").update(JSON.stringify({
+    ...binding, adapter_result: adapterResult, policy: UNATTENDED_FIXED_LOCAL_EFFECT_POLICY
+  })).digest("hex");
+  return {
+    status: "ready", exact_blocker: null,
+    sourceSnapshot: {
+      ...admission.sourceSnapshot,
+      source_snapshot_id: sourceSnapshotId,
+      status: "ready",
+      // Dispatch eligibility is not a claim that the cloud read Mac files.
+      readback_verified: false,
+      exact_blocker: null,
+      adapter_result: adapterResult
+    },
+    inputBundle: {
+      account_ref: BACKUP_ACCOUNT_REF, target_key: BACKUP_TARGET_KEY,
+      payload_hash: backupBusinessPayloadHash(), source_snapshot_id: sourceSnapshotId
+    }
+  };
+}
+
+export function isDelegatedBackupSourceReadback(
+  snapshot: Record<string, unknown>, bundle: Record<string, unknown>, companyId: string
+): boolean {
+  const adapter = snapshot.adapter_result as Record<string, unknown> | undefined;
+  return companyId === "company_2560580981cedfd106b66245"
+    && snapshot.workflow_id === "daily-backup-safety-check" && snapshot.company_id === companyId
+    && snapshot.status === "ready" && snapshot.readback_verified === false
+    && snapshot.external_action_executed === false
+    && adapter?.source_readback_scope === "mac_worker_pre_effect"
+    && adapter.pre_effect_backup_readback_required === true
+    && adapter.control_plane_readback_verified === false
+    && adapter.control_plane_exact_blocker === "local_backup_runner_missing"
+    && bundle.account_ref === BACKUP_ACCOUNT_REF && bundle.target_key === BACKUP_TARGET_KEY
+    && bundle.payload_hash === backupBusinessPayloadHash()
+    && typeof snapshot.source_snapshot_id === "string" && /^[a-f0-9]{64}$/u.test(snapshot.source_snapshot_id)
+    && bundle.source_snapshot_id === snapshot.source_snapshot_id;
+}
+
+/**
+ * The control plane runs in Zeabur while this fixed workflow's source of
+ * truth lives on the registered Mac worker.  When the control plane cannot
+ * see the Mac-only registry/vault, preserve the exact fixed target and defer
+ * the source readback to the worker.  The worker performs the read-only audit
+ * immediately before any Vault or Git write; an audit failure therefore
+ * remains effect-free and is recorded as an exact blocker.
+ *
+ * This escape hatch is deliberately limited to the registered Obsidian
+ * workflow and the known Mac-path admission blocker.  It is not a generic
+ * approval bypass and is never available to caller-supplied targets.
+ */
+export function preparePortableLocalObsidianBusinessAdmission(input: {
+  companyId: string;
+  dueKey: string;
+  scheduledFor: string;
+}): PortableLocalBusinessAdmission {
+  const admission = preparePortableLocalBusinessAdmission({
+    ...input,
+    workflowId: "obsidian-project-memory-audit"
+  });
+  if (admission.status === "ready" && admission.inputBundle) return admission;
+  if (admission.exact_blocker !== "obsidian_artifact_write_requires_approval"
+    && admission.exact_blocker !== "obsidian_audit_findings_present") return admission;
+
+  const capturedAt = nowIso();
+  const delegatedPayload = {
+    schema: "aos.portable_local_mac_worker_source_readback.v1",
+    workflow_id: "obsidian-project-memory-audit",
+    company_id: input.companyId,
+    due_key: input.dueKey,
+    scheduled_for: input.scheduledFor,
+    control_plane_snapshot_id: admission.sourceSnapshot.source_snapshot_id,
+    control_plane_exact_blocker: admission.exact_blocker,
+    source_readback_delegated_to_mac_worker: true,
+    pre_effect_audit_required: true,
+    captured_at: capturedAt,
+    external_action_executed: false
+  };
+  const sourceSnapshotId = createHash("sha256").update(JSON.stringify(delegatedPayload)).digest("hex");
+  const sourceSnapshot: PortableLocalSourceSnapshot = {
+    ...admission.sourceSnapshot,
+    source_snapshot_id: sourceSnapshotId,
+    captured_at: capturedAt,
+    status: "ready",
+    readback_verified: true,
+    exact_blocker: null,
+    adapter_result: {
+      ...admission.sourceSnapshot.adapter_result,
+      source_readback_scope: "mac_worker_pre_effect",
+      source_readback_delegated_to_mac_worker: true,
+      pre_effect_audit_required: true,
+      control_plane_preflight_blocker: admission.exact_blocker,
+      control_plane_readback_verified: false,
+      write_performed: false
+    },
+    external_action_executed: false
+  };
+  return {
+    status: "ready",
+    exact_blocker: null,
+    sourceSnapshot,
+    inputBundle: {
+      account_ref: OBSIDIAN_ACCOUNT_REF,
+      target_key: OBSIDIAN_TARGET_KEY,
+      payload_hash: obsidianBusinessPayloadHash(),
+      source_snapshot_id: sourceSnapshotId
+    }
+  };
 }
 
 function blockedBusinessAdmission(input: {
@@ -367,12 +684,14 @@ export function runPortableLocalWorkflowBusiness(input: {
   targetDigest: string;
   inputBundleSha256: string;
   inputBundle: Record<string, unknown>;
+  backupSnapshotReader?: typeof readBackupSnapshot;
 }): PortableLocalWorkflowBusinessReceipt {
   if (input.workerRole !== "mac") return localBusinessBlocked(input, "mac_worker_required", false);
   if (input.workflowId === "obsidian-project-memory-audit") {
     return runObsidianProjectMemoryBusiness(input);
   }
   if (input.workflowId !== "daily-backup-safety-check") return localBusinessBlocked(input, "local_business_workflow_not_enabled", false);
+  if (input.companyId !== "company_2560580981cedfd106b66245") return localBusinessBlocked(input, "local_backup_company_not_allowed", false);
   const bundle = input.inputBundle;
   if (bundle.account_ref !== BACKUP_ACCOUNT_REF
     || bundle.target_key !== BACKUP_TARGET_KEY
@@ -392,6 +711,17 @@ export function runPortableLocalWorkflowBusiness(input: {
     }
   } catch {
     return localBusinessBlocked(input, "local_backup_runner_missing", false);
+  }
+  // Every business run, including a cloud-delegated occurrence, performs the
+  // actual source/remote/integrity/restore checks before starting the runner.
+  const preEffectReadback = runPortableLocalWorkflowReadOnly({
+    workflowId: "daily-backup-safety-check", companyId: input.companyId,
+    workerRole: "mac", backupSnapshotReader: input.backupSnapshotReader
+  });
+  if (!preEffectReadback.readback_verified || !preEffectReadback.cleanup_verified) {
+    return localBusinessBlocked(input, preEffectReadback.exact_blocker ?? "local_backup_pre_effect_readback_failed", false, {
+      pre_effect_readback: preEffectReadback.adapter_result
+    });
   }
   let stdout = "";
   let childExitCode = 0;
@@ -436,14 +766,19 @@ export function runPortableLocalWorkflowBusiness(input: {
   const state = (() => {
     try { return readFileSync(statePath, "utf8"); } catch { return ""; }
   })();
+  const runnerRunId = stdout.match(/(?:^|\n)OK run_id=([^\s]+)/u)?.[1] || null;
+  const postEffectReadback = (input.backupSnapshotReader ?? readBackupSnapshot)();
   const remoteVerified = /^[a-f0-9]{40}$/u.test(localCommit)
     && remote === BACKUP_REPOSITORY
     && branch === "main"
     && remoteCommit === localCommit
     && clean === ""
     && state.includes("status: success")
-    && state.includes(`latest_backup_commit: ${localCommit}`);
-  const runnerRunId = stdout.match(/(?:^|\n)OK run_id=([^\s]+)/u)?.[1] || null;
+    && state.includes(`latest_backup_commit: ${localCommit}`)
+    && postEffectReadback.readback_verified === true
+    && postEffectReadback.cleanup_verified === true
+    && postEffectReadback.snapshot_id === runnerRunId
+    && postEffectReadback.commit === localCommit;
   const exactBlocker = remoteVerified ? null : "local_backup_remote_reconciliation_required";
   const runnerReceipt = {
     schema: "aos.local_backup_business_runner_receipt.v1",
@@ -456,6 +791,8 @@ export function runPortableLocalWorkflowBusiness(input: {
     repository: BACKUP_REPOSITORY,
     branch: "main",
     backup_commit: /^[a-f0-9]{40}$/u.test(localCommit) ? localCommit : null,
+    pre_effect_readback: preEffectReadback.adapter_result,
+    post_effect_readback: postEffectReadback,
     external_action_executed: true,
     same_run_receipt: true,
     same_run_source_sync: remoteVerified,
@@ -515,6 +852,22 @@ function runObsidianProjectMemoryBusiness(input: Parameters<typeof runPortableLo
   const gitSyncStatusFile = join(statusRoot, "obsidian-git-sync-status.json");
   let effectStarted = false;
   try {
+    // The Zeabur control plane may not have the Mac-only project registry or
+    // Vault mounted.  Re-read them on the registered Mac worker immediately
+    // before the first write, so an approved run cannot turn stale or missing
+    // source state into a Vault/Git effect.
+    const sourceAudit = auditProjects({ obsidianVaultPath: vaultPath });
+    if (!sourceAudit.ok) {
+      return localBusinessBlocked(input, "obsidian_source_audit_failed", false, {
+        source_readback_scope: "mac_worker_pre_effect",
+        source_readback_verified: false,
+        source_readback_delegated_to_mac_worker: true,
+        pre_effect_audit_required: true,
+        audit_summary: sourceAudit.summary,
+        operation_effect_state: "none",
+        reconciliation_required: false
+      });
+    }
     // The exporter reads AOS run/proof state while rendering the Vault.  The
     // worker is an independent process, so initialize its configured DB
     // before entering the fixed, registered Obsidian sequence.

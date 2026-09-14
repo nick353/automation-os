@@ -6,6 +6,35 @@ controller identity, first-class root, or App-owned session.
 
 ## Contract
 
+### Codex provider and account boundary
+
+Codex is an interchangeable AI execution provider for Automation OS. The
+local Mac worker's `CODEX_HOME` and a server-side Codex App Server's
+`CODEX_HOME` are separate authentication stores. A portable worker may use
+the same Codex account label in both environments, or a different account
+label, without changing the AOS company, workflow, provider account,
+approval, or run identity.
+
+`codex_account_ref` is a non-secret capability label only. It is not an AOS
+business identity, provider account, approval binding, or run-ownership key.
+The AOS company/workflow contract and worker credential remain the authority;
+Codex auth material is never copied between environments. In particular,
+`auth.json`, browser cookies, and access or refresh tokens must not be moved
+from the Mac to the server or from one account profile to another.
+
+Logging out of the local Codex profile normally does not log the server out.
+If server-side Codex auth expires or is revoked, only the server Codex lane is
+blocked; AOS company/workflow identity and other worker lanes are unchanged.
+An account switch is an attempt boundary: delayed results or an
+`operation_effect_unknown` result from the old attempt must not be replayed or
+resent after the switch. After every switch, re-check auth, readiness, and a
+read-only canary independently in each execution environment.
+
+The provider account and browser session used by a workflow are also separate
+from the Codex account. AOS never silently migrates either one during a Codex
+account switch; they require their own explicit environment-local readiness
+and authorization.
+
 `apps/server/src/runs/portableWorkflowContract.ts` defines the versioned
 workflow and run manifests. Every portable workflow uses:
 

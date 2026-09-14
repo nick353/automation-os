@@ -2,13 +2,16 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
-import { constants, existsSync, mkdirSync, openSync, readFileSync, lstatSync, chmodSync, writeFileSync, closeSync } from "node:fs";
+import { constants, existsSync, mkdirSync, openSync, readFileSync, lstatSync, chmodSync, writeFileSync, closeSync, fsyncSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
+import { tmpdir } from "node:os";
 import { businessRunnerBindingEnvironment as resolveBusinessRunnerBindingEnvironment } from "./aos-portable-business-runner.mjs";
+import { portableLocalExecutionDeadline, runPortableLocalWorkflowOffThread } from "./aos-portable-local-workflow-execution.mjs";
+import { cleanupOwnedProcessGroup } from "./process-group-cleanup.mjs";
 
 const ROOT = path.resolve(process.env.AUTOMATION_OS_REPO_ROOT || path.join(import.meta.dirname, ".."));
 const REMOTE_URL = String(process.env.AUTOMATION_OS_PORTABLE_REMOTE_URL || "https://automation-os.zeabur.app").replace(/\/+$/u, "");
@@ -16,12 +19,15 @@ const COMPANY_ID = String(process.env.AUTOMATION_OS_PORTABLE_REMOTE_COMPANY_ID |
 const TOKEN_SERVICE = String(process.env.AUTOMATION_OS_PORTABLE_REMOTE_TOKEN_SERVICE || "Automation OS Zeabur Trigger");
 const WORKER_ID = String(process.env.AUTOMATION_OS_PORTABLE_REMOTE_WORKER_ID || `mac-${hostname()}`).replace(/[^A-Za-z0-9._:-]/gu, "-").slice(0, 120);
 const WORKER_INSTANCE_ID = String(process.env.AUTOMATION_OS_PORTABLE_REMOTE_WORKER_INSTANCE_ID || `instance-${process.pid}-${Date.now()}-${randomUUID()}`).replace(/[^A-Za-z0-9._:-]/gu, "-").slice(0, 120);
+const WORKER_GENERATION = String(process.env.AUTOMATION_OS_PORTABLE_REMOTE_WORKER_GENERATION || `generation-${process.pid}-${Date.now()}-${randomUUID()}`).replace(/[^A-Za-z0-9._:-]/gu, "-").slice(0, 120);
+const WORKER_GENERATION_STARTED_AT = new Date().toISOString();
 const WORKER_PROFILE_ID = String(process.env.AUTOMATION_OS_WORKER_PROFILE_ID || "default").replace(/[^A-Za-z0-9._:-]/gu, "-").slice(0, 120);
 const CODEX_ACCOUNT_REF = String(process.env.AUTOMATION_OS_CODEX_ACCOUNT_REF || "").replace(/[^A-Za-z0-9._:@+/-]/gu, "-").slice(0, 160);
 const ARTIFACT_ROOT = path.resolve(process.env.AUTOMATION_OS_PORTABLE_REMOTE_ARTIFACT_ROOT || path.join(ROOT, "data", "artifacts", "portable-remote-worker"));
 const WORKER_STATUS_PATH = path.join(ARTIFACT_ROOT, "worker-status.v1.json");
 const READ_ONLY_RUNNER = path.join(ROOT, "scripts", "aos-portable-browser-use-runner.mjs");
 const BUSINESS_RUNNER = path.join(ROOT, "scripts", "aos-portable-business-runner.mjs");
+const BACKUP_EVIDENCE_READER = path.join(ROOT, "scripts", "aos-portable-backup-evidence-reader.mjs");
 const POLL_MS = Math.max(5_000, Math.min(10 * 60_000, Number(process.env.AUTOMATION_OS_PORTABLE_REMOTE_POLL_MS || 30_000)));
 const LOG_IDLE = String(process.env.AUTOMATION_OS_PORTABLE_REMOTE_LOG_IDLE || "0") === "1";
 const DEFAULT_REMOTE_HTTP_TIMEOUT_MS = 15_000;
@@ -29,6 +35,8 @@ const PORTABLE_LOCAL_WORKFLOW_IDS = new Set([
   "email-review-reply",
   "daily-backup-safety-check",
   "obsidian-project-memory-audit",
+  "nisenprints-existing-product-audit",
+  "daily-ai-research-source-sync",
 ]);
 const AOS_CHROME_COMPANION_BROWSER_SURFACE = "aos_chrome_companion_profile_instance";
 const AOS_CHROME_COMPANION_TASK_ID_ENV = "AOS_CHROME_COMPANION_TASK_ID";
@@ -46,6 +54,13 @@ const CHROME_PLUGIN_READBACK_PATH = path.resolve(
   process.env.AOS_CHROME_PLUGIN_READBACK_PATH
     || path.join(String(process.env.HOME || "/Users/nichikatanaka"), ".social-flow", "aos-company1-profile2-bridge-readback-v2.json")
 );
+const BROWSER_USE_ROOM_REGISTRY_PATH = path.resolve(
+  process.env.AUTOMATION_OS_BROWSER_USE_ROOM_REGISTRY_PATH
+    || path.join(String(process.env.HOME || "/Users/nichikatanaka"), ".browser-use-cli", "home", "room-registry.json")
+);
+const PORTABLE_WORKER_RUNTIME_OBSERVATION_SCHEMA = "aos.portable_worker_runtime_observation.v1";
+const PORTABLE_WORKER_HEARTBEAT_TRANSPORT_ACK_SCHEMA = "aos.portable_worker_heartbeat_transport_ack.v1";
+const PORTABLE_WORKER_PROCESS_READBACK_TIMEOUT_MS = 2_000;
 
 /**
  * A local AOS UI can be backed by a different PostgreSQL instance than the
@@ -136,7 +151,8 @@ function safeChromeWorkerBlocker(value) {
 }
 
 function safeChromeWorkerTimestamp(value) {
-  return typeof value === "string" && Number.isFinite(Date.parse(value)) ? value : null;
+  const normalized = typeof value === "string" ? value.trim() : "";
+  return normalized.length > 0 && normalized.length <= 64 && Number.isFinite(Date.parse(normalized)) ? normalized : null;
 }
 
 /**
@@ -210,19 +226,377 @@ export function readChromePluginWorkerReadback(readbackPath = CHROME_PLUGIN_READ
   }
 }
 
+function safePortableWorkerIdentifier(value) {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  return /^-?[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u.test(normalized) ? normalized : null;
+}
+
+function safePortableWorkerPublicRef(value) {
+  const normalized = typeof value === "string" ? value.trim().replaceAll("\\", "/") : "";
+  if (!normalized || normalized.length > 160 || normalized.startsWith("/") || normalized.includes("..") || normalized.includes("://")) return null;
+  return /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/u.test(normalized) ? normalized : null;
+}
+
+function safePortableWorkerTimestamp(value) {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  return normalized.length > 0 && normalized.length <= 64 && !Number.isNaN(Date.parse(normalized)) ? normalized : null;
+}
+
+function safePortableWorkerActivity(value) {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  return /^[a-z][a-z0-9_.:-]{0,79}$/u.test(normalized) ? normalized : null;
+}
+
+function publicBrowserUseProfileRef(value) {
+  const normalized = typeof value === "string" ? value.replaceAll("\\", "/") : "";
+  const marker = "/.browser-use-cli/profiles/";
+  const markerIndex = normalized.lastIndexOf(marker);
+  // A bare profile reference is safe; an unrecognised path is not.  Only
+  // strip the known Browser Use profile root before allowing nested public
+  // profile components through.
+  if (markerIndex < 0) return normalized.includes("/") ? null : safePortableWorkerPublicRef(normalized);
+  return safePortableWorkerPublicRef(normalized.slice(markerIndex + marker.length));
+}
+
+/** Read only the local process table; raw command text never leaves this module. */
+export function readPortableWorkerProcessTable({ runner = spawnSync } = {}) {
+  try {
+    const result = runner("ps", ["-axo", "pid=,ppid=,command="], {
+      encoding: "utf8",
+      timeout: PORTABLE_WORKER_PROCESS_READBACK_TIMEOUT_MS,
+      maxBuffer: 4 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "ignore"]
+    });
+    if (result?.error || result?.status !== 0) return null;
+    return String(result.stdout || "");
+  } catch {
+    return null;
+  }
+}
+
+function parsePortableWorkerBrowserUseProcesses(output) {
+  if (typeof output !== "string") return null;
+  const groups = new Map();
+  for (const line of output.split(/\r?\n/u)) {
+    const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/u);
+    if (!match || !/(?:Google Chrome|Chromium|chrome)/iu.test(match[3])) continue;
+    const portMatch = match[3].match(/--remote-debugging-port=(\d+)/u);
+    const profileMatch = match[3].match(/--user-data-dir=(?:"([^"]+)"|'([^']+)'|(\S+))/u);
+    const port = Number(portMatch?.[1]);
+    const profileRef = publicBrowserUseProfileRef(profileMatch?.[1] ?? profileMatch?.[2] ?? profileMatch?.[3]);
+    if (!Number.isSafeInteger(port) || port <= 0 || port >= 65_536 || !profileRef) continue;
+    const row = {
+      pid: Number(match[1]),
+      ppid: Number(match[2]),
+      profileRef,
+      port
+    };
+    const key = `${profileRef}:${port}`;
+    const group = groups.get(key) ?? [];
+    group.push(row);
+    groups.set(key, group);
+  }
+  return [...groups.values()]
+    .map((group) => {
+      const primary = [...group].sort((left, right) => left.pid - right.pid)[0];
+      return { ...primary, processCount: group.length };
+    })
+    .sort((left, right) => left.port - right.port || left.profileRef.localeCompare(right.profileRef));
+}
+
+function readPortableBrowserUseRoomRegistry(roomRegistryPath = BROWSER_USE_ROOM_REGISTRY_PATH) {
+  try {
+    const stat = fs.lstatSync(roomRegistryPath);
+    const currentUid = typeof process.getuid === "function" ? process.getuid() : null;
+    if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1
+      || (currentUid !== null && stat.uid !== currentUid) || (stat.mode & 0o077) !== 0) return null;
+    return fs.readFileSync(roomRegistryPath, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+function parsePortableBrowserUseRoomRegistry(output) {
+  if (typeof output !== "string") return { status: "unobserved", rooms: [] };
+  try {
+    const value = JSON.parse(output);
+    if (!value || typeof value !== "object" || Array.isArray(value)
+      || value.schema !== "browser-use-room-registry.v1" || !Array.isArray(value.rooms)) {
+      return { status: "unobserved", rooms: [] };
+    }
+    const rooms = value.rooms.flatMap((raw) => {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
+      const owner = raw.owner && typeof raw.owner === "object" && !Array.isArray(raw.owner) ? raw.owner : {};
+      const roomId = safePortableWorkerIdentifier(raw.room_id);
+      const lifecycle = ["temporary", "single-use", "scheduled"].includes(raw.lifecycle) ? raw.lifecycle : null;
+      const state = ["active", "starting", "held"].includes(raw.state) ? raw.state : null;
+      const profileRef = publicBrowserUseProfileRef(raw.profile);
+      const port = Number(raw.port);
+      if (!roomId || !lifecycle || !state || !profileRef || !Number.isSafeInteger(port) || port <= 0 || port >= 65_536) return [];
+      return [{
+        roomId,
+        lifecycle,
+        state,
+        ownerKind: safePortableWorkerIdentifier(owner.kind),
+        ownerId: safePortableWorkerIdentifier(owner.id),
+        taskId: safePortableWorkerIdentifier(raw.task_id),
+        automationId: safePortableWorkerIdentifier(raw.automation_id),
+        profileRef,
+        port,
+        currentActivity: safePortableWorkerActivity(raw.current_activity),
+        updatedAt: safePortableWorkerTimestamp(raw.updated_at)
+      }];
+    });
+    return { status: "observed", rooms };
+  } catch {
+    return { status: "unobserved", rooms: [] };
+  }
+}
+
+function emptyPortableWorkerRoomObservation(status) {
+  return {
+    status,
+    room_id: null,
+    state: null,
+    lifecycle: null,
+    owner_kind: null,
+    owner_id: null,
+    task_id: null,
+    automation_id: null,
+    profile_ref: null,
+    port: null,
+    current_activity: null,
+    updated_at: null
+  };
+}
+
+/**
+ * Build a bounded Mac-local Browser Use observation.  The control plane only
+ * receives this projection through the authenticated heartbeat; it cannot
+ * infer it from its own ps or room registry.
+ */
+export function buildPortableWorkerRuntimeObservation({
+  psOutput = undefined,
+  roomRegistryOutput = undefined,
+  roomRegistryPath = BROWSER_USE_ROOM_REGISTRY_PATH,
+  runId = null,
+  workerStatus = "idle",
+  observedAt = new Date().toISOString(),
+  processRunner = spawnSync
+} = {}) {
+  const effectiveObservedAt = safePortableWorkerTimestamp(observedAt) ?? new Date().toISOString();
+  const processOutput = psOutput === undefined ? readPortableWorkerProcessTable({ runner: processRunner }) : psOutput;
+  const processes = parsePortableWorkerBrowserUseProcesses(processOutput);
+  const normalizedRunId = workerStatus === "idle" ? null : safePortableWorkerIdentifier(runId);
+  // An idle worker must not turn an empty or inaccessible local process table
+  // into a false stopped-process proof.  Keep all local runtime resources
+  // explicitly unobserved until a run is bound to this worker generation.
+  const processStatus = normalizedRunId === null
+    ? "unobserved"
+    : processes === null ? "unobserved" : processes.length > 0 ? "present" : "absent";
+  const process = normalizedRunId === null
+    ? { status: "unobserved", pid: null, process_count: null, profile_ref: null, port: null }
+    : {
+      status: processStatus,
+      pid: processes?.[0]?.pid ?? null,
+      process_count: processes === null ? null : processes[0]?.processCount ?? 0,
+      profile_ref: processes?.[0]?.profileRef ?? null,
+      port: processes?.[0]?.port ?? null
+    };
+  const registryOutput = roomRegistryOutput === undefined && processStatus === "present"
+    ? readPortableBrowserUseRoomRegistry(roomRegistryPath)
+    : roomRegistryOutput;
+  const registry = parsePortableBrowserUseRoomRegistry(registryOutput);
+  let room = null;
+  if (normalizedRunId !== null) {
+    const matchedRoom = processes?.[0]
+      ? registry.rooms.find((candidate) => candidate.profileRef === processes[0].profileRef && candidate.port === processes[0].port)
+      : null;
+    room = matchedRoom
+      ? {
+        status: "present",
+        room_id: matchedRoom.roomId,
+        state: matchedRoom.state,
+        lifecycle: matchedRoom.lifecycle,
+        owner_kind: matchedRoom.ownerKind,
+        owner_id: matchedRoom.ownerId,
+        task_id: matchedRoom.taskId,
+        automation_id: matchedRoom.automationId,
+        profile_ref: matchedRoom.profileRef,
+        port: matchedRoom.port,
+        current_activity: matchedRoom.currentActivity,
+        updated_at: matchedRoom.updatedAt
+      }
+      : emptyPortableWorkerRoomObservation(registry.status === "observed" ? "absent" : "unobserved");
+  }
+  const transport = normalizedRunId === null
+    ? { status: "unobserved", last_seen_at: null }
+    : room?.status === "present"
+      ? { status: "connected", last_seen_at: room.updated_at ?? effectiveObservedAt }
+      : { status: "unobserved", last_seen_at: null };
+  const status = normalizedRunId === null
+    ? workerStatus === "idle" ? "idle" : "unobserved"
+    : processes === null ? "unobserved" : "observed";
+  return {
+    schema: PORTABLE_WORKER_RUNTIME_OBSERVATION_SCHEMA,
+    status,
+    observed_at: effectiveObservedAt,
+    run_id: normalizedRunId,
+    room_id: room?.room_id ?? null,
+    browser_use: {
+      runtime_status: processStatus,
+      process,
+      room,
+      transport
+    }
+  };
+}
+
+export function buildPortableWorkerHeartbeatBody({
+  companyId = COMPANY_ID,
+  status = "idle",
+  queueDepth = null,
+  exactBlocker = null,
+  runId = null,
+  observedAt = new Date().toISOString(),
+  runtimeObservation = undefined,
+  chromePluginReadback = undefined
+} = {}) {
+  const observation = runtimeObservation ?? buildPortableWorkerRuntimeObservation({
+    runId,
+    workerStatus: status,
+    observedAt
+  });
+  const effectiveObservedAt = safePortableWorkerTimestamp(observation?.observed_at)
+    ?? safePortableWorkerTimestamp(observedAt)
+    ?? new Date().toISOString();
+  const normalizedRunId = status === "idle" ? null : safePortableWorkerIdentifier(runId);
+  return {
+    schema: "aos.portable_worker_heartbeat.v2",
+    company_id: companyId,
+    worker_id: WORKER_ID,
+    worker_instance_id: WORKER_INSTANCE_ID,
+    generation: WORKER_GENERATION,
+    observed_at: effectiveObservedAt,
+    status,
+    queue_depth: queueDepth,
+    exact_blocker: exactBlocker,
+    run_id: normalizedRunId,
+    runtime_observation: observation,
+    chrome_plugin_readback: chromePluginReadback === undefined ? readChromePluginWorkerReadback() : chromePluginReadback
+  };
+}
+
+/** Normalize a heartbeat response without treating a missing legacy echo as a new binding. */
+export function normalizePortableWorkerHeartbeatAck(response, {
+  companyId = COMPANY_ID,
+  workerId = WORKER_ID,
+  workerInstanceId = WORKER_INSTANCE_ID,
+  generation = WORKER_GENERATION
+} = {}, observedAt = new Date().toISOString()) {
+  const record = response && typeof response === "object" && !Array.isArray(response) ? response : {};
+  const nested = record.heartbeat && typeof record.heartbeat === "object" && !Array.isArray(record.heartbeat) ? record.heartbeat : {};
+  const hasTransportAck = Object.prototype.hasOwnProperty.call(record, "transport_ack");
+  const transportRecord = hasTransportAck && record.transport_ack && typeof record.transport_ack === "object" && !Array.isArray(record.transport_ack)
+    ? record.transport_ack
+    : {};
+  const transportAckShapeInvalid = hasTransportAck
+    && (!record.transport_ack || typeof record.transport_ack !== "object" || Array.isArray(record.transport_ack)
+      || record.transport_ack.schema !== PORTABLE_WORKER_HEARTBEAT_TRANSPORT_ACK_SCHEMA);
+  const ackAt = safePortableWorkerTimestamp(
+    transportRecord.ack_at
+      ?? record.ack_at
+      ?? nested.ack_at
+      ?? record.heartbeat_at
+      ?? nested.heartbeat_at
+  );
+  const returnedCompanyId = safePortableWorkerIdentifier(transportRecord.company_id ?? record.company_id ?? nested.company_id);
+  const returnedWorkerId = safePortableWorkerIdentifier(transportRecord.worker_id ?? record.worker_id ?? nested.worker_id);
+  const returnedWorkerInstanceId = safePortableWorkerIdentifier(transportRecord.worker_instance_id ?? record.worker_instance_id ?? nested.worker_instance_id);
+  const returnedGeneration = safePortableWorkerIdentifier(transportRecord.generation ?? record.generation ?? nested.generation);
+  const hasBindingEcho = [returnedCompanyId, returnedWorkerId, returnedWorkerInstanceId, returnedGeneration]
+    .some((value) => value !== null);
+  const expectedValues = [companyId, workerId, workerInstanceId, generation].map((value) => safePortableWorkerIdentifier(value));
+  const transportAckShape = transportRecord.schema === PORTABLE_WORKER_HEARTBEAT_TRANSPORT_ACK_SCHEMA;
+  const explicitBindingStatus = ["verified", "legacy_unbound", "mismatch", "unverified"].includes(String(transportRecord.binding_status))
+    ? String(transportRecord.binding_status)
+    : null;
+  // The v1 transport-ack projection intentionally echoes only the worker
+  // instance and generation.  A legacy response may instead echo all four
+  // identity fields, or none of them.  Validate whichever binding contract
+  // the response actually advertises; never treat a partial legacy echo as a
+  // verified binding.
+  const bindingStatus = transportAckShape
+    ? explicitBindingStatus === "legacy_unbound" && returnedWorkerInstanceId === null && returnedGeneration === null
+      ? "legacy_unbound"
+      : explicitBindingStatus === "mismatch"
+        ? "mismatch"
+        : expectedValues[2] !== null
+          && expectedValues[3] !== null
+          && returnedWorkerInstanceId === expectedValues[2]
+          && returnedGeneration === expectedValues[3]
+          && (explicitBindingStatus === null || explicitBindingStatus === "verified")
+          ? "verified"
+          : explicitBindingStatus === "unverified"
+            ? "unverified"
+            : "mismatch"
+    : !hasBindingEcho
+      ? "legacy_unbound"
+      : expectedValues.every((value) => value !== null)
+        && returnedCompanyId === expectedValues[0]
+        && returnedWorkerId === expectedValues[1]
+        && returnedWorkerInstanceId === expectedValues[2]
+        && returnedGeneration === expectedValues[3]
+        ? "verified"
+        : "mismatch";
+  const advertisedAckStatus = transportAckShape && ["acknowledged", "blocked", "unobserved", "pending"].includes(String(transportRecord.status))
+    ? String(transportRecord.status)
+    : null;
+  return {
+    schema: PORTABLE_WORKER_HEARTBEAT_TRANSPORT_ACK_SCHEMA,
+    // A successful HTTP response without a server-captured heartbeat time is
+    // not a usable transport acknowledgement.  Do not substitute the local
+    // observation time, which would create a false fresh heartbeat.
+    status: record.ok === true && !transportAckShapeInvalid && ackAt !== null
+      && (advertisedAckStatus === null || advertisedAckStatus === "acknowledged")
+      ? "acknowledged"
+      : "blocked",
+    observed_at: observedAt,
+    ack_at: ackAt,
+    worker_instance_id: returnedWorkerInstanceId,
+    generation: returnedGeneration,
+    binding_status: bindingStatus
+  };
+}
+
 export function portableRemoteErrorCode(error) {
   const message = error instanceof Error ? error.message : "";
   if (message === "portable_remote_http_timeout") return message;
   if (/^portable_remote_http_\d+$/u.test(message)) return message;
+  if (message === "portable_remote_heartbeat_ack_invalid" || message === "portable_remote_heartbeat_binding_mismatch") return message;
   return "portable_remote_http_failed";
 }
 
 const WORKER_STATUS_PRESERVED_FIELDS = [
+  "observed_at",
+  "heartbeat_observed_at",
   "heartbeat_status",
   "heartbeat_exact_blocker",
+  "heartbeat_transport_status",
+  "heartbeat_transport_observed_at",
+  "heartbeat_ack_at",
+  "heartbeat_ack_observed_at",
+  "heartbeat_ack_binding_status",
+  "heartbeat_ack_worker_instance_id",
+  "heartbeat_ack_generation",
+  "heartbeat_observation",
+  "heartbeat_observation_status",
+  "heartbeat_observation_run_id",
+  "heartbeat_observation_room_id",
   "last_attempt_at",
   "last_successful_heartbeat_at",
   "heartbeat_at",
+  "generation",
   "generation_started_at",
   "claim_status",
   "last_claim_at",
@@ -274,6 +648,7 @@ function writeWorkerStatus(update, { targetKey = "", primary = true, primaryOrig
       schema: "aos.portable_remote_worker_status.v1",
       worker_id: WORKER_ID,
       worker_instance_id: WORKER_INSTANCE_ID,
+      generation: WORKER_GENERATION,
       worker_profile_id: WORKER_PROFILE_ID,
       codex_account_ref: CODEX_ACCOUNT_REF || null,
       browser_use_helper: String(process.env.AUTOMATION_OS_BROWSER_USE_CLI_HELPER || "").trim() || null,
@@ -309,6 +684,19 @@ export function initialPortableWorkerTargetStatuses(targets) {
       exact_blocker: null,
       heartbeat_status: "unknown",
       heartbeat_exact_blocker: null,
+      observed_at: null,
+      heartbeat_observed_at: null,
+      heartbeat_transport_status: "unobserved",
+      heartbeat_transport_observed_at: null,
+      heartbeat_ack_at: null,
+      heartbeat_ack_observed_at: null,
+      heartbeat_ack_binding_status: "unverified",
+      heartbeat_ack_worker_instance_id: null,
+      heartbeat_ack_generation: null,
+      heartbeat_observation: null,
+      heartbeat_observation_status: "unobserved",
+      heartbeat_observation_run_id: null,
+      heartbeat_observation_room_id: null,
       claim_status: "unknown",
     },
   ]));
@@ -338,7 +726,7 @@ function safeWriteBytes(filePath, bytes) {
     return { path: resolved, sha256: sha256(bytes) };
   }
   const fd = openSync(resolved, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | (constants.O_NOFOLLOW || 0), 0o600);
-  try { writeFileSync(fd, bytes, "utf8"); } finally { closeSync(fd); }
+  try { writeFileSync(fd, bytes, "utf8"); fsyncSync(fd); } finally { closeSync(fd); }
   chmodSync(resolved, 0o600);
   return { path: resolved, sha256: sha256(bytes) };
 }
@@ -374,7 +762,7 @@ export function runZeaburServiceExec(args, { runner = spawnSync } = {}) {
       "service", "exec",
       "--id", ZEABUR_CODEX_APP_SERVER_SERVICE_ID,
       "--env-id", ZEABUR_CODEX_APP_SERVER_ENVIRONMENT_ID,
-      "-i=false", "--", ...args
+      "-i=false", "--", "env", "CODEX_HOME=/data/codex", ...args
     ], { encoding: "utf8", timeout: 30_000, maxBuffer: 2 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
     // `codex login status` intentionally exits non-zero for the valid
     // unauthenticated state. Preserve its safe stdout so the caller can
@@ -467,18 +855,27 @@ function safePluginEntries(value, accessApps = undefined) {
   const accessByName = new Map(safeAppAccessEntries(accessApps).map((entry) => [canonicalConnectorName(entry.name), entry]));
   return value.flatMap((item) => {
     const record = item && typeof item === "object" && !Array.isArray(item) ? item : {};
-    const name = typeof record.name === "string" ? record.name.trim() : "";
+    const name = typeof record.name === "string" && record.name.trim()
+      ? record.name.trim()
+      : typeof record.pluginName === "string" ? record.pluginName.trim() : "";
     if (!name) return [];
     const id = typeof record.pluginId === "string" && record.pluginId.trim()
       ? record.pluginId.trim()
       : typeof record.id === "string" && record.id.trim() ? record.id.trim() : name;
+    const marketplaceName = typeof record.marketplaceName === "string" && record.marketplaceName.trim()
+      ? record.marketplaceName.trim()
+      : id.includes("@") ? id.slice(id.lastIndexOf("@") + 1).trim() : "openai-curated";
     // App Server app display names use spaces ("Google Drive"), while the
     // marketplace/plugin names use hyphens ("google-drive").  Compare only
     // the canonical connector key so a fresh, accessible app is not
     // incorrectly persisted as unverified.
     const access = accessByName.get(canonicalConnectorName(name));
-    const authStatus = access?.isAccessible === true && access.isEnabled === true ? "verified" : "unverified";
-    return [{ id, name, installed: record.installed === true, authStatus }];
+    const installed = record.installed === true;
+    const authStatus = !installed
+      ? "unknown"
+      : access?.isAccessible === true && access.isEnabled === true ? "verified" : "unverified";
+    const authPolicy = record.authPolicy === "ON_INSTALL" || record.authPolicy === "ON_USE" ? record.authPolicy : undefined;
+    return [{ id, name, installed, authStatus, marketplaceName, ...(authPolicy ? { authPolicy } : {}) }];
   }).slice(0, 500);
 }
 
@@ -1148,21 +1545,29 @@ async function runRunner(claim, files) {
 }
 
 async function processPortableLocalWorkflowClaim(claim, target) {
+  const root = runRoot(claim.run_id);
+  // A receipt-delivery failure or a worker crash never admits the adapter a
+  // second time. Legacy receipts also count as positive prior execution.
+  if (["portable-local-execution-started.v1.json", "portable-local-worker-receipt.v1.json", "portable-local-receipt-submission.v1.json"].some((name) => existsSync(path.join(root, name)))) {
+    return resumePortableLocalReceiptOnly(claim, target, root);
+  }
+  if (!claimPortableLocalMarker(path.join(root, "portable-local-execution-started.v1.json"), {
+    schema: "aos.portable_local_execution_started.v1", run_id: claim.run_id, step_id: claim.step_id,
+    workflow_id: claim.workflow_id, company_id: claim.company_id, idempotency_key: claim.idempotency_key
+  })) return resumePortableLocalReceiptOnly(claim, target, root);
   let localReceipt;
+  let observedExternalAction = false;
   let artifactUri = "";
   const business = claim.execution_mode === "business_effect";
   let effectAuthority = null;
   let admission = null;
   let inputBundle = null;
   try {
-    const modulePath = path.join(ROOT, "apps/server", "dist", "runs", "portableLocalWorkflow.js");
-    const localModule = await import(pathToFileURL(modulePath).href);
     if (business) {
-      const root = runRoot(claim.run_id);
       effectAuthority = createEffectAuthorityFile(claim, root);
       admission = createAdmission(claim, root);
       inputBundle = createInputBundle(claim, root);
-      localReceipt = localModule.runPortableLocalWorkflowBusiness({
+      const businessInput = {
         workflowId: claim.workflow_id,
         workerRole: process.env.AUTOMATION_OS_WORKER_ROLE?.trim() || "mac",
         companyId: claim.company_id,
@@ -1172,16 +1577,37 @@ async function processPortableLocalWorkflowClaim(claim, target) {
         targetDigest: claim.target_digest,
         inputBundleSha256: claim.input_bundle_sha256,
         inputBundle: claim.input_bundle || {},
-      });
+        authorityExpiresAt: effectAuthorityFromClaim(claim)?.expires_at ?? "",
+      };
+      portableLocalExecutionDeadline(claim);
+      observedExternalAction = null;
+      localReceipt = await runPortableLocalWorkflowOffThread(claim, businessInput);
+      observedExternalAction = localReceipt.external_action_executed;
+    } else if (claim.workflow_id === "email-review-reply") {
+      const response = await requestPortableRemoteJson(
+        `${target.baseUrl}/api/v1/companies/${encodeURIComponent(claim.company_id)}/connectors/gmail/review-read-only`,
+        target.token, { run_id: claim.run_id }, { companyId: claim.company_id, timeoutMs: 300_000, localWorker: target.kind === "local" }
+      );
+      const review = response.review;
+      if (!review || review.run_id !== claim.run_id || review.company_id !== claim.company_id) throw new Error("gmail_review_response_binding_invalid");
+      observedExternalAction = review.external_action_executed === true;
+      if (observedExternalAction) throw new Error("gmail_review_read_only_boundary_violation");
+      localReceipt = {
+        status: review.status, exact_blocker: review.exact_blocker,
+        external_action_executed: false, workflow_id: claim.workflow_id,
+        read_only_stage_bound: true, readback_verified: review.status === "complete", cleanup_verified: true,
+        business_completion_verified: false,
+        adapter_result: { connector: "gmail", connector_execution_owner: "zeabur_codex_app_server", review, review_only: true, send_completed: false },
+      };
     } else {
-      localReceipt = localModule.runPortableLocalWorkflowReadOnly({
+      localReceipt = await runPortableLocalWorkflowOffThread(claim, {
         workflowId: claim.workflow_id,
+        runId: claim.run_id,
         workerRole: process.env.AUTOMATION_OS_WORKER_ROLE?.trim() || "mac",
         companyId: claim.company_id,
         companyConnectionVerified: claim.company_connection_verified === true,
       });
     }
-    const root = runRoot(claim.run_id);
     const artifact = safeWrite(path.join(root, "portable-local-worker-receipt.v1.json"), {
       schema: "aos.portable_local_worker_receipt.v1",
       ...localReceipt,
@@ -1195,11 +1621,11 @@ async function processPortableLocalWorkflowClaim(claim, target) {
     localReceipt = {
       status: "blocked",
       exact_blocker: error instanceof Error ? error.message.slice(0, 240) : "portable_local_worker_setup_failed",
-      external_action_executed: business ? false : false,
+      external_action_executed: observedExternalAction,
       workflow_id: claim.workflow_id,
       read_only_stage_bound: !business,
       readback_verified: false,
-      cleanup_verified: true,
+      cleanup_verified: localReceipt?.cleanup_verified ?? observedExternalAction === false,
       business_completion_verified: false,
       same_run_receipt: false,
       same_run_source_sync: false,
@@ -1207,17 +1633,18 @@ async function processPortableLocalWorkflowClaim(claim, target) {
       runner_receipt: { business_proofs: {} },
     };
   }
-  const completed = localReceipt.status === "complete" && localReceipt.exact_blocker === null;
-  const externalActionExecuted = business && localReceipt.external_action_executed === true;
+  const completed = localReceipt.status === "complete" && localReceipt.exact_blocker === null && localReceipt.cleanup_verified === true;
+  const externalActionExecuted = localReceipt.external_action_executed;
+  if (localReceipt.status === "complete" && !completed) localReceipt = { ...localReceipt, status: "blocked", exact_blocker: "portable_local_child_cleanup_unverified" };
   const payloadHash = typeof claim.input_bundle?.payload_hash === "string" ? claim.input_bundle.payload_hash : null;
   const lifecycle = business ? {
     schema: "automation_os_web_operation_lifecycle.v1",
-    state: externalActionExecuted && completed ? "completed" : externalActionExecuted ? "effect_unknown" : "blocked",
-    status: externalActionExecuted && completed ? "complete" : "blocked",
+    state: externalActionExecuted === true && completed ? "completed" : externalActionExecuted !== false ? "effect_unknown" : "blocked",
+    status: externalActionExecuted === true && completed ? "complete" : "blocked",
     run_id: claim.run_id,
     step_id: claim.step_id,
     idempotency_key: claim.idempotency_key,
-    operation: "publish",
+    operation: claim.workflow_id === "daily-ai-research-source-sync" ? "update" : "publish",
     target_digest: claim.target_digest,
     payload_hash: payloadHash,
     external_action_executed: externalActionExecuted,
@@ -1267,19 +1694,16 @@ async function processPortableLocalWorkflowClaim(claim, target) {
       ...(business ? { remote_verified: localReceipt.adapter_result?.remote_verified === true } : {}),
     },
   };
-  const completion = await requestTargetJson(target, `/api/portable-worker/${encodeURIComponent(claim.run_id)}/receipt`, {
-    worker_id: WORKER_ID,
-    worker_instance_id: WORKER_INSTANCE_ID,
-    receipt,
-  });
-  persistPortableProtectedReadback(claim, receipt, completion, runRoot(claim.run_id));
+  const submission = await submitPortableLocalReceipt(claim, target, receipt, runRoot(claim.run_id));
+  if (submission.status !== "recorded") return submission;
+  const completion = submission.completion;
   return {
-    status: receipt.status,
+    status: completion.receipt.status,
     run_id: claim.run_id,
     workflow_id: claim.workflow_id,
     step_id: claim.step_id,
-    exact_blocker: receipt.exact_blocker,
-    external_action_executed: false,
+    exact_blocker: completion.receipt.exact_blocker,
+    external_action_executed: externalActionExecuted,
     browser_surface: "local_worker",
     cleanup_verified: receipt.cleanup_verified,
     readback_verified: receipt.readback_verified,
@@ -1289,10 +1713,280 @@ async function processPortableLocalWorkflowClaim(claim, target) {
   };
 }
 
+/** Run only the fixed backup verifier; this path never starts a business runner. */
+export async function runPortableBackupEvidenceVerifier(claim, { spawnProcess = spawn } = {}) {
+  if (!claim?.evidence_only || claim.workflow_id !== "daily-backup-safety-check") throw new Error("portable_backup_evidence_claim_invalid");
+  const leaseExpiresAt = Date.parse(String(claim.lease_expires_at || ""));
+  if (!Number.isFinite(leaseExpiresAt) || leaseExpiresAt <= Date.now()) throw new Error("portable_backup_evidence_claim_deadline_invalid");
+  const configuredTimeout = Number(process.env.AUTOMATION_OS_PORTABLE_BACKUP_EVIDENCE_VERIFIER_TIMEOUT_MS || 120_000);
+  const timeoutMs = Math.max(1, Math.min(120_000, Number.isFinite(configuredTimeout) ? configuredTimeout : 120_000, leaseExpiresAt - Date.now()));
+  return new Promise((resolve, reject) => {
+    let temporaryScope;
+    try {
+      temporaryScope = fs.mkdtempSync(path.join(tmpdir(), "aos-backup-evidence-verifier-"));
+      fs.chmodSync(temporaryScope, 0o700);
+    } catch {
+      reject(new Error("portable_backup_evidence_verifier_temp_scope_failed"));
+      return;
+    }
+    const cleanupTemporaryScope = () => {
+      try {
+        fs.rmSync(temporaryScope, { recursive: true, force: true });
+        return !fs.existsSync(temporaryScope);
+      } catch {
+        return false;
+      }
+    };
+    let child;
+    try {
+      child = spawnProcess(process.execPath, [BACKUP_EVIDENCE_READER, `--run-id=${claim.run_id}`], {
+        cwd: ROOT,
+        env: {
+          ...process.env,
+          AUTOMATION_OS_REPO_ROOT: ROOT,
+          AUTOMATION_OS_PORTABLE_REMOTE_ARTIFACT_ROOT: ARTIFACT_ROOT,
+          TMPDIR: temporaryScope,
+          TMP: temporaryScope,
+          TEMP: temporaryScope,
+        },
+        detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"]
+      });
+    } catch {
+      cleanupTemporaryScope();
+      reject(new Error("portable_backup_evidence_verifier_spawn_failed"));
+      return;
+    }
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    let settled = false;
+    let cleanupPromise;
+    const cleanup = () => {
+      if (!cleanupPromise) cleanupPromise = cleanupOwnedProcessGroup(child, 1_000).catch(() => ({ verified: false }));
+      return cleanupPromise;
+    };
+    const finish = (callback) => {
+      if (settled) return;
+      settled = true;
+      callback();
+    };
+    const parseOutput = () => {
+      const text = String(stdout || "").trim();
+      if (!text) return null;
+      try { return JSON.parse(text); } catch { return null; }
+    };
+    const validExactBlocker = (value) => typeof value === "string" && /^[A-Za-z0-9_.:-]{1,240}$/u.test(value);
+    const validBlockedEnvelope = (parsed) => parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      && parsed.status === "blocked" && validExactBlocker(parsed.exact_blocker)
+      && parsed.provider_replayed === false && parsed.new_effect === false;
+    const validEvidenceEnvelope = (parsed) => parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      && parsed.schema === "aos.portable_backup_post_effect_evidence.v1"
+      && parsed.run_id === claim.run_id && parsed.workflow_id === claim.workflow_id
+      && (parsed.exact_blocker === null || validExactBlocker(parsed.exact_blocker))
+      && parsed.provider_replayed === false && parsed.new_effect === false
+      && (parsed.evidence === null || (parsed.evidence && typeof parsed.evidence === "object" && !Array.isArray(parsed.evidence)));
+    const timer = setTimeout(() => {
+      timedOut = true;
+      void cleanup().then((processGroupCleanup) => finish(() => {
+        const temporaryCleanupVerified = cleanupTemporaryScope();
+        return resolve({
+        status: "blocked", exact_blocker: processGroupCleanup.verified === true
+          && temporaryCleanupVerified ? "portable_backup_evidence_verifier_timeout" : "portable_backup_evidence_verifier_cleanup_unverified",
+        readback_verified: false, cleanup_verified: processGroupCleanup.verified === true && temporaryCleanupVerified,
+        provider_replayed: false, new_effect: false, child_exit_code: child.exitCode ?? null,
+        child_signal: child.signalCode || "SIGTERM", process_group_cleanup: processGroupCleanup,
+        temporary_restore_cleanup: { attempted: true, verified: temporaryCleanupVerified }
+        });
+      }));
+    }, timeoutMs);
+    child.stdout?.on("data", (chunk) => { stdout = `${stdout}${chunk}`.slice(-200_000); });
+    child.stderr?.on("data", (chunk) => { stderr = `${stderr}${chunk}`.slice(-20_000); });
+    child.once("error", () => {
+      clearTimeout(timer);
+      void cleanup().then(() => finish(() => {
+        const temporaryCleanupVerified = cleanupTemporaryScope();
+        reject(new Error(temporaryCleanupVerified ? "portable_backup_evidence_verifier_spawn_failed" : "portable_backup_evidence_verifier_cleanup_unverified"));
+      }));
+    });
+    child.once("close", (code, signal) => {
+      clearTimeout(timer);
+      void cleanup().then((processGroupCleanup) => finish(() => {
+        const parsed = parseOutput();
+        const temporaryCleanupVerified = cleanupTemporaryScope();
+        if (timedOut) return resolve({ status: "blocked", exact_blocker: processGroupCleanup.verified === true && temporaryCleanupVerified
+          ? "portable_backup_evidence_verifier_timeout" : "portable_backup_evidence_verifier_cleanup_unverified", readback_verified: false,
+        cleanup_verified: processGroupCleanup.verified === true && temporaryCleanupVerified, provider_replayed: false, new_effect: false,
+        process_group_cleanup: processGroupCleanup, temporary_restore_cleanup: { attempted: true, verified: temporaryCleanupVerified } });
+        const knownEnvelope = validEvidenceEnvelope(parsed) || validBlockedEnvelope(parsed);
+        const knownBlocker = knownEnvelope && validExactBlocker(parsed.exact_blocker) ? parsed.exact_blocker : null;
+        if (code !== 0 || signal) return reject(new Error(knownBlocker || (signal
+          ? "portable_backup_evidence_verifier_signal"
+          : "portable_backup_evidence_verifier_nonzero")));
+        if (stderr.trim() || (!validEvidenceEnvelope(parsed) && !validBlockedEnvelope(parsed))) return reject(new Error("portable_backup_evidence_verifier_output_invalid"));
+        if (validBlockedEnvelope(parsed)) return resolve({ ...parsed, cleanup_verified: parsed.cleanup_verified === true && processGroupCleanup.verified === true && temporaryCleanupVerified,
+          child_exit_code: code, child_signal: signal, process_group_cleanup: processGroupCleanup,
+          temporary_restore_cleanup: { attempted: true, verified: temporaryCleanupVerified } });
+        if (parsed.readback_verified === true && (parsed.cleanup_verified !== true || !processGroupCleanup.verified || !temporaryCleanupVerified)) return reject(new Error("portable_backup_evidence_verifier_cleanup_unverified"));
+        if (parsed.readback_verified !== true && typeof parsed.exact_blocker !== "string") return reject(new Error("portable_backup_evidence_verifier_output_invalid"));
+        return resolve({ ...parsed, cleanup_verified: parsed.cleanup_verified === true && processGroupCleanup.verified === true && temporaryCleanupVerified,
+          child_exit_code: code, child_signal: signal,
+          process_group_cleanup: processGroupCleanup, temporary_restore_cleanup: { attempted: true, verified: temporaryCleanupVerified } });
+      }));
+    });
+  });
+}
+
+async function processPortableBackupEvidenceClaim(claim, target) {
+  const root = runRoot(claim.run_id);
+  let verified;
+  try {
+    verified = await runPortableBackupEvidenceVerifier(claim);
+  } catch (error) {
+    verified = { status: "blocked", exact_blocker: error instanceof Error ? error.message : "portable_backup_evidence_verifier_failed", readback_verified: false, cleanup_verified: false, provider_replayed: false, new_effect: false };
+  }
+  const success = verified.readback_verified === true && verified.cleanup_verified === true;
+  const receipt = {
+    evidence_only: true, status: success ? "complete" : "blocked", exact_blocker: success ? null : verified.exact_blocker,
+    external_action_executed: success ? true : null, browser_surface: "local_worker", workflow_id: claim.workflow_id,
+    run_id: claim.run_id, step_id: claim.step_id, cleanup_verified: success, readback_verified: success,
+    effects_mode: "business_effect", read_only_stage_bound: false, same_run_receipt: success,
+    same_run_source_sync: success, business_completion_verified: success, business_proof_verified: success,
+    provider_replayed: false, new_effect: false, original_run_id: claim.run_id,
+    original_step_id: claim.step_id, original_authority_id: claim.reconciliation_binding?.original_authority_id,
+    original_authority_sha256: claim.reconciliation_binding?.original_authority_sha256,
+    original_claim: verified.original_claim || null,
+    original_timeout_receipt: verified.original_timeout_receipt || null,
+    reconciliation_binding: claim.reconciliation_binding || null,
+    evidence: verified.evidence ? {
+      ...verified.evidence,
+      original_execution_summary: verified.original_execution_summary || null,
+      direct_child_link_verified: verified.direct_child_link_verified === false ? false : null
+    } : null,
+    adapter_result: { execution_surface: "mac_local_worker", evidence_only: true, remote_verified: success, evidence: verified.evidence || null },
+    runner_receipt: { status: success ? "complete" : "blocked", same_run_source_sync: success,
+      business_proofs: { backup_snapshot: success, backup_remote_push: success, backup_state: success, cleanup_receipt: success } },
+    external_executor_status: "portable_backup_post_effect_evidence_verifier"
+    , attempt_id: claim.attempt_id, fencing_token: claim.fencing_token
+  };
+  const body = { worker_id: WORKER_ID, worker_instance_id: WORKER_INSTANCE_ID, receipt };
+  safeWrite(path.join(root, "portable-backup-post-effect-evidence-submission.v1.json"), {
+    schema: "aos.portable_backup_post_effect_evidence_submission.v1", run_id: claim.run_id,
+    step_id: claim.step_id, workflow_id: claim.workflow_id, provider_replayed: false, new_effect: false, body
+  });
+  const completion = await requestTargetJson(target, `/api/portable-worker/${encodeURIComponent(claim.run_id)}/receipt`, body);
+  return { status: completion.receipt.status, run_id: claim.run_id, workflow_id: claim.workflow_id, step_id: claim.step_id,
+    exact_blocker: completion.receipt.exact_blocker, external_action_executed: completion.receipt.external_action_executed,
+    evidence_only: true, provider_replayed: false, new_effect: false, readback_verified: success, cleanup_verified: success,
+    remote_replayed: completion.replayed === true };
+}
+
+/** Persist the exact token-free submission before HTTP; never rerun a provider. */
+export async function submitPortableLocalReceipt(claim, target, receipt, root, { request = requestTargetJson } = {}) {
+  const body = { worker_id: WORKER_ID, worker_instance_id: WORKER_INSTANCE_ID, receipt };
+  let envelope;
+  let completion;
+  let serverReceiptConfirmed = false;
+  try {
+    envelope = safeWrite(path.join(root, "portable-local-receipt-submission.v1.json"), {
+      schema: "aos.portable_local_receipt_submission.v1", run_id: claim.run_id, step_id: claim.step_id,
+      workflow_id: claim.workflow_id, company_id: claim.company_id,
+      target_origin: target.baseUrl, lease_expires_at: claim.lease_expires_at,
+      idempotency_key: claim.idempotency_key, input_bundle_sha256: claim.input_bundle_sha256 ?? null, body
+    });
+    // The server's completion schema is boolean-only. Never coerce unknown
+    // business effects to false to make a receipt fit that schema.
+    if (typeof receipt.external_action_executed !== "boolean") throw new Error("portable_local_effect_reconciliation_required");
+    completion = await request(target, `/api/portable-worker/${encodeURIComponent(claim.run_id)}/receipt`, body);
+    const readback = buildPortableProtectedReadback(claim, receipt, completion);
+    if (readback.protected_readback.status !== "verified" || completion.receipt.workflow_id !== claim.workflow_id
+      || (receipt.external_action_executed === true && completion.receipt.external_action_executed !== true)) {
+      throw new Error("portable_local_server_receipt_binding_unverified");
+    }
+    serverReceiptConfirmed = true;
+    persistPortableProtectedReadback(claim, receipt, completion, root);
+    return { status: "recorded", completion };
+  } catch (error) {
+    return {
+      status: "blocked", run_id: claim.run_id, step_id: claim.step_id, workflow_id: claim.workflow_id,
+      exact_blocker: serverReceiptConfirmed ? "portable_local_completion_readback_persist_failed" : "portable_local_receipt_submission_unconfirmed",
+      receipt_submission_error: portableRemoteErrorCode(error),
+      local_receipt_status: receipt.status, local_receipt_exact_blocker: receipt.exact_blocker,
+      external_action_executed: receipt.external_action_executed,
+      operation_effect_state: receipt.external_action_executed === false ? "none" : "unknown",
+      reconciliation_required: true, no_replay: true, browser_surface: "local_worker",
+      cleanup_verified: receipt.cleanup_verified === true, readback_verified: receipt.readback_verified === true,
+      receipt_submission_artifact: envelope ? `file://${envelope.path}` : null,
+      server_receipt_confirmed: serverReceiptConfirmed
+    };
+  }
+}
+
+function claimPortableLocalMarker(filePath, value) {
+  mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
+  let fd;
+  try { fd = openSync(filePath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | (constants.O_NOFOLLOW || 0), 0o600); }
+  catch (error) { if (error.code === "EEXIST") return false; throw error; }
+  try { writeFileSync(fd, `${JSON.stringify(value)}\n`); fsyncSync(fd); }
+  finally { closeSync(fd); }
+  return true;
+}
+
+function privatePortableLocalRecord(filePath) {
+  const stat = lstatSync(filePath);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || (stat.mode & 0o077) !== 0
+    || (typeof process.getuid === "function" && stat.uid !== process.getuid()) || stat.size > 4_000_000) throw new Error("portable_local_receipt_artifact_invalid");
+  return JSON.parse(readFileSync(filePath, "utf8"));
+}
+
+/** One receipt-only retry within the original claim. Never invokes an adapter. */
+export async function resumePortableLocalReceiptOnly(claim, target, root, { request = requestTargetJson } = {}) {
+  let receipt = null;
+  const fallback = () => ({
+    status: "blocked", exact_blocker: "portable_local_previous_execution_reconciliation_required",
+    run_id: claim.run_id, step_id: claim.step_id, workflow_id: claim.workflow_id,
+    external_action_executed: receipt?.external_action_executed === true ? true
+      : receipt?.external_action_executed === false || claim.execution_mode === "read_only" ? false : null,
+    local_receipt_status: receipt?.status ?? null, local_receipt_exact_blocker: receipt?.exact_blocker ?? null,
+    reconciliation_required: true, no_replay: true, provider_replayed: false, browser_surface: "local_worker",
+    cleanup_verified: receipt?.cleanup_verified === true, readback_verified: receipt?.readback_verified === true
+  });
+  try {
+    const envelopePath = path.join(root, "portable-local-receipt-submission.v1.json");
+    if (!existsSync(envelopePath)) {
+      const legacy = privatePortableLocalRecord(path.join(root, "portable-local-worker-receipt.v1.json"));
+      if (legacy.run_id === claim.run_id && legacy.step_id === claim.step_id && legacy.workflow_id === claim.workflow_id) receipt = legacy;
+      return fallback();
+    }
+    const saved = privatePortableLocalRecord(envelopePath);
+    if (saved.schema !== "aos.portable_local_receipt_submission.v1" || saved.company_id !== claim.company_id
+      || saved.run_id !== claim.run_id || saved.step_id !== claim.step_id || saved.workflow_id !== claim.workflow_id
+      || saved.target_origin !== target.baseUrl || saved.idempotency_key !== claim.idempotency_key
+      || saved.input_bundle_sha256 !== (claim.input_bundle_sha256 ?? null)
+      || saved.lease_expires_at !== claim.lease_expires_at
+      || saved.body?.receipt?.run_id !== claim.run_id || saved.body.receipt.step_id !== claim.step_id
+      || saved.body.receipt.workflow_id !== claim.workflow_id) return fallback();
+    receipt = saved.body.receipt;
+    if (saved.body.worker_id !== WORKER_ID || saved.body.worker_instance_id !== WORKER_INSTANCE_ID
+      || typeof receipt.external_action_executed !== "boolean") return fallback();
+    portableLocalExecutionDeadline(claim);
+    if (!claimPortableLocalMarker(path.join(root, "portable-local-receipt-resubmission.v1.json"), {
+      schema: "aos.portable_local_receipt_resubmission.v1", run_id: claim.run_id,
+      original_submission_sha256: sha256(readFileSync(envelopePath)), provider_replayed: false
+    })) return fallback();
+    const submitted = await submitPortableLocalReceipt(claim, target, receipt, root, { request });
+    if (submitted.status !== "recorded") return { ...submitted, provider_replayed: false };
+    return {
+      ...fallback(), status: submitted.completion.receipt.status, exact_blocker: submitted.completion.receipt.exact_blocker,
+      reconciliation_required: submitted.completion.receipt.status !== "complete", remote_receipt_resynced: true,
+      remote_replayed: submitted.completion.replayed === true, server_receipt_confirmed: true
+    };
+  } catch { return fallback(); }
+}
+
 export function portableRemoteHttpTimeoutMs(value = process.env.AUTOMATION_OS_PORTABLE_REMOTE_HTTP_TIMEOUT_MS) {
   const parsed = Number(value ?? DEFAULT_REMOTE_HTTP_TIMEOUT_MS);
   return Number.isFinite(parsed)
-    ? Math.max(1_000, Math.min(120_000, Math.floor(parsed)))
+    ? Math.max(1_000, Math.min(300_000, Math.floor(parsed)))
     : DEFAULT_REMOTE_HTTP_TIMEOUT_MS;
 }
 
@@ -1330,31 +2024,78 @@ async function requestTargetJson(target, pathname, body) {
   return requestPortableRemoteJson(url, target.token, body, { companyId: target.companyId, localWorker: target.kind === "local" });
 }
 
-function publishHeartbeat(target) {
+export function publishHeartbeat(target) {
   const key = `${target.kind}:${target.baseUrl}:${target.companyId}`;
   const existing = heartbeatInFlight.get(key);
   if (existing) return existing;
   const current = (async () => {
     const attemptedAt = new Date().toISOString();
+    const runtimeObservation = buildPortableWorkerRuntimeObservation({
+      workerStatus: "idle",
+      runId: null,
+      observedAt: attemptedAt
+    });
     if (target.kind === "remote" && !target.token) {
-      writeTargetWorkerStatus(target, { status: "blocked", exact_blocker: "portable_remote_worker_token_missing", heartbeat_status: "blocked", heartbeat_exact_blocker: "portable_remote_worker_token_missing", last_attempt_at: attemptedAt });
+      writeTargetWorkerStatus(target, {
+        status: "blocked",
+        exact_blocker: "portable_remote_worker_token_missing",
+        heartbeat_status: "blocked",
+        heartbeat_exact_blocker: "portable_remote_worker_token_missing",
+        observed_at: attemptedAt,
+        heartbeat_observed_at: attemptedAt,
+        heartbeat_transport_status: "blocked",
+        heartbeat_transport_observed_at: attemptedAt,
+        heartbeat_ack_at: null,
+        heartbeat_ack_observed_at: null,
+        heartbeat_ack_binding_status: "unverified",
+        heartbeat_ack_worker_instance_id: null,
+        heartbeat_ack_generation: null,
+        heartbeat_observation: runtimeObservation,
+        heartbeat_observation_status: runtimeObservation.status,
+        heartbeat_observation_run_id: runtimeObservation.run_id,
+        heartbeat_observation_room_id: null,
+        last_attempt_at: attemptedAt
+      });
       return false;
     }
     try {
-      const response = await requestTargetJson(target, "/api/portable-worker/heartbeat", {
-        worker_id: WORKER_ID,
-        worker_instance_id: WORKER_INSTANCE_ID,
-        status: "running",
-        queue_depth: null,
-        exact_blocker: null,
-        chrome_plugin_readback: readChromePluginWorkerReadback(),
-      });
-      const heartbeatAt = typeof response.heartbeat_at === "string" ? response.heartbeat_at : null;
+      const response = await requestTargetJson(target, "/api/portable-worker/heartbeat", buildPortableWorkerHeartbeatBody({
+        companyId: target.companyId,
+        status: "idle",
+        queueDepth: null,
+        exactBlocker: null,
+        runId: null,
+        observedAt: attemptedAt,
+        runtimeObservation
+      }));
+      const ackObservedAt = new Date().toISOString();
+      const ack = normalizePortableWorkerHeartbeatAck(response, {
+        companyId: target.companyId,
+        workerId: WORKER_ID,
+        workerInstanceId: WORKER_INSTANCE_ID,
+        generation: WORKER_GENERATION
+      }, ackObservedAt);
+      if (ack.status !== "acknowledged") throw new Error("portable_remote_heartbeat_ack_invalid");
+      if (!["verified", "legacy_unbound"].includes(ack.binding_status)) throw new Error("portable_remote_heartbeat_binding_mismatch");
+      const heartbeatAt = ack.ack_at;
       writeTargetWorkerStatus(target, {
         status: "heartbeat_ok",
         exact_blocker: null,
         heartbeat_status: "ok",
         heartbeat_exact_blocker: null,
+        observed_at: attemptedAt,
+        heartbeat_observed_at: attemptedAt,
+        heartbeat_transport_status: ack.status,
+        heartbeat_transport_observed_at: ack.observed_at,
+        heartbeat_ack_at: ack.ack_at,
+        heartbeat_ack_observed_at: ack.observed_at,
+        heartbeat_ack_binding_status: ack.binding_status,
+        heartbeat_ack_worker_instance_id: ack.worker_instance_id,
+        heartbeat_ack_generation: ack.generation,
+        heartbeat_observation: runtimeObservation,
+        heartbeat_observation_status: runtimeObservation.status,
+        heartbeat_observation_run_id: runtimeObservation.run_id,
+        heartbeat_observation_room_id: runtimeObservation.browser_use?.room?.room_id ?? null,
         last_attempt_at: attemptedAt,
         last_successful_heartbeat_at: heartbeatAt ?? attemptedAt,
         heartbeat_at: heartbeatAt,
@@ -1362,7 +2103,26 @@ function publishHeartbeat(target) {
       return true;
     } catch (error) {
       const exactBlocker = portableRemoteErrorCode(error);
-      writeTargetWorkerStatus(target, { status: "heartbeat_blocked", exact_blocker: exactBlocker, heartbeat_status: "blocked", heartbeat_exact_blocker: exactBlocker, last_attempt_at: attemptedAt });
+      writeTargetWorkerStatus(target, {
+        status: "heartbeat_blocked",
+        exact_blocker: exactBlocker,
+        heartbeat_status: "blocked",
+        heartbeat_exact_blocker: exactBlocker,
+        observed_at: attemptedAt,
+        heartbeat_observed_at: attemptedAt,
+        heartbeat_transport_status: "blocked",
+        heartbeat_transport_observed_at: new Date().toISOString(),
+        heartbeat_ack_at: null,
+        heartbeat_ack_observed_at: null,
+        heartbeat_ack_binding_status: "unverified",
+        heartbeat_ack_worker_instance_id: null,
+        heartbeat_ack_generation: null,
+        heartbeat_observation: runtimeObservation,
+        heartbeat_observation_status: runtimeObservation.status,
+        heartbeat_observation_run_id: runtimeObservation.run_id,
+        heartbeat_observation_room_id: null,
+        last_attempt_at: attemptedAt
+      });
       return false;
     }
   })();
@@ -1452,6 +2212,7 @@ async function processOne({ target, requestedRunId = null } = {}) {
   }
   const claim = claimed.run;
   writeTargetWorkerStatus(target, { status: "claimed", exact_blocker: null, claim_status: "claimed", last_claim_at: new Date().toISOString() });
+  if (claim.evidence_only === true) return processPortableBackupEvidenceClaim(claim, target);
   const fixedSurfaceBlocker = fixedChromePluginProfile2BlockerForClaim(claim);
   if (fixedSurfaceBlocker) {
     const receipt = fixedChromePluginProfile2Receipt(claim, fixedSurfaceBlocker);
@@ -1560,10 +2321,24 @@ async function main() {
     claim_status: "unknown",
     heartbeat_status: "unknown",
     heartbeat_exact_blocker: null,
+    observed_at: null,
+    heartbeat_observed_at: null,
     last_attempt_at: null,
     last_successful_heartbeat_at: null,
     heartbeat_at: null,
-    generation_started_at: new Date().toISOString(),
+    generation: WORKER_GENERATION,
+    generation_started_at: WORKER_GENERATION_STARTED_AT,
+    heartbeat_transport_status: "unobserved",
+    heartbeat_transport_observed_at: null,
+    heartbeat_ack_at: null,
+    heartbeat_ack_observed_at: null,
+    heartbeat_ack_binding_status: "unverified",
+    heartbeat_ack_worker_instance_id: null,
+    heartbeat_ack_generation: null,
+    heartbeat_observation: null,
+    heartbeat_observation_status: "unobserved",
+    heartbeat_observation_run_id: null,
+    heartbeat_observation_room_id: null,
     // A status artifact is a current-generation readback, not an append-only
     // history.  Drop target keys from an older company/authority binding so
     // a stale `claimed` entry cannot be mistaken for a live target.

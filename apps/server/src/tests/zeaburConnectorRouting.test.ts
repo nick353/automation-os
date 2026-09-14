@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildConnectorExecutionPlacement, canBootstrapInstalledPluginAuth, type ZeaburConnectorRegistryReadback } from "../codex/zeaburConnectorRouting.js";
+import { buildConnectorExecutionPlacement, canBootstrapInstalledPluginAuth, sanitizeZeaburConnectorRegistryReadback, type ZeaburConnectorRegistryReadback } from "../codex/zeaburConnectorRouting.js";
 
 function fixture(status: "verified" | "unverified" = "verified"): ZeaburConnectorRegistryReadback {
   return {
@@ -79,4 +79,31 @@ test("Zeabur CLI authentication failure remains a hard placement blocker", () =>
   assert.equal(placement.status, "blocked");
   assert.equal(placement.owner, "none");
   assert.equal(placement.exactBlocker, "zeabur_cli_authentication_unavailable");
+});
+
+test("company registry sanitizer preserves Codex Server auth metadata without secrets", () => {
+  const registry = sanitizeZeaburConnectorRegistryReadback({
+    schema: "aos_zeabur_codex_app_server_connector_registry.v1",
+    capturedAt: "2026-08-18T00:00:00.000Z",
+    source: "zeabur_service_exec",
+    target: { projectId: "project", serviceId: "service", serviceName: "codex-app-server", environmentId: "environment" },
+    appServer: { servicePresent: true, runtimeStatus: "running", codexLogin: "logged_in" },
+    pluginRegistry: {
+      installed: [],
+      available: [{ pluginId: "linear@openai-curated", name: "linear", marketplaceName: "openai-curated", installed: false, authStatus: "unknown", authPolicy: "ON_INSTALL" }]
+    },
+    mcpRegistry: { configuredCount: 0, verified: false, names: [] },
+    connectorAuth: {},
+    exactBlocker: null,
+    secretMaterialIncluded: false
+  });
+  assert.deepEqual(registry.pluginRegistry.available[0], {
+    id: "linear@openai-curated",
+    name: "linear",
+    installed: false,
+    authStatus: "unknown",
+    marketplaceName: "openai-curated",
+    authPolicy: "ON_INSTALL"
+  });
+  assert.equal(registry.secretMaterialIncluded, false);
 });

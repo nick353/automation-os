@@ -24,6 +24,8 @@ import {
   UNATTENDED_FIXED_LOCAL_EFFECT_POLICY
 } from "./portableLocalWorkflow.js";
 import { backupBusinessPayloadHash, obsidianBusinessPayloadHash } from "./portableLocalWorkflow.js";
+import { DAILY_AI_RESEARCH_SYNC_WORKFLOW, DAILY_AI_RESEARCH_SYNC_POLICY, DAILY_AI_RESEARCH_SYNC_COMPANY,
+  DAILY_AI_RESEARCH_SYNC_ACCOUNT, DAILY_AI_RESEARCH_SYNC_TARGET, dailyAiResearchSyncPayloadHash, dailyAiResearchSyncBundleValid } from "./dailyAiResearchSourceSync.js";
 import { preparePortableExternalApprovalPostgres } from "./portableWorkflowEntrypoint.js";
 import {
   createRegisteredRootAdmissionV1,
@@ -41,8 +43,10 @@ export type PortableLocalWorkflowStartInput = {
   readOnlyStage?: "reference_readback";
   effectStage?: "business_execute";
   inputBundle?: Record<string, unknown> | null;
-  unattendedEffectPolicy?: typeof UNATTENDED_FIXED_LOCAL_EFFECT_POLICY;
+  unattendedEffectPolicy?: typeof UNATTENDED_FIXED_LOCAL_EFFECT_POLICY | typeof DAILY_AI_RESEARCH_SYNC_POLICY;
   sourceSnapshot?: PortableLocalSourceSnapshot;
+  chatOrigin?: { schema: "aos.chat_workflow_binding.v1"; binding_id: string; job_id: string; prompt_sha256: string };
+  recoveryOrigin?: { schema: "aos.portable_run_recovery.v1"; binding_id: string; parent_run_id: string; company_id: string };
 };
 
 export type PortableLocalWorkflowStartResult = {
@@ -56,11 +60,23 @@ export type PortableLocalWorkflowStartResult = {
   registeredRoot?: RegisteredRootAdmissionV1;
 };
 
+export function portableChatWorkflowRunId(origin: NonNullable<PortableLocalWorkflowStartInput["chatOrigin"]>): string {
+  return `run_chat_${hashIdempotencyRequest(origin).slice(0, 32)}`;
+}
+
+export function portableRecoveryRunId(origin: NonNullable<PortableLocalWorkflowStartInput["recoveryOrigin"]>): string {
+  return `run_retry_${hashIdempotencyRequest(origin).slice(0, 32)}`;
+}
+
 export async function startPortableLocalWorkflowRun(input: PortableLocalWorkflowStartInput): Promise<PortableLocalWorkflowStartResult> {
   const idempotencyKey = input.idempotencyKey.trim();
   const companyId = input.companyId.trim();
   if (!idempotencyKey) throw new Error("portable_idempotency_key_required");
   if (!companyId) throw new Error("company_id_required");
+  if (input.chatOrigin && input.recoveryOrigin) throw new Error("portable_run_origin_conflict");
+  if (input.recoveryOrigin && input.recoveryOrigin.company_id !== companyId) throw new Error("portable_recovery_company_mismatch");
+  const boundRunId = input.chatOrigin ? portableChatWorkflowRunId(input.chatOrigin)
+    : input.recoveryOrigin ? portableRecoveryRunId(input.recoveryOrigin) : null;
   if (input.readOnlyStage !== undefined && input.readOnlyStage !== "reference_readback") {
     throw new Error("portable_local_read_only_stage_unsupported");
   }
@@ -82,6 +98,12 @@ export async function startPortableLocalWorkflowRun(input: PortableLocalWorkflow
     input_bundle: inputBundle,
     unattended_effect_policy: input.unattendedEffectPolicy ?? null,
     source_snapshot: input.sourceSnapshot ?? null,
+    ...(input.chatOrigin ? { chat_origin: input.chatOrigin,
+      registered_automation_id: input.registeredAutomationId ?? null,
+      registered_automation_version_id: input.registeredAutomationVersionId ?? null } : {}),
+    ...(input.recoveryOrigin ? { recovery_origin: input.recoveryOrigin,
+      registered_automation_id: input.registeredAutomationId ?? null,
+      registered_automation_version_id: input.registeredAutomationVersionId ?? null } : {}),
     idempotency_key: idempotencyKey
   });
   const existingQuery = `
@@ -99,8 +121,9 @@ export async function startPortableLocalWorkflowRun(input: PortableLocalWorkflow
   if (existing?.request_hash !== requestHash && existing) {
     throw new Error("portable_workflow_invocation_payload_conflict");
   }
-  if (existing?.run_id) {
-    const runQuery = `SELECT id, status FROM runs WHERE id=${sqlValue(existing.run_id)} LIMIT 1`;
+  const existingRunId = existing?.run_id ?? (existing ? boundRunId : null);
+  if (existingRunId) {
+    const runQuery = `SELECT id, status FROM runs WHERE id=${sqlValue(existingRunId)} AND company_id=${sqlValue(companyId)} LIMIT 1`;
     const run = (postgres
       ? (await querySqlAsync<{ id: string; status: string }>(runQuery))[0]
       : querySql<{ id: string; status: string }>(runQuery)[0]);
@@ -141,10 +164,13 @@ export async function startPortableLocalWorkflowRun(input: PortableLocalWorkflow
     const registeredRoot = createRegisteredRootAdmissionV1({
       registeredAutomationId: input.registeredAutomationId ?? input.workflowId,
       workflowId: input.workflowId,
-      runId: makeId("run"),
+      runId: boundRunId ?? makeId("run"),
       sourceTrigger: input.sourceTrigger,
       definitionFingerprint: hashIdempotencyRequest(manifest)
     });
+    // Chat's durable binding deterministically identifies this Run before it
+    // exists. Do not prefill invocation.run_id: its foreign key correctly
+    // requires an existing Run. A lost completion is recovered by the same ID.
     const persistedInputBundle = inputBundle ? writeLocalInputBundle(registeredRoot.run_id, input.workflowId, inputBundle) : null;
     const started = await startCommandRun(manifest.command, {
       runId: registeredRoot.run_id,
@@ -179,6 +205,8 @@ export async function startPortableLocalWorkflowRun(input: PortableLocalWorkflow
         : {}),
         registeredWorkflowId: input.workflowId,
         registered_workflow_id: input.workflowId,
+        ...(input.chatOrigin ? { chat_origin: input.chatOrigin } : {}),
+        ...(input.recoveryOrigin ? { recovery_origin: input.recoveryOrigin } : {}),
         workflow_id: input.workflowId,
         registered_workflow_start: {
           source,
@@ -220,7 +248,9 @@ export async function startPortableLocalWorkflowRun(input: PortableLocalWorkflow
       }
     });
     if (input.effectStage) {
-      if (dbBackend !== "postgres" || !companyId || !persistedInputBundle) throw new Error("portable_local_business_requires_postgres_bundle");
+      if ((dbBackend !== "postgres" && input.workflowId !== "email-review-reply") || !companyId || !persistedInputBundle) {
+        throw new Error("portable_local_business_requires_postgres_bundle");
+      }
       await preparePortableExternalApprovalPostgres({
         runId: started.runId,
         workflowId: input.workflowId,
@@ -231,6 +261,7 @@ export async function startPortableLocalWorkflowRun(input: PortableLocalWorkflow
         inputBundleSha256: persistedInputBundle.sha256,
         browserSurface: "browser_use_cli",
         approvalMode: input.unattendedEffectPolicy === UNATTENDED_FIXED_LOCAL_EFFECT_POLICY
+          || (input.workflowId === DAILY_AI_RESEARCH_SYNC_WORKFLOW && input.unattendedEffectPolicy === DAILY_AI_RESEARCH_SYNC_POLICY)
           ? "registered_unattended_local"
           : "explicit"
       });
@@ -245,9 +276,11 @@ export async function startPortableLocalWorkflowRun(input: PortableLocalWorkflow
     const current = (await querySqlAsync<{ id: string; status: string }>(`SELECT id, status FROM runs WHERE id=${sqlValue(started.runId)} LIMIT 1`))[0];
     return result(input, idempotencyKey, started.runId, current?.status ?? String(started.run.status ?? "queued"), false, registeredRoot);
   } catch (error) {
-    const releaseStep = { sql: `DELETE FROM portable_workflow_invocations WHERE id=${sqlValue(reservationId)} AND status='pending'` };
-    if (postgres) await runSqlTransactionAsync([releaseStep]);
-    else runSqlTransaction([releaseStep]);
+    if (!boundRunId) {
+      const releaseStep = { sql: `DELETE FROM portable_workflow_invocations WHERE id=${sqlValue(reservationId)} AND status='pending'` };
+      if (postgres) await runSqlTransactionAsync([releaseStep]);
+      else runSqlTransaction([releaseStep]);
+    }
     throw error;
   }
 }
@@ -257,14 +290,76 @@ function result(input: PortableLocalWorkflowStartInput, idempotencyKey: string, 
 }
 
 function normalizeLocalBusinessInput(input: PortableLocalWorkflowStartInput): Record<string, unknown> | null {
-  if (!input.effectStage) return null;
-  if (input.workflowId !== "daily-backup-safety-check" && input.workflowId !== "obsidian-project-memory-audit") {
+  if (!input.effectStage) {
+    // Gmail's read-only provider review still needs the exact company-bound
+    // connection/account pair in the Run so the worker can revalidate it at
+    // the provider boundary. Other read-only local workflows have no caller
+    // input and continue to reject arbitrary bundles.
+    if (input.workflowId !== "email-review-reply" || input.inputBundle === undefined || input.inputBundle === null) return null;
+    if (typeof input.inputBundle !== "object" || Array.isArray(input.inputBundle)) {
+      throw new Error("portable_local_gmail_input_bundle_invalid");
+    }
+    const allowed = new Set(["connection_ref_id", "account_ref"]);
+    const normalized: Record<string, unknown> = {};
+    for (const [key, raw] of Object.entries(input.inputBundle)) {
+      if (!allowed.has(key) || typeof raw !== "string" || !raw.trim() || raw.length > 1000) {
+        throw new Error("portable_local_gmail_input_bundle_invalid");
+      }
+      normalized[key] = raw.trim();
+    }
+    if (typeof normalized.connection_ref_id !== "string" || typeof normalized.account_ref !== "string") {
+      throw new Error("portable_local_gmail_input_bundle_required");
+    }
+    return normalized;
+  }
+  if (input.workflowId !== "daily-backup-safety-check" && input.workflowId !== "obsidian-project-memory-audit"
+    && input.workflowId !== DAILY_AI_RESEARCH_SYNC_WORKFLOW && input.workflowId !== "email-review-reply") {
     throw new Error("portable_local_business_workflow_unsupported");
   }
   if (!input.inputBundle || typeof input.inputBundle !== "object" || Array.isArray(input.inputBundle)) {
     throw new Error("portable_local_business_input_bundle_required");
   }
   const bundle = input.inputBundle;
+  if (input.workflowId === "email-review-reply") {
+    const allowed = new Set([
+      "connection_ref_id", "account_ref", "target_key", "payload_hash", "source_snapshot_id",
+      "gmail_source_run_id", "gmail_source_review_hash", "gmail_source_evidence_sha256",
+      "gmail_canonical_reply_payload_sha256", "gmail_reply_effect_input_json", "gmail_reply_producer_result_json"
+    ]);
+    const normalized: Record<string, unknown> = {};
+    for (const [key, raw] of Object.entries(bundle)) {
+      if (!allowed.has(key) || typeof raw !== "string" || !raw.trim()
+        || raw.length > (key.endsWith("_json") ? 400_000 : 1_000)) {
+        throw new Error("portable_local_gmail_business_input_bundle_invalid");
+      }
+      normalized[key] = raw.trim();
+    }
+    const required = ["connection_ref_id", "account_ref", "target_key", "payload_hash", "source_snapshot_id",
+      "gmail_source_run_id", "gmail_source_review_hash", "gmail_source_evidence_sha256",
+      "gmail_canonical_reply_payload_sha256", "gmail_reply_effect_input_json", "gmail_reply_producer_result_json"];
+    if (required.some((key) => typeof normalized[key] !== "string")
+      || !/^[a-f0-9]{64}$/u.test(String(normalized.payload_hash))
+      || !/^[a-f0-9]{64}$/u.test(String(normalized.source_snapshot_id))
+      || !/^[a-f0-9]{64}$/u.test(String(normalized.gmail_source_review_hash))
+      || !/^[a-f0-9]{64}$/u.test(String(normalized.gmail_source_evidence_sha256))
+      || !/^[a-f0-9]{64}$/u.test(String(normalized.gmail_canonical_reply_payload_sha256))) {
+      throw new Error("portable_local_gmail_business_input_bundle_required");
+    }
+    try {
+      const parsedInput = JSON.parse(String(normalized.gmail_reply_effect_input_json)) as unknown;
+      const parsedResult = JSON.parse(String(normalized.gmail_reply_producer_result_json)) as unknown;
+      if (!parsedInput || typeof parsedInput !== "object" || !parsedResult || typeof parsedResult !== "object") {
+        throw new Error("invalid");
+      }
+    } catch {
+      throw new Error("portable_local_gmail_business_input_bundle_invalid");
+    }
+    return normalized;
+  }
+  if (input.workflowId === DAILY_AI_RESEARCH_SYNC_WORKFLOW
+    && (input.companyId !== DAILY_AI_RESEARCH_SYNC_COMPANY || !dailyAiResearchSyncBundleValid(bundle))) {
+    throw new Error("portable_local_business_target_invalid");
+  }
   const allowed = new Set(["account_ref", "target_key", "payload_hash", "source_snapshot_id"]);
   const normalized: Record<string, unknown> = {};
   for (const [key, raw] of Object.entries(bundle)) {
@@ -273,7 +368,9 @@ function normalizeLocalBusinessInput(input: PortableLocalWorkflowStartInput): Re
     }
     normalized[key] = raw.trim();
   }
-  const expected = input.workflowId === "daily-backup-safety-check"
+  const expected = input.workflowId === DAILY_AI_RESEARCH_SYNC_WORKFLOW
+    ? { accountRef: DAILY_AI_RESEARCH_SYNC_ACCOUNT, targetKey: DAILY_AI_RESEARCH_SYNC_TARGET, payloadHash: dailyAiResearchSyncPayloadHash() }
+    : input.workflowId === "daily-backup-safety-check"
     ? { accountRef: "github:nick353/daily-workspace-backup", targetKey: "daily-workspace-backup:main", payloadHash: backupBusinessPayloadHash() }
     : { accountRef: "github:nick353/obsidian-vault-backup", targetKey: "obsidian-vault-backup:main", payloadHash: obsidianBusinessPayloadHash() };
   if (normalized.account_ref !== expected.accountRef

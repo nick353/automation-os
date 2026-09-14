@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -210,6 +210,29 @@ test("all registered workflow families complete only with provider, source-sync,
   }
 });
 
+test("new browser receipts require the declared readback and never claim whole-workflow completion", async () => {
+  for (const mode of ['matched', 'missing', 'untrusted']) {
+    const root = mkdtempSync(join(tmpdir(), 'aos-companion-declared-readback-'));
+    try {
+      const input = { workflow_id: 'daily-ai-research-publish-run', run_id: `run-declared-${mode}`, step_id: 'web-effect', source_trigger: 'test', idempotency_key: `idem-declared-${mode}`, task_id: `task-declared-${mode}` };
+      const intent = intentFixture(input), authority = authorityFixture(root, input, intent); intent.authority_sha256 = authority.sha256;
+      const adapterModule = { async executeAosChromeCompanionAuthorized(request) {
+        return { result: 'verified', external_action_executed: true, browser_receipt_verified: mode !== 'untrusted',
+          provider_receipt_trusted: false, visual_readback_verified: true, cleanup_verified: true,
+          outcome: { schema: 'aos.chrome_companion.transaction_outcome.v1', provider_completion: 'unverified', source_sync: 'unverified' },
+          actions: request.actions.map(action => ({ method: action.method, result: action.method === 'page.query' ? { ok: true, count: mode === 'missing' ? 0 : 1 } : { ok: true } })) };
+      } };
+      const result = await runAosChromeCompanionWebOperationEffect(input, { mode: 'authorized', lifecycle: 'scheduled', public_lane: false, allowed_origins: [origin] }, intent,
+        { AUTOMATION_OS_ARTIFACT_ROOT: root, AUTOMATION_OS_PORTABLE_EFFECT_AUTHORITY_PATH: authority.path,
+          AUTOMATION_OS_PORTABLE_EFFECT_AUTHORITY_SHA256: authority.sha256, AUTOMATION_OS_PORTABLE_EFFECT_AUTHORITY_ID: authority.id }, { adapterModule, client: { close() {} } });
+      assert.equal(result.status, mode === 'matched' ? 'complete' : 'blocked');
+      assert.equal(result.workflow_completion, 'unverified');
+      assert.equal(result.adapter_result.source_sync.workflow_source_sync, 'unverified');
+      assert.equal(result.completion_scope, 'approved_web_operation_and_declared_readback');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }
+});
+
 test("unknown effects and incomplete cleanup block and remain no-replay", async () => {
   for (const mode of ["unknown_effect", "cleanup_missing"]) {
     const root = mkdtempSync(join(tmpdir(), "aos-companion-negative-"));
@@ -259,4 +282,27 @@ test("unknown effects and incomplete cleanup block and remain no-replay", async 
     assert.equal(duplicate.exact_blocker, "portable_external_web_operation_duplicate_idempotency_key");
     assert.equal(dispatchCount, 1);
   }
+});
+
+test('partial browser work is never returned as not_attempted when provider completion is unknown', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'aos-companion-outcome-'));
+  const input = { workflow_id: 'daily-ai-research-publish-run', run_id: 'run-outcome', step_id: 'web-effect', source_trigger: 'test', idempotency_key: 'idem-outcome', task_id: 'task-outcome' };
+  const intent = intentFixture(input), authority = authorityFixture(root, input, intent);
+  intent.authority_sha256 = authority.sha256;
+  const outcome = { schema: 'aos.chrome_companion.transaction_outcome.v1', applied_action_indices: [0], remaining_action_indices: [1, 2],
+    uncertain_action_indices: [1], reconciliation_required: true, provider_completion: 'unverified', source_sync: 'unverified' };
+  let dispatched = 0;
+  const adapterModule = { async executeAosChromeCompanionAuthorized() {
+    dispatched++; return { result: 'blocked', external_action_executed: false, outcome, provider_receipt_trusted: false,
+      exact_blocker: { code: 'operation_effect_unknown' }, actions: [{ method: 'page.type', result: { ok: true } }] };
+  } };
+  const environment = { AUTOMATION_OS_ARTIFACT_ROOT: root, AUTOMATION_OS_PORTABLE_EFFECT_AUTHORITY_PATH: authority.path,
+    AUTOMATION_OS_PORTABLE_EFFECT_AUTHORITY_SHA256: authority.sha256, AUTOMATION_OS_PORTABLE_EFFECT_AUTHORITY_ID: authority.id };
+  const route = { mode: 'authorized', lifecycle: 'scheduled', public_lane: false, allowed_origins: [origin] };
+  const result = await runAosChromeCompanionWebOperationEffect(input, route, intent, environment, { adapterModule, client: {} });
+  assert.equal(result.status, 'blocked'); assert.equal(result.browser_mutation_executed, true);
+  assert.equal(result.dispatch_state, 'unknown'); assert.equal(result.web_operation_lifecycle.state, 'effect_unknown');
+  assert.match(result.web_operation_lifecycle.restart_point, /remaining actions/); assert.deepEqual(result.outcome, outcome);
+  await runAosChromeCompanionWebOperationEffect(input, route, intent, environment, { adapterModule, client: {} });
+  assert.equal(dispatched, 1);
 });

@@ -66,15 +66,15 @@ test("reference workflow canary proves three runner routes stop before external 
     "nisenprints-daily-product-canva-printify-etsy-pinterest"
   ]);
   assert.ok(receipt.paths.every((path) => path.status === "proof_backed_safe_stop_verified"));
-  assert.ok(receipt.paths.every((path) => path.exact_blocker === "browser_use_cli_required"));
+  assert.ok(receipt.paths.every((path) => path.exact_blocker === "aos_chrome_companion_task_id_missing"));
   assert.ok(receipt.paths.every((path) => path.run_blocked && path.step_blocked));
   assert.ok(receipt.paths.every((path) => path.proof_gate_ok === false));
   assert.ok(receipt.paths.every((path) => path.runner_exit_status === null));
   assert.ok(receipt.paths.every((path) => !path.runner_started && !path.runner_completed));
   assert.ok(receipt.paths.every((path) => path.external_action_executed === false && path.idempotent_recheck));
-  assert.ok(receipt.paths.every((path) => path.reference_workflow_admission.browser_surface === "browser_use_cli"));
-  assert.ok(receipt.paths.every((path) => path.reference_workflow_admission.exact_blocker === "browser_use_cli_authority_missing"));
-  assert.ok(receipt.paths.every((path) => path.reference_workflow_admission.adapter?.schema === "service_readiness_browser_use_workflow_adapter.v1"));
+  assert.ok(receipt.paths.every((path) => path.reference_workflow_admission.browser_surface === "aos_chrome_companion_profile_instance"));
+  assert.ok(receipt.paths.every((path) => path.reference_workflow_admission.exact_blocker === "aos_chrome_companion_task_id_missing"));
+  assert.ok(receipt.paths.every((path) => path.reference_workflow_admission.adapter?.schema === "service_readiness_aos_chrome_companion_workflow_adapter.v1"));
   assert.ok(receipt.paths.every((path) => path.approval_boundary_verified));
   assert.ok(receipt.paths.every((path) => path.company_scope_verified));
   assert.ok(receipt.paths.every((path) => path.start_lineage_verified));

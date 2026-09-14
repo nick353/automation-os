@@ -5,6 +5,16 @@ import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 import { registeredBrowserLanes } from "../runs/laneManager.js";
+import {
+  PORTABLE_WORKER_HEARTBEAT_LEGACY_SCHEMA,
+  PORTABLE_WORKER_HEARTBEAT_SCHEMA,
+  PORTABLE_WORKER_HEARTBEAT_TRANSPORT_ACK_SCHEMA,
+  PORTABLE_WORKER_RUNTIME_OBSERVATION_SCHEMA,
+  validatePortableWorkerHeartbeat,
+  type PortableWorkerChromePluginReadback,
+  type PortableWorkerHeartbeatTransportAck,
+  type PortableWorkerRuntimeObservation
+} from "../runs/portableWorkerHeartbeat.js";
 
 const execFileAsync = promisify(execFileCallback);
 const LIVE_PROCESS_READBACK_TIMEOUT_MS = 2_000;
@@ -23,6 +33,9 @@ type SafeProcessEnv = {
   mode: "external" | "canary" | "unknown";
   durableOnly: boolean | null;
   workerId: string | null;
+  workerInstanceId: string | null;
+  generation: string | null;
+  identityStatus: "verified" | "legacy_unbound" | "mismatch" | "unreadable" | "unknown";
   remoteOrigin: string | null;
   remoteCompanyId: string | null;
 };
@@ -33,6 +46,9 @@ export type PortableRemoteWorkerScopeReadback = {
   remoteWorkerCompanyIds: string[];
   remoteOrigins: string[];
   workerIds: string[];
+  remoteWorkerInstanceIds: string[];
+  remoteWorkerGenerations: string[];
+  identityStatus: "verified" | "legacy_unbound" | "mismatch" | "unreadable" | "not_observed";
   alignmentCandidates: Array<{
     scope: "control_plane_queue" | "portable_remote_worker";
     status: "observed" | "not_observed" | "unreadable";
@@ -41,7 +57,13 @@ export type PortableRemoteWorkerScopeReadback = {
     workerIds: string[];
   }>;
   alignmentDecisionRequired: boolean;
-  exactBlocker: "portable_worker_company_scope_mismatch" | "portable_worker_company_scope_unreadable" | null;
+  exactBlocker:
+    | "portable_worker_company_scope_mismatch"
+    | "portable_worker_company_scope_unreadable"
+    | "portable_worker_identity_mismatch"
+    | "portable_worker_identity_unreadable"
+    | "portable_worker_heartbeat_unreadable"
+    | null;
   nextAction: string;
 };
 
@@ -55,6 +77,29 @@ export type BrowserRuntimeProcessReadbackOptions = {
   /** Keep server-side unit projections hermetic; production defaults to live ps readback. */
   readLiveProcessTable?: boolean;
   capturedAt?: string;
+  /** Sanitized or raw heartbeat metadata persisted by the control plane. */
+  remoteWorkerHeartbeat?: unknown;
+  /** Backward-compatible alias used by readback callers that call this metadata. */
+  heartbeatMetadata?: unknown;
+};
+
+export type PortableRemoteWorkerHeartbeatReadback = {
+  readbackStatus: "reported" | "unreadable";
+  identityStatus: "verified" | "legacy_unbound" | "unreadable";
+  schema: string | null;
+  companyId: string | null;
+  workerId: string | null;
+  workerInstanceId: string | null;
+  generation: string | null;
+  observedAt: string | null;
+  heartbeatAt: string | null;
+  status: "running" | "idle" | "blocked" | "unknown";
+  queueDepth: number | null;
+  exactBlocker: string | null;
+  runId: string | null;
+  runtimeObservation: PortableWorkerRuntimeObservation | null;
+  transportAck: PortableWorkerHeartbeatTransportAck | null;
+  chromePluginReadback: PortableWorkerChromePluginReadback | null;
 };
 
 /**
@@ -109,7 +154,7 @@ type BrowserRoomReadback = {
   exactBlocker: "browser_use_room_registry_readback_unavailable" | "browser_use_room_registry_readback_invalid" | null;
 };
 
-type PortableRemoteWorkerTransportReadback = {
+export type PortableRemoteWorkerTransportReadback = {
   status: "available" | "missing" | "invalid" | "unavailable";
   heartbeatStatus: "ok" | "blocked" | "unknown";
   heartbeatExactBlocker: string | null;
@@ -121,16 +166,236 @@ type PortableRemoteWorkerTransportReadback = {
   updatedAt: string | null;
   pid: number | null;
   workerId: string | null;
+  workerInstanceId: string | null;
+  generation: string | null;
+  observedAt: string | null;
+  identityStatus: "verified" | "legacy_unbound" | "mismatch" | "unreadable" | "unknown";
   remoteOrigin: string | null;
-  source: "worker_status_file" | "missing" | "invalid" | "unavailable";
+  source: "worker_status_file" | "heartbeat_metadata" | "missing" | "invalid" | "unavailable";
 };
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function firstOwn(record: Record<string, unknown>, keys: readonly string[]): unknown {
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(record, key)) return record[key];
+  }
+  return undefined;
+}
+
+function copyOwn(target: Record<string, unknown>, targetKey: string, source: Record<string, unknown>, keys: readonly string[]): void {
+  const value = firstOwn(source, keys);
+  if (value !== undefined) target[targetKey] = value;
+}
+
+function normalizeHeartbeatProcess(value: unknown): unknown {
+  const record = asRecord(value);
+  if (!record) return value;
+  const result: Record<string, unknown> = {};
+  copyOwn(result, "status", record, ["status"]);
+  copyOwn(result, "pid", record, ["pid"]);
+  copyOwn(result, "process_count", record, ["process_count", "processCount"]);
+  copyOwn(result, "profile_ref", record, ["profile_ref", "profileRef"]);
+  copyOwn(result, "port", record, ["port"]);
+  return result;
+}
+
+function normalizeHeartbeatRoom(value: unknown): unknown {
+  const record = asRecord(value);
+  if (!record) return value;
+  const result: Record<string, unknown> = {};
+  copyOwn(result, "status", record, ["status"]);
+  copyOwn(result, "room_id", record, ["room_id", "roomId"]);
+  copyOwn(result, "state", record, ["state"]);
+  copyOwn(result, "lifecycle", record, ["lifecycle"]);
+  copyOwn(result, "owner_kind", record, ["owner_kind", "ownerKind"]);
+  copyOwn(result, "owner_id", record, ["owner_id", "ownerId"]);
+  copyOwn(result, "task_id", record, ["task_id", "taskId"]);
+  copyOwn(result, "automation_id", record, ["automation_id", "automationId"]);
+  copyOwn(result, "profile_ref", record, ["profile_ref", "profileRef"]);
+  copyOwn(result, "port", record, ["port"]);
+  copyOwn(result, "current_activity", record, ["current_activity", "currentActivity"]);
+  copyOwn(result, "updated_at", record, ["updated_at", "updatedAt"]);
+  return result;
+}
+
+function normalizeHeartbeatRuntimeObservation(value: unknown): unknown {
+  const record = asRecord(value);
+  if (!record) return value;
+  const result: Record<string, unknown> = {};
+  copyOwn(result, "schema", record, ["schema"]);
+  copyOwn(result, "status", record, ["status"]);
+  copyOwn(result, "observed_at", record, ["observed_at", "observedAt"]);
+  copyOwn(result, "run_id", record, ["run_id", "runId"]);
+  copyOwn(result, "room_id", record, ["room_id", "roomId"]);
+  const browserUse = firstOwn(record, ["browser_use", "browserUse"]);
+  if (browserUse !== undefined) {
+    const browserRecord = asRecord(browserUse);
+    if (!browserRecord) {
+      result.browser_use = browserUse;
+    } else {
+      const browserResult: Record<string, unknown> = {};
+      copyOwn(browserResult, "runtime_status", browserRecord, ["runtime_status", "runtimeStatus"]);
+      const process = firstOwn(browserRecord, ["process"]);
+      const room = firstOwn(browserRecord, ["room"]);
+      const transport = firstOwn(browserRecord, ["transport"]);
+      if (process !== undefined) browserResult.process = normalizeHeartbeatProcess(process);
+      if (room !== undefined) browserResult.room = normalizeHeartbeatRoom(room);
+      if (transport !== undefined) browserResult.transport = normalizeHeartbeatTransport(transport);
+      result.browser_use = browserResult;
+    }
+  }
+  return result;
+}
+
+function normalizeHeartbeatTransport(value: unknown): unknown {
+  const record = asRecord(value);
+  if (!record) return value;
+  const result: Record<string, unknown> = {};
+  copyOwn(result, "status", record, ["status"]);
+  copyOwn(result, "last_seen_at", record, ["last_seen_at", "lastSeenAt"]);
+  return result;
+}
+
+function normalizeHeartbeatTransportAck(value: unknown): unknown {
+  const record = asRecord(value);
+  if (!record) return value;
+  const result: Record<string, unknown> = {};
+  copyOwn(result, "schema", record, ["schema"]);
+  copyOwn(result, "status", record, ["status"]);
+  copyOwn(result, "observed_at", record, ["observed_at", "observedAt"]);
+  copyOwn(result, "ack_at", record, ["ack_at", "ackAt"]);
+  copyOwn(result, "worker_instance_id", record, ["worker_instance_id", "workerInstanceId"]);
+  copyOwn(result, "generation", record, ["generation"]);
+  copyOwn(result, "binding_status", record, ["binding_status", "bindingStatus"]);
+  return result;
+}
+
+function heartbeatCandidate(input: Record<string, unknown>, fallbackCompanyId?: string | null): Record<string, unknown> {
+  const candidate: Record<string, unknown> = {};
+  copyOwn(candidate, "schema", input, ["schema"]);
+  copyOwn(candidate, "company_id", input, ["company_id", "companyId"]);
+  if (!Object.prototype.hasOwnProperty.call(candidate, "company_id") && fallbackCompanyId) {
+    candidate.company_id = fallbackCompanyId;
+  }
+  copyOwn(candidate, "worker_id", input, ["worker_id", "workerId"]);
+  copyOwn(candidate, "worker_instance_id", input, ["worker_instance_id", "workerInstanceId"]);
+  copyOwn(candidate, "generation", input, ["generation", "generation_id", "generationId"]);
+  copyOwn(candidate, "observed_at", input, ["observed_at", "observedAt"]);
+  copyOwn(candidate, "status", input, ["status"]);
+  copyOwn(candidate, "queue_depth", input, ["queue_depth", "queueDepth"]);
+  copyOwn(candidate, "exact_blocker", input, ["exact_blocker", "exactBlocker"]);
+  copyOwn(candidate, "run_id", input, ["run_id", "runId"]);
+  const runtimeObservation = firstOwn(input, ["runtime_observation", "runtimeObservation", "browser_use_observation", "browser_use_runtime_observation"]);
+  if (runtimeObservation !== undefined) candidate.runtime_observation = normalizeHeartbeatRuntimeObservation(runtimeObservation);
+  const transportAck = firstOwn(input, ["transport_ack", "transportAck"]);
+  if (transportAck !== undefined) candidate.transport_ack = normalizeHeartbeatTransportAck(transportAck);
+  copyOwn(candidate, "chrome_plugin_readback", input, ["chrome_plugin_readback", "chromePluginReadback"]);
+  return candidate;
+}
+
+function invalidPortableRemoteHeartbeat(input: Record<string, unknown>, exactBlocker: string, fallbackHeartbeatAt?: string | null): PortableRemoteWorkerHeartbeatReadback {
+  const statusValue = firstOwn(input, ["status"]);
+  const status = statusValue === "running" || statusValue === "idle" || statusValue === "blocked" ? statusValue : "unknown";
+  const companyValue = firstOwn(input, ["company_id", "companyId"]);
+  const workerValue = firstOwn(input, ["worker_id", "workerId"]);
+  const instanceValue = firstOwn(input, ["worker_instance_id", "workerInstanceId"]);
+  const generationValue = firstOwn(input, ["generation", "generation_id", "generationId"]);
+  const observedValue = firstOwn(input, ["observed_at", "observedAt"]);
+  const queueValue = firstOwn(input, ["queue_depth", "queueDepth"]);
+  const runValue = firstOwn(input, ["run_id", "runId"]);
+  return {
+    readbackStatus: "unreadable",
+    identityStatus: "unreadable",
+    schema: input.schema === PORTABLE_WORKER_HEARTBEAT_SCHEMA || input.schema === PORTABLE_WORKER_HEARTBEAT_LEGACY_SCHEMA ? input.schema : null,
+    companyId: typeof companyValue === "string" ? safeIdentifier(companyValue.trim()) : null,
+    workerId: typeof workerValue === "string" ? safeIdentifier(workerValue.trim()) : null,
+    workerInstanceId: typeof instanceValue === "string" ? safeIdentifier(instanceValue.trim()) : null,
+    generation: typeof generationValue === "string" ? safeIdentifier(generationValue.trim()) : null,
+    observedAt: typeof observedValue === "string" ? safeTimestamp(observedValue.trim()) : null,
+    heartbeatAt: safeTimestamp(typeof firstOwn(input, ["heartbeat_at", "heartbeatAt"]) === "string" ? String(firstOwn(input, ["heartbeat_at", "heartbeatAt"])) : fallbackHeartbeatAt ?? null),
+    status,
+    queueDepth: typeof queueValue === "number" && Number.isSafeInteger(queueValue) && queueValue >= 0 ? queueValue : null,
+    exactBlocker,
+    runId: typeof runValue === "string" ? safeIdentifier(runValue.trim()) : null,
+    runtimeObservation: null,
+    transportAck: null,
+    chromePluginReadback: null
+  };
+}
+
+/**
+ * Sanitize heartbeat metadata before it crosses the control-plane readback
+ * boundary. This accepts both the wire snake_case envelope and the validator's
+ * internal camelCase value, but never returns paths, URLs, cookies, or raw
+ * untrusted metadata. A malformed persisted row remains explicit as
+ * `unreadable`; it is never silently treated as no worker.
+ */
+export function sanitizePortableRemoteWorkerHeartbeat(
+  input: unknown,
+  options: { fallbackCompanyId?: string | null; fallbackHeartbeatAt?: string | null } = {}
+): PortableRemoteWorkerHeartbeatReadback | null {
+  const record = asRecord(input);
+  if (!record) return null;
+  const candidate = heartbeatCandidate(record, options.fallbackCompanyId);
+  const validation = validatePortableWorkerHeartbeat(candidate);
+  if (!validation.ok) return invalidPortableRemoteHeartbeat(record, validation.exactBlocker, options.fallbackHeartbeatAt);
+  const value = validation.value;
+  const companyId = value.companyId ?? (options.fallbackCompanyId ? safeIdentifier(options.fallbackCompanyId) : null);
+  const suppliedCompanyId = firstOwn(record, ["company_id", "companyId"]);
+  if (options.fallbackCompanyId && suppliedCompanyId !== undefined && companyId !== safeIdentifier(options.fallbackCompanyId)) {
+    return invalidPortableRemoteHeartbeat(record, "portable_worker_company_scope_mismatch", options.fallbackHeartbeatAt);
+  }
+  const modernIdentityComplete = value.schema === PORTABLE_WORKER_HEARTBEAT_SCHEMA
+    ? Boolean(companyId && value.workerInstanceId && value.generation && value.observedAt)
+    : true;
+  if (!modernIdentityComplete) {
+    return invalidPortableRemoteHeartbeat(record, "portable_worker_heartbeat_observation_metadata_incomplete", options.fallbackHeartbeatAt);
+  }
+  const heartbeatAtValue = firstOwn(record, ["heartbeat_at", "heartbeatAt"]);
+  const heartbeatAt = safeTimestamp(typeof heartbeatAtValue === "string" ? heartbeatAtValue : options.fallbackHeartbeatAt ?? null);
+  const identityStatus: PortableRemoteWorkerHeartbeatReadback["identityStatus"] = value.workerInstanceId && value.generation && value.observedAt
+    ? "verified"
+    : "legacy_unbound";
+  return {
+    readbackStatus: "reported",
+    identityStatus,
+    // An omitted schema is the pre-v2 legacy shape, but keep it as `null` so
+    // callers can distinguish an explicitly declared v1 payload (which is
+    // legacy-unbound and cannot claim a generation) from an older status row
+    // that predates schema tagging altogether.
+    schema: value.schema ?? null,
+    companyId,
+    workerId: safeIdentifier(value.workerId),
+    workerInstanceId: safeIdentifier(value.workerInstanceId),
+    generation: safeIdentifier(value.generation),
+    observedAt: safeTimestamp(value.observedAt),
+    heartbeatAt,
+    status: value.status,
+    queueDepth: value.queueDepth,
+    exactBlocker: value.exactBlocker ?? (value.status === "blocked" ? "portable_worker_heartbeat_blocked" : null),
+    runId: value.runId ?? null,
+    runtimeObservation: value.runtimeObservation ?? null,
+    transportAck: value.transportAck ?? null,
+    chromePluginReadback: value.chromePluginReadback ?? null
+  };
+}
 
 export function buildBrowserRuntimeProcessReadback(options: BrowserRuntimeProcessReadbackOptions = {}) {
   const capturedAt = options.capturedAt ?? new Date().toISOString();
   const psOutput = options.psOutput === undefined
     ? options.readLiveProcessTable === false ? "" : readProcessTable()
     : options.psOutput;
-  if (psOutput === null) return unavailableReadback(capturedAt);
+  const remoteWorkerHeartbeat = sanitizePortableRemoteWorkerHeartbeat(
+    options.remoteWorkerHeartbeat ?? options.heartbeatMetadata,
+    {
+      fallbackCompanyId: options.controlPlaneCompanyIds?.length === 1 ? options.controlPlaneCompanyIds[0] : null,
+      fallbackHeartbeatAt: capturedAt
+    }
+  );
+  if (psOutput === null) return unavailableReadback(capturedAt, remoteWorkerHeartbeat, options.controlPlaneCompanyIds ?? []);
 
   const rows = parseProcessRows(psOutput);
   const browserProcesses = dedupeBrowserUseProcesses(rows
@@ -142,7 +407,7 @@ export function buildBrowserRuntimeProcessReadback(options: BrowserRuntimeProces
       pid: row.pid,
       ...readSafeProcessEnv(row.pid, options.envOutputByPid?.[String(row.pid)])
     }));
-  const workerTransport = readPortableRemoteWorkerTransport(options.workerStatusOutput);
+  const workerTransport = readPortableRemoteWorkerTransport(options.workerStatusOutput, remoteWorkerHeartbeat);
   const roomReadback = parseBrowserUseRoomRegistry(options.roomRegistryOutput);
 
   const registeredLaneReadback = registeredBrowserLanes.map((lane) => {
@@ -217,9 +482,22 @@ export function buildBrowserRuntimeProcessReadback(options: BrowserRuntimeProces
     remoteWorkers: remoteWorkers.map((worker) => ({
       remoteCompanyId: worker.remoteCompanyId,
       remoteOrigin: worker.remoteOrigin ?? workerTransport.remoteOrigin,
-      workerId: worker.workerId ?? workerTransport.workerId
-    }))
+      workerId: worker.workerId ?? workerTransport.workerId,
+      workerInstanceId: worker.workerInstanceId ?? workerTransport.workerInstanceId,
+      generation: worker.generation ?? workerTransport.generation,
+      identityStatus: worker.identityStatus ?? workerTransport.identityStatus
+    })),
+    remoteHeartbeat: remoteWorkerHeartbeat
   });
+
+  const localProcessStatus = remoteWorkers.length > 0 ? "present" : "absent";
+  const portableStatus = remoteWorkers.length > 0
+    ? "present"
+    : remoteWorkerHeartbeat?.readbackStatus === "reported"
+      ? "remote_reported"
+      : remoteWorkerHeartbeat
+        ? "unknown"
+        : "absent";
 
   return {
     schema: BROWSER_RUNTIME_PROCESS_READBACK_SCHEMA,
@@ -233,7 +511,12 @@ export function buildBrowserRuntimeProcessReadback(options: BrowserRuntimeProces
       matchedProcessCount: publicBrowserProcesses.filter((process) => process.roomId !== null).length
     },
     portableRemoteWorker: {
-      status: remoteWorkers.length > 0 ? "present" : "absent",
+      // `status` describes the best available worker evidence. It is not a
+      // process claim: a hosted control plane can have a remote heartbeat even
+      // when its own same-host process table is empty.
+      status: portableStatus,
+      processStatus: localProcessStatus,
+      processReadbackStatus: "available",
       processCount: remoteWorkers.length,
       pids: remoteWorkers.map((worker) => worker.pid),
       mode: portableMode,
@@ -249,7 +532,9 @@ export function buildBrowserRuntimeProcessReadback(options: BrowserRuntimeProces
         durableOnly: worker.durableOnly
       })),
       scopeReadback: workerScopeReadback,
-      transportReadback: workerTransport
+      transportReadback: workerTransport,
+      remoteReport: remoteWorkerHeartbeat,
+      heartbeatMetadata: remoteWorkerHeartbeat
     },
     unregisteredBrowserProcessCount: unregisteredCount,
     bindingMismatchCount: mismatchCount,
@@ -258,14 +543,20 @@ export function buildBrowserRuntimeProcessReadback(options: BrowserRuntimeProces
       ? "所有者を確認できないBrowser Useプロセスは終了せず、同一Runのroom・authority・recording readbackを確認してください。"
       : workerScopeReadback.exactBlocker
         ? workerScopeReadback.nextAction
-        : remoteWorkers.length > 0
-          ? "remote workerのプロセス存在は確認済みです。heartbeat、queue claim、同一Runのreceipt/readbackは別に確認してください。"
-          : "登録laneを起動する場合は、AOSのworkflow-owned profile/port lockを同一Runで取得してから進めてください。",
+        : remoteWorkerHeartbeat?.readbackStatus === "reported"
+          ? "Mac workerのheartbeat reportは受理済みです。APIホストのprocess/roomは別観測で、同一Runのreceipt/readbackを別に確認してください。"
+          : remoteWorkers.length > 0
+            ? "remote workerのプロセス存在は確認済みです。heartbeat、queue claim、同一Runのreceipt/readbackは別に確認してください。"
+            : "登録laneを起動する場合は、AOSのworkflow-owned profile/port lockを同一Runで取得してから進めてください。",
     externalActionExecuted: false
   } as const;
 }
 
-function unavailableReadback(capturedAt: string) {
+function unavailableReadback(
+  capturedAt: string,
+  remoteWorkerHeartbeat: PortableRemoteWorkerHeartbeatReadback | null = null,
+  controlPlaneCompanyIds: string[] = []
+) {
   return {
     schema: BROWSER_RUNTIME_PROCESS_READBACK_SCHEMA,
     status: "unavailable",
@@ -275,7 +566,9 @@ function unavailableReadback(capturedAt: string) {
     browserProcesses: [],
     roomReadback: parseBrowserUseRoomRegistry(null),
     portableRemoteWorker: {
-      status: "unknown",
+      status: remoteWorkerHeartbeat?.readbackStatus === "reported" ? "remote_reported" : remoteWorkerHeartbeat ? "unknown" : "unknown",
+      processStatus: "unknown",
+      processReadbackStatus: "unavailable",
       processCount: 0,
       pids: [],
       mode: "unknown",
@@ -283,11 +576,14 @@ function unavailableReadback(capturedAt: string) {
       durableOnly: null,
       processes: [],
       scopeReadback: buildPortableRemoteWorkerScopeReadback({
-        controlPlaneCompanyIds: [],
+        controlPlaneCompanyIds,
         remoteWorkers: [],
-        unavailable: true
+        unavailable: true,
+        remoteHeartbeat: remoteWorkerHeartbeat
       }),
-      transportReadback: readPortableRemoteWorkerTransport(null)
+      transportReadback: readPortableRemoteWorkerTransport(null, remoteWorkerHeartbeat),
+      remoteReport: remoteWorkerHeartbeat,
+      heartbeatMetadata: remoteWorkerHeartbeat
     },
     unregisteredBrowserProcessCount: 0,
     bindingMismatchCount: 0,
@@ -393,8 +689,40 @@ async function readBrowserUseRoomRegistryAsync(): Promise<string | null> {
   }
 }
 
-function readPortableRemoteWorkerTransport(injectedOutput?: string | null): PortableRemoteWorkerTransportReadback {
-  if (injectedOutput === null) return unavailableWorkerTransport("unavailable");
+function heartbeatTransportReadback(heartbeat: PortableRemoteWorkerHeartbeatReadback): PortableRemoteWorkerTransportReadback {
+  const reported = heartbeat.readbackStatus === "reported";
+  const heartbeatStatus: PortableRemoteWorkerTransportReadback["heartbeatStatus"] = !reported
+    ? "unknown"
+    : heartbeat.status === "blocked" || heartbeat.exactBlocker ? "blocked" : "ok";
+  const claimStatus: PortableRemoteWorkerTransportReadback["claimStatus"] = !reported
+    ? "unknown"
+    : heartbeat.runId ? "claimed" : heartbeat.status === "idle" ? "idle" : "unknown";
+  return {
+    status: reported ? "available" : "invalid",
+    heartbeatStatus,
+    heartbeatExactBlocker: heartbeat.exactBlocker,
+    heartbeatAt: heartbeat.heartbeatAt,
+    lastSuccessfulHeartbeatAt: heartbeatStatus === "ok" ? heartbeat.heartbeatAt : null,
+    lastAttemptAt: heartbeat.heartbeatAt,
+    claimStatus,
+    generationStartedAt: null,
+    updatedAt: heartbeat.heartbeatAt ?? heartbeat.observedAt,
+    pid: null,
+    workerId: heartbeat.workerId,
+    workerInstanceId: heartbeat.workerInstanceId,
+    generation: heartbeat.generation,
+    observedAt: heartbeat.observedAt,
+    identityStatus: heartbeat.identityStatus,
+    remoteOrigin: null,
+    source: "heartbeat_metadata"
+  };
+}
+
+function readPortableRemoteWorkerTransport(
+  injectedOutput?: string | null,
+  remoteHeartbeat?: PortableRemoteWorkerHeartbeatReadback | null
+): PortableRemoteWorkerTransportReadback {
+  if (injectedOutput === null) return remoteHeartbeat ? heartbeatTransportReadback(remoteHeartbeat) : unavailableWorkerTransport("unavailable");
   const output = injectedOutput === undefined
     ? (() => {
       const repoRoot = resolve(process.env.AUTOMATION_OS_REPO_ROOT || process.cwd());
@@ -410,18 +738,29 @@ function readPortableRemoteWorkerTransport(injectedOutput?: string | null): Port
       }
     })()
     : injectedOutput;
-  if (output === null) return unavailableWorkerTransport("missing");
+  if (output === null) return remoteHeartbeat ? heartbeatTransportReadback(remoteHeartbeat) : unavailableWorkerTransport("missing");
   try {
     const value = JSON.parse(output) as Record<string, unknown>;
-    if (!value || value.schema !== "aos.portable_remote_worker_status.v1") return unavailableWorkerTransport("invalid");
+    if (!value || value.schema !== "aos.portable_remote_worker_status.v1") {
+      return remoteHeartbeat ? heartbeatTransportReadback(remoteHeartbeat) : unavailableWorkerTransport("invalid");
+    }
     const heartbeatStatus = value.heartbeat_status === "ok" || value.heartbeat_status === "blocked" ? value.heartbeat_status : "unknown";
     const claimStatus = value.claim_status === "claimed" || value.claim_status === "idle" ? value.claim_status : "unknown";
     const safeTimestamp = (key: string) => typeof value[key] === "string" && !Number.isNaN(Date.parse(String(value[key]))) ? String(value[key]) : null;
     const blocker = typeof value.heartbeat_exact_blocker === "string" && /^[A-Za-z0-9_.:-]{1,160}$/u.test(value.heartbeat_exact_blocker) ? value.heartbeat_exact_blocker : null;
     const pid = typeof value.pid === "number" && Number.isSafeInteger(value.pid) && value.pid > 0 ? value.pid : null;
     const workerId = safeIdentifier(typeof value.worker_id === "string" ? value.worker_id : null);
+    const workerInstanceId = safeIdentifier(typeof value.worker_instance_id === "string" ? value.worker_instance_id : null);
+    const generation = safeIdentifier(typeof value.generation === "string" ? value.generation : null);
+    const identityStatus: PortableRemoteWorkerTransportReadback["identityStatus"] = workerId && workerInstanceId && generation
+      ? "verified"
+      : workerId && !workerInstanceId && !generation
+        ? "legacy_unbound"
+        : workerInstanceId || generation
+          ? "unreadable"
+          : "unknown";
     const remoteOrigin = safeOrigin(typeof value.remote_origin === "string" ? value.remote_origin : null);
-    return {
+    const localReadback: PortableRemoteWorkerTransportReadback = {
       status: "available",
       heartbeatStatus,
       heartbeatExactBlocker: blocker,
@@ -433,11 +772,28 @@ function readPortableRemoteWorkerTransport(injectedOutput?: string | null): Port
       updatedAt: safeTimestamp("updated_at"),
       pid,
       workerId,
+      workerInstanceId,
+      generation,
+      observedAt: safeTimestamp("observed_at"),
+      identityStatus,
       remoteOrigin,
       source: "worker_status_file"
     };
+    if (!remoteHeartbeat) return localReadback;
+    // The persisted control-plane heartbeat is the newest authenticated
+    // transport observation. Keep useful same-host pid/origin fields from the
+    // local artifact, but do not let a stale artifact overwrite the heartbeat
+    // status, timestamp, claim, or generation identity.
+    const heartbeatReadback = heartbeatTransportReadback(remoteHeartbeat);
+    return {
+      ...heartbeatReadback,
+      pid: localReadback.pid,
+      generationStartedAt: localReadback.generationStartedAt,
+      remoteOrigin: localReadback.remoteOrigin ?? heartbeatReadback.remoteOrigin,
+      source: "heartbeat_metadata"
+    };
   } catch {
-    return unavailableWorkerTransport("invalid");
+    return remoteHeartbeat ? heartbeatTransportReadback(remoteHeartbeat) : unavailableWorkerTransport("invalid");
   }
 }
 
@@ -454,6 +810,10 @@ function unavailableWorkerTransport(status: "missing" | "invalid" | "unavailable
     updatedAt: null,
     pid: null,
     workerId: null,
+    workerInstanceId: null,
+    generation: null,
+    observedAt: null,
+    identityStatus: "unknown",
     remoteOrigin: null,
     source: status
   };
@@ -554,13 +914,25 @@ function readSafeProcessEnv(pid: number, injectedOutput?: string | null): SafePr
   const mode = read("AUTOMATION_OS_PORTABLE_WORKER_MODE");
   const durableOnly = read("AUTOMATION_OS_WORKER_DURABLE_ONLY");
   const workerId = safeIdentifier(read("AUTOMATION_OS_PORTABLE_REMOTE_WORKER_ID"));
+  const workerInstanceId = safeIdentifier(read("AUTOMATION_OS_PORTABLE_REMOTE_WORKER_INSTANCE_ID"));
+  const generation = safeIdentifier(read("AUTOMATION_OS_PORTABLE_REMOTE_WORKER_GENERATION"));
   const remoteOrigin = safeOrigin(read("AUTOMATION_OS_PORTABLE_REMOTE_URL"));
   const remoteCompanyId = safeIdentifier(read("AUTOMATION_OS_PORTABLE_REMOTE_COMPANY_ID"));
+  const identityStatus: SafeProcessEnv["identityStatus"] = workerId && remoteCompanyId && workerInstanceId && generation
+    ? "verified"
+    : workerId && !workerInstanceId && !generation
+      ? "legacy_unbound"
+      : workerInstanceId || generation
+        ? "unreadable"
+        : "unknown";
   return {
     effects: effects === "read_only" ? "read_only" : "unknown",
     mode: mode === "external" || mode === "canary" ? mode : "unknown",
     durableOnly: durableOnly === "1" ? true : durableOnly === "0" ? false : null,
     workerId,
+    workerInstanceId,
+    generation,
+    identityStatus,
     remoteOrigin,
     remoteCompanyId
   };
@@ -604,13 +976,63 @@ function safeOrigin(value: string | null | undefined): string | null {
 
 export function buildPortableRemoteWorkerScopeReadback(input: {
   controlPlaneCompanyIds?: string[];
-  remoteWorkers: Array<{ remoteCompanyId: string | null; remoteOrigin: string | null; workerId: string | null }>;
+  remoteWorkers: Array<{
+    remoteCompanyId: string | null;
+    remoteOrigin: string | null;
+    workerId: string | null;
+    workerInstanceId?: string | null;
+    generation?: string | null;
+    identityStatus?: PortableRemoteWorkerScopeReadback["identityStatus"] | "unknown";
+  }>;
+  remoteHeartbeat?: PortableRemoteWorkerHeartbeatReadback | null;
   unavailable?: boolean;
 }): PortableRemoteWorkerScopeReadback {
-  const controlPlaneCompanyIds = [...new Set((input.controlPlaneCompanyIds ?? []).filter((value): value is string => Boolean(safeIdentifier(value))))].sort();
-  const remoteWorkerCompanyIds = [...new Set(input.remoteWorkers.map((worker) => worker.remoteCompanyId).filter((value): value is string => Boolean(value)))].sort();
-  const remoteOrigins = [...new Set(input.remoteWorkers.map((worker) => worker.remoteOrigin).filter((value): value is string => Boolean(value)))].sort();
-  const workerIds = [...new Set(input.remoteWorkers.map((worker) => worker.workerId).filter((value): value is string => Boolean(value)))].sort();
+  let controlPlaneCompanyIds = [...new Set((input.controlPlaneCompanyIds ?? []).filter((value): value is string => Boolean(safeIdentifier(value))))].sort();
+  const heartbeatWorker = input.remoteHeartbeat
+    ? {
+      remoteCompanyId: input.remoteHeartbeat.companyId,
+      remoteOrigin: null,
+      workerId: input.remoteHeartbeat.workerId,
+      workerInstanceId: input.remoteHeartbeat.workerInstanceId,
+      generation: input.remoteHeartbeat.generation,
+      identityStatus: input.remoteHeartbeat.identityStatus
+    }
+    : null;
+  const remoteWorkers = heartbeatWorker ? [...input.remoteWorkers, heartbeatWorker] : input.remoteWorkers;
+  const remoteWorkerCompanyIds = [...new Set(remoteWorkers.map((worker) => worker.remoteCompanyId).filter((value): value is string => Boolean(safeIdentifier(value))))].sort();
+  // During the Company 1 migration, the authenticated actor can still carry
+  // a legacy project-* membership alongside the canonical company_* record.
+  // If the live worker reports exactly one canonical company and that
+  // company is present in the control-plane set, the legacy alias is not a
+  // second worker scope. Keep real company mismatches fail-closed.
+  if (remoteWorkerCompanyIds.length === 1
+    && /^company_[A-Za-z0-9_-]+$/u.test(remoteWorkerCompanyIds[0] ?? "")
+    && controlPlaneCompanyIds.includes(remoteWorkerCompanyIds[0])) {
+    const canonicalCompanyId = remoteWorkerCompanyIds[0];
+    const legacyAliases = controlPlaneCompanyIds.filter((companyId) => companyId !== canonicalCompanyId && /^project[-_][A-Za-z0-9_-]+$/u.test(companyId));
+    if (legacyAliases.length > 0 && legacyAliases.length === controlPlaneCompanyIds.length - 1) {
+      controlPlaneCompanyIds = [canonicalCompanyId];
+    }
+  }
+  const remoteOrigins = [...new Set(remoteWorkers.map((worker) => worker.remoteOrigin).filter((value): value is string => Boolean(safeOrigin(value))))].sort();
+  const workerIds = [...new Set(remoteWorkers.map((worker) => worker.workerId).filter((value): value is string => Boolean(safeIdentifier(value))))].sort();
+  const remoteWorkerInstanceIds = [...new Set(remoteWorkers.map((worker) => worker.workerInstanceId).filter((value): value is string => Boolean(safeIdentifier(value))))].sort();
+  const remoteWorkerGenerations = [...new Set(remoteWorkers.map((worker) => worker.generation).filter((value): value is string => Boolean(safeIdentifier(value))))].sort();
+  const identityStatuses = remoteWorkers.map((worker) => worker.identityStatus ?? "unknown");
+  const identityStatus: PortableRemoteWorkerScopeReadback["identityStatus"] = remoteWorkers.length === 0
+    ? "not_observed"
+    : input.remoteHeartbeat?.readbackStatus === "unreadable"
+      ? "unreadable"
+      : identityStatuses.includes("mismatch")
+        ? "mismatch"
+        : identityStatuses.includes("unreadable")
+          ? "unreadable"
+          : identityStatuses.includes("verified")
+            ? "verified"
+            : identityStatuses.includes("legacy_unbound")
+              ? "legacy_unbound"
+              : "not_observed";
+  const heartbeatUnreadable = input.remoteHeartbeat?.readbackStatus === "unreadable";
   const alignmentCandidates = [
     {
       scope: "control_plane_queue" as const,
@@ -621,9 +1043,9 @@ export function buildPortableRemoteWorkerScopeReadback(input: {
     },
     {
       scope: "portable_remote_worker" as const,
-      status: input.unavailable || (input.remoteWorkers.length > 0 && remoteWorkerCompanyIds.length === 0)
+      status: input.unavailable || heartbeatUnreadable || (remoteWorkers.length > 0 && remoteWorkerCompanyIds.length === 0)
         ? "unreadable" as const
-        : input.remoteWorkers.length > 0
+        : remoteWorkers.length > 0
           ? "observed" as const
           : "not_observed" as const,
       companyIds: remoteWorkerCompanyIds,
@@ -637,25 +1059,42 @@ export function buildPortableRemoteWorkerScopeReadback(input: {
     alignmentDecisionRequired: value.status === "mismatch"
   });
   if (input.unavailable) {
+    const heartbeatScopeMismatch = remoteWorkerCompanyIds.length > 0
+      && remoteWorkerCompanyIds.some((companyId) => !controlPlaneCompanyIds.includes(companyId));
+    const heartbeatScopeMatched = remoteWorkerCompanyIds.length > 0
+      && controlPlaneCompanyIds.length > 0
+      && !heartbeatScopeMismatch;
     return withCandidates({
-      status: "unavailable",
+      status: heartbeatScopeMismatch ? "mismatch" : heartbeatScopeMatched ? "matched" : "unavailable",
       controlPlaneCompanyIds,
       remoteWorkerCompanyIds,
       remoteOrigins,
       workerIds,
-      exactBlocker: "portable_worker_company_scope_unreadable",
-      nextAction: "同一ホストのworker process readbackを取得し、control planeとworkerの会社scopeを照合してください。"
+      remoteWorkerInstanceIds,
+      remoteWorkerGenerations,
+      identityStatus: heartbeatScopeMismatch && identityStatus === "verified" ? "mismatch" : identityStatus,
+      exactBlocker: heartbeatScopeMismatch
+        ? "portable_worker_company_scope_mismatch"
+        : heartbeatScopeMatched ? null : "portable_worker_company_scope_unreadable",
+      nextAction: heartbeatScopeMismatch
+        ? "control planeのqueue scopeとMac workerのremote company scopeが異なります。同じAOS company/endpointへ揃えてからclaimしてください。"
+        : heartbeatScopeMatched
+          ? "Mac worker heartbeatのcompany scopeは一致しています。APIホストのprocess表は別観測として未取得です。"
+          : "同一ホストのworker process readbackを取得し、control planeとworkerの会社scopeを照合してください。"
     });
   }
-  if (input.remoteWorkers.length === 0) {
+  if (remoteWorkers.length === 0) {
     return withCandidates({
       status: "absent",
       controlPlaneCompanyIds,
       remoteWorkerCompanyIds,
       remoteOrigins,
       workerIds,
+      remoteWorkerInstanceIds,
+      remoteWorkerGenerations,
+      identityStatus,
       exactBlocker: null,
-      nextAction: "remote workerが起動した後に、heartbeat・claim・同一Run receiptを確認してください。"
+      nextAction: "このホスト内にはworker processがありません。別ホストの稼働は会社別queueのheartbeatと同一Run receiptで確認します。この表示だけを理由にworkerを再起動しません。"
     });
   }
   if (remoteWorkerCompanyIds.length === 0) {
@@ -665,8 +1104,13 @@ export function buildPortableRemoteWorkerScopeReadback(input: {
       remoteWorkerCompanyIds,
       remoteOrigins,
       workerIds,
-      exactBlocker: "portable_worker_company_scope_unreadable",
-      nextAction: "workerの会社scopeをreadbackできるLaunchAgent/process環境を確認してください。"
+      remoteWorkerInstanceIds,
+      remoteWorkerGenerations,
+      identityStatus,
+      exactBlocker: heartbeatUnreadable ? "portable_worker_heartbeat_unreadable" : "portable_worker_company_scope_unreadable",
+      nextAction: heartbeatUnreadable
+        ? "Mac worker heartbeat metadataを再取得し、会社・worker・instance・generationのreadbackを確認してください。"
+        : "workerの会社scopeをreadbackできるLaunchAgent/process環境を確認してください。"
     });
   }
   if (controlPlaneCompanyIds.length === 0) {
@@ -676,20 +1120,96 @@ export function buildPortableRemoteWorkerScopeReadback(input: {
       remoteWorkerCompanyIds,
       remoteOrigins,
       workerIds,
+      remoteWorkerInstanceIds,
+      remoteWorkerGenerations,
+      identityStatus,
       exactBlocker: null,
       nextAction: "対象companyを選択して、control planeとworkerの会社scopeを比較してください。"
     });
   }
   const mismatch = remoteWorkerCompanyIds.some((companyId) => !controlPlaneCompanyIds.includes(companyId));
+  if (mismatch) {
+    return withCandidates({
+      status: "mismatch",
+      controlPlaneCompanyIds,
+      remoteWorkerCompanyIds,
+      remoteOrigins,
+      workerIds,
+      remoteWorkerInstanceIds,
+      remoteWorkerGenerations,
+      identityStatus: identityStatus === "verified" ? "mismatch" : identityStatus,
+      exactBlocker: "portable_worker_company_scope_mismatch",
+      nextAction: "control planeのqueue scopeとMac workerのremote company scopeが異なります。同じAOS company/endpointへ揃えてからclaimしてください。"
+    });
+  }
+  if (heartbeatUnreadable) {
+    return withCandidates({
+      status: "unknown",
+      controlPlaneCompanyIds,
+      remoteWorkerCompanyIds,
+      remoteOrigins,
+      workerIds,
+      remoteWorkerInstanceIds,
+      remoteWorkerGenerations,
+      identityStatus,
+      exactBlocker: "portable_worker_heartbeat_unreadable",
+      nextAction: "Mac worker heartbeat metadataを再取得し、現行company scopeとworker identityを照合してください。"
+    });
+  }
+  if (input.remoteHeartbeat?.readbackStatus === "reported"
+    && input.remoteHeartbeat.schema === PORTABLE_WORKER_HEARTBEAT_LEGACY_SCHEMA
+    && input.remoteHeartbeat.identityStatus === "legacy_unbound") {
+    return withCandidates({
+      status: "matched",
+      controlPlaneCompanyIds,
+      remoteWorkerCompanyIds,
+      remoteOrigins,
+      workerIds,
+      remoteWorkerInstanceIds,
+      remoteWorkerGenerations,
+      identityStatus,
+      exactBlocker: "portable_worker_identity_unreadable",
+      nextAction: "legacy heartbeatはcompany scopeのみ確認済みです。新世代worker_instance_id/generation付きheartbeatを取得してからclaimしてください。"
+    });
+  }
+  if (identityStatus === "mismatch") {
+    return withCandidates({
+      status: "mismatch",
+      controlPlaneCompanyIds,
+      remoteWorkerCompanyIds,
+      remoteOrigins,
+      workerIds,
+      remoteWorkerInstanceIds,
+      remoteWorkerGenerations,
+      identityStatus,
+      exactBlocker: "portable_worker_identity_mismatch",
+      nextAction: "worker instance/generationのreadbackが現在のheartbeatと一致しません。新しいgenerationを確認してからclaimしてください。"
+    });
+  }
+  if (identityStatus === "unreadable") {
+    return withCandidates({
+      status: "unknown",
+      controlPlaneCompanyIds,
+      remoteWorkerCompanyIds,
+      remoteOrigins,
+      workerIds,
+      remoteWorkerInstanceIds,
+      remoteWorkerGenerations,
+      identityStatus,
+      exactBlocker: "portable_worker_identity_unreadable",
+      nextAction: "worker instance/generationのreadbackが不完全です。現行worker identityを再取得してください。"
+    });
+  }
   return withCandidates({
-    status: mismatch ? "mismatch" : "matched",
+    status: "matched",
     controlPlaneCompanyIds,
     remoteWorkerCompanyIds,
     remoteOrigins,
     workerIds,
-    exactBlocker: mismatch ? "portable_worker_company_scope_mismatch" : null,
-    nextAction: mismatch
-      ? "control planeのqueue scopeとMac workerのremote company scopeが異なります。同じAOS company/endpointへ揃えてからclaimしてください。"
-      : "同じcompany scopeを確認済みです。claim・同一Run receipt・source syncを個別に確認してください。"
+    remoteWorkerInstanceIds,
+    remoteWorkerGenerations,
+    identityStatus,
+    exactBlocker: null,
+    nextAction: "同じcompany scopeを確認済みです。claim・同一Run receipt・source syncを個別に確認してください。"
   });
 }

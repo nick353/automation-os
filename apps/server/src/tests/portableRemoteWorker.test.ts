@@ -15,16 +15,22 @@ const db = await import("../db/client.js");
 const { initRegisteredWorkflows } = await import("../registeredWorkflows.js");
 const { startPortableLocalWorkflowRun } = await import("../runs/portableLocalWorkflowEntrypoint.js");
 const { startPortableWorkflowRun } = await import("../runs/portableWorkflowEntrypoint.js");
+const dailyAi = await import("../runs/dailyAiResearchSourceSync.js");
 const {
   claimPortableMacWorker,
+  claimPortableMacWorkerAsync,
+  claimPortableBackupPostEffectReconciliationAsync,
+  recordPortableBackupPostEffectEvidenceAsync,
   recordPortableMacWorkerReceipt,
   recordPortableMacWorkerReceiptAsync,
   requeuePortableMacWorkerAfterApproval,
   requeuePortableMacWorkerAfterApprovalAsync,
   reconcileStalePortablePreparingRunsAsync,
+  businessProofSatisfied,
   validSafeCompanionToOfficialHandoff,
   validBlockedSafeCompanionToOfficialHandoff
 } = await import("../runs/portableRemoteWorker.js");
+const { readPortableRunRecovery, requestPortableBackupPostEffectReconciliation } = await import("../runs/portableRunRecovery.js");
 
 // Keep the pre-existing Browser Use CLI receipt fixtures explicit. The live
 // application default is Chrome Plugin; the dedicated regression below
@@ -156,6 +162,7 @@ test("remote Mac worker claim and receipt stay Company-scoped, idempotent, and r
     workflowId: "job-application-manager",
     sourceTrigger: "automation_os_scheduler",
     idempotencyKey: "portable-remote-worker-regression",
+    browserSurfaceRequirement: "browser_use_cli",
     companyId,
     readOnlyStage: "candidate_supply",
     inputBundle: {
@@ -395,6 +402,7 @@ test("read-only completion remains blocked when the candidate artifact proof is 
     workflowId: "job-application-manager",
     sourceTrigger: "automation_os_scheduler",
     idempotencyKey: "portable-remote-read-only-proof-regression",
+    browserSurfaceRequirement: "browser_use_cli",
     companyId,
     readOnlyStage: "candidate_supply",
     inputBundle: {
@@ -892,6 +900,257 @@ test("remote Mac worker accepts the explicit local-worker receipt surface for lo
   assert.equal(run.status, "blocked");
 });
 
+test("backup evidence recovery fences failed attempts, replays one success, and keeps the original run bound", async () => {
+  const companyId = "company_2560580981cedfd106b66245";
+  ensureTestCompany(companyId);
+  const backup = await import("../runs/portableLocalWorkflow.js");
+  const entrypoint = await import("../runs/portableLocalWorkflowEntrypoint.js");
+  const inputBundle = {
+    account_ref: "github:nick353/daily-workspace-backup",
+    target_key: "daily-workspace-backup:main",
+    payload_hash: backup.backupBusinessPayloadHash(),
+    source_snapshot_id: "source-snapshot-phase2"
+  };
+  const started = await entrypoint.startPortableLocalWorkflowRun({
+    workflowId: "daily-backup-safety-check", sourceTrigger: "automation_os_ui",
+    idempotencyKey: "backup-phase2-original", companyId, readOnlyStage: "reference_readback"
+  });
+  const step = db.querySql<{ id: string }>(`SELECT id FROM run_steps WHERE run_id=${db.sqlValue(started.runId)} LIMIT 1`)[0];
+  const run = db.querySql<{ metadata_json: string }>(`SELECT metadata_json FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`)[0];
+  const metadata = JSON.parse(run.metadata_json);
+  const authority = {
+    schema: "aos.portable_external_effect_authority.v1", authority_id: "authority-backup-phase2",
+    company_id: companyId, workflow_id: "daily-backup-safety-check", run_id: started.runId, step_id: step.id,
+    approval_id: "approval-backup-phase2", idempotency_key: "backup-phase2-original",
+    target_digest: "target-backup-phase2", input_bundle_sha256: "bundle-backup-phase2",
+    payload_hash: inputBundle.payload_hash, issued_at: "2026-09-10T13:30:26.869Z", expires_at: "2026-09-10T14:30:26.869Z",
+    external_action_authorized: true
+  };
+  const claim = {
+    run_id: started.runId, step_id: step.id, workflow_id: "daily-backup-safety-check", execution_mode: "business_effect",
+    approval_id: authority.approval_id, idempotency_key: authority.idempotency_key, target_digest: authority.target_digest,
+    input_bundle_sha256: authority.input_bundle_sha256, input_bundle: inputBundle, portable_effect_authority: authority,
+    effect_operation_key: "backup-phase2-ledger-missing"
+  };
+  db.execSql(`UPDATE runs SET status='blocked', metadata_json=${db.sqlValue({ ...metadata, effect_stage: "business_execute",
+    portable_input_bundle: { input: inputBundle, sha256: authority.input_bundle_sha256 },
+    external_action_executed: null, remote_worker_claim: claim, remote_worker_receipt: undefined })} WHERE id=${db.sqlValue(started.runId)}`);
+  const view = await readPortableRunRecovery({ companyId, runId: started.runId });
+  const request = await requestPortableBackupPostEffectReconciliation({ companyId, runId: started.runId,
+    expectedReadbackToken: view.readback_token, idempotencyKey: `portable-backup-post-effect-${started.runId}` });
+  assert.equal(request.response.status, "queued");
+  const reconciliationRun = db.querySql<{ metadata_json: string }>(`SELECT metadata_json FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`)[0];
+  const reconciliationBinding = JSON.parse(reconciliationRun.metadata_json).portable_post_effect_reconciliation.original_claim as Record<string, unknown>;
+  const first = await claimPortableBackupPostEffectReconciliationAsync({ companyId, workerId: "backup-worker", workerInstanceId: "backup-instance-1", requestedRunId: started.runId });
+  assert.ok(first);
+  assert.ok(first.attempt_id && first.fencing_token);
+  const claimedMetadata = JSON.parse((db.querySql<{ metadata_json: string }>(`SELECT metadata_json FROM runs WHERE id=${db.sqlValue(started.runId)}`)[0]).metadata_json);
+  assert.equal(claimedMetadata.portable_post_effect_reconciliation.attempt_id, first.attempt_id);
+  assert.equal(claimedMetadata.portable_post_effect_reconciliation.fencing_token, first.fencing_token);
+  assert.equal(claimedMetadata.portable_post_effect_reconciliation.lease_expires_at, first.lease_expires_at);
+  assert.equal(await claimPortableBackupPostEffectReconciliationAsync({ companyId, workerId: "backup-worker", workerInstanceId: "backup-instance-other", requestedRunId: started.runId }), null);
+  const timeout = { artifact_name: "portable-local-worker-receipt.v1.json", run_id: started.runId,
+    sha256: "a".repeat(64), status: "blocked", exact_blocker: "portable_local_child_deadline_exceeded",
+    external_action_executed: null, no_replay: true };
+  const makeReceipt = (workerClaim: { attempt_id: string; fencing_token: string }, commit: string) => ({
+    evidence_only: true, provider_replayed: false, new_effect: false, status: "complete", exact_blocker: null,
+    external_action_executed: true, run_id: started.runId, step_id: step.id, workflow_id: "daily-backup-safety-check",
+    original_run_id: started.runId, original_step_id: step.id, original_authority_id: authority.authority_id,
+    original_authority_sha256: request.response.original_authority_sha256, original_timeout_receipt: timeout,
+    original_claim: { run_id: started.runId, step_id: step.id, authority_id: authority.authority_id,
+      sha256: "c".repeat(64), authority_sha256: request.response.original_authority_sha256 },
+    attempt_id: workerClaim.attempt_id, fencing_token: workerClaim.fencing_token,
+    reconciliation_binding: reconciliationBinding,
+    evidence: { commit, remote_commit: commit, snapshot_id: "20260910T223116+0900", manifest_source_count: 6,
+      readback_verified: true, remote_parity: true, git_integrity_verified: true, restore_verified: true, cleanup_verified: true,
+      state_matches_snapshot_and_commit: true, original_execution_summary: {
+        correlation_method: "unique_success_in_original_claim_interval", direct_child_link_verified: false,
+        interval_start: "2026-09-10T13:30:27.020Z", interval_end: "2026-09-10T13:40:11.939Z", candidate_count: 1,
+        sha256: "c".repeat(64), snapshot_id: "20260910T223116+0900", backup_commit: commit
+      } },
+    cleanup_verified: true, readback_verified: true, same_run_receipt: true, same_run_source_sync: true,
+    effects_mode: "business_effect", read_only_stage_bound: false, business_completion_verified: true,
+    business_proof_verified: true, browser_surface: "local_worker", connector_execution_owner: "mac_worker_explicit_connector_fallback",
+    external_executor_status: "fixture-backup-evidence"
+  });
+  const firstClaim = first;
+  const firstReceipt = makeReceipt(firstClaim, "d".repeat(40));
+  const failedReceipt = { ...firstReceipt, evidence: { ...(firstReceipt.evidence as Record<string, unknown>), state_matches_snapshot_and_commit: false } };
+  const expiredMetadata = JSON.parse((db.querySql<{ metadata_json: string }>(`SELECT metadata_json FROM runs WHERE id=${db.sqlValue(started.runId)}`)[0]).metadata_json);
+  expiredMetadata.portable_post_effect_reconciliation.lease_expires_at = "2020-01-01T00:00:00.000Z";
+  db.execSql(`UPDATE runs SET metadata_json=${db.sqlValue(expiredMetadata)} WHERE id=${db.sqlValue(started.runId)}`);
+  await assert.rejects(() => recordPortableBackupPostEffectEvidenceAsync({ companyId, workerId: "backup-worker", workerInstanceId: "backup-instance-1", runId: started.runId, receipt: firstReceipt }), /portable_backup_evidence_lease_expired/u);
+  expiredMetadata.portable_post_effect_reconciliation.lease_expires_at = first.lease_expires_at;
+  db.execSql(`UPDATE runs SET metadata_json=${db.sqlValue(expiredMetadata)} WHERE id=${db.sqlValue(started.runId)}`);
+  const failed = await recordPortableBackupPostEffectEvidenceAsync({ companyId, workerId: "backup-worker", workerInstanceId: "backup-instance-1", runId: started.runId, receipt: failedReceipt });
+  assert.equal(failed.receipt.status, "blocked");
+  assert.ok(failed.artifact_uri);
+  const failedArtifactId = failed.artifact_uri.split("/").pop()!;
+  const failedArtifact = db.querySql<{ kind: string; checksum_sha256: string; content_text: string }>(`SELECT kind, checksum_sha256, content_text FROM run_artifacts WHERE id=${db.sqlValue(failedArtifactId)} AND run_id=${db.sqlValue(started.runId)} LIMIT 1`)[0];
+  assert.equal(failedArtifact.kind, "portable_backup_evidence_attempt");
+  assert.equal(failedArtifact.checksum_sha256, createHash("sha256").update(failedArtifact.content_text).digest("hex"));
+  assert.equal(JSON.parse(failedArtifact.content_text).attempt_id, first.attempt_id);
+  assert.equal(failed.receipt.external_action_executed, null);
+  assert.equal(failed.receipt.readback_verified, false);
+  assert.equal(failed.receipt.cleanup_verified, false);
+  assert.equal(failed.receipt.same_run_receipt, false);
+  assert.equal(failed.receipt.same_run_source_sync, false);
+  assert.equal(failed.receipt.business_completion_verified, false);
+  assert.equal(failed.receipt.business_proof_verified, false);
+  assert.deepEqual(failed.receipt.business_proofs, { backup_snapshot: false, backup_remote_push: false, backup_state: false, cleanup_receipt: false });
+  assert.equal(failed.receipt.runner_receipt.status, "blocked");
+  assert.equal(failed.receipt.runner_receipt.same_run_source_sync, false);
+  assert.ok(failed.receipt.web_operation_lifecycle);
+  assert.equal(failed.receipt.web_operation_lifecycle.status, "blocked");
+  assert.equal(failed.receipt.web_operation_lifecycle.same_run_receipt, false);
+  assert.ok(failed.receipt.raw_observations);
+  assert.equal(failed.receipt.raw_observations.reported_readback_verified, true);
+  assert.equal(db.querySql<{ status: string }>(`SELECT status FROM runs WHERE id=${db.sqlValue(started.runId)}`)[0].status, "blocked");
+  const duplicateRequest = await requestPortableBackupPostEffectReconciliation({ companyId, runId: started.runId,
+    expectedReadbackToken: "stale-readback-token", idempotencyKey: `portable-backup-post-effect-${started.runId}` });
+  assert.equal(duplicateRequest.replayed, true);
+  await assert.rejects(() => recordPortableBackupPostEffectEvidenceAsync({ companyId, workerId: "backup-worker", workerInstanceId: "backup-instance-1", runId: started.runId, receipt: firstReceipt }), /portable_backup_evidence_claim_not_active/u);
+  const second = await claimPortableBackupPostEffectReconciliationAsync({ companyId, workerId: "backup-worker", workerInstanceId: "backup-instance-2", requestedRunId: started.runId });
+  assert.ok(second);
+  assert.notEqual(second.attempt_id, first.attempt_id);
+  const secondClaimMetadata = JSON.parse((db.querySql<{ metadata_json: string }>(`SELECT metadata_json FROM runs WHERE id=${db.sqlValue(started.runId)}`)[0]).metadata_json);
+  assert.equal(secondClaimMetadata.portable_post_effect_reconciliation.lease_expires_at, second.lease_expires_at);
+  assert.equal(secondClaimMetadata.portable_post_effect_reconciliation.attempts.at(-1).attempt_id, second.attempt_id);
+  assert.equal(db.querySql<{ state: string }>(`SELECT state FROM task_effect_ledger WHERE operation_key=${db.sqlValue(`backup-effect-${createHash("sha256").update(started.runId).digest("hex")}`)} LIMIT 1`)[0].state, "intent");
+  const rollbackMetadata = JSON.parse((db.querySql<{ metadata_json: string }>(`SELECT metadata_json FROM runs WHERE id=${db.sqlValue(started.runId)}`)[0]).metadata_json);
+  rollbackMetadata.portable_post_effect_reconciliation.original_claim.effect_operation_key = "backup-phase2-ledger-missing";
+  db.execSql(`UPDATE runs SET metadata_json=${db.sqlValue(rollbackMetadata)} WHERE id=${db.sqlValue(started.runId)}`);
+  reconciliationBinding.effect_operation_key = "backup-phase2-ledger-missing";
+  const beforeLedgerFailureArtifactCount = db.querySql<{ count: number }>(`SELECT COUNT(*) AS count FROM run_artifacts WHERE run_id=${db.sqlValue(started.runId)}`)[0].count;
+  await assert.rejects(
+    () => recordPortableBackupPostEffectEvidenceAsync({ companyId, workerId: "backup-worker", workerInstanceId: "backup-instance-2", runId: started.runId, receipt: makeReceipt(second, "e".repeat(40)) }),
+    /sql_transaction_expected_changes:1:actual:0/u
+  );
+  assert.equal(db.querySql<{ count: number }>(`SELECT COUNT(*) AS count FROM run_artifacts WHERE run_id=${db.sqlValue(started.runId)}`)[0].count, beforeLedgerFailureArtifactCount);
+  assert.equal(db.querySql<{ status: string }>(`SELECT status FROM runs WHERE id=${db.sqlValue(started.runId)}`)[0].status, "blocked");
+  const operationKey = "backup-phase2-ledger-operation";
+  db.execSql(`INSERT INTO task_effect_ledger
+    (operation_key, company_id, trace_id, task_id, workflow_id, target_hash, payload_hash, audience_hash, state,
+     external_action_executed, ambiguous, retry_forbidden, provider_receipt_hash, source_sync_hash, reconciliation_hash,
+     cleanup_hash, exact_blocker, restart_point, created_at, updated_at, closed_at)
+    VALUES (${db.sqlValue(operationKey)}, ${db.sqlValue(companyId)}, 'trace-backup-phase2', ${db.sqlValue(started.runId)},
+      'daily-backup-safety-check', ${db.sqlValue("a".repeat(64))}, ${db.sqlValue("b".repeat(64))}, ${db.sqlValue("c".repeat(64))},
+      'executing', 0, 0, 0, NULL, NULL, NULL, NULL, NULL, 'effect_executing', ${db.sqlValue(new Date().toISOString())}, ${db.sqlValue(new Date().toISOString())}, NULL)`);
+  const retryMetadata = JSON.parse((db.querySql<{ metadata_json: string }>(`SELECT metadata_json FROM runs WHERE id=${db.sqlValue(started.runId)}`)[0]).metadata_json);
+  retryMetadata.portable_post_effect_reconciliation.original_claim.effect_operation_key = operationKey;
+  db.execSql(`UPDATE runs SET metadata_json=${db.sqlValue(retryMetadata)} WHERE id=${db.sqlValue(started.runId)}`);
+  reconciliationBinding.effect_operation_key = operationKey;
+  const success = await recordPortableBackupPostEffectEvidenceAsync({ companyId, workerId: "backup-worker", workerInstanceId: "backup-instance-2", runId: started.runId, receipt: makeReceipt(second, "e".repeat(40)) });
+  assert.equal(success.receipt.status, "complete");
+  assert.equal(db.querySql<{ count: number }>(`SELECT COUNT(*) AS count FROM run_artifacts WHERE run_id=${db.sqlValue(started.runId)}`)[0].count, 2);
+  assert.ok(db.querySql<{ id: string }>(`SELECT id FROM run_artifacts WHERE id=${db.sqlValue(failedArtifactId)} AND run_id=${db.sqlValue(started.runId)} LIMIT 1`)[0]);
+  const replay = await recordPortableBackupPostEffectEvidenceAsync({ companyId, workerId: "backup-worker", workerInstanceId: "backup-instance-2", runId: started.runId, receipt: makeReceipt(second, "e".repeat(40)) });
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.artifact_uri, success.artifact_uri);
+  await assert.rejects(() => recordPortableBackupPostEffectEvidenceAsync({ companyId, workerId: "backup-worker", workerInstanceId: "backup-instance-2", runId: started.runId,
+    receipt: { ...makeReceipt(second, "f".repeat(40)), evidence: { ...makeReceipt(second, "f".repeat(40)).evidence, state_matches_snapshot_and_commit: true } } }), /portable_backup_evidence_conflict/u);
+  assert.equal((await readPortableRunRecovery({ companyId, runId: started.runId })).status, "complete");
+});
+
+test("NisenPrints inventory audit is claimable and stores an idempotent read-only result, not publication proof", async () => {
+  const companyId = "portable_remote_inventory_fixture";
+  ensureTestCompany(companyId);
+  const workerId = "mac-inventory-fixture";
+  const started = await startPortableLocalWorkflowRun({
+    workflowId: "nisenprints-existing-product-audit", sourceTrigger: "automation_os_scheduler",
+    idempotencyKey: "inventory-fixture-occurrence-1", companyId, readOnlyStage: "reference_readback"
+  });
+  const claim = claimPortableMacWorker({ companyId, workerId, requestedRunId: started.runId });
+  assert.ok(claim);
+  assert.equal(claim.workflow_id, "nisenprints-existing-product-audit");
+  const receipt = { status: "complete", exact_blocker: null, external_action_executed: false,
+    browser_surface: "local_worker", workflow_id: claim.workflow_id, run_id: claim.run_id, step_id: claim.step_id,
+    cleanup_verified: true, readback_verified: true, effects_mode: "read_only", read_only_stage_bound: true,
+    same_run_receipt: true, external_executor_status: "portable_local_worker_completed",
+    adapter_result: { local_workflow_receipt: true, execution_surface: "mac_local_worker",
+      local_receipt: { same_run_source_sync: true, full_publish_workflow_completed: false } } };
+  const result = recordPortableMacWorkerReceipt({ companyId, workerId, runId: started.runId, receipt });
+  assert.equal(result.receipt.status, "complete");
+  assert.equal(result.receipt.read_only_proof_verified, true);
+  assert.equal(result.receipt.business_proof_verified, false);
+  assert.equal(result.receipt.external_action_executed, false);
+  const repeated = recordPortableMacWorkerReceipt({ companyId, workerId, runId: started.runId, receipt });
+  assert.equal(repeated.replayed, true);
+  const run = db.querySql<{ status: string }>(`SELECT status FROM runs WHERE id=${db.sqlValue(started.runId)}`)[0];
+  assert.equal(run.status, "complete");
+});
+
+test("Gmail worker receipt persistence keeps all 100 bounded summaries in sync and async paths", async () => {
+  for (const asyncPath of [false, true]) {
+    const companyId = `portable_gmail_result_${asyncPath ? "async" : "sync"}`;
+    ensureTestCompany(companyId);
+    const workerId = `gmail-result-${asyncPath ? "async" : "sync"}`;
+    const started = await startPortableLocalWorkflowRun({ workflowId: "email-review-reply", sourceTrigger: "automation_os_ui",
+      idempotencyKey: `${workerId}-read-only`, companyId, readOnlyStage: "reference_readback" });
+    const claim = claimPortableMacWorker({ companyId, workerId, requestedRunId: started.runId });
+    assert.ok(claim);
+    const review = { provider: "gmail", operation: "summary_review", fetched_count: 100, exhausted: false,
+      items: Array.from({ length: 100 }, (_, i) => ({ message_id: `mail${i}`, category: "確認", summary: `要約${i}`, reply_candidate: i < 5 ? "未送信案" : null })), exact_blocker: null };
+    const result = { run_id: claim.run_id, company_id: companyId, status: "complete", exact_blocker: null, review,
+      review_hash: createHash("sha256").update(JSON.stringify(review)).digest("hex"), provider_read_observed: true,
+      reply_candidates_require_approval: true, messages_sent: false, provider_drafts_created: false, external_action_executed: false,
+      diagnostics: { fetched_count: 100, item_count: 100, unique_id_count: 100, reply_candidate_count: 5, exhausted: false, provider_read_call_count: 2 } };
+    const receipt = { status: "complete", exact_blocker: null, external_action_executed: false,
+      browser_surface: "local_worker", workflow_id: claim.workflow_id, run_id: claim.run_id, step_id: claim.step_id,
+      cleanup_verified: true, readback_verified: true, effects_mode: "read_only", read_only_stage_bound: true, same_run_receipt: true,
+      external_executor_status: "portable_local_worker_completed", adapter_result: { local_workflow_receipt: true,
+        execution_surface: "mac_local_worker", local_receipt: { review: result, ignored_deep_diagnostics: { a: { b: { c: { raw: "not copied" } } } } } } };
+    const recordReceipt = asyncPath ? recordPortableMacWorkerReceiptAsync : recordPortableMacWorkerReceipt;
+    const saved = await recordReceipt({ companyId, workerId, runId: claim.run_id, receipt });
+    const accepted = (saved.receipt.adapter_result?.local_receipt as any).review;
+    assert.equal(accepted.review.items.length, 100);
+    assert.equal(accepted.review.items[99].summary, "要約99");
+    assert.equal(accepted.review_hash, result.review_hash);
+    assert.equal(saved.receipt.read_only_proof_verified, true);
+    assert.equal(saved.receipt.business_proof_verified, false);
+    assert.doesNotMatch(JSON.stringify(saved.receipt), /not copied/);
+    const persisted = db.querySql<{ content_text: string }>(`SELECT content_text FROM run_artifacts WHERE run_id=${db.sqlValue(claim.run_id)} LIMIT 1`)[0];
+    assert.equal(JSON.parse(persisted.content_text).adapter_result.local_receipt.review.review.items.length, 100);
+    assert.equal((await recordReceipt({ companyId, workerId, runId: claim.run_id, receipt })).replayed, true);
+  }
+});
+
+test("Obsidian audit project rows survive both receipt storage paths without a Vault write claim", async () => {
+  for (const asyncPath of [false, true]) {
+    const companyId = `portable_obsidian_rows_${asyncPath ? "async" : "sync"}`;
+    ensureTestCompany(companyId);
+    const workerId = `obsidian-rows-${asyncPath}`;
+    const started = await startPortableLocalWorkflowRun({ workflowId: "obsidian-project-memory-audit", sourceTrigger: "automation_os_ui",
+      idempotencyKey: `${workerId}-read-only`, companyId, readOnlyStage: "reference_readback" });
+    const claim = claimPortableMacWorker({ companyId, workerId, requestedRunId: started.runId });
+    assert.ok(claim);
+    const local = { audit_ok: true, audit_summary: { projects: 10, ok: 5, attention: 5, blocked: 0 },
+      audit_run_id: claim.run_id, audit_company_id: companyId, audit_generated_at: "2026-09-06T00:00:00.000Z", audit_projects_truncated: false,
+      audit_projects: Array.from({ length: 10 }, (_, i) => ({ project_id: `project-${i}`, project_label: `Project ${i}`,
+        status: i < 5 ? "attention" : "ok", issue_codes: i < 5 ? "state_stale" : "", finding: `Finding ${i}`,
+        state_updated_at: "2026-08-01T00:00:00.000Z", latest_activity_at: "2026-09-01T00:00:00.000Z", next_action: `Read STATE ${i}` })),
+      audit_only: true, write_performed: false, maintenance_performed: false, git_sync_performed: false };
+    const receipt = { status: "complete", exact_blocker: null, external_action_executed: false,
+      browser_surface: "local_worker", workflow_id: claim.workflow_id, run_id: claim.run_id, step_id: claim.step_id,
+      cleanup_verified: true, readback_verified: true, effects_mode: "read_only", read_only_stage_bound: true, same_run_receipt: true,
+      external_executor_status: "portable_local_worker_completed", adapter_result: { local_workflow_receipt: true,
+        execution_surface: "mac_local_worker", local_receipt: local } };
+    const recordReceipt = asyncPath ? recordPortableMacWorkerReceiptAsync : recordPortableMacWorkerReceipt;
+    const saved = await recordReceipt({ companyId, workerId, runId: claim.run_id, receipt });
+    assert.equal(saved.receipt.read_only_proof_verified, true);
+    assert.equal(saved.receipt.business_proof_verified, false);
+    assert.equal(saved.receipt.external_action_executed, false);
+    const accepted = saved.receipt.adapter_result?.local_receipt as any;
+    assert.equal(accepted.audit_projects.length, 10);
+    assert.equal(accepted.audit_projects[9].finding, "Finding 9");
+    assert.equal(accepted.audit_projects[9].next_action, "Read STATE 9");
+    assert.equal(accepted.audit_company_id, companyId);
+    const artifact = db.querySql<{ content_text: string }>(`SELECT content_text FROM run_artifacts WHERE run_id=${db.sqlValue(claim.run_id)} LIMIT 1`)[0];
+    assert.equal(JSON.parse(artifact.content_text).adapter_result.local_receipt.audit_projects[9].project_id, "project-9");
+    assert.equal((await recordReceipt({ companyId, workerId, runId: claim.run_id, receipt })).replayed, true);
+  }
+});
+
 test("remote Mac worker claims a business effect only after target-bound AOS approval", async () => {
   const previousMode = process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE;
   process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE = "external";
@@ -902,6 +1161,7 @@ test("remote Mac worker claims a business effect only after target-bound AOS app
       workflowId: "job-application-manager",
       sourceTrigger: "automation_os_ui",
       idempotencyKey: "portable-remote-business-regression",
+      browserSurfaceRequirement: "browser_use_cli",
       companyId,
       effectStage: "one_candidate_submit",
       inputBundle: {
@@ -1147,6 +1407,50 @@ test("expired portable worker claim is blocked without replay when no receipt ex
   });
 });
 
+for (const mode of ["business_effect", "missing", "read_only_positive"] as const) {
+  for (const asyncClaim of [false, true]) {
+    test(`expired missing receipt preserves unknown or positive effects: ${mode}, async=${asyncClaim}`, async () => {
+      const key = `expired-unknown-${mode}-${asyncClaim}`;
+      const companyId = `company_${key}`;
+      ensureTestCompany(companyId);
+      const started = await startPortableLocalWorkflowRun({
+        companyId, workflowId: "obsidian-project-memory-audit", sourceTrigger: "automation_os_scheduler", idempotencyKey: key
+      });
+      const first = claimPortableMacWorker({ companyId, workerId: "mac-expiry-test-owner", requestedRunId: started.runId });
+      assert.ok(first);
+      const run = db.querySql<{ metadata_json: string }>(`SELECT metadata_json FROM runs WHERE id=${db.sqlValue(started.runId)}`)[0]!;
+      const metadata = JSON.parse(run.metadata_json) as Record<string, unknown>;
+      const storedClaim = metadata.remote_worker_claim as Record<string, unknown>;
+      const { execution_mode: _oldMode, ...rest } = storedClaim;
+      const positive = mode === "read_only_positive";
+      db.execSql(`UPDATE runs SET metadata_json=${db.sqlValue({
+        ...metadata, external_action_executed: positive,
+        remote_worker_claim: { ...rest, ...(mode !== "missing" ? { execution_mode: positive ? "read_only" : mode } : {}), lease_expires_at: "2020-01-01T00:00:00.000Z" }
+      })} WHERE id=${db.sqlValue(started.runId)}`);
+      const next = await (asyncClaim ? claimPortableMacWorkerAsync : claimPortableMacWorker)({ companyId, workerId: "mac-expiry-test-next" });
+      assert.equal(next, null);
+      const result = db.querySql<{ status: string; metadata_json: string }>(`SELECT status, metadata_json FROM runs WHERE id=${db.sqlValue(started.runId)}`)[0]!;
+      const resultMetadata = JSON.parse(result.metadata_json) as Record<string, unknown>;
+      assert.equal(result.status, "blocked");
+      assert.equal(resultMetadata.external_action_executed, positive ? true : null);
+      assert.equal(resultMetadata.operation_effect_state, "unknown");
+      assert.equal(resultMetadata.reconciliation_required, true);
+      assert.equal(resultMetadata.portable_remote_claim_reconciled, false);
+      assert.equal(resultMetadata.no_replay, true);
+      for (const table of ["run_steps", "worker_events"]) {
+        const rows = db.querySql<{ metadata_json: string }>(`SELECT metadata_json FROM ${table} WHERE run_id=${db.sqlValue(started.runId)}${table === "worker_events" ? " AND event_type='portable_remote_claim_expired_reconciled'" : ""}`);
+        assert.ok(rows.length > 0);
+        for (const row of rows) {
+          const evidence = JSON.parse(row.metadata_json) as Record<string, unknown>;
+          assert.equal(evidence.external_action_executed, positive ? true : null);
+          assert.equal(evidence.reconciliation_required, true);
+        }
+      }
+      assert.equal(await claimPortableMacWorkerAsync({ companyId, workerId: "mac-expiry-test-next" }), null);
+    });
+  }
+}
+
 test("expired registered root is terminally blocked instead of remaining queued forever", async () => {
   const companyId = "portable_remote_expired_root_company";
   ensureTestCompany(companyId);
@@ -1205,6 +1509,7 @@ test("candidate-supply claim waits for the persisted input bundle boundary", asy
     workflowId: "job-application-manager",
     sourceTrigger: "automation_os_scheduler",
     idempotencyKey: "portable-remote-bundle-race-regression",
+    browserSurfaceRequirement: "browser_use_cli",
     companyId,
     readOnlyStage: "candidate_supply",
   });
@@ -1361,6 +1666,7 @@ test("Daily AI and NisenPrints reject generic receipts without workflow business
         workflowId: item.workflowId,
         sourceTrigger: "automation_os_scheduler",
         idempotencyKey: item.idempotencyKey,
+        browserSurfaceRequirement: "browser_use_cli",
         companyId: item.companyId,
         effectStage: item.stage,
         inputBundle: item.bundle,
@@ -1421,6 +1727,7 @@ test("Daily AI business effect requires every plan proof and same-run source syn
       workflowId: "daily-ai-research-publish-run",
       sourceTrigger: "automation_os_scheduler",
       idempotencyKey: "portable-daily-business-proof-complete-regression",
+      browserSurfaceRequirement: "browser_use_cli",
       companyId,
       effectStage: "publish",
       inputBundle: {
@@ -1484,6 +1791,138 @@ test("Daily AI business effect requires every plan proof and same-run source syn
   } finally {
     if (previousMode === undefined) delete process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE;
     else process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE = previousMode;
+  }
+});
+
+test("Daily AI source-sync proof binds the inner receipt to the fixed mirror", () => {
+  const binding = {
+    companyId: dailyAi.DAILY_AI_RESEARCH_SYNC_COMPANY,
+    runId: "run_daily_source_fixture",
+    stepId: "step_daily_source_fixture",
+    idempotencyKey: "daily-source-fixture-key",
+    targetDigest: "a".repeat(64),
+    inputBundleSha256: "b".repeat(64),
+    sourceSnapshotId: "c".repeat(64),
+    payloadHash: dailyAi.dailyAiResearchSyncPayloadHash(),
+  };
+  const runnerReceipt: Record<string, any> = {
+    schema: "aos.daily_ai_research_source_sync_receipt.v1",
+    company_id: binding.companyId,
+    workflow_id: dailyAi.DAILY_AI_RESEARCH_SYNC_WORKFLOW,
+    run_id: binding.runId,
+    step_id: binding.stepId,
+    idempotency_key: binding.idempotencyKey,
+    target_digest: binding.targetDigest,
+    input_bundle_sha256: binding.inputBundleSha256,
+    source_snapshot_id: binding.sourceSnapshotId,
+    payload_hash: binding.payloadHash,
+    payload_sha256: "d".repeat(64),
+    status: "complete",
+    exact_blocker: null,
+    external_action_executed: true,
+    same_run_receipt: true,
+    same_run_source_sync: true,
+    readback_verified: true,
+    cleanup_verified: true,
+    full_publish_completed: false,
+    generation_performed: false,
+    research: { metrics: { published: 0, sheets_synced: 0, auto_promoted: 0 } },
+    mirror: {
+      spreadsheet_id: dailyAi.DAILY_AI_RESEARCH_SYNC_SHEET,
+      sheet_id: 1541274581,
+      mirror_column_count: 39,
+      all_local_ids_and_columns_match: true,
+      manual_views_match: true,
+    },
+    business_proofs: {
+      research_queue: true,
+      existing_sheet_mirror: true,
+      all_mirror_columns: true,
+      cleanup_receipt: true,
+    },
+  };
+  const input = {
+    same_run_receipt: true,
+    same_run_source_sync: true,
+    cleanup_verified: true,
+    readback_verified: true,
+    external_action_executed: true,
+    runner_receipt: runnerReceipt,
+  };
+  assert.equal(
+    businessProofSatisfied(dailyAi.DAILY_AI_RESEARCH_SYNC_WORKFLOW, input, { remote_verified: true }, binding),
+    true,
+  );
+});
+
+test("Daily AI source-sync proof rejects inner binding, mirror, schema, and publication drift", () => {
+  const baseBinding = {
+    companyId: dailyAi.DAILY_AI_RESEARCH_SYNC_COMPANY,
+    runId: "run_daily_source_reject_fixture",
+    stepId: "step_daily_source_reject_fixture",
+    idempotencyKey: "daily-source-reject-key",
+    targetDigest: "a".repeat(64),
+    inputBundleSha256: "b".repeat(64),
+    sourceSnapshotId: "c".repeat(64),
+    payloadHash: dailyAi.dailyAiResearchSyncPayloadHash(),
+  };
+  const makeReceipt = (): Record<string, any> => ({
+    company_id: baseBinding.companyId,
+    workflow_id: dailyAi.DAILY_AI_RESEARCH_SYNC_WORKFLOW,
+    run_id: baseBinding.runId,
+    step_id: baseBinding.stepId,
+    idempotency_key: baseBinding.idempotencyKey,
+    target_digest: baseBinding.targetDigest,
+    input_bundle_sha256: baseBinding.inputBundleSha256,
+    source_snapshot_id: baseBinding.sourceSnapshotId,
+    payload_hash: baseBinding.payloadHash,
+    status: "complete",
+    exact_blocker: null,
+    external_action_executed: true,
+    same_run_receipt: true,
+    same_run_source_sync: true,
+    readback_verified: true,
+    cleanup_verified: true,
+    full_publish_completed: false,
+    generation_performed: false,
+    research: { metrics: { published: 0, sheets_synced: 0, auto_promoted: 0 } },
+    mirror: {
+      spreadsheet_id: dailyAi.DAILY_AI_RESEARCH_SYNC_SHEET,
+      sheet_id: 1541274581,
+      mirror_column_count: 39,
+      all_local_ids_and_columns_match: true,
+      manual_views_match: true,
+    },
+    business_proofs: { research_queue: true, existing_sheet_mirror: true, all_mirror_columns: true, cleanup_receipt: true },
+  });
+  const mutations: Array<[string, (receipt: Record<string, any>) => void]> = [
+    ["company", (receipt) => { receipt.company_id = "foreign"; }],
+    ["workflow", (receipt) => { receipt.workflow_id = "foreign"; }],
+    ["run", (receipt) => { receipt.run_id = "foreign"; }],
+    ["step", (receipt) => { receipt.step_id = "foreign"; }],
+    ["idempotency", (receipt) => { receipt.idempotency_key = "foreign"; }],
+    ["target", (receipt) => { receipt.target_digest = "f".repeat(64); }],
+    ["source", (receipt) => { receipt.source_snapshot_id = "f".repeat(64); }],
+    ["payload", (receipt) => { receipt.input_bundle_sha256 = "f".repeat(64); }],
+    ["manual-view", (receipt) => { receipt.mirror.manual_views_match = false; }],
+    ["columns", (receipt) => { receipt.mirror.mirror_column_count = 9; }],
+    ["sheet", (receipt) => { receipt.mirror.spreadsheet_id = "foreign"; }],
+    ["gid", (receipt) => { receipt.mirror.sheet_id = 1; }],
+    ["publication", (receipt) => { receipt.full_publish_completed = true; }],
+  ];
+  for (const [label, mutate] of mutations) {
+    const runnerReceipt = makeReceipt();
+    mutate(runnerReceipt);
+    assert.equal(
+      businessProofSatisfied(
+        dailyAi.DAILY_AI_RESEARCH_SYNC_WORKFLOW,
+        { same_run_receipt: true, same_run_source_sync: true, cleanup_verified: true, readback_verified: true, external_action_executed: true, runner_receipt: runnerReceipt },
+        { remote_verified: true },
+        baseBinding,
+      ),
+      false,
+      label,
+    );
   }
 });
 

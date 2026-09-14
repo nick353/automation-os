@@ -24,6 +24,7 @@ export type BriefCandidateRecord = {
   title: unknown;
   summary: unknown;
   nextAction?: unknown;
+  scopeExcludedReason?: unknown;
 };
 
 export type CompanyBriefInput = {
@@ -33,6 +34,7 @@ export type CompanyBriefInput = {
   templateVersion: unknown;
   companies: readonly BriefCompanySnapshot[];
   records: readonly BriefCandidateRecord[];
+  scopeNote?: unknown;
 };
 
 export type LocalBriefItem = {
@@ -65,10 +67,13 @@ export type LocalBriefBundle = {
   status: "complete" | "partial";
   companies: LocalBriefCompany[];
   exclusions: LocalBriefExclusion[];
+  scope_exclusions?: LocalBriefExclusion[];
+  scope_note?: string;
   counts: {
     input_records: number;
     included_records: number;
     excluded_records: number;
+    scope_excluded_records?: number;
     companies: number;
     generated_companies: number;
     empty_companies: number;
@@ -117,6 +122,7 @@ export function generateCompanyBriefs(input: CompanyBriefInput): LocalBriefBundl
   const recordIds = new Set<string>();
   const itemsByCompany = new Map<string, LocalBriefItem[]>();
   const exclusions: LocalBriefExclusion[] = [];
+  const scopeExclusions: LocalBriefExclusion[] = [];
   const fingerprintRecords: Array<Record<string, unknown>> = [];
 
   for (const record of records) {
@@ -150,6 +156,14 @@ export function generateCompanyBriefs(input: CompanyBriefInput): LocalBriefBundl
       continue;
     }
 
+    // A user-selected display scope is not a registry failure or a completed
+    // business action. Keep it separate from technical exclusions and delivery.
+    const scopeReason = optionalBriefText(record.scopeExcludedReason, "scope_exclusion_invalid", 240);
+    if (scopeReason) {
+      scopeExclusions.push({ record_id: recordId, reason: scopeReason });
+      fingerprintRecords.push({ record_id: recordId, match_class: matchClass, company_id: companyId, scope_excluded_reason: scopeReason });
+      continue;
+    }
     const item = {
       record_id: recordId,
       title: safeBriefText(record.title, "brief_title_invalid", 240),
@@ -170,6 +184,7 @@ export function generateCompanyBriefs(input: CompanyBriefInput): LocalBriefBundl
   }
 
   const normalizedFingerprintInput = {
+    ...(normalized.scope_note ? { scope_note: normalized.scope_note } : {}),
     brief_type: normalized.brief_type,
     business_date: normalized.business_date,
     timezone: normalized.timezone,
@@ -190,6 +205,7 @@ export function generateCompanyBriefs(input: CompanyBriefInput): LocalBriefBundl
     } satisfies LocalBriefCompany;
   });
   exclusions.sort((left, right) => compareText(left.record_id ?? "", right.record_id ?? "") || compareText(left.reason, right.reason));
+  scopeExclusions.sort((left, right) => compareText(left.record_id ?? "", right.record_id ?? ""));
 
   const withoutOutputFingerprint = {
     schema: LOCAL_BRIEF_BUNDLE_SCHEMA,
@@ -201,10 +217,13 @@ export function generateCompanyBriefs(input: CompanyBriefInput): LocalBriefBundl
     status: exclusions.length > 0 ? "partial" : "complete",
     companies,
     exclusions,
+    ...(scopeExclusions.length ? { scope_exclusions: scopeExclusions } : {}),
+    ...(normalized.scope_note ? { scope_note: normalized.scope_note } : {}),
     counts: {
       input_records: records.length,
-      included_records: records.length - exclusions.length,
+      included_records: records.length - exclusions.length - scopeExclusions.length,
       excluded_records: exclusions.length,
+      ...(scopeExclusions.length ? { scope_excluded_records: scopeExclusions.length } : {}),
       companies: companies.length,
       generated_companies: companies.filter((company) => company.status === "generated").length,
       empty_companies: companies.filter((company) => company.status === "empty").length
@@ -239,6 +258,7 @@ function normalizeInput(input: CompanyBriefInput) {
     timezone,
     template_version: templateVersion,
     companies,
+    scope_note: optionalBriefText(input.scopeNote, "scope_note_invalid", 1000),
     records: input.records
   };
 }

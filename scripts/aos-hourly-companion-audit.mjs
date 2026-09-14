@@ -41,6 +41,7 @@ const DEFAULT_RECENT_DAYS = 7;
 // unchanged.  A file mtime by itself is not evidence of a stalled task: old
 // session logs are retained for resume, and must not create an hourly loop.
 export const DEFAULT_STALLED_TASK_THRESHOLD_MS = 10 * 60_000;
+const ACTIVE_TASK_STATUSES = new Set(["active", "running", "in_progress", "inprogress", "in progress", "executing", "working"]);
 const COMPANION_MARKERS = [
   "companion",
   "chrome_plugin",
@@ -99,7 +100,7 @@ const CONTEXT_ONLY_COMPANION_MARKERS = new Set(["companion"]);
 const COMPANION_EVIDENCE_CUES = /(?:error|failed|failure|blocked|pending|timeout|timed out|unresolved|mismatch|disconnected|not available|not exposed|not owned|reconciliation_required|operation_effect_unknown|unknown effect|transaction_action_|mcp_session_task_binding_missing|page_instance_mismatch|semantic_snapshot_empty|status\s*[:=]|exact[_ ]blocker\s*[:=])/iu;
 const COMPANION_CONTEXT_FAILURE_CUES = /(?:error|failed|failure|blocked|pending|timeout|timed out|unresolved|mismatch|disconnected|not available|not exposed|not owned|reconciliation_required|operation_effect_unknown|unknown effect)/iu;
 const USER_HELP_EVIDENCE_CUES = /(?:\bcurrently\b|\bnow\b|\brendered\b|\bvisible\b|\bdisplayed\b|\bwaiting\b|requires?\s+(?:a\s+)?(?:user|human|action)|\benter\b|\binput\b|\bchallenge\b|\bwidget\b|\bverification\b|status\s*[:=])/iu;
-const INSTRUCTION_ONLY_CUES = /(?:never|do not|don't|not a (?:gate|proof)|without replay|must not|should not|if .* then)/iu;
+const INSTRUCTION_ONLY_CUES = /(?:never|do not|don't|not a (?:gate|proof)|without replay|must not|should not|if .* then|please\b|してください|しないで(?:ください)?|禁止|必ず|すること)/iu;
 // User-help is a terminal boundary only when the tail describes an observed
 // challenge and an action that is currently required.  A policy sentence
 // mentioning "OTP/CAPTCHA" must not become a blocker by keyword alone.
@@ -122,7 +123,10 @@ export const COMPANION_VISUAL_INTERACTION_POLICY_SCHEMA = "aos.companion_visual_
 export const MIN_INDEPENDENT_REPRODUCTIONS_FOR_PLAYBOOK_PROPOSAL = 3;
 const SOFT_ANOMALY_ACTIONABILITY = "review_only";
 const MAX_SOFT_ANOMALY_EVIDENCE = 3;
-const MAX_SOFT_ANOMALIES_PER_SESSION = 4;
+// Minor quality signals are intentionally retained alongside hard blockers;
+// truncating at four hid useful web-operation friction when a task also had
+// drift, a near miss, and a verification gap.
+const MAX_SOFT_ANOMALIES_PER_SESSION = 8;
 const MAX_SOFT_ANOMALY_FINDINGS = 100;
 const MAX_SOFT_ANOMALY_EVIDENCE_CHARS = 240;
 const MAX_LIGHTWEIGHT_THREAD_INSPECTIONS = 200;
@@ -135,6 +139,8 @@ const PROACTIVE_SOFT_ANOMALY_TYPES = new Set([
   "recovered_near_miss",
   "unstable_behavior",
   "progress_verification_next_action_gap",
+  "web_operation_friction",
+  "workflow_deviation",
 ]);
 const PROACTIVE_PLAYBOOK_IDS = new Set([
   "stale_connection_generation",
@@ -147,6 +153,9 @@ const PROACTIVE_PLAYBOOK_IDS = new Set([
 // They describe quality or continuity signals in a recent tail, but never
 // authorize a repair, resume, refresh, or replay.
 const SOFT_INTENT_DRIFT_CUES = /(?:intent|scope|goal|objective|request|purpose)\s*(?:drift(?:ed)?|mismatch|divergen(?:ce|t)|off[- ]track|misalign(?:ed|ment)|changed)|(?:scope creep|out of scope|wrong task|wrong target|unrelated work|not what (?:the )?user asked|does not match (?:the )?request)|(?:意図|目的|依頼|スコープ|対象).*(?:逸脱|ずれ|不一致|外れ|変わっ|違う|拡大)|(?:依頼と(?:異なる|違う)|ユーザー意図.*(?:不一致|逸脱|ずれ)|目的から逸脱)/iu;
+const SOFT_MINOR_DEVIATION_CUES = /(?:slightly\s+(?:off|wrong|different)|not quite(?: right)?|seems?\s+off|a little\s+(?:wrong|different)|unexpected(?:ly)?\s+(?:different|changed)|想定(?:と|から)\s*(?:少し|ちょっと)?(?:違|外れ)|少し(?:ずれ|違|外れ)|ちょっと(?:ずれ|違|おか)|違和感|微妙に(?:違|ずれ))/iu;
+const SOFT_WEB_OPERATION_CUES = /(?:\b(?:browser|chrome|web|page|tab|click|double[- ]click|tap|type|input|select|dropdown|scroll|navigate|upload|submit|locator|selector|element|screenshot|visual|semantic|cursor|mouse|frame|iframe)\b|ブラウザ|ウェブ|ページ|タブ|クリック|入力|選択|スクロール|移動|アップロード|送信|要素|セレクタ|画面|カーソル|マウス|操作)/iu;
+const SOFT_WEB_FRICTION_CUES = /(?:not\s+(?:clickable|editable|found|selected|reflected|applied)|element\s+(?:not\s+found|missing)|selector\s+(?:not\s+found|failed)|wrong\s+(?:page|target)|no\s+(?:effect|response)|unresponsive|did(?:n['’]t|\s+not)\s+work|could\s+not|can['’]t|cannot|failed|failure|error|timeout|timed\s+out|retry|reconnect|unexpected|mismatch|empty|unclear|stuck|hang(?:ing)?|blocked|not\s+reflected|not\s+applied|反応しな|うまくいか|できな|見つから|対象.*(?:違|不一致)|ページ.*(?:違|不一致)|効かな|反映されな|タイムアウト|再試行|再接続|エラー|失敗|不安定|止ま|詰ま|空|不明)/iu;
 const SOFT_NEAR_MISS_CUES = /(?:near[- ]miss|almost fail(?:ed)?|recover(?:ed|y)?(?: after| from)?|self[- ]recover(?:ed|y)?|transient(?:ly)? resolved|retry[^\n]{0,80}(?:succeed|pass|complet)|fallback[^\n]{0,80}(?:succeed|pass|complet)|initial(?:ly)?[^\n]{0,100}(?:fail|timeout|error)[^\n]{0,100}(?:then|after|but)[^\n]{0,100}(?:pass|succeed|complet|resolv))/iu;
 const SOFT_FAILURE_CUES = /(?:\bfail(?:ed|ure)?\b|\btimeout\b|\btimed out\b|\berror\b|\balmost fail(?:ed)?\b|\bblocked\b|\bnear[- ]miss\b|(?:失敗|タイムアウト|エラー|未完了|保留))/iu;
 const SOFT_RECOVERY_CUES = /(?:\brecover(?:ed|y)\b[^\n]{0,100}(?:pass|succeed|complet|resolv|after|from)|self[- ]recover(?:ed|y)?|recovery[^\n]{0,100}(?:pass|succeed|complet|resolv)|transient[^\n]{0,80}(?:resolv|pass|succeed)|retry[^\n]{0,80}(?:succeed|pass|complet)|fallback[^\n]{0,80}(?:succeed|pass|complet)|(?:then|after|eventually)[^\n]{0,100}(?:pass|succeed|complet|resolv)|(?:復旧|回復|再試行.*(?:成功|通過)|一時的.*解消))/iu;
@@ -161,7 +170,7 @@ const SOFT_VERIFICATION_GAP_CUES = /(?:verification[^\n]{0,120}(?:missing|pendin
 const SOFT_NEXT_ACTION_GAP_CUES = /(?:next\s+(?:action|step)[^\n]{0,120}(?:missing|unclear|unknown|not\s+(?:set|recorded|defined)|未定|不明|未記載|欠落)|(?:without|but\s+no|missing|gap\s+(?:in|between)|unrecorded)[^\n]{0,80}next\s+(?:action|step)|(?:次の(?:アクション|対応|手順)|次にすること)[^\n]{0,80}(?:未定|不明|未記載|欠落))/iu;
 const SOFT_PROGRESS_GAP_CUES = /(?:progress[^\n]{0,120}(?:missing|unclear|unknown|not\s+(?:recorded|updated)|未記載|不明|欠落)|(?:without|but\s+no|missing|gap\s+(?:in|between)|unrecorded)[^\n]{0,80}progress|(?:進捗)[^\n]{0,80}(?:未記載|不明|欠落))/iu;
 const SOFT_ANY_GAP_CUES = /(?:progress\s*\/\s*verification(?:\s*\/\s*next\s+action)?[^\n]{0,100}(?:gap|missing|incomplete|欠落|不足)|(?:gap|missing|incomplete|欠落|不足)[^\n]{0,100}(?:progress|verification|next\s+action)|(?:進捗|検証|次のアクション)[^\n]{0,80}(?:gap|欠落|不足))/iu;
-const SOFT_OBSERVED_CUES = /(?:observed|detected|occurred|happened|found|reported|recorded|currently|now|result\s*[:=]|status\s*[:=]|progress\s*[:=]|verification\s*[:=]|next\s+action\s*[:=]|実際|検出|発生|記録|現在|結果\s*[:=]|状態\s*[:=])/iu;
+const SOFT_OBSERVED_CUES = /(?:observed|detected|occurred|happened|found|reported|recorded|currently|now|fail(?:ed|ure)?|error|timeout|did(?:n['’]t|\s+not)|result\s*[:=]|status\s*[:=]|progress\s*[:=]|verification\s*[:=]|next\s+action\s*[:=]|実際|検出|発生|記録|現在|失敗|エラー|タイムアウト|反応しな|できな|見つからな|結果\s*[:=]|状態\s*[:=])/iu;
 const SOFT_WORKFLOW_CONTEXT_CUES = /(?:companion|aos|task|thread|goal|objective|request|scope|workflow|test|implemented?|implementation|progress|verification|result|status|next\s+action|readback|dispatch|owner|target|effect|handoff|artifact|実装|進捗|検証|結果|状態|次のアクション|依頼|目的|対象|外部効果)/iu;
 const SESSION_METADATA_NOISE_CUES = /(?:<\/?entry\b|<\/?environment_context\b|<\/?instructions\b|<permissions(?:\s|>)|<skills_instructions>)/iu;
 // Session lines often contain serialized tool output, paths, or historical
@@ -296,17 +305,47 @@ function textFromContent(content) {
     .join(" ");
 }
 
+// Goal continuation metadata is injected into a user-message record so the
+// next model turn can retain its objective. It is control-plane data, not a
+// task observation: words such as `timeout`, `blocked`, and `CAPTCHA` inside
+// it must never create a Companion incident or a resume candidate.
+function removeInternalControlText(value) {
+  return String(value ?? "")
+    .replace(/<codex_internal_context\b[^>]*>[\s\S]*?<\/codex_internal_context>/giu, " ")
+    .replace(/<codex_internal_context\b[^>]*>[\s\S]*/giu, " ");
+}
+
+function toolOutputText(output) {
+  if (Array.isArray(output)) {
+    // `functions.exec` stores a terminal wrapper and its captured stdout as
+    // separate input_text blocks. The stdout can contain test source,
+    // previous assistant reports, or this audit's own words; none is a
+    // task-observation receipt. Ignore the whole wrapper rather than letting
+    // captured prose create a new blocker on the next scan.
+    if (output.some((entry) => /^\s*Script\s+(?:completed|running|failed)\b/iu.test(String(entry?.text ?? "")))) return "";
+  }
+  return textFromContent(output) || (typeof output === "string" ? output : "");
+}
+
 function extractSessionLine(line) {
   const source = String(line || "");
   try {
     const record = JSON.parse(source);
-    if (typeof record?.message === "string") return record.message;
+    if (typeof record?.message === "string") return removeInternalControlText(record.message);
     const payload = record?.payload;
-    if (payload?.type === "message") return textFromContent(payload.content);
-    if (payload?.type === "custom_tool_call_output" || payload?.type === "function_call_output") {
-      return textFromContent(payload.output) || (typeof payload.output === "string" ? payload.output : "");
+    // Assistant prose is a report about the task, not an authoritative task
+    // observation. Reading it back as evidence makes the audit classify its
+    // own words (for example, "blocked" or "timeout") as a new incident on
+    // the next tick. Keep user messages and structured tool/event results;
+    // exact tool receipts remain available through the latter paths.
+    if (payload?.type === "message") {
+      if (["assistant", "system", "developer"].includes(String(payload.role || "").toLowerCase())) return "";
+      return removeInternalControlText(textFromContent(payload.content));
     }
-    if (payload?.type === "event_msg" && payload?.message) return textFromContent(payload.message);
+    if (payload?.type === "custom_tool_call_output" || payload?.type === "function_call_output") {
+      return removeInternalControlText(toolOutputText(payload.output));
+    }
+    if (payload?.type === "event_msg" && payload?.message) return removeInternalControlText(textFromContent(payload.message));
     if (payload?.type === "turn_aborted") return `turn aborted: ${payload.reason || "unknown"}`;
     if (payload?.type === "thread_goal_updated" && payload.goal) {
       return `goal status: ${payload.goal.status || "unknown"}`;
@@ -469,8 +508,26 @@ export function classifySoftAnomalies(tail) {
   const entries = softTailEntries(tail);
   const anomalies = [];
   const intentEntries = entries.filter((entry) => isObservedSoftSignal(entry, SOFT_INTENT_DRIFT_CUES));
+  const minorDeviationEntries = entries.filter((entry) => isObservedSoftSignal(entry, SOFT_MINOR_DEVIATION_CUES));
   const intent = buildSoftAnomaly("intent_drift", intentEntries, { severity: "medium", confidence: "high" });
   if (intent) anomalies.push(intent);
+  const deviation = hasSoftWorkflowContext(minorDeviationEntries)
+    ? buildSoftAnomaly("workflow_deviation", minorDeviationEntries, { severity: "low", confidence: "medium" })
+    : null;
+  if (deviation) anomalies.push(deviation);
+
+  // Detect a single observed web-operation wobble immediately.  It is a
+  // quality finding, not permission to mutate: the existing two-adjacent-run
+  // confirmation and fresh task-owned readback still gate proactive repair.
+  const webFrictionEntries = entries.filter((entry) => isObservedSoftSignal(entry, SOFT_WEB_FRICTION_CUES)
+    && SOFT_WEB_OPERATION_CUES.test(String(entry.text || "")));
+  const webFriction = webFrictionEntries.length > 0
+    ? buildSoftAnomaly("web_operation_friction", webFrictionEntries, {
+      severity: "low",
+      confidence: webFrictionEntries.length > 1 ? "high" : "medium",
+    })
+    : null;
+  if (webFriction) anomalies.push(webFriction);
 
   const failureEntries = entries.filter((entry) => isObservedSoftSignal(entry, SOFT_FAILURE_CUES));
   const recoveryEntries = entries.filter((entry) => isObservedSoftSignal(entry, SOFT_RECOVERY_CUES));
@@ -636,16 +693,28 @@ export function classifyThreadTail(tail) {
   // signal, so the classifier must use that normalized projection.
   const normalizedLines = lines.join("\n");
   const blocked = /(?:status\s*[:=]\s*blocked|goal[^.]{0,120}\bblocked\b|result[^.]{0,120}\bblocked\b|result\s+未完了)/iu.test(normalizedLines)
-    || /"status"\s*:\s*"blocked"/iu.test(tail);
+    ;
   // Keep the established completion classifier on the bounded raw tail.  The
   // extracted projection intentionally drops some terminal tool records, and
   // using it alone would turn completed history into live work.  Only the
   // explicit Goal-blocked signal above needs the normalized projection.
-  const completed = /(?:task_complete|result\s*[:=]\s*(?:complete|completed)|status\s*[:=]\s*completed)/iu.test(tail);
+  const completed = /(?:task_complete|result\s*[:=]\s*(?:complete|completed)|status\s*[:=]\s*completed)/iu.test(normalizedLines)
+    || raw.split(/\r?\n/u).some((line) => {
+      try {
+        const record = JSON.parse(line);
+        return record?.type === "task_complete" || record?.payload?.type === "task_complete";
+      } catch { return false; }
+    });
   // An explicitly interrupted turn is not live work.  Keeping it in a
   // separate paused scope prevents the hourly controller from interpreting a
   // user stop (or an aborted turn) as a stale task that needs a repair/retry.
-  const interrupted = /(?:<turn_aborted>|turn\s+(?:aborted|interrupted)\b|status\s*[:=]\s*interrupted\b|中断(?:されました|した|済み)?)/iu.test(tail);
+  const interrupted = /(?:<turn_aborted>|turn\s+(?:aborted|interrupted)\b|status\s*[:=]\s*interrupted\b|中断(?:されました|した|済み)?)/iu.test(normalizedLines)
+    || raw.split(/\r?\n/u).some((line) => {
+      try {
+        const record = JSON.parse(line);
+        return record?.type === "turn_aborted" || record?.payload?.type === "turn_aborted";
+      } catch { return false; }
+    });
   return {
     companionIssue: companionMarkers.length > 0 || companionContext,
     companionMarkers,
@@ -690,6 +759,16 @@ function taskHostId(task) {
   return task?.hostId ?? task?.host_id ?? null;
 }
 
+// The child audit deliberately exposes opaque aliases in its projection, while
+// the post-audit Root must use the real official-App ID for a callback. Keep
+// both identities on every candidate so the Root can resolve the alias against
+// the same fresh inventory before attempting a read or send.
+function candidateThreadAlias(candidate) {
+  const threadId = String(candidate?.threadId ?? candidate?.thread_id ?? "").trim();
+  if (!threadId) return null;
+  return /^t-[a-f0-9]{24}$/u.test(threadId) ? threadId : createThreadAlias(threadId);
+}
+
 function taskOwner(task) {
   return task?.owner
     ?? task?.ownerKind
@@ -724,6 +803,10 @@ function taskOwnerIsUser(task, { source = "" } = {}) {
 
 function taskStatus(task) {
   return normalize(task?.status ?? task?.state ?? task?.lifecycleState ?? task?.lifecycle_state ?? "unknown").toLowerCase() || "unknown";
+}
+
+function taskIsActiveStatus(status) {
+  return ACTIVE_TASK_STATUSES.has(String(status || "").toLowerCase());
 }
 
 function taskTimestampMs(value) {
@@ -781,7 +864,7 @@ function taskStalled(task, { now = Date.now(), thresholdMs = DEFAULT_STALLED_TAS
   if (booleanValue(task?.stalled ?? task?.isStalled ?? task?.is_stalled)) return true;
   if (task?.stalled === false || task?.isStalled === false || task?.is_stalled === false) return false;
   const status = taskStatus(task);
-  if (!new Set(["active", "running", "in_progress", "executing", "working"]).has(status)) return false;
+  if (!taskIsActiveStatus(status)) return false;
   const value = task?.lastProgressAt ?? task?.last_progress_at ?? task?.updatedAt ?? task?.updated_at ?? task?.updatedAtMs ?? task?.updated_at_ms;
   const timestamp = taskTimestampMs(value);
   return timestamp !== null && now - timestamp >= Math.max(1_000, Number(thresholdMs) || DEFAULT_STALLED_TASK_THRESHOLD_MS);
@@ -823,6 +906,7 @@ function buildThreadInspectionEntries({
     const updatedAt = taskUpdatedAt(task);
     const generation = taskGeneration(task);
     const status = taskStatus(task);
+    const active = taskIsActiveStatus(status);
     const terminal = booleanValue(task?.completed ?? task?.interrupted ?? task?.archived)
       || ["completed", "complete", "done", "closed", "archived", "cancelled", "canceled", "interrupted", "paused"].includes(status)
       || ["history", "paused"].includes(String(task?.stateScope ?? task?.state_scope ?? "").toLowerCase());
@@ -845,6 +929,17 @@ function buildThreadInspectionEntries({
     if (changed && !terminal) reasons.push("changed");
     if (stalled) reasons.push("stalled");
     if (actionable) reasons.push("actionable");
+    // An active task may still be making progress while its latest turn
+    // contains a Companion wobble. Read the current thread within the
+    // bounded deep-read cap so a stable-looking task is not invisible to the
+    // proactive stability scan. This never authorizes interruption or send.
+    if (active && !terminal) reasons.push("active");
+    // The official App Server list intentionally keeps lifecycle and latest
+    // turn details shallow for inactive/notLoaded tasks.  Those are exactly
+    // the checkpoints that can hide a stopped task behind
+    // `latestTurnStatus=unknown`; select them for one bounded deep read so
+    // the same task can be classified before any relay decision.
+    if (!terminal && ["notloaded", "not_loaded", "unknown"].includes(status)) reasons.push("not_loaded");
     if (softAnomalyConfirmed && !terminal) reasons.push("soft_anomaly_confirmed");
     eligible.push({
       task,
@@ -858,6 +953,7 @@ function buildThreadInspectionEntries({
       generation,
       actionable,
       stalled,
+      active,
       softAnomalyTypes,
       softAnomalyConfirmed,
       changed,
@@ -885,6 +981,7 @@ function publicThreadInspectionEntry(entry, { lightweight = null, deepRead = nul
     exactBlocker: task.exactBlocker ?? null,
     actionable: entry.actionable,
     stalled: entry.stalled,
+    active: entry.active,
     changed: entry.changed,
     softAnomalyTypes: entry.softAnomalyTypes,
     softAnomalyConfirmed: entry.softAnomalyConfirmed,
@@ -995,6 +1092,7 @@ function mergeLightweightThreadReadback(entry, lightweight, {
   if (lightweight.softAnomalyConfirmedKnown) task.softAnomalyConfirmed = lightweight.softAnomalyConfirmed;
 
   const status = taskStatus(task);
+  const active = taskIsActiveStatus(status);
   const terminal = booleanValue(task?.completed ?? task?.interrupted ?? task?.archived)
     || ["completed", "complete", "done", "closed", "archived", "cancelled", "canceled", "interrupted", "paused"].includes(status)
     || ["history", "paused"].includes(String(task?.stateScope ?? task?.state_scope ?? "").toLowerCase());
@@ -1028,6 +1126,12 @@ function mergeLightweightThreadReadback(entry, lightweight, {
   if (changed && !terminal) reasons.push("changed");
   if (stalled) reasons.push("stalled");
   if (actionable) reasons.push("actionable");
+  if (active && !terminal) reasons.push("active");
+  // The official App Server's lightweight projection may expose an inactive
+  // task as notLoaded with an unknown latest turn. Preserve that signal after
+  // the lightweight callback so the bounded deep read actually runs and can
+  // recover a current interrupted/Goal state before any continuation gate.
+  if (!terminal && ["notloaded", "not_loaded", "unknown"].includes(status)) reasons.push("not_loaded");
   if (softAnomalyConfirmed && !terminal) reasons.push("soft_anomaly_confirmed");
   return {
     ...entry,
@@ -1039,11 +1143,47 @@ function mergeLightweightThreadReadback(entry, lightweight, {
     generation: lightweight.generationKnown ? lightweight.generation : entry.generation,
     actionable,
     stalled,
+    active,
     changed,
     softAnomalyTypes: lightweight.softAnomalyTypesKnown ? lightweight.softAnomalyTypes : entry.softAnomalyTypes,
     softAnomalyConfirmed,
     deepReadEligible: ownerIsUser && reasons.length > 0,
     deepReadReasons: ownerIsUser ? reasons : ["owner_changed_or_non_user"],
+  };
+}
+
+function mergeDeepThreadReadback(entry, deepReadback, options = {}) {
+  if (!entry || deepReadback?.status !== "observed") return entry;
+  const meaningfulText = (value) => value !== null && value !== undefined && String(value).trim() !== "" && String(value).toLowerCase() !== "unknown";
+  const meaningfulBool = (value) => typeof value === "boolean";
+  const meaningfulArray = (value) => Array.isArray(value) && value.length > 0;
+  const selective = {
+    ...deepReadback,
+    threadStatusKnown: deepReadback.threadStatusKnown === true && meaningfulText(deepReadback.threadStatus),
+    revisionKnown: deepReadback.revisionKnown === true && meaningfulText(deepReadback.revision),
+    updatedAtKnown: deepReadback.updatedAtKnown === true && meaningfulText(deepReadback.updatedAt),
+    generationKnown: deepReadback.generationKnown === true && meaningfulText(deepReadback.generation),
+    latestTurnStatusKnown: deepReadback.latestTurnStatusKnown === true && meaningfulText(deepReadback.latestTurnStatus),
+    goalStatusKnown: deepReadback.goalStatusKnown === true && meaningfulText(deepReadback.goalStatus),
+    planStatusKnown: deepReadback.planStatusKnown === true && meaningfulText(deepReadback.planStatus),
+    exactBlockerKnown: deepReadback.exactBlockerKnown === true && meaningfulText(deepReadback.exactBlocker),
+    ownerKnown: deepReadback.ownerKnown === true && meaningfulText(deepReadback.owner),
+    actionableKnown: deepReadback.actionableKnown === true && meaningfulBool(deepReadback.actionable),
+    stalledKnown: deepReadback.stalledKnown === true && meaningfulBool(deepReadback.stalled),
+    changedKnown: deepReadback.changedKnown === true && meaningfulBool(deepReadback.changed),
+    softAnomalyTypesKnown: deepReadback.softAnomalyTypesKnown === true && meaningfulArray(deepReadback.softAnomalyTypes),
+    // Official deep projections intentionally do not grant the consecutive
+    // soft-anomaly confirmation used by the audit ledger.
+    softAnomalyConfirmedKnown: false,
+  };
+  const merged = mergeLightweightThreadReadback(entry, selective, options);
+  // `deepReadEligible` describes the selection made before the read. Keep it
+  // stable for the receipt even if the task completes while being inspected;
+  // the updated status itself remains the authoritative post-readback state.
+  return {
+    ...merged,
+    deepReadEligible: entry.deepReadEligible,
+    deepReadReasons: entry.deepReadReasons,
   };
 }
 
@@ -1148,7 +1288,25 @@ export async function inspectRecentUserThreads({
       }
       if (deepRead.status === "observed") deepReadCount += 1;
     }
-    records.push(publicThreadInspectionEntry(entry, { lightweight, deepRead }));
+    let recordEntry = entry;
+    if (deepRead.status === "observed") {
+      // A deep read is not just a receipt that the API responded. Feed its
+      // current task/turn/blocker state back into the inspection record so a
+      // Companion wobble found in an active thread becomes a real repair
+      // candidate in this same audit. Preserve the two-run soft-anomaly
+      // confirmation from the inspection ledger; the bounded official
+      // projection intentionally does not grant that confirmation.
+      recordEntry = mergeDeepThreadReadback(entry, deepRead, {
+        now,
+        stalledTaskThresholdMs,
+      });
+      recordEntry.softAnomalyConfirmed = entry.softAnomalyConfirmed;
+      recordEntry.task = {
+        ...(recordEntry.task || {}),
+        softAnomalyConfirmed: entry.task?.softAnomalyConfirmed,
+      };
+    }
+    records.push(publicThreadInspectionEntry(recordEntry, { lightweight, deepRead }));
   }
   const candidates = observedEntries.filter((entry) => entry.deepReadEligible);
   return {
@@ -1246,6 +1404,7 @@ export const COMPANION_BLOCKER_PROGRESS_SCHEMA = "aos.companion_blocker_progress
 const BLOCKER_PROGRESS_REASONS = new Set([
   "unknown_effect",
   "send_result_unknown",
+  "thread_readback_unavailable",
   "foreign_owner",
   "target_mismatch",
   "capability_missing",
@@ -1287,6 +1446,10 @@ export function classifyOperationalBlocker(item = {}) {
   const source = blockerText(item);
   const has = (pattern) => pattern.test(source);
   if (has(/(?:operation[_ ]effect[_ ]unknown|unknown[_ ]effect|effect[_ ]unknown|result[_ ]unknown|external[_ ]action[_ ]unknown)/u)) return "unknown_effect";
+  // A task-level official-App list/read mismatch is neither a send outcome
+  // nor permission to retry. Keep it distinct so the scheduler can preserve
+  // the task and request one fresh same-target readback on a later tick.
+  if (has(/(?:thread[_ ](?:lightweight[_ ]inspection|deep[_ ]read|readback)[_ ](?:failed|unavailable|not[_ ]supplied|not[_ ]confirmed|bounded[_ ]error|callback[_ ]not[_ ]supplied)|thread[_ ]readback[_ ]projection[_ ]bounded[_ ]error|codex[_ ]app[_ ]thread[_ ]readback[_ ]all[_ ]failed)/u)) return "thread_readback_unavailable";
   if (has(/(?:sent[_ ]unverified|send[_ ]result[_ ]unknown|thread[_ ]send[_ ]ack[_ ]unknown|thread[_ ]readback[_ ](?:not[_ ]supplied|failed|unavailable)|message[_ ]readback[_ ]unknown)/u)) return "send_result_unknown";
   if (has(/(?:transaction[_ ]action[_ ]target[_ ]page[_ ]mismatch|target[_ ]page[_ ]mismatch|page[_ ]instance[_ ]mismatch|target[_ ]mismatch|target不一致|ambiguous[_ ]target)/u)) return "target_mismatch";
   if (has(/(?:session[_ ]not[_ ]owned|foreign[_ ]owner|foreign[_ ]task|owner[_ ]mismatch|ownership[_ ]mismatch|not[_ ]owner)/u)) return "foreign_owner";
@@ -1322,6 +1485,13 @@ export function buildBlockerProgressPlan(item = {}) {
       nextActionNow: "read the same task and key once, then record sent, sent_unverified, or deferred",
       resumeTrigger: "same-target readback observes the message or a fresh bounded retry boundary is authorized",
       fallbackOrIndependentWork: "continue unrelated tasks; preserve the intent/receipt ledger entry",
+    },
+    thread_readback_unavailable: {
+      progressAttemptNow: "one fresh same-target official-App task readback using the listed threadId and hostId",
+      result: "the list/read inconsistency is retained as a task-local blocker; no task message or browser/provider effect is retried",
+      nextActionNow: "on the next fresh scheduler boundary, re-read the same task once and classify the current status, turn, Goal, Plan, owner, and blocker",
+      resumeTrigger: "same-target official-App readback returns an observed task state with matching identity",
+      fallbackOrIndependentWork: "continue unrelated user-owned tasks and retain this task's exact readback failure evidence",
     },
     foreign_owner: {
       progressAttemptNow: "fresh owner-scoped task/session/tab readback; do not adopt, close, or clean the foreign resource",
@@ -2034,6 +2204,14 @@ function executionStage(status = "not_run", details = null) {
   return details ? { status, ...details } : { status };
 }
 
+function observedExecutionStatus(value) {
+  const status = String(value?.status ?? value?.resultStatus ?? "");
+  if (actionFailed(value) || ["failed", "blocked"].includes(status)) return "failed";
+  if (["deferred", "not_run", "unavailable", "pending", "unknown"].includes(status)) return "deferred";
+  return value === true || value?.ok === true || value?.success === true
+    || ["passed", "succeeded", "completed", "verified"].includes(status) ? "completed" : "deferred";
+}
+
 /**
  * Turn a controller result into a compact, machine-readable stage receipt.
  * This is intentionally derived from the returned result rather than from
@@ -2085,22 +2263,27 @@ export function buildControllerExecutionReceipt(controller = {}) {
     );
   }
   if (actions.has("repair") || controller?.repair?.attempted === true) {
-    stages.bounded_repair = executionStage(actionFailed(controller.repair?.result) ? "failed" : "completed", {
+    stages.bounded_repair = executionStage(observedExecutionStatus(controller.repair?.result ?? controller.repair), {
       playbookId: controller.repair?.playbookId ?? null,
     });
     stages.generalize_root_cause = executionStage("completed");
   }
   if (actions.has("verification") || controller?.verification) {
-    stages.focused_verification = executionStage(actionFailed(controller.verification) ? "failed" : "completed");
+    stages.focused_verification = executionStage(observedExecutionStatus(controller.verification));
   }
   if (controller?.freshStatus || controller?.verification || controller?.repair) {
     const idleBlocked = controller?.exact_blocker === "companion_idle_reconciled_boundary_required"
       || controller?.exact_blocker === "companion_idle_reconciled_boundary_required_after_e2e"
       || controller?.exact_blocker === "companion_disconnected";
-    stages.idle_reconciled_check = executionStage(idleBlocked ? "deferred" : "completed", {
-      exactBlocker: idleBlocked ? controller?.exact_blocker ?? null : null,
-      nextActionNow: idleBlocked ? controller?.next_action_now ?? null : null,
-      resumeTrigger: idleBlocked ? controller?.resume_trigger ?? null : null,
+    const fresh = controller?.verification?.freshStatus ?? controller?.verification?.fresh_status ?? controller?.freshStatus;
+    const observedIdle = fresh?.connected === true
+      && ["activeLeaseCount", "pendingCount", "queueCount", "activeReconciliationCount"].every((field) => fresh[field] === 0)
+      && fresh.unknownEffect !== true && fresh.foreignOwner !== true && fresh.humanAuthRequired !== true;
+    const deferred = idleBlocked || !observedIdle;
+    stages.idle_reconciled_check = executionStage(deferred ? "deferred" : "completed", {
+      exactBlocker: deferred ? controller?.exact_blocker || "companion_idle_reconciled_boundary_unverified" : null,
+      nextActionNow: deferred ? controller?.next_action_now ?? null : null,
+      resumeTrigger: deferred ? controller?.resume_trigger ?? null : null,
     });
   }
   if (actions.has("refresh") || controller?.refresh) {
@@ -2216,9 +2399,11 @@ export function buildAuditExecutionReceipt({ summary = {}, runId = null, schedul
   if (live && live.available !== false) {
     stages.fresh_status = executionStage("completed", {
       generation: live.generation ?? null,
+      connected: live.connected === true,
       activeLeaseCount: finiteCount(live.activeLeaseCount),
       pendingCount: finiteCount(live.pendingCount),
       queueCount: finiteCount(live.queueCount),
+      activeReconciliationCount: typeof live.activeReconciliationCount === "number" ? live.activeReconciliationCount : null,
     });
     stages.readback = executionStage(exactBlocker ? "deferred" : "completed", { exactBlocker });
   } else if (heartbeat) {
@@ -2358,6 +2543,12 @@ function officialAppOnlyContinuationCandidates(tasks) {
 const TASK_OWNED_RELAY_REASONS = new Set(["ready", "stale_owner_recoverable"]);
 const TASK_OWNED_RELAY_TASK_STATUSES = new Set(["idle", "notloaded", "not_loaded"]);
 const TASK_OWNED_RELAY_TURN_STATUSES = new Set(["completed"]);
+const TASK_OWNED_RELAY_INTERRUPTED_TURN_STATUSES = new Set(["interrupted"]);
+const TASK_OWNED_SAFE_REPAIR_BLOCKERS = new Set([
+  "capability_missing",
+  "current_task_companion_target_missing",
+  "task_specific_safety_or_goal_plan_proof_missing",
+]);
 const TASK_OWNED_RELAY_BLOCKERS = new Set([
   "unknown_effect",
   "send_result_unknown",
@@ -2369,15 +2560,16 @@ const TASK_OWNED_RELAY_BLOCKERS = new Set([
   "capability_missing",
 ]);
 
-function taskOwnedContinuationCandidates(tasks) {
-  return (Array.isArray(tasks) ? tasks : [])
+function taskOwnedContinuationCandidates(tasks, additionalCandidates = []) {
+  const source = [...(Array.isArray(tasks) ? tasks : []), ...(Array.isArray(additionalCandidates) ? additionalCandidates : [])];
+  const seen = new Set();
+  return source
     .filter((task) => {
       if (!task || !isLiveCandidate(task) || task.currentTaskReadback !== true) return false;
-      if (task.owner !== "user" || task.userHelpRequired === true || task.completed === true || task.blocked === true) return false;
-      if (task.interrupted === true || task.resumeEligibleAfterProof === true) return false;
+      if (task.owner !== "user" || task.userHelpRequired === true || task.completed === true) return false;
       const taskStatusValue = String(task.officialTaskStatus ?? task.status ?? "").toLowerCase();
       const turnStatusValue = String(task.officialLatestTurnStatus ?? task.latestTurnStatus ?? "").toLowerCase();
-      if (!TASK_OWNED_RELAY_TASK_STATUSES.has(taskStatusValue) || !TASK_OWNED_RELAY_TURN_STATUSES.has(turnStatusValue)) return false;
+      if (!TASK_OWNED_RELAY_TASK_STATUSES.has(taskStatusValue)) return false;
       const reason = String(task.resumeAssessment?.reason ?? "");
       const blockerReason = String(task.blockerProgress?.reason ?? "");
       const exactBlocker = String(task.officialExactBlocker ?? task.exactBlocker ?? task.exact_blocker ?? "");
@@ -2386,14 +2578,90 @@ function taskOwnedContinuationCandidates(tasks) {
       // task's Companion callback, but the awakened task can implement and
       // verify its own adapter.  Keep every effect/ownership/target/auth/
       // reconciliation blocker excluded from the relay.
-      const capabilityRelay = [reason, blockerReason, exactBlocker].includes("capability_missing");
-      if (!TASK_OWNED_RELAY_REASONS.has(reason) && !capabilityRelay) return false;
-      if (exactBlocker && !capabilityRelay) return false;
-      if (TASK_OWNED_RELAY_BLOCKERS.has(blockerReason) && blockerReason !== "capability_missing") return false;
+      const safeRepairBlocker = [reason, blockerReason, exactBlocker].find((value) => TASK_OWNED_SAFE_REPAIR_BLOCKERS.has(value)) ?? "";
+      const capabilityRelay = safeRepairBlocker === "capability_missing";
+      const repairRelay = Boolean(safeRepairBlocker);
       const markers = Array.isArray(task.companionMarkers) ? task.companionMarkers : [];
-      return task.companionIssue === true || markers.length > 0;
+      // A shallow App Server inventory legitimately reports an inactive task
+      // as notLoaded/unknown before the post-audit Root performs the required
+      // same-task read. Keep a safe Companion signal in the relay queue so
+      // that post-audit fresh readback is actually reached; this is never
+      // send approval and cannot include an unknown-effect blocker.
+      const shallowTaskRelay = turnStatusValue === "unknown"
+        && task.officialReadbackState === "task_present_state_not_loaded"
+        && (repairRelay || task.companionIssue === true || markers.length > 0);
+      const interruptedCapabilityRelay = task.interrupted === true
+        && task.resumeEligibleAfterProof === true
+        && TASK_OWNED_RELAY_INTERRUPTED_TURN_STATUSES.has(turnStatusValue)
+        && repairRelay;
+      if (!TASK_OWNED_RELAY_TURN_STATUSES.has(turnStatusValue) && !interruptedCapabilityRelay && !shallowTaskRelay) return false;
+      if (task.blocked === true && !interruptedCapabilityRelay && !shallowTaskRelay) return false;
+      if (task.interrupted === true && !interruptedCapabilityRelay && !shallowTaskRelay) return false;
+      if (task.resumeEligibleAfterProof === true && !interruptedCapabilityRelay && !shallowTaskRelay) return false;
+      if (!TASK_OWNED_RELAY_REASONS.has(reason) && !capabilityRelay) return false;
+      if (exactBlocker && !repairRelay) return false;
+      if (TASK_OWNED_RELAY_BLOCKERS.has(blockerReason) && blockerReason !== "capability_missing") return false;
+      if (!(task.companionIssue === true || markers.length > 0 || repairRelay)) return false;
+      const threadId = String(task.threadId ?? task.thread_id ?? "");
+      if (!threadId || seen.has(threadId)) return false;
+      seen.add(threadId);
+      return true;
     })
     .sort((left, right) => String(left.threadId ?? left.thread_id ?? "").localeCompare(String(right.threadId ?? right.thread_id ?? "")));
+}
+
+function isTaskOwnedRelayCandidate(task) {
+  return task?.requiresTaskOwnedCompanionCallback === true
+    && task?.relayMode === "same_task_root_companion_repair_or_resume";
+}
+
+// The audit projection and the controller used to stop at different
+// boundaries: the projection exposed task-owned relay candidates, but the
+// controller only consumed `eligibleTasks`. Keep both queues in one bounded,
+// deterministic path so an inactive task with a Companion issue is actually
+// handed back to its own Root for fresh repair/readback.
+function continuationQueue(summary, eligibleTasks, {
+  allowRecoveredThreadIds = [],
+  allowRecoveredReasons = ["stale_owner_recoverable"],
+  maxContinuations = 50,
+} = {}) {
+  const ordinary = eligibleContinuationTasks(summary, eligibleTasks, {
+    allowRecoveredThreadIds,
+    allowRecoveredReasons,
+  });
+  const relay = (Array.isArray(summary?.taskOwnedContinuationCandidates)
+    ? summary.taskOwnedContinuationCandidates
+    : []).filter(isTaskOwnedRelayCandidate);
+  const result = [];
+  const seen = new Set();
+  // Prefer the explicit relay lane when the same task appears in both lists;
+  // it carries the task-owned Companion boundary and cannot be downgraded to
+  // an ordinary scheduler continuation.
+  for (const task of [...relay, ...ordinary]) {
+    const threadId = String(task?.threadId ?? task?.thread_id ?? "");
+    if (!threadId || seen.has(threadId)) continue;
+    seen.add(threadId);
+    result.push(task);
+    if (result.length >= Math.max(0, Number(maxContinuations) || 0)) break;
+  }
+  return result;
+}
+
+function continuationContext(task, stage, freshStatus, summary) {
+  const relay = isTaskOwnedRelayCandidate(task);
+  return {
+    stage,
+    lane: relay ? "task_owned_companion_relay" : undefined,
+    task,
+    freshStatus,
+    idempotencyKey: continuationKeyFor(summary, task, freshStatus),
+    sourceThreadOnly: relay || task.taskType === "job" || task.task_type === "job",
+    ...(relay ? {
+      requiresTaskOwnedCompanionCallback: true,
+      relayRequiresFreshOfficialReadback: task.relayRequiresFreshOfficialReadback === true,
+      relayReason: task.relayReason ?? "companion_local_review",
+    } : {}),
+  };
 }
 
 function continuationKeyFor(summary, task, freshStatus) {
@@ -2713,7 +2981,7 @@ export async function runBoundedHourlyController({
   // Target mismatch is handled by the matching target_binding repair callback;
   // the other reasons require an explicit readback callback before resume.
   const candidateNeedsProgress = Boolean(candidateProgressPlan
-    && ["unknown_effect", "send_result_unknown", "foreign_owner", "capability_missing", "active_reconciliation", "external_service_limit"].includes(candidateProgressPlan.reason)
+    && ["unknown_effect", "send_result_unknown", "foreign_owner", "capability_missing", "active_reconciliation", "external_service_limit", "thread_readback_unavailable"].includes(candidateProgressPlan.reason)
     && (candidateProgressPlan.reason !== "capability_missing" || repairPlan?.automatic !== true)
     && !(result?.blockerProgress?.reason === candidateProgressPlan.reason
       && result?.blockerProgress?.status === "reconciled"));
@@ -2893,11 +3161,11 @@ export async function runBoundedHourlyController({
         ? [result.repair.threadId ?? candidate?.threadId ?? candidate?.thread_id].filter(Boolean)
         : []),
     ])];
-    const tasks = eligibleContinuationTasks(summary, eligibleTasks, {
+    const tasks = continuationQueue(summary, eligibleTasks, {
       allowRecoveredThreadIds: continuationRecoveredThreadIds,
       allowRecoveredReasons: recoveredReasons,
-    })
-      .slice(0, Math.max(0, Number(maxContinuations) || 0));
+      maxContinuations,
+    });
     if (tasks.length > 0 && typeof continueTask !== "function") {
       return controllerBase(summary, {
         ...result,
@@ -2910,13 +3178,7 @@ export async function runBoundedHourlyController({
     for (const task of tasks) {
       let continuation;
       try {
-        continuation = await continueTask({
-          stage: "continuation",
-          task,
-          freshStatus: idleStatus,
-          idempotencyKey: continuationKeyFor(summary, task, idleStatus),
-          sourceThreadOnly: task.taskType === "job" || task.task_type === "job",
-        });
+        continuation = await continueTask(continuationContext(task, "continuation", idleStatus, summary));
       }
       catch (error) { continuation = { status: "failed", exact_blocker: controllerError(error), external_action_executed: false }; }
       result.actions.push("continuation");
@@ -3011,6 +3273,12 @@ function blockerProgressCleared(plan, value) {
       && (value.canaryPassed === true || value.canary_passed === true)
       && (value.installedGenerationVerified === true || value.installed_generation_verified === true);
   }
+  if (plan.reason === "thread_readback_unavailable") {
+    const readbackStatus = String(value.readbackStatus ?? value.readback_status ?? value.status ?? "").toLowerCase();
+    return (value.readbackVerified === true || value.readback_verified === true)
+      && ["observed", "verified", "success", "completed"].includes(readbackStatus)
+      && (value.sameTask === true || value.same_task === true || value.threadId === plan.threadId);
+  }
   if (plan.reason === "active_reconciliation") return value.reconciled === true || value.reconciled === "true";
   return false;
 }
@@ -3066,11 +3334,11 @@ async function continueEligibleTasksAfterE2E({
   recoveredThreadIds = [],
   recoveredReasons = ["stale_owner_recoverable"],
 }) {
-  const tasks = eligibleContinuationTasks(summary, eligibleTasks, {
+  const tasks = continuationQueue(summary, eligibleTasks, {
     allowRecoveredThreadIds: recoveredThreadIds,
     allowRecoveredReasons: recoveredReasons,
-  })
-    .slice(0, Math.max(0, Number(maxContinuations) || 0));
+    maxContinuations,
+  });
   if (tasks.length > 0 && typeof continueTask !== "function") {
     return {
       ...result,
@@ -3083,13 +3351,7 @@ async function continueEligibleTasksAfterE2E({
   for (const task of tasks) {
     let continuation;
     try {
-      continuation = await continueTask({
-        stage: "continuation_after_same_run_e2e",
-        task,
-        freshStatus,
-        idempotencyKey: continuationKeyFor(summary, task, freshStatus),
-        sourceThreadOnly: task.taskType === "job" || task.task_type === "job",
-      });
+      continuation = await continueTask(continuationContext(task, "continuation_after_same_run_e2e", freshStatus, summary));
     } catch (error) {
       continuation = { status: "failed", exact_blocker: controllerError(error), external_action_executed: false };
     }
@@ -4182,18 +4444,38 @@ function buildLocalThreadInspection(sessions = [], {
 
 function threadInspectionBlockerCandidates(inspection) {
   const records = Array.isArray(inspection?.records) ? inspection.records : [];
+  const officialSource = String(inspection?.source || "").startsWith("codex_app");
   return records
-    .filter((record) => record?.lightweight?.status === "observed" && String(record?.owner || "") === "user")
+    .filter((record) => {
+      if (String(record?.owner || "") !== "user") return false;
+      if (record?.lightweight?.status === "observed") return true;
+      // The official Root owns the list/read boundary. If one listed task
+      // cannot be read, keep that task visible as a bounded blocker even when
+      // other tasks were read successfully; otherwise a partial failure
+      // becomes a silent no-op and the task can remain stalled indefinitely.
+      return officialSource && record?.lightweight?.status !== "metadata_only";
+    })
     .map((record) => {
       const taskStatusValue = String(record?.status || "unknown");
       const goalStatusValue = String(record?.goalStatus || "unknown");
       const planStatusValue = String(record?.planStatus || "unknown");
+      const lightweightStatus = String(record?.lightweight?.status || "not_run");
+      const deepStatus = String(record?.deepRead?.status || "not_run");
+      const lightweightReadbackFailed = lightweightStatus !== "observed" && lightweightStatus !== "metadata_only";
+      const deepReadbackFailed = record?.deepReadEligible === true && deepStatus !== "observed";
+      const readbackUnavailable = officialSource && (lightweightReadbackFailed || deepReadbackFailed);
       const completed = ["completed", "complete", "done", "closed", "archived"].includes(taskStatusValue)
         || goalStatusValue === "complete";
       const interrupted = taskStatusValue === "interrupted";
       const blocked = !completed && !interrupted
-        && (["blocked", "failed"].includes(taskStatusValue) || goalStatusValue === "blocked" || planStatusValue === "blocked");
-      const exactBlocker = record?.exactBlocker ?? null;
+        && (readbackUnavailable
+          || ["blocked", "failed"].includes(taskStatusValue)
+          || goalStatusValue === "blocked"
+          || planStatusValue === "blocked");
+      const exactBlocker = record?.exactBlocker
+        ?? (lightweightReadbackFailed ? record?.lightweight?.exactBlocker : null)
+        ?? (deepReadbackFailed ? record?.deepRead?.exactBlocker : null)
+        ?? (readbackUnavailable ? "thread_readback_unavailable" : null);
       const companionMarkers = exactBlocker ? [String(exactBlocker)] : [];
       const item = {
         threadId: record?.threadId ?? null,
@@ -4208,6 +4490,8 @@ function threadInspectionBlockerCandidates(inspection) {
         revision: record?.revision ?? null,
         updatedAt: record?.updatedAt ?? null,
         generation: record?.generation ?? null,
+        lightweightStatus,
+        deepReadStatus: deepStatus,
         actionable: record?.actionable ?? null,
         stalled: record?.stalled ?? null,
         changed: record?.changed ?? null,
@@ -4705,7 +4989,6 @@ export function buildAuditSummary({
     && item.userHelpRequired !== true
     && String(item.resumeAssessment?.reason || "") === "ready");
   const officialAppOnlyContinuationCandidateItems = officialAppOnlyContinuationCandidates(liveCandidates);
-  const taskOwnedContinuationCandidateItems = taskOwnedContinuationCandidates(liveCandidates);
   const proactiveRepairCandidates = (Array.isArray(proactiveRepairInputs) ? proactiveRepairInputs : [])
     .map(normalizeProactiveRepairCandidate)
     .filter(Boolean)
@@ -4750,6 +5033,15 @@ export function buildAuditSummary({
       repairPlan: enriched.repairPlan || buildRepairPlan(enriched, { artifactComparison }),
     };
   });
+  // Include both the fresh live projection and the enriched repair records.
+  // The latter preserves a safe task-local blocker (for example
+  // capability_missing) even when the shallow task list did not expose the
+  // latest turn.  The official Root still must perform the post-audit fresh
+  // same-task read before sending; this list is only the bounded relay queue.
+  const taskOwnedContinuationCandidateItems = taskOwnedContinuationCandidates(
+    liveCandidates,
+    plannedRepairCandidateItems,
+  );
   const sessionIds = new Set(sessions.map((item) => String(item.threadId ?? item.thread_id ?? "")));
   const extraReadbackItems = plannedRepairCandidateItems.filter((item) => !sessionIds.has(String(item.threadId ?? item.thread_id ?? "")));
   const plannedByThreadId = new Map(plannedRepairCandidateItems
@@ -4794,9 +5086,12 @@ export function buildAuditSummary({
       threadId: item.threadId,
       owner: item.owner,
       status: item.status,
+      blocked: item.blocked === true,
       goalStatus: item.goalStatus,
       planStatus: item.planStatus,
       exactBlocker: item.exactBlocker,
+      lightweightStatus: item.lightweightStatus ?? null,
+      deepReadStatus: item.deepReadStatus ?? null,
       blockerProgress: item.blockerProgress,
     })),
     proactiveRepairCandidates: proactiveRepairCandidates.map((item) => ({
@@ -4887,7 +5182,7 @@ export function buildAuditSummary({
         stalledTaskThresholdMs: DEFAULT_STALLED_TASK_THRESHOLD_MS,
         stalledTaskBehavior: "fresh_status_readback_then_bounded_progress; never_wait_only",
         lightweightInspection: "all recent authoritative user-owned tasks once per tick",
-        deepInspectionRequires: ["audit fingerprint change", "new live runtime signal", "idle reconciliation boundary", "repeated soft anomaly confirmation"],
+        deepInspectionRequires: ["active task within the bounded per-run cap", "audit fingerprint change", "new live runtime signal", "idle reconciliation boundary", "repeated soft anomaly confirmation"],
         maxNoChangeRunsBeforeFreshStatus: 24,
         noChangeMustNotCreateTask: true,
       },
@@ -4938,7 +5233,14 @@ export function buildAuditSummary({
         continuation: "one send-or-queue message per eligible user task (active or inactive) after fresh readback; record sent, queued, and deferred IDs with reasons",
         continuationAdapter: "scripts/lib/hourly-thread-dispatch.mjs",
         continuationReceipt: "aos.hourly_thread_dispatch.v1",
-        continuationReadbackProof: "read_thread success alone is insufficient; require the matching continuation turn/message or explicit deliveryConfirmed=true",
+        continuationReadbackProof: "read_thread success alone is insufficient; require the matching continuation turn/message or explicit deliveryConfirmed=true; when official cross-task readback omits items, allow only an explicit same_task_new_turn_completed transport proof and keep Goal/Plan proof separate",
+        continuationTransportProof: {
+          schema: "aos.continuation_transport_delivery_proof.v1",
+          kind: "same_task_new_turn_completed",
+          requires: ["accepted official send result", "exact same target thread", "pre-send and post-send turn IDs differ", "post-send turn status completed", "no target/owner/effect ambiguity"],
+          doesNotProve: ["continuation marker visibility", "Goal/Plan resumption", "business completion"],
+          replayPolicy: "terminal for the exact ledger key; never resend an ambiguous effect",
+        },
         continuationIdempotency: "sha256(threadId,targetIdentity,auditFingerprint,generation,nextAction); duplicate keys are suppressed",
         continuationLedger: "immutable intent/receipt ledger is global to the scheduler root so the same key is suppressed across hourly processes",
         continuationTargetIdentity: ["taskId", "sessionId", "leaseId", "generation", "pageInstanceId", "windowId", "frameId", "targetFingerprint"],
@@ -5001,6 +5303,8 @@ export function buildAuditSummary({
     officialAppOnlyContinuationCandidateCount: officialAppOnlyContinuationCandidateItems.length,
     officialAppOnlyContinuationCandidates: officialAppOnlyContinuationCandidateItems.map((item) => ({
       threadId: item.threadId,
+      threadAlias: candidateThreadAlias(item),
+      hostId: item.hostId ?? item.host_id ?? null,
       cwd: item.cwd ?? null,
       owner: item.owner ?? null,
       currentTaskReadback: item.currentTaskReadback === true,
@@ -5016,6 +5320,7 @@ export function buildAuditSummary({
     taskOwnedContinuationCandidateCount: taskOwnedContinuationCandidateItems.length,
     taskOwnedContinuationCandidates: taskOwnedContinuationCandidateItems.map((item) => ({
       threadId: item.threadId,
+      threadAlias: candidateThreadAlias(item),
       hostId: item.hostId ?? item.host_id ?? null,
       cwd: item.cwd ?? null,
       owner: item.owner ?? null,
@@ -5028,6 +5333,17 @@ export function buildAuditSummary({
       resumeAssessment: item.resumeAssessment || buildResumeAssessment(item),
       companionMarkers: item.companionMarkers ?? [],
       requiresTaskOwnedCompanionCallback: true,
+      relayRequiresFreshOfficialReadback: String(item.officialLatestTurnStatus ?? item.latestTurnStatus ?? "").toLowerCase() === "unknown"
+        || (item.officialReadbackState === "task_present_state_not_loaded"
+          && ["notloaded", "not_loaded", "unknown", ""].includes(String(item.officialTaskStatus ?? "").toLowerCase())),
+      relayMode: "same_task_root_companion_repair_or_resume",
+      relayReason: [
+        item.resumeAssessment?.reason,
+        item.blockerProgress?.reason,
+        item.officialExactBlocker,
+        item.exactBlocker,
+      ].find((value) => TASK_OWNED_SAFE_REPAIR_BLOCKERS.has(String(value)))
+        ?? (item.companionIssue === true || (item.companionMarkers || []).length > 0 ? "companion_local_review" : "ready"),
       stateScope: item.stateScope ?? null,
       nextAction: item.nextAction ?? item.repairPlan?.nextAction ?? null,
     })),
@@ -5040,6 +5356,8 @@ export function buildAuditSummary({
     softAnomalyFindings,
     repairCandidates: plannedRepairCandidateItems.map((item) => ({
       threadId: item.threadId,
+      threadAlias: candidateThreadAlias(item),
+      hostId: item.hostId ?? item.host_id ?? null,
       cwd: item.cwd,
       currentTaskReadback: item.currentTaskReadback === true,
       officialTaskStatus: item.officialTaskStatus ?? null,
@@ -5062,6 +5380,7 @@ export function buildAuditSummary({
     blockerProgressCandidates: blockerProgressCandidates.map((progress) => ({
       schema: progress.schema,
       threadId: progress.threadId,
+      threadAlias: candidateThreadAlias(progress),
       reason: progress.reason,
       exactBlocker: progress.exactBlocker,
       progressAttemptNow: progress.progressAttemptNow,
@@ -5114,6 +5433,35 @@ function writePrivateJson(file, value) {
   return file;
 }
 
+/**
+ * A read-only audit is an intermediate result when it asks the official App
+ * Root to perform post-audit callbacks. Keep that obligation alive across a
+ * no-change tick until the finalizer has written its immutable receipt.
+ */
+export function readPendingRootActionAudit(artifactDir) {
+  const auditPath = path.join(String(artifactDir || ""), "aos-hourly-companion-audit.v1.json");
+  try {
+    const audit = JSON.parse(fs.readFileSync(auditPath, "utf8"));
+    const receipt = audit?.executionReceipt;
+    if (audit?.schema !== "aos.hourly_companion_audit.v1"
+      || receipt?.rootActionRequired !== true
+      || audit?.externalActionExecuted === true
+      || receipt?.externalActionExecuted === true) {
+      return { pending: false, path: auditPath };
+    }
+    const controllerReceiptPath = String(audit?.controllerReceiptPath || "").trim();
+    const finalized = controllerReceiptPath.length > 0 && fs.existsSync(controllerReceiptPath);
+    return {
+      pending: !finalized,
+      path: auditPath,
+      priorRunId: audit?.runId ?? null,
+      controllerReceiptPath: controllerReceiptPath || null,
+    };
+  } catch {
+    return { pending: false, path: auditPath };
+  }
+}
+
 function writePrivateJsonNoReplace(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const bytes = `${JSON.stringify(value, null, 2)}\n`;
@@ -5160,6 +5508,7 @@ export function runHourlyAudit(options = {}) {
   );
   const artifactDir = summary.artifactDir;
   const artifactPath = path.join(artifactDir, "aos-hourly-companion-audit.v1.json");
+  const pendingRootActionAudit = readPendingRootActionAudit(artifactDir);
   let ledger = updateLearningLedger(summary.learningLedgerPath, summary);
   if (options.controllerOutcome) {
     ledger = recordCompanionLearningOutcome(summary.learningLedgerPath, {
@@ -5176,6 +5525,7 @@ export function runHourlyAudit(options = {}) {
   const softAnomalyDeepReadCandidateCount = Number(summary.softAnomalyDeepReadCandidateCount || 0);
   const heartbeatOnly = !changedSincePreviousRun
     && Number(ledger.noChangeRuns || 0) < 24
+    && pendingRootActionAudit.pending !== true
     && stalled.length === 0
     && deepReadCandidateCount === 0
     && softAnomalyDeepReadCandidateCount === 0;
@@ -5194,6 +5544,7 @@ export function runHourlyAudit(options = {}) {
       changedSincePreviousRun,
       noChangeRunCount: Number(ledger.noChangeRuns || 0),
       heartbeatOnly,
+      pendingRootAction: pendingRootActionAudit.pending === true,
       stalledTaskCount: stalled.length,
       lightweightThreadInspectionCount: Number(summary.threadInspection?.lightweightInspectionCount || 0),
       deepReadCandidateCount,
@@ -5211,6 +5562,8 @@ export function runHourlyAudit(options = {}) {
           ? "Lightweight inspection found a bounded deep-read candidate; inspect only those existing tasks before any repair decision."
         : stalled.length > 0
           ? "A live task exceeded the stalled threshold; perform one fresh status/readback before any bounded repair."
+        : pendingRootActionAudit.pending === true
+          ? "The previous audit still requires the official App post-audit callback/finalizer; keep the Root action queue open even without a new fingerprint."
         : changedSincePreviousRun
           ? "Audit signal changed; perform one bounded live status/readback before any repair."
           : "No-change heartbeat threshold reached; perform a fresh status/readback without replay.",
@@ -5297,7 +5650,7 @@ export async function runHourlyAuditLive(options = {}) {
       stalledTaskThresholdMs: options.stalledTaskThresholdMs ?? DEFAULT_STALLED_TASK_THRESHOLD_MS,
       source: "codex_app_thread_list",
       maxTasks: options.maxThreadInspections ?? MAX_LIGHTWEIGHT_THREAD_INSPECTIONS,
-      maxDeepReads: options.maxDeepThreadReads ?? MAX_DEEP_THREAD_READS,
+      maxDeepReads: options.maxDeepThreadReads ?? suppliedProjection?.limits?.maxDeepReads ?? MAX_DEEP_THREAD_READS,
     });
   }
   return runHourlyAudit({ ...options, recentTasks, inspectThread, readThread, threadReadbackProjection: suppliedProjection, liveStatus, threadInspection: liveThreadInspection });
@@ -5327,7 +5680,13 @@ if (isMainModule) {
   }
   if (process.exitCode !== 1) runHourlyAuditLive({ threadReadbackProjection }).then((result) => {
     process.stdout.write(`${JSON.stringify(result)}\n`);
-    if (result?.executionReceipt?.status === "blocked" || result?.executionReceipt?.status === "failed") process.exitCode = 2;
+    // A read-only audit with actionable candidates is an intermediate result.
+    // Make the registered Root continue into the official App callback phase;
+    // otherwise the local runner sees exit 0 and incorrectly records a green
+    // workflow even though repair/continuation was never attempted.
+    if (result?.executionReceipt?.status === "blocked"
+      || result?.executionReceipt?.status === "failed"
+      || result?.executionReceipt?.rootActionRequired === true) process.exitCode = 2;
   }).catch((error) => {
     process.stdout.write(`${JSON.stringify({
       schema: "aos.hourly_companion_audit.v1",

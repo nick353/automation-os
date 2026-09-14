@@ -223,7 +223,9 @@ export function validatePortableTargetBoundApprovalReceipt(
   const binding = receipt.binding as Record<string, unknown>;
   if (binding.schema !== PORTABLE_EXTERNAL_APPROVAL_BINDING_SCHEMA_V1
     || binding.issued_by !== "automation_os_portable_controller"
-    || (binding.browser_surface !== "browser_use_cli" && binding.browser_surface !== "signed_chrome_extension_profile2")
+    || (binding.browser_surface !== "browser_use_cli"
+      && binding.browser_surface !== "signed_chrome_extension_profile2"
+      && binding.browser_surface !== "aos_chrome_companion_profile_instance")
     || binding.fresh_browser_use_authority_required !== true
     || binding.authority_scope !== "current_run_company_target"
     || binding.first_class_root_required !== false

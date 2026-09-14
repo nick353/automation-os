@@ -1,5 +1,1774 @@
-<!-- Active plan is maintained in the current-plan section near the end of this
-file so historical checkpoints above remain append-only and auditable. -->
+<!-- The consolidated active execution plan is at the start of this file.
+Historical checkpoints below are preserved as dated evidence, not current instructions. -->
+
+## 2026-09-14T04:36Z — latest registry-plane correction
+
+- Companion fresh readback confirmed Company 1 Obsidian registration `automation_e977435478c5c01ad1f47a49`, `active`, `runnable=false`, canonical `obsidian-project-memory-audit`, entrypoint `obsidian_audit_registered`, schedule Monday 09:30 Asia/Tokyo.
+- Source/test readback confirms the provider-neutral workflow adapter registry contains all six catalog workflows, including the local Obsidian adapter. The separate fixed browser adapter inventory intentionally excludes Obsidian, Backup, Gmail connector, and the Brief heartbeat.
+- The browser-portable canary was checked once with Obsidian and rejected before execution as `portable_worker_workflow_required`; this is an entrypoint boundary, not a reason to retry. Obsidian must use the local scheduler/adapter lane.
+- Therefore the blocker is `company_registration_active_but_runnable_false`; it is not `runtime_adapter_missing`. No adoption, schedule mutation, Vault/Git write, provider action, or external effect was executed.
+- Evidence: `outputs/aos-company1-registry-plane-readback-20260914.json`, `outputs/aos-workflow-gate-matrix-20260914.json`; targeted catalog/adapter/inventory/guide tests passed.
+- UI source now labels `can_run=false` as「業務実行=未許可（外部効果は承認・同一Run receipt後のみ）」instead of the ambiguous `runnable=false`. `typecheck:web`, production web build, and workflow guide tests 27/27 passed. This source change is not yet deployed or fresh-read back in production.
+- Fresh Zeabur read-only target readback: project `automation-wiled`, environment `69df815a5ae0a69725e92048`, `automation-os` deployment `6aa7597b8eb543d8d10c4398` RUNNING, admin ingress `6aa76e91287f66ebfafeaa35` RUNNING. Deployment gate: `outputs/aos-ui-source-change-deployment-gate-20260914.json`.
+- Deployment safety boundary: `automation-os` is GitHub repo ID `1293768748`, branch `main`; the current local branch is `codex/automation-os-unblock-20260812` with 403 changed files. Do not deploy the dirty worktree or claim the UI source change is live. A reviewed/published revision and explicit deployment approval are required first.
+
+# AOS本番利用準備 — 現行実行計画（2026-09-14）
+
+## 受入れ状態
+
+- [x] 正本ドキュメントと証跡の入口を整理し、最新の総合監査を `outputs/aos-production-readiness-current-20260914.json` に固定する。
+- [x] Company 1 の保護された canonical Company を `company_2560580981cedfd106b66245` として、Companion/Profile 2 の同一プロファイル read-only endpoint/API readbackで確認する。
+- [x] 7項目（protected catalog 6件 + `aos-morning-brief` heartbeat）の構成・schedule・entry・Company scopeをfresh readbackする。heartbeatと6件のexecution-lane adapterを混同しない。
+- [x] 最新デプロイ後の Home / Chat / Company / Runs / Approvals / Plugins / Admin とCompanionのfresh readbackを完了する。
+- [x] 認証、provider receipt、source sync、reconciliation、cleanupを別ゲートとして表示し、Gmail read-only canary以外を業務完了へ昇格しない。
+- [x] 外部送信・公開・応募・承認消費・スケジュールmaterialize・Company rewiringをこの計画の検証では実行しない。
+
+## 残タスク（この順序）
+
+1. **保護された実行基盤の最終照合** — Company 1、project scope、durable service identity、Gmail/Drive/Supabaseの3 account ref、Codex/App Server入口、9 scheduleはProtected Postgres/AOS Owner readbackで確認済み。Gmail/Drive/Supabase/Canva/Google CalendarのPlugin accessもread-only callableまでfresh確認済み。ただしCodex authは有効でも、Zeabur remote WebSocket transportの本番cutoverは`codex_app_server_remote_transport_experimental_unsupported`で停止中。残りはworkflowごとのfresh provider/browser authority、未確認provider、Brief delivery設定のowner決定である。workflow別のread/effect proof境界は`outputs/aos-workflow-gate-matrix-20260914.json`に固定した。
+2. **7 workflowの業務証跡** — 各workflowごとに新規Runを作る前に target/account/payload/approval を明示照合し、provider receipt → source sync → reconciliation → cleanup → business completion を同一Runで揃える。詳細な停止位置は `outputs/aos-seven-workflow-readiness-matrix-20260914.json` に固定した。現在はGmail read-only canaryのみがreceipt chainを満たし、業務完了は未claim。
+3. **Companion lifecycle debt** — `aos-official-gmail-account-readback-20260914-retry2` の `tabs.navigate` unknown-effectを再送せず、同一タブのfresh readback後に、`failed` と `reconciliation_required` の不整合を解消できる製品側のowner-scoped transitionを確認する。強制close・foreign cleanupはしない。
+4. **UI hydrationの最終確認** — 修正版ingressでauth/state endpointを通過し、Home / Chat / 正規Company root (`#/projects/{companyId}`) / Runs / Approvals / Plugins / Adminを同一Profile・直列・10秒待機後にsemantic readbackした。URLと本文の対応一致、主要データ表示、read-only、cleanupを確認済み。初回の誤った`#/company` readbackは証拠に採用しない。
+5. **最終監査・反映** — 1〜4の証拠を総合監査へ追記し、未完了ならGoalをactiveのまま維持する。全ゲートが揃った場合のみ本番利用可能と報告する。
+
+## 現在の停止境界
+
+- Control plane healthは7/7 active/okだが、healthは業務完了ではない。
+- `/readyz` は200、保護されたAPIはCompanion同一Profileではreadでき、未認証の直接HTTPは401 `owner_sso_required`。
+- Local company-binding readinessの古いSQLite診断は本番authorityではない。現在のprotected endpointはCompany 1を`selected=true / fresh=true / matched`として返し、service identityと3 account refsも確認済み。そこからscheduleを再materializeしない。
+- Companionはactive session/lease/pending/reconciliation=0だが、過去のtask-owned Gmail tab 1件をunknown-effect境界で保持している。
+- `automation-os`本体は`6aa7597...` RUNNING。`aos-admin-ingress`は修正版deployment `6aa76e91287f66ebfafeaa35` がRUNNING、build context 18.82kBで`server.mjs`を含むimage build成功、`/readyz=200`。旧deployment `6aa6efe...` の2B/missing errorは履歴として保持する。修正版の`/api/auth/session`は`authenticated=true / scope=write`、`/api/mvp/state?projection=summary&fresh=1`はCompany 1・automation・active scheduleを返したため、初回UIの「確認中」は認証/経路失敗ではなく非同期hydration前のsnapshotと判定する。ただし全画面のsemantic data hydrationはまだ一括再確認していない。
+- 外部効果は0。曖昧な効果の再送は禁止。
+
+Evidence: `outputs/aos-production-readiness-current-20260914.json`, `outputs/aos-post-ingress-hydration-readback-20260914.json`, `outputs/aos-technical-gates-readback-20260914.json`, `outputs/aos-goal-completion-audit-20260914.json`, `outputs/aos-seven-workflow-readiness-matrix-20260914.json`, `outputs/aos-canonical-seven-live-readback-20260914.json`, `outputs/aos-company-binding-readiness-20260914.json`.
+
+## 2026-09-09T13:45:44.713Z — Company 1 local guide fresh readback
+
+- [x] Fresh Companion/Profile 2 semantic + screenshot readback confirmed local Company 1 `readyState=complete`, Owner/write, registered inventory `6`, five guide rows, correspondence `2/5`, `can_run=false`, `can_preflight=true`, and `external_action=false`.
+- [x] The local projection visibly keeps NisenPrints at `要照合 / Mac workerのCompanion同一Run readback待ち`; no matching same-Run overlay was present in this local readback.
+- [x] Read-only transaction ended `known_no_effect`; provider/workflow/replay/external effect `0`; terminal Companion cleanup closed the owned tab and released its lease without foreign mutation.
+- [ ] Production provider receipt, source sync, reconciliation, business completion, and production reflection remain pending.
+
+Evidence: `work/aos-company1-local-guide-fresh-readback-20260909-1345.json`.
+
+**Next action:** keep effect-stage admission closed; continue only with a fresh target-bound same-Run readback or explicitly authorized release path.
+
+# 2026-09-09T13:23:50Z — latest Run readback overlay local acceptance
+
+- [x] Start Guide now consumes `input.runs` only as a bounded read-only overlay: exact Company 1 scope, canonical workflow, registered automation ID, latest valid Run timestamp, terminal status, explicit same-run/readback/external-effect fields, and an explicit `effects_mode=read_only` or `read_only_stage=reference_readback` marker are required.
+- [x] The latest matching Run wins independent of array order; an untrusted newer Run prevents fallback to an older verified Run. Missing registration, mismatched identity, missing metadata, and unknown external effect remain unconfirmed.
+- [x] Registration blockers and aggregate execution gate remain authoritative; the overlay adds only Run ID/Run updated-at evidence and does not infer provider or business completion.
+- [x] Focused tests 27/27, web typecheck, web build, and diff check passed. Same-timestamp conflicts, invalid/future timestamps, optional expiry, and binding-revision mismatch fail closed. No provider call, external effect, deployment, or production readback.
+- [ ] Production deployment/readback remains pending and requires an authorized release path; five-workflow provider receipt/source sync/reconciliation/cleanup/business completion remains unresolved.
+
+Evidence: `work/aos-company1-guide-readback-overlay-local-acceptance-20260909.json`.
+
+**Next action:** keep effect stage closed; if production verification is requested after authorized reflection, perform one fresh Company 1 guide readback and confirm the row without promoting it to business completion.
+
+## 2026-09-09T13:06:11.403Z — Home / Brief fresh readback
+
+- [x] Fresh Company 1 Home readback confirmed Owner/write, worker=`idle / runs=862`, today `9` Runs (`4` complete, `5` review required), approval waiting `0`, and all-company registered automation count `9`.
+- [x] Company 1 Brief displayed target automations `7`, supplemental readbacks `10`, `state=generated`, inconsistency excluded `0`, intentional out-of-scope `6`, delivery `delivered`, and no external notification/action.
+- [x] NisenPrints Home projection displayed active, latest Run `complete (read-only)`, same-Run proof count `1` (`worker_receipt`), and the remaining provider receipt/source sync/reconciliation/cleanup checks.
+- [x] Task-owned Companion cleanup closed tab `1980916245`, released one lease, changed no foreign resource, and settled `done/fully_idle` with no unknown effect.
+- [ ] Home/Brief delivery and worker receipt remain control-plane evidence only; NisenPrints provider/business completion and the five-workflow completion chain remain unresolved.
+
+Evidence: work/aos-company1-home-guide-fresh-readback-20260909-1306.json.
+
+**Next action:** keep the effect stage closed; do not use Home delivery or worker receipt as business completion, and do not publish, Pin, or replay.
+
+## 2026-09-09T12:50:31.714Z — NisenPrints detail reconciliation
+
+- [x] Fresh Company 1 Runs readback selected `run_mttb0orn_0crcf3` for `nisenprints-daily-product-canva-printify-etsy-pinterest` and confirmed `完了`, one procedure, three updates, and the remote Mac worker receipt label.
+- [x] Same-tab semantic plus screenshot readback confirmed the visible Run progress boundary; the UI does not independently expose provider receipt, source sync, reconciliation, or business completion.
+- [x] The row was selected once with a known-effect visual click; `external_action_executed=false`, provider completion unverified, and replay disallowed.
+- [x] Terminal Companion cleanup closed the owned tab and fresh status settled connected / sessions=0 / leases=0 / pending=0 / active_task_tabs=0 / done_fully_idle; foreign resource unchanged.
+- [ ] NisenPrints product/listing readback, provider receipt, source sync, reconciliation, and business completion remain unresolved; effect stage remains closed.
+
+Evidence: work/aos-company1-nisenprints-run-detail-readback-20260909-1250.json.
+
+**Next action:** do not publish, Pin, or replay; continue only with remaining independent read-only evidence or explicit authorization.
+
+## 2026-09-09T12:42:36.769Z — Backup detail reconciliation
+
+- [x] Fresh Company 1 Runs readback selected run_mttc1rw1_xqmrjx and confirmed 要確認, backup_integrity_readback_failed, one procedure, three updates, and the remote Mac worker receipt label.
+- [x] Same-tab semantic plus screenshot readback confirmed Run progress through 仕様 / Queue / Worker; Proof and business completion remain unconfirmed/unclaimed.
+- [x] Invalid visual proof stopped before dispatch; fresh visual proof selected the row once with no provider/external effect and replay disallowed.
+- [x] Terminal Companion cleanup closed the owned tab and fresh status settled connected / sessions=0 / leases=0 / pending=0 / timed_out=0 / active_task_tabs=0 / done_fully_idle.
+- [ ] Backup integrity/provider receipt and the five-workflow same-Run completion chain remain unresolved; effect stage remains closed.
+
+Evidence: work/aos-company1-backup-run-detail-readback-20260909-1242.json.
+
+**Next action:** do not retry or create a new snapshot/push; perform one fresh read-only NisenPrints detail reconciliation.
+
+# 2026-09-09T12:31:06.477Z — Auth/binding acceptance and Obsidian detail readback
+
+- [x] Fresh Companion readback confirmed Company 1 `Owner` / `認証: 書き込み許可`, matching route company ID and Company 1 membership scope; human email identity was not inferred.
+- [x] Gmail Builder readback confirmed explicit same-company connection/account target `bound / verified`, while the registered-automation response still has no matching Gmail entry.
+- [x] Fresh Obsidian Run `run_mtqi8of9_0dnaxp` detail readback confirmed `完了`, saved proof, same-Run execution/source-sync/result-reconciliation/cleanup display, and unclaimed business completion.
+- [x] Terminal cleanup and fresh status settled with zero task-owned sessions, leases, pending operations, timeouts, and active tabs; foreign resources unchanged.
+- [ ] Registration mismatch, independent provider receipts, and five-workflow business completion remain unresolved; effect stage remains closed.
+
+Evidence: `work/aos-company1-auth-binding-obsidian-readback-20260909-1231.json`.
+
+**Next action:** do not adopt or mutate Gmail registration without explicit management authorization; perform one fresh read-only detail reconciliation for Backup or NisenPrints.
+
+# 2026-09-09T12:17:44.332Z — Company 1 Gmail historical Run detail readback
+
+- [x] Read back the selected historical Gmail Run `run_mtt8wkwa_0nkoxm` in the same task-owned Companion tab.
+- [x] Confirmed `要確認`, `blocker=codex_app_server_turn_timeout`, one procedure, three updates, remote Mac worker receipt label, and `business completion=未claim`.
+- [x] Confirmed fresh terminal cleanup: one task tab closed, one lease released, foreign resources unchanged, and post-cleanup Companion recovery `done/fully_idle`.
+- [ ] Provider receipt, source sync, reconciliation, cleanup proof, and business completion remain unverified; replay is not allowed.
+
+Evidence: `work/aos-company1-gmail-run-detail-readback-20260909-1217.json`.
+
+**Next action:** keep the historical Run unreplayed and effect stage closed; resume only from a fresh named workflow row with explicit target/account/payload/approval and a new same-Run provider receipt chain.
+
+# 2026-09-09T12:02:06.586Z — Daily AI Run binding/readback inspection
+
+- [x] Read the existing `run_mttc34n8_f6sy6w` artifacts without starting or replaying a run.
+- [x] Confirmed the read-only terminal proof and cleanup (`same_run_receipt=true`, `readback_verified=true`, `cleanup_verified=true`, `external_action_executed=false`).
+- [x] Confirmed the local protected API boundary is HTTP 401 `production_token_required`; no production payload was inferred from the empty local SQLite file.
+- [ ] Provider receipt, target/account/payload binding, source sync, reconciliation, and business completion remain unverified; approval status alone is not enough.
+
+Evidence: `work/aos-dailyai-run-mttc34n8-binding-readback-20260909.json`.
+
+**Next action:** keep the effect stage closed and resume only from a fresh named workflow row with an explicit target/account/payload/approval and a new same-Run provider receipt chain; do not replay this Run.
+
+
+# 2026-09-09T11:50:43.894Z — Production Company 1 Runs readback boundary
+
+- [x] Fresh production Company 1 guide readback: registration inventory `6`, guide correspondence `2/5`, `can_run=false`, `can_preflight=true`, `worker=blocked`, `external_action=false`.
+- [x] Fresh company-scoped Runs readback: `500` total, `0` processing, `405` stopped, `95` completed, `2` pending jobs, `0` approval-waiting, `0` running; visible safety boundary is `external_action_none`.
+- [x] Selected existing Daily AI Run `run_mttc34n8_f6sy6w` and read back `完了`, one procedure, three updates, remote Mac worker receipt, but `business completion=unclaimed`.
+- [x] One queued navigation authority expiry was dispatch-free and not replayed; fresh navigation and exact-tab row readback succeeded. Terminal Companion cleanup closed both task tabs, released two leases, and changed no foreign resource.
+- [ ] Provider receipt, source sync, reconciliation, cleanup proof, and business completion remain unverified for the five workflows; effect stage remains closed.
+
+Evidence: `work/aos-company1-runs-fresh-readback-20260909.json`.
+
+**Next action:** only resume from a fresh named workflow row with explicit target/account/payload/approval and same-Run provider receipt; do not replay or infer completion from history/worker/queue status.
+
+# 2026-09-09 — UI state-read latency repair verified
+
+- [x] Added the company-scoped `runs(company_id, created_at DESC)` index through the schema and idempotent PostgreSQL startup migration.
+- [x] Bounded the UI-only `runs` and `proofs` metadata projections without changing full/detail readback semantics or the external-effect boundary.
+- [x] Server build and targeted migration/state suites pass: `8/8` and `22/22`.
+- [x] Fresh isolated HTTP readback on port 8788 returned authenticated Company 1 UI state with `200`; UI route timing improved from `17,441 ms` to `3,942 ms`. Recursive JSON semantic comparison of 500 runs and 500 proofs found zero changed rows; response size remained `1,245,201` bytes.
+- [x] PostgreSQL readback confirms schema marker `15` and `idx_runs_company_created_at`; temporary diagnostic server was cleaned up and live `8787` was left untouched.
+- [ ] The broader goal remains incomplete: five workflow provider receipts, source sync, reconciliation, cleanup, and business completion are still unverified; effect stage remains closed.
+
+Evidence: `work/aos-ui-latency-projection-fix-20260909.json`.
+
+**Next action:** return to the Company 1 guide's existing same-Run receipt/readback reconciliation, starting with the named workflow whose current row-level target and approval boundary are explicit; do not replay unknown or timed-out runs.
+
+# 2026-09-09T19:27:30+09:00 JST — UI state-read cancellation fix
+
+- [x] Preserve caller `AbortSignal` in `mvpFetch` while retaining the internal 30-second timeout boundary.
+- [x] Abort route-level auth/summary/detail MVP reads on effect cleanup and skip retry delay after cancellation.
+- [x] Web/server builds and UI truthfulness source tests pass (`109/109`); `git diff --check` passes.
+- [x] Fresh settled Companion diagnostic readback completed: Company 1 route issued two unique state reads (summary 3,637 ms; detail 16,064 ms) with distinct `read_id`s, versus three state requests in the prior observed route. This proves an observed scenario-level request reduction, not causal attribution or a general latency win.
+- [ ] Latency attribution remains open; the detail read is still the slowest path and needs server-side/`Server-Timing` correlation before projection or transfer changes.
+- [ ] Provider receipt, source sync, reconciliation, cleanup, and business completion remain unverified; effect stage remains closed.
+
+Evidence: `work/aos-ui-latency-cancel-fix-20260909.json`.
+
+**Next action:** correlate the two fresh `read_id`s with server timing evidence, then decide whether the detail projection/transfer should change; do not replay the prior timed-out transaction.
+
+# 2026-09-09T19:12:00+09:00 JST — UI latency diagnostics implemented; reduction deferred
+
+- [x] Server-side read-only timing sink separates membership, DB fan-out, mapping, runtime snapshot, per-query label/duration/rows/status, and overall read timing.
+- [x] `diagnostics=1` emits bounded `Server-Timing` and correlation headers only; ordinary UI state responses remain unchanged.
+- [x] `mvp_diagnostics=1` route mode labels state reads by origin (`route_summary`, `route_detail`, `auth_retry`, `manual_sync`, `codex_probe_refresh`) with unique read IDs for duplicate-request analysis.
+- [x] Web/server builds and targeted suites pass: 22/22 Postgres MVP tests, 109/109 UI truthfulness source tests.
+- [ ] Fresh live diagnostic readback: Companion page snapshot and network read both timed out with dispatch 0; latency improvement is not claimed.
+- [ ] Use three fresh scoped reads to identify DB/runtime/transfer/duplicate contribution before projection or request-count reduction.
+- [ ] Provider receipt, source sync, reconciliation, cleanup, and business completion remain unverified; effect stage remains closed.
+
+Evidence: `work/aos-ui-latency-diagnostics-20260909.json`.
+
+**Next action:** fresh diagnostic browser readback after broker responsiveness returns; do not replay the failed read.
+
+# AOSを簡単に使いこなすための実行Plan（2026-09-09）
+
+## 2026-09-09T09:35:07Z — UI scope fix accepted; latency remains open
+
+- [x] Company 1 routeのfresh UI requestにcanonical `company_id`が入り、semantic+visual readbackが`ready`、登録6件、`can_run=false`、`external_action=false`でsettleすることを確認した。
+- [x] Scope mismatch防止と初回/同期/認証復帰へのscope伝播のlocal build/testを完了した。
+- [ ] UI latency: Resource TimingはUI request 3回、成功応答約1.22MB、7.4〜10.3秒（初回bounded/error-sized entryは21.4秒）。scope修正だけでは遅延解消と判定しない。
+- [ ] DB fan-out、runtime construction、transfer、重複requestの寄与を分離計測する。
+- [ ] Provider receipt、source sync、reconciliation、cleanup、business completionは未確認。effect stageはclosed。
+
+Evidence: `work/aos-company1-ui-scope-latency-readback-20260909.json`.
+
+## 2026-09-09T08:02:10Z — Local rehearsal contract regression fixed
+
+- [x] `apiFirstStageCompat`の登録workflow rehearsal fixtureを、現行Companion task-identity fail-closed blockerへ整合させた。
+- [x] 対象suiteは`83/83 pass`。local healthはHTTP 200、runtimeは`ready_for_authorized_admission`、server=`read_only`、worker=`enabled`、external effect=`false`。
+- [ ] Companion Profile 2は`profile_not_connected`。fresh protected Company 1 route、5 workflowの同一Run receipt chain、business completionは未確認。
+
+**Next action:** Reconnect後にCompany 1 protected routeを1回fresh readbackし、effect-stageは閉じたまま対象・account・payload・approval境界を確認する。
+
+## 2026-09-09T13:45:24+09:00 JST — Post-timeout Companion cleanup verified
+
+- [x] Fresh Companion statusでtask-owned session/lease/pending/timeout/active tabがすべて0、Profile 2はconnected、recovery=`done/fully_idle`を確認した。
+- [x] Profile-globalのhistorical reconciliation 52件とforeign resourceはobserve-onlyのまま、採用・cleanupしていない。
+- [ ] Protected Company 1 routeのloading境界、5 workflow row、同一Runのprovider receipt/source sync/reconciliation/cleanup/business completion。
+
+**Next action:** timeout済みsettleを再送せず、material state changeまたはユーザー操作によるReconnect後にfresh protected readbackを行う。effect-stageは閉じる。
+
+## 2026-09-09T13:44:24+09:00 JST — Protected guide loading boundary revalidated
+
+- [x] Fresh task-owned Companion readbackでCompany 1 routeが`phase=loading / mvp_state_readback_pending`、権限範囲未確認、詳細readback未確認に戻ったことを確認した。
+- [x] bounded settleを1回だけ試行したが`page.delay`がdispatchなしでtimeout。transactionは`known_no_effect`、`dispatch_count=0`、`replay_allowed=false`、task-owned tabs cleanup済み。
+- [x] loadingを空inventory・logout・target absence・業務完了と解釈せず、ガイドをfail-closedの現行境界へ同期した。
+- [ ] Company 1 protected readbackのsettle、5 workflow row readback、同一Runのprovider receipt/source sync/reconciliation/cleanup/business completion。
+
+**Next action:** 同じtimeout settleを再送せず、material state changeまたはユーザー操作によるCompanion reconnect後にfresh protected readbackを1回行う。effect-stageは閉じたまま、target/account/payload/approvalを推測しない。
+
+## 2026-09-09T13:41:03+09:00 JST — Guide synchronized with production Gmail target boundary
+
+- [x] `outputs/aos-user-guide.md`を最新のproduction readbackへ合わせ、Company 1のsummary/detail settled状態とGmail Builderの`unbound / execution_target_unbound`を明記した。
+- [x] verified connectionの表示、target selectorの表示、target保存済み、provider receipt、業務完了を別々の状態として説明した。
+- [x] target保存、provider call、Gmail read、workflow start、approval/schedule変更、replay、外部効果は0。
+- [ ] 5 workflowの`provider receipt → source sync → reconciliation → cleanup → business completion`。
+
+**Next action:** effect-stage admissionを閉じたまま、ユーザーが明示したnamed workflowのtarget/account/payload/approval境界が揃った場合だけ新規Runを開始する。Gmail targetをverified connectionから推測・保存せず、既存Runは再送しない。
+
+## 2026-09-09T03:56:24Z — Company 1 guideのsettled readback
+
+- [x] loading/権限未確認を登録なしと扱わず、fresh visual proof付きのread-only「同期」を1回実行した。
+- [x] 同一task-owned tabのsemantic+visual readbackで`readyState=complete`、Owner/write、Company 1、登録6件、5行、`can_run=false / can_preflight=true / external_action=false`を確認した。
+- [x] Gmailのcanonical workflow/candidate/binding表示、Daily AI/NisenPrintsの同一Run readback待ち、Backup/Obsidianの`unknown_readback`、Runs/preflight/local-check導線を確認した。
+- [x] provider call、workflow start、schedule/approval変更、replay、外部効果なし。session/tab/leaseをterminal cleanupし、foreign mutationなし。
+- [ ] Gmail row-level protected detailと同一Run provider receipt、全5業務のsource sync/reconciliation/business completionは未確認。
+
+Evidence: `work/aos-company1-guide-settled-readback-20260909-0356.json`。
+
+**Next action:** effect stageを閉じたまま、Gmail rowのprotected detail/target/payload/approvalと既存Run receiptを照合する。Daily AI/NisenPrints/Backup/Obsidianの既存receiptもread-onlyで照合し、未確認Runは再送しない。
+
+## 2026-09-09T03:49:37Z — Guide作業後のtask-scoped cleanup status
+
+- [x] Fresh Companion statusで、現タスクのsession/lease/pending/active task tab/timeoutが0、recovery=`done/fully_idle`、Profile 2が期待buildでconnectedであることを確認した。
+- [x] profile-globalのownerless/ledger-only cleanup-eligible 1件と履歴reconciliation 52件はforeign/不明として採用・cleanupしなかった。
+- [ ] これはcleanup/readiness readbackであり、provider receipt、source sync、reconciliation、business completionの証明ではない。
+
+Evidence: fresh `companion_status(detail=task)` readback。
+
+**Next action:** profile-global候補を触らず、Gmail guide rowのfresh protected registration/target/payload/approval照合へ進む。readback timeoutや不明Runは再送しない。
+
+## 2026-09-09T03:45:25Z — Guide row readbackを現行利用ガイドへ反映
+
+- [x] Company 1のfresh Companion readbackで、登録inventory 6件、guide response対応2/5、対応entryなし3件、aggregate `can_run=false` / `can_preflight=true`（read-only確認のみ）を確認した。
+- [x] Daily AI/NisenPrintsのread-only preflight、Backup/ObsidianのRuns導線、Gmail builderの別証拠を確認した。builderの`bound`はguide rowの登録整合、target/payload/approval、provider完了へ昇格させない。
+- [x] provider call、workflow start、schedule/approval変更、replay、外部効果、foreign resource変更なし。Companion sessionはterminal cleanup済み。
+- [x] 旧来の長文・矛盾した状態記述を削除し、fresh row readbackを正本にした簡潔な`outputs/aos-user-guide.md`へ置換した。route、5手順、5業務の確認点、承認境界、no-replay復旧を記載した。
+- [ ] Gmail guide rowのfresh protected registration/target/payload/approval照合、およびprovider receipt → source sync → reconciliation → cleanup → business completionは未確認。
+
+Evidence: `work/aos-company1-guide-row-readback-20260909.json`, `work/aos-company1-gmail-target-bound-builder-readback-20260909.json`, `outputs/aos-user-guide.md`。
+
+**Next action:** effect stageを閉じたまま、Gmail guide rowのfresh protected readbackでbuilder targetを照合する。行別gateと対象/account/payload/approvalが明示されるまで送信・保存・公開・archive・replayはしない。
+
+## 2026-09-09T03:38:15Z — Gmail builder target persistence reconciled
+
+- [x] Company 1 canonical Gmail registered workflow `automation_813091820198928c10c54297` のbuilderをfresh semantic+visual readbackし、persisted execution targetが `bound`、verified connection/account_ref、schedule revision 7 active、`external_action=false` であることを確認した。
+- [x] 現行guide行は `unknown_readback` / registration response no matching entryのまま保持し、builderのboundだけでrow-level registration、payload、approval、provider receipt、business completionへ昇格させないことを記録した。aggregate `can_run=false` / `can_preflight=true`。
+- [x] 以前のvisual clickの不明確なbroker分類（`external_commit`, `external_action_executed=null`, reconciliation required）は同一tab readbackとcanonical route照合で整理し、再送・provider call・Gmail read・workflow start・schedule/approval変更・replayは行わなかった。
+- [x] Companion session/tab/leaseのterminal cleanupを完了し、closed tab、lease解放、retained/unknown/foreign mutationなしを確認した。直後statusはtask recovery=`done/fully_idle`。
+- [ ] Gmail guide rowのfresh protected registration/target/payload/approval reconciliation、provider receipt → source sync → reconciliation → cleanup、および5 workflowのbusiness completionは未確認。
+
+Evidence: `work/aos-company1-gmail-target-bound-builder-readback-20260909.json`。
+
+**Next action:** effect stageは閉じたまま、Gmail rowのfresh protected readbackでbuilder targetとの整合を確認し、target/account/payload/approvalが明示された場合だけ新規同一Runのread-only/provider receipt chainへ進む。
+
+## 2026-09-09T02:00:00Z — Company Gmail接続とWorkflow実行先の分離
+
+- [x] サーバーのautomation list/detail/create/patch readbackに、canonical workflowに対する`execution_target`を追加した。Gmailはbuilder spec内の明示的な`connection_ref_id`/`account_ref`だけを解決し、Company 1にverified Gmail refが1件あるだけでは`unbound`のままにする。
+- [x] 実行先の状態を`bound`、`unbound`、`company_mismatch`、`competing`、`revoked`、`scope_insufficient`に分け、会社接続の証拠（verified/unverified/missing）と別フィールドで返す。read-only responseの`external_action_allowed=false`は維持する。
+- [x] Web開始ガイドでも会社接続と実行対象を別表示し、`verified接続 + 実行先未設定`を`needs_binding`として案内する。canonical Gmail ID、候補Aのdraft、effect-stage停止は変更していない。
+- [x] server API 15/15、focused guide 18/18、server build/typecheck、web typecheckを確認した。これはlocal contract/build evidenceであり、production deployment・provider receipt・source sync・reconciliation・business completionの証明ではない。
+
+Evidence: `apps/server/src/runs/gmailAccountBinding.ts`, `apps/server/src/index.ts`, `apps/web/src/workflowStartGuide.ts`, `apps/web/src/App.tsx`, `work/aos-company1-gmail-run-identity-readback-20260909.json`。
+
+**Next action:** productionのeffect stageは閉じたまま、明示されたrow-level bindingと新鮮なtarget/payload/approvalが揃った場合だけ、同一Runのread-only/provider receipt照合へ進む。今回の実装だけでbinding・送信・業務完了へ昇格しない。
+
+## 2026-09-09T01:17:16Z — Gmail immutable identity readback and guide projection fix
+
+- [x] Company 1 scoped GETで候補A `automation_mtolbrdw_yo7aiz` と候補B `automation_813091820198928c10c54297` のimmutable recordをfresh read-only確認した。両方とも`company_id=company_2560580981cedfd106b66245`、`company_scope.enforced=true`、`archived_at=null`。
+- [x] 候補Bは`automation_type=registered_workflow`、`builder_spec.schema=aos.registered_automation_adoption.v1`、`builder_spec.canonicalWorkflowId=email-review-reply`、active/daily 07:30。候補Aはchat-created `gmail-reply` draft、manual/pausedでcanonicalWorkflowIdなし。したがって canonical registered-workflow IDは候補Bと解消できる。
+- [x] 両候補にrow-level account/mailbox/connection bindingと明示的な`superseded_by`/replacement relationは存在せず、候補Aのarchiveは自動実行しない。provider receipt、source sync、reconciliation、business completionは未確認のためeffect stageは閉じたまま。
+- [x] Webのbounded automation-row projectionが`builder_spec`を保持するよう修正し、canonical IDを落として候補Bまでname-only conflictにする問題を防止した。保存・実行・schedule・provider処理は変更していない。
+
+Evidence: `work/aos-company1-gmail-run-identity-readback-20260909.json`、Company 1 protected API readback、`apps/web/src/App.tsx`。
+
+**Next action:** Guideでcanonical IDが反映されるfocused test/buildを確認し、row-level Gmail account/mailbox bindingがfresh readbackで明示されるまで送信・返信案・Calendar変更・候補Aのarchiveを行わない。
+
+## 2026-09-09T01:10:58Z — Gmail candidate and same-Run receipt readback
+
+- [x] Fresh Company 1 guide readback kept Gmail at `registered_workflow_ambiguous` with candidates `automation_mtolbrdw_yo7aiz` and `automation_813091820198928c10c54297`; row-level account/mailbox binding remains unknown.
+- [x] Canonical Company 1 Runs route showed 0 current DOM matches for `automation_mtolbrdw_yo7aiz` and 2 matches for `automation_813091820198928c10c54297` (`run_mtt8wkwa_0nkoxm`, `run_mtrtfduz_lf4ax6`). This is not proof of supersession or archive, so neither candidate was selected.
+- [x] Target-bound detail for `run_mtt8wkwa_0nkoxm` and proof `proof_mtt92tnp_fsoivq` were read back. The persisted `worker_receipt` is `blocked` with `codex_app_server_turn_timeout`, `readback_verified=false`, `same_run_receipt=false`, `business_proof_verified=false`, `cleanup_verified=true`, and `external_action_executed=false`.
+- [x] Immutable candidate recordsの一部は次のreadbackで確認済み（候補Bがcanonical registered workflow、候補Aが別のchat draft）。row-level mailbox bindingと明示的supersession relationはなお未露出。Provider receipt/source sync/reconciliation/business completion remain unconfirmed.
+
+Evidence: `work/aos-company1-gmail-run-identity-readback-20260909.json`.
+
+**Next action:** read both candidate records and their immutable binding metadata without choosing by name, newest record, run history, or zero current-run matches. Keep effect-stage admission closed.
+
+## 2026-09-09T01:00:17Z — Canonical Backup Run detail and receipt resolved
+
+- [x] Fresh target-bound protected readback resolved the Backup Run to canonical `run_mttc1rw1_xqmrjx` and confirmed its same-Run detail API/proof view.
+- [x] Existing proof `proof_mttc4eak_quakr8` was read back as `worker_receipt`: `status=blocked`, exact blocker=`backup_integrity_readback_failed`, `readback_verified=false`, `same_run_receipt=false`, `business_proof_verified=false`, `cleanup_verified=true`, and `external_action_executed=false`.
+- [x] Receipt metadata records `ETIMEDOUT`/`SIGTERM`, stale snapshot `20260907T090411+0900`, `snapshot_created=false`, `git_push_performed=false`, and `business_effect_started=false`; no replay or external effect occurred.
+- [ ] Provider receipt/source sync/reconciliation/business completion remain unconfirmed. The fresh local adapter result must not be promoted to completion.
+
+Evidence: `work/aos-company1-backup-run-identity-readback-20260909.json`.
+
+**Next action:** keep the Backup effect stage closed; repair/reconcile the saved Run's integrity readback or start a newly authorized business Run with a fresh target/account/payload/approval boundary. Do not replay the local-check ID or create a new snapshot.
+
+## 2026-09-09T00:43:41Z — Backup adapter vs protected Run projection
+
+- [x] 現行`readBackupSnapshot`のread-only adapterで、commit/remote parity、manifest 6領域、integrity、restore、temporary cleanupを確認した。
+- [x] snapshot stale（48.66h）を確認したが、snapshot作成・push・provider/external effectは行っていない。
+- [x] Protected Runsの保存済み表示`backup_integrity_readback_failed`と、fresh adapterの`readback_verified=true / exact_blocker=null`の不一致を記録した。
+- [ ] 同一Runのcanonical detail、receipt、source sync、reconciliation、business completionは未確認。stale snapshot解消の新snapshotも未承認・未実行。
+
+Evidence: `work/aos-company1-backup-run-identity-readback-20260909.json`.
+
+**Next action:** 保存済みBackup projectionを現行adapter結果に自動昇格せず、詳細readbackが有効になったfresh protected target-bound Run detailで既存receiptを照合する。新snapshot・push・replayはしない。
+
+## 2026-09-09T00:41:33Z — Backup Run identity and protected list readback
+
+- [x] ローカル確認用候補 `aos-company1-local-check-backup-20260909-01`を正規AOS Runとして扱わないことを確認した。候補はlocal guide React表示だけで、canonical `runs` row・provider receipt・business effectを持たない。
+- [x] Fresh protected Company 1 Runs route `#/runs?company_id=company_2560580981cedfd106b66245`をsemantic+visualで確認し、Backupのexact blocker=`backup_integrity_readback_failed`、Runs=500、詳細readback control disabledを確認した。
+- [x] Companion transaction/session/tab cleanupを確認し、外部効果、provider call、snapshot作成、push、replay、foreign resource変更を0に保った。
+- [ ] Backupのtarget-bound canonical Run ID、同一Run receipt、source sync、reconciliation、business completionは未確認。
+
+Evidence: `work/aos-company1-backup-run-identity-readback-20260909.json`.
+
+**Next action:** effect stageは閉じたまま、詳細readbackが有効になりtarget-bound Backup Run IDと既存receiptを返すfresh protected readbackまで、ローカル候補の再実行・新snapshot作成・Run ID推測をしない。
+
+## 2026-09-09T09:30:00+09:00 JST — Settled guide readback, guide alignment, and completion audit
+
+- [x] Company 1のfresh Companion semantic+visual readbackで、登録6件、Owner/write、5行、`can_run=false`、`can_preflight=false`、Worker `blocked / runs=500`を確認した。詳細readbackは`readyState=complete`でsettled済み。
+- [x] 現行表示の5行blockerを確認した。Gmailは`registered_workflow_ambiguous`、Daily AI/NisenPrintsは`mac_worker_companion_same_run_readback_pending`、Backup/Obsidianは`unknown_readback`。
+- [x] 前回の`can_preflight=true`は過去snapshotとして扱い、現行の操作開始条件には使わない。aggregate effect gateは停止中で、外部操作は開始していない。
+- [x] 利用ガイドを現行settled readbackへ同期し、古い「詳細readback確認中」表記を除去した。最新の完了監査とreadback証跡を追加した。
+- [x] Companion session/tab/leaseをtask-owned cleanupし、foreign resource非変更、unknown effectなしを確認した。
+- [x] 現行ワークツリーでfocused UI/guide tests 27/27、`npm run typecheck:web`、`git diff --check`を再確認した。
+- [ ] `provider receipt → source sync → reconciliation → cleanup → business completion`は未確認。`health=200`、runtime `ready_for_authorized_admission`、worker `enabled`、Companion connectedは業務完了を意味しない。
+
+Evidence: `work/aos-company1-current-guide-readback-20260909-0024.json`; `work/aos-company1-goal-completion-audit-20260909-0027.json`; `outputs/aos-user-guide.md`.
+
+**Next action:** effect stageを閉じたまま、明示承認された1 workflowのtarget/account/payload/approval境界が揃った場合だけ、新しい同一Run証跡を開始する。それまでは既存Runのread-only照合のみとし、Gmail候補競合とforeign reconciliationは触らない。
+
+## 2026-09-09T08:07:30+09:00 JST — Fresh runtime and Companion status boundary
+
+- [x] Fresh read-only health/runtime readbackは`/readyz=200`、`ready_for_authorized_admission`、server `read_only`、worker `enabled`、external effect `false`を返した。
+- [x] Companion Profile 2は期待buildで`connected=true`。このtaskは`done`/`fully_idle`で、owned session/lease/pending/active tab/terminal cleanupは0件。
+- [x] Profile-globalには別task所有のactive reconciliation 1件（`upload_file_readback_failed`）が残るが、foreign resourceとして採用・cleanupせずobserve-onlyにした。
+- [ ] registered effect stage、provider receipt、source sync、reconciliation、cleanup、5業務のbusiness completionは未確認。
+
+Evidence: fresh AOS health/runtime and task-scoped Companion status readbacks.
+
+**Next action:** Company 1のfresh protected readbackで対象・account・payload・approvalが揃うまで、local check以外のworkflow操作を開始しない。foreign reconciliationは触らない。
+
+## 2026-09-09T08:05:00+09:00 JST — Local-only check affordance
+
+- [x] Backup / Obsidianの行に、aggregate effect gateから独立した「取得済みローカル情報を確認」を追加した。登録readback済み・会社scope内で、既にロード済みのRun/proof metadataだけを確認する。
+- [x] local checkはqueue投入、Provider接続、Companion操作、snapshot作成、Git/Vault書込み、業務完了判定を行わない。Gmail / Daily AI / NisenPrintsには提供しない。
+- [x] aggregate `can_run=false` / `can_preflight=false` と `registered_automation_effect_stage_not_admitted` は変更せず、結果は部分確認・`external_action=false`として表示する。
+- [x] `workflowStartGuide`契約テスト18/18、`npm run typecheck:web`、`npm run build:web`を確認した（Viteのchunk warningは非致命）。
+- [ ] provider receipt → source sync → reconciliation → cleanup → business completionは未確認。production effect stageは閉じたまま。
+
+Evidence: `work/aos-company1-five-workflow-registration-evidence-audit-20260909.json`; `STATE.md`の同時刻エントリ。
+
+**Next action:** Companion Profile 2が再接続され、fresh protected readbackで対象・account・payload・approvalが揃うまで、local check以外のworkflow操作を開始しない。
+
+## 2026-09-09T07:42:45+09:00 JST — Company 1 workflow row readback
+
+- [x] Profile 2を再接続後、fresh task-owned Companion session/tabでCompany 1の5行をsettled readbackした。
+- [x] Gmailのcanonical候補競合、Daily AI/NisenPrintsの同一Run worker readback待ち、Backup/Obsidianの`unknown_readback`を行単位で確認した。
+- [x] session/tab/leaseを終端cleanupし、task recovery=`done/fully_idle`、foreign tab非変更、unknown effectなしを確認した。
+- [ ] 5 workflowのprovider receipt → source sync → reconciliation → cleanup → business completionは未確認。
+
+Current blocker: aggregate `can_run=false` / `can_preflight=false`、`external_post_send_delete_submit_publish_auth_captcha_otp_payment_gate`。Gmail候補をread-onlyで一意化し、他4件は同じRunのreceipt/readbackを再送なしで照合する。行の`can_preflight=true`かつtarget/account/payload/approvalが明確になるまでpreflight/effect stageは開始しない。
+
+Evidence: `work/aos-company1-workflow-row-readback-20260909.json`.
+
+## 2026-09-09T07:21:27+09:00 JST — Timeout recovery follow-up
+
+- [x] Fresh status repoll confirmed pending and timed-out operations cleared and task-owned tab/cleanup candidate counts returned to zero; no cleanup call or recovery-handle adoption was performed.
+- [x] Kept the exact blocker as `profile_not_connected`; no provider workflow, schedule, approval, sync, replay, or external effect occurred.
+- [x] Reconnect Profile 2 through the user-visible path, fresh-read status, then open a new task-owned session for the Company 1 guide readback if the task remains tab-free.
+
+Evidence: `work/aos-company1-current-guide-readonly-timeout-20260909.json`.
+
+## 2026-09-09T07:11:06+09:00 JST — Current guide readback timeout and recovery
+
+- [x] Runtime readback remained healthy (`/readyz=200`, `ready_for_authorized_admission`, server read-only / worker enabled) and the Companion build/profile identity was observed before the guide read.
+- [x] The exact Company 1 automations read-only retry was allowed to time out once; it was not replayed. A status repoll confirmed the operation and timeout tombstones had cleared, while the task-owned tab `1980915725` was retained as `ledger_only` after `client_transport_disconnected`.
+- [x] Recorded the exact current blocker as `profile_not_connected`; no foreign resources, provider workflows, schedules, approvals, sync, or external effects were touched.
+- [x] Local contract verification passed: five-workflow/UI tests `29/29`, `npm run typecheck:web`, JSON evidence validation, and `git diff --check`.
+- [ ] After user-visible Companion reconnect, fresh-read status, perform one current-task-only cleanup of the ledger-only tab, then obtain a new exact Company 1 guide readback.
+
+Evidence: `work/aos-company1-current-guide-readonly-timeout-20260909.json`.
+
+**Next action:** do not replay the timed-out request; reconnect Companion and clean only tab `1980915725`, then continue with a new target-bound read-only guide readback.
+
+## 2026-09-09T07:21:27+09:00 JST — Requirement-by-requirement completion audit
+
+- [x] Audited Companion route, Company 1 auth/binding, five workflows, user guide, approval/evidence boundary, recovery/no-replay, and local runtime/contracts without promoting indirect evidence to completion.
+- [x] Recorded local verification as verified-local-only and separated it from current protected-state and business-effect proof.
+- [x] Reconnect Companion Profile 2, fresh-read Company 1 protected state, and obtain a new task-owned guide readback before any workflow action.
+
+Evidence: `work/aos-company1-goal-completion-audit-20260909.json`.
+
+## 2026-09-09T03:49:15+09:00 JST — Identity and evidence audit
+
+- [x] Read-onlyでcanonical catalog、Company 1の最新protected auth/binding、5 workflowのproduction registration detail、既存Run/proof状態を突合。
+- [x] Companion statusとAOS runtimeを再確認。connected、active session/lease/pending operationなし、unresolved timeout=0、health=200、`ready_for_authorized_admission`、external effect=false。
+- [x] Gmailのactive＋draft/test競合、Daily AIのread-only receipt限定、NisenPrintsの未確認preflight、Backup/Obsidianのreadback待ちを分離して記録。
+- [x] `awaiting_reconnect`の旧reload reservationは保持し、session/tab作成、cleanup、binding変更、provider call、再送を行わなかった。
+- [ ] Gmailのcanonical候補確定、各workflowの同一Run provider receipt/source sync/reconciliation/cleanup/business completion。
+
+Evidence: `work/aos-company1-identity-and-evidence-audit-20260909.json`。
+
+**Next action:** effect stageを閉じたまま、必要なら既存の非effect Runを1件だけfresh readbackする。新しいtarget/account/payload/approval境界なしにworkflowを開始しない。
+
+## 2026-09-09T03:21:17+09:00 JST — Guide aggregate-gate scope correction
+
+- [x] 開始ガイドの集約`can_run / can_preflight`を「登録inventory全体」と表示し、5ワークフロー全体の実行完了と誤読される文言を除去。
+- [x] ガイド表示による`external_action=false`とprovider/business completionを分離。
+- [x] local test 8/8、web typecheck、web build、静的button QA（passed / issues=0）、diff checkが成功。
+- [ ] この修正のproduction visual readback、Companion semantic transportの安定化、effect stage admission、5業務の同一Run証跡。
+
+Evidence: `work/aos-company1-guide-execution-gate-scope-fix-20260909.json`.
+
+**Next action:** Companionが新しいsemantic+visual readbackを安定して返せる状態で、会社1ガイドのscope文言を1回だけ確認する。実行ゲートが未確認または停止中のままなら、業務実行とsurface syncを開始しない。
+
+## 2026-09-08T16:43:15Z UTC — Current local source promotion readback
+
+- [x] Fresh target matched personal workspace / project `automation-wiled` / production environment / existing `automation-os` service and provisioned domain.
+- [x] Current source was staged from the dirty worktree with runtime-only files excluded, uploaded, and deployed once to the exact service/environment IDs. New deployment `6aa03a3911e40dee1a6960a7` is `RUNNING` with the expected `docker` plan.
+- [x] `/readyz` and root returned HTTP 200; public JS/CSS matched the local build byte-for-byte. The served JS contains the current Companion refresh and `registered_automation_effect_stage_not_admitted` projection.
+- [ ] Protected Company 1 inventory readback returned `401 production_token_required`; provider receipt, source sync, reconciliation, and business completion remain unverified. No provider, schedule, secret, or external action occurred.
+
+Evidence: `work/aos-company1-local-source-promotion-readback-20260908.json`.
+
+**Exact blocker:** `production_token_required`.
+
+**Next action:** Use the existing authenticated Company 1 Owner session for one fresh protected read-only inventory readback; do not replay preserved jobs or start provider/business effects.
+
+## 2026-09-08T16:17:06Z UTC — Companion terminal cleanup checkpoint
+
+- [x] AOS health HTTP 200、runtime `ready_for_authorized_admission`、server `read_only`、worker `enabled`をfresh確認。
+- [x] task-owned Companion sessionを閉じ、lease解放確認=1。cleanup dry-run候補0件、foreign tab非変更、unknown effectなし、external effectなし。
+- [x] 保留tab `1980915409`/`1980915410`は`target_bound` capsuleのため保持。強制closeやforeign cleanupは行わない。
+- [ ] 5業務の同一Run provider receipt→source sync→reconciliation→cleanup→business completion、Gmail登録一意性。
+
+**Exact blocker:** `same_run_provider_receipt_source_sync_reconciliation_missing`。過去の`authority_expired`、`task_target_unavailable`、`page_execution_timeout`操作は再送しない。
+
+**Next action:** fresh Owner-authorized target-bound Companion sessionが得られた後、既存server receipt/登録対応をread-onlyで一度照合する。ページ操作・surface sync・cleanupの反復はしない。
+
+## 2026-09-08T11:23:40Z — Companion surface refresh production deployment
+
+- [x] Fresh Zeabur target readback matched project `automation-wiled`, production environment, and existing `automation-os` service. One deployment was issued with explicit service/environment IDs; deployment `6a9feed211e40dee1a69476f` is `RUNNING` with the expected `nodejs` plan.
+- [x] Production `/readyz` returned HTTP 200 and the served web asset contains `companion-surface-refresh`.
+- [x] Fresh AOS Chrome Companion readback used the connected owned profile and completed task cleanup with zero pending operations, zero active task sessions/leases, no foreign-tab mutation, and no external action.
+- [ ] Company 1 protected Owner/write readback is still unavailable on the production ingress (`mvp_state_readback_pending`, visible role `Company member`), so the five-workflow surface sync was not clicked and no provider receipt/source sync/reconciliation/business completion is claimed.
+
+Evidence: [production deployment/readback](work/aos-company1-companion-surface-refresh-production-20260908.json).
+
+## 2026-09-08T10:35:45Z UTC — Zeabur/Companion continuation readback
+
+- [x] Fresh Zeabur service/deployment readback matched project `automation-wiled`, production environment, dedicated `codex-app-server` (`docker`, `RUNNING`, deployment `6a9edf20d92d7bffd1bc2ffb`) and `automation-os` (`RUNNING`). No deploy, restart, variable, secret, or business mutation occurred.
+- [x] Companion status showed exactly one connected profile, pending operations `0`; one Home read-only transaction captured a verified screenshot with `known_no_effect`, and the task-owned session was terminally cleaned with foreign tabs unchanged.
+- [x] The Home semantic query returned zero matches; this is recorded as query-not-found, not empty Company 1 state or business completion. Provider receipt, source sync, reconciliation, and business effect remain unverified/not started.
+- [ ] Continue only after an explicit new Company 1 target-bound workflow request; require the same-run provider receipt, source sync, reconciliation/no-replay, and cleanup chain.
+
+Evidence: [continuation readback](work/aos-company1-zeabur-companion-continuation-readback-20260908.json).
+
+## 2026-09-08T10:27:00Z UTC — Companion-first user-facing copy alignment
+
+- [x] Home priority guidance, common web-operation admission, lane/project summaries, and control-manifest readback now present AOS Chrome Companion as the current user-facing surface.
+- [x] Preserved Browser Use identifiers only as compatibility/low-level diagnostics; no runtime contract or historical evidence was relabeled as execution proof.
+- [x] `npm run typecheck:web`, `npm run build:web`, `npm run build:server`, UI truthfulness tests (109/109), and `git diff --check` passed.
+- [ ] Keep the Goal active until a newly authorized target-bound workflow supplies same-run provider receipt, source sync, reconciliation, and cleanup; no replay or external effect was performed here.
+
+Evidence: current source changes and fresh Companion readback transactions `aos-company1-continuation-fresh-readback-20260908-01` / `aos-company1-continuation-scope-query-20260908-03`.
+
+## 2026-09-08T08:31:48Z UTC — Preserved Daily AI job production readback
+
+- [x] 保存済み `create_planner_job_mtrh1emr_kudqvr` をproduction ingressの正規URLからAOS Chrome CompanionでGET-only fresh readbackした。
+- [x] `ok=true`、canonical Company 1 scope、`status=blocked`、`exactBlocker=codex_app_server_protocol_line_too_large`、`result={}`、`worker_readback=null`をvisual確認した。
+- [x] jobを再送せず、provider/runner/schedule/external effectなし、transaction known_no_effect、task-owned cleanup完了を確認した。
+- [ ] 保存済みjobは再利用せず、production Codex App Server protocol pathの現行readbackを確認後、明示承認された新規target-bound workflowでprovider receipt→source sync→reconciliation→cleanupを成立させる。
+
+Evidence: [preserved Daily AI production job readback](work/aos-company1-preserved-dailyai-production-job-readback-20260908.json) / [completion audit v5](work/aos-goal-completion-audit-20260908-v5.json).
+
+## 2026-09-08T08:24:55Z UTC — Home loading boundary settled
+
+- [x] Company 1 Homeの即時snapshotで見えた`mvp_state_readback_pending`に対し、同一local routeを15秒のbounded no-effect wait後に再確認した。
+- [x] `MVP ui readback 済みです。worker=idle / runs=500`のvisual readback、browser mutation=false、external_action=false、tab close/lease releaseを確認した。
+- [ ] loadingを現行blockerと扱わず、Goalはprovider receipt、source sync、reconciliation、business completion、Browser Use live resource/heartbeat（選択時）、公開production/full-screen acceptanceが揃うまでactiveのまま維持する。
+
+Evidence: [delayed Home readback](work/aos-company1-home-delayed-readonly-readback-20260908.json) / [completion audit v4](work/aos-goal-completion-audit-20260908-v4.json).
+
+## 2026-09-08T08:13:41Z UTC — Loading boundary persists
+
+- [x] After the fresh loopback state readback, one new Companion session rechecked the same Company 1 route and still received `mvp_state_readback_pending` / `phase=loading`.
+- [x] No control or workflow was activated; the temporary tab/session was cleaned up and foreign tabs were unchanged.
+- [ ] Stop identical reads until a material state change or a different approved readback route exists.
+
+Evidence: [loading boundary readback](work/aos-company1-fresh-route-readonly-loading-20260908.json).
+
+## 2026-09-08T08:11:40Z UTC — Local protected state readback
+
+- [x] Fresh loopback GET-only readback returned Company 1 authenticated/write state from the Postgres persistent read pool; worker heartbeat was fresh and queue scope matched Company 1.
+- [x] Recorded the summary counts and registered workflow IDs without storing credential values; current queue remained empty and historical queue records were not reused.
+- [ ] Treat this as local control-plane evidence only. Wait for the Companion loading boundary to settle before one newly authorized target-bound workflow, then require the complete same-Run receipt chain.
+
+Evidence: [local protected state](work/aos-company1-local-protected-state-readback-20260908.json) / [audit v3](work/aos-goal-completion-audit-20260908-v3.json).
+
+## 2026-09-08T08:08:50Z UTC — Fresh route loading boundary
+
+- [x] Performed two bounded fresh read-only reads of the same Company 1 route; both returned `mvp_state_readback_pending` / `phase=loading`.
+- [x] Treated the result as unverified rather than empty; activated no controls and replayed no prior run. Temporary tabs and the task session were cleaned up; foreign tabs were unchanged.
+- [ ] Continue only after a material state change or approved protected-state route. Do not loop identical reads or infer business completion.
+
+Evidence: [fresh route loading readback](work/aos-company1-fresh-route-readonly-loading-20260908.json).
+
+
+## 2026-09-08T08:04:05Z UTC — Live binding authority recovery
+
+- [x] Fresh launchd readback confirmed the server and resident worker are running against Postgres and the same canonical Company 1 ID; server authority is fresh and selection is applied.
+- [x] Fresh Companion readback confirmed the same Company 1, Owner/write scope, and six registered automations. The expired snapshot query had zero dispatch and was not replayed; separate read_page succeeded and cleanup was confirmed.
+- [x] Reclassified the prior `canonical_company_unresolved` CLI artifact as non-authoritative for the live launchd runtime because it lacked the launchd environment and used diagnostic SQLite.
+- [ ] Keep the Goal active until one newly authorized target-bound workflow proves provider receipt, source sync, reconciliation, no-replay, and cleanup in the same Run; prove Browser Use live resource and heartbeat transport first if that path is selected.
+
+Evidence: [runtime/binding recovery](work/aos-company1-binding-authority-recovery-readback-20260908.json) / [completion audit v2](work/aos-goal-completion-audit-20260908-v2.json).
+
+## 2026-09-08T06:06:57Z UTC — Active Goal completion audit (superseded blocker wording)
+
+- [x] Audited the seven Goal requirements: Companion, Company 1 auth, canonical binding, five workflows, guide, approval/evidence, and recovery/no-replay.
+- [x] Recorded partial versus blocked evidence; no requirement was promoted from indirect or historical evidence to complete.
+- [x] Rechecked the live launchd authority after the earlier diagnostic-only result; the live Company 1 runtime binding is now aligned.
+- [ ] Fresh-read the same company and complete one newly authorized target-bound workflow with the full same-Run evidence chain.
+
+Evidence: [work/aos-goal-completion-audit-20260908.json](work/aos-goal-completion-audit-20260908.json).
+
+## 2026-09-08T06:01:51Z UTC — Company 1 binding reconciliation fresh readback
+
+- [x] Local read-only reconciliation confirmed six registered trigger automations for `company_2560580981cedfd106b66245` and six active diagnostic schedules for `company_9588eaafb46d7cbaead81811`.
+- [x] SQLite integrity was `ok` and the file fingerprint stayed stable; no canonical company was selected and no schedule or trigger was changed.
+- [ ] Obtain explicit Owner confirmation of the protected AOS company/project mapping, then fresh-read the same company before any schedule materialization or target-bound workflow.
+
+Evidence: [work/aos-company1-binding-reconciliation-readback-20260908.json](work/aos-company1-binding-reconciliation-readback-20260908.json).
+
+## 2026-09-08T13:16:21+09:00 JST — Company 1 PC/transport recheck v613
+
+- [x] Fresh PC status readback confirmed Owner/Company 1, Local Agent heartbeat readback complete, worker running, and heartbeat fresh.
+- [x] The page still separates `Heartbeat transport=未確認`, `Portable remote worker process=absent`, and `Browser Use live resource=未登録 0件 / mismatch 0件` from the fresh heartbeat display.
+- [x] One exact visual-proof-bound `再確認` was used; task-owned cleanup closed the tab and confirmed lease release with no foreign-tab mutation.
+- [ ] Obtain same-run Browser Use live-resource and heartbeat-transport binding before any target-bound effectful workflow. Do not claim business completion from this readback or reuse historical queue records.
+
+Evidence: [work/aos-company1-pc-transport-readback-20260908.json](work/aos-company1-pc-transport-readback-20260908.json).
+
+## 2026-09-08T13:12:51+09:00 JST — Company 1 natural tick readback v612
+
+- [x] Fresh Owner/Company 1 page readback and one exact visual-proof-bound `自然tickを実行` canary completed through AOS Chrome Companion.
+- [x] Same-tab Home readback showed `status=completed`, `materialized=0件`, `service_user=configured`, `duplicate=0件`, and `external_action=false`.
+- [x] Owner-scoped cleanup closed tab `1980913932`, released and confirmed one lease, and left foreign tabs unchanged.
+- [ ] Do not promote this internal canary to provider/business completion. Browser Use live resource, heartbeat transport, provider receipt, source sync, reconciliation, runner admission, and business proof remain unverified.
+
+Evidence: [work/aos-company1-natural-tick-readback-20260908.json](work/aos-company1-natural-tick-readback-20260908.json).
+
+## 2026-09-08T11:50:59+09:00 JST — Companion transport disconnect boundary
+
+- [x] Saved automation details were expanded with one fresh visual-proof-bound click; transaction status later read back as `completed`, `effect_state=known_effect`, and `reconciliation_required=false`.
+- [x] Fresh Companion status confirmed `pendingOperationCount=0` and no active session or lease.
+- [ ] Reconnect the Companion profile and perform a new exact Company 1 readback. The prior task tab is `ledger_only` after `client_transport_disconnected`; do not replay the prior click or infer a send/provider effect.
+
+Evidence: `work/aos-company1-companion-disconnect-readback-20260908.json`.
+
+## 目的
+
+AOSサイトを、会社1の正しい対象・AOS Chrome Companion・承認・証跡を守りながら、ユーザーが迷わず日常利用できる状態にする。業務完了は画面表示ではなく、`provider receipt → source sync → reconciliation → cleanup`の同一Run証跡で判定する。
+
+## 現在地
+
+- Companion経路への切替、サーバービルド、Companion固有テスト、ローカル5Workflow/UI受入は完了。最新の隔離受入は5 Workflow/UI合計15/15 pass、provider call=0、external effect=false。
+- 対象Workflowは Gmail、Daily AI、NisenPrints、Backup、Obsidian。
+- local healthはHTTP 200、runtimeは `ready_for_authorized_admission`、serverはread-only、resident Mac workerはLaunchAgent経由でrunning。Companionの接続probeとChatのstate readbackは確認済みだが、これは業務実行の証明ではない。
+- 同一AOS Ingressのfresh UI readbackでCompany 1 `company_2560580981cedfd106b66245` は `Owner / 書き込み許可`、Companion選択、worker runningを確認済み。live launchd server/workerも同じCompany 1 ID・Postgres・remote queueで整合している。旧diagnostic SQLiteの`canonical_company_unresolved`はlive launchdの正本判定には使わないが、scopeや予定の自動rebindは行わない。provider receipt、source sync、reconciliation、business completionは未確認。
+- Company 1 Lane/PC readbackでは、7つのBrowser Use CLI laneが `workflow_owned / registered` だが全て `process未検出・未claim（予約のみ）`。Mac heartbeatはfreshだがHeartbeat transportは未確認、Browser Use live resourceは未登録0件。現在の選択面はAOS Chrome Companionなので、Browser Useの予約状態を実行済みとは扱わない。
+- 状態不明の保存済みPlanner Jobは再送・再実行しない。
+
+## 実行順
+
+### Phase 0 — 入口と安全確認
+
+- [x] AOSサイトを開き、会社1（`company_2560580981cedfd106b66245`）を選択する。
+- [x] Home、Admin、Company/Lane、PC/Workerをfresh readbackする。
+- [x] AdminでCompanion、worker、local sync、会社scopeを確認する。
+- 完了条件: 会社1が一致し、Companionが選択済み、worker状態がfresh、foreign resourceがない。
+
+### Phase 1 — Owner認証と会社Binding
+
+- [x] ユーザーが公式Owner SSOを完了する。OTP、CAPTCHA、本人確認はユーザー操作のみ。
+- [x] 同じ会社1のfresh UIでOwner/write scopeとCompany 1 membershipを確認する。
+- [x] Live launchd server/workerのCompany 1 authority・selection・queue scope整合をfresh readbackした。旧diagnostic-onlyの`canonical_company_unresolved`は再生せず、scopeや予定を変更していない。
+- [ ] Fresh protected target-state readbackと同一Runのprovider/source/reconciliation proofを揃える。
+- 完了条件: `owner_sso_required`が消え、会社1のprotected stateがfresh取得できる。
+
+### Phase 2 — サイトの基本操作受入
+
+- [ ] Home：今日の状態、Brief、通知を見る。
+- [ ] Runs：queued/running/blocked/completedと要確認を読む。
+- [ ] Approvals：対象Run・会社・内容を読み返してから承認する。
+- [ ] Automations：5 Workflowの有効状態、時刻、Asia/Tokyo、revisionを確認する。
+- [ ] Chat：Workflow名、対象、日付、保存/送信の有無を明記して依頼する。
+- 完了条件: 各画面で「見る」「承認する」「実行する」の境界が説明できる。
+
+### Phase 3 — 5 Workflowのread-only確認
+
+次の順番で1件ずつ実行し、外部効果なしのreceipt/readbackを確認する。
+
+1. Gmail：受信・返信案の確認
+2. Daily AI：sourceとSheets構造の確認
+3. NisenPrints：商品・Canva・Printify・Etsy・Pinterest状態の確認
+4. Backup：対象・差分・保存先の確認
+5. Obsidian：同期対象・差分・parityの確認
+
+完了条件: 各Workflowが同一RunでCompanion → receipt → source sync → reconciliation → cleanupまで確認できる。
+
+### Phase 4 — 必要な外部効果を承認付きで実行
+
+- [ ] 送信、Sheets書込み、Etsy/Pinterest公開、求人応募、SNS投稿、Backup変更、Obsidian同期は操作直前に対象・内容・会社を再確認する。
+- [ ] 承認なしでは実行しない。
+- [ ] 結果不明なら再送せず、同じRunをGET/readbackして照合する。
+- 完了条件: provider receipt、source sync、reconciliation、cleanup、no-replayが揃う。
+
+### Phase 5 — 日常運用へ固定
+
+- [ ] 毎日見る画面をHome → Runs → Approvalsの3画面に固定する。
+- [ ] 予定変更はAutomationsでrevisionを確認してから行う。
+- [ ] 毎週、Feedback、Recovery、Adminをread-only監査する。
+- [ ] 利用ガイドとPlan/STATE/GOALの差分を確認する。
+- 完了条件: ユーザーが「何を見るか」「いつ止めるか」「何を承認するか」を短い指示で再現できる。
+
+## AOS Chatへの簡単な依頼文
+
+read-only確認:
+
+`会社1で、Daily AIの今日の状態を確認してください。保存・送信・公開はしないでください。`
+
+承認待ち実行:
+
+`会社1で、Daily AIの同期を実行してください。対象Run、Sheet、書込み内容を先に表示し、承認待ちで止めてください。`
+
+停止・照合:
+
+`このRunは再実行せず、同じRunのreceipt、source sync、reconciliation、cleanupだけ確認してください。`
+
+## 停止条件
+
+fresh authoritative readbackで`owner_sso_required`または`canonical_company_unresolved`、Companion未確認、会社scope不一致、target不明、approval不足、receipt不明、source sync不一致、unknown effect、OTP/CAPTCHA/本人確認が出た場合は停止し、推測・再送・暗黙の別経路切替をしない。過去のdiagnostic-only結果だけでlive launchdを再bindしない。
+
+## 次の1アクション
+
+会社1をfresh target-bound Companionで再読し、新しい認可済みWorkflowを1件だけ開始する。同一Runのauthority・provider receipt・source sync・reconciliation/no-replay・cleanupを確認してから次のWorkflowへ進む。NisenPrintsの確定receiptなしpreflightや状態不明Runは再クリック・再送しない。Browser Use CLIを選ぶ場合だけ、先にlive resourceとheartbeat transportを同一Runで確認する。
+
+## 2026-09-08 current checkpoint — worker経路とガイドの同期
+
+- LaunchAgentのresident workerはrunning、サービスID設定済み、最終終了コード0。通常シェルで`npm run worker:loop:stored`を直接実行すると環境不足で`worker_service_identity_missing`となるため、resident worker稼働中は重複起動しない。
+- `outputs/aos-user-guide.md`に上記のworker起動経路とno-replay手順を追記し、`git diff --check`を通過。
+- `company1FiveWorkflowLocalAcceptance.test.mjs` と `allPageButtonQa.test.mjs` は9/9 pass。AOS runtime readbackは `ready_for_authorized_admission`、local healthはHTTP 200、今回の外部効果はfalse。
+- これは運用経路とローカル受入の更新であり、Owner SSO、provider receipt、source sync、reconciliation、business completionを完了扱いにはしない。
+
+## 2026-09-08T09:18:35+09:00 JST — Company 1 production scope readback discrepancy resolved
+
+- [x] Fresh authenticated Companion readback for canonical `company_2560580981cedfd106b66245` resolved the transient `対象automation 0件` display: the settled Company 1 scope panel shows 7 target automations, 10 supplemental readbacks, `state=generated`, and `inconsistency_excluded=0`.
+- [x] The panel explicitly limits the target to Gmail, Daily AI, NisenPrints, Backup, and Obsidian; job applications and Runway-required generation/publication remain excluded as intended.
+- [x] Fresh rendered status shows write permission, worker running, runs=500, approvals waiting=0, and Home delivery=`not_attempted`; no provider call, runner start, approval, schedule mutation, retry/cancel, replay, or external effect occurred.
+
+**判定:** the earlier zero-count was a transient/early Home readback rather than a confirmed empty Company 1 scope. This advances production scope evidence only; workflow provider receipts, source sync, reconciliation, and business completion remain unverified. Goal remains `active/incomplete`.
+
+Evidence: `work/aos-company1-company-scope-readback-20260908.json`.
+
+**next_action_now:** select one newly authorized target-bound workflow after fresh target readback; do not replay preserved unknown jobs.
+
+## 2026-09-08T08:28:05+09:00 JST — Company 1 local auth/state boundary readback
+
+- [x] Fresh local read-only GET returned `/api/auth/session=200 authenticated=true scope=write` and Company 1 `mvp/state=200` for canonical `company_2560580981cedfd106b66245`; the local state exposed 8 target definitions, 843 runs, 805 proofs, 195 approvals (0 waiting / 2 expired), 2 historical queued jobs, and a fresh idle worker heartbeat.
+- [x] Fresh public protected GETs for the same auth/state endpoints both returned HTTP 401 with exact blocker `owner_sso_required`.
+- [x] No provider call, runner start, schedule mutation, replay, or external effect occurred. Local owner/session recovery is not production SSO, provider receipt, source sync, reconciliation, or business completion proof.
+
+**判定:** local readback capability has advanced, but the production Owner SSO boundary remains. Continue with the public authenticated readback only after official Owner SSO; do not replay the preserved planner job.
+
+Evidence: `work/aos-company1-local-auth-state-readback-20260908.json`.
+
+## 2026-09-08T08:20:48+09:00 JST — Company 1 Daily AI Chat clarification readback
+
+- [x] Existing Company 1 Chat was resumed in the task-owned Companion tab and one target-bound clarification was sent to the same thread. It fixed the current target as automation `automation_90303bb7919647e5005004ed`, automation revision 8, schedule revision 6, daily 09:00 Asia/Tokyo, existing Sheet `16W-IhCLb1ENizHLXT7afGQeQA-dqLh_2DYtkeeWeiho` / `queue` / gid `1541274581` / 39 columns, source `posting_queue.tsv` in the existing workspace, and business date 2026-09-08.
+- [x] Planner job `create_planner_job_mtrv3s79_ozg6dd` completed with no provider call, schedule mutation, or external effect. The response kept execution blocked because the worker effects mode is `read_only` and same-run browser operating/authentication readback is not confirmed. Local worker PID 37825 reported heartbeat `ok` and claim `idle`, which is not execution approval.
+- [x] No business run, provider receipt, source sync, reconciliation, or business completion was claimed; no replay was attempted. Evidence: `work/aos-company1-daily-chat-clarification-readback-20260908.json`.
+
+**判定:** same-company Chat clarification advanced and the target is now explicit, but runner admission remains blocked at `browser_use_worker_readback_pending`; Goal remains `active/incomplete`.
+
+## 2026-09-08T04:21:05+09:00 JST — Preserved Daily AI Chat UI readback v608
+
+- [x] Fresh task-owned Companion readback reached Company 1 Chat with the canonical ID `company_2560580981cedfd106b66245`; visual readback was verified and the page showed `worker=idle / runs=839`, Chat `status=idle`, current thread `01a07b7e-300e-7853-936b-6b9affef6a1c`, and the recent blocked/completed conversation list.
+- [x] The preserved planner job ID was not exposed in this UI snapshot, so no job completion, provider receipt, source sync, reconciliation, or business completion was inferred. No new request, provider call, replay, schedule mutation, or external effect occurred.
+- [x] The earlier localhost origin mismatch was corrected by using the actual `http://localhost:8787` origin in the signed allowlist. The task-owned tab/session was closed with lease release, `foreign_tabs_mutated=false`, and `external_action_executed=false`.
+
+**判定:** this advances same-company Chat UI/readback evidence only. The preserved job still requires authenticated production lookup by exact job ID; Goal remains `active/incomplete` and production readiness is not claimed.
+
+Evidence: [work/aos-company1-chat-preserved-job-ui-readback-20260908.json](work/aos-company1-chat-preserved-job-ui-readback-20260908.json).
+
+## 2026-09-08T04:09:27+09:00 JST — Full regression suite green v607
+
+- [x] Updated the four stale source-shape assertions in `controlManifest.test.ts` and `dashboardSanitizer.test.ts` to match the current fail-closed UI contracts; focused coverage passed 51/51.
+- [x] Full `npm test` passed 1,483/1,483 executed tests with 26 environment/browser skips and zero failures (`tests=1509`, duration `624647ms`).
+- [x] No provider call, Owner SSO input, schedule mutation, runner start, preserved-job replay, or external effect occurred.
+
+**判定:** local regression verification is green. This does not prove authenticated Company 1 production state, provider receipt, source sync, reconciliation, business completion, or `production_ready`; Goal remains `active/incomplete` with protected blocker `owner_sso_required`.
+
+Evidence: [work/aos-full-suite-20260908-v607.json](work/aos-full-suite-20260908-v607.json).
+
+## 2026-09-08T04:00:00+09:00 JST — Feedback readback contract test alignment v606
+
+- [x] Updated the stale source-shape assertion in `apps/server/src/tests/uiTruthfulnessSource.test.ts` to match the current safe behavior: loading/error renders `ReadbackState`, while feedback rows are derived only when `readStatus === "ready"`.
+- [x] Full UI truthfulness suite passed `108/108`; server build, web typecheck, and `git diff --check` passed. Registered workflow/canonical trigger focused coverage remains green.
+- [x] No provider call, SSO input, schedule mutation, runner start, preserved-job replay, or external effect occurred.
+
+**判定:** this is a local regression-test alignment only. It does not change the protected Company 1 boundary or promote read-only admission to business completion. Goal remains `active/incomplete`, `production_ready=false`, with `owner_sso_required` as the current protected blocker.
+
+## 2026-09-08T03:23:00+09:00 JST — User guide consistency update v605
+
+- [x] Added the fresh v602 binding-readiness, v603 protected-SSO, and v604 local-acceptance evidence to `outputs/aos-user-guide.md`.
+- [x] Verified all three linked evidence files exist and `git diff --check` is clean. No provider call, schedule mutation, authentication input, or external effect occurred.
+
+**判定:** Plan/STATE/GOAL/利用ガイド now describe the same current blocker and local evidence. This does not change production readiness or business completion; Goal remains `active/incomplete`.
+
+## 2026-09-08T03:21:47+09:00 JST — Company 1 local acceptance rerun v604
+
+- [x] Re-ran the isolated five-workflow acceptance and UI truthfulness tests: 15/15 passed, including Gmail, Daily AI, NisenPrints, Backup, Obsidian, loading/error separation, viewer action hiding, timeout abort, and no-implicit-retry behavior.
+- [x] Provider calls and external effects were zero. The result is local fixture evidence only and does not claim production SSO, provider receipt, runner admission, source sync, reconciliation, or business completion.
+
+**判定:** local acceptance remains green; Goal remains `active/incomplete`, `production_ready=false`, with protected blocker `owner_sso_required`.
+
+Evidence: [work/aos-company1-local-acceptance-20260908-v604.json](work/aos-company1-local-acceptance-20260908-v604.json).
+
+## 2026-09-08T03:20:00+09:00 JST — Company 1 protected SSO boundary fresh readback v603
+
+- [x] GET-only fresh readback of `/api/auth/session` and Company 1 `/api/mvp/state?...fresh=1` returned HTTP 401 with exact blocker `owner_sso_required` on both endpoints.
+- [x] No SSO/OTP/CAPTCHA input, provider call, runner start, schedule mutation, preserved-job replay, or external effect occurred.
+
+**判定:** the protected production boundary is unchanged. Goal remains `active/incomplete`, `production_ready=false`.
+
+Evidence: [work/aos-company1-protected-sso-readback-20260908-v3.json](work/aos-company1-protected-sso-readback-20260908-v3.json).
+
+**next_action_now:** after official Owner SSO, fresh-read the same Company 1 endpoints, then proceed only with a newly authorized target-bound workflow and same-run receipt/readback.
+
+## 2026-09-08T03:19:10+09:00 JST — Company 1 binding readiness fresh readback v602
+
+- [x] Ran `scripts/aos-company-binding-readiness.mjs` against the local diagnostic SQLite in read-only mode. The database remained stable during the readback and `PRAGMA integrity_check` returned `ok`.
+- [x] Confirmed the Codex trigger scope is `company_2560580981cedfd106b66245` with 8 registered automation definitions, while the local diagnostic schedules remain 6 active entries under `company_9588eaafb46d7cbaead81811`.
+- [x] Reconciliation remains `requires_user_decision` with exact blocker `canonical_company_unresolved`; no scope rewrite, schedule materialization, provider call, browser start, notification, replay, or external effect occurred.
+
+**判定:** this is fresh local binding evidence, not production readiness or business completion. Goal remains `active/incomplete`, `production_ready=false`.
+
+Evidence: [work/aos-company1-binding-readiness-20260908-v2.json](work/aos-company1-binding-readiness-20260908-v2.json).
+
+**next_action_now:** resolve canonical company binding through the Owner-authorized protected AOS path; until then continue only independent read-only acceptance and do not rewrite scope or replay preserved jobs.
+
+## 2026-09-08T02:51:53+09:00 JST — Web production build QA v601
+
+- [x] Re-ran `npm run build:web`; Vite transformed 1,581 modules and completed successfully.
+- [x] Recorded the generated `dist/index.html` and `dist/assets/index-obKLXtIr.js` sizes and SHA-256 hashes.
+- [x] Preserved the non-failing Vite warning that the JavaScript chunk is larger than 500 kB; no additional code-splitting change was in scope.
+- [x] No SSO, provider call, runner admission, schedule mutation, or external effect occurred.
+
+**判定:** local web production build is green. Authenticated production state, provider receipt, source sync, reconciliation, runner admission, and business completion remain unverified because the protected surface still returns `owner_sso_required`; Goal remains `active/incomplete`, `production_ready=false`.
+
+Evidence: [work/aos-company1-web-build-qa-20260908.json](work/aos-company1-web-build-qa-20260908.json).
+
+## 2026-09-08T02:47:40+09:00 JST — Static UI QA repair v600
+
+- [x] Fixed the static QA disposition validator to accept the declared `safe_local_action` contract.
+- [x] Removed the duplicate Feedback queue panel control, added control IDs to the two Chat workflow result/draft links, and registered both controls.
+- [x] `npm run typecheck:web` passed; all-page static QA passed with 387 manifest entries, 507 rendered patterns, and zero issues; five-workflow/UI regression passed 15/15.
+- [x] No SSO, provider call, schedule mutation, runner, or external effect occurred.
+
+**判定:** static UI contract QA is now clean; authenticated production screen acceptance and business completion remain unverified. Goal remains `active/incomplete`, `production_ready=false`.
+
+Evidence: [work/aos-ui-static-qa-repair-20260908.json](work/aos-ui-static-qa-repair-20260908.json).
+
+## 2026-09-08T02:43:12+09:00 JST — Rendered control-ID coverage audit v599
+
+- [x] Checked all 312 non-wildcard control IDs in the 385-entry manifest against `App.tsx`: 304 direct references and 8 conditional Sidebar mappings.
+- [x] Missing direct IDs=0; all conditional Sidebar mappings are present. No provider call or external action occurred.
+
+**判定:** rendered control-ID coverage is locally consistent. This is not authenticated production UI or business completion proof; Goal remains `active/incomplete`, `production_ready=false`.
+
+Evidence: [work/aos-control-manifest-rendered-id-audit-20260908.json](work/aos-control-manifest-rendered-id-audit-20260908.json).
+
+## 2026-09-08T02:41:56+09:00 JST — Control manifest source audit and repair v598
+
+- [x] Audited all 385 control-manifest entries: duplicate IDs=0, missing fields=0, missing source files=0, missing App component references=0.
+- [x] Corrected five stale `ProjectsPage` source references to the current `AutomationsPage` implementation in `apps/web/src/controlManifest.ts`.
+- [x] Re-ran the five-workflow and isolated UI regression command: 15 pass / 0 fail; provider calls=0 and external effect=false.
+
+**判定:** static control-contract consistency advanced. This does not prove protected production UI, provider receipts, or business completion; Goal remains `active/incomplete`, `production_ready=false`.
+
+Evidence: [work/aos-control-manifest-source-audit-20260908.json](work/aos-control-manifest-source-audit-20260908.json).
+
+## 2026-09-08T02:39:16+09:00 JST — Company 1 identity binding audit v597
+
+- [x] Scoped source/state audit found zero occurrences of the truncated or wrong Company 1 prefix across `apps`, `scripts`, `Plan.md`, `STATE.md`, `GOAL.md`, and the user guide.
+- [x] The canonical ID `company_2560580981cedfd106b66245` is present in the local acceptance test, acceptance artifact, and state documents.
+- [x] No external action, provider call, SSO action, or preserved-job replay occurred.
+
+**判定:** identity binding is locally consistent; this does not prove protected production state or business completion. Goal remains `active/incomplete`, `production_ready=false`.
+
+Evidence: [work/aos-company1-identity-binding-audit-20260908.json](work/aos-company1-identity-binding-audit-20260908.json).
+
+## 2026-09-08T02:36:44+09:00 JST — Company 1 local UI acceptance rerun v596
+
+- [x] Re-ran the isolated five-workflow acceptance matrix for the exact Company 1 ID `company_2560580981cedfd106b66245`: 5 workflow cases passed, provider calls=0, external effect=false.
+- [x] Re-ran isolated UI truthfulness coverage for loading/error separation, viewer action hiding, empty states, timeout abort, and network-failure no-retry: 10 cases passed.
+- [x] Combined command result: 15 pass / 0 fail. `production_sso`, provider receipt, source sync, reconciliation, and business completion remain unclaimed.
+
+**判定:** local implementation/isolated UI evidence advanced; this does not satisfy authenticated production UI or external business completion. Goal remains `active/incomplete`, `production_ready=false`.
+
+Evidence: [work/aos-company1-local-ui-acceptance-rerun-20260908.json](work/aos-company1-local-ui-acceptance-rerun-20260908.json).
+
+**next_action_now:** after official Owner SSO, fresh-read Company 1 protected state and verify one newly authorized target-bound workflow through provider receipt → source sync → reconciliation → cleanup. Do not replay preserved unknown jobs.
+
+## 2026-09-08T02:34:53+09:00 JST — Company 1 runtime/protected-state readback v595
+
+- [x] Fresh AOS read-only status confirmed local health HTTP 200, runtime `ready_for_authorized_admission`, server `read_only`, worker `enabled`, and Codex account/thread/turn completion.
+- [x] Fresh Companion status confirmed one connected profile with zero task sessions, leases, pending operations, active reconciliation, or task tabs; recovery is `execution_idle`.
+- [x] Protected Company 1 state remains blocked at HTTP 401 `owner_sso_required`. This is an Owner SSO boundary, not evidence that Company 1 state is absent.
+- [x] No SSO/OTP/CAPTCHA, provider call, runner, schedule, external effect, or preserved-job replay occurred.
+
+**判定:** runtime/read-only boundary is verified; protected business state, provider receipt, source sync, reconciliation, runner admission, and business completion remain unverified. Goal remains `active/incomplete`, `production_ready=false`.
+
+Evidence: [work/aos-company1-current-runtime-protected-readback-20260908-v2.json](work/aos-company1-current-runtime-protected-readback-20260908-v2.json).
+
+**next_action_now:** After Owner completes official SSO, perform one fresh same-company protected-state readback. Until then continue only independent local/read-only work; do not replay the preserved job.
+
+## 2026-09-08T02:02:24+09:00 JST — Preserved unknown job UI readback remains blocked
+
+- [x] Local AOS runtime readback remained `ready_for_authorized_admission`; `/readyz` returned HTTP 200 and the credential-free Codex account/thread/turn readback completed with `external_action_executed=false`.
+- [x] One task-owned Companion read-only read was attempted for Company 1. The Chat route was rejected as `target_resource_busy` because another logical session was executing on the same target; the Runs route showed `phase=loading`, `mvp_state_readback_pending`, and mutation controls hidden until readback.
+- [x] Task-owned Companion cleanup completed with no foreign-tab mutation and no unknown effect. The preserved job `create_planner_job_mtrh1emr_kudqvr` was not replayed.
+
+**判定:** this is a fresh fail-closed UI/runtime readback, not reconciliation. Provider receipt, source sync, reconciliation, runner admission, and business completion for the preserved job remain unverified. Goal remains `active`.
+
+Evidence: `work/aos-company1-unknown-job-ui-readback-20260908.json`.
+Next action: wait for an idle boundary of the other logical session, then perform one fresh same-job readback; do not replay the preserved request.
+
+## 2026-09-08T02:04:14+09:00 JST — Idle-boundary readback still fail-closed
+
+- [x] After the other logical session became idle, a new task-owned Companion read of Company 1 Chat completed without `target_resource_busy`.
+- [x] The page remained `phase=loading` with `mvp_state_readback_pending`; mutation controls stayed hidden until state readback. The preserved planner job was not replayed.
+- [x] Companion cleanup completed with `external_action_executed=false` and no unknown effect.
+
+**判定:** the prior session-busy blocker is cleared, but the current MVP state readback is still missing. This read does not reconcile the preserved job or prove provider receipt, source sync, reconciliation, runner admission, or business completion. Goal remains `active`.
+
+Evidence: `work/aos-company1-preserved-job-idle-readback-20260908.json`.
+
+**原因確定:** direct protected API readback returned `401 owner_sso_required` for both `/api/auth/session` and Company 1 `mvp/state?projection=summary&fresh=1`. This is an authentication boundary, not evidence that Company 1 has no state. Owner SSO/本人認証はユーザー境界のため代行せず、認証完了後に同じ保存済み job を readback する。
+
+Local bounded acceptance after the readback diagnosis passed 10/10: MVP state / server-auth / UI truthfulness `7/7`, and Codex App Server JSONL line-boundary regressions `3/3`. These are local/isolated tests only and do not claim production SSO, provider receipt, or business completion. Evidence: `work/aos-company1-local-acceptance-20260908.json`.
+
+## 2026-09-08T16:57:48Z UTC — JSONL line ceiling repair / preserved Daily AI unknown-effect boundary
+
+- [x] Raised the single raw JSONL line ceiling in `apps/server/src/codex/appServerClient.ts` from 512 KiB to 4 MiB while retaining bounded event/text projections. Focused Codex App Server tests passed `26/26`; server build passed.
+- [x] One explicit deploy targeted the fresh `automation-os` service. Deployment `6a9eebeccf97588525f8c205` reached `RUNNING`; public `/readyz` returned HTTP 200.
+- [x] Fresh same-tab Company 1 Chat connection probe after deployment returned `status=ok`, `state readback=ok`, and `external_action=false`.
+- [x] The earlier job `create_planner_job_mtrh1emr_kudqvr` remains preserved as `codex_app_server_protocol_line_too_large` with automation creation unconfirmed and delivery unknown. No replay was attempted.
+
+**判定:** the bounded parser/runtime admission blocker is repaired and fresh readback is positive. The Daily AI business request is not complete: provider receipt, source sync, reconciliation, runner admission, and business completion remain unverified; the preserved unknown-effect job must be reconciled before any new business request. Goal remains `active`.
+
+Evidence: `work/aos-company1-chat-dailyai-line-limit-readback-20260908.json`.
+
+## 2026-09-08T16:37:43Z UTC — Protocol fix deployed / Company 1 Chat admission fresh readback
+
+- [x] Patched the Codex App Server stdout JSONL boundary so the 512 KiB limit applies to each raw line rather than the accumulated buffer across coalesced valid lines. Added focused regression coverage for coalesced output and an oversized individual line; focused tests passed 25/25, server build passed, and the full build passed.
+- [x] One explicit credential-free staging deploy targeted the fresh `automation-os` Zeabur service. Deployment `6a9ee69dcf97588525f8c19a` reached `RUNNING`; public `/readyz` returned HTTP 200. No further deploy/retry was issued.
+- [x] Fresh same-tab Companion readback for Company 1 showed `Codex App Server: 確認済み`, Chat `status=idle`, `state readback=ok`, `external_action=false`, and registered lanes `7`. The bounded connection probe did not start a provider or business workflow.
+
+**判定:** the protocol blocker and Chat runtime admission readback are resolved for the bounded probe. Provider receipt, source sync, reconciliation, runner admission, and business completion for the clarified Daily AI request remain unverified; the prior unknown request is not replayed. Goal remains `active`.
+
+Evidence: `work/aos-company1-chat-postfix-readback-20260908.json`. Next action is independent read-only acceptance or a newly authorized target-bound request with same-run receipt/readback; do not infer business completion from this probe.
+
+- [x] Independent Home fresh readback after the protocol deployment showed `worker=idle`, `runs=839`, `today runs=0`, `pending approvals=0`, Company 1 target automation count `7`, `delivery=not_attempted`, `external_notification=false`, and `external_action=false`. The latest Home Run is `brief_home_mtr8kuzy_0o1ere` / `complete` with `business completion unclaimed`.
+
+Evidence: `work/aos-company1-home-postfix-readback-20260908.json`. This remains read-only acceptance; no scheduler tick, soak, provider call, runner dispatch, or business effect was started.
+
+## 2026-09-07T16:20:40Z UTC — Company 1 Chat clarified workflow request / exact blocker
+
+- [x] A fresh task-owned Companion Chat session for Company 1 sent one clarified, target-bound request for the registered Daily AI fixed-Sheets sync. The request explicitly limited scope to one runner admission and same-run receipt/source-sync/reconciliation/cleanup, with no generation, publication, send, new workspace, or other account.
+- [x] Fresh same-tab readback reached `処理が停止しました` for job `create_planner_job_mtrg4jya_ksyw8u`; the UI reports `blocker=codex_app_server_protocol_line_too_large` and says the plan result and request delivery are unknown. No automation creation was confirmed.
+- [x] No replay was attempted. Companion session cleanup closed tab `1980913506`, released one lease, left foreign tabs unchanged, and returned `unknown_effect=[]` at the browser cleanup boundary.
+
+**判定:** exact blocker is `codex_app_server_protocol_line_too_large`; external effect, provider receipt, source sync, reconciliation, runner admission, and business completion remain unverified. Goal remains `active`.
+
+Evidence: [work/aos-company1-chat-clarified-workflow-readback-20260908.json](work/aos-company1-chat-clarified-workflow-readback-20260908.json).
+
+**next_action_now:** repair or obtain a fresh readback of the Codex App Server protocol boundary, then issue a new authorized target-bound request only after confirming no prior effect. Until then, do not replay this request or infer workflow creation/completion; continue only independent read-only acceptance.
+
+## 2026-09-07T16:13:20Z UTC — Company 1 Admin Companion connection readback
+
+- [x] Fresh task-owned Companion session reserved the exact Admin tab, performed semantic+visual readback, and used one fresh visual-proof-bound `再確認` click. The earlier proof-invalid attempts had `dispatch_count=0`; the successful attempt dispatched exactly once and had `browser_mutation_executed=true`, `external_action_executed=null`.
+- [x] Same-tab fresh post-action readback showed `Owner専用Admin diagnosticsを再読込しました。外部操作は実行していません。`; backend remained `AOS Chrome Companion`, revision `33`, Profile 2, local sync `ok`, worker heartbeat fresh.
+- [x] Admin still reports Companion selection as `未確認`; exact blocker remains `browser_use_worker_readback_pending`. Session close completed with tab `1980913504` closed, one lease released, foreign tabs unchanged, and unknown effect false.
+
+**判定:** Companion browser authority and bounded Admin readback are evidenced, but AOS worker/Companion connection admission, provider receipts, source sync, reconciliation, and Company 1 business completion remain unverified. Do not start an effectful workflow or infer completion from this diagnostic refresh. Goal remains `active`.
+
+Evidence: [work/aos-company1-admin-connection-readback-20260908.json](work/aos-company1-admin-connection-readback-20260908.json).
+
+**next_action_now:** resolve the authenticated worker/Companion diagnostic readback through a fresh target-bound AOS path; otherwise continue only independent read-only acceptance units.
+
+## 2026-09-07T16:06:15Z UTC — Codex App Server image update succeeded / technical canary readback
+
+- [x] Fresh Zeabur readback confirmed the corrected ECR-based deployment `6a9edf20d92d7bffd1bc2ffb` is `RUNNING` with `plan=docker`; the prior Docker Hub-429 deployments remain failed and were not replayed.
+- [x] Fresh container readback confirmed `codex-cli 0.153.4`, `/readyz=200`, and token-file metadata `regular/0400/64 bytes/readable`; the token value was not read or recorded.
+- [x] Same-run read-only container canary completed `initialize → account/read → thread/start(ephemeral, read-only) → turn/start → turn/completed(status=completed)` with `account_type=chatgpt` and `external_action_executed=false`.
+
+**判定:** the image/runtime update and authenticated no-effect technical canary are成立. This is not production promotion or Company 1 business completion: the public/private WSS route was not separately verified, the official WebSocket transport remains experimental, and the five business workflows still lack same-run provider receipt/source sync/reconciliation evidence.
+
+**next_action_now:** preserve local stdio and Mac worker fallbacks; if remote transport admission is required, establish an approved private TLS/WSS route and perform a fresh WSS initialize/thread/turn readback. Separately resolve the Company 1 `mvp_state_readback_pending` target-inventory blocker before any business action. Do not infer business completion from deployment, health, or this technical canary.
+
+Evidence: [work/aos-company1-codex-app-server-deploy-readback-20260908.json](work/aos-company1-codex-app-server-deploy-readback-20260908.json).
+
+## 2026-09-07T15:49:18Z UTC — Codex App Server image update attempt / exact blocker
+
+- [x] Local source preflight passed with no secrets read and no source blocker. The dedicated image source now pins `@openai/codex@0.153.4`; credential-free staging contained only the Dockerfile and entrypoint, with Docker plan boundary preserved.
+- [x] Fresh Zeabur identity/target readback matched the existing dedicated `codex-app-server` service (`project=69df815a554543d46b0f2485`, `environment=69df815a5ae0a69725e92048`, `service=6a7777cde4a69d66638d2141`). One explicit deploy was accepted as deployment `6a9edc18cf97588525f8c054`, plan=`docker`.
+- [x] Fresh post-submit readback: deployment remains `BUILDING` with `startedAt` and `finishedAt` unset; service remains `RUNNING` on the prior deployment. Public `/readyz` is HTTP 200, but service exec still reports `codex-cli 0.148.0`; token file metadata remains regular/0400/64 bytes without exposing its value.
+
+**判定:** source patch and deploy request are recorded, but the new image is not running and remote planner timeout remains unresolved. Exact blocker is `zeabur_deployment_stuck_building_and_build_log_forbidden`: deployment has not transitioned, and `zeabur deployment log --type build --watch` returns `FORBIDDEN` on `buildLogReceived`. Do not replay deploy, restart, or infer version/runtime parity from `/readyz`.
+
+**next_action_now:** obtain Zeabur build-log/deployment permission or platform-side completion/readback for deployment `6a9edc18cf97588525f8c054`; then fresh-read deployment status, service exec version, `/readyz`, authenticated initialize, and the existing bounded read-only thread/turn canary. Keep local stdio fallback and AOS production unchanged until all same-run evidence is present. Goal remains `active`.
+
+## 2026-09-07T15:54:01Z UTC — Company 1 fresh Home/Runs route readback
+
+- [x] Fresh task-owned Companion read-only Home readback for `company_2560580981cedfd106b66245` showed `worker=idle`, but Company 1 target automation count=`0`, state=`未確認`, and `delivery=not_attempted`; no provider or external action occurred.
+- [x] Fresh single-route Runs readback showed `phase=loading`, exact blocker=`mvp_state_readback_pending`, summary `Run 0 / stopped 0 / queued 0 / completed 0`, and mutation controls hidden until readback. A single-origin concurrency conflict was not replayed; the exact transaction was read back and cleanup completed.
+
+**判定:** this fresh UI evidence confirms fail-closed behavior and exposes a current production readback gap. It does not prove that Company 1 has no registered automation, nor does it prove any of the five business workflows, schedule, provider receipt, source sync, reconciliation, or completion. Goal remains `active`.
+
+Evidence: [work/aos-company1-fresh-route-readback-20260908.json](work/aos-company1-fresh-route-readback-20260908.json).
+
+**next_action_now:** resolve the current `mvp_state_readback_pending` / Company 1 target-readback gap through the authenticated same-origin AOS readback path after the runtime/deployment state changes; do not expose mutation controls or infer the five-business inventory from this loading state.
+
+## 2026-09-07T15:56:30Z UTC — Codex App Server deploy terminal failure / Docker Hub rate limit
+
+- [x] The first dedicated-service deployment `6a9edc18cf97588525f8c054` terminalized as `FAILED`; its build log is now readable and identifies the exact cause: Docker builder metadata request for `docker.io/library/node:22-bookworm-slim` returned HTTP `429 Too Many Requests`.
+- [x] One bounded retry from the same credential-free staging and exact target was attempted after a fresh service readback. Retry deployment `6a9edea4cf97588525f8c0d8` also terminalized as `FAILED` with the identical Docker Hub `429` before image build; no further retry was issued.
+- [x] The existing running deployment and service were preserved; service exec remains on Codex CLI `0.148.0`, and public `/readyz` remains HTTP 200. No secret, provider, Browser, scheduler, or business operation was changed.
+
+**判定:** the prior `BUILDING`/permission uncertainty is resolved into the exact infrastructure blocker `dockerhub_base_image_metadata_rate_limited_429`. The source patch to `0.153.4` remains un-deployed. Do not alter the base image to bypass the registry boundary or replay the same deploy while the rate limit is unchanged.
+
+**next_action_now:** after Docker Hub/Zeabur builder rate-limit state changes, perform one fresh target readback and one deploy from the existing verified staging; then verify deployment, service version, `/readyz`, authenticated initialize, and bounded read-only thread/turn evidence. Goal remains `active`.
+
+## 2026-09-07T15:22:17Z UTC — Company 1 Plugin / Chat fresh readback
+
+- [x] Fresh Plugin readback verified Company 1 scope, linear added, common auth wizard `2/4`, Gmail/Google Drive/Supabase verified references, and catalog `180` / configured MCP registry `0`. Linear official auth and company-scope verification remain incomplete.
+- [x] Fresh Chat readback started with Codex App Server unconfirmed, then one bounded `接続状態を確認` action produced same-run `status=ok / blocker=none / external_action=false`, `Codex App Server: 確認済み`, `state readback=ok`, Chat `status=idle`, and `registered lanes 7`.
+- [x] Runtime remained `ready_for_authorized_admission` with server read-only, worker enabled, and external action false. Companion session cleanup closed task tab `1980913494`, released one lease, left foreign tabs unchanged, and fresh status reached `done/fully_idle`.
+
+**判定:** Company 1 Plugin/Chat UI and Codex App Server read-only admission evidence is fresh. It does not prove Linear OAuth/company scope, Mac worker readback, provider receipt, source sync, reconciliation, or business completion; Goal remains `active`.
+
+Evidence: [work/aos-company1-plugin-chat-readback-20260908.json](work/aos-company1-plugin-chat-readback-20260908.json).
+
+## 2026-09-07T15:15:56Z UTC — Company 1 Runs project-filter readback
+
+- [x] Fresh Company 1 Runs readback verified `runs=500 / proofs=500`, project filter `会社1`, and status `Project filter: 会社1 を選択しました`; processing candidates=0, pending approvals=0, running jobs=0.
+- [x] One fresh visual-proof-bound filter click completed with browser effect `known_effect` and visual readback `verified`; no retry, cancel, approval, provider call, or business workflow was dispatched.
+- [x] Task-owned Companion session/tab/lease cleanup completed; foreign tabs were unchanged and unknown effect was false.
+
+**判定:** Runs/project-filter UI evidence is fresh and bounded. It is not provider receipt, source sync, reconciliation, or business completion proof; Goal remains `active`.
+
+Evidence: [work/aos-company1-runs-filter-readback-20260907.json](work/aos-company1-runs-filter-readback-20260907.json).
+
+## 2026-09-07T15:06:45Z UTC — Company 1 NisenPrints read-only Chat answer
+
+- [x] Fresh Company 1 Chat probe was positive (`status=ok / blocker=none / external_action=false`) and the explicit NisenPrints existing-product audit request was sent once through the same thread.
+- [x] Job `create_planner_job_mtrdhtj6_mteklx` returned `回答を受信しました` with `planner=codex_app_server`, `mode=demo_first`; the answer stayed read-only and proposed only reading the canonical screen/records and listing missing confirmation.
+- [x] The common Web-operation gate stopped at `needs_input / clarify` because purpose, site/URL, service/account, and target were unresolved. No execution, provider receipt, save, schedule change, send, publish, submit, delete, or business completion occurred; no replay was attempted.
+
+**判定:** Company 1 Chat→Codex App Server→read-only answer and fail-closed clarification are verified. NisenPrints target-bound audit and business completion remain unverified; Goal remains `active`.
+
+Evidence: [work/aos-company1-nisenprints-readonly-chat-readback-20260907.json](work/aos-company1-nisenprints-readonly-chat-readback-20260907.json).
+
+**next_action_now:** obtain an unambiguous site/account/target only if a human-authorized read-only audit is still needed; do not replay this job or infer provider completion from the answer.
+
+## 2026-09-07T15:01:46Z UTC — Company 1 Codex probe and Chat read-only answer
+
+- [x] Fresh Company 1 Chat readback confirmed `Codex App Server: 確認済み` after the bounded read-only probe (`status=ok / blocker=none / external_action=false`), with the existing Company 1 scope preserved.
+- [x] One explicitly read-only Chat request was sent once through the same Company 1 session/thread. The same job `create_planner_job_mtrdag51_cmd0p0` returned `回答を受信しました`; the planner classified it as `needs_input / clarify` because purpose, site/URL, and service/account were not specified.
+- [x] The safe boundary was visible: no provider receipt, save, schedule change, send, publish, submit, delete, or business workflow start. No replay was attempted. Task-owned Chat tab `1980913488` was closed and its lease released; foreign tabs were unchanged.
+
+**判定:** Chat→Codex App Server→answer and fail-closed clarification behavior are verified for Company 1. This does not yet prove an approved business request, runner execution, provider receipt, source sync, reconciliation, or business completion. Goal remains `active`.
+
+Evidence: [work/aos-company1-chat-readonly-answer-readback-20260907.json](work/aos-company1-chat-readonly-answer-readback-20260907.json), [work/aos-company1-codex-app-server-probe-fresh-readback-20260907.json](work/aos-company1-codex-app-server-probe-fresh-readback-20260907.json).
+
+**next_action_now:** continue with one concrete, target-bound read-only or already-authorized business acceptance unit; do not replay this clarification job. Canva reauthentication and Linear workspace choice remain human-only boundaries.
+
+## 2026-09-07T14:52:59Z UTC — Company 1 Codex App Server probe fresh readback
+
+## 2026-09-07T14:45:32Z UTC — Company 1 probe flag deploy and recovery readback
+
+- [x] Fresh exact target readback confirmed `automation-wiled` / production / `automation-os`; the stored `AUTOMATION_OS_CODEX_APP_SERVER_PROBE_ENABLED` key was present and source preflight passed.
+- [x] A bounded GitHub-main redeploy was attempted once and crashed at startup with exact blocker `postgres_schema_version_newer_than_binary:14:12`; no retry of that failing deployment was made.
+- [x] The service was recovered once from the previously verified local staging `/tmp/aos-goal-deploy17-20260907.iMz1H3`; deployment `6a9ecc14cf97588525f8bedc` is `RUNNING`, runtime listens on port 8080, and ingress `/readyz` is HTTP 200.
+- [x] Fresh authenticated Company 1 Chat readback remained `status=idle`, worker=`idle`, `Codex App Server: 未確認`. One visual `接続状態を確認` click was dispatched with fresh proof; browser effect was verified, external action was false, and provider/thread/turn completion was not established. Companion cleanup completed with foreign tabs unchanged.
+
+**判定:** deployment/runtime recovery is成立したが、Codex App Server runtime admission is未成立. Exact blocker remains `web_operation_runtime_readback_unverified`; Goal remains `active`. No business workflow was started.
+
+**next_action_now:** investigate the authenticated readiness/probe path and why the stored probe flag does not change the UI from `未確認`; do not start thread/turn, provider, or business workflows until fresh probe evidence is positive.
+
+Evidence: [work/aos-company1-zeabur-probe-redeploy-readback-20260907.json](work/aos-company1-zeabur-probe-redeploy-readback-20260907.json).
+
+## 2026-09-07T14:13:28Z UTC — Company 1 Zeabur probe blocker fresh readback
+
+- [x] Official Zeabur CLI `0.21.0` read-only target resolution completed: workspace `personal`, project `automation-wiled`, environment `69df815a5ae0a69725e92048`, services `automation-os` and `aos-admin-ingress` were matched by fresh IDs. Latest deployments are `RUNNING`; no deploy, restart, or setting mutation was issued.
+- [x] Fresh variable-key readback shows `AUTOMATION_OS_CODEX_APP_SERVER_PROBE_ENABLED` is absent from the production `automation-os` service. Source contract confirms the flag defaults to disabled and the probe route is bounded, stdio initialize-only, and read-only. The local launchd flag being `1` does not transfer to Zeabur.
+- [x] Admin ingress network readback shows the public HTTPS route fronts port 8080 while the service's Zeabur port forwarding is disabled. No token or secret value was recorded in the artifact.
+
+**判定:** Chat's `status=blocked / blocker=disabled` is explained by the production variable-key mismatch, not by a provider workflow or business failure. Exact runtime blocker remains `web_operation_runtime_readback_unverified`; Goal remains `active`.
+
+**next_action_now:** Keep production unchanged. If runtime admission is required, obtain explicit authorization for the smallest configuration mutation, then re-read the exact target and perform one bounded deploy/readiness/probe verification. Otherwise continue independent read-only Company 1 acceptance. Do not infer business completion from health, deployment, or UI route proof.
+
+Evidence: [work/aos-company1-zeabur-probe-blocker-readback-20260907.json](work/aos-company1-zeabur-probe-blocker-readback-20260907.json).
+
+## 2026-09-07T14:20:44Z UTC — Company 1 automation builder / recovery UI crosswalk
+
+- [x] Company directory and Company 1 automation list were read-only verified in one task-owned Companion session. The automation list exposed 8 edit controls, including the five target businesses and the existing AOS test/draft entries.
+- [x] NisenPrints existing-product automation edit route was read-only verified. The page exposed company-scoped `名前・目的を保存` and revision-bound `定期実行を保存` controls plus the boundary that registered processing contract, destination, and approval policy are preserved unless explicitly changed. No save dispatched.
+- [x] Existing Company 1 Recovery route for `run_mtqdxw4j_i59bsa` was read-only verified. Same-company Run binding, pre-execution cancel, and safe retry rules were visible; `新しいRunで再試行` was not dispatched.
+- [x] Companion session close and fresh status confirmed sessions=0, leases=0, pending=0, task tabs=0, recovery=`done/fully_idle`, foreign tabs unchanged, unknown effect=false.
+
+**判定:** Builder/recovery route evidence advanced the UI crosswalk but does not prove provider receipt, source sync, reconciliation, business completion, or successful retry/cancel. Goal remains `active`.
+
+Evidence: [work/aos-company1-automation-recovery-ui-crosswalk-20260907.json](work/aos-company1-automation-recovery-ui-crosswalk-20260907.json).
+
+## 2026-09-07T14:23:07Z UTC — Company 1 five-business Builder readback
+
+- [x] The five target business edit routes (Gmail, Daily AI, NisenPrints, Backup, Obsidian) were opened in fresh task-owned Companion transactions. Each route visibly exposed exactly one `定期実行を保存` control; all five visual readbacks were verified and external actions were false.
+- [x] Session cleanup completed with sessions=0, leases=0, pending=0, task tabs=0, recovery=`done/fully_idle`, foreign tabs unchanged, unknown effect=false.
+
+**判定:** All five Builder routes now have a current UI readback for the revision-bound schedule-save boundary. This is not proof that any schedule was edited, a runner executed, a provider receipt arrived, or a business workflow completed. Goal remains `active`.
+
+Evidence: [work/aos-company1-five-builder-readback-20260907.json](work/aos-company1-five-builder-readback-20260907.json).
+
+## 2026-09-07T14:02:17.007Z UTC — Company 1 PC / Admin / Production / Security fresh readback
+
+- [x] 上記4 routeを同一Companion task-owned sessionでsemantic+visual read-only確認した。Admin/Production/Securityのroute navigationはbrowserMutation=`true`だがexternal_action=`false`、PCのreadはbrowserMutation=`false`。4 routeともvisual readback verified、provider/business effectなし。
+- [x] PCはheartbeat=10秒前/fresh、fresh queue=0/historical=2、保存queuedは現行Runとしてclaim/reuseしない境界を確認した。AdminはCompanion選択、revision=33、Profile 2、local sync=ok、open feedback=2/triaged=0、adapter 7件の同一Run証跡境界を確認した。Productionは会社1、API readback有効、worker fresh、公式Chrome未観測、status unverified/goal_complete null/production_ready null。Securityは閲覧専用、gmail/google-drive/supabaseの保存接続参照がverified、secret非保存境界を確認した。
+- [x] `close_session(taskTerminal=true)`でtab `1980913434`を閉じ、lease 1件解放、foreign tabs変更なし、fresh statusはsessions/leases/pending/task tabs=0、task recovery=`done/fully_idle`。
+
+**判定:** browser route proofは成立したが、provider receipt/source sync/reconciliation/business completionは未確認。Goalはactive。
+
+Evidence: [work/aos-company1-pc-admin-production-security-readback-20260907.json](work/aos-company1-pc-admin-production-security-readback-20260907.json)。
+
+**next_action_now:** business workflowは同一Company 1 scopeのsame-run receipt→source sync→reconciliation/no-replay→terminal cleanupが揃うまで開始・完了扱いしない。
+
+## 2026-09-07T13:57:02.028Z UTC — Company 1 truthful views readback
+
+- [x] Artifacts、Memory、Lanes、Performanceの4 Company 1 routeをAOS Chrome Companionでread-only確認した。各routeはvisual readback=`verified`、browser mutation=`false`、external action=`false`、task-owned cleanup完了、foreign tabs非変更、unknown effectなし。
+- [x] semantic `page.query`は4 routeとも0件だったため、これはvisual route proofに限定し、semantic control acceptance・provider receipt・source sync・business completionはclaimしていない。
+
+**判定:** `semantic_query_no_match_with_visual_readback`を維持。Goalは`active`。
+
+Evidence: [work/aos-company1-artifacts-memory-lanes-performance-readback-20260907.json](work/aos-company1-artifacts-memory-lanes-performance-readback-20260907.json)。
+
+**next_action_now:** broker/target state change後に、観測済みの正確なlocatorでsemantic snapshotをfresh取得する。スクリーンショットだけでcontrol受入へ拡張しない。
+
+## 2026-09-07T13:47:12.813Z UTC — Company 1 runtime admission fresh readback
+
+- [x] Company 1 (`company_2560580981cedfd106b66245`) のfresh local health/runtime/account readbackを記録した。`aos_local_health`はstatus=`ok`、HTTP 200、reachable=`true`、`external_action_executed=false`。
+- [x] `aos_runtime_readback`（`automation_os_runtime_boundary_readback.v1`）はdecision=`ready_for_authorized_admission`、server effects=`read_only`、worker effects=`enabled`。source/installed server-worker scriptsは存在し、dynamic runner selection=`true`、legacy runner referenceなし。live control-plane server（port 8787）とportable remote workerもreadbackどおりで、外部効果は`false`。
+- [x] Codex account readbackはchatgpt/pro account present、thread/turn started、completion observed/status=`completed`。Companion fresh statusはprofile connected、task-scoped sessions/leases/task tabs/pending/timedout=0、task recovery=`done/fully_idle`。
+
+**判定:** runtime/browser proofはauthorized admissionの準備完了を示すだけで、Chat private ingress/SSO、Linear OAuth（2/4の公式認証・company scope）、provider receipt、business completion、external effectは未確認。
+
+**next_action_now:** AOS Chrome Companion routeでsame-run provider receipt/readbackとtask-owned cleanupを揃える。上記の未確認境界をこのreadbackから補完しない。
+
+Evidence: [work/aos-company1-runtime-admission-readback-20260907.json](work/aos-company1-runtime-admission-readback-20260907.json)。
+
+# 現行実行計画：AOSを会社1で実用・自動運転できる状態にする
+
+## 2026-09-07 Company 1 Home natural canary fresh readback (13:39-13:40 UTC)
+
+- [x] 新Companion session `session_8696bf71-75a2-47d6-a1bb-4511a233cd40`、profile=`profile_37fd31b6-ed53-4a35-8604-ab92ffbab05a`、generation=`gen_4d2bb3e5-6281-4f55-8663-0648e6c033dd`、task tab `1980913419`、lease `lease_70bf32eb-8e23-4f39-bad5-6b2d132dc384`で、Company 1 (`company_2560580981cedfd106b66245`) の `/#/` をread-only確認した。`aos-company1-route-readback-20260907-r2` の `page.query` はlocator probeのみで0件だったが、同一transactionのvisual readbackを確認した。
+- [x] Homeはworker=`idle` / runs=`839`、登録automation 5件の最新completed時刻（Daily AI `2026-09-07T00:02:44Z`、Backup `00:10:11Z`、Obsidian `00:32:07Z`）、active scheduleなしのChat下書き、internal/external notification=false・external_action=falseを表示。`canary`、自然tick、短期soakはexternal-effect-free、Obsidian同期準備はAOS approval/receipt/parityが必要との表示を確認した。
+- [x] `canary`（role=button/name=canary exact）のvisual.target.inspectを同じtab/leaseで1回だけ試行し、`broker_request_timeout`。mutation dispatch、pending operation、unknown effectはなく、同一inspectの再送とcanary clickは行っていない。timeout後statusはconnected=true、pending=0、timedOutUnresolved=0。
+- [x] `companion_close_session(taskTerminal=true)`でtabを閉じlease 1件を解放。foreign tabs変更=false、external_action_executed=false。cleanup後のfresh readbackはlocal health HTTP200、AOS runtime=`ready_for_authorized_admission`（server=`read_only` / worker=`enabled`）、Codex account/thread/turn=`completed`、Companion task sessions/leases/tabs/pending/timedout=0。
+
+**判定:** browser proofは成立したが、provider/business completionは未成立。自然tick、短期soak、Obsidian sync、canary clickは実行しておらず、Goalは`active`。
+
+**next_action_now:** broker/target state changes後に、新しいCompanion authorityでHomeをfresh semantic+visual readbackし、canary対象状態を再評価する。同じvisual.target.inspectのreplayやcanary clickは行わない。
+
+Evidence: [work/aos-company1-home-natural-canary-readback-20260907.json](work/aos-company1-home-natural-canary-readback-20260907.json)。
+
+## 2026-09-07 Company 1 Home→Admin fresh readback
+
+- [x] AOS Chrome Companionの`profile_37fd31b6-ed53-4a35-8604-ab92ffbab05a`、generation=`gen_4d2bb3e5-6281-4f55-8663-0648e6c033dd`、新session=`session_d1f55f20-cd0e-4fac-9a48-7df27a391aa0`、task-owned tab=`1980913412`を固定し、Company 1（`company_2560580981cedfd106b66245`）scopeを維持した。
+- [x] `aos-company1-remaining-ui-readback-20260907`で`/#/home`をsemantic+visual read-only確認し、Company 1説明、朝Brief/夜Brief/fresh readback/再配信ボタン、Company 1 schedulerの外部効果なし説明を確認した。
+- [x] 同じtabを`authorized tabs.navigate`一回で`/#/admin`へ移動した。run=`aos-company1-admin-readback-nav-20260907`、`browserMutationExecuted=true`だが`external_action_executed=false`で、provider completionは本readbackの判定対象外。
+- [x] `/#/admin`を同じtabでsemantic+visual fresh readbackし、`MVP ui readback 済みです。worker=running / runs=500`、`認証: 書き込み許可`、`AOS Chrome Companion選択`、`current=aos_chrome_companion / revision=33 / Profile=Profile 2 / local sync=ok`を確認した。Companion選択が未確認ならfallbackせず安全停止する表示も確認した。
+- [x] Adapter一覧7件にはfresh Companion authority、provider receipt、same-run source sync、reconciliation、no-replay、terminal cleanupが必要。Portable Mac workerはheartbeat 11秒前/fresh（system check）だが、local worker診断は14日前で鮮度未確認。Feedback修正キューはopen 2件、triaged 0件。
+- [x] 設定保存、backend変更、triage、scheduler/tick/soak、provider/業務Run、外部効果は0。`close_session(taskTerminal=true)`でtab 1980913412を閉じ、lease 1件解放、foreign tabs非変更、fresh statusでsessions/leases/task tabs=0、pendingOperations=0、timedOut=0、task recovery=`done/fully_idle`を確認。profile全体のhistorical reconciliation 49件（foreign/別状態）は未操作。
+
+**判定:** Company 1 Adminのbrowser readbackは完了。browser proofとbusiness completionは分離し、Goalは`active`のまま。Adapter 7件の表示は業務完了の証明ではなく、provider receipt→same-run source sync→reconciliation→no-replay→terminal cleanupが揃うまでbusiness completionをclaimしない。
+
+**next_action_now:** 未確認Adapterは同じCompany 1 scopeとfresh Companion authorityで一件ずつreadbackし、provider receipt等の同一Run証跡が揃わない場合はexact blockerで停止する。fallback、設定保存、triage、scheduler/tick/soak、provider/業務Run、外部効果は開始しない。
+
+Evidence: [work/aos-company1-admin-readback-20260907.json](work/aos-company1-admin-readback-20260907.json)。
+
+## 2026-09-07 22:20:49 JST 更新
+
+- Company 1 `/plugins` のLinear read-only fresh readは2/4（company selected・plugin added、公式認証・company scope verification未完）。公式認証はpassword/OTP/CAPTCHA/device-codeの本人入力境界。公式リンクは authorized transaction `aos-company1-linear-user-auth-handoff-open-20260907-r2` で1回だけ開き、`dispatch_count=1`、`browserMutation=true`、`external_action_dispatched=true`、`external_action_executed=null`（provider receipt/auth completion未確認）。証拠は `work/aos-company1-linear-auth-handoff-20260907.json`。
+- 後続の `companion_read_page` は90秒 `operation_timeout`、fresh query transactionは `page.snapshot timeout`、`mutationDispatchAttempted=false`。操作は再送していない。`close session(taskTerminal=false)` でsession closed、tab `1980913405` はユーザー操作用に保持。13:20:49Zのfresh statusはsessions/leases/pending ops=0、tabは `retained failed/terminal_cleanup_pending`、`timedOutOperationCount=1`。旧process binding missingのcleanup APIは再試行せず、Linear provider auth/company scopeは未完、Goalはactive。
+
+## 2026-09-07 22:13 更新
+
+- Linear認証確認用のtask-owned Companion sessionをterminal closeし、lease 1件解放・tab 1980913402閉鎖・foreign resource変更なし・unknown effectなしをfresh statusで確認。現タスクはsessions/leases/task tabs=0、done/fully_idle。証拠は `work/aos-company1-companion-cleanup-20260907.json`。
+- Companion profile全体に残る `reconciliation_required` / `upload_file_readback_failed` は別の既存reconciliation状態として未解消のまま触れていない。公式認証・OAuth・予定・runner・provider効果の再送は行っていない。Goalはactive。
+
+## 2026-09-07 21:55 更新
+
+- 会社1のCompanion task-owned sessionをterminal closeし、lease 1件解放・tab 1980913380閉鎖・foreign resource変更なし・unknown effectなしをfresh statusで確認。会社1 Chatはidle/scope一致だが、Codex App Serverのruntime admissionは `web_operation_runtime_readback_unverified` のまま。
+- Plugin画面のread-only確認はLinear 2/4（会社選択・plugin追加済み、公式認証未完、会社scope検証未開始）。`plugin_connection_not_ready` を維持し、password/OTP/CAPTCHA/device-codeの本人入力が必要な公式認証リンクは開いていない。証拠は `work/aos-company1-runtime-plugin-readback-20260907.json`。
+- 予定保存、接続確認の再 dispatch、Chat送信、実runner、既存job再送、provider OAuthは0。全10工程・全対象画面・ガイド最終整合は未完、Goalはactive。
+
+## 2026-09-07 21:58 更新
+
+- live read-onlyで `automation:health` は total8/active7/ok7/warnings0/blockers0/db_drift0/missing_entrypoints0。LaunchAgent `com.nichikatanaka.automation-os.worker` はrunning/pid37825/last exit0、会社・queue authority・external modeは会社1/remote/enabledで一致。ただしローカルstate fileは2026-08-23のstoppedでstale、worker再起動や設定変更は行わない。Codex App Server/runtime readback未確認は解消しておらず、health/queuedを業務完了とは扱わない。証拠: `work/aos-company1-worker-readback-20260907.json`。
+
+## 2026-09-07 21:43 更新
+
+- 会社1 ChatをCompanionでfresh read-only確認。初期の`mvp_state_readback_pending`は1回のbounded待機後に解消し、Chatは`status=idle`、入力・相談UIと「接続状態を確認」を表示。会社scopeは会社1で一致した。
+- ただしCodex App Serverは`未確認`、state readbackは`phase=nogo / blocker=web_operation_runtime_readback_unverified`、業務blockerは`auth=unknown / effect=unknown / completion=unknown`。予定保存、接続確認、送信、実runner起動、既存planner job再送は0。
+- task-owned cleanup完了、foreign resource変更なし。証拠は [work/aos-chat-readonly-acceptance-20260907.json](work/aos-chat-readonly-acceptance-20260907.json)。Chat予定受入・実runner接続・全10工程・全対象画面・Plugin本人OAuth・ガイド最終整合は未完でGoalはactive。
+
+## 2026-09-07 21:38 更新
+
+- Daily AIの固定Sheets同期経路に、部分書込み後のGET-only照合と `daily_ai_partial_sheet_write_requires_manual_reconciliation` blocker、物理行全体のnative構造preflight、header/schema drift拒否、同一Runの内側receipt binding（39列・3ビュー・公開なし）を追加。Python 20件、Daily AI/remote worker 41件、server build、web typecheck PASS。PostgreSQL統合は5件PASS・1件skip（fixture未設定）で、本番DB接続による補完はしていない。
+- 専用ステージ `/tmp/aos-goal-deploy32-20260907.UtSNS2` から既存 `automation-os` へ1回配信。deployment `6a9eaef5cf97588525f8bc42` は `RUNNING`、health=200、Daily AI/remote workerのsource/dist hashがステージと稼働コンテナで一致。Sheets書込み・既存業務Run再送は行っていない。Chat予定のSSO blocker、承認/retry/cancel、全対象画面、Plugin本人OAuth、ガイド最終整合は未完でGoalはactive。
+
+## 2026-09-07 21:40 更新
+
+- 会社1 Runs read-only証拠をmetric/history/blocker-triageの8 controlへ対応付け。代表証拠集計129/385（in_scope121、isolated8）、未照合197。候補数・blocker表示を業務成功や復旧完了へ拡張していない。
+
+## 2026-09-07 21:22 更新
+
+- Home read-onlyのCompany 1 Brief表示を `home.company-brief.companies` へ対応付け。代表証拠集計121/385（in_scope113、isolated8）、未照合205。全会社一覧・会社切替・配信操作は未確認。
+
+## 2026-09-07 21:10 更新
+
+- Home read-only証拠を `home.degraded-summary.runs` / `home.degraded-summary.approvals` / `home.degraded-summary.external` へ対応付け。代表証拠集計は120/385（in_scope112、isolated8）、未照合206。個別Run成功・承認処理・会社全体の外部効果なしは主張しない。
+
+## 2026-09-07 20:52 更新
+
+- 既存Recovery readbackのparent/child Run選択・詳細表示を `truthful.recovery.portable.open-run` / `truthful.recovery.portable.open-retry` へ対応付け。代表証拠集計は117/385（in_scope109、isolated8）、未照合209。fresh cancel/retryや承認・provider効果は実行していない。
+
+## 2026-09-07 20:44 更新
+
+- 保存済み証拠のcrosswalkを再計算。共通ナビ5件は既存対応、Feedbackの `feedback.panel.close` を `aos-ui26-feedback-scroll-close-20260907.json` へ新規対応、Approvalの2 controlは `aos-ui32-approval-readback-20260907.json` を追加証拠として記録した。代表証拠集計は114/385から115/385（in_scope107、isolated8）へ更新。これは未照合controlの減少であり、全分岐・全10工程完了を意味しない。
+- 予定5件のfresh protected readbackは `work/aos-schedule-readback-20260907-continuation.json` に保存。5件とも会社1限定HTTP 200、Asia/Tokyo、enabled/active。SSO依存のChat予定受入は再送せず、Goalはactive。
+
+## 2026-09-07 20:19 更新
+
+- fresh Companion sessionで会社1 Chat routeをread-only確認したが、private ingress/SSO認証画面で停止。exact blockerは`private_ingress_or_sso_not_established`。認証開始、予定保存、外部処理はdispatchせず、session/tab/leaseはterminal cleanup済み。
+- 前回planner job `create_planner_job_mtr52a2f_fqubda` は再送しない。ユーザーが公開ingress/SSO認証を完了した後、新規接続済みCompanion sessionで同じ対象をfresh readbackし、`ready_to_schedule`とrevisionが確認できた場合だけ予定保存へ進む。
+- 証拠: `work/aos-schedule-acceptance-auth-blocked-20260907.json`。Goalはactive。
+
+## 2026-09-07 20:13 更新
+
+- 会社1 Chatで、対象 `automation_chat_workflow_binding_mtosjmbf_apzj7i` / 「AOS実runner下書き確認 20260906」の予定を手動・停止中へ変更する要求を1回送信。planner job `create_planner_job_mtr52a2f_fqubda` は同じ画面で completed / 回答受信を確認した。
+- 予定保存ボタンは押していない。外部処理、メール送信、Gmail下書き作成、schedule変更のdispatchは0。Companion profile切断（`profile_not_connected`）により `ready_to_schedule` とschedule revisionのfresh readbackは未確認。jobを再送せず、次の接続済みCompanion sessionで同じjob/対象をread-only照合する。
+- 証拠: `work/aos-schedule-acceptance-planner-readback-20260907.json`。Goalはactive。
+
+## 2026-09-07 19:45 更新
+
+- 19:45: phase17をphase16固定ステージへ6ファイルだけ差し替えた専用ステージ `/tmp/aos-goal-deploy17-20260907.iMz1H3` から既存 `automation-os` へ1回配信。deployment `6a9e93fd3aa3b4323a8b68d0` は `RUNNING`、build完了、health=200。`/src` の6対象hashはローカルステージと一致。会社1の同一Run `run_chat_ee11de7a0207c9d9e7ac82ab91db707a` をAPIとCompanion実画面でread-only確認し、完了・metadata100件・返信案0件・送信/Gmail下書き/外部効果なし、同一Run再取得と安全なProof表示を確認。外部Runは再送していない。phase17の実装/配信/実業務結果は成立したが、全10工程・全対象画面・Plugin本人操作境界・ガイド最終整合は未完でGoalはactive。
+
+- 19:29: Daily AIのChat→実runner要求を1回送信。planner job `create_planner_job_mtr3khp4_t2pdef` は `blocked / codex_app_server_turn_timeout`。同一jobのGET=200でautomation/run未作成、固定Sheet書込み・schedule変更・provider効果なしを確認し、再送せずCompanion cleanup済み。証拠: `work/aos-daily-chat-timeout-readback-20260907.json`。この経路は未成立として残す。
+
+- 19:26: 会社1 Runsを同一Runでread-only再照合。`run_mtqdxw4j_i59bsa` は `要確認 / portable_remote_http_502`、確認記録は手順1件・更新2件、業務完了は未claim。retry/cancel/承認/provider操作はdispatchせず、Companionのown tab/session cleanupを完了した。証拠: `work/aos-runs-recovery-readback-20260907.json`。fresh transitionは再送しない。
+
+- 19:20: 承認画面の対象Run/会社束縛とGET-only復旧、結果不明時のPATCH再送停止をUIに反映し、UI truthfulness 108/108・web typecheck/buildを通過。限定ステージを既存automation-osへ1回配信し、deployment `6a9e8e56d92d7bffd1bc2887` のhealth=200、App/controlManifest/test source hash、配信JS HTTP200をfresh readback。会社1 ApprovalsをAOS Chrome Companionでsemantic+visual確認し、未確認/期限切れを「portable対象」「外部効果未確認」と表示、Standing Approval未確認のまま操作非表示、foreign approval操作なし。証拠: `work/aos-ui32-approval-readback-20260907.json`。承認/retry/cancelの全状態・全10工程・ガイド最終整合は未完。
+
+- 19:00: 会社1 Runsをread-onlyで再取得。runs/proofs=500/500、queued/running候補2、承認待ち0、実行中Job0、要確認412件。`run_mtqdxw4j_i59bsa` は `portable_remote_http_502` と表示され、既存cancelled/承認却下Runも履歴に保持。retry/cancel/承認/provider操作は dispatch 0。証拠: `work/aos-runs-readonly-20260907.json`。fresh transitionは再送せず未確認として残す。
+
+- 19:01: 会社1の対象5 automationとscheduleを本番APIでread-only照合。Gmail 07:30、Daily AI 09:00、NisenPrints 08:30、Backup 09:00、Obsidian MON 09:30はいずれもAsia/Tokyoでactive/enabled、次回時刻とrevisionを確認。Daily AIはMac worker queue、Nisenはread-only、外部効果許可は全件false。現在定義は `work/aos-schedule-readback-20260907.json`、Daily AIのpause→restore（revision 5→6、reload visual readback）は `work/aos-goal-execution-20260905.json` で既に確認済み。future tickの追加待機や再操作は行わない。
+
+- 第26便のFeedback受入を一段進めた。会社1 PerformanceでscrollY=650の撮影プレビューを確認し、送信せず閉じ、同じPerformance routeのlauncherへ戻ることを実画面で照合した。Companion自分のtabのみcleanup済み。証拠: `work/aos-ui26-feedback-scroll-close-20260907.json`。
+- これはFeedbackの非zero-scroll/close確認であり、全ページ・狭幅・error/timeout分岐、triage/restore、全対象controlの完了ではない。次は未照合controlと代表障害の証拠を順に埋め、最後に利用ガイドと10工程の受入表をfresh-readで整合させる。
+
+## 現在値（2026-09-07 08:32 JSTの受入まで反映）
+
+18:44: 第26便 `6a9e85883aa3b4323a8b628b` のruntime/source/asset一致を確認し、会社1 PerformanceのFeedbackでスクショ取得完了と画像プレビューを実画面確認。送信は行わずcleanup済み。非zero scroll/狭幅/全ページ撮影と全体control受入は残件。
+
+08:49: Chat→Gmail実runnerも本番同一Runで再照合。Chat binding `chat_workflow_binding_mtorw714_d2uybg` / planner job `create_planner_job_mtorp4vv_gxzfq0` から `run_chat_ee11de7a0207c9d9e7ac82ab91db707a` が `automation_os_ui` 起点で `email-review-reply` に到達し、worker `completed_readback`、read-only receipt・同一Run・cleanup一致。Gmail metadata 100件を取得、返信案0件、provider read観測、Gmail下書き/送信/外部効果なし。GmailのChat→実runner残件を解消した。Provider下書き/送信は別の明示操作であり、他workflowのChat接続・承認/retry/cancel・全画面/ガイド最終整合は未完。
+
+08:45: Daily AIの会社1登録自然Runを本番同一Runで再照合。`run_mtqh63ah_1m94vb` は scheduler 起点、`daily-ai-research-source-sync`、Mac worker `completed_business_effect`、receipt/readback/same-run/source-sync/cleanup/business proof がすべて完了。固定Sheet `16W-IhCLb1ENizHLXT7afGQeQA-dqLh_2DYtkeeWeiho` の `queue` gid `1541274581`、39列、local 575 / remote 595、遠隔のみ20行保持、ID・列・3ビュー一致。生成・公開は0件。実装・自然実行・業務結果の区別を維持し、この証拠で実行順4 Daily AIの登録自然Run残件を解消した。証拠は本番 `/api/runs/run_mtqh63ah_1m94vb` と `work/aos-goal-execution-20260905.json`。次はChatからの実runner接続、承認/retry/cancelの残状態、全対象画面とガイド整合。
+
+08:36: 会社1本番の承認/テンプレート/Plugin/Admin route内容をread-only確認。承認は未確認2件・期限切れ2件、Standing Approval未確認、会社権限未確認のため承認操作非表示。テンプレートは下書き保存のみ・外部操作なしの境界を確認。Pluginは会社1の未確認/公式認証必要状態、AdminはAOS Chrome Companion選択・revision33・未接続adapterのfallback禁止を確認。証拠は `work/aos-route-content-readback-20260907.json`。OAuth/承認/外部効果なし。全状態分岐と全10工程の最終判定は未完。
+
+08:34: 会社1本番の共通サイドバー6項目を同一Companion sessionで順に実操作し、`#/chat`、`#/projects`、`#/approvals`、`#/templates`、`#/plugins`、`#/admin`への遷移と各画面のsemantic+visual readbackを確認。Chatは会社1 scopeだがCodex App Server未確認、Pluginは共通認証ウィザード表示まででOAuth本人操作は未実施。業務Run/承認/provider呼出し/外部効果なし。証拠は `work/aos-common-navigation-acceptance-20260907.json`。全状態分岐、Plugin実認証、全10工程の最終判定、ガイド最終整合は未完。全Goal active。
+
+08:32: 会社1本番の実行履歴をCompanionで再読込し、Home→`#/runs`の画面遷移と視覚証拠を確認。runs=500、proofs=500、待機Job=2、実行中Job=0、承認待ち=0。同じ画面で要確認Run `run_mtqdxw4j_i59bsa` を選択し、`portable_remote_http_502`、手順1件・更新2件を表示確認。Run再実行・承認・provider呼出し・外部効果はなし。証拠は `work/aos-runs-job-readback-20260907.json`。次は共通ナビの未照合項目と残る全状態分岐を既存証拠へ対応づけ、不足だけを受入する。全10工程の最終判定、Canva本人再認証、Linear既存workspace/除外判断、ガイド最終整合は未完。全Goal active。
+
+第31便は本番反映・Chat変更部受入済み。追加で保存済みGmail100行の実表示とHome Briefの夜→朝切替・再取得、既存承認/Builder/予定/Feedback/Laneの証拠照合を確認した。証拠は `work/aos-gmail-items-ui-acceptance-20260907.json`、`work/aos-home-brief-controls-20260907.json`、既存 `aos-goal-execution-20260905.json` 群。業務再送・追加配信なし。対象controlの代表証拠対応は114/385（in_scope106、isolated8）、対象内未照合212、対象外59。対応数は全状態合格数ではない。次は未照合の共通ナビ・Job操作を既存証拠と照合し、不足のみ実受入する。Canva本人再認証、Linear既存workspace/除外判断、全10工程の最終判定は残る。以下は日時付き履歴。
+
+9月7日07:39: 第31便の本番入力消去・別会話導線・新規session作成/activateを画面とAPIで確認。旧session/thread保持、依頼/業務送信なし。ガイドへ反映。次は全10工程の残件/対象controlと既存証拠の対応を完了させる。work/aos-ui31-production-acceptance-20260907.json。全Goal active。
+
+9月7日07:33: 第31便はRUNNING（22:31:44Z完了）、/srcのApp・controlManifestと配信JS/CSSがローカル検証版のhashに一致。次は会社1の本番Chatで同操作受入。配信だけで業務/全Goal完了とはしない。work/aos-ui31-release-20260907.json。
+
+9月7日07:28: 第31便（Chat入力消去と別会話導線）は隔離受入後、既存serviceへ1回配信要求。deployment 6a9de8eed420caa38e65f570はBUILDING。次は同ID完了→runtime/asset一致→会社1本番同操作。業務再送なし、全体受入/ガイド整合は継続。work/aos-ui31-release-20260907.json。
+
+9月7日07:03更新: 保存済み証拠を再読し、viewerのApprovals/Runs/Recovery、backend正常保存/409競合、第30便の本番source/asset/会社1再読込を残件表へ対応づけた。PluginのGET未接続/503/検証不足/正常復帰とリンクfallbackは隔離実Chrome受入済み（aos-plugin-browser-20260907.json、aos-plugin-popup-browser-20260907.json）。実OAuth再認証/同意拒否/取消の証拠とは区別する。全10工程の細目・対象control・代表障害の最終照合とガイド最終整合は未完、Canva本人再認証とLinear既存workspace/除外判断も残る。業務再送・本番追加配信なし、全Goal active。現在の対応表はwork/aos-full-plan-remaining-audit-20260906.md。
+
+23:58追記: 第30便はruntime/配信asset hash一致に加え、会社1の連携画面で初回確認中→保存3件、再読込1クリック→確認中→最新3件receiptを実Chromeで確認。provider認証/失効未実行の表示も一致。own tab3141閉鎖・lease解放・unknownなし。work/aos-ui30-production-acceptance-20260906.json。隔離revoke正常/503復旧の既存証拠とは分離。残るPlugin異常系/隔離control対応/全体受入とガイド整合は継続、全Goal active。
+
+第30便ローカル準備: 連携の誤成功表示・再読込後の古い案内を修正。隔離実Chromeの正常/失敗→GET復旧を確認済み、UI107件・隔離8件・web型検査・build成功。候補JS index-7VwPylpv.js、work/aos-ui30-local-20260906.json。Vite大chunk警告あり。未配信で、本番は第29便。次は既存serviceへの反映と会社1の読取再受入。実接続解除/業務再送なし、全Goal active。
+
+23:34追記: 連携画面の接続操作後、inventory再取得失敗でも成功表示する経路を修正。fresh matching revision・revoke状態が確認できない場合は結果未確認/再送せず照合を表示。隔離React/async/判定テスト8件とweb型検査成功。本修正はローカルのみ・未配信、実画面の正常/再取得失敗受入は次。会社作成と401認証gateの隔離実Chrome証拠は残件auditへ反映済み。実接続解除/業務再送なし、全Goal active。
+
+23:24追記: 隔離実Chromeで現行Recoveryの503失敗→同じRun照合1クリック→cancelled表/閲覧のみへ復帰を確認（GET合計2、追加要求0）。work/aos-isolated-recovery-browser-20260906.json。SSR/async単体7件とは別の実mount/画面状態遷移証拠。本番provider障害の復旧証拠ではない。own tab3123閉鎖・lease解放unknownなし。本番変更/配信/業務再送なし。残る隔離control/Plugin認証境界/全体受入は継続、Goal active。
+
+23:11追記: 共通検索の該当なし/入力置換/遷移に続き、実ChromeのTabで検索入力→移動ボタンのfocusと可視枠、Enter1回で本番状態へ遷移・loading→readyを確認。work/aos-common-search-acceptance-20260906.json / aos-keyboard-acceptance-20260906.json。own tab3121閉鎖lease解放unknownなし。隔離backend保存/古revision拒否も1件PASS・server型検査成功（webOperationBackendPersistenceIsolated.test.ts）。全controlのkeyboard/隔離8画面/Plugin異常系は未完。業務再送・本番設定変更・再配信なし、Goal active。
+
+23:01追記: 固定Daily AI Sheetsのqueue(gid1541274581)をCompanion実Chromeで開き、正しいタイトル/URL、ヘッダー/既存データ/管理ビューtabを確認。Drive connector metadataは403、権限変更せず既存Chromeで閲覧成功。全594行/39列は保存済み同期証拠であり今回再照合とはしない。own tab3117閉鎖lease解放unknownなし、書込/業務再送なし。work/aos-fixed-sheet-visual-acceptance-20260906.json、ガイドと残件audit更新。残る共通UI/Plugin異常系と最終受入は継続、Goal active。
+
+9月6日追記（5業務ガイド整合）: outputs/aos-user-guide.mdに手動/自然/同期先/Mac条件の5業務表を追加。保存済み9:00 Daily AI/Backup、8:30 Nisenの同一Run receiptを再読しリンク追加。Briefは配信時点の集計、Backup/worker復旧はタスク支援、隔離認証テストは実OAuthではないことを明示。前turnの接続参照API2件PASSとテストbackend mirror隔離はwork/aos-full-plan-remaining-audit-20260906.mdに記録。コード配信/業務再送なし。残る共通UI/Plugin異常系・固定Sheets最終閲覧・最終受入は未完、Goal active。
+
+22:52追記: 隔離対象8定義を抽出し、本番会社作成/revoke/共有backend変更をしない方針を保持。管理sessionの期限切れ/改変/未認証でwrite拒否する合成テストを追加、既存Codex device認証等と16件PASS・server型検査/diff成功。実認証/秘密/本番コードは不変、再配信不要。work/aos-auth-isolated-acceptance-20260906.json。Plugin固有同意拒否/popupや管理session画面の異常表示を合格に含めない。残る共通UI・隔離8項目/Provider障害・Sheets閲覧/ガイドは継続。全Goal active。
+
+22:49追記: 全10工程の証拠整理をwork/aos-full-plan-remaining-audit-20260906.mdへ作成。古い残件を再実行せず整理。第29便Recoveryの既存取消親/子Runで選択欄・詳細cancelled、会社/Run限定loading→GET照合、reload、戻る/進む一致を実確認。新Run/承認/取消/業務再送なし、own tab3115閉鎖lease解放unknownなし。ガイド更新。証拠work/aos-recovery-readback-acceptance-20260906.json。次は共通検索/異常系・Plugin境界・固定Sheets閲覧・ガイド全体整合。全Goal active。
+
+22:42追記: 第29便のAdmin初回はmembership確認中→Owner画面・Feedback保存2件へ切替を実確認。本番状態で会社1を選択し公式Chrome「未観測」/Goal「未確認」バッジ、asset BAqHPp61/runtime artifact hashを会社限定API200と照合。表示修正を代表実画面で受入、ガイド修正待ち文を解消。own tab3113/session閉鎖・lease解放・unknownなし。work/aos-ui29-production-acceptance-20260906.json。新規業務送信/設定変更/再配信なし。次は残る全工程の障害/操作証拠を整理し不足分を受入、ガイド全体整合。全Goal active。
+
+22:38追記: 第29便6a9d6b855126b0bf41085c59は22:35:52 RUNNING、稼働App/testのSHA256とstage一致、22:37:30配信JS BAqHPp61/CSSのHTTP200・local hash一致。管理入口の未認証HTTP200はasset証拠にせずAPI originで検証。実Admin/本番状態の同画面再受入は次。既存隔離障害3件もPASS（結果不明は照合のみ・未dispatchのstale sessionは1回復帰・実fixture子孫プロセスtimeout終了）、実Chrome/本番worker切断試験とは区別。work/aos-ui29-release-20260906.json / work/aos-recovery-representative-fixtures-20260906.json。業務再送・追加配信・Mac worker再起動なし、全Goal active。
+
+22:33追記: 第29便6a9d6b855126b0bf41085c59を既存AOSへ1回配信しBUILDINGを確認（nodejs plan一致）。前回stageからApp/testの2ファイルだけ変更、668 files・禁止物なし・server build成功。事前会社scope/API200・active Run/lease/fresh queueすべて0。稼働中は第28便。次は同じdeploymentの終了確認→source/asset hash→Admin/本番状態の同操作再受入。再配信・worker再起動・業務再送なし。work/aos-ui29-release-20260906.json。全Goal active。
+
+22:29追記: 第28便の会社1 Performanceで下部scrollY=3346のFeedback再表示→撮影完了・プレビューの下部3節一致→閉じるを実確認。前回の390×844/Escape受入と合わせて代表共通操作を確認。送信なし。own session/tab3108閉鎖・lease解放確認・unknownなし・foreign不変。ガイド更新。第29便ローカル107件成功は未配信のまま。次は第29便反映と同じ管理画面の再検証、残代表障害/全10工程受入。work/aos-ui29-local-20260906.json。全Goal active。
+
+第29便ローカル検証: Admin membership読込中の誤拒否案内と本番状態の未確認を承認待ちに見せるバッジを修正。UI107件・web型検査・build・diff check成功（index-BAqHPp61.js）、未配信。本番第28便でFeedbackの390×844表示、Escape閉鎖/launcher focus復帰、viewport復元を確認。非zero scroll/閉じる再開と自分のtab3108 cleanup、反映後同画面/残全体受入は未完。業務送信なし。work/aos-ui29-local-20260906.json。全Goal active。
+
+22:16追記: 第28便 `6a9d6518fc1e06a8e79829e1` RUNNING、変更2 sourceと配信JS/CSS hash一致。AdminでFeedback確認中→保存済みopen2件と対象画面への移動、選択Companionと診断出所の分離を実確認。PCの保存queued2行はProject Aと明示、会社1 historical Job集計とは区別。本番状態の会社1選択/再読込は確認中→API200・asset/hash一致、公式Chrome未観測と業務未確認を保持。own tab3102/session閉鎖・lease解放・unknownなし。`work/aos-ui28-production-acceptance-20260906.json`。初回Admin読込中案内と未観測カードの共通承認待ちバッジ、Feedback共通操作/代表障害/ガイド全面受入は残る。業務再送・worker再起動なし、全Goal active。
+
+22:02追記: 保護APIでFeedbackは全社/会社1ともopen2件、PCのqueued Run2件はProject Aで会社1 historical Job2件とは別と確認。Productionの公式Chrome未観測/確認中、Adminの選択面と診断分離、Feedbackの認証後再取得/未取得を0件にしない表示、PCの会社表示と保存Run/現行queueの区別を局所修正。UI105件・web型検査・build成功（候補JS `index-ZOno6KGH.js`）、変更はApp/testのみで未配信。本番は第27便のまま。`work/aos-ui28-management-local-20260906.json`。次は第28便反映と同じ画面の受入、残共通操作/代表障害/ガイド。新規業務実行・worker再起動なし、全Goal active。
+
+21:54追記: 第27便のProduction会社1選択/再読込/API200一致、Security接続3件の閲覧/再読込、Admin→PC状態とPC再確認を実画面で確認。heartbeat fresh・fresh queue0/historical2。Productionの公式Chrome観測範囲/読込中表示、AdminのCompanion選択とBrowser Use診断参照の混在、PCの古いqueued行の現行一覧混在を修正対象として記録。Admin Feedback0件は会社scope/API比較待ちで原因未確定。コード変更・再配信なし。own tab3088/session閉鎖・lease解放・unknownなし、設定保存/業務再送/worker再起動なし。証拠 `work/aos-ui28-management-actual-20260906.json`。次は表示元の限定確認→局所修正/回帰→一度反映し同じ実画面で受入。全Goal active。
+
+21:41追記: 第27便 `6a9d5de25126b0bf41085acf` RUNNING、変更2 sourceと配信JS/CSS hash一致。Memory/Artifactsの同じ遷移で確認中→保存済みデータを実画面確認し、誤失敗表示の修正を受入。PerformanceはDaily AI選択11Run→9/6限定5Run（完了状態2/停止等3/処理中0）とAPI200・会社/期間/Automation一致、再読込の集計中→同じ結果も確認。Job0件は別集計。自分のtab3086/session閉鎖・lease解放・unknownなし。`work/aos-ui27-production-acceptance-20260906.json`。PC/Admin/Production/Security、Feedback共通操作、代表障害などは残る。新規業務実行・Mac worker再起動なし、全Goal active。
+
+21:28追記: 第26便の会社1実画面で成果物一覧→Daily AI同一Run→「安全に開く」の保存receipt表示、保存情報1件→成果物へ戻る導線を確認。追加業務実行なし。Memory/Artifactsが詳細読込途中を失敗と表示する原因を確認し、pendingのみ確認中へ変更、真のtimeout/error表示は保持、modelのblocker依存も修正。UI103件・web型検査・build成功（JS `index-B4CwsMzw.js`）、この修正は未配信。自分のtab3084/session閉鎖・lease解放・unknownなし。証拠 `work/aos-ui27-artifacts-memory-20260906.json`。次は反映後の同じ遷移再確認とPerformance/PC/Admin/Production/Security等の残受入。全Goal active。
+
+21:17追記: 第26便 `6a9d5574fc1e06a8e798247e` RUNNING、変更3 sourceと配信JS/CSS hash一致。会社1 Laneの再読込→loading→同じ手順履歴/API200一致、Feedback画像付き1件 `feedback_ui_22e3c75c-c928-4d9f-a8cf-cf4389e5418e` の送信1回→画面receipt→会社/ID限定GET1件→画像38352 bytes/hash一致・目視まで実証。長URL折返しと閉じるボタンの収まりも確認。再度開く操作はfresh proofでもgeometry拒否2回/0dispatchのため、Escape確認は未完で担当へ共有。自分のtab3080/sessionは閉鎖・lease解放・unknownなし。`work/aos-ui26-actual-acceptance-20260906.json`。非zero scroll/狭幅、残画面/代表障害/ガイド全面受入は未完。業務再送・Mac worker再起動なし、全Goal active。
+
+更新担当からCompanion更新完了・再開許可を受信。通常Chrome/brokerのschema一致・connected=true、新generation `gen_4d2bb3e5-6281-4f55-8663-0648e6c033dd` と担当の試験cleanup完了の報告あり。下記再読み込み待ちは解消。旧leaseを再利用せず新sessionで再開する。こちらの実UI再確認と第26便反映はまだ未実施。
+
+20:53追記: 現行controlManifestを全385定義・重複0で読み、対象内318・対象外59・隔離試験8に分類。求人55定義とObsidian private backup別lane4定義を今回の業務範囲から分離し、新規会社作成/実接続revoke/共有backend保存/権限境界などは隔離確認へ分類。廃止確認0、実画面合格数ではない。残UIはFeedback→Artifacts/Memory/Lanes/Performance→PC/Admin/Production/Security→Recovery/共通操作の順に同じ対象の証拠を確認する。`work/aos-control-scope-inventory-20260906.json`。更新担当からextension_build_id_mismatch・ユーザーによるCompanion再読み込み待ち、担当の接続確認後まで再開不可と通知あり。こちらはbrowser/再照会/再起動なし、第26便未配信。全Goal active。
+
+20:47追記: Companion更新完了連絡までは新規browser操作を控え、Feedback撮影をローカル修正。viewport切取り/scroll=0指定を全viewport縮小/現在scrollへ変更、画像待ち2.5秒・全体15秒へ分離し成功後timer解除。失敗時の全DOM SVG再構成は削除し画像なしエラーを明示。UI source/behavior102件・web型検査・web build・diff check成功、JS `index-CasroZ03.js`。第26便候補は未配信で、実画像の忠実性・timeout解消・画像付き保存は未実証。既存のCSS横幅修正と合わせて本番反映後に同じ操作で確認する。証拠: `work/aos-ui26-feedback-capture-local-20260906.json`。業務再送・browser操作・worker再起動なし。全10工程Goal active。
+
+20:42追記: Companion再接続後、新sessionで会社1 profile表示名保存revision1→reload保持→元表示名復元revision2/API200一致を実証。値は元どおり、sourceは自動判定から保存profileへ変更（業務/予定不変）。Feedback画像なし1件 `feedback_ui_39d7fd95-3b27-4a48-b324-43a785ed78dc` を送信1回・画面receipt・同じID/会社GET一致まで確認。自分のtab3071/session cleanup完了。Feedbackの長いURLによる横はみ出しを発見しCSSのみ局所修正、web buildと専用回帰1件成功・未配信。長いPerformance画面で画像取得3500ms timeout、画像付き報告と残UI/障害/ガイド全面受入は継続。利用ガイドへ実証したprofile/画像なし報告の手順を追記。証拠: `work/aos-ui25-profile-feedback-actual-20260906.json`。全Goal active。
+
+20:30追記: 利用ガイドのDaily AI Chat手動同期の古い未完記述を修正し、既存の実承認→同じRunの結果を開く手順を追加。20:27の同一Run GETは会社1/completeのまま。574 local/594 remote（遠隔のみ20行保持）の区別も明記。Companionは20:26:44にtransport切断し、予約直後のreadがsession_not_owned、fresh statusはprofile_not_connected/owned sessions0/pending0。Chrome自体は稼働。保存操作は未送信で、UI受入は未完。lost sessionを再利用せず、接続復帰後に管理入口の新しい専用sessionで再開する。Chrome/worker再起動・暗黙surface切替なし。記録: `work/aos-ui25-guide-connection-20260906.json`。全Goalはactive。
+
+第25便 `6a9d4b4c5126b0bf410858b4` はRUNNING。稼働コンテナの変更13ファイルとstagingが一致、配信JS `index-CWqkA1dh.js` のSHA256もlocal buildと一致。root/asset/会社1 profile・lanes・production APIはHTTP200、profileは実登録構成由来のoperations、DBはPostgres、業務完了は未確認のまま。管理入口 `https://aos-admin-ingress.zeabur.app` で書込許可・会社1 Home・worker idleを目視確認。API originのSSO画面と管理入口は別で、誤入口の自分のタブは閉じ、正しい管理入口で再開済み。次は同じ専用タブでprofile保存/復元・成果物・Feedback等の実操作受入→残障害/ガイド。配信は前turnの1回のみ、業務再送・Mac worker再起動なし。関連125件成功など既存検証証拠は保持。証拠: `work/aos-ui25-release-20260906.json`。全10工程Goal active。
+
+20:06追記: Feedbackの会社/一意ID固定、連打防止、応答喪失時GET専用照合、閉じる/reload後の確認待ち復元、保存後一覧反映を実装。確認待ちにはIDと会社だけを保存し本文/画像を保持しない。UI98件、ID指定/別会社GET/重複POSTの増殖拒否を含む隔離Postgres4件、server build/web型検査成功。DB cleanup済み・本番送信なし。第25便未配信。次はChatの不要質問、残画面受入/本番反映/同じ操作再検証/ガイド。証拠: `work/aos-ui25-feedback-recovery-local-20260906.json`。
+
+19:58追記: 期待値修正後の隔離Postgres4件は全成功・DB cleanup完了・外部効果なし。画像あり/なし保存、GET/PATCH、画像整合性、他社拒否、本番状態APIのPostgres値と未確認判定を確認。server build/web型検査も成功。証拠: `work/aos-ui25-production-feedback-local-20260906.json`。本番未反映、Feedbackの送信結果不明時UI照合とChat不要質問など残件は継続。
+
+19:55更新: 本番状態の会社権限付き読取API・配信情報・再読込・未確認表示を追加し、UI97件/build/型検査成功。Feedbackの保存/一覧/画像/分類変更をPostgres非同期化し、画像とコメントの短い原子保存を維持。隔離DBで保存2種・GET/PATCH・画像bytes/別会社拒否/破損拒否と本番状態の実APIが成功したが、別会社POSTの期待404に対して既存契約403が返ったためテスト期待値を修正し再検証中。SQLite画像回帰1件も成功。第25便は未配信。Feedbackの結果不明時GET専用照合/連打防止、Chat不要質問、残実画面受入・配信・ガイドは継続する。完了業務の再送なし。
+
+ユーザー指定によりAdaptive Orchestrationを使わず直接継続する。第25便はローカル修正・検証中で未配信。会社profileのPostgres非同期保存/CAS競合/全projection一致は隔離Postgres4件成功。Memory・成果物の会社束縛と開く導線、profile保存の単一要求/結果不明時GET専用照合を修正。Run集計をdurable Jobとは独立表示し、会社/期間/Automation絞込み・二重計上除外・状態と業務完了の分離は集計テスト2件成功。
+
+Lanesの会社別手順履歴GET、接続記録の明示再読込、PCの処理中と停止履歴分離、画面検索のPC/本番導線を追加。既存UI95件と型検査は成功。復旧選択欄の同じRun最新状態と読込/未選択案内を追加修正し、追加回帰を実行中。いずれも実画面/本番反映は未確認。次は追加回帰→本番状態の実値取得/FeedbackのPostgres保存/Chat不要質問→関連受入・本番反映・ガイド。完了した業務を再送しない。全10工程Goal active。
+
+19:44追記: 復旧選択欄の追加回帰を含むUI96件＋集計2件＝98件成功、server build/web型検査/diff check成功。第25便は未配信のまま。検証記録: `work/aos-ui25-local-checkpoint-20260906.json`。
+
+### 直前の到達点（17:02 JST）
+
+第24便は本番8 source hash/asset/health一致、171関連テスト成功。実UIで完了済みRunの再送不可→新規未承認Runのキャンセル→別Run/別承認の準備→新Runも未実行キャンセル→選択・reload・GET専用照合まで確認。親 `run_chat_0ca3588516138f848d66b2021378bee2` は16:50:38、子 `run_retry_e2227b3d149d51589ece57aad17aabe2` は16:54:53にRun/手順/承認すべてcancelled、開始・claim・receiptなし/external=false。会社・account・固定Sheet・payload・version一致、親履歴と旧完了/却下Run・Automation revision8・daily09:00 schedule revision6は不変。16:58:57にown session/tab cleanup済み。業務retryの実処理成功とは別で、既存第23便の実同期を再利用。証拠: `work/aos-run-recovery-actual-20260906.json`、`work/aos-ui24-release-20260906.json`。
+
+第23便 `6a9d09e7aad15df0678d4a6e` はRUNNING、3 source hash・asset SHA・health200一致、90 UIテスト/型検査/build成功。実Chatの新規依頼→固定対象/内容/JST期限の確認→メモ編集→承認1回→同じRunの実同期を実証。`run_chat_ea3041e61c1f321d52bb4266cae6336d` / `app_mtpg885z_6xvfir` は15:50:17 approved、15:51:54 complete。local574/remote594行・39列/3ビュー一致・遠隔のみ20行保持、source sync/照合/cleanup/実UI proof確認。今回は新出典/原稿0件、生成/送信/公開なし。旧却下Runと元Automation revision8・daily09:00 JST schedule revision6は不変。own tab/session cleanup済み。証拠: `work/aos-daily-chat-approved-sync-actual-20260906.json`。
+
+次は選択欄の古い状態/読込案内/Chatの不要質問の表示修正、代表障害と残UI/ガイド。完了処理は再送しない。全10工程Goal active。
+
+### 直前の到達点（15:36 JST）
+
+- 第22便はRUNNING/9 source hash/asset SHA/health一致、164テスト成功。実ChatでDaily AI同一Runの固定対象承認を準備したが、UIのnested object parser差分で承認対象を表示できない不具合を検出。未実行Runだけを実画面で却下し、`run_chat_721a3c931a752246cfe3999d52005afe` の15:25:21 blocked/開始なし/external=falseをAPI/実画面確認、own tab cleanup済み。`work/aos-daily-chat-approval-actual-20260906.json`。
+- 第23便の表示修正は90 UIテスト/型検査/server・web build成功。第22便の3ファイルのみを配信要求中。次はruntime一致→同じ承認画面の固定先/期限/レイアウト確認→新しい明示承認でDaily AIの実同期→残るcancel/retry/復旧/全画面/ガイド。旧Run/承認は履歴に残し、再承認・再実行しない。
+
+### 直前の到達点（15:00 JST）
+
+- Chatの新規読取監査 `run_chat_550eb9fa0968a32573069aa6b715b40f` は14:40:25 complete。10 project/attention5/blocked0の個別理由・STATE時刻・最新活動・次操作をAPI/実画面照合。Vault/Git/共有memory更新なし。朝Home自然配信の表示も確認し、自分のsession/tabをcleanup。証拠は `work/aos-obsidian-chat-actual-20260906.json` と `work/aos-morning-home-visual-20260906.json`。
+- 第22便候補でDaily AI Chatの明示承認接続・承認対象/Run導線・GET専用復帰・メモと内容の区別・競合/期限/旧内容の拒否・却下/取消の未claim Run停止を実装。116関連テスト/server build/web型検査/web build成功、隔離Postgres検証中。未配信・新手動実業務は未実行。
+
+- 通常09:00 Backup `run_mtp1ph7e_0jicn3` は09:09:47 complete。snapshot `20260906T090342+0900`、commit `9c79638a402e12a8af85cb7ce19a5cfcc753aa4a`、6領域/remote parity/整合性/代表ファイル隔離復元/cleanupと同一Run Server proofを14:18 GET・local receiptで照合。タスク支援再送ではなく既存schedulerの自然成功。以前のblocked Runは保持。
+- 通常09:00 Daily AI `run_mtp1ph3g_7ngukf` は原稿3件・既存Sheet local574/remote594行・39列/3ビュー一致・遠隔のみ20行保持、08:30 Nisen `run_mtp0mvuk_sozkqk` は既存商品2 GET/同一Run管理snapshot/cleanupまで自然成功。生成・公開なし。証拠: `work/aos-morning-natural-readback-20260906.json`。
+- 第21便は08:02 RUNNING・08:04の6 hash/asset `index-KTKUM13C.js`/health200一致、140関連テスト/型検査/native config loaderによるweb build成功。午前のVault読取停止は午後に同じファイルreadが0.55秒で復帰し、上記実監査も成功。原因特定や権限変更はしていない。
+- 次は第22便の隔離検証/本番反映/同じ実UIとDaily AI手動実業務、承認/復旧・残UI/ガイドを確認する。全10工程Goal active。
+
+### 直前の到達点（07:54 JST）
+
+- 朝07:45予定のHome Briefが07:48:29に自然配信。delivery `brief_delivery_mtoz52kz_a5e2h4`、sync/reconciliation/cleanupをGET照合。夜に続き朝も成立。配信後の状態変化と配信済み内容を区別する。Gmail07:30自然Runは100件/未送信返信案4件、同一Run proofまで成功。
+- Backup新自然Run `run_mtoyn3d9_vbmimr` は07:47:40 runner成功・6領域/commit `317a012b1dad901fef95dfc985bf1c289875e255` の遠隔一致。その後の整合性検査が期限へ達し、AOSはblocked/unknown/no-replay。再pushせず同じ現物の照合と結果保存を修復する。元daily09:00予定はrevision10へ復元GET済み。
+- Obsidian個別理由・時刻・次の対応を同一Runで保持する第21便は140関連テスト/server build/web型検査PASS、web build再試行中、未配信。次は本番/実監査/同じ画面、その後Daily AI Chat手動同期・承認/復旧・残UI/ガイドを続ける。全10工程Goal active。
+
+### 直前の到達点（07:30 JST）
+
+- 第20便は07:21 RUNNING/07:23の12 hash・asset・health200一致。関連191テスト・隔離Postgres1・build/typecheck PASS。idle確認後にworkerをgraceful更新し新PID37825/heartbeat復帰。実UIの旧Run unknown/no-replay、Homeの記録上未完/現queue分離、AdminのBrowser条件別案内を確認しown tab cleanup済み。
+- Backup次回07:34 JSTを既存schedule revision9へ一時保存/GET確認。既存schedulerからの自然Run受付後にdaily09:00 Asia/Tokyoへ復元し成果物まで照合する。元失敗Runとタスク支援回復は保持。Gmail07:30/朝Brief07:45は自然経過を読む。全10工程は未完、承認・復旧・残UI/ガイドを継続。
+
+### 直前の到達点（07:04 JST）
+
+- Backupの同じcommitを06:46に転送復旧しremote parity/6領域/fsck/代表ファイル隔離復元/cleanupを確認。Git sparse pack 1.81GB→exact 1.17MBの原因修正を正規runnerへ適用、6 fixture PASS。元の自然Runはblockedのまま保存し、タスク支援復旧と区別。
+- 第20便候補の同期local業務の子process分離/期限内cleanup、実行開始1回記録、HTTP前の結果保存/限定結果再送、未受信business effectのunknown保持/Brief表示を検証中。未配信、修正後自然Backup/朝Brief/承認・復旧・残UIを続ける。以下06:41以前は履歴。
+
+### 直前の到達点（06:41 JST）
+
+- 第19便RUNNING/8 source hash/health200、関連137テスト・隔離Postgres1・build/typecheck PASS。実Builderの下書き有効化/version固定/予定保存/reloadと、Obsidian監査コピーの06:36自然Run `run_mtowl4qo_453i7l` の10 project/attention5/blocked0・結果保存・実UI proof表示を確認。Vault/Git更新なし。コピーはarchive・元週次不変・own tab cleanup済み。
+- Backupは自然Run `run_mtovcee8_6jal42` でsnapshot/commit作成→HTTP408×2→receipt未受理のまま。同期処理のheartbeat停止と未受信=no-effect誤記録を含め修復し、同じ既存commitだけを照合する。権限期限の拡張や全処理replayはしない。朝Brief・承認/復旧/全画面受入を継続。以下05:54以前は履歴。
+
+### 直前の到達点（05:54 JST）
+
+- 第18便 `6a9c7d7551c5e68fdad5a898` はRUNNING/11 hash/health200一致。関連138テスト・別実行の隔離Postgres4・build/typecheck PASS。実Chatの最新予定調整→検証用下書きの明示選択→06:15 Asia/Tokyo/停止中プレビュー→保存1回→API/Builder/reload一致を確認。元Gmailの07:30予定/登録は不変。
+- 同じ完了Gmail Runの元source hashに一致する100件結果だけを限定同期し、artifact/proof/API/実UIを確認。元receipt/完了時刻とProvider呼出2回は不変、再実行なし。自分のtab1980912804 cleanup済み。次はBackup/Obsidianの予定実証、朝Brief、承認/復旧/残る画面受入。以下05:27以前は履歴。
+
+### 直前の到達点（05:27 JST）
+
+- 第17便RUNNING/6 hash/health200、実Runの100件/返信案0件/GET更新、Chatの同一job復元/manual表示を確認。下書きの停止中予定保存は、最新依頼が過去の「実行しない」に引かれて参照相談となり未成立。保存せず自分のtabをcleanupした。
+- 第18便候補のGmail全件保存と同一source hash限定の結果同期はUI/remote/Gmail回帰・隔離Postgres/型検査PASS、未配信。次の単位は予定調整の意図と停止状態の明示プレビュー修正→回帰/配信→停止中予定の実UI→元Gmail成果物の限定同期。以下04:59以前は履歴。
+
+- 接続済みGmail下書きは実Chat保存→Builder→reload一致まで合格。`automation_chat_workflow_binding_mtosjmbf_apzj7i` はdraft/revision1、04:57の会社別DB read-only確認でRun0・schedule0、元登録revision/hash不変。自分のtab1980912733をcleanup済み。残る停止中予定受入用に下書きを保持する。
+- 第17便候補のmanual/分単位予定、明示対象への予定保存/同一値readback/連打・不明結果の再送防止、Run有限自動更新・Gmail件数表示は94テスト・server build/web型検査PASS、未配信。次はweb build→配信→同じ画面で確認。Macの同一Run成果物には全メール要約があるが、Server receiptの汎用深さ/20件制限で項目が欠落する。Gmail再実行ではなく同じ成果物の限定同期を追加残件とする。以下04:33以前は履歴。
+
+- 第16便RUNNING/runtime全hash/health確認後、ChatのGmail1回依頼→固定登録業務の実行ボタン1回→同じRun詳細への遷移→100件metadata取得/分類→同一Run証拠保存/previewを実証。返信案は今回は0件、送信/Gmail下書きなし。Run `run_chat_ee11de7a0207c9d9e7ac82ab91db707a`。接続済み下書きUI保存、1回依頼のdaily誤表示、明示対象のない予定調整、Run詳細の更新/結果可読性が次。下の04:17は配信前履歴。
+
+- 第16便 `6a9c6a2451c5e68fdad5a75a` はBUILDING。Chatの実runner接続を実装し、UI80・判定6・entrypoint18・登録workflow9・隔離Postgres1、build/typecheck PASS。4業務の固定read-only手動実行と5業務の停止中下書きを分離し、Daily AIのChat手動同期は未接続表示。回答/保存だけで実行せず、同時要求と完了更新喪失を同じRunに収束させた。本番UIの実Gmail確認と下書き保存が次。以下03:44の「未実装」は履歴。
+
+- 第15便 `6a9c602051c5e68fdad5a67b` は本番RUNNING/hash/health200一致。77 UIテスト/build/typecheck PASS。登録業務Builderの表示用目的編集→保存revision7→元内容へ復元revision8、固定spec保持、実schedule停止revision5→再開revision6→daily09:00 JST/enabled/next=9月6日09:00をAPI/reload/実画面で確認。Daily AI同一Runの調査・既存Sheet同期だけの完了表示も実証。新規research/Sheet writeなし、own tab cleanup済み。以下03:12のBuilder修正前は履歴。
+- 次の実装はChat→対象5業務の登録runner接続。汎用の下書き保存を実業務の実行と誤表示せず、会社・登録処理・実行IDを結び付ける。
+
+- ユーザーが全残件の実行とGoal設定を明示依頼。03:08に正式Goalを同じタスクへ設定しactiveを確認。以下の10工程を維持する。
+- 第14便は本番RUNNING/hash一致。Daily AI自然Run `run_mtooj8ac_3tkbcs` は02:51から調査→原稿3件→既存Sheets574行/39列/3ビュー同期→同一Run証拠/cleanupまで完了。新規ソース0、遠隔のみ20行保持。daily09:00 JST・enabled・revision4への復元を03:01:55 GET確認済み。実行順4/6/9の古いDaily AI未登録/未実行は履歴。
+- 直近の実画面でregistered_workflowをBuilderが未対応扱いし、保存/予定変更ができない不具合を発見した。実処理の成功とは別。実行順1/3/8の優先修正に加える。固定処理契約を保持した名前・説明・実予定の編集と、登録手順の正しい表示を実装/試験する。
+- 優先順はBuilder修正→Chat実runner接続→Backup/Obsidian/朝Brief等の残る予定実証→承認/復旧/全画面受入→ガイド/最終整理。9の配信は修正単位で挟む。Canva/Linearの本人操作が未完でも独立作業を続ける。
+- 03:02進捗報告の全残件が対象。過去の7/18を完成率にせず、各工程の実装・検証・本番・業務結果を別々に更新する。Goal、STATE、利用ガイドにはこの再開点を反映した。
+
+## 次に行う全計画：サイトを自分で使いこなせる状態まで（2026-09-05 20:03 JST）
+
+今回の依頼は「残りを全て試して確認し、今からのプランを全て書き出す」。**この節が今後の実行順の正本**。下の19:18到達点と旧18項目は実績・対応関係として残す。「Linearが先に完了するまで他を進めない」という旧順序は使わない。計画を書いたことを実装・全機能テスト完了には数えない。
+
+### 目指す使い方と対象
+
+- 入口は `https://aos-admin-ingress.zeabur.app/`。本人の会社1 `company_2560580981cedfd106b66245` だけで、接続 → Chatで依頼 → 必要な設定／承認 → 実行 → 成果物／Brief確認まで完結させる。
+- 日常の対象はGmail、日次AIのRunway非依存部分、NisenPrintsのRunway非依存部分、Backup、Obsidian。求人応募とRunway導入・Runway必須の生成／公開は明示的な対象外。別タスクの求人schedule、既存会社・履歴は停止・削除しない。
+- 「Plugin全対応」は、取得したカタログを漏れなく表示し、公式に対応する接続手順と実際の利用状態を示すこと。180サービスのアカウント作成・一括インストール・一括権限付与は行わない。認証対応と認証済み、Plugin追加とProvider利用成功を分ける。
+- Macを起動している無人運転と、Mac停止中のクラウド運転は別に判定する。現在Mac worker依存が残る。必要もなく全業務をクラウドへ移すことを今回の利用開始条件には追加しないが、Mac停止時の影響・復帰方法を画面と案内に出す。
+- 「全て試す」は全ての対象機能・状態遷移を確認する意味。同じ表の全行を繰り返しクリックしたり、テストのために実メール送信・新規公開・課金・実データ削除を行う意味ではない。危険な分岐は隔離fixtureで検証し、本番確認と区別する。
+
+### 今回確認した現在値／引き継ぐ証拠
+
+- **今回の本番読み取り:** health、会社1のstate・schedule・Plugin registry・夜Brief・scheduler診断がHTTP 200。Gmailは毎日07:30 Asia/Tokyo、enabled、revision7、次回9月6日07:30 JST。Zeabur schedulerは60秒間隔で稼働。
+- **今回の配信再確認:** 夜Brief `brief_delivery_mto86mhx_kjr89b` はdelivered、同一fingerprint、source sync／reconciliation／cleanup verified。
+- **今回の不整合の検出:** Macのworker statusはPID67354・read_only・heartbeat_ok・idle。本番stateにもfresh heartbeatがある一方、同レスポンス内のホストローカルprocess診断はportable worker absent。稼働実績と矛盾する「workerを起動した後に」の案内は修正候補。汎用runtime toolのeffects=enabledと実worker status=read_onlyも、出所・優先度を分けて扱う。権限設定を広げて合わせない。
+- **ソース確認:** Gmailの返信案上限5件は現在プロンプトだけで、結果の件数制限がない。Backup read-only adapterは実バックアップ確認ではなくrunner存在確認。既存controlManifestは347定義（画面・入力・ワイルドカード・求人含む）で、347個の本番ボタンを操作済みという意味ではない。
+- **同日既存証拠の再利用:** Gmail100件取得／分類と自然起動3回、Drive／Supabase実read、Printify既存商品read、Backup現物・隔離復元、Obsidian監査、朝夕Home実配信。Canva実APIの `oauth_token_invalid_grant`、Linearの `Create a workspace` は直前実行の記録であり、今回OAuthを再操作していない。
+- 証拠: [今回の計画用readback](work/aos-usability-plan-readback-20260905.json)、[前回の実行checkpoint](work/aos-plan-execution-final-20260905.json)、[Gmail自然実行](work/aos-plan-natural-gmail-soak-20260905.json)。既存18項目は7件完了・11件部分完了等のまま。7/18を製品完成率に換算しない。
+
+### 実行順1：判明済みの不具合と誤表示を直す
+
+03:44更新: 第15便でregistered BuilderとDaily AI限定完了表示の修正を本番/実UIで確認。固定spec hash不変・API/reload一致。Readiness等の残る対象外集計/全状態受入は継続。
+
+02:05更新: 第13便まで本番hash/healthと代表UIを確認。Chat保存・本文/手順/元spec保持、Automationsの実schedule/実行契約/有効表示、手順欄の可読性、手動予定表示、Run証拠プレビュー/停止理由なし表示を反映した。73 UIテスト/build/typecheck PASS。以下00:02は履歴。
+
+状態: 部分完了（2026-09-06 00:02 JST）。第9便まで本番RUNNING/hash/health確認。返信案上限5・worker案内・Home今日/過去分離・Chat同期保存/実行先競合/全Plugin context・Brief最終配信と現在値の分離・会話本文/プランGET復元・新規下書き意図判定・手動予定/承認なし保存を反映。Briefは対象5業務、求人2記録とarchived下書き1件を集計対象外に分離。再開UIで同じjobの本文/プラン復元、再送なしを確認。残る保存ボタンの外部登録元mapping依存を外した第10便は69 UIテスト/build/typecheck PASSだが、Docker Hub 429でビルド失敗。同一ソースの限定retryを配信中。対応する旧項目: 2-1の残件、3-1、4-2。
+
+1. `gmailReviewReadOnly.ts` で返信案を最大5件に確実に制御する。100件の取得／分類結果を捨てず、採用順序を固定する。0／5／6件、重複ID、100件未満の正当な最終ページを関連テストで確認する。
+2. Home／Readiness／Briefの対象集計に今回の求人・Runway除外を反映し、過去の停止・テスト履歴と現在の要対応を分ける。対象外を正常完了に書き換えず、別業務のscheduleを変更しない。
+3. worker表示を、実行ホストのprocess有無・会社別remote heartbeat・実Runの結果に分ける。「ZeaburコンテナにMac processがいない」ことを全体停止と表示しない。通信断中も最終確認日時を残す。
+4. Chatの回答専用モードで空の「確認したいこと」や `ask_more` を出さない。回答では接続利用可なのにサイドバーだけ「未確認」となる表示の出所を照合する。
+
+合格条件: 関連テスト成功、返信案は5件以内、会社1の現在状態が画面とAPIで一致し、誤った復旧要求・不要な再承認が出ない。次は第10便の配信結果とChat保存UIを確認し、Readiness等の残る対象外集計を点検する。
+
+### 実行順2：Plugin追加・認証・再認証を最後まで通す
+
+状態: 共通処理は本番反映済み、Provider承認と異常系の受入が未完。22:00前後のCanva公式操作で個別ページ・アクション一覧へ到達したが、同意画面は未到達。実APIは再度 `oauth_token_invalid_grant` / `TRIGGER_REAUTHENTICATION`。Linear既存workspaceは未確定。旧1-2／1-3／1-4／2-2。
+
+1. 新規項目の一覧取得、検索、追加、選択、公式の個別接続リンクまでを確認する。既にAOSから追加したCanvaの実績を使い、不必要なPluginを新たに導入しない。カタログの全ID対応はコード検証、認証方式は実在する代表例で検証する。
+2. CanvaをAOSのリンクから公式接続設定へ進め、実際の再認証／同意画面と要求権限を確認する。成功後、専用Codex Serverから本人所有デザインのmetadataを1件読み取り、実アカウント参照を会社1へ保存・再取得する。案内ページやaction一覧を承認画面と誤認しない。
+3. Linearは既存workspaceをread-onlyで確認できる正規入口を調べる。既存workspaceが確定できなければ、必要入力は「既存workspace URL、または今回は除外」の一点。新規workspaceを勝手に作らず、他の実行順を続ける。
+4. Gmail／Drive／Supabaseは既存の成功接続を使い、会社の対象ファイル／projectと専用Serverの実行先を照合する。接続を試すために本番DBを書き換えない。
+5. 復帰時の自動更新、ページ再読込、同意拒否、取消、popup制限、期限切れ、複数Appのリンク、非対応認証方式を確認する。認証済みを意図的に失効させる試験は隔離fixtureを使い、実Canva失効の観測結果と区別する。Providerのエラーで再認証が必要なら、その状態をUIへ反映する。
+
+合格条件: 「追加済み」「接続操作が必要」「実利用確認済み」「再認証が必要」「非対応」が実状態どおり。ホームへ飛ぶだけの行き止まりがなく、認証直後に手動の再確認連打を要しない。本人確認／OTPが必要な操作はユーザー固有の操作として明記し、認証を迂回しない。
+
+### 実行順3：Chatから仕事を作り、編集・実行できることを確かめる
+
+05:54更新: 実Chat→Gmail1回実処理、接続済み下書き保存、同じjobのGET復元、明示対象だけへの停止中06:15予定保存/GET/reloadまで実証。第18便でlatest intentと予定の有効状態/TZを修正し、未確認時のGET専用再取得を維持した。Daily AIのChat手動同期、対象束縛の承認等の残受入は別工程。
+
+04:17更新: 第16便で登録済み処理への1回実行/接続済み下書き保存を追加し隔離検証済み、配信BUILDING。固定会社・本人・job・元automation/version/hashを確認し、任意のモデル提案をworker commandにしない。未知/範囲外依頼とDaily AI手動同期の未接続を表示。次は実UIからのGmail未送信確認と同一Run証拠、接続済み下書きの保存/reload。既存Chatの予定調整で明示対象のない既定先選択が残るため、予定変更受入前に修正する。
+
+03:44更新: 登録済みの実業務もBuilderから目的保存と予定停止/再開が可能になり、Daily AIで実確認。Chatから実runnerへの新規接続は調査中、未実装。Chat下書きの既存CRUD証拠は再利用する。
+
+02:05更新: 同じChat下書きで手順7追加・無効化→保存revision3→reload一致、追加手順削除→保存revision4→reload一致を確認。手動/無効/next=nullのscheduleを保存revision1、API/画面一致。元6手順・Chat情報は保持。own tab cleanup済み。下書きは残るdry-run受入用に保持、実runner未接続は変わらない。
+
+01:40更新: Chat由来 `automation_mtolbrdw_yo7aiz` を「この内容で作成」で1件保存。実UIで6項目（名前/依頼内容/実行先説明/予定メモ/retry/手順1）を編集し、revision2・元Chat情報保持・API・reload一致。手動/scheduleなし/create_approval=falseを確認。入力応答のシリアライズ失敗は再送せず現値照合後に保存1回。タブcleanup済み。下書きは残る手順追加/削除/有効切替等の受入用に保持。汎用Chat→実runnerは未完。
+
+01:08更新: テンプレートGmailから `automation_mtojroy4_na3e7n` を実UIで作成、名前/仕様メモ/retry編集revision2、reload一致、検証後archive revision3・API履歴保持まで合格。本文/手順/実行先説明欄がなかったため追加し、spec/stepの元metadata保持も修正（ローカル71 UIテストPASS）。Chatからの保存は第11便で第10便修正を含めて反映確認中。汎用Chatから実runnerへの接続は未完。直下の00:02は過去checkpoint。
+
+状態: 部分完了（00:02）。回答専用・本文/保存プランのGET復元は実UI確認済み。`create_planner_job_mtogafgj_xiuc83` が指定名・Gmail最大5件・save_planを返す。本番APIで検証用 `automation_mtogmc8m_whks8l` の作成revision1→同一キー重複防止→内容/手順/実行先表示/retry仕様編集revision2→GET一致→古いrevision拒否409→archive revision3/履歴保持を確認。scheduleなし・承認作成なし・外部操作なし。第9便のUI保存は別用途の `canonical_company_unresolved` によりdisabledを実確認し、第10便で不要な依存を除去（API会社確認は維持）、反映待ち。汎用Chat下書きは `control_plane_dry_run` で実Gmail runner接続ではなく、実業務への接続とUI保存/編集クリックは未完。旧4-2。
+
+1. 回答だけの質問、1回の読み取り依頼、定期実行の作成依頼を区別する。まず「Gmailを確認し、要対応と返信案をまとめる。送信しない」の既存許可範囲を使う。
+2. Chatで指定した会社・Plugin・依頼内容が実Runに渡り、計画文を返しただけで完了にならないことを確認する。実行できない依頼は具体的な制約と利用可能な操作を出す。
+3. task-ownedのテスト用自動化下書き1件で、名前／内容／手順／実行先／retry設定の保存、再読込、再編集、二重送信防止を確認する。曖昧な日程ヒントと実際の有効scheduleを混同させない。
+4. テンプレートからの下書き作成、既存会話の選択・再開、キャンセル、入力リセットを確認する。テスト用下書きは識別できる名前を付け、終了時は必要に応じてその1件だけrecoverableなarchiveとする。
+
+合格条件: ユーザーの日本語依頼から正しい1件の永続化結果／実Runへ辿れ、再読込後も残り、同意していない送信・公開・schedule有効化が発生しない。
+
+### 実行順4：5業務を実際の成果物まで通す
+
+02:42更新: Daily AI調査→既存Sheet限定の専用runnerを実装し、Python15・AOS単体7・隔離Postgres一周1・既存回帰61・最終worker回帰2とbuild PASS。元の全公開workflowと別IDで生成/公開を禁止。39列/3ビュー照合、曖昧writeの同一Run GET専用再開、固定account/Sheetと期限を検証。第14便はBUILDINGであり、登録変更・自然Run成功はまだ未確認。
+
+02:05更新: Nisen自然Run `run_mtol4trz_eofw4d` の保存proof `proof_mtol5363_hpp7b9` を、本番Run詳細の「安全に開く」で表示し同一RunのGET/snapshot/sync/cleanupを確認。provider auditは再実行していない。Daily AI登録/自然Run統合が次の実行単位。
+
+01:40更新: NisenPrintsの専用既存商品auditを本番/既存登録へ反映し、自然Run `run_mtol4trz_eofw4d` が01:16にGET2件・同一Run管理snapshot・Server proof/照合/cleanup完了。通常08:30へ復元。生成/公開/元manifest変更なし。Run画面表示とproof API 200/okも確認したが、画面から証拠を開く導線は修正中。Daily AIは下記手動実績を維持し、AOS登録/自然Run統合が残る。
+
+状態: 部分完了（2026-09-06 00:27 JST）。Gmail修正後実処理済み。Backupは自然Runでsnapshot/commit作成後HTTP408となり、同じcommitのタスク支援再送・remote parity・6領域・fsck・隔離復元で復旧。元Runの失敗は保持。Daily AIは23:30に調査11件・原稿3件を作成し、既存Sheetへ574件同期・39列一致・遠隔のみ20件保持を確認。NisenPrintsは既存商品audit専用adapterを実装し、00:21の実API2 GETと同一Runのローカル管理snapshot保存/再取得を確認。公開manifestは変更せず、Etsyの現公開画面や新規生成/公開は確認したとしない。専用adapterの本番反映と両業務のAOS登録/自然Run一周は未完。旧2-1〜2-5、3-2、4-3。非Runway範囲の成果と元の全公開workflow完了は区別する。
+
+| 業務 | 次に行う実処理 | 合格条件・範囲 |
+| --- | --- | --- |
+| Gmail | 上限制御を入れた後に、最新metadata取得→分類→返信案→Run／成果物画面を1回通す | 実IDと件数一致、返信案最大5、保存した結果をAOSで開ける。返信案は未送信。送信／Provider下書きは別操作として表示 |
+| Daily AI | Runway不要の調査→出典→原稿→既存source同期を登録Runにつなぐ | 同一Runの原稿・出典・管理データを再取得して一致。Runway必須の生成／公開は対象外。既存素材を使う公開も現行契約・対象・許可内容を満たす場合だけ実施 |
+| NisenPrints | 本人の既存shop／商品／必要なデザインを確認し、非生成の管理・source同期を登録Runにつなぐ | 実shop／商品ID・URL・source状態一致。Canvaが不要な独立部分は先行。Runway必須の新規生成／公開を代用品で埋めない |
+| Backup | scheduled adapterをrunner存在確認からsnapshot日時・remote parity・整合性・隔離復元の実確認へ変更する | 同じ予定Runに現物の確認結果と復元hashが残る。古いsnapshotを「今日のバックアップ済み」にしない。新規snapshot／pushが業務契約に必要なら、既存の対象・許可範囲を確認して正規runnerを別工程で実行・照合する |
+| Obsidian | 既存の実監査を定期Runに接続し、現在のattention項目を確認する | 最新監査結果と具体的な要対応がAOSから読める。監査と修正／Vault更新を分離し、共有memory・AGENTS等の変更を推測で行わない |
+
+共通合格条件: Provider処理がある業務は実応答・同一Run結果・必要なsource同期・照合・作業資源cleanupまで確認。ローカル確認業務は実成果物で判断する。APIに接続しただけ、runnerが存在するだけ、queuedになっただけでは業務完了にしない。
+
+### 実行順5：承認・停止・再実行を試す
+
+17:02更新: 第24便を本番/実UIで確認。新しい未承認Daily AI Runのキャンセル→1つだけの再試行Run/新承認→子Runも未実行キャンセル、Run選択/承認導線/reload/GET照合まで成立。元Run・手順・承認は履歴保持、会社/account/Sheet/payload/version一致、worker claim/追加同期なし。完了済みRunはAPI/実画面とも再送不可。第23便の実承認→実同期は既存証拠を再利用。選択欄だけ古い状態を残す表示差分は次で修正する。証拠: `work/aos-run-recovery-actual-20260906.json`。
+
+16:29更新: 第23便で実Daily AIの固定対象・内容・JST期限確認→メモ編集→新承認→同一Runの実同期とproofまで成立。第22便の却下履歴も保持。第24便候補では会社/Run引継ぎのRecovery、未claimキャンセル、元Runを保つ一意の再試行Run・新承認を実装し、UI93/既存関連62/承認回帰6が成功。隔離Postgresで競合・未知効果・期限・旧version・新承認後のfixture処理を検証中、未配信。予定の停止を明示的な手動再試行の禁止には流用しない。元version/固定対象/履歴は保持する。
+
+状態: 部分完了（01:08）。自分のBuilder検証用承認 `approval_mtok0xsh_ypt8h5` を実UIで1回作成/選択/却下し、APIのrejected・時刻一致・外部効果なしを確認。他タスクの期限切れ2件は操作せず、ボタン非表示を目視確認。Builderのlegacy承認はrun/action未束縛であり、外部実行許可の合格とは数えない。対象束縛の承認/編集後再承認・cancel/retryの残受入は未完。旧3-3、4-2。
+
+1. 対象・宛先／アカウント・内容・期限が分かる承認画面を開き、承認／拒否／編集後の再承認を確認する。AOSの操作承認とProviderのOAuth同意画面は別テストとする。
+2. 承認が不要なread-only作業はそのまま通し、既存の継続承認範囲も表示する。外部送信等は具体的な対象・内容を伴う既存許可範囲だけを使う。
+3. テスト用Runで実行前キャンセル、許可されたretry、同じ操作IDの重複要求、期限切れ承認、内容変更後の旧承認を検証する。実行済みのGmail／公開処理を再送して試さない。
+
+合格条件: 状態が保存されて再読込後も一致し、拒否／取消は勝手に実行されず、retryも確認済み外部効果を重複させない。実メール送信・課金・破壊のテストは隔離環境と明記する。本番の他タスクの承認は操作しない。
+
+### 実行順6：予定時刻から成果物・Briefまで自動で回す
+
+03:44更新: Daily AI自然Runは調査/既存Sheet同期/同一Run証拠まで完了。第15便のBuilder実UIで予定停止→再開→通常daily09:00 JSTを保存/GET/reload照合。schedule revision6、固定version `automation_version_mtoq8swe_yewi9u`（処理契約は同じ）。残るBackup/Obsidian/朝Briefの自然実証は別工程。
+
+01:40更新: NisenPrints既存auditがscheduler due 01:16 JSTから自然起動し、Server receiptまで完了。既存schedule `automation_schedule_msm1x3yl_8yai3m` はrevision4・毎日08:30 Asia/Tokyo・enabledへ復元、新versionを固定。APIと実一覧UIで一致。Gmail07:30も表示一致。短期cronは残していない。Daily AIと他の未実証範囲は継続。
+
+状態: Gmail自然3回、夜21:45の既存heartbeat→21:49 Home Brief `brief_home_mtodr1wx_0wmqys` →5段階の証拠を確認。Backupも自然起動→実保存まで到達したが転送はタスク支援で復旧。通常09:00へ復元済み（revision6）。他業務の予定実成果物とBackup限定retryの自然実証は未完。旧3-1／3-2／3-4／3-5／4-3。
+
+1. 各業務のschedule有効／無効、時刻、Asia/Tokyo、次回時刻、固定versionをUIで保存・GET照合する。既存の通常設定を記録し、短時間試験の終了時に復元する。
+2. 実行順4が通った業務から、対象限定の短時間scheduleで各1回、手動triggerでない自然起動→実処理→結果保存→照合を確認する。共通schedulerのGmail3-cycle証拠は再利用し、理由なく全業務を3回ずつ再実行しない。
+3. 朝夕Briefの既存定期設定で生成→Home配信→GET照合を確認する。既存の朝07:45／夜21:45 JSTの継続機構を使い、重複した監視を追加しない。次の定刻までの間は実行順7・8を進める。自然配信は実際に得た結果だけを記録する。
+4. 遅延／失敗は同じRunのログ・receipt・heartbeatから原因を特定して修正する。観測期限を各処理の既存timeoutに合わせ、単に「次回を待つ」の繰り返しにしない。
+
+合格条件: 対象5業務について、起動と実処理と配信がどこまで自然実行で通ったかが一覧で分かる。短期soakを長期無障害の保証とは言わない。Mac依存業務の稼働条件も併記する。
+
+### 実行順7：障害からの復旧を確認する
+
+17:02更新: 会社/Runを保持するRecoveryの実UI、GET専用照合、完了結果のno-replay、新しい未承認Runの取消・別Runでの再開準備を検証。第24便の隔離Postgres10 reported PASSには同時要求・完了記録喪失・新承認・旧version/対象変更・claim競合・失効lease/未知効果を含む。実Provider/worker/browser切断の代表範囲全体を検証したことにはしない。
+
+04:17更新: Chatの完了更新喪失を隔離DBで発生させ、先に保存したbinding由来の決定的Run IDから同じRunをGET復帰できることを確認。同時要求でも1 Run。UIは結果未確認時に再操作を止め、GETのみの再取得を提示。実通信断/全Provider障害の実証とは別。
+
+状態: Chatの実timeoutとMac/cloud競合を修正、本番回答成功で確認。Backup実HTTP408はremote照合→同一commit再送→復元で回復。登録runnerの一時障害限定retry・既配信・remote変更・認証エラー・retry失敗・既存commitの6 fixture PASS。全Provider/worker/browser代表障害の受入は未完。旧3-3。
+
+1. 通信timeout、一時的なProviderエラー、認証失効、結果受信後の切断、worker再起動、browser接続切れを隔離fixture／task-owned read-only試験で再現する。
+2. 回数と期限を限定したretry、同一Runの照合、lease失効後の回復、復旧後の1回だけの再開を確認する。認証失効は公式に可能なrefreshと本人再認証を区別する。
+3. Mac停止／ネット切断の扱いを確認し、Zeabur側のqueue状態・画面表示・復帰後の処理が一致するか試す。稼働中の他タスクやChrome全体を停止させない。本番worker再起動が必要なら実行中jobなしを確認し、対象と影響を限定する。
+4. 修復不能な1サービスは具体的な操作リンクと理由を1件にまとめ、それに依存しない業務は続ける。無限retry・新規アカウント推測・同じ外部効果の再送は行わない。
+
+合格条件: 代表障害で重複効果がなく、回復可能なものは自動復旧し、本人操作が必要なものは対象が明確。障害試験のために新しい共通gate／監視レイヤーを増やさない。
+
+### 実行順8：画面の全機能を操作して受け入れ確認する
+
+17:02更新: Run詳細→会社/Run限定Recovery、実行前cancel、新Run/承認準備、新Run結果/承認への移動、ネイティブRun選択、reload、同じRunのGET照合を実UI/APIで確認。未実行の確認用2Runだけを取消、元の業務/予定/履歴不変、own cleanup済み。取消後の選択欄だけ古い状態を残すため表示修正は未完。Artifacts/Memory/Lanes/Performance/PC/Admin/Production/Security/Feedback等の残受入は引き続き行う。
+
+03:44更新: 登録業務Builderの実手順表示、目的保存/復元、実予定停止/再開、再読込保持とDaily AI完了Runの限定結果表示を実確認。自分のtab1980912660だけcleanup。対象内の残る画面群は未完。
+
+02:05更新: 第13便のRun詳細/証拠previewとBuilder手順追加/有効切替/削除/保存/reload/手動無効schedule保存を実UI/APIで確認。手順テキストは全幅・checkboxは16px。schedule checkboxの配置は改善余地があるが機能の保存結果は一致。自分のtab1980912625のみcleanup。全対象画面の受入はまだ未完。
+
+01:40更新: 第12便のChat作成/6項目編集/reload、Automations詳細一覧の展開、Gmail/Nisen実予定・有効状態・実行契約を画面/APIで確認。Nisen自然Run詳細にも到達し、停止理由なしの誤警告と証拠viewer導線不足を発見、同一Run GET・手順・安全なpreviewを追加検証中。Companion session終了で自分のtab1980912613だけcleanup済み。残る全対象機能を合格としたものではない。
+
+状態: Home/Chat/Approvals/Templates/Builder/Automationsの代表操作を実UIで確認。01:08時点ではテンプレート作成・保存編集・reload・承認却下・archiveのAPI一致とown cleanupまで合格。Automationsの実schedule/実行契約欠落とactive→下書き誤表示を発見・修正、ローカル回帰PASS。本番反映後再確認と他の対象機能は未完。旧4-2／4-3。
+
+既存 `apps/web/src/controlManifest.ts` と `App.tsx` の実表示を照合する。現行385定義（20:53照合、旧347）をそのまま合格数にしない。対象内318／対象外59／隔離試験8を `work/aos-control-scope-inventory-20260906.json` に分類した。廃止確認は0で、未描画・死んだcontrolがないことは未証明。同型の動的行は代表値で確認し、包括wildcardに含まれる求人・Runway・新規生成公開には今回の受入を拡張しない。生きたボタンが何も保存・遷移しない場合は、既存処理を直すか、不要と確認したものだけ削除する。
+
+| 画面・機能 | 操作と確認する内容 |
+| --- | --- |
+| 入口・会社・共通ナビ | ログイン済み入口、会社1維持、戻る／進む、直接URL、reload、検索、同期、期限切れセッションの公式復帰。複数会社は新規作成しない。未認証の保護は隔離確認 |
+| Home | 今日の実績、現在／過去の要対応、次の操作リンク、朝夕切替、配信結果、対象外表示、最終更新時刻 |
+| Plugins／Integrations | 一覧・検索・詳細・追加・公式接続・自動復帰・実利用確認・再認証。実接続を試験目的でrevokeしない |
+| Chat | 新しいAOS内会話、履歴・再開、日本語入力、回答だけ／1回の仕事／定期作成、進行表示、取消、結果へ移動 |
+| Automations／Builder | 一覧、詳細、作成、保存、編集、手動実行、schedule変更、停止・再開、version競合。テスト用1件だけarchiveと復元可能性を確認 |
+| Templates | 一覧、選択、会社1の下書きへ反映、編集・保存。テンプレートを選んだだけで外部実行しない |
+| Approvals | 内容・対象・期限・継続承認、承認／拒否／編集、期限切れ。fixture試験と本番承認を区別 |
+| Runs／Run詳細／Recovery | 最新・履歴フィルタ、手順、処理状況、receipt、proof、エラー、retry／cancel、二重実行防止、結果ページへの導線 |
+| Artifacts／Memory／Lanes／Performance | 実成果物を開く、参照先の権限・鮮度、read-only情報、期間別実績、空の状態、集計の母数。架空の成果物・固定グラフを出さない |
+| PC／Admin／Production／Security | MacとZeaburの役割、heartbeat、実行先、配信版、会社scope、権限境界、接続障害。secretを画面／ログへ出さない |
+| Feedback | 開閉、コメント、画像なし／task-owned画面画像、内部報告保存、再取得。業務データ入り画像を外部へ送らない |
+| 全画面共通 | loading／empty／error／古いreadback、連打、API失敗、キーボード操作、狭い画面、スクロール、押せない理由の案内 |
+
+合格条件: 対象内の各機能に「操作結果・永続化または読取結果・証拠・未検証範囲」がある。ソース上のhandler存在や静的ボタンQAだけで実操作合格にしない。Companionで最新画面を確認し、作成した自分のタブだけcleanupする。
+
+### 実行順9：必要な修正を本番へ反映し、同じ操作で再検証する
+
+05:54更新: 第18便はRUNNING、05:40:53に対象11 source hash/asset/health200一致。前便stageから11ファイルだけ更新し、Mac worker再起動なし。予定保存と同じGmail Runの全件結果表示/証拠previewを実UIで再検証した。第17便の未配信/第18便候補は以下の履歴。
+
+04:17更新: 第16便はBUILDING。検証済み第15便stageから今回10ファイルだけ更新した653ファイルを配信し、別サービス・worker・設定は変更なし。runtime hash/health/実Chat操作は次の確認。
+
+03:44更新: 第14便はDaily AI自然業務結果まで確認済み。第15便 `6a9c602051c5e68fdad5a67b` はRUNNING・03:36:27 runtime hash/health200一致・asset `index-DNydMVud.js`。前便stageから今回の2ファイルだけ変更し、Mac workerは変更/再起動なし。上記実UI/API受入まで合格。
+
+02:42更新: 第13便は本番hash/health/実UIのRun証拠previewと手順・手動停止schedule保存まで確認済み。第14便 `6a9c544455753f248de165b3` はDaily AI専用同期runnerの追加でBUILDING。第13便の検証済みstageから11ファイルだけを更新、nodejs plan一致。新runnerの本番反映/業務結果は未確認。以下01:40以前の第13便未配信記述は履歴。
+
+01:40更新: 第11便は16:07:31Z、第12便 `6a9c3fd46f9895514dfd147b` は16:19:31Zにruntime hash/health200を確認。第12便は実UIでChat保存/編集と予定表示一致まで実証。第13便候補はUI可読性/手動予定とRun証拠viewerの修正で、追加検証中・未配信。直下01:08のruntime待ち/未配信は履歴。
+
+01:08更新: 第10便の限定retry `6a9c2ec86f9895514dfd0fb0` はCANCELED。第11便 `6a9c36fa55753f248de1615e` は25分待ちの後16:01:25Z開始→16:05:13Z build完了、runtime確認中。第12便予定のBuilder編集とPostgres実schedule投影修正は関連92テスト/build/typecheck PASS、まだ配信していない。第9便の稼働証拠は下記の通り。待ち状態を成功と数えない。
+
+状態: この正式Goalで第1〜9便を本番反映。現在第9便 `6a9c264f6f9895514dfd0d11` RUNNING、対象ソースhash一致・health200・Chat本文/プラン復元を実確認。第10便は69 UIテスト/server・web build/typecheck PASS、Docker Hub node:22 HEADの429でビルド失敗。ソース不具合とは分離し、同一ソースを一度だけ再配信中。第9便の稼働は継続。Goal以前の連番とは別。旧4-1。
+
+1. 既存dirty worktreeを保護し、今回の変更を識別する。同じファイルの変更は競合しない順で進める。AGENTS.mdは変更しない。
+2. 変更範囲の回帰テスト、server build、web typecheck／buildを行う。UIは代表シナリオの実結果を確認する。無関係な全体テストを毎回追加しない。
+3. 既存AOS serviceだけを対象に配信内容・戻し先を確認して反映する。source／asset hash、health、会社1の実操作、結果の再取得を確認する。
+4. この工程は最後までまとめて待たず、実行順1〜8の修正がまとまった単位で挟む。不合格箇所だけ原因修正→同じ操作を再試験する。
+
+合格条件: localで直った内容と本番が一致し、ユーザーの入口から使える。deploy成功を業務完了とは数えない。
+
+### 実行順10：日常の使い方を渡し、最終進捗を確定する
+
+03:44更新: 登録業務の編集/停止/再開とDaily AI結果の見方を利用ガイドへ反映。Chat実runner接続と全体受入の未完は維持。
+
+02:05更新: 第13便の本番hash/health/73 UIテスト/Run証拠previewと、手順編集・手動停止schedule保存の実績を利用ガイドへ反映。実runner未接続とDaily AI統合未完は明記したまま。
+
+状態: `outputs/aos-user-guide.md` に検証済み範囲の先行ガイドを作成。全面受入・最終進捗は未完。旧4-3／4-4。
+
+1. 実操作で通った手順だけで、短い利用ガイドを `outputs/aos-user-guide.md` に作る。入口、Homeの見方、Plugin接続、Chatへの依頼例、Automation編集、予定の停止・再開、承認、成果物、復旧をまとめる。
+2. 依頼例は「メールを確認して返信案をまとめる。送信しない」「今日のAI調査を原稿にまとめる」「既存商品の管理状況を確認する」「バックアップ確認結果を見せる」「Obsidian監査の要対応を示す」。実装が通らない例は掲載せず、対応範囲を明記する。
+3. 5業務それぞれに、手動実処理／予定実処理／結果同期／Brief／復旧／Mac依存／対象外を一覧化する。使える部分の案内は先に出し、全体の未完を隠さない。
+4. このPlanの各工程へ実施日時・結果・証拠・残件を追記し、STATE.md／GOAL.mdと整合させる。本人操作が本当に必要なら、サービス名・理由・正しいリンク・1つの具体的操作だけを残す。
+
+合格条件: ユーザーが通常操作のために毎回このCodexタスクへ質問する必要がなく、AOSだけで依頼・確認・修正できる。Runway／求人／未指定Linear workspaceの扱いを含め、何が動き、何が対象外・未完かを誤解なく読める。
+
+### 進め方・完了判定
+
+- 直列の基本は **1 → 2と3 → 4 → 5と6 → 7 → 8 → 10**。9の配信・再検証は必要な修正単位に挟む。Canva／Linearの本人操作が未完でも1・3・Backup・Obsidian・非依存業務・画面確認を進める。
+- 認証、公開、Backup push等の実行対象が変わる判断は推測しない。ただし、既に許可された同じ対象・操作範囲では毎段階の再承認を足さない。
+- 問題は「実エラー → 原因確認 → 今行う局所修正または独立作業 → readback」で扱う。曖昧な待機を唯一の次アクションにしない。
+- 結果欄は **実装／検証／本番反映／業務結果**を分ける。`completeReadOnly`、queued、installed、healthを送信・公開・全面自動運転の証拠に昇格させない。
+- 20:03の計画作成後、ユーザーの正式Goal依頼により実装・本番配信・実Run・公式接続画面の操作へ進んだ。最新の実施結果は各工程と `work/aos-goal-execution-20260905.json` を参照する。全機能を試し終わったという報告は、上記受入結果が揃ってから行う。
+
+---
+
+## 最新到達点（2026-09-05 19:18 JST）
+
+**全面完了ではない。** Gmailの実処理と自然起動3回、接続UI/Chat修復、朝夕Home Brief、バックアップ現物確認・Obsidian監査を完了。Runway必須の生成/公開と求人は今回の対象外。Linear/Canvaの実認証、残る非生成業務の定期接続・障害注入試験は未完。
+
+- 配信版: AOS deployment `6a9bea7155753f248de15647` RUNNING、health=200、App.tsx hash `2452e8e3b5790261ae2cd10362e54a933e959f12d60bc817c53c9fe695d246de` がlocalと一致。直前版 `6a9be22d6f9895514dfcf873`。追加UI試験65件、server build・web typecheck/build PASS。変更前から存在する差分・AGENTS.mdは保護した。
+- 定期起動の二重原因を解消: 1分以内の正常なpoll遅延を過去分skipにしない。Macの旧AOS serverも本番PostgreSQLへ定期起動していたため、local LaunchAgentとrepo templateの `AUTOMATION_OS_DURABLE_SCHEDULER_MS=0` を反映。local APIは再起動後health=200・scheduler disabled、Zeaburは60秒scheduler enabled。Mac remote workerは継続稼働。Mac停止中にMac依存業務まで動くとは主張しない。
+- Gmail自然実行: 下表の3回はすべて同一Run receipt・Server受理・source trigger・cleanupを確認。各100件の実message IDを分類と照合。メール送信・Gmail下書き・Calendar変更は0。事前の自然成功 `run_mto7g1xd_4a6kcp` を含め計4Run成功。テスト用の重複送信/公開はなし。
+
+| 予定UTC | 本番Run | 完了UTC | 実取得/分類 | 返信案 |
+| --- | --- | --- | --- | --- |
+| 09:57 | `run_mto7lxqh_zzt1mg` | 09:59:42 | 100/100 | 5 |
+| 10:00 | `run_mto7psme_h0bbi3` | 10:02:56 | 100/100 | 5 |
+| 10:03 | `run_mto7tnj2_7jixjl` | 10:05:45 | 100/100 | 6 |
+
+- Gmail scheduleは10:04:07 UTCに **daily 07:30 Asia/Tokyo / enabled / revision7** へ復元しGET確認。次回9月6日07:30 JST。証拠: [自然実行と設定復元](work/aos-plan-natural-gmail-soak-20260905.json)。短期確認は長期無障害保証ではない。返信案は未送信のローカル提案で、最後のRunは指示上限5件に対し6件を返したため、件数上限の決定的な制御は残件。
+- Plugin: 専用Serverカタログ180件、追加済み5件。AOSボタンからCanva追加成功。Gmailは再読み込み後の自動照会で4/4「会社1で利用可」を視覚確認。会社registryをChatへ渡す修正後、同じ会話の `create_planner_job_mto7cb0r_75ya09` がGmail ready/Zeabur実行を正しく回答し、不要な質問・自動化作成・外部操作なし。
+- Canva実APIは `UNAUTHORIZED / oauth_token_invalid_grant`。`app/installed` のenabled/callableだけでは有効なProvider tokenを保証しない。会社account_refは作成していない。公式個別PluginページとAppのaction一覧まで実操作したが、再認証完了は未確認。失効時にも公式接続リンクを常時表示するUIを第6便へ反映し、「Provider承認済み」と断定する古い文言を削除。Linearは公式接続操作後の `Create a workspace` で、既存workspace未指定。新規workspace・課金は作成しない。
+- 接続実物: 専用Server経由のDriveファイルmetadata/Supabase project一覧を実取得。Printifyは既存ショップ `21066723` と商品 `6a4a09f08295538b61036f1b` をGET確認。いずれも新規公開・商品作成・DB更新なし。
+- Obsidian本番Run `run_mto4dmc4_1ribkp` は10 project監査、blocked0、attention5、同一Run readback/cleanup完了。Backupは9月3日snapshot、remote main/HEAD一致、fsck成功、隔離復元hash一致。Backupの予定Runはまだrunner存在確認だけで、現物確認を予定Runへ移す作業は未完。
+- 朝Briefは既記録どおり配信済み。夜Briefは15項目、delivery `brief_delivery_mto86mhx_kjr89b`、run `brief_home_mto86mhx_5ov6uv`、19:13:52 JSTに配信しGETで同じfingerprint `47d66c7fb7141c34adbeda1656278e57a8607e0f09d36810b36c5c0f3b81c23f`、delivered/synced/reconciled/cleanup verified。既存朝夕heartbeatは生成→配信→GETへ更新済み。将来の自然配信を既に成功したとは扱わない。
+
+### 残りを実行単位に分ける
+
+1. Canva: 公式接続設定で失効した接続を再認証 → 専用Serverからown-design metadataを1件取得 → 実アカウント参照を会社1へ保存。接続済み表示を根拠にaccount_refを捏造しない。
+2. Linear: 既存workspace URLの指定またはユーザーによる対象除外を確定。新規作成の判断は代行しない。他業務を止める条件にはしない。
+3. Backupのread-only adapterを「runner存在確認」から既存snapshotのremote parity/整合性/隔離復元確認へ置換し、1回の予定Runで検証する。新規pushは別のeffectful処理。
+4. 日次AI/NisenPrintsはRunway必須部分をスキップしたまま、現行manifest内の非生成成果物・source同期を接続する。公開契約を弱めた代用品は出さない。
+5. Readiness/Briefに今回の求人・Runway対象外表示を反映する。別タスクの求人scheduleは停止・削除しない。期限切れ認証・通信切断・worker再起動の代表障害試験と、返信案上限5件の決定的な制御を完了させる。
+
+以下は経緯の保存。下記18:35以前の未確認・配信中・次の予定は上の19:18記録で置き換える。
+
+## 最新実行記録（2026-09-05 18:35 JST、継続中）
+
+- **Runwayはユーザー指示でスキップ。** 未導入のまま保持。Runway必須の生成・公開は今回の完成率に含めず、代替画像で公開契約を弱めない。求人も検証対象外。
+- 本番第4便 `6a9bd72c55753f248de15296` のhealthとsource hash一致を確認。CanvaはAOSの追加ボタンから専用Serverへ追加できた。追加結果が一覧へ即反映されない問題は会社registry更新・選択ID更新で修正済み。
+- Gmailの本人照合は実Providerプロフィールと会社account_ref hashが一致。100件の実検索結果を直接分類へ渡す処理を実診断で完了確認。分類71秒に対し旧timeout50秒だったため、turn120秒／worker HTTP300秒へ修正。送信・Gmail下書き・予定変更は0。
+- 最初の自然起動検証で根本不具合を特定。`catch_up_policy=skip` が予定時刻の3秒後にも適用され、Runを生成せず次の時刻へ進んでいた。通常の1分poll遅延と本当の過去分を区別する修正・回帰テストを完了。最初の検証scheduleは毎朝07:30 Asia/Tokyoへ復元済み、revision4。旧Runの再送はしていない。
+- AOS画面で会社1に新しい会話「AOS動作確認 2026-09-05」を作成し、専用Serverから回答受信を確認。Job `create_planner_job_mto5bhjl_8iv168`。接続情報がChat文脈の途中切断で欠落する追加不具合を修正。会社registryを直接渡し、専用ServerのGmail PluginをAOSプロセス側のインストールと混同しない。回答専用の依頼には余計なworkflow質問を追加しない。
+- 第5便を配信中。追加のscheduler／Chat／routingテスト29件、UI64件、server build、web typecheck/build PASS。第4便までの関連104件もPASS。次は第5便のfresh hash確認→Gmail自然起動3回→通常scheduleへの復元→Plugin/Chat/Run画面の最終確認。
+- Obsidianは本番Run `run_mto4dmc4_1ribkp` で監査10 project、blocked0・attention5、同一Run receipt/readback/cleanup完了。Backupは既存snapshotとremote main一致、fsck、隔離復元hash一致まで完了。新規backup push・Vault書込はしていない。
+- Morning Briefは会社1のHome配信と再取得を実確認。既存朝夕heartbeatを「生成→配信→再取得」に更新済み。将来の自然配信が既に成功したとは扱わない。
+- Linearは公式接続操作後に「Create a workspace」へ到達。既存workspaceの指定または対象除外の回答が必要。新規workspace・課金は作成しない。他の作業はこの回答を待たず進める。
+
+以下の中間記録は経緯として保持する。現在値はこの最新節と同一Runのreadbackを優先する。
+
+更新日: 2026-09-05 / 今回の依頼: 「全てやってください。許可するので。」 / 実行中
+
+この節を今後の実行順・完了条件の正本とする。下部の過去チェックポイントは履歴として保持する。古い「何かが見えたら再試行」「求人が未完了なので本番不可」などの記述は、この現行計画を上書きしない。ユーザー承認を受け実装・本番反映・実接続検証を実行中。完了条件を満たした項目だけをチェックする。
+
+## 2026-09-05 今回の実行進捗（17:12 JST 中間記録）
+
+- 第1便の本番反映: AOS service `6a47122e24bec8372d3e1a31`、deployment `6a9bcc26918d24b236ebc43e` は `RUNNING`。health=200。認証復帰時・再読込時の自動照会、最大12回の定期照会、会社切替時の旧結果破棄、全Appの接続リンク、厳密ID対応、誤った「認証可能」表示修正を反映。戻し先は `6a9ab073c2f0ed37446d6c30`。
+- 第1便後の実確認で追加不具合を特定: 専用Serverの `app/list` は403由来の -32603、`app/installed` は正常。このため実際に enabled+callable な同一App IDだけを公式runtime応答から確認する互換処理を追加中。エラーも保持し、欠落Appは認証済みと推測しない。
+- Gmail: 実際の `gmail.get_profile` 完了と `result.structuredContent.email` を確認。モデルに見えるcontentにはメールが無く、従来判定が誤っていた。実Tool応答をメモリ内でhash照合する追加修正・回帰テスト中。メール一覧・分類・返信候補のread-only経路も実装し、同一会社の実行中Runだけ受け付ける。送信・Gmail下書き作成・Calendar書込は含めない。まだ業務完了ではない。
+- Linear: AOS→ChatGPT個別Plugin画面→「プラグインをインストール」を実操作し、Linearへ進んだ。現時点の到達先は `Create a workspace`。OAuth承認完了ではない。既存workspaceまたは対象除外についてユーザーへ質問済み。新規workspace・外部アカウント・課金は作成していない。
+- Google Drive/Supabase: 専用Serverから実Tool完了とファイル1件／project一覧の応答を確認。対象データの変更なし。業務固有ファイル・projectへの最終照合は別項目。
+- 朝Brief: 2026-09-05 morning、会社1、15項目をHomeへ実配信。delivery=`brief_delivery_mto3gwme_vf95vq`、run=`brief_home_mto3gwme_cfumal`。同じoutput fingerprintのGETでdelivered・synced・reconciled・cleanup verifiedを確認。既存 `aos-morning-brief` は朝夕とも生成だけでなく配信・再取得を行うよう公式App APIで更新。今後の自然起動を実証したとはしない。
+- Backup/Obsidian: backup HEADとGitHub mainは `7b8c1ba4cb8f8ded971246df71f1ace34b76d065` で一致（最新snapshotは9月3日）。`git fsck --no-reflogs` 成功。隔離先へSTATE.mdを復元しblob hash一致。Obsidian監査は10 project、blocked=0、attention=5（更新時刻の注意）。監査実物は `work/aos-plan-obsidian-audit-20260905.json`。無関係な共有memory・AGENTS.mdは変更していない。
+- 追加修正: Obsidianの読み取り監査結果をrun-owned receiptへ保存する処理に、Vault/Git書込用の承認待ちを誤適用しないよう修正。maintenance/export/Git完了とは区別。追加分は第2便の検証・配信が残る。
+- 検証済み: 第1便 client/Gmail 20件・UI63件、web typecheck/build、server build。追加分 Gmail review 3件、worker31件、registered workflow9件。後続の新規変更について必要なテストを再実行中。
+- 未完了の主要作業: 第2便の反映とGmail業務readback、自然起動3回の実処理soak、NisenPrints/Daily AIの登録済み実処理接続、UI受入、最終進捗確定。求人は対象外のまま。全自動運転完成とは報告しない。
+
+## 今回の除外
+
+- 2026-09-05追記のユーザー指示: Runwayは別途行うため、追加・接続・Runway必須の生成／公開を今回から除外する。Daily AI/NisenPrintsの非生成部分・既存接続確認は進めるが、生成契約を弱めた公開や、除外部分の完了偽装はしない。
+
+## 2026-09-05 追加進捗（17:31 JST）
+
+- 第2便 deployment `6a9bcf83918d24b236ebc49e` はRUNNING。実配信client source hashがlocalと一致。Gmail本人照合はHTTP 200、実profile Tool完了・会社account_ref hash一致・cleanupを確認。
+- Gmail本番Run `run_mto48g8a_3a0x63` は実検索までは実行したが、応答のモデル向け表示が切れ、`gmail_review_result_incomplete`。後続診断で実データは `structuredContent.emails` にあることを確認した。現在はその実データを分類へ直接渡し、全message IDと件数を照合する第3便をデプロイ中。途中のモデルによる「0件」は業務完了に採用していない。
+- Obsidian本番Run `run_mto4dmc4_1ribkp` は監査完了、同一RunのServer受理receipt・readback・cleanup成功。監査10 project、blocked=0、attention=5。Vault maintenanceと共有memory更新はしていない。
+- Mac workerはidle確認後にSIGTERMで正常終了（exit 0）、同じLaunchAgentを起動。新PID 62630でfresh heartbeatと上記Run pickupを確認。他アプリ・他workflowは再起動していない。
+- 第3便のfocused検証: client/Gmail 28件、UI63件、worker34件、server build、web typecheck/build PASS。新規の正本データ照合は「空メール捏造・未知のmessage ID・不一致会社・想定外write」を拒否する回帰を含む。
+- Printify GET診断はショップ `21066723 / Nisen JP` と既存商品 `6a4a09f08295538b61036f1b` の取得に成功。過去のブラウザ認証不足とAPI接続を区別。Runway必須の新規生成／公開はユーザー指示でスキップ。
+
+## 目的と対象
+
+- ユーザーの会社1だけで、AOSからプラグインを選択・追加・認証し、必要な外部サービスを実際に利用できるようにする。最新の本番記録の会社IDは `company_2560580981cedfd106b66245`。実行時に本番registryとの一致を確認し、診断用local会社へ切り替えない。
+- 対象業務はメール確認・返信管理、日次AI研究・公開、NisenPrints、日次バックアップ確認、Obsidian週次監査の5系統。各業務の既存manifest・設定・許可範囲を使う。複数会社対応の拡張、求人応募、不要な新規プラグインの導入は今回の完成条件に含めない。
+- 「全プラグイン対応」は、Codex Serverから取得できるカタログ全件を正しく表示し、対応する追加・認証・利用導線を提供すること。全件を勝手にインストールしたり、持っていない外部アカウントを作成したり、一括権限付与することではない。
+- 完成とは、画面表示や内部Run生成だけでなく、対象業務が予定に従って動き、必要な成果物・外部結果を確認でき、朝夕Briefに反映され、想定した一時障害から復旧できる状態。認証不要のローカル処理や純粋な確認業務に、不必要な外部書き込みは追加しない。
+
+## 計画の基準となる確認済み記録
+
+今回、現行コード、Plan.md、STATE.md・GOAL.mdの最新節、9月5日07:54 JSTの保存済み本番readbackを確認した。本番へ新たに接続して採取した現在値とは区別する。
+
+| 項目 | 到達点と残件 |
+| --- | --- |
+| AOS・専用Codex Server | 直近のデプロイ・health・Plugin一覧・追加fallbackは実装／検証記録あり。今回、再デプロイはしていない。 |
+| Linear認証 | 直前のUI確認はChatGPTの「プラグインをインストール」案内ページまで。実際のProvider OAuth承認画面、承認完了、専用Serverからの利用は未確認。以前の「承認画面確認済み」という表現は訂正する。 |
+| カタログ | 過去UI記録は180件、専用Serverの追加済みはLinear・Gmail・Google Drive・Supabase。authPolicyやinstalledだけで「認証可能」「利用可能」と判定しない。 |
+| Gmail | 保存されたaccount_refはverifiedでも、最新業務は `gmail_provider_read_only_call_not_executed`。以前の `gmail_provider_account_ref_mismatch` も実アカウント照合で解消を確かめる。 |
+| NisenPrints | 最新はread-only完了。以前の実処理は `printify_auth_required`。商品・公開・投稿の完了証拠は別途必要。 |
+| Obsidian | 最新業務は `obsidian_artifact_write_requires_approval`。ローカル成果物への不要な承認制約なのか、実際の保護対象なのかを切り分ける。 |
+| scheduler | 自然tickと3-cycle soakの内部Run生成は既存実証を再利用する。外部業務までの無人完了を証明したものではない。 |
+| 朝夕Brief | 9月5日朝は会社1・15項目・生成完了。ただし `delivery=not_attempted`。9月4日夜はブラウザ接続失敗で生成未達。 |
+| 求人応募 | 最新registryには6業務・6有効scheduleがあり、求人も残る。今回の5業務の完成率から除外し、応募送信は実行しない。他タスク所有の運用を無断で停止・削除しない。 |
+
+## 実行原則
+
+- 既に許可された低リスク・可逆な作業は当方で進める。新しいPlanner、権限チェッカー、handoff、証跡専用レイヤーを追加せず、既存処理の問題箇所を直す。
+- 不具合は関連ログ・レスポンス・差分から原因を特定し、修正後に同じ利用シナリオで確認する。根拠なく全サービスを再ログインさせたり、失敗ボタンを繰り返し押したりしない。
+- 対象と権限範囲が既に許可されている操作は進める。OTP/CAPTCHA・本人確認、未承認の重要権限、課金・破壊・重大な本番変更だけは具体的な対象と影響をまとめて確認する。確認を要する1項目のために独立した作業全体を停止しない。
+- 外部効果の結果が不明な場合は、同じ対象・操作IDを照合して未実行／実行済みを確定する。根拠が得られれば適切に再開し、重複送信・重複公開しない。
+- 通常のChrome確認はCompanionを使い、進行中のrunやworkflowが選択済みのsurfaceは維持する。別タスクのタブ・session・lease・認証を流用しない。
+
+## 第1段階：AOSから「追加 → 本当の認証 → 利用確認」を完成させる
+
+- [x] **1-1 現在の接続経路を確定する。** 本番会社registry、配信版、専用Codex Serverのversion・利用可能method・plugin/app応答を照合する。UIの180件表示とCLIのavailable件数差、会社選択の残存表示をデータの出所まで確認する。最新仕様が必要な点だけ公式資料で確認する。
+  - 2026-09-05結果: 完了: 本番会社・専用Server0.148.0・180件catalog・app/list不整合とapp/installed互換経路を実応答で特定。
+  - 完了条件: 対象会社・Server・カタログの出所が一致し、何を修正すべきかが実レスポンスで特定されている。過去の成功やlocal loginを代用しない。
+- [ ] **1-2 Linearを最初の実認証シナリオとして通す。** AOSの接続ボタンから実際に操作し、案内／インストールページの先にある公式接続操作とProvider承認への遷移を確認する。`installUrl`をOAuth URLと即断しない。Codex本体のログイン、Plugin追加、ChatGPT App接続、Provider認証、専用Serverの実利用を区別して既存実装を修正する。
+  - 2026-09-05結果: 未完: Linearの既存workspace未指定。公式の接続操作後にCreate a workspaceへ到達。アカウント作成や完了の推測はしない。
+  - 完了条件: 正しいサービス・アカウント・要求権限の承認画面を視覚確認し、許可範囲で接続後、会社1に紐づく専用Serverから無害なLinear読み取りが成功する。案内ページを開いただけでは未完了。
+- [ ] **1-3 戻って手動再確認する手間を除く。** サポートされる公式callback／状態取得と、AOSへの復帰時の自動再照会を接続する。時間上限付きの照会、キャンセル・拒否・期限切れ、popup制限時の代替リンク、複数Appを持つPluginの全認証先を扱う。現行の先頭URLだけ開く処理や2件制限、曖昧な「認証不要または未確定」の表示を見直す。
+  - 2026-09-05結果: 部分完了: 復帰/再読込自動照会・回数上限・会社世代guard・公式リンク保持を本番反映。Gmail自動4/4を視覚確認。Canva再認証完了、取消/失効の実機受入は未完。
+  - 完了条件: 認証後の手動再クリックを原則不要にし、未追加／接続操作が必要／接続確認中／利用可能／認証不要／エラーが実状態と一致する。画面再読み込み・Server再起動後も状態と利用可能性が維持される。
+- [ ] **1-4 カタログ全件へ同じ導線を適用する。** 厳密なPlugin/App IDで対応付け、新規取得項目にも使える一覧・検索・接続操作を整える。authPolicyだけの一律「認証可能」表示をやめる。専用Serverが実際に対応する認証方式ごとに代表例を検証し、非対応項目には公式の利用手段・制約を表示する。
+  - 2026-09-05結果: 部分完了: 180件の正確ID表示と共通導線、AOSボタンからCanva新規追加を確認。全件認証済みではない。Canva失効とLinearの実認証が未完。
+  - 完了条件: 取得カタログ全件に矛盾のない操作と状態があり、ホームページだけ開く行き止まりがない。全件の実アカウント認証済みとは表示しない。未インストール項目についてもAOSボタン経由の追加処理を確認し、直接CLIの成功だけで代用しない。
+
+## 第2段階：必要な外部サービスと5業務の実処理をつなぐ
+
+- [x] **2-1 Gmailの本人アカウントと実呼び出しを修復する。** 会社1の設定、専用Serverが返すProvider identity、workflowの呼び出し先を照合する。誤接続と呼び出し欠落を別々に直し、必要な場合だけ公式再認証を行う。取得可能な最小のプロフィール／メール一覧読み取りで確認する。
+  - 2026-09-05結果: 完了（読み取り・分類・未送信返信案の範囲）: 本人hash一致、最新100件の実ID照合、自然起動3回で同一Run結果保存/照合/cleanup確認。送信・Gmail下書きは0。返信案の件数上限制御は独立残件。
+  - 完了条件: 正しい本人アカウントで同じRunの実API結果を確認でき、account_refの表示とも一致する。メール確認→分類→返信案まで通す。送信は既存の対象・内容・承認範囲に従い、承認待ちを送信成功とは数えない。
+- [ ] **2-2 Google Drive・Supabase・業務に必要な残りの接続を実確認する。** 既存接続を再利用し、会社1が使うファイル／プロジェクトへの最小読み取りで確認する。ローカルCodexの接続で専用Serverの欠落を隠さない。必要な認証情報は公式の永続化方法で保持し、秘密値をコピー・ログ出力しない。
+  - 2026-09-05結果: 部分完了: 専用ServerからDrive/Supabaseの実read、Printify既存shop/product GET成功。Canvaはoauth_token_invalid_grantで、会社account_ref未保存。
+  - 完了条件: 必要な接続ごとに対象・実行場所・実アクセス結果が揃う。不要な権限拡大や全Plugin一括導入はしない。
+- [ ] **2-3 NisenPrintsを1商品単位で通す。** 既存manifestの順にCanva・Printify・Etsy・Pinterestの必要接続と対象ストアを確認し、Printify認証の原因を解消する。既存の承認済み商品・内容で、作成／更新→対象の公開・投稿→元データ同期まで実行する。課金など未承認の効果がある箇所だけ切り分ける。
+  - 2026-09-05結果: 部分実施・生成/公開は今回スキップ: 既存Printifyのshop/product read成功。Canva再認証と非生成部分のsource同期が残る。商品作成・新規公開は未実施。
+  - 完了条件: 実行対象に含まれる各サービスの実物ID・URL・状態が同じRunと一致する。下書きまでなら下書き完了と報告し、公開完了へ格上げしない。
+- [ ] **2-4 日次AI研究・公開を通す。** 現行workflowの調査→原稿→公開→管理データ更新を実接続へ結び、空のworker receiptで終了する箇所を修正する。公開先・内容は既存の許可範囲を使う。
+  - 2026-09-05結果: 生成/公開は今回スキップ: Runway未導入。非生成の調査/原稿/source同期を登録Runへ結ぶ部分は未完。代替画像による公開はしない。
+  - 完了条件: 原稿と対象公開先の実結果、管理データの同期が確認できる。非公開運用の部分は、その設定どおりの成果物を判定する。
+- [x] **2-5 バックアップ確認とObsidian監査を完了させる。** バックアップは現物・更新日時・整合性を確認し、必要な復元テストは隔離先で行う。Obsidianの制約はエラー発生箇所まで追い、許可済みのproject-ownedローカル監査成果物への書き込みだけを通す。Codex共有memoryや保護ファイルを勝手に変更しない。
+  - 2026-09-05結果: 完了（確認/監査の範囲）: Backup現物・remote parity・fsck・隔離復元hashを確認。Obsidian本番Runで10 project監査・receipt/cleanup成功。新規backup pushやVault書込はしていない。
+  - 完了条件: 確認対象の実物と監査成果物を読み返せる。外部操作のない業務は実成果物で完了を判断し、無関係なProvider認証を要求しない。
+
+## 第3段階：無人実行・自動復旧・朝夕Briefを成立させる
+
+- [ ] **3-1 実行対象と運用場所を合わせる。** 今回は5業務をreadinessの対象にし、求人は「対象外」と表示する。求人の既存scheduleが別タスクの運用か確認し、今回の検証からは起動しない。各業務がZeaburだけで動くのか、Mac／ブラウザ接続が必要なのかを既存構成に沿って明示する。
+  - 2026-09-05結果: 部分完了: 起動元をZeaburへ一本化、Mac worker継続。求人を起動せず、Runwayを未追加で保持。Readiness/Briefの対象外表示は未反映。Mac依存を保持。
+  - 完了条件: 他社・診断会社・求人を誤起動しない。Mac依存が残る業務を「Mac停止中も完全稼働」とは説明しない。ユーザー不在時の必要なrunner接続・再接続が構成されている。
+- [ ] **3-2 schedulerから実処理へ接続する。** 既存の自然tick・内部soak証拠は維持し、scheduled Runが第2段階の実Provider／成果物処理を呼ぶようにする。必要な既存の会社scope権限を使用し、UIの操作を毎回要求する不要な分岐を直す。
+  - 2026-09-05結果: 部分完了: GmailとObsidian監査の実処理/receipt経路は本番成功。Backup予定Runはまだrunner存在確認。残りの非生成業務との接続を続ける。
+  - 完了条件: 予定時刻の起動→実処理→必要な結果保存・同期→照合→自分の作業資源のcleanupが同じRunで完結する。純粋な確認業務には、その業務に必要な証拠だけを求める。
+- [ ] **3-3 一時障害から自動復旧する。** 期限・回数を決めた通信再試行、対応するtoken更新、worker再起動後の再開、同じ実行IDによる重複防止を既存経路に追加／修復する。Companion障害は現在のタスク対象で原因確認・接続回復・再検証まで進める。
+  - 2026-09-05結果: 部分完了: Gmail timeout修正、重複防止テスト、正常idle再起動後のworker heartbeat確認。意図的な切断・期限切れ・稼働中再起動の代表障害試験は未実施。
+  - 完了条件: 代表的な切断・タイムアウト・worker再起動を管理された環境で起こしても、結果を照合して継続できる。失効して本人操作が必須の場合だけ、対象・理由・操作リンクを1件にまとめる。別業務は続行する。
+- [x] **3-4 Brief生成からAOS Homeへの配信まで自動化する。** 朝夕の生成だけで終わらせず、既存delivery処理を接続しHomeへの保存・表示を確認する。ブラウザ接続障害だけで内部Brief全体が停止しないよう、既存の認証済み会社API／service経路を使える構成に直す。権限を迂回せず、外部メール・通知先を勝手に追加しない。
+  - 2026-09-05結果: 完了（実装/朝夕の実配信確認）: 既存heartbeatを生成→Home配信→GETへ更新。9月5日朝夕とも実配信/同一fingerprint readback成功。未来の自然配信を過去の成功とは数えない。
+  - 完了条件: 正しい日付・会社・時刻の朝夕BriefがHomeに届き、実業務完了、下書き、要対応、対象外、未確認を区別している。生成済みを配信済みと表示しない。
+- [x] **3-5 3回の自然起動で業務接続を確認する。** 対象・効果を限定した短時間の検証scheduleで、手動起動ではない3回の自然実行を確認する。既存業務の公開物やメールをテスト目的で重複作成しない。各5業務の実経路確認と組み合わせ、時間上限後はログから原因修正へ進む。
+  - 2026-09-05結果: 完了（限定Gmail soak）: 09:57/10:00/10:03 UTCの3回が実100件処理まで自然完了、重複effectなし、scheduleを07:30 JST/rev7へ復元。5業務全体/長期無障害の完成ではない。
+  - 完了条件: 3回とも実処理結果、重複なし、復旧・配信結果を確認し、検証用設定は戻す。短時間soakを長期無障害の保証とはしない。観測には既存の定期実行・継続機構を使い、その間に未完の独立作業を進める。
+
+## 第4段階：本番へ反映し、日常操作で受け入れ確認する
+
+- [x] **4-1 必要な修正だけ検証・本番反映する。** 既存の未コミット変更を保護し、変更箇所に応じた認証・Provider routing・scheduler・Briefの回帰テストと必要なbuild/typecheckを行う。デプロイ対象・差分・戻し先を明確にし、本番assetとruntimeを読み返す。
+  - 2026-09-05結果: 完了: 第6便RUNNING、最新UI65件、関連scheduler/Chat29件、build/typecheck、live hash/health確認。dirty worktreeの無関係差分を保護。
+  - 完了条件: 変更した処理のテストと配信版が一致する。過去の全体テスト成功を今回の新規変更の証拠には使わず、逆に関連のない全体試験を繰り返して作業を止めない。
+- [ ] **4-2 AOS画面で日常操作を一周する。** 会社1選択→Plugin接続→Chatから依頼→Automation設定／実行→必要な承認→Run結果→朝夕Briefを代表シナリオで操作確認する。再読み込み、期限切れ接続、拒否／取消時も確認する。
+  - 2026-09-05結果: 部分完了: 会社1・Canva追加・Gmail認証4/4・Chat回答・Run履歴・Home配信を実確認。Canva/Linear承認完了と取消/失効の受入は未完。
+  - 完了条件: 操作が行き止まりにならず、正しいアカウント・対象・結果が画面とServerで一致する。不要な再承認や「ホームへ飛ぶだけ」を残さない。
+- [ ] **4-3 5業務の最終判定を揃える。** 第2段階の実業務結果、第3段階の無人実行・復旧・Briefを突き合わせる。未解決なら不足箇所だけを修正して再検証する。
+  - 2026-09-05結果: 未完: Gmail、Backup確認、Obsidian監査は実物あり。5業務の予定処理/障害復旧全体は未成立。Runway必須の生成/公開と求人は除外。
+  - 完了条件: 対象5業務がそれぞれ設定した成果を出し、定期実行・必要な復旧・Home Brief反映を確認できる。求人除外、未購入サービス、不要なPluginを未完了の分母にしない。第三者の非対応機能は制約として明記し、対応済みと偽装しない。
+- [x] **4-4 Planと運用表示を更新して引き渡す。** この節の各項目へ結果・証拠・残件を追記し、最後にSTATE.md・GOAL.mdの最新状態と整合させる。日常の入口、動く業務、必要な実行環境、本人操作が残る箇所だけを短く案内する。
+  - 2026-09-05結果: 完了（現時点の引渡し記録）: Plan・STATE・GOALへ同じ最新到達点と残る実行単位を記載。全目標の達成を意味しない。
+  - 完了条件: 「実装済み」「ローカル検証済み」「本番反映済み」「業務完了」を区別して報告できる。計画作成やqueuedのみを完了率に加算しない。
+
+## 最短の進め方と進捗管理
+
+1. 最初の実行単位は **1-1の接続確認 → 1-2のLinear実認証ルート確認・修復**。案内ページを開く同じ操作の再報告では終わらせない。
+2. 認証の共通修正を固めながら、独立して進められるGmail呼び出し調査、Obsidianローカル制約修正、Brief delivery接続を先に進める。同じファイルを変更する作業は競合しない順に実行する。
+3. 使える接続から1業務ずつ実結果まで通し、schedulerへ接続する。全Pluginの検証終了を待って業務に着手する順序にはしない。
+4. 自然起動の観測中は他の修正・UI確認を進める。期限内に完了しない項目は、原因・今行う修正・再検証方法へ分解し、単なる「次回待ち」に戻さない。
+5. 各項目は完了条件が揃って初めてチェックする。部分完了は、実装／検証／本番／業務のどこまでかを同じ項目に記録する。今回の新しい実行項目は未着手で、既存の実装・検証成果は上記基準表から引き継ぐ。
+
+計画作成時の根拠: [9月5日朝の本番readback](work/aos-morning-brief-20260905-company1-readback.json)、[9月4日夜の失敗記録](work/aos-evening-brief-20260904-readback-blocked.json)、STATE.md／GOAL.mdのv589、本ファイルのv587・v588、`apps/web/src/App.tsx` のPlugin認証処理、`apps/server/src/index.ts` のPlugin install API、`apps/server/src/codex/appServerClient.ts`。
+
+---
+
+<!-- Historical checkpoints follow. Their dated instructions do not override the active plan above. -->
 
 # Current plan pointer
 
@@ -18382,3 +20151,2999 @@ Evidence: [work/current-goal-protected-brief-localhost-readback-v461.json](work/
 **fallback_or_independent_work:** Home-only Brief生成、会社scope付きChat consultation/local fallback demo、runtime/worker health、no-effect scheduler canary、read-only source audit。
 
 Evidence: [work/current-goal-brief-chat-zeabur-readback-v462.json](work/current-goal-brief-chat-zeabur-readback-v462.json)。
+
+## 2026-09-03 Companion Zeabur deploy and terminal readback v463
+
+- ユーザーがログインしたZeabur dashboardをCompanionの新規Goal-owned tabで再確認し、Company 1の`automation-os`を`main`からデプロイした最新deployment `6a991999af18d14b178c18c8`としてreadbackした。状態は`実行中 1/1`、deployment messageは`Complete AOS company automation runtime and brief chat flows`、image pull・container start・`Automation OS server listening on 0.0.0.0:8080`まで確認できた。
+- GitHubの`origin/main`とfeature refはcommit `ce476516e987e2e723fc15726056a100089ea20f`で一致し、公開`/readyz`と`/api/health`もHTTP 200だった。これは現行コードのZeabur反映と公開readinessの証拠だが、provider business completionやremote connector owner/auth証拠とは分離する。
+- Companionの一度のtransport断は`extension_transport_unavailable`として送信前に記録され、旧tabはunknown-effect ledger-onlyとして保持した。その後、同じ古い操作をreplayせずfresh session/tabでreadbackを完了し、foreign tab/sessionの採用・cleanupは行っていない。
+
+**判定:** AOSの実装・Zeabur deploy・公開runtimeは前進し、`production_ready=false`、distinct business completion=`2/6`は維持。残りはremote registry/service-exec auth、Gmail/Codex owner verification、4 workflowのsame-Run proof、Chat planner worker、Brief外部delivery、unattended multi-day soak。
+
+**progress_attempt_now:** Companion fresh status/session、Zeabur exact service/deployment semantic+screenshot readback、Git remote ref readback、public health readback、owner-scoped cleanupを完了。
+
+**next_action_now:** authenticated remote registry/service-exec authorityとCompany 1のexact account/target/payloadが揃ったら、新規workflowを1件だけprovider receipt→source sync→reconciliation→cleanupまで実行し、その後に残りworkflowとmulti-day soakへ進む。既存queued/ambiguous Runは再送しない。
+
+**resume_trigger:** fresh authenticated Zeabur service-exec or Owner-authorized remote registry readback plus exact Company 1 account/target/payload binding。
+
+**fallback_or_independent_work:** Home-only朝夕Brief、会社scope付きChat consultation/local fallback、runtime/worker health、no-effect scheduler canary、read-only source audit。
+
+Evidence: [work/current-goal-brief-chat-zeabur-readback-v463.json](work/current-goal-brief-chat-zeabur-readback-v463.json)。
+
+## 2026-09-03 Companion multi-company heartbeat fix and Zeabur deployment v484
+
+- CompanionでZeaburの`automation-os`サービスを確認し、GitHubへpushした`346dafb`の新デプロイが`実行中 1/1`になったことをreadbackした。
+- `/api/mvp/state`のfull/UIとsummaryが`companyIds[0]`だけでportable worker heartbeatを絞り込んでいたため、2社目の会社に紐づくfresh heartbeatを隠していた。両箇所を可視会社全体の`companyIds.includes(...)`判定へ修正し、2社目heartbeat回帰テストを追加した。
+- focused Postgres state testsは`19 passed / 0 failed`、全server suiteは`1373 tests / 1356 passed / 0 failed / 17 skipped`。Companionのfresh PC Statusは`worker=running`、heartbeat`3秒前 / fresh`、Adminも`worker=running`・system-check freshになった。
+
+**判定:** heartbeat表示・会社横断readbackの実装バグ、テスト、Zeabur反映、Companion画面検証は完了。ただしGoal=`active/incomplete`、`production_ready=false`、distinct business completion=`2/6`は維持。これはコードdeployとruntime readbackの完了であり、provider業務成功ではない。
+
+**Exact blockers:** `zeabur_cli_authentication_unavailable`／remote registry・Codex App Server owner readback、残り4 workflowの同一Run provider receipt・source sync・reconciliation・cleanup、fresh account/target/payload binding、自然scheduled tickとmulti-day soak、Brief外部delivery、production Chat planner worker。歴史的queued/unknown-effect Runは再送しない。
+
+**progress_attempt_now:** multi-company heartbeat選択修正、回帰テスト、全体テスト、GitHub push、Zeabur deploy、Companion PC Status/Admin fresh readbackを完了。provider送信・応募・公開・通知・secret変更・旧Run replay・foreign resource変更は0件。
+
+**next_action_now:** authenticated remote registry/service-exec authorityまたはOwner-authorized fresh readback後、Company 1の新規workflowを1件だけexact target/account/payloadでprovider receipt→source sync→reconciliation→cleanupまで通し、成功後に未完了の残り3 workflowとunattended soakへ進む。
+
+**resume_trigger:** fresh authenticated remote registry/service-exec authority plus exact Company 1 account/target/payload binding。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+
+## 2026-09-03 Final fresh state and current truth v552
+
+- Goalは`active`（thread `01a061d7-cfdf-7532-bdbd-00c9f22c04a4`）。AOS local healthはHTTP 200、runtimeは`ready_for_authorized_admission`、server effects=`read_only`、worker effects=`enabled`。
+- Companion Profile 2はconnected。current Goalのsession/lease/tab/pending operation/active reconciliationはすべて0。見えているforeign Job taskのsessionは1、pending operationは1件だが、ownerはforeign task `01a03a2d-7b5d-76e0-80c7-ad81ed300e0a`、`page.pressKey`、`no_dispatch`であり、未操作。
+- 登録automation監査は9/9 compliant、gaps=0。Codex側`aos-morning-brief` heartbeatはACTIVEだが、AOS internal company-binding readinessは`blocked`、canonical companyはnull、Brief delivery readinessはfalse、6 schedule materializationはblocked。
+
+**Current truth:** Goal=`active/incomplete`、`production_ready=false`、business completion=`2/6`。Chat登録ゲートnegative path、foreign isolation、registry audit、runtime healthは確認済み。canonical会社、protected AOS/Zeabur authority、provider/account/target/payload binding、残り4 workflowのsame-Run proof、実Brief delivery receipt、unattended soakは未達。
+
+**stop_class:** `warn_and_continue`。
+
+**exact_blocker:** `canonical_company_unresolved`、`brief_delivery_not_configured_in_protected_aos`、`durable_scheduler_service_user_id_missing`、`current_aos_account_refs_missing`、Zeabur authenticated management target未確立。
+
+**progress_attempt_now:** 同一RunでAOS health/runtime、Companion owner境界、global registration audit、company-binding readinessをfresh readbackし、最新状態をファイル末尾へ同期した。外部効果は0。
+
+**next_action_now:** 既存controller/朝夕Brief heartbeatを維持し、次の実delivery receiptをfresh readbackする。Ownerがcanonical company mappingを確定し、Companion Profile 2に認証済みAOS/Zeabur targetが現れたら、Brief設定・schedule materialization・`377caf3`/planner worker readback後、1 workflowをprovider receipt→source sync→reconciliation→cleanupまで進める。
+
+**resume_trigger:** Ownerのcanonical company選択、およびCompanion Profile 2上の認証済みAOS/Zeabur management target。foreign pending operation・旧queued/unknown-effect Runは操作・再送しない。
+
+**fallback_or_independent_work:** Codex Home-only Brief heartbeat、local Brief preview、runtime/health、registry audit、Chat consultation/demo/approval preview、proof packet準備。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-03 Companion foreign pending boundary final readback v551
+
+- 最終Companion statusでpending operationが1件見えたが、ownerはforeign Job task `01a03a2d-7b5d-76e0-80c7-ad81ed300e0a`、sessionもforeign、methodは`page.pressKey`、effectは`no_dispatch`だった。現在Goalのsession/lease/tab/pending operation/active reconciliationはすべて0。
+- foreign session、lease、task tab、pending operationは採用・cleanup・replayせず、外国resource変更なしを確認した。AOS healthはHTTP 200、runtimeは`ready_for_authorized_admission`、Goalはactiveのまま。
+
+**Current truth:** Goal=`active/incomplete`、`production_ready=false`、business completion=`2/6`。AOS/Companion基盤と登録監査は健全だが、canonical会社、AOS internal Brief delivery、Zeabur private target、残り4 workflowのsame-Run proof、実Brief receipt、unattended soakは未達。
+
+**stop_class:** `warn_and_continue`。
+
+**exact_blocker:** foreign pending operationは本Goalのblockerではない。Goal側のexact blockerは`canonical_company_unresolved`、protected AOS/Zeabur authority未確立、provider/account/target/payload binding未確認。
+
+**progress_attempt_now:** pending ownerをfresh readbackで特定し、Goal-owned resourceが0であることを確認。foreign resourceは未操作。
+
+**next_action_now:** 既存controller/朝夕Brief heartbeatを維持し、自然tickの実delivery receiptを確認する。Ownerのcanonical mappingと認証済みZeabur/AOS targetが得られたら、同一会社scopeでBrief設定・schedule materialization・planner worker readback後、workflowを1件だけsame-Run proofへ進める。
+
+**resume_trigger:** Ownerのcanonical company mapping、およびCompanion Profile 2上の認証済みAOS/Zeabur management target。foreign pending operationを理由に操作・再送しない。
+
+**fallback_or_independent_work:** Home-only Codex Brief、local preview、runtime/health、registry audit、Chat consultation/demo/approval preview、proof packet準備。foreign lease/pending operation、旧queued/unknown-effect Runは触らない。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-03 Codex BriefとAOS internal readinessの分離確認 v550
+
+- `/Users/nichikatanaka/.local/bin/audit-codex-automations`をfresh実行し、登録automationは9/9 compliant、gaps=0、external action=0だった。`aos-morning-brief`はCodex App heartbeatとしてACTIVE（07:45/21:45 JST、同一Goal thread）である。
+- `npm run aos:company-binding-readiness`をfresh実行した結果、AOS内部のreadinessは`blocked`、`canonical_company_id=null`、trigger=`company_2560580981cedfd106b66245`とlocal=`company_9588eaafb46d7cbaead81811`のmismatch、service identity未設定、account refs=0、Brief `delivery_configured=false`、6 schedule materialization blockedだった。build以外のmutation/provider/browser/notificationは0。
+- よって「Codex heartbeat登録済み」と「AOS内部の保護されたBrief delivery準備済み」は別状態として扱う。前者は次の自然tickを待てるが、後者はOwnerのcanonical mappingとAOS private authorityが確立するまで完了と呼ばない。
+
+**Current truth:** Goal=`active/incomplete`、`production_ready=false`、business completion=`2/6`。登録整合性9/9、runtime/health、Chat安全ゲートは健全。AOS internal Brief delivery、Zeabur private target、canonical company authority、残り4 workflowのsame-Run proof、実Brief receipt、unattended soakは未達。
+
+**stop_class:** `warn_and_continue`。
+
+**exact_blocker:** `canonical_company_unresolved`、`brief_delivery_not_configured_in_protected_aos`、`durable_scheduler_service_user_id_missing`、`current_aos_account_refs_missing`、Zeabur authenticated management target未確立。
+
+**progress_attempt_now:** Codex App登録監査とAOS company-binding readinessを同一時点で比較し、Briefの二層状態を分離記録した。外部効果は0。
+
+**next_action_now:** 既存heartbeatを維持し、次の実delivery receiptをfresh readbackする。Ownerのcanonical company mappingとAOS private authorityが確定したら、Brief delivery設定・schedule materialization・`377caf3`/planner worker readbackを同じ会社scopeで行う。
+
+**resume_trigger:** Ownerが`company_2560580981cedfd106b66245`または`company_9588eaafb46d7cbaead81811`を実運用対象として明示し、Companion Profile 2で認証済みAOS/Zeabur targetがfreshに見えること。
+
+**fallback_or_independent_work:** Codex Home-only heartbeat、local Brief preview、runtime/health、registry audit、Chat consultation/demo/approval preview、proof packet準備。AOS internal schedule materialization、provider実行、旧Run replay、foreign resource操作はしない。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-03 Chat registration gate unresolved-scope regression v549
+
+- Companion Profile 2でlocal routeを`company_9588eaafb46d7cbaead81811`へ切り替えてfresh semantic＋visual readbackしたところ、Chat相談projectionは`company_scope_forbidden`で停止し、company-scoped登録controlsは表示されなかった。
+- この状態でcreate API、保存、provider、送信、公開は呼ばれていない。新しく追加した`companyScopedRegistrationReady` gateが、canonical company/readback不一致をcreate前に止める経路を実画面で確認した。
+- 検証tabはGoal-owned cleanupで閉じ、foreign Job session/leaseは未変更。これは安全ゲートの回帰証跡であり、canonical会社確定・登録・business completionの証跡ではない。
+
+**Current truth:** Goal=`active/incomplete`、`production_ready=false`、business completion=`2/6`。AOS runtime/healthと定期登録は健全だが、Zeabur private target、canonical company authority、残り4 workflowのsame-Run proof、Brief実delivery、unattended soakは未達。
+
+**stop_class:** `warn_and_continue`。
+
+**exact_blocker:** `company_scope_forbidden`（local company route）、`canonical_company_unresolved`、Zeabur authenticated management target未確立、actual Brief delivery receipt未観測。
+
+**progress_attempt_now:** 未解決会社scopeで登録ゲートのnegative pathをCompanion実画面検証し、create/provider effectなしとtask-owned cleanupを確認した。
+
+**next_action_now:** 既存controller/朝夕Brief heartbeatを維持し、次のdelivery receiptをfresh readbackする。Ownerがcanonical会社を一意に確定し、認証済みZeabur targetが見えたら`377caf3`/planner workerをreadbackし、1件の新規workflowをsame-Run proof chainへ進める。
+
+**resume_trigger:** Ownerのcanonical company mapping確定、およびCompanion Profile 2上のuser-authenticated Zeabur management target。credentials/OTP/CAPTCHAは自動入力しない。
+
+**fallback_or_independent_work:** Home-only朝夕Brief、company-scoped Chat/local fallback、runtime/health、read-only registry audit、proof packet準備。旧queued/unknown-effect Run、foreign lease、同一送信keyの再送はしない。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-03 Chat作成のcanonical registration gate v548
+
+- Chatの会社scope付き相談・read-only実演preview・承認preview入口を、Companion Profile 2の実画面で再確認した。`company_2560580981cedfd106b66245` / 会社1は`matched`、registered automation 6、AOS automation 6、schedule 6で、3入口は表示・有効だった。
+- `canCreatePlan`と`createFromChat`に、freshなcompany consultation readbackの`company_scoped_registration_ready=true`および`canonical_company_id===targetProject`を必須化した。未確認時はcreate APIを呼ばず、exact blockerを表示する。`npm run typecheck:web`と`npm run build:web`は成功し、今回の検証ではcreate/provider/save/send/publishを実行していない。
+- 検証後、Goal所有のCompanion session/lease/tab/pending operationを0へcleanupした。foreign Job session/leaseは未変更。AOS local healthはHTTP 200、runtimeは`ready_for_authorized_admission`、worker effectsはenabled、server effectsはread-onlyのまま。
+
+**Current truth:** Goal=`active/incomplete`、`production_ready=false`、business completion=`2/6`。今回の進展はChatの相談・実演・承認preview入口と登録安全ゲートの実装/実画面確認であり、registration/business completionではない。Zeabur private management target、canonical company authority、残り4 workflowのsame-Run provider receipt/source sync/reconciliation/cleanup、朝夕Briefの実delivery receipt、unattended soakは未達。
+
+**stop_class:** `warn_and_continue`。
+
+**exact_blocker:** `zeabur_user_authentication_or_private_management_target_unavailable`、`canonical_company_unresolved`、freshなeffectful workflowのaccount/target/payload/approval binding未確認、actual Brief delivery receipt未観測。
+
+**progress_attempt_now:** Chatのregistration gateを追加し、typecheck/buildとCompanionのsemantic/visual UI readbackを実施。検証用のlocal UI draft以外の外部効果はなく、Goal-owned resourcesをcleanupしforeign task resourcesを保持した。
+
+**next_action_now:** 既存controller/朝夕Brief heartbeatを維持し、次の会社別delivery receiptをfresh readbackする。認証済みZeabur management targetとcanonical company mappingが得られたら`377caf3`/planner workerをreadbackし、対象会社を一意に固定した新規Runを一件だけprovider receipt→source sync→reconciliation→cleanupまで進める。
+
+**resume_trigger:** Companion Profile 2上のuser-authenticated Zeabur management targetとOwnerが一意に確定したcanonical company mapping。credentials/OTP/CAPTCHAは自動入力しない。
+
+**fallback_or_independent_work:** Home-only朝夕Brief、company-scoped Chat/local fallback、AOS runtime/health、read-only registry audit、proof packet準備。旧queued/unknown-effect Run、foreign lease、同一送信keyの再送はしない。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-03 Post-Chat runtime and cleanup readback v546
+
+- Chat stage verification後の`/api/health`はHTTP 200。Companion Profile 2はconnected、current Goalのsession/lease/tab/pending operationは0、foreign Job resourceは未変更。
+- Goalは`active/incomplete`、`production_ready=false`、business completion=`2/6`。ChatのUI入口検証は完了したが、provider業務完了・Brief実delivery・production deployment・unattended soakは未達。
+
+**next_action_now:** 既存heartbeatを維持し、次の朝夕Brief delivery receiptを確認する。認証済みZeabur management targetとcanonical company mappingが得られた時点で`377caf3`/planner workerをreadbackし、一件のsame-Run proof chainへ進む。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-03 Chat相談・実演・承認preview入口の会社scope可視化 v545
+
+- `apps/web/src/App.tsx`と`apps/web/src/controlManifest.ts`に、会社scopeを維持したChatの「相談を入力」「read-only実演preview」「承認previewを相談」を追加。いずれもローカルの入力下書き準備だけで、送信後もprovider・保存・送信・公開を開始しない境界を画面に明示した。
+- `npm run typecheck:web`と`npm run build:web`は成功。Companion Profile 2で`http://localhost:8787/#/chat`をfresh readbackし、`company_2560580981cedfd106b66245` / `matched` / 登録6・AOS6・schedule6、3入口enabledを確認。「相談を入力」を1回だけvisual proof付きで実行し、相談文の入力準備と「送信するまで外部操作はありません」をsame-tab semantic＋visual readbackした。provider/save/send/publishとAOS business effectは0。
+- 検証後のtask-owned tab 2枚はCompanion cleanupで閉じ、foreign taskのtab/leaseは未変更。Goalは`active/incomplete`、`production_ready=false`、business completion=`2/6`のまま。
+
+**Current truth:** Chatの相談・実演・承認previewの入口と会社scope表示は実画面で確認済み。これは登録済みworkflowのprovider業務完了や朝夕Briefのdelivery receiptではない。Zeabur認証済み管理target、`377caf3` production readback、remote registry/service-exec、各workflowのsame-Run proof、Brief実delivery、unattended soakは未達。
+
+**stop_class:** `warn_and_continue`。
+
+**exact_blocker:** `zeabur_user_authentication_or_private_management_target_unavailable`、`canonical_company_unresolved`、`codex_app_server_not_verified`、effectful workflowのfresh account/target/payload/approval binding未確認、actual Brief delivery receipt未観測。
+
+**progress_attempt_now:** Chat UIの実装・typecheck/build・Companion same-target visual/semantic readback・local draft boundary・task-owned cleanupを完了。UI mutationはCompanion上で記録されたが、provider/business effectは発生していない。
+
+**next_action_now:** 既存のcontroller/朝夕Brief heartbeatを維持し、次の自然tickの会社別delivery receiptを確認する。user-authenticated Zeabur targetが得られたら同じCompanion surfaceで`377caf3`とplanner workerをreadbackし、Ownerが一意に確定した会社のworkflowを一件だけprovider receipt→source sync→reconciliation→cleanupまで通す。
+
+**resume_trigger:** Companion Profile 2上のuser-authenticated Zeabur management target、private AOS ingress/Owner authority、canonical company mapping、exact account/target/payload binding。
+
+**fallback_or_independent_work:** all-company local Brief preview、会社scope付きChatの相談・read-only実演・承認preview、AOS runtime/local health、read-only registry audit、proof packet準備。旧queued/unknown-effect Run、foreign lease、同じ送信keyの再送はしない。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-03 Company-scoped Chat boundary v542
+
+- 会社256のChat routeを同じCompanion Profile 2で個別semantic query。`read-only`表示=1、一般`承認`リンク=1、会社別`相談`=0、`実演`=0、`登録`=0。一般承認リンクは会社別登録の証拠として扱わない。
+- transactionは`verified / capsule effect_state=no_dispatch / dispatch_count=0 / provider_external_action_executed=false`。task-owned session/tab cleanup完了、foreign tabs不変。
+
+**Current truth:** Goal=`active/incomplete`、`production_ready=false`、business completion=`2/6`。Chat routeの入口・read-only noticeは確認済みだが、company-scoped registration、canonical company、Owner/private ingress、Zeabur management target、same-Run business proof、朝夕delivery receipt、unattended soakは未達。
+
+**stop_class:** `warn_and_continue`。一般承認リンクだけで会社登録・planner・provider実行へ進めない。canonical binding未解決のままの登録、認証推測、外部効果は`must_stop`。
+
+**exact_blocker:** `chat_company_scoped_registration_not_ready`、`canonical_company_unresolved`、`aos_private_ingress_authentication_required`、`zeabur_authenticated_management_target_unavailable`。
+
+**progress_attempt_now:** 会社256 Chatの個別semantic readbackと同一runのno-dispatch・cleanupを完了。planner、保存、provider、通知、secret、foreign resource変更は0件。
+
+**next_action_now:** 次のACTIVE controller heartbeatは既存continuation keyをfresh reconciliationし、再送しない。Owner/private ingressとcanonical companyが一致した後、Chat相談→read-only実演→approval preview→company-scoped registrationの順でfresh readbackし、Company 1の1件をprovider receipt→source sync→reconciliation→cleanupへ進める。
+
+**resume_trigger:** company-256またはOwnerが明示したcanonical companyのfresh readbackで、Chatの会社別controlsとexact account/target/payload/approvalが同一scopeで確認できること。
+
+**fallback_or_independent_work:** local Brief/Chat preview、runtime/registration audit、readiness tests、proof packet準備。foreign task resources、sent_unverified key、旧Run、CLI/IAB/Browser Useへの暗黙切替は触らない。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-03 Companion owner-scope post-cleanup v540
+
+- fresh `companion_status`でconnected Profile 2は1件。current Goal所有はlogical session=0、lease=0、task tab=0、pending=0、active reconciliation=0。task-owned Zeabur readbackのtemporary session/tabもcleanup済み。
+- foreign Job session=1、active lease=1、task tabs=14は存在するが、別task所有のため操作・claim・cleanupはしていない。`foreign_resources_mutated=false`。
+
+**Current truth:** Goal=`active/incomplete`、`production_ready=false`、business completion=`2/6`。Companionのcurrent Goal lifecycleはcleanだが、認証済みZeabur management target、Owner/private ingress、canonical company binding、same-Run business proof、朝夕delivery receipt、unattended soakは未達。
+
+**stop_class:** `warn_and_continue`（foreign resourcesは情報のみ）。foreign leaseの横取り・終了・cleanup、404/timeout fingerprintの再送、認証推測は`must_stop`。
+
+**exact_blocker:** `zeabur_authenticated_management_target_unavailable`、`aos_private_ingress_authentication_required`、`canonical_company_unresolved`、`scheduled_brief_delivery_receipt_not_observed`。
+
+**progress_attempt_now:** current Goal-owned Zeabur sessionをterminal cleanupし、直後のowner-scoped statusで残存0を確認。foreign resource、provider、secret、notification、business effectは0件。
+
+**next_action_now:** 既存continuation keyは再送せず、次のACTIVE controller heartbeatによるfresh reconciliationを待つ。ユーザーが同じProfile 2に認証済みZeabur management targetを表示した後、deployment/worker readback→Brief delivery receipt→Company 1の1件のreceipt→source sync→reconciliation→cleanupへ進める。
+
+**resume_trigger:** current Goal所有のCompanion resourceがcleanなまま、Profile 2で認証済みZeabur management targetとAOS Owner/private ingress、canonical company、exact account/target/payload/approvalがfresh一致すること。
+
+
+
+**fallback_or_independent_work:** local Brief/Chat preview、runtime/registration audit、readiness tests、proof packet準備。foreign task resources、sent_unverified key、旧Run、CLI/IAB/Browser Useへの暗黙切替は触らない。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-03 Brief delivery semantics alignment v538
+
+- `apps/server`は既に`AOS_BRIEF_DELIVERY_MODE=home_only`を認識していたが、`scripts/aos-company-binding-readiness.mjs`が常に`brief_delivery_configured=false`を渡していたため、Home-onlyの朝夕Briefを誤って未設定と表示していた。CLIをserver/readbackと同じ判定に修正した。
+- `AOS_BRIEF_DELIVERY_MODE=home_only`のbounded readbackで`readiness.brief.delivery_configured=true`、`exact_blocker=null`を確認。CLI会社binding test=1/1、関連server/Chat/readiness tests=68/68、build=passed。会社binding、provider receipt、source sync、reconciliation、cleanup、Chat登録、production readinessは緩めていない。
+- 現行の朝夕heartbeatはHome/同一Goal thread向けに登録済みだが、将来の自然scheduled delivery receipt自体はまだ未観測。`Brief生成`や設定readbackだけを配信成功とは呼ばない。
+
+**Current truth:** Goal=`active/incomplete`、`production_ready=false`、business completion=`2/6`。Home-only Brief設定は正確に表現できるようになったが、認証済みZeabur management target、Owner/private ingress、canonical company binding、same-Run business proof、実際の朝夕delivery receipt、unattended soakは未達。
+
+**stop_class:** `warn_and_continue`。Brief設定を理由に会社bindingやprovider業務実行へ進めない。認証推測、404/timeout targetの再送、外部通知の代行は`must_stop`。
+
+**exact_blocker:** `zeabur_authenticated_management_target_unavailable`、`aos_private_ingress_authentication_required`、`canonical_company_unresolved`、`scheduled_brief_delivery_receipt_not_observed`。
+
+**progress_attempt_now:** serverとCLIのBrief delivery判定を一致させ、Home-only readbackと68件の関連テストを完了。provider、browser business action、secret、notification送信、foreign resource変更は0件。
+
+**next_action_now:** 次のACTIVE heartbeatは既存continuation keyをfresh reconciliationし、再送しない。認証済みZeabur targetとOwner/private ingressが揃った後、deployment/worker readback、朝夕heartbeatの一回のdelivery receipt、Company 1の1件のreceipt→source sync→reconciliation→cleanupを順に確認する。
+
+**resume_trigger:** Home-only Brief heartbeatの自然実行または公式readbackでdelivery receiptが取得でき、かつCompanion Profile 2で認証済みZeabur management targetとAOS Owner/private ingress、canonical company、exact account/target/payload/approvalが一致すること。
+
+**fallback_or_independent_work:** local Brief/Chat preview、runtime/registration audit、readiness tests、proof packet準備。foreign task resources、sent_unverified key、旧Run、CLI/IAB/Browser Useへの暗黙切替は触らない。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-03 Current-task Zeabur 404/timeout boundary v536
+
+- 同じ選択済みCompanion Profile 2で`https://zeabur.com/dashboard`をbounded read-only確認したが、画面は`404: This page could not be found.`。`tabs.navigate`は完了したものの、続く`page.delay`がtimeoutし、queryは実行されなかった。
+- transactionは`result=blocked / exact_blocker=operation_timeout / capsule effect_state=known_no_effect / dispatch_count=1 / provider_external_action_executed=false`。task-owned session/tabはcleanup済み、foreign tabsは不変。認証・secret・SSO・deployment・provider操作は行っていない。
+
+**Current truth:** Goal=`active/incomplete`、`production_ready=false`、business completion=`2/6`。AOS runtime/health/Companion接続は正常だが、認証済みZeabur management target、Owner/private ingress、canonical company binding、same-Run business proof、Brief delivery、unattended soakは未達。
+
+**stop_class:** `must_stop`（同じtimeout fingerprintの機械的再試行、404 targetでのdeployment/service mutation、認証推測、別surfaceへの暗黙切替）。独立read-only監視は`warn_and_continue`。
+
+**exact_blocker:** `zeabur_authenticated_management_target_unavailable`、`operation_timeout`、`aos_private_ingress_authentication_required`、`canonical_company_unresolved`。
+
+**progress_attempt_now:** current Goal-owned sessionでZeabur dashboardを一度だけreadbackし、404・timeout・known-no-effect・cleanupを確認。foreign resource、provider、secret、external business effectは0件。
+
+**next_action_now:** timeout fingerprintを再送せず、次のACTIVE heartbeatは既存continuation keyのfresh reconciliationのみ行う。ユーザーが同じCompanion Profile 2に認証済みZeabur management targetを表示した後、fresh deployment/worker readbackとOwner/private ingress readbackを行い、Company 1の1件だけをreceipt→source sync→reconciliation→cleanupへ進める。
+
+**resume_trigger:** Companion Profile 2で認証済みZeabur management targetがfresh readbackでき、AOS Owner/private ingressとcanonical company、exact account/target/payload/approvalが一致すること。
+
+**fallback_or_independent_work:** local Brief/Chat preview、runtime/registration audit、readiness tests、proof packet準備。foreign task resources、sent_unverified key、旧Run、CLI/IAB/Browser Useへの暗黙切替は触らない。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-03 AOS private ingress authentication boundary v534
+
+- 正規入口`https://aos-admin-ingress.zeabur.app/`はCompanionで到達できたが、fresh semantic readbackは`認証: 未確認`、`外部作用: 未検証`、`業務完了未claim`。Owner/private ingressの認証済み状態とは呼ばない。
+- transactionは`effect_state=no_dispatch / dispatch_count=0 / provider_external_action_executed=false`。session cleanup完了、foreign tabs不変。認証情報・token・secretの入力、login/SSO操作、provider操作は行わなかった。
+- 直後のCompanion statusはconnected Profile 2、current Goal所有session/lease/pending/active reconciliation=0。foreign Job sessionは残るがlease=0で、採用・cleanup・操作はしていない。
+
+**Current truth:** Goal=`active/incomplete`、`production_ready=false`、business completion=`2/6`。AOS runtime/health/9件登録監査/会社binding testsは正常だが、Owner/private ingress認証、Zeabur private deployment、canonical company binding、same-Run business proof、Brief delivery、unattended soakは未達。
+
+**stop_class:** `must_stop`（認証未確認のままlogin/SSOを代行、tokenを推測・注入、会社bindingやprovider実行へ進む場合）。read-only監視は`warn_and_continue`。
+
+**exact_blocker:** `aos_private_ingress_authentication_required`、`zeabur_authenticated_management_target_unavailable`、`canonical_company_unresolved`。
+
+**progress_attempt_now:** 正規private ingressのsemantic readbackとCompanion cleanup/status readbackを完了。外部効果・権限変更・foreign resource mutationは0件。
+
+**next_action_now:** 次のACTIVE heartbeatは既存continuation keyをfresh reconciliationし、再送しない。ユーザーが正規SSO/Owner管理セッションを同じ選択surfaceで完了した後、fresh AOS state readbackとZeabur management targetを確認し、`377caf3` deployment→Company 1の1件のreceipt→source sync→reconciliation→cleanupへ進める。
+
+**resume_trigger:** AOS画面の認証がOwner/private ingress verifiedになり、会社ID・project・exact account/target/payload/approvalがfresh readbackできること。Zeabur管理対象もCompanion Profile 2で可視になること。
+
+**fallback_or_independent_work:** local Brief/Chat read-only確認、runtime/registration audit、readiness test、proof packet準備。foreign Job session、既存sent_unverified key、CLI/IAB/Browser Useへの暗黙切替は触らない。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-03 Zeabur management inventory boundary v532
+
+- Companion Profile 2で`https://zeabur.com/dashboard`を一度だけread-only遷移し、直後のfresh sanitized inventoryを取得。19タブ中Zeabur対象は0、認証済みmanagement targetは確認できなかった。
+- 上位transactionの`local_ui_navigation_effect=true`は画面遷移の記録であり、capsuleは`effect_state=no_dispatch / dispatch_count=0 / provider_external_action_executed=false`。session cleanup完了、foreign tabsは不変。
+- これはユーザーのChrome全体のログイン状態を否定する証拠ではなく、選択中のCompanion Profile 2でprivate deployment確認に使える管理対象が見えないという境界である。
+
+**Current truth:** Goal=`active/incomplete`、`production_ready=false`、business completion=`2/6`。AOS runtime/health/登録監査/会社binding readiness testsは正常だが、Zeabur private deployment、canonical company binding、same-Run business proof、Brief delivery、unattended soakは未達。
+
+**stop_class:** `must_stop`（visible management targetなしでdeployment/service mutation、認証推測、別surfaceへの暗黙切替を行う場合）。read-only monitoringは`warn_and_continue`。
+
+**exact_blocker:** `zeabur_authenticated_management_target_unavailable`、`aos_private_ingress_authentication_required`、`canonical_company_unresolved`。
+
+**progress_attempt_now:** dashboard routeのfresh Companion readbackとsanitized inventory、task-owned cleanupを完了。provider操作、secret/token入力、foreign resource操作は0件。
+
+**next_action_now:** 次のACTIVE heartbeatは既存continuation keyをfresh reconciliationし、再送しない。Profile 2に認証済みZeabur管理対象とOwner/private ingressが揃った後、`377caf3`をfresh readbackし、Company 1の1件をreceipt→source sync→reconciliation→cleanupまで実行する。
+
+**resume_trigger:** Companion Profile 2上でZeaburの認証済みmanagement targetがreadbackでき、Owner/private ingressからcanonical companyとexact account/target/payload/approvalが確認できること。
+
+**fallback_or_independent_work:** local Brief/Chat read-only確認、runtime/registration audit、readiness test、proof packet準備。foreign Job lease、既存sent_unverified key、CLI/IAB/Browser Useへの暗黙切替は触らない。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-03 Private ingress 401 boundary v530
+
+- fresh read-only HTTP確認で`http://localhost:8787/api/v1/mvp/state`はHTTP 401。未認証のため会社・automation・scheduleの状態は返されず、空配列を「0件」と解釈しない。
+- token注入、認証 bypass、会社IDの推測・rewire、provider操作、Companionのforeign lease/tab操作は行わなかった。`external_action_executed=false`。
+
+**Current truth:** Goal=`active/incomplete`、`production_ready=false`、business completion=`2/6`。runtime/health/登録監査は正常だが、canonical company bindingとprivate management ingressが未証明。
+
+**stop_class:** `must_stop`（推測した認証・token・会社bindingで進める場合）。独立read-only監視は`warn_and_continue`。
+
+**exact_blocker:** `aos_private_ingress_authentication_required`、`canonical_company_unresolved`、`zeabur_authenticated_management_target_unavailable`。
+
+**progress_attempt_now:** AOS state endpointを同一runでreadbackし、401境界を確定。空データ誤認・外部効果・権限変更なし。
+
+**next_action_now:** 次のACTIVE heartbeatは既存continuation keyをfresh reconciliationし、再送しない。Owner/private ingressの署名付きreadbackとCompanion Profile 2上のZeabur management targetが揃った後、`377caf3` deploymentを確認し、Company 1の1件だけをreceipt→source sync→reconciliation→cleanupまで進める。
+
+**resume_trigger:** 認証済みOwner/private ingressでcanonical company、exact account/target/payload/approvalがreadbackでき、Companion Profile 2にユーザー認証済みZeabur management targetが出現すること。
+
+**fallback_or_independent_work:** local Brief/Chat read-only確認、runtime/registration audit、proof packet準備。foreign Job lease、既存sent_unverified key、CLIへのsurface切替は触らない。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-03 Live runtime, registration audit, and Companion target boundary v528
+
+- fresh AOS readbackは`status=ok`、`decision=ready_for_authorized_admission`、server effects=`read_only`、worker effects=`enabled`、local health=HTTP 200、Codex account readback=completed no-effect turn。
+- `audit-codex-automations`は`checked=9 / compliant=9 / gaps=0`。登録・manifest・prompt parityのglobal boundaryは正常で、これだけでは各provider業務完了を意味しない。
+- Companion Profile 2のsanitized tab inventoryは19件中Zeabur=0。current Goal所有session/lease/tab=0、pending=0、active reconciliation=0。別taskのJob leaseが1件 activeのため、Scheduler Rootからclaim・cleanup・refreshしない。
+- 上記はAOS local/read-onlyの進展証拠。Zeabur private deployment、会社binding、provider business proof、Brief delivery、unattended soakは未達のまま。
+
+**Current truth:** Goal=`active/incomplete`、`production_ready=false`、business completion=`2/6`。AOS runtimeと登録基盤は健全だが、会社別業務を毎日無人成功させる本番証拠はまだない。
+
+**stop_class:** `warn_and_continue`（foreign Job leaseへの操作、Zeabur target不在、会社ID推測は`must_stop`境界）。
+
+**exact_blocker:** `zeabur_authenticated_management_target_unavailable`、`canonical_company_unresolved`、および残りworkflowのsame-Run proof未確立。
+
+**progress_attempt_now:** AOS runtime/health/account、global registration audit、Companion status、sanitized全tab inventoryをfresh readback。current Goal所有資源は0、foreign resourceは不変、外部効果は0。
+
+**next_action_now:** 次のACTIVE heartbeatは既存continuation keyをfresh reconciliationし、再送しない。Zeabur private targetとOwner company bindingが揃った時だけ、`377caf3` deployment確認後にCompany 1の1件をreceipt→sync→reconciliation→cleanupへ進める。
+
+**resume_trigger:** Companion Profile 2にZeaburのユーザー認証済みmanagement targetが出現し、canonical companyの署名付きOwner readbackが揃うこと。
+
+**fallback_or_independent_work:** local Brief/Chat read-only確認、AOS registry/runtime audit、proof packet準備。foreign Job leaseのclaim/cleanup、旧sent_unverified keyの再送、CLIへのsurface切替はしない。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-03 Scoped Chat readback and terminal Companion status v526
+
+- `http://localhost:8787/#/chat?company=company_9588eaafb46d7cbaead81811&project=company_9588eaafb46d7cbaead81811`をCompanion Profile 2のtask-owned transactionでread-only確認。Chat scope/statusの表示は確認できたが、相談・read-only実演・登録の該当controlsは0件で、画面には`canonical_company_unresolved`境界が残った。
+- planner、保存、実行、provider外部効果は未実行。transactionは`no_dispatch`、sessionはterminal cleanup済み、`foreign_tabs_mutated=false`。
+- 直後のCompanion statusはconnected Profile 2、current Goal所有session/lease/tab=0、pending operation=0、active reconciliation=0。historical reconciliation=31は他task/過去証跡として保持し、claim・cleanup・replayしない。
+
+**Current truth:** Goal=`active/incomplete`、`production_ready=false`、business completion=`2/6`。Chatのlocal route表示は確認済みだが、canonical company bindingとprivate Zeabur authorityが未解決のため、会社別登録・本番planner・残りworkflowの業務完了とは呼ばない。
+
+**stop_class:** `warn_and_continue`。
+
+**exact_blocker:** `chat_company_scoped_registration_not_ready`、根本原因は`aos_local_diagnostic_scope_not_authorized_for_claim`と`zeabur_authenticated_management_target_unavailable`。
+
+**progress_attempt_now:** 会社query付きChatを同一Companion transaction内でsemantic readbackし、表示境界とno-dispatchを確認。終了後にsession/tab/leaseのowner cleanupとforeign不変性をreadback。
+
+**next_action_now:** 次のACTIVE heartbeatで既存relay keyを一度だけfresh reconciliationする。Company 1の新規業務実行やZeabur deployment確認は、private target・canonical company binding・exact account/target/payload/approvalが揃った後に1件ずつ進める。
+
+**resume_trigger:** canonical companyの署名付きOwner readbackと、Companion Profile 2上のユーザー認証済みZeabur management target。
+
+**fallback_or_independent_work:** local Brief preview、Chatの未選択scope/read-only UI、AOS runtime/registry audit、proof packet準備。既存sent_unverified keyの再送、foreign tab操作、推測による会社切替はしない。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-03 Companion Zeabur target discovery and Brief boundary v524
+
+- Companion Profile 2のfresh sanitized tab listで、現在のProfileにZeaburの認証済み管理タブは存在しないことを確認。task-ownedの新規探索sessionで公開root `https://zeabur.com/`だけをsemantic/visual同一tab readbackし、`verified`・`no_dispatch`を得た。
+- 探索sessionはtask terminal cleanup済み。`foreign_tabs_mutated=false`、provider外部効果なし。別task所有の応募・SNS・YouTube等のタブはclaim・navigation・cleanupしていない。
+- 朝Brief/夜Briefのlocal previewは両方生成可能だが、deliveryは`not_attempted`。local SQLite previewの12件は診断会社`company_9588eaafb46d7cbaead81811`に属し、運用canonical会社`company_2560580981cedfd106b66245`のproduction Briefとは混同しない。
+- `npm run build`（server + web + runtime parity manifest）と`npm run typecheck:web`も成功。これはlocal implementation proofであり、Zeaburへの`377caf3`反映の証明ではない。
+- 最新のcompany binding/parity readbackでも、登録6件は`company_256...`、local SQLiteは診断用`company_9588...`、AOS local count=0、status=`blocked`。指定controller taskは`idle`だが最新turnは`interrupted`で、次のheartbeatによる新turn発生までは再送しない。
+
+**Current truth:** Goal=`active/incomplete`、`production_ready=false`、business completion=`2/6`。AOS runtime、自然tickのfinalizer/STATE sync、既存heartbeat ACTIVE、local test/Brief generatorは確認済みだが、Zeabur private deployment readback、残り4 workflowのsame-Run proof、Brief delivery、multi-day unattended soak、two `sent_unverified` relayの照合は未達。
+
+**stop_class:** `warn_and_continue`。
+
+**exact_blocker:** `zeabur_authenticated_management_target_unavailable`。public rootのreadbackだけでは`377caf3` deployment・remote registry・service-exec authorityを証明できない。
+
+**progress_attempt_now:** CompanionでProfile 2の全タブをsanitized read-only確認し、Zeabur private target不在を確定。作成したsessionをcleanupし、foreign resourceを不変のまま維持。朝夕Briefをlocal read-only previewし、delivery未設定を確認。
+
+**next_action_now:** 次のheartbeatで新しい送信を行わず、既存relay keyを一度だけfresh reconciliationする。Zeabur private targetが現れた時だけ同じCompanion surfaceで`377caf3` deployment/planner workerとremote authorityをreadbackし、その後Company 1の1件をprovider receipt・source sync・reconciliation・cleanupまで通す。
+
+**resume_trigger:** Companion Profile 2にユーザー認証済みのZeabur management targetが出現すること。credentials/OTP/CAPTCHAは自動入力しない。
+
+**fallback_or_independent_work:** Home-only朝夕Brief生成、company-scoped Chat consultation/read-only demo、AOS health/runtime、registry audit、local proof packet準備。旧queued/unknown-effect Run、foreign tab、同一continuation keyの再送は行わない。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-03 Natural tick finalizer and Companion heartbeat activation v522
+
+- 自然tickの新規run `2026-09-03T09-59-24-587Z-4c52c970a022b222`をfresh確認。Kernelは`succeeded`、cleanup proofあり。post-audit finalizerまで到達し、controller=`deferred`、exact blocker=`thread_send_delivery_not_confirmed`、`not_run=0`、deferred=10、STATE同期済み。
+- 同runではtask-owned relay 3件をreconciliation。`01a0387a...`は既存markerを確認済み、`01a058d3...`と`01a05cb9...`は`sent_unverified`のまま。新規送信は0件で、同じkeyは再送しない。
+- 指定リンクのcontroller task `01a05aa2-64bc-7321-b7fc-2e38595bdcec`に紐づく既存`aos-companion-goal` heartbeatをPAUSEDからACTIVEへ戻した。毎時設定・対象task・failed-runs-only通知を維持し、重複automationは作成していない。
+
+**Current truth:** Goal=`active/incomplete`、`production_ready=false`、business completion=`2/6`。AOSの自然tick→Kernel→audit→finalizer→STATE同期は新runで確認できたが、taskのCompanion修復・継続は候補ごとに安全境界で保留されており、Zeabur private authority、残り4 workflowのsame-Run業務証跡、Brief外部delivery、unattended soakは未達。
+
+**stop_class:** `warn_and_continue`。
+
+**exact_blocker:** `thread_send_delivery_not_confirmed`。加えて、2件のrelay delivery、Zeabur user-authenticated management target/private registry authority、effectful workflowのfresh account/target/payload/approval bindingが未確立。
+
+**progress_attempt_now:** 既存heartbeatのACTIVE化、自然tickの新run確認、3 taskのoutput-bearing readback、finalizer/cleanup/STATE同期のfresh確認を完了。provider/browser/secret/notification変更、foreign resource操作、旧key再送は0。
+
+**next_action_now:** ACTIVE heartbeatの次runで4 affected task boundaryとcontinuation ledgerをfresh reconciliationする。Zeabur認証済みtargetが現れた場合のみ、同じCompanion surfaceで`377caf3` deploymentとprivate authorityをreadbackし、Company 1の新規1件をprovider receipt→source sync→reconciliation→cleanupへ進める。
+
+**resume_trigger:** matching `continuation_key`、明示的`deliveryConfirmed=true`、または決定的no-delivery proof。Zeabur側はCompanion Profile 2上のuser-authenticated fresh target。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-03 Full regression and post-test runtime readback v520
+
+- `npm test`をfresh実行し、`1373 tests / 1356 passed / 0 failed / 17 skipped`。build、代表workflow E2E`18/0/0`、Companion監査`77/0/0`、`git diff --check`も成功。
+- テスト後のAOS runtimeは`ready_for_authorized_admission`、`exact_blocker=null`、server effects=`read_only`、worker effects=`enabled`、portable remote worker=`live`。local healthはHTTP 200。Companion Profile 2はconnectedで、current Goal所有のlogical session/lease/tabは0。foreign resourceは変更していない。
+- 最新Companion controller receiptの正本は引き続き`deferred`、`thread_send_delivery_not_confirmed`。公式App継続は1件試行済みだが、明示的なdelivery/Goal proofがないため`sent_unverified`のまま。既存keyの再送はしない。
+
+**Current truth:** Goal=`active/incomplete`、`production_ready=false`、business completion=`2/6`。local実装・回帰・runtime/readinessは良好だが、Zeabur private deployment/registry/service-exec authority、残り4 workflowのsame-Run business proof、Brief外部delivery、自然tickとunattended multi-day soakは未達。
+
+**stop_class:** `warn_and_continue`。
+
+**exact_blocker:** `thread_send_delivery_not_confirmed`。加えて、認証済みZeabur management targetとprivate authority、effectful workflowのfresh account/target/payload/approval binding、Brief外部deliveryが未確立。
+
+**progress_attempt_now:** full server suite、post-test runtime/health/Companion readback、正本receiptの訂正状態を同期。provider/browser/notification/secret変更、旧Run replay、foreign resource操作は0。
+
+**next_action_now:** 次の自然controller runで対象taskとcontinuation ledgerをfresh reconciliationし、明示的delivery proofまたは決定的no-delivery proofが得られた場合だけboundedに継続する。並行してCompanion上の認証済みZeabur targetが現れたら`377caf3` deploymentとprivate authorityをreadbackし、Company 1の新規1件をsame-Run proof chainへ進める。
+
+**resume_trigger:** matching `continuation_key`、明示的`deliveryConfirmed=true`、または同一taskの決定的no-delivery proof。Zeabur側はCompanion Profile 2上のuser-authenticated fresh target。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-03 Live control-plane alignment and regression verification v514
+
+- launchdの実稼働設定を秘密情報なしでfresh readback。AOS serverは`AOS_CANONICAL_COMPANY_ID=company_2560580981cedfd106b66245`、canonical authority fresh、selection applied、Postgresを使用。remote workerは同じcompany ID、`queue_authority=remote`、`worker_mode=external`、`https://automation-os.zeabur.app`を使用している。
+- したがって、ローカルSQLite診断の`company_9588eaafb46d7cbaead81811`はlive production authorityではなく別diagnostic source。候補選択・rewire・schedule materializationは行っていない。
+- remote Zeaburの公開`/readyz`と`/api/health`はHTTP 200、`ready/ok`。公開healthは到達性のみで、`377caf3` deployment、private registry/service-exec authority、provider business completionの証明にはしない。
+- `npm run build:server`成功。portable workflow / registered workflow E2Eは18件成功、失敗0、skip 0。async Mac workerとsynchronous `runWorkerOnce`のcompany scope保持を再確認した。local evidenceのみで自然tick・production business completionとは分離する。
+
+**Current truth:** Goal=`active/incomplete`、`production_ready=false`、business completion=`2/6`。AOS runtime、local/remote health、live launchd company alignment、registry整合性、Chat plannerのlocal build/testは確認済み。Zeabur private deployment readback、6 workflowのsame-Run business proof、Brief外部delivery、自然tick/multi-day soakは未達。
+
+**stop_class:** `warn_and_continue`。
+
+**exact_blocker:** private Zeabur deployment/registry/service-exec owner readback未確立、effectful workflowのfresh account/target/payload/approval binding未確認、BriefはHome-only、same-Run proofと自然tick soak未達。Companion Profile 2はhealthyだが、認証済みZeabur management targetは未表示。
+
+**controller_followup_readback:** 指定されたCompanion controller taskへ公式App `send_message_to_thread`を一件送信し、受付は`accepted`。同一taskのfresh readbackでは新turnがまだ見えず、前回turnは`interrupted`のままなので、delivery/Goal再開は`sent_unverified`として扱い、同じ内容を再送しない。
+
+## 2026-09-03 Latest Companion receipt correction v518
+
+- 正本のcontroller receipt `2026-09-03T09-03-45-699Z-16948ae74cddf10a`を再読。これは修復・継続が全て`not_run`だったrunではなく、公式Appの継続を1件試行し、`send_status=accepted`後の同一task readbackが不確定となった`controller=deferred`のrunだった。
+- finalizerのSTATE同期は`not_run_stage_count=0`、`deferred_stage_count=9`、`continuation_count=1`。対象`01a06349-159d-7751-b4b0-87d87c5d7174`は現在completed turnが見えるが、items内の`continuation_key`または明示的delivery proofがないため、Goal再開・配信確定とは扱わない。
+- この訂正により、定期監査が「候補検出だけで終わった」とは報告せず、「1件の公式App継続試行はあったが、送信結果のreadbackが未確定」と記録する。既存idempotency keyの再送は行わない。
+
+**Current truth:** Goal=`active/incomplete`、`production_ready=false`、business completion=`2/6`。定期controllerの実行・finalizer・cleanupは証明済みだが、継続delivery/Goal proof、Zeabur private deployment readback、残り4 workflowのsame-Run business proof、Brief外部delivery、自然tick/multi-day soakは未達。
+
+**exact_blocker:** `thread_send_delivery_not_confirmed`。加えてprivate Zeabur management/registry/service-exec authority、fresh account/target/payload/approval binding、Home-only Briefの外部deliveryが未確立。
+
+**progress_attempt_now:** 最新controller receipt、対象taskの公式App readback、live launchd company/worker設定、remote health、build、workflow E2E、Companion監査テストをfresh確認。送信再実行、provider/browser/notification/secret変更、foreign resource操作は0。
+
+**next_action_now:** 次の自然controller runで対象taskとcontinuation ledgerをfresh reconciliationし、matching keyまたは明示的no-delivery proofが得られた場合だけ新規keyを検討する。並行して認証済みZeabur management targetが表示されたら`377caf3` deploymentとprivate authorityをreadbackする。
+
+**resume_trigger:** matching `continuation_key`、明示的`deliveryConfirmed=true`、または同一taskの決定的no-delivery proof。Zeabur側はCompanion Profile 2上のuser-authenticated fresh target。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+**progress_attempt_now:** live launchd/server/worker設定の非秘密readback、remote public health readback、build、代表E2E、artifact/STATE同期、Companion controller taskへの公式App経由の継続指示を完了。foreign taskのsession/lease/tabは変更していない。
+
+**next_action_now:** Companion Profile 2に認証済みZeabur management targetが表示されたら、同じsurfaceで`377caf3` deploymentとChat planner workerをfresh readbackし、remote registry/service-exec authorityを確立する。その後、明示的にboundされた一件だけをprovider receipt→source sync→reconciliation→cleanupまで通す。
+
+**resume_trigger:** Companionのuser-authenticated Zeabur fresh targetまたは同一tabの認証回復。credentials/OTP/CAPTCHAは自動入力しない。
+
+**fallback_or_independent_work:** Home-only朝夕Brief生成、company-scoped Chat相談/read-only demo、AOS/runtime/health監視、no-effect scheduler canary、registry audit、proof packet準備。旧queued/unknown-effect Runとforeign owner resourcesは再送・奪取しない。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-03 Companion controller task confirmed v512
+
+- ユーザー指定の`codex://threads/01a05aa2-64bc-7321-b7fc-2e38595bdcec`を公式Appでfresh readbackした。タイトルは「AOS Companion毎時監査・自己修復・タスク再開」で、現在もactive/inProgress。AOSの定期監査・自己修復・既存task再開を担う正しいCompanion controller taskとして扱う。
+- 同taskでは重複automationを整理し、既存の`aos-companion-2`だけをACTIVEのまま更新済み。別taskのCompanion API操作は禁止し、別taskへの再開文は公式App経由に限定する方針が反映されている。
+- 本current Goalからforeign taskのCompanion session/tabは取得・横取りせず、ユーザー指定taskへの移動だけを行った。Company binding、Zeabur認証、provider業務完了の証拠は別途未解決のまま保持する。
+
+**Current truth:** Companion controller taskの指定は確定。Goal=`active/incomplete`、`production_ready=false`、business completion=`2/6`。
+
+**exact_blocker:** `canonical_company_unresolved`（trigger=`company_2560580981cedfd106b66245`、local registry=`company_9588eaafb46d7cbaead81811`）。加えて、Companion上のZeabur authenticated management targetが未確立。
+
+**next_action_now:** Companyの正本選択後、同taskのCompanion controllerでfresh Zeabur management targetとremote deployment/service-exec authorityを読み、`377caf3`を確認してからCompany 1のsame-Run proofへ進む。
+
+**resume_trigger:** Ownerが`company_2560580981cedfd106b66245`または`company_9588eaafb46d7cbaead81811`を正式な実運用scopeとして明示すること、およびCompanion Profile 2に認証済みZeabur targetが現れること。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+
+## 2026-09-03 Codex App Server service probe v485
+
+- Companionの新規task-owned tabで専用`codex-app-server`を確認。Zeaburサービスは`実行中 1/1`、domainは`PROVISIONED`だが、`/readyz`はHTTP 200・本文長0でprotocol readinessを証明しなかった。
+- したがって`codex_app_server_not_verified`を維持。資格情報・secret・コマンド・service設定変更は行わず、AOSのremote connector registry authorityへ昇格しない。
+
+**判定:** AOS heartbeat修正とdeploy/readbackは完了。Goal=`active/incomplete`、`production_ready=false`、business completion=`2/6`。専用サービスの稼働とApp Server認証・registry readinessは別物。
+
+**progress_attempt_now:** Companionで専用serviceのstatus/domainを確認し、新規origin tabで`/readyz`をsemantic+screenshot readback、HTTP status/header readbackまで実施。
+
+**next_action_now:** authenticated remote registry/service-exec authorityまたはOwner-authorized fresh readbackを復旧し、Codex/App Server protocol・connector registry・Gmail ownerを同一authorityで再確認する。その後Company 1の新規workflow一件をsame-Run proof chainへ進める。
+
+**resume_trigger:** fresh authenticated remote registry/service-exec authority plus exact Company 1 account/target/payload binding。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-03 Companion continuity boundary v486
+
+- 既存の`aos-morning-brief`は同一Goal threadを対象にACTIVE（毎日07:45/21:45）、`aos-companion-2`はAutomation OS projectを対象にACTIVE（毎時）であることを確認した。Companionによる朝夕Briefと毎時監査の継続経路は既に存在する。
+- `aos-companion-goal`はPAUSEDかつ旧thread対象。既存Goal threadには既にheartbeatがあるため、Codex Appの「1 thread 1 heartbeat」制約により追加作成・誤ったthreadへの変更は行わなかった。新しい外部効果は0件。
+- AOS runtime readbackは`ready_for_authorized_admission`、local healthはHTTP 200、workerはeffects enabledでfresh。これは実行基盤の健全性であり、provider業務完了とは分離する。
+
+**判定:** Goal=`active/incomplete`、`production_ready=false`、business completion=`2/6`。Companion継続経路と朝夕Brief設定は確認済みだが、remote Codex App Server/registry owner、4 workflowのsame-Run proof、Brief外部配信、Chat planner worker、multi-day soakは未達。
+
+**stop_class:** `warn_and_continue`。
+
+**progress_attempt_now:** 既存automationのfresh設定確認、重複作成の拒否readback、AOS runtime/local health/account readback、現行artifact同期。
+
+**exact_blocker:** `codex_app_server_not_verified`、`zeabur_cli_authentication_unavailable`、`brief_delivery_destination_not_decided`、production Chat planner worker未確認。
+
+**next_action_now:** remote registry/service-exec authorityまたはOwner-authorized fresh readbackが得られた後、Company 1の新規workflowを一件だけprovider receipt→source sync→reconciliation→cleanupまで通し、その後Chat planner workerと残りworkflowのsoakを確認する。
+
+**resume_trigger:** fresh authenticated remote registry/service-exec authority plus exact Company 1 account/target/payload binding。
+
+**fallback_or_independent_work:** Home-only朝夕Brief、会社scope付きChat consultation/local fallback、runtime/worker health、no-effect scheduler canary、read-only source audit。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-03 Production Chat planner worker and Companion Zeabur boundary v487
+
+- Chat相談の非同期jobを本番server起動時にも拾う最小workerを`apps/server/src/index.ts`へ追加し、`start:server`で30秒周期を有効化。既存Mac workerと同じDB leaseを共有するため、二重処理を避けながらChat相談・実演の継続経路を作った。
+- `377caf3 Run production chat planner worker`を`origin/main`へpushし、server buildと全server suite（`1373 tests / 1356 passed / 0 failed / 17 skipped`）を通過。これはコードpushであり、provider/business effectではない。
+- CompanionではAOS Admin ingressのfresh readbackを実施し、`worker=running / runs=500`、Portable Mac heartbeat fresh、Chrome操作backend=`aos_chrome_companion / Profile 2 / local sync=ok`を確認。AOS公開rootはprivate ingress/SSO未確立の表示で、Zeabur管理画面のログイン済み既存tabは`NI nichika2000823`と`automation-wiled`を表示した。
+- Zeabur管理画面は同じsessionの新規tabではguest/loginへ遷移し、既存認証tabのclaimは`Authority schema is invalid`でdispatch前に停止。Companionのtarget/authority境界を越えず、デプロイ設定変更・secret・provider actionは0件。今回作成したguest/login一時tabだけをtask-owned cleanupで閉じ、foreign tabは変更していない。
+
+**判定:** Goal=`active/incomplete`、`production_ready=false`、business completion=`2/6`。Chat planner workerの実装とpushは完了したが、Zeabur上の`377caf3`反映、remote Codex App Server protocol/registry owner、4 workflowのsame-Run proof、Brief外部配信、自然tick/multi-day soakは未確認。
+
+**stop_class:** `warn_and_continue`。
+
+**exact_blocker:** `companion_authenticated_existing_tab_authority_invalid`、`codex_app_server_not_verified`、`zeabur_cli_authentication_unavailable`、Brief外部delivery未設定、4 workflowのprovider receipt/source sync/reconciliation/cleanup未達。
+
+**progress_attempt_now:** production Chat planner worker実装、build/full test、`377caf3` push、Companion AOS Admin/Zeabur fresh readback、guest/login temporary tab cleanupを完了。
+
+**next_action_now:** signed Companion authorityで認証済みZeabur tabを再接続、またはユーザー認証済みfresh targetを取得し、`377caf3`のZeabur deploymentとplanner worker稼働をreadback。その後remote registry/service-exec authorityを確立し、Company 1の新規workflowを1件だけprovider receipt→source sync→reconciliation→cleanupまで通す。
+
+**resume_trigger:** signed Companion authority for the authenticated Zeabur tab or a user-authenticated fresh target、fresh remote registry/service-exec authority、exact Company 1 account/target/payload binding。
+
+**fallback_or_independent_work:** Home-only朝夕Brief、会社scope付きChat consultation/local fallback demo、runtime/worker health、no-effect scheduler canary、read-only source audit、Company 1 proof packet preparation。旧queued/unknown-effect Runはreplayしない。
+
+## 2026-09-03 Companion authenticated-tab re-read and cleanup v488
+
+- 新しいCompanion sessionで既存のZeabur認証tabを正確にreserveできた。視覚screenshotは取得できたが、同一tabのsemantic readbackは`broker_request_timeout`となったため、認証状態・サービス設定・デプロイ状態は推測しない。
+- Zeaburのtask-ownedログイン一時tab `1980912009`だけをcleanupで閉じた。認証済みZeabur tab、AOS Admin、AOS公開root、Codex App Server確認tabは保持し、`foreign_tabs_changed=false`、外部効果なしを確認した。Companion sessionとleaseは解放済み。
+
+**判定:** Goal=`active/incomplete`、`production_ready=false`、business completion=`2/6`。`377caf3`のZeabur反映、remote registry/service-exec、same-Run business proof、Brief外部配信、自然tick/multi-day soakは未確認。
+
+**stop_class:** `warn_and_continue`。
+
+**exact_blocker:** `companion_authenticated_existing_tab_semantic_readback_timeout`、`companion_authenticated_existing_tab_authority_invalid`、`codex_app_server_not_verified`、`zeabur_cli_authentication_unavailable`、Brief外部delivery未設定、4 workflowのsame-Run proof未達。
+
+**progress_attempt_now:** 認証済みtabのfresh reserve・視覚確認、semantic timeoutの記録、task-owned login tab cleanup、lease/session release。
+
+**next_action_now:** brokerが復旧した同一Companion surfaceまたはユーザー認証済みfresh targetで、Zeabur上の`377caf3` deploymentとChat planner workerをfresh readbackする。その後remote registry/service-exec authorityを確立し、Company 1新規workflow一件をprovider receipt→source sync→reconciliation→cleanupまで通す。
+
+**resume_trigger:** signed Companion authority and successful semantic readback for the authenticated Zeabur tab or a user-authenticated fresh target、fresh remote registry/service-exec authority、exact Company 1 account/target/payload binding。
+
+**fallback_or_independent_work:** Home-only朝夕Brief、会社scope付きChat/local fallback、runtime/worker health、no-effect canary、read-only audit、proof packet preparation。旧queued/unknown-effect Runは再送しない。
+
+## 2026-09-03 Companion owner-scoped terminal cleanup v490
+
+- Companionのtask-owned cleanupで、AOSが作成した完了済みtab `1980911962`、`1980911966`、`1980911982`を閉じた。ログイン済みZeabur tab `1980911965`は保持した。
+- cleanup receiptは`foreign_tabs_changed=false`、`unknown_effect=[]`、`pending operation=0`。current Goalのsession/leaseは解放済みで、Companionは接続済みのまま。履歴上のreconciliationは再実行していない。
+
+**判定:** Goal=`active/incomplete`、`production_ready=false`、business completion=`2/6`。今回の進捗は所有範囲のterminal cleanupのみで、Zeabur deployment/readback、provider業務効果、same-Run proofは未達。
+
+**stop_class:** `warn_and_continue`。
+
+**exact_blocker:** `companion_authenticated_existing_tab_semantic_readback_timeout`、`companion_authenticated_existing_tab_authority_invalid`、`codex_app_server_not_verified`、`zeabur_cli_authentication_unavailable`、Brief外部delivery未設定、4 workflowのsame-Run proof未達。
+
+**progress_attempt_now:** AOS task-owned terminal tab cleanupとCompanion post-cleanup status readbackを完了。
+
+**next_action_now:** 同じCompanion surfaceでbroker復旧または認証済みfresh targetが得られたら、Zeaburの`377caf3` deployment/planner workerをreadbackし、Company 1新規workflow一件のsame-Run proofへ進む。
+
+**resume_trigger:** successful semantic readback for the authenticated Zeabur tab or a user-authenticated fresh target、fresh remote registry/service-exec authority、exact Company 1 account/target/payload binding。
+
+**fallback_or_independent_work:** Home-only朝夕Brief、会社scope付きChat/local fallback、runtime/worker health、no-effect canary、read-only audit、proof packet preparation。旧queued/unknown-effect Runは再送しない。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+
+## 2026-09-03 Companion authorized reuse boundary v492
+
+- 認証済みZeabur tabを直接reserveした後、同一taskの`companion_authorized_transaction`で限定`page.query`を一回だけ実行した。transaction自体は`result=verified`だが、`target_resolution=not_found`、実際のtabは新規login tab `1980912020`で、認証済みtabの再利用・Zeabur service navigationは起きていない。
+- これはlocal UI queryのno-effect証拠のみ。`external_action_executed=false`、provider/deploy/secret変更0。新規login tabはtask-owned cleanupで閉じ、session/leaseも解放した。
+
+**判定:** Goal=`active/incomplete`、`production_ready=false`、business completion=`2/6`。Companionの認証済みtab引き継ぎは未解決で、`377caf3`のZeabur反映、remote registry、same-Run business proof、Brief外部配信、自然tick/multi-day soakは未達。
+
+**stop_class:** `warn_and_continue`。
+
+**exact_blocker:** `companion_authenticated_existing_tab_authority_invalid`、`companion_authorized_reuse_target_not_found`、`codex_app_server_not_verified`、`zeabur_cli_authentication_unavailable`、Brief外部delivery未設定、4 workflowのsame-Run proof未達。
+
+**progress_attempt_now:** authenticated tabの限定query、authorized reuse transactionのtarget resolution確認、no-effect readback、task-owned login tab cleanup。
+
+**next_action_now:** 同じCompanion surfaceでbroker/target bindingが復旧するか、ユーザー認証済みfresh targetを得た後にZeabur deployment/planner workerをfresh readbackする。旧fingerprintのclick/retryは行わない。
+
+**resume_trigger:** authenticated Zeabur tabでsemantic target resolutionが成功し、同一task/runのsigned transactionが既存tabを再利用できること。加えてfresh remote registry/service-exec authorityとexact Company 1 binding。
+
+**fallback_or_independent_work:** Home-only朝夕Brief、会社scope付きChat/local fallback、runtime/worker health、no-effect canary、read-only audit、proof packet preparation。旧queued/unknown-effect Runは再送しない。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-03 Companion foreign-task isolation readback v494
+
+- Companionのpost-cleanup fresh statusで、current Goalのclient session/leaseは0、active task tabは0を確認した。
+- 全体で残るpending operation=1とlease=1はTaboola task `01a03a2d-7b5d-76e0-80c7-ad81ed300e0a`所有で、`no_dispatch`・外部効果なし。foreign ownerのため採用・release・cleanupは行っていない。
+
+**判定:** Goal=`active/incomplete`、`production_ready=false`、business completion=`2/6`。Companionのforeign-task isolationは確認済みだが、Zeabur deployment/readback、remote registry、same-Run business proof、Brief外部配信、自然tick/multi-day soakは未達。
+
+**stop_class:** `warn_and_continue`。
+
+**exact_blocker:** `companion_authenticated_existing_tab_authority_invalid`、`companion_authorized_reuse_target_not_found`、`codex_app_server_not_verified`、`zeabur_cli_authentication_unavailable`、Brief外部delivery未設定、4 workflowのsame-Run proof未達。
+
+**progress_attempt_now:** current GoalのCompanion cleanup後status確認とforeign task owner/readback分離。
+
+**next_action_now:** foreign taskの完了を待って奪取するのではなく、Companion target bindingまたはuser-authenticated fresh targetが得られた時点で、Zeabur `377caf3` deployment/planner workerをfresh readbackする。
+
+**resume_trigger:** current Goalが所有するauthenticated Zeabur targetでsemantic resolutionとsigned transaction再利用が成功し、foreign taskのlease/pending operationとは別targetとして確定すること。
+
+**fallback_or_independent_work:** Home-only朝夕Brief、会社scope付きChat/local fallback、runtime/worker health、no-effect canary、read-only audit、proof packet preparation。旧queued/unknown-effect Runは再送しない。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-03 Companion same-tab readback and target-mismatch cleanup v496
+
+- 新しいCompanion sessionでZeabur既存認証tab `1980911965`をreserveし、同一tabのsemantic＋visual readbackに成功。`NI nichika2000823`、プロジェクト`automation-wiled`、Retry表示を確認した。
+- その直後の読み取り専用プロジェクト遷移transactionは、既存tabを再利用せず新規login tab `1980912023`へ解決され、`transaction_action_target_page_mismatch`でaction listは空、`external_action_executed=false`、deploy・secret・provider変更は0。新規login tabはsession close時のowner-scoped cleanupで閉じ、認証済みtabは保持した。
+- fresh post-cleanup statusはcurrent Goalのsession/lease/pending operation=0、active task tab=0。残るCompanion leaseはTaboola task所有で、foreign ownerの採用・release・cleanupは行っていない。
+
+**Current truth:** Goal=`active/incomplete`、`production_ready=false`、business completion=`2/6`。`377caf3`のZeabur反映・planner worker稼働、remote registry/service-exec、残りworkflowのsame-Run proof、Brief外部配信、自然tick/multi-day soakは未達。
+
+**stop_class:** `warn_and_continue`。
+
+**exact_blocker:** `transaction_action_target_page_mismatch`、`companion_authorized_reuse_target_not_found`、`companion_authenticated_existing_tab_authority_invalid`、`codex_app_server_not_verified`、`zeabur_cli_authentication_unavailable`。
+
+**progress_attempt_now:** authenticated existing tabのfresh semantic＋visual readback、同一Companion transactionのtarget resolution確認、no-effect readback、task-owned login tab cleanup、session/lease release、foreign owner分離readback。
+
+**next_action_now:** 同じCompanion surfaceでsigned target bindingまたはuser-authenticated fresh targetが得られた時点で、Zeaburの`377caf3` deploymentとplanner workerをfresh readbackする。その後remote registry/service-exec authorityを確立し、Company 1の新規workflow一件をprovider receipt→source sync→reconciliation→cleanupまで通す。
+
+**resume_trigger:** 既存認証tabを同一transactionが再利用できるsemantic target resolution、またはuser-authenticated fresh target。加えてfresh remote registry/service-exec authorityとexact Company 1 account/target/payload binding。
+
+**fallback_or_independent_work:** Home-only朝夕Brief、会社scope付きChat/local fallback、runtime/worker health、no-effect canary、read-only audit、proof packet preparation。旧queued/unknown-effect Runとforeign leaseは再送・奪取しない。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-03 Company registry audit and scheduler state repair v498
+
+- read-only registry reconciliationでCompany 1の6 automation＋6 scheduleを含む12 recordが全件`matched`。`missing_company=0`、`duplicate=0`、`conflict=0`、`orphan=0`、mutation未実行。global catalogの6 registered workflowもactive。
+- 朝Brief/夜Briefのlocal previewはともに`complete`。Company 1は12 itemを生成し、Canary API・Company A・Company Bはempty。deliveryは未実行で、外部通知は発生していない。
+- 6 scheduleの`next_run_at`が過去だったため、service identity `aos_service_4c33e3f8454c8030b0eb`でscheduler tickを一回実行。`catch_up_policy=skip`に従い6件を次の未来 occurrenceへ進め、occurrence/run作成0、provider/business effect 0。fresh readbackで07:30/08:30/09:00とMON 09:30の未来値を確認した。
+
+**Current truth:** Goal=`active/incomplete`、`production_ready=false`、business completion=`2/6`。登録整合性と内部scheduler再計算は改善したが、6 workflowのprovider receipt→source sync→reconciliation→cleanup、Zeabur `377caf3` production readback、remote registry/service-exec、Brief外部delivery、自然tick/multi-day soakは未達。
+
+**stop_class:** `warn_and_continue`。
+
+**exact_blocker:** `transaction_action_target_page_mismatch`、`companion_authorized_reuse_target_not_found`、`companion_authenticated_existing_tab_authority_invalid`、`codex_app_server_not_verified`、`zeabur_cli_authentication_unavailable`、effectful workflowのfresh account/target/payload/approval binding未確認。
+
+**progress_attempt_now:** registry read-only audit、朝夕Brief preview、stale scheduleのbounded scheduler repair、future `next_run_at`・run count・external_action_executedのfresh readback。
+
+**next_action_now:** 同じCompanion surfaceでsigned target bindingまたはuser-authenticated fresh targetが得られた時点で、Zeaburの`377caf3` deployment/planner workerをfresh readbackする。その後remote registry/service-exec authorityを確立し、Company 1の新規workflow一件をprovider receipt→source sync→reconciliation→cleanupまで通す。
+
+**resume_trigger:** 既存認証tabを同一transactionが再利用できるsemantic target resolution、またはuser-authenticated fresh target。加えてfresh remote registry/service-exec authorityとexact Company 1 account/target/payload binding。
+
+**fallback_or_independent_work:** Home-only朝夕Brief、会社scope付きChat/local fallback、runtime/worker health、future schedule監視、read-only audit、proof packet preparation。旧queued/unknown-effect Runとforeign leaseは再送・奪取しない。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-03 Companion signed-resume navigation timeout v502
+
+- `companion_prepare_resume`で既存Zeabur deployment targetの署名済みresume情報をfresh取得。新しいauthorized transactionはtarget resolution=`resolved/exact`で認証tab `1980911965`を選択した。
+- transactionは`tabs.navigate`でtimeoutし、`page.query`は実行されなかった。`effect_state=known_no_effect`、`external_action_executed=false`、deploy・secret・provider変更0。same-target semantic＋visual readbackでは`https://zeabur.com/projects`のゲスト状態、`Permission denied`、プロジェクト未検出を確認した。
+- current Goalのsession/lease/pending operationは0に戻し、Zeabur tabは保持。Companion全体のpending/leaseはTaboola・YAGISHのforeign task所有のため、採用・release・cleanupしていない。
+
+**Current truth:** Goal=`active/incomplete`、`production_ready=false`、business completion=`2/6`。target bindingはexactまで改善したが、Zeabur認証状態またはnavigation timeoutにより`377caf3` production readbackは未達。registry整合性、内部scheduler再計算、朝夕Brief生成、AOS runtime healthは確認済み。
+
+**stop_class:** `warn_and_continue`。
+
+**exact_blocker:** `operation_timeout`（`tabs.navigate`）、Zeabur live targetのguest/`Permission denied`、`codex_app_server_not_verified`、`zeabur_cli_authentication_unavailable`、6 workflowのsame-Run proof未達、Brief外部delivery未設定。
+
+**progress_attempt_now:** signed resume readback、exact target resolution、同一tabのtimeout後semantic＋visual readback、no-effect確認、session/lease release、foreign owner分離、記録同期。
+
+**next_action_now:** ユーザーがCompanionの保持tabでZeaburへ再認証するか、認証済みfresh targetを用意した時点で、同じCompanion surfaceから`377caf3` deployment/planner workerをfresh readbackする。認証なしでの再試行・同じnavigationのreplayは行わない。
+
+**resume_trigger:** Zeaburのuser-authenticated fresh targetまたは同一tabの認証回復、かつfresh remote registry/service-exec authority。次にCompany 1のexact account/target/payload bindingを確認する。
+
+**fallback_or_independent_work:** Home-only朝夕Brief、会社scope付きChat/local fallback、runtime/worker health、future schedule監視、read-only registry audit、proof packet preparation。foreign taskと旧queued/unknown-effect Runは触らない。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-03 Final runtime and Companion readback v500
+
+- AOS local healthはHTTP 200、runtime readbackは`ready_for_authorized_admission`。server effectsはread-only、worker effectsはenabled、portable remote workerはlive。Codex account readbackもaccount present→thread started→turn completedを確認した。
+- Companionは接続済み。current Goalのsession=0、lease=0、pending operation=0、active task tab=0。認証済みZeabur tab `1980911965`は保持し、foreign Taboola taskのsession/lease 1件は触っていない。historical reconciliation 29件は未再実行。
+
+**Current truth:** Goal=`active/incomplete`、`production_ready=false`、business completion=`2/6`。AOS内部基盤・registry整合性・schedule再計算・Brief生成は確認済みだが、Zeabur `377caf3` production readback、remote registry/service-exec authority、6 workflowのsame-Run business proof、自然tick/multi-day soakは未達。
+
+**stop_class:** `warn_and_continue`。
+
+**exact_blocker:** `transaction_action_target_page_mismatch`、`companion_authorized_reuse_target_not_found`、`companion_authenticated_existing_tab_authority_invalid`、`codex_app_server_not_verified`、`zeabur_cli_authentication_unavailable`、effectful workflowのfresh account/target/payload/approval binding未確認。
+
+**progress_attempt_now:** runtime/local health/account/Companionのfresh readback、Company registry/Brief read-only audit、stale scheduleのbounded repair、owner/foreign resource分離を完了。
+
+**next_action_now:** Companion target bindingまたはuser-authenticated fresh targetが得られた時点で、Zeaburの`377caf3` deployment/planner workerをfresh readbackする。その後remote registry/service-exec authorityを確立し、Company 1の新規workflow一件をprovider receipt→source sync→reconciliation→cleanupまで通す。
+
+**resume_trigger:** 既存認証tabを同一transactionが再利用できるsemantic target resolution、またはuser-authenticated fresh target。加えてfresh remote registry/service-exec authorityとexact Company 1 account/target/payload binding。
+
+**fallback_or_independent_work:** Home-only朝夕Brief、会社scope付きChat/local fallback、runtime/worker health、future schedule監視、read-only audit、proof packet preparation。旧queued/unknown-effect Runとforeign leaseは再送・奪取しない。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-03 Company-scope regression verification v504
+
+- `apps/server/src/runs/workerEngine.ts`のasync Mac workerとsynchronous `runWorkerOnce`の両方が、Runの`company_id`をlocal adapter readbackへ渡すことを確認した。
+- `npm run build:server`は成功。対象のportable workflow / registered workflow E2Eテストは18件成功、失敗0件、skip 0件。同期経路の`company_scope_required`誤ブロックがなく、adapter receiptの`company_id`がRun scopeと一致した。
+- これはlocal code/test evidenceであり、Zeabur反映、provider business completion、自然tickの証明ではない。CompanionのZeabur blockerとproduction readinessの判定は変更しない。
+
+**Current truth:** Goal=`active/incomplete`、`production_ready=false`、business completion=`2/6`。会社scope回帰は補強済みだが、Zeabur `377caf3` production readback、remote registry/service-exec、6 workflowのsame-Run business proof、Brief外部delivery、自然tick/multi-day soakは未達。
+
+**stop_class:** `warn_and_continue`。
+
+**exact_blocker:** Zeabur live targetのguest/`Permission denied`と直前のCompanion `tabs.navigate` timeout、`codex_app_server_not_verified`、`zeabur_cli_authentication_unavailable`、effectful workflowのfresh account/target/payload/approval binding未確認。
+
+**progress_attempt_now:** sync/async company scope regressionのbuild・対象テスト、Companion timeout後readback、Goal-owned lease/session cleanup、foreign task分離を完了。
+
+**next_action_now:** ユーザー認証済みのCompanion fresh targetが得られたら、同じCompanion surfaceで`377caf3` deployment/planner workerをreadbackし、remote registry/service-exec authorityを確認する。その後Company 1の一件だけをprovider receipt→source sync→reconciliation→cleanupまで通す。
+
+**resume_trigger:** Zeaburのuser-authenticated fresh targetまたは保持tabの認証回復。認証情報・OTP・CAPTCHAは自動入力しない。
+
+**fallback_or_independent_work:** Home-only朝夕Brief、company-scoped Chat/local fallback、runtime/worker health、future schedule監視、read-only audit、proof packet preparation。旧queued/unknown-effect Runとforeign leaseは触らない。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-03 Companion fresh Zeabur public-root readback v506
+
+- 新しいtask-owned Companion sessionと新規Zeaburタブで、`https://zeabur.com/`のsemantic readbackを実施。Companionはconnected、target readは`verified`、`effect_state=no_dispatch`、`external_action_executed=false`だった。
+- Zeaburは公開トップページを返し、認証済み管理画面・deployment・service実行状態は取得できなかった。今回の確認でタブ作成以外のprovider/deploy/secret変更はなく、session/leaseはcleanup済み。
+- Profile 2のCompanionそのものは正常。残る外部blockerはZeaburのuser-authenticated targetとremote registry/service-exec authorityであり、旧target/navigationのreplayはしない。
+
+**Current truth:** Goal=`active/incomplete`、`production_ready=false`、business completion=`2/6`。local code/build/対象テスト、registry、schedule再計算、Brief生成、AOS runtimeは確認済みだが、production deployment readback、残り4 workflowのsame-Run proof、Brief外部delivery、自然tick/multi-day soakは未達。
+
+**stop_class:** `warn_and_continue`。
+
+**exact_blocker:** Zeabur user authentication / private management target未確立、remote registry/service-exec authority未確認、effectful workflowのfresh account/target/payload/approval binding未確認。
+
+**progress_attempt_now:** 新規Companion task-owned session/tabで公開rootをread-only確認し、`verified/no_dispatch`を得た後、session/lease cleanupとforeign task分離を完了。
+
+**next_action_now:** ユーザー認証済みのZeabur targetが得られたら、同じCompanion surfaceから`377caf3` deployment/planner workerをfresh readbackし、その後Company 1の1件をsame-Run proof chainへ進める。
+
+**resume_trigger:** ZeaburのCompanion上のuser-authenticated fresh target。credentials/OTP/CAPTCHAは自動入力しない。
+
+**fallback_or_independent_work:** Home-only朝夕Brief、company-scoped Chat/local fallback、runtime/worker health、future schedule監視、read-only audit、proof packet preparation。旧queued/unknown-effect Runとforeign leaseは触らない。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-03 Fresh registry and runtime readback v508
+
+- `audit-codex-automations`を実行し、会社registry reconciliationを再確認。12件すべて`matched`、missing/duplicate/conflict/orphanは0、mutationなし。global catalogの6 workflowはactive。
+- AOS runtimeは`ready_for_authorized_admission`、local healthはHTTP 200、portable remote workerはlive、server effectsはread-only、worker effectsはenabled。CompanionはProfile 2がconnectedで、current Goalのsession/leaseは0。
+- Companionのfresh Zeabur public-root readbackは`verified/no_dispatch`だったが、管理画面認証は得られていない。registry/runtimeの健全性は、provider業務完了やproduction deployment readbackを意味しない。
+
+**Current truth:** Goal=`active/incomplete`、`production_ready=false`、business completion=`2/6`。Zeabur authenticated target、remote registry/service-exec authority、残り4 workflowのsame-Run proof、Brief外部delivery、自然tick/multi-day soakが未達。
+
+**stop_class:** `warn_and_continue`。
+
+**exact_blocker:** Zeabur user authentication / private management target未確立、remote registry/service-exec authority未確認、effectful workflowのfresh account/target/payload/approval binding未確認。
+
+**progress_attempt_now:** automation audit、12件registry readback、6 workflow catalog readback、AOS runtime/local health、Companion Profile 2 statusとfresh public-root verificationを完了。
+
+**next_action_now:** ZeaburをCompanion上で認証済みにした後、`377caf3` deployment/planner workerをreadbackし、remote authorityを確立する。その後Company 1の1件をsame-Run proof chainへ進める。
+
+**resume_trigger:** CompanionのZeabur user-authenticated fresh target。credentials/OTP/CAPTCHAは自動入力しない。
+
+**fallback_or_independent_work:** Home-only朝夕Brief、company-scoped Chat/local fallback、runtime/worker health、future schedule監視、read-only audit、proof packet preparation。旧queued/unknown-effect Runとforeign leaseは触らない。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-03 Company binding mismatch confirmed v510
+
+- fresh `company_binding_readiness.v1`で、Codex登録automation/Briefのtrigger scopeは`company_2560580981cedfd106b66245`、AOSローカルSQLiteの6 automation/6 scheduleは`company_9588eaafb46d7cbaead81811`と再確認した。
+- `canonical_company_id=null`、status=`blocked`、`exact_blocker=canonical_company_unresolved`。service identityとprovider account refsも未設定で、6 scheduleはactive表示でもmaterializationはblocked。推測によるrewire、schedule materialization、provider/browser、Brief deliveryは行っていない。
+- これはCompanionの故障ではなく、保護対象の会社/project mappingとAOS endpointをOwnerが一意に確定していない境界。候補の多数決・新しさ・登録件数だけでは選択しない。
+
+**Current truth:** Goal=`active/incomplete`、`production_ready=false`、business completion=`2/6`。Companion Profile 2とAOS runtimeはhealthyだが、canonical company mapping、remote registry/service-exec authority、fresh account/target/payload、残りworkflowのsame-Run proof、Brief delivery、unattended soakは未達。
+
+**stop_class:** `ask_one_question`。
+
+**exact_blocker:** `canonical_company_unresolved`（Codex trigger=`company_2560580981cedfd106b66245`、local AOS registry=`company_9588eaafb46d7cbaead81811`）。
+
+**progress_attempt_now:** readiness/reconciliationをfresh実行し、2候補のprovenance・件数・downstream blockerをreadback。DB integrityはok、mutation/provider/browser/notificationは0。
+
+**next_action_now:** Ownerが保護対象のcompany/project mappingを一意に指定した後、そのIDだけでCodex trigger、AOS registry、Brief、service identityを再bindし、same-run readbackを行う。
+
+**resume_trigger:** `company_2560580981cedfd106b66245`または`company_9588eaafb46d7cbaead81811`のどちらが実運用対象かというOwnerの明示回答。
+
+**fallback_or_independent_work:** Companion public-root read-only、AOS health/runtime、registry audit、local Brief preview、会社scope回帰テスト、proof packet準備。候補選択・rewire・schedule materialization・旧queued/unknown-effect Run replayはしない。
+
+
+## 2026-09-03 All-company morning/evening Brief registration parity v544
+
+- `aos-morning-brief`を既存IDのまま更新し、会社1固定を廃止。認証済みAOSのcompany registryをfresh readbackして、現在Ownerに見える全会社を朝夕Briefの対象にした。スケジュールは毎日07:45/21:45、通知先は現在Goal threadのまま。
+- 更新後に共通registryの旧prompt hashが残る不整合を検出。automationを一時PAUSEDにしてcanonical `adopt-heartbeat`でregistry materialを同期し、同じ内容でACTIVEへ復帰した。fresh `audit-codex-automations`は9/9 compliant、gaps=0、activation-checkもpassed。provider/business effectは0。
+- Goalは`active/incomplete`、`production_ready=false`、business completion=`2/6`のまま。設定整合性は完了したが、実際の朝夕heartbeat delivery receipt、Zeabur認証済み管理target、`377caf3` production readback、remote registry/service-exec、各workflowの同一Run proof、unattended soakは未達。
+
+**stop_class:** `warn_and_continue`。
+
+**exact_blocker:** `zeabur_user_authentication_or_private_management_target_unavailable`、`canonical_company_unresolved`、`codex_app_server_not_verified`、effectful workflowのfresh account/target/payload/approval binding未確認、actual Brief delivery receipt未観測。
+
+**progress_attempt_now:** 既存Brief登録の会社scopeを動的化し、canonical registry materialを同期。global audit 9/9、activation-check、AOS runtime、local health、Companion Profile 2、Goal-owned cleanupをfresh readbackした。foreign Job leaseは触っていない。
+
+**next_action_now:** 次の自然Brief tickで会社別delivery receiptを確認し、認証済みZeabur targetが見えた時点で`377caf3`とplanner workerをreadback。その後、Ownerが一意に確定した会社のworkflowを一件だけprovider receipt→source sync→reconciliation→cleanupまで進める。
+
+**resume_trigger:** Companion Profile 2上のuser-authenticated Zeabur management target、private AOS ingress/Owner authority、canonical company mapping、exact account/target/payload binding。
+
+**fallback_or_independent_work:** all-company local Brief preview、AOS runtime/local health、read-only registry audit、Companion controller heartbeat、proof packet準備。旧queued/unknown-effect Run、foreign lease、同じ送信keyの再送はしない。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-03 Chat UI検証後の最終境界 v547
+
+- `/api/health`はHTTP 200。Companion Profile 2はconnected、current Goalのsession/lease/tab/pending operationは0、foreign Job resourceは未変更。
+- Goalは`active/incomplete`、`production_ready=false`、business completion=`2/6`。Chatの3段階入口は実画面で確認済みだが、provider業務完了・朝夕Brief実delivery・Zeabur production readback・unattended soakは未達。
+
+**next_action_now:** 既存controller/朝夕Brief heartbeatを維持し、次の会社別delivery receiptを確認する。認証済みZeabur management targetとcanonical company mappingが得られたら`377caf3`/planner workerをreadbackし、一件のsame-Run proof chainへ進む。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-03 Final fresh state and current truth v553
+
+- Goalは`active`（thread `01a061d7-cfdf-7532-bdbd-00c9f22c04a4`）。AOS local healthはHTTP 200、runtimeは`ready_for_authorized_admission`、server effects=`read_only`、worker effects=`enabled`。
+- Companion Profile 2はconnected。current Goalのsession/lease/tab/pending operation/active reconciliationはすべて0。foreign Job taskのsessionは1、pending operationは1件だが、ownerはforeign task `01a03a2d-7b5d-76e0-80c7-ad81ed300e0a`、`page.pressKey`、`no_dispatch`であり、未操作。
+- 登録automation監査は9/9 compliant、gaps=0。Codex側`aos-morning-brief` heartbeatはACTIVEだが、AOS internal company-binding readinessは`blocked`、canonical companyはnull、Brief delivery readinessはfalse、6 schedule materializationはblocked。
+
+**Current truth:** Goal=`active/incomplete`、`production_ready=false`、business completion=`2/6`。Chat登録ゲートnegative path、foreign isolation、registry audit、runtime healthは確認済み。canonical会社、protected AOS/Zeabur authority、provider/account/target/payload binding、残り4 workflowのsame-Run proof、実Brief delivery receipt、unattended soakは未達。
+
+**stop_class:** `warn_and_continue`。
+
+**exact_blocker:** `canonical_company_unresolved`、`brief_delivery_not_configured_in_protected_aos`、`durable_scheduler_service_user_id_missing`、`current_aos_account_refs_missing`、Zeabur authenticated management target未確立。
+
+**progress_attempt_now:** 同一RunでAOS health/runtime、Companion owner境界、global registration audit、company-binding readinessをfresh readbackし、最新状態をPlan末尾へ同期した。外部効果は0。
+
+**next_action_now:** 既存controller/朝夕Brief heartbeatを維持し、次の実delivery receiptをfresh readbackする。Ownerがcanonical company mappingを確定し、Companion Profile 2に認証済みAOS/Zeabur targetが現れたら、Brief設定・schedule materialization・`377caf3`/planner worker readback後、1 workflowをprovider receipt→source sync→reconciliation→cleanupまで進める。
+
+**resume_trigger:** Ownerのcanonical company選択、およびCompanion Profile 2上の認証済みAOS/Zeabur management target。foreign pending operation・旧queued/unknown-effect Runは操作・再送しない。
+
+**fallback_or_independent_work:** Codex Home-only Brief heartbeat、local Brief preview、runtime/health、registry audit、Chat consultation/demo/approval preview、proof packet準備。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+
+## 2026-09-03 Companion Zeabur login boundary readback v554
+
+- Current Goal専用のCompanion Profile 2 sessionを開き、task-owned tab `1980912114`で`https://zeabur.com/ja-JP/`をfresh readbackした。公開トップの`ログイン`リンクをsemantic＋screenshotで確認し、fresh visual proofを取得直後に一回だけ使って`https://zeabur.com/ja-JP/login`へ遷移した。
+- 遷移後のfresh readbackはtitle=`Zeabur`、空のメール欄、disabledなメール継続、`GitHubで続行`/`Googleで続行`を表示する未認証ログイン画面だった。Companion Profile 2上のuser-authenticated management target、AOS/Zeabur project、deployment、service-exec authorityは未取得。credentials、OAuth account選択、OTP、CAPTCHAは入力・実行していない。
+- 最初のvisual proofは有効期限切れで`visual_target_proof_invalid`（`no_dispatch`）になったが、同じ操作を再送せず、fresh lease・semantic readback・screenshot proofを取り直した後の一回だけのclickは`visual_target_proof_verified=true`でknown effectのlocal UI navigationとして完了した。provider/deploy/secret/business effectは発生していない。
+- session close後のowner cleanup receiptは`closed=[1980912114]`、current Goalのsession/lease/tab/pending operation/active reconciliation=0。foreign Job task `01a03a2d-7b5d-76e0-80c7-ad81ed300e0a`のsession/lease/pending operation/task tabsは未変更。
+
+**Current truth:** Goal=`active/incomplete`、`production_ready=false`、business completion=`2/6`。AOS runtime/registry/Chat安全ゲートは維持されているが、canonical会社、protected AOS/Zeabur authority、provider/account/target/payload binding、残り4 workflowのsame-Run proof、実Brief delivery receipt、unattended soakは未達。
+
+**stop_class:** `warn_and_continue`。
+
+**exact_blocker:** `zeabur_companion_profile2_not_authenticated`（ログイン画面で停止。認証済み管理targetとremote registry/service-exec authorityが未確立）。
+
+**progress_attempt_now:** Companionのfresh task-owned targetを公開rootからログイン画面まで確認し、期限切れproofのbounded recovery、local UI navigation、semantic readback、owner-scoped cleanup、foreign owner分離を完了した。
+
+**next_action_now:** ユーザーがCompanion Profile 2でZeabur認証を完了した後、fresh targetでAOS private ingressと`377caf3`/planner workerをreadbackし、canonical company mappingとremote registry/service-exec authorityを確認する。その後、一意にbindできた会社のworkflow一件をprovider receipt→source sync→reconciliation→cleanupまで通す。
+
+**resume_trigger:** Companion Profile 2でログイン後のZeabur dashboard/project/serviceがsemantic＋visual readbackでき、private AOS authorityとcanonical company mappingが同一Runで確認できること。
+
+**fallback_or_independent_work:** 既存controller/朝夕Brief heartbeat、Home-only Brief preview、AOS health/runtime、registry audit、Chat consultation/demo/approval preview、proof packet準備。foreign task、旧queued/unknown-effect Run、同じ送信keyは触らない。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+
+## 2026-09-03 Fresh auth and company-binding recheck v555
+
+- v554後に新しいCompanion Profile 2 session `session_2743fe0c-8355-44fb-8aae-0f6e2464bea2`とtab `1980912117`でZeaburを再確認した。fresh root readbackは`https://zeabur.com/ja-JP/`、title=`Zeabur - あなたの AI DevOps エンジニア`、visible target=`ログイン`で、認証済みmanagement targetはfalseだった。
+- root navigationはCompanionの同一task-owned transactionで`verified/known_effect/local_ui`、provider external actionはfalse。前回同様、ログイン操作・credentials・OAuth account選択・OTP/CAPTCHA・deploy/secret変更は行っていない。
+- fresh `npm run aos:company-binding-readiness`は`blocked`、`canonical_company_id=null`、trigger会社=`company_2560580981cedfd106b66245`、local diagnostic会社=`company_9588eaafb46d7cbaead81811`、6 schedule materialization blocked、service identity未設定、account refs=0、Brief delivery=false。自動選択・rewire・provider/browser起動はしていない。
+- session close後のcleanupはtab `1980912117`を閉じ、current Goalのsession/lease/tab/pending/reconciliation=0。foreign Job task資源は未変更。global automation auditは9/9 compliant、gaps=0。
+
+**Current truth:** Goal=`active/incomplete`、`production_ready=false`、business completion=`2/6`。AOS/Companion基盤と登録整合性は健全だが、Zeabur認証済み管理target、canonical company authority、service/account binding、残りworkflowのsame-Run proof、実Brief delivery receipt、unattended soakは未達。
+
+**stop_class:** `warn_and_continue`。
+
+**exact_blocker:** `zeabur_companion_profile2_not_authenticated` と `canonical_company_unresolved`。どちらもOwnerの認証・一意な会社mappingなしには自動突破できない。
+
+**progress_attempt_now:** 同じCompanion surfaceでfresh target/readbackを再確認し、同じ操作を再送せず、company-binding readinessとglobal auditをfresh実行して、Goal-owned cleanupとforeign owner分離を完了した。
+
+**next_action_now:** OwnerがCompanion Profile 2でZeabur認証を完了したら、fresh management targetからAOS private ingress、`377caf3`/planner worker、remote registry/service-execをreadbackする。会社mappingが確定した後、1 workflowをprovider receipt→source sync→reconciliation→cleanupまで同一Runで実行する。
+
+**resume_trigger:** Companion Profile 2でログイン後のZeabur dashboard/project/serviceが見え、Owner-authorized private AOS authority、canonical company mapping、fresh account/target/payload bindingが同一Runで確認できること。
+
+**fallback_or_independent_work:** 既存controller/朝夕Brief heartbeat、local Brief preview、AOS health/runtime、registry audit、Chat consultation/demo/approval preview、proof packet準備。認証未完了のままprovider操作、会社選択、schedule materialization、旧Run replayはしない。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+
+## 2026-09-03 Final runtime and ownership boundary v556
+
+- AOS local healthはHTTP 200、runtime readbackは`ready_for_authorized_admission`、server effects=`read_only`、worker effects=`enabled`、exact blockerなし。Goal `01a061d7-cfdf-7532-bdbd-00c9f22c04a4`は`active`を維持している。
+- Companion Profile 2はbuild `0.3.2`・connected profile 1。current Goalのsession/lease/tab/pending/reconciliationは0。別task側はlogical session 1、lease 1、pending operation 1、active task tab 1であり、foreign ownerとして未操作。historical reconciliation 31件は再実行しない。
+- global automation auditは9/9 compliant、gaps=0。会社binding readinessは引き続き`blocked`（canonical会社null、trigger/local diagnostic会社不一致、service identity/account refsなし、6 schedule materialization blocked）。
+- したがって、AOS自体は稼働可能だが、Zeabur認証済みmanagement targetとOwner-authorized canonical company mappingがないため、provider業務実行・schedule materialization・Brief実delivery・unattended soakは完了扱いにしない。
+
+**Current truth:** Goal=`active/incomplete`、`production_ready=false`、business completion=`2/6`。
+
+**stop_class:** `warn_and_continue`。
+
+**exact_blocker:** `zeabur_companion_profile2_not_authenticated`、`canonical_company_unresolved`。foreign taskのactive資源は本Goalのblockerではなく、所有権境界として保護している。
+
+**progress_attempt_now:** Zeabur認証状態、company-binding readiness、AOS health/runtime、Goal、Companion ownershipをfresh readbackし、current Goalのcleanup完了とforeign resource未変更を確認した。
+
+**next_action_now:** 認証済みZeabur dashboard/project/serviceがCompanion Profile 2に現れたら、AOS private ingressと`377caf3`/planner workerをreadbackし、canonical company・account・target・payloadを一意にbindして1 workflowのsame-Run proofへ進む。それまでは既存heartbeatと安全なread-only監査を継続する。
+
+**resume_trigger:** Companion Profile 2上のuser-authenticated Zeabur management targetとOwnerのcanonical company mappingがfresh readbackできること。
+
+**fallback_or_independent_work:** controller/朝夕Brief heartbeat、local Brief preview、registry/runtime監査、Chat consultation/demo/approval preview、proof packet準備。foreign resource、旧queued/unknown-effect Run、同じ送信keyは触らない。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-03 Local no-effect canary and execution spine readback v557
+
+- `portableSchedulerCanary`を正しい`--output=`形式で一回実行し、6 workflow（求人、Daily AI、NisenPrints、prompt-transfer、SNS、X lane）すべて`completed`。各receiptは`manifest_validation → run_binding → readback → cleanup`、browser/connector/provider/notification effectは0。
+- 隔離SQLite・隔離artifact rootの`referenceWorkflowCanary`を3 workflowに実行。3/3が`proof_backed_safe_stop_verified`、exact blocker=`browser_use_cli_required`、runner未起動、cleanup receipt検証済み、idempotent recheck済み。これは外部業務完了ではなく、未認証・未提供browser authorityで安全停止するexecution spineの証明。
+- 最初のscheduler呼び出しは`--output`ではなく実装が受け付ける`--output=`形式に合わせる必要があり、receipt未生成で外部効果は0だった。正しい形式で再実行後、6件のreceiptを読み返して確定した。
+- Goalは`active/incomplete`、`production_ready=false`、business completion=`2/6`のまま。Zeabur Profile 2の認証済みmanagement target、canonical company mapping、service/account/target/payload binding、same-Run provider proof、Brief実delivery、unattended soakは未達。
+
+**stop_class:** `warn_and_continue`。
+
+**progress_attempt_now:** local no-effect canaryを実行し、6 workflowのscheduler bindingと3 workflowのbrowser safe-stop、cleanup、idempotencyをfresh artifactで検証してGoal artifactへ同期した。外部効果は0。
+
+**next_action_now:** 次の安全境界でBrief heartbeatの実delivery receiptをfresh readbackする。OwnerがCompanion Profile 2でZeabur認証を完了したら、AOS private ingress・`377caf3`/planner worker・canonical company mappingをfresh readbackし、1 workflowをprovider receipt→source sync→reconciliation→cleanupまで同一Runで進める。
+
+**resume_trigger:** 認証済みZeabur dashboard/project/service、Owner-authorized canonical company mapping、fresh service identity/account refs、provider/browser authority。
+
+**fallback_or_independent_work:** canary artifact、local Brief preview、runtime/health、global automation audit、Chat read-only consultation/demo/approval preview。foreign resource、旧queued/unknown-effect Run、同じ送信keyは触らない。
+
+Evidence: [work/aos-portable-scheduler-canary-20260903-2222.json](work/aos-portable-scheduler-canary-20260903-2222.json)、[work/aos-reference-workflow-canary-20260903-2222.json](work/aos-reference-workflow-canary-20260903-2222.json)、[work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-03 Post-canary runtime and ownership readback v558
+
+- canary後のfresh AOS readbackはlocal health HTTP 200、runtime=`ready_for_authorized_admission`、server effects=`read_only`、worker effects=`enabled`、external effect=false。
+- canary後のfresh Companion readbackはbuild `0.3.2`・connected profile 1、current Goal owned session/lease/tab/pending operation=0。見えている1 session・1 lease・5 task tabsはforeign task所有で、変更していない。active task tab=0、pending operation=0、historical reconciliation=31。
+- company binding fresh readbackは`blocked`、canonical company=null、trigger company=`company_2560580981cedfd106b66245`、local diagnostic company=`company_9588eaafb46d7cbaead81811`、6/6 materialization blocked、service identity未設定、account refs=0、Brief delivery=false。
+- 公式登録カードのfresh viewとglobal auditは維持され、9/9 compliant・gaps=0。Goalは`active/incomplete`、`production_ready=false`、business completion=`2/6`。認証済みZeabur management target、canonical mapping、same-Run provider proof、実Brief delivery、unattended soakは未達。
+
+**stop_class:** `warn_and_continue`。
+
+**progress_attempt_now:** canary実行後にAOS、Companion、company binding、公式automation登録を同一継続turnで再読込し、foreign owner非干渉とGoal-owned cleanupを確認した。外部効果は0。
+
+**next_action_now:** OwnerがCompanion Profile 2のZeabur認証を完了した時点で、fresh dashboard/project/serviceからAOS private ingress・`377caf3`/planner worker・canonical company mappingをreadbackし、1 workflowをsame-Run proofへ進める。
+
+**resume_trigger:** user-authenticated Zeabur management target、Owner-authorized canonical company/project mapping、service identity/account refs、provider/browser authority。
+
+**fallback_or_independent_work:** existing controller/Brief heartbeat、local no-effect canary、local Brief preview、runtime/health、global audit、Chat read-only consultation/demo/approval preview。foreign task、old queued/unknown-effect run、同じ送信keyは触らない。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)、[work/aos-portable-scheduler-canary-20260903-2222.json](work/aos-portable-scheduler-canary-20260903-2222.json)、[work/aos-reference-workflow-canary-20260903-2222.json](work/aos-reference-workflow-canary-20260903-2222.json)。
+
+## 2026-09-03 Current execution plan: Companion全タスク管理・自己修復・継続
+
+この節を今回の実行の正本とする。目的は、最近のCodex taskの目的と停滞原因を一つの監査結果にまとめ、AOS Companionがユーザー不在時にも「検知→所有者確認→最小修復→同一task再開→readback→次回継続」を安全に繰り返せる状態にすること。過去の履歴、queued、preflight、内部canaryだけでは外部業務完了とは判定しない。
+
+### 完了条件
+
+- 最近の公式task一覧をfresh readし、各taskについて目的、現在地、明確な問題、所有者、次の再開条件を分類する。
+- `aos-companion-2`の監査・復旧・再開コードが、同一task・同一Goal・同一Companion所有権を守り、unknown effectを再送せず、送信後の同一task readbackまで証拠化する。
+- 2つの既存Companion登録（通常cronと同一Goal heartbeat）の責務重複を解消または明確に分離する。App所有のautomationは公式APIでreadback/updateし、TOML/SQLiteを直接編集しない。
+- 代表ケース（正常、停滞、Goal/Plan不足、partial readback、timeout、unknown effect、foreign owner、active lease/pending operation、送信成功、送信未確認、Goal再開）をfocused testと実環境readbackで確認する。
+- Plan、automation-specific STATE、artifact、テスト結果を同一runで整合させる。
+- 完了時点で、完了した範囲、未完了の外部権限依存、exact blocker、resume triggerを明記する。未確認のprovider効果や認証を完了と称さない。
+
+### 実行順と状態
+
+1. **Scope / fresh inventory — `completed`**
+   - 公式Codex Appの最新task一覧、対象Goal、登録automation、AOS health/runtime、Companion Profile 2をfresh readする。
+   - foreign taskのsession、lease、pending operation、browser tabは変更しない。active leaseまたはpending operationがある間はextension refresh、close、replayをしない。
+   - 公式一覧58件を取得し、57件をreadback、1件（求人応募task）はtimeoutとして記録した。全件の目的・最新turn状態・例外を [work/aos-companion-current-inventory-20260903-v1.md](work/aos-companion-current-inventory-20260903-v1.md) に保存した。
+   - 既知の `unknown_effect` / `send result unknown` は再送せず、同じidempotency keyを保持する。
+
+2. **Intent / blocker map — `completed`**
+   - taskごとに「何をしようとしているか」を、タイトルではなくreadbackされたGoal/Plan/turn/STATE/receiptから抽出する。
+   - `queued`、`preflight`、`verified-local`、`not_run`、`deferred`、`unknown_effect`、business completionを別状態として表にする。
+   - task identity不一致、Goal/Plan不足、provider auth、CAPTCHA/OTP、AOS protected ingress、会社scope、Browser authority、外部効果未確認を別々のblockerに分類し、inventory artifactのexceptionsへ記録した。
+
+3. **Local implementation — `completed`**
+   - `aos-hourly-companion-audit.mjs`、controller finalizer、thread dispatch、readback projectionをレビューし、必要な最小修正だけを実装する。
+   - audit後に `not_run` を残さず、actionを実行しなかった場合は `deferred` または正確なblockerを返す。
+   - same-task continuationは公式 `send_message_to_thread` 一回、delivery proof、同一taskのcompleted turn readbackの三点が揃った場合だけ成功とする。
+   - readback失敗時は再送せず、最後のfresh evidenceを保存し、次回tickのbounded retry条件を記録する。今回の差分レビューでは追加のsource patchは不要だった。既存の修正を含むfocused suiteは122/122 pass。
+
+4. **Automation ownership / lifecycle — `completed`**
+   - 通常cronを監査・自己修復・再開の実行担当、同一Goal heartbeatを同じGoalでの継続wake-up担当として責務分離する。
+   - 重複実行を生む登録、古いprompt、別taskへのcross-task callbackがないか確認する。更新は既存IDを対象に公式automation APIで行う。
+   - update結果がcreate扱い、対象不一致、またはunknown effectになった場合は再試行せず、登録readbackで状態を確定する。heartbeatを一時停止して公式APIで採用・監査し、ACTIVEへ戻した結果、global auditは9/9 compliant、gaps=0となった。
+
+5. **Case-study verification — `completed`**
+   - static/focused suiteを実行する。
+   - liveではread-only inventory、同一Goal readback、foreign isolation、active-resource preservation、既存登録auditを確認する。
+   - effectful provider操作、応募送信、投稿、deploy、secret変更、OAuth/OTP/CAPTCHAは、fresh authority・対象・approval・payload・receiptが揃うまで実行しない。syntax、focused tests、web typecheck、web build、automation health、registered runner dry-run/preflightを完了し、外部効果は0と確認した。buildはchunk size warningのみ。
+
+6. **Runtime reflection / final handoff — `in_progress`**
+   - 次の自然tickまたは既存runの結果を一度だけbounded readbackし、同じartifact・同じtaskを照合する。
+   - Planは本節の実行ログを更新済み。`/Users/nichikatanaka/.codex/automations/aos-companion-2/STATE.md`は、今回のinteractive taskが登録automationのRootではなく新しいcontroller receiptを生成していないため、手動で書き換えず、公式runnerの次回natural tickによるsame-run syncを待つ。
+   - 最新readbackではAOS health=HTTP 200、runtime=`ready_for_authorized_admission`、Companion build=`0.3.2`、connected profile=1、current interactive task-owned resource=0を確認した。求人応募task所有のreconciliation active=1、pending operation=0であり、foreign resourceは操作していない。
+   - 自然tick artifactの最新時刻は今回のautomation prompt更新前で、prompt更新後のcontroller continuation/readback/finalizer/STATE syncはまだ観測できていない。したがってruntime反映とtask再開は未完了として残す。
+   - 「実装」「テスト」「runtime反映」「task再開」「外部業務完了」を分けて最終報告する。
+
+### 運用境界
+
+- Companionが自動でできるのは、公式taskのfresh read、明確なsoft anomalyの診断、task-ownedな最小修復、同一taskへの一回限りの継続通知、送信後readback、次回resume条件の保存まで。
+- ユーザー認証、秘密情報、OTP/CAPTCHA、本人確認、課金、破壊操作、対象が曖昧な外部効果、別task所有の資源は自動突破しない。
+- ユーザー不在時もautomationは継続するが、外部権限待ちを捏造せず、意味のある変化・完了・失敗・ユーザー操作が必要な時だけ通知する。
+- 現時点の既知境界は、Companion側のtask-owned active resource、求人taskのreadback不整合、Zeabur/AOS protected authority、canonical company mapping、provider receipt未確認である。これらはコード修正だけで完了にできない可能性があるため、実証できる範囲を最大化し、exact blockerを残す。
+
+### 今回の実行ログ
+
+- [x] 既存Plan、作業ツリー、適用Skill、現在の変更を確認した。
+- [x] この現行プランを `Plan.md` 末尾に追記した。
+- [x] fresh inventoryとintent/blocker mapを今回のartifactへ保存する。
+- [x] 実装レビュー、必要な最小修正、focused testsを完了する。
+- [x] 全server testを再実行し、1356 pass / 0 fail / 17 skipを確認した。skipは`AUTOMATION_OS_TEST_POSTGRES_URL`未設定などのfixture未提供で、失敗ではない。
+- [x] UI truthfulnessテストの1件を修正し、該当63/63 pass、web typecheck/build passを確認した。
+- [x] 既存automationの責務・登録・readbackを確定する。
+- [x] 代表ケースとruntime反映可能性を検証する。natural tick後のcontroller receipt/state syncは未観測のため、runtime業務完了とは扱わない。
+- [ ] STATEとこのPlanを最終readbackし、natural tickの結果・完了範囲・残存blockerを確定する。
+
+**Current status:** `local_verified_runtime_pending`
+**Current next action:** 次の公式natural tickで同じ登録Rootがfresh task inventoryを読み、eligibleなtaskだけを一回継続し、同一task readback・finalizer・STATE syncまで実行する。今回のinteractive taskから別taskへ送信して重複させない。
+**External effect:** このプラン追記自体はlocal file変更のみ。provider/business effectは0。
+
+**Remaining exact blockers:** `canonical_company_unresolved`（trigger/local diagnosticの会社ID不一致）、求人応募taskのofficial readback timeout/unknown-effect reconciliation、foreign owner資源、prompt更新後の自然tick証跡未観測。これらはこのinteractive taskから安全に代行・再送・所有権変更できない。
+
+
+## 2026-09-03 AOSサイト全機能化・最短実行計画 v559
+
+この節を現行の実行正本とする。目的は、AOSサイトを「閲覧できる」だけでなく、会社scope、Chat、Run、承認、テンプレート、Plugin、定期実行、各workflowの業務完了まで一つの安全な実行経路で使える状態にすること。2026年内の最短目標を9月末に置き、外部認証やprovider効果を理由にサイト全体を停止しない。
+
+### 現在地
+
+- AOS local healthはHTTP 200、runtimeは`ready_for_authorized_admission`、server effectsは`read_only`、worker effectsは`enabled`。
+- 公式automation登録は9/9 compliant。local no-effect scheduler canaryは6 workflow、safe-stop reference canaryは3 workflowで証明済み。これらは本番業務完了とは別に扱う。
+- サイトは主要7画面を入口から表示できる。summaryが取得できればread-only画面を先に表示し、詳細readback未確認時も保存・送信・承認変更・外部効果は安全停止する。
+- `production_ready=false`、business completion=`2/6`。
+- canonical companyが未確定で、trigger会社`company_2560580981cedfd106b66245`とlocal diagnostic会社`company_9588eaafb46d7cbaead81811`が不一致。service identity未設定、account refs=0、6 schedule materialization blocked、実Brief delivery未確認。
+- Zeaburは公開トップとログイン画面までは到達するが、認証済みmanagement target、private AOS authority、remote registry/service-exec authorityは未確認。
+- 残り4 workflowは、provider receipt、source sync、reconciliation、cleanupを同一Runで完了した証拠がない。historical queue、unknown-effect、`sent_unverified`は再送しない。
+
+### 実行順
+
+#### 1. サイトの即時利用面 — `completed`
+
+- `apps/web/src/App.tsx`にsummary投影の12秒timeoutを追加する。
+- 詳細projectionの前にsummaryを表示し、詳細readbackはバックグラウンドでbounded retryする。
+- read-only画面を先に表示し、mutation/effectful controlは詳細証拠が揃うまでfail-closedにする。
+- 「readback完了を待つ」「確認中」を受動的な次アクションとして表示せず、自動再読込・exact blocker確定・安全停止を表示する。
+- 主要7画面（Home、Chat、Company、Runs、Approvals、Templates、Plugins）を入口からbrowserで確認する。
+- 検証結果：`npm run typecheck:web`成功、`npm run build:web`成功、主要7画面のnavigation/read-only到達を確認、external effect=0。
+
+#### 2. 監査・再開controllerの待ち状態除去 — `completed`
+
+- 監査、候補選定、task継続、business workflow実行を別責務に分離する。
+- controllerは1回につき、fresh readback → 1 bounded action → same-task readback → receipt/finalizerまで実行する。
+- 5分を超える`in_progress`を残さず、terminal receiptと次の独立actionを記録する。
+- cross-task Companion操作を禁止し、task ownerが一致する公式task messageだけを使う。
+- `sent_unverified`、unknown-effect、historical queue、foreign task resourceは再送・再claim・再実行しない。
+- `next_action_now`に「何々されたら」「何々が見えたら」「完了を待つ」を書かず、現在の権限で実行できる動詞・対象・結果を必ず書く。
+- 正常、timeout、partial readback、foreign owner、unknown effect、送信成功、送信未確認のfocused testと登録runner readbackを実行する。
+- 実行結果：resume/controller suite 22/22 pass、Companion/controller suite 121/121 pass、登録automation audit 9/9 compliant・gaps=0、external effect=0。
+
+#### 3. 会社scope・AOS/Zeabur authorityの一本化 — `blocked_with_action`
+
+- trigger/local diagnostic/DBの会社IDを比較し、本番canonical companyを一つに確定する。候補IDを推測で採用しない。
+- service identity、account refs、target、payload、approval scopeを会社単位でfresh登録・readbackする。
+- Zeabur private ingress、Codex App Server registry、remote service-exec、`377caf3` planner workerをselected Companion Profile 2 surfaceで確認する。
+- 認証・OTP・CAPTCHA・本人確認は人間専用境界として扱い、自動突破しない。ただしこの境界の間も、サイト、tests、proof packet、local no-effect検証を継続する。
+- 完了条件は、canonical mapping、protected authority、remote registry、service identity、account/target/payload bindingが同一Runで揃うこと。
+- 実行結果：`npm run aos:company-binding-readiness`をfresh実行し、`status=blocked`、`canonical_company_id=null`、会社ID不一致、service identity未設定、account refs=0、6 schedule materialization blocked、external effect=0を確認した。これは受動的な待ちではなく、protected authorityを得るまで会社選択・schedule materialization・provider起動を安全停止する確定状態である。
+
+#### 3-A. 外部権限の解消と解除後の実行境界
+
+「外部権限を解消する」とは、権限を無制限に開放することではなく、対象・scope・owner・least privilegeをfresh readbackで確定し、必要なworkflowだけを実行可能にすることを指す。
+
+- Companion Profile 2でZeaburのauthenticated management targetを確認する。
+- private AOS ingress、Codex App Server registry、remote service-exec、`377caf3` planner workerを同一authorityでreadbackする。
+- Owner-authorized canonical company mappingを一意に確定し、trigger/local diagnosticの不一致を解消する。
+- service identity、company-scoped account refs、provider/browser authority、target、payload、approval scopeを登録・readbackする。
+- 認証・OTP・CAPTCHA・本人確認は`human_only`として扱い、自動突破しない。認証が必要でも、local/read-only、tests、proof packet、safe-stopは継続する。
+- 権限解除後も、Plan.mdの過去のv554〜v558記録、historical queue、unknown-effect、`sent_unverified`を一括再実行・削除・再送しない。
+- 権限解除後に進めるのは、このv559の未完了項目だけである。まず1 workflowをprovider receipt → source sync → reconciliation → cleanupまで通し、証跡が揃ってから次のworkflowへ進む。
+- したがって、権限解除だけでPlan.mdの全項目が自動実行されることも、全外部効果が一括で開始されることもない。履歴は残し、現行の未完了チェックだけを順番に完了させる。
+
+#### 4. workflow本番proof — `blocked_with_action`
+
+- 低リスク順に、local backup/Obsidian → Daily AI → NisenPrints/SNS → Email → 求人応募の順で一件ずつ実行する。
+- 各workflowは、admission → provider operation → provider receipt → source sync → reconciliation → cleanupを同一Runで通す。
+- 外部効果を実行する前に、対象・payload・approval・idempotency keyをfresh readbackする。
+- provider receiptが取れない場合は、そのRunをterminal blockedにし、同じkeyを再送しない。
+- 6/6 workflowで同一Run証跡が揃うまでbusiness completionを完了としない。
+- 実行結果：portable scheduler canaryは6/6 completed（manifest validation → run binding → readback → cleanup）、reference workflow canaryは3/3 `proof_backed_safe_stop_verified`（`browser_use_cli_required`、runner未起動、cleanup・idempotency確認）。本番provider operationは未実行、external effect=0。
+
+#### 5. Brief、natural tick、無人soak — `in_progress`
+
+- Home-only Briefを最初のAOS内deliveryとしてreceipt付きで確定する。
+- Gmail等の外部通知はconnector認証と送信receiptが揃った後に追加する。
+- natural scheduled tickを実行し、scheduler claim、worker receipt、source sync、cleanupを確認する。
+- 7日間のunattended soakは「待つ」のではなく、各tickのreceiptを自動収集し、失敗時にterminal化・修復候補化する。
+- 実Brief receiptと複数日soakが揃うまでproduction readinessをtrueにしない。
+- 実行結果：AOS Homeの朝夕Brief read-only generationをbrowserで実行し、Project Aと会社1のbundleを`generated`として確認した。通知送信は未実行。external delivery receipt、natural tick、7日soakは未達のため、ここは完了扱いにしない。
+
+#### 6. production readiness — `not_started`
+
+- `production_ready=true`、business completion=`6/6`。
+- canonical company、protected AOS authority、remote registry/service-exec、全workflow proof、Brief delivery receipt、unattended soakが揃う。
+- unresolved queue、unknown-effect、同一keyの再送、foreign owner干渉がない。
+- 主要画面に無期限loadingや受動的な待ち指示がなく、未確認状態にはexact blockerと実行可能な次アクションがある。
+
+### 期限目標
+
+- 9月3〜4日：サイトread-only利用面（第1段階）
+- 9月4〜6日：監査・再開controllerのbounded execution
+- 9月6〜10日：authority/company binding
+- 9月10〜18日：workflow proof
+- 9月19〜26日：Brief、natural tick、soak開始
+- 9月27〜30日：production readiness audit
+
+### 待ち状態を作らない運用規則
+
+- `waiting`は実行状態として残してよいが、次アクションを「待つ」にしない。必ず自動再読込、再検証、safe-stop、独立作業のいずれかを同時に持つ。
+- 認証など人間専用の操作は`human_only`として明示し、AOS側で突破可能なように見せない。その他の作業は継続する。
+- すべての状態変化後に、同一Run・同一task・同一scopeをreadbackする。
+- queued、preflight、local test、runtime reflectionを業務完了と呼ばない。
+- provider効果、応募、投稿、deploy、secret変更、承認変更は、fresh authority・target・approval・receiptなしに開始しない。
+
+### 今回の実行ログ
+
+- [x] 既存の最近のtask一覧とAOS関連taskをfresh reviewした。
+- [x] 現行Plan、STATE、Goal artifact、AOS health/runtime、Companion ownershipをreadbackした。
+- [x] サイトのsummary-first/read-only fallbackを実装した。
+- [x] web typecheck、production build、主要7画面のbrowser入口確認を完了した。
+- [x] controllerのfocused suite、registration audit、same-task continuation boundaryを今回の実行で再検証する。
+- [x] AOS Chrome Companion Profile 2でZeabur公開トップへのlocal UI navigationとvisual proofを実行した（`https://zeabur.com/ja-JP/`、tab=`1980912164`）。外部provider効果は0、今回のsession cleanupは完了し、foreign task resourceは変更していない。
+- [ ] Zeaburのauthenticated management target、private AOS ingress、remote registry/service-execを同一Runでreadbackする（今回のsemantic page readbackは`broker_request_timeout`となり、認証済みtargetは未確認）。
+- [ ] company bindingとprotected authorityを、推測や自動認証突破なしで確定する（current blocker=`canonical_company_unresolved` / `zeabur_companion_profile2_not_authenticated`）。
+- [ ] 残りworkflowを低リスク順にsame-Run proofまで実行する（現在はcanonical authority/account binding blocker）。
+- [ ] Brief delivery receipt、natural tick、7日soak、production readinessを確定する（Home read-only generationのみ完了）。
+
+**Current execution state:** `site_read_only_ready / orchestration_verified / canary_verified / brief_preview_verified / authority_blocked_with_independent_work`
+
+**Current next action:** canonical company mappingとprotected AOS/Zeabur authorityの候補を推測で変更せず、独立してAOS Home Brief preview・runtime health・registered auditを自動継続する。認証済みauthorityが得られない間はprovider/business effectを開始しない。
+
+**Companion readback:** Zeaburの公開トップ遷移はvisualに確認できたが、今回のbounded semantic readbackは`broker_request_timeout`。ログイン、OAuth account選択、OTP、CAPTCHA、本人確認は実行していないため、認証済み管理画面やAOSデプロイ先の解決完了とは扱わない。
+
+**External effect:** 今回のサイト修正・Plan更新・focused verification・Zeabur公開トップ遷移はlocal/read-onlyのみ。provider/business effect=0。
+
+## 2026-09-03 AOSサイト認証済みingress到達・実行境界更新 v560
+
+v559の`zeabur_companion_profile2_not_authenticated`は解消した。ユーザー提示の`https://aos-admin-ingress.zeabur.app/`をAOS Chrome Companion Profile 2で開き、AOS管理画面のvisual＋semantic readbackを取得した。本節をv559の後続状態として扱い、過去記録は削除・再実行しない。
+
+### 今回確定したこと
+
+- Zeaburプロジェクト`automation-wiled`の`automation-os`は`1/1実行中`、`automation-os.zeabur.app`は`PROVISIONED`。
+- Zeaburプロジェクトの`aos-admin-ingress`も`1/1実行中`、`aos-admin-ingress.zeabur.app`は`PROVISIONED`。
+- `aos-admin-ingress.zeabur.app`のAOS Homeはログイン済みで、画面上に`認証: 書き込み許可`を表示。Home、Chat、会社、実行履歴、承認、テンプレート、プラグイン、Adminの入口を確認した。
+- `#/projects/company_2560580981cedfd106b66245/automations`をfresh readbackし、表示名`会社1`、`会社scope: 会社1 membership readbackから取得`、登録自動化`6件`、`status=ready`、`external_action=false`を確認した。trigger側canonical IDとlive AOS routeが一致するため、live protected scopeは`company_2560580981cedfd106b66245`として扱える。
+- local SQLite diagnosticの`company_9588eaafb46d7cbaead81811`は別scopeとして残す。これを本番canonicalへ自動切替・移行しない。
+- `#/plugins`のfresh readbackでは、専用Codexサービスは`already_authenticated`、アカウント種別は`chatgpt / pro`、remote websocket blockerはなし。一方、Plugin registryは`0 configured / verified=false`、Gmail/Supabase authは`unknown`、画面のexact blockerは`zeabur_cli_authentication_unavailable`。
+- Zeaburの`codex-app-server`は`1/1実行中`、`codex-app-server.zeabur.app`は`PROVISIONED`。変数タブのreadbackでは`CODEX_APP_SERVER_BIND_HOST`、`CODEX_APP_SERVER_NON_LOOPBACK_APPROVED`、`CODEX_APP_SERVER_REMOTE_TOKEN`、`CODEX_APP_SERVER_TLS_TERMINATED`、`CODEX_APP_SERVER_TOKEN_FILE`等の変数名を確認した。値は取得・表示していない。
+- 変数タブの1回のclickはBrokerが`operation_effect_unknown`を返したため再送しない。reconciliation readbackでは同じZeabur serviceとmasked variable listを確認したが、completion capsuleはreadback-changedで確定できず、該当タブだけ証跡保持した。Zeabur設定の書込み・再起動・再デプロイ・secret変更は0件。
+
+### Plan.md進捗
+
+- 第1段階サイト即時利用面：`completed`。summary-first/read-only fallback、typecheck/build、主要画面入口を確認済み。
+- 第2段階監査・再開controller：`completed`。resume/controller`22/22`、Companion/controller`121/121`、登録audit`9/9`、external effect=0。
+- 第3段階会社scope・AOS/Zeabur authority：`in_progress`。Zeabur認証済みmanagement target、AOS authenticated ingress、live Company 1 scopeは確認済み。Plugin registry、provider auth、account/target bindingのfresh proofが未完了。
+- 第4段階workflow本番proof：`blocked_with_action`。portable canary`6/6`、reference safe-stop`3/3`は完了。本番provider receipt→source sync→reconciliation→cleanupは未実行。
+- 第5段階Brief・natural tick・無人soak：`in_progress`。Home-only generationは確認済み。external delivery receipt、natural tick、7日soakは未完了。
+- 第6段階production readiness：`not_started`。`production_ready=false`、business completion=`2/6`を維持する。
+
+### 次に実行する独立アクション
+
+1. live AOSの会社1 scopeを基準に、Zeabur Codex App Server registryのfresh readbackを取得し、Plugin/MCP/connectorのverified inventoryを確定する。
+2. Gmail/Supabaseを含むcompany-scoped account refs、browser/provider authority、target、payload、approval scopeを値を露出させずreadbackする。
+3. bindingが揃った低リスクworkflowを1件だけ、provider receipt → source sync → reconciliation → cleanupまで同一Runで通す。receipt欠落時はterminal blockedにして同一keyを再送しない。
+4. Home Briefのdelivery receipt、natural scheduler tick、失敗時のterminal化を確認し、複数日soakの証跡を自動収集する。
+
+上記は「ログインされたら」「何かが見えたら」という受動状態ではなく、各Runで`fresh readback → bounded action → same-run readback → safe-stop/receipt`を実行する。未確認のprovider効果、旧queue、unknown-effect、foreign task resourceは再利用しない。
+
+**Current execution state:** `site_access_resolved / aos_ingress_authenticated / live_company1_scope_verified / orchestration_verified / canary_verified / plugin_registry_blocked / independent_next_actions_active`
+
+**External effect:** 今回のZeabur/AOS遷移、AOS readback、Plan更新はlocal/read-only。provider/business effect、secret変更、deploy、restart、schedule変更は0件。
+
+## 2026-09-03 Interactive plan execution final readback v560
+
+この節は、今回の「Plan.mdを作成して全て実行する」依頼に対する最終readbackである。既存のv1〜v559履歴は上書きせず、別taskが同じPlanへ追記した内容もそのまま保持した。
+
+- [x] 公式task一覧をfresh取得し、58件（Codex 55 / ChatGPT 3）を確認した。今回の最終readback時点は`notLoaded=45 / idle=8 / active=5`。inventoryと57件の成功readback、1件の求人応募task timeoutは [work/aos-companion-current-inventory-20260903-v1.md](work/aos-companion-current-inventory-20260903-v1.md) に保存済み。
+- [x] task目的、停滞原因、Goal/Plan不足、identity mismatch、provider/auth、unknown effect、foreign owner、次のresume条件を分類した。
+- [x] Companion監査・finalizer・same-task dispatch・readback projectionの既存修正をレビューし、追加でUI安全停止文言の不整合を修正した。focused suiteは122/122、該当UI truthfulness suiteは63/63 pass。
+- [x] server全体testは`1356 pass / 0 fail / 17 skip`。skipはPostgreSQL fixture等の未設定による環境依存である。web typecheck、web production build、`git diff --check`もpassした。
+- [x] 既存2登録を責務分離した。`aos-companion-2`は全recent taskの監査・候補選別・owner taskへの安全なrelay、`aos-companion-goal`はtarget thread=`01a05aa2-64bc-7321-b7fc-2e38595bdcec`の既存Goal/Plan継続専用。公式登録auditは`9/9 compliant / gaps=0`で、両登録はACTIVE。
+- [x] AOS local healthはHTTP 200、runtimeは`ready_for_authorized_admission`、server effectはread-only、worker effectはenabled。外部効果は0。
+- [x] 最終Companion readbackはproductVersion=`0.3.2`、connected profile=1、current interactive task-owned session/lease/tab=0。全体では別task所有のsession=3、lease=4、pending operation=1、active reconciliation=2、historical reconciliation=31、queue=1を観測した。foreign resourceは採用・close・refresh・replayしていない。
+- [x] `canonical_company_unresolved`をfresh再確認した。trigger companyとlocal diagnostic companyが一致せず、canonical company未選択、schedule materialization/provider/source sync/reconciliation/cleanupは未実行、external effect=0である。
+- [ ] prompt更新後の`aos-companion-2` natural tickによるcontinuation/readback/finalizer/automation-specific STATE syncは、今回のinteractive task中には観測できていない。登録automationのRootを偽装して手動receiptを作成したり、STATEを手動上書きしたりしていない。
+
+**最終状態:** `local_implementation_verified / automation_registration_verified / runtime_readback_ok / external_business_completion_not_claimed`
+
+**自動継続:** 次の公式natural tickが、fresh inventory → eligible taskのowner/readback確認 → 最大一回の同一task continuation → 同一task readback → finalizer → STATE syncを実行する。active reconciliation、unknown effect、foreign owner、auth/CAPTCHA/OTP、対象不一致が残る場合は再送せずexact blockerを保存する。
+
+**人間操作が必要な境界:** `canonical_company_unresolved`をOwnerが一意に確定し、必要ならCompanion Profile 2でZeaburへ認証するまで、provider業務、応募送信、投稿、schedule materialization、Brief実deliveryは開始しない。これはコード不足ではなく、対象・所有者・外部効果の権限証拠が不足しているためである。
+
+**完了判定:** Plan作成、調査、実装、修正、テスト、登録責務分離、local/runtime readbackまでは完了。外部business completion、prompt更新後のnatural tick、STATE同期、canonical company確定は未完了として正確に残した。provider/business effectは0。
+
+## 2026-09-03 Controlled blocked audit repair v561
+
+- 公式natural tick `aos-companion-2-20260903142612-0`をreadbackした。監査artifact自体は`executionReceipt.status=blocked`、exact blocker=`active_reconciliation`、`rootActionRequired=true`、`externalActionExecuted=false`、cleanup完了だったが、audit CLIの終了コード2を親Runnerが一律`registered_automation_command_failed`として扱っていた。
+- そのため当該tickでは同一task continuation、同一task readback、finalizer/STATE syncへ進まず、Kernelの一般的なcommand failureとして記録された。これは外部効果や再送ではなく、safe blocked auditとregistered-command境界の分類不整合である。
+- 親Runnerに`readControlledAuditResult`を追加し、read-onlyかつexternal effect=falseのaudit artifactに限って、childのexact blockerをKernel evidenceへ引き継ぐよう修正した。外部効果を含むaudit、schema不一致、artifact欠落はcontrolled扱いせず、従来どおりfail-closedする。
+- 修正後のfocused suiteは119/119 pass、`node --check`、`git diff --check`もpass。修正前に実行したserver全体testは1356 pass / 0 fail / 17 skipであり、今回のrunner修正には新たなserver依存がない。
+- [ ] 修正後のregistered natural tickが、`active_reconciliation`を一般command failureではなくexact blockerとして記録し、後続finalizer/STATE syncまで進むことは、次のscheduler実行後にartifactと同一Rootでreadbackする。
+
+**v561 exact next action:** 次の公式natural tickで同じ登録Rootを実行し、(1) child auditのblocked/failed結果を親Runnerが読み取る、(2) `controlled_audit_result`と`active_reconciliation`を証跡化する、(3) unknown effectを再送せず、eligible候補だけを公式same-task readbackする、(4) finalizerとSTATE同期をreadbackする。今回のinteractive taskからexecuteを偽装しない。
+
+## 2026-09-03 Final post-fix local readback v562
+
+- [x] `node --check .codex/automation-kernel/runners/aos-companion-2.mjs`、focused runner/audit/controller/dispatch/readback suite `119/119`、`git diff --check`をpassした。
+- [x] global automation auditを再実行し、`checked=9 / compliant=9 / gaps=0 / external_action_executed=false`を確認した。heartbeatのtarget threadは`01a05aa2-64bc-7321-b7fc-2e38595bdcec`のまま維持されている。
+- [x] 2026-09-03T14:34Zのfresh AOS readbackはhealth HTTP 200、runtime=`ready_for_authorized_admission`、server=`read_only`、worker=`enabled`。Companionはconnected profile=1、current task-owned resources=0、全体はpending operation=0・active reconciliation=4・queue=1で、全体資源は別task所有として非干渉を維持した。
+- [ ] 修正後の自然tickartifactはまだ生成されていない。最新artifactは修正前の`aos-companion-2-20260903142612-0`で、親Runnerのexact blockerがまだ`registered_automation_command_failed`の旧証跡である。次のnatural tickの新artifactでv561のcontrolled blocker修正を確認する。
+
+**v562 handoff state:** `implementation_verified / tests_verified / registration_verified / runtime_readback_verified / natural_tick_post_fix_pending / external_effect_zero`
+
+## 2026-09-03 Local morning/evening Brief preview and binding recheck v563
+
+- 朝Briefと夜Briefを、immutable local SQLite snapshotから会社分離のread-only previewとして生成した。両方とも`aos.local_brief_bundle.v1`、business date=`2026-09-03`、4社、12 input/included records、excluded=0、generated company=1、empty companies=3である。
+- previewは`delivery.attempted=false / status=not_attempted`、`mutation.attempted=false / allowed=false`、provider/browser/notification/external effect=0。したがって会社別Briefの生成契約は確認できたが、朝夕の実delivery receiptや未在席運用の証明ではない。
+- npm wrapperの出力がbuild段階で終わったため、同じwrapperを再送せず、既検証distを直接読むbounded read-only経路へ切り替えた。直接readbackはexit code=2の`blocked`で、canonical company=null、trigger company=`company_2560580981cedfd106b66245`、local diagnostic company=`company_9588eaafb46d7cbaead81811`、6/6 schedule materialization blocked、service identity=false、account refs=0、Brief delivery=false、exact blocker=`canonical_company_unresolved`を確認した。
+- Brief generator/API/readback/company-binding/Companion監査のfocused suiteは`86/86 PASS`。これは実装・安全境界の検証であり、provider業務完了ではない。
+
+**Current truth:** Goal=`active/incomplete`、`production_ready=false`、business completion=`2/6`。AOS health/runtimeとCompanion接続は正常、global registration auditは9/9 compliantだが、canonical会社・protected AOS/Zeabur authority・service/account/target/payload binding・same-Run provider proof・実Brief delivery・unattended soakは未達。
+
+**stop_class:** `warn_and_continue`。
+
+**exact_blocker:** `canonical_company_unresolved`、`zeabur_companion_profile2_not_authenticated`、`brief_delivery_destination_and_morning_evening_time_not_decided`、`durable_scheduler_service_user_id_missing`、`current_aos_account_refs_missing`。
+
+**progress_attempt_now:** 朝夕Brief previewを実生成し、会社分離・空会社の明示・安全なnext action・delivery/mutation非実行をreadbackした。直接company-binding readback、focused test、artifact同期も完了し、外部効果は0。
+
+**next_action_now:** OwnerがCompanion Profile 2でZeabur認証を完了し、canonical company mappingとprotected AOS authorityがfresh readbackできたら、`377caf3`/planner worker・remote registry/service-exec・Brief destination/timeを一意にbindする。その後、最も低リスクな一社一workflowをprovider receipt→source sync→reconciliation→cleanupまで同一Runで実行し、次に朝夕Briefの実delivery receiptとnatural tickを確認する。
+
+**resume_trigger:** user-authenticated Zeabur dashboard/project/service、Owner-authorized private AOS ingress、canonical company mapping、service identity/account refs、exact provider/browser target、朝夕delivery destination/time。
+
+**fallback_or_independent_work:** 既存controller/朝夕Brief heartbeat、local Brief preview、AOS health/runtime、global registration audit、Chat consultation/read-only demo/approval preview、proof packet準備。foreign task、旧queued/unknown-effect Run、同じ送信keyは触らない。
+
+Evidence: [work/aos-company-brief-preview-morning-20260903.json](work/aos-company-brief-preview-morning-20260903.json)、[work/aos-company-brief-preview-evening-20260903.json](work/aos-company-brief-preview-evening-20260903.json)、[work/aos-company-binding-readiness-20260903-2336-direct.json](work/aos-company-binding-readiness-20260903-2336-direct.json)、[work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-03 Post-preview final runtime readback v564
+
+- Brief preview artifact同期後のfresh readbackはAOS health HTTP 200、runtime=`ready_for_authorized_admission`、server=`read_only`、worker=`enabled`、external effect=false。
+- CompanionはProfile 2 connected、current Goalのsession/lease/tab/pending/reconciliation=0。foreign resourcesは未変更。
+- Goalは`active/incomplete`、`production_ready=false`、business completion=`2/6`。v563の会社binding blockerに変化はなく、provider業務・実delivery・unattended soakは開始していない。
+
+**Next action:** 認証済みZeabur management targetとcanonical company mappingが現れた時点で、private AOS authority・remote registry/service-exec・Brief destination/timeをreadbackし、一社一workflowをsame-Run proof chainへ進める。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-03 Zeabur management target ownership and bounded timeout readback v565
+
+- Companionのsanitized tab一覧で、Profile 2にZeabur project/service URL（tab=`1980912164`）とAOS private ingress（tab=`1980912167`）が存在することを確認した。ただし両方とも別task所有のためclaim/adopt/closeは行っていない。
+- 観測済みのexact project/service URLを、current Goalのtask-owned新規tabでread-only navigationするbounded attemptを一回だけ実施した。`tabs.create`がtimeoutしたが、same-target `companion_transaction_status`で`state=failed`、`effect_state=known_no_effect`、`dispatch_count=0`、`safe_fresh_retry_allowed=false`、tabなしを確認した。同じkey/fingerprintは再送しない。
+- session cleanupは`completed`、閉じたのはcurrent Goalのlate-created tab=`1980912183`のみ。Companion post-cleanupはconnected profile=1、current Goal session/lease/tab/pending=0、foreign resources unchanged、external provider/deploy/secret/schedule/business effect=0。
+
+**Current truth:** Zeabur management targetがProfile 2に見えることは確認できたが、current GoalでのOwner-authorized target readbackは未完了。Goal=`active/incomplete`、`production_ready=false`、business completion=`2/6`。
+
+**stop_class:** `warn_and_continue`。今回のtimeoutはknown_no_effectであり、同一targetの自動retryはしない。
+
+**exact_blocker:** `operation_timeout`（Companion `tabs.create`、dispatch=0、safe fresh retry=false）、`foreign_task_target_not_adoptable`、`canonical_company_unresolved`、`brief_delivery_destination_and_morning_evening_time_not_decided`。
+
+**progress_attempt_now:** foreign targetを採用せず、観測済みexact URLのtask-owned read-only attempt、same-target status readback、owner cleanup、post-cleanup Companion readbackを完了した。
+
+**next_action_now:** 次の自然tickまたは別のfresh lifecycle境界でCompanionが自発的に新規targetを作成できるまで、同じURL・keyの再試行はせず、local Brief/runtime/auditを継続する。認証済みtargetをcurrent taskで取得できた場合だけ、private AOS authorityとcanonical companyを同一Runでreadbackする。
+
+**resume_trigger:** current Goal-owned fresh Zeabur project/service target、Owner-authorized private AOS ingress、canonical company mapping、service identity/account refs。
+
+**fallback_or_independent_work:** local morning/evening Brief preview、AOS health/runtime、global automation audit、controller heartbeat、Chat read-only consultation/demo/approval preview、proof packet準備。foreign task、旧queued/unknown-effect Run、同じ送信keyは触らない。
+
+Evidence: [work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-03 User-provided AOS ingress resolution and current progress v564
+
+この節をPlan.mdの最新実行状態とする。v563以前の履歴・証跡は保持し、古い条件文を現行next actionとして再利用しない。
+
+### 解決済み
+
+- [x] ユーザー提示の`https://aos-admin-ingress.zeabur.app/`をAOS Chrome Companion Profile 2で開いた。
+- [x] AOS Homeをログイン済みでreadbackし、画面上の`認証: 書き込み許可`、Home/Chat/会社/実行履歴/承認/テンプレート/プラグイン/Adminを確認した。
+- [x] live Company 1 route `#/projects/company_2560580981cedfd106b66245/automations`を確認した。`会社scope: 会社1 membership readbackから取得`、registered automation`6件`、`status=ready`、`external_action=false`。
+- [x] Zeaburの`automation-os`、`aos-admin-ingress`、`codex-app-server`を管理画面でfresh readbackした。各サービスは`1/1実行中`、domainは`PROVISIONED`。
+- [x] `codex-app-server`のsecret値を取得せず、変数名のみ確認した。token file、remote token、TLS/non-loopback関連の変数名が表示されている。
+
+### 未完了
+
+- [ ] AOS Plugin registryのverified inventoryを取得する。現状は`0 configured / verified=false`、Gmail/Supabase auth=`unknown`、exact blocker=`zeabur_cli_authentication_unavailable`。
+- [ ] company-scoped account refs、provider/browser authority、target、payload、approval scopeを同一Runでreadbackする。
+- [ ] provider receipt → source sync → reconciliation → cleanupを低リスクworkflowから1件ずつ実行する。本番provider operationはまだ開始しない。
+- [ ] Home Briefのexternal delivery receipt、natural scheduler tick、複数日soakを取得する。
+- [ ] `production_ready=true`、business completion=`6/6`へ到達する。現状は`production_ready=false`、business completion=`2/6`。
+
+### unknown-effectの扱い
+
+Zeabur変数タブのclick 1件はBroker timeout後に`operation_effect_unknown`となったため、同じclickを再送していない。owner-scoped reconciliation readbackでは同じserviceとmasked variable listを確認したが、completion capsuleはreadback-changedで確定しなかった。該当tabの証跡だけを保持し、Zeaburの設定書込み・再起動・再デプロイ・secret変更は0件。foreign task resourceも変更していない。
+
+### 現行の実行順
+
+1. live AOS Company 1 scopeを基準に、Codex App Server registryとverified Plugin/MCP/connector inventoryをfresh readbackする。
+2. account/target/payload/approvalのbindingを値を露出させずreadbackする。
+3. 一件のlow-risk workflowをsame-Run proof chainまで通し、receipt欠落時はterminal blockedとして同一keyを再送しない。
+4. Brief delivery、natural tick、failure terminalization、soak receiptを自動収集する。
+
+この順序は受動的な「ログインされたら」「何かが見えたら」ではない。各段階を`fresh readback → bounded action → same-run readback → receiptまたはsafe-stop`で実行し、外部効果は各workflowの個別証跡が揃うまで開始しない。
+
+**Current execution state:** `site_access_resolved / aos_ingress_authenticated / live_company1_scope_verified / orchestration_verified / canary_verified / plugin_registry_blocked / business_proof_not_started`
+
+**External effect:** 今回のAOS/Zeabur遷移・readback・Plan.md更新はlocal/read-only。provider/business effect、secret変更、deploy、restart、schedule変更は0件。
+
+## 2026-09-03 Plugin scope reduction and job application lane independence v566
+
+この節を最新の実行方針とする。直前までのPlugin未確認状態は、AOS全体および求人応募の停止条件から除外する。過去の状態・証跡は削除せず、現行判断だけを更新する。
+
+### 今回のスコープ決定
+
+- [x] Plugin registry、MCP/connector discovery、Pluginインストール・有効化・設定変更を必須工程から外した。推奨Pluginは導入しない。
+- [x] AOS ingressの認証済みCompany 1 scope、6 automation、Zeabur主要3サービス稼働のreadbackは有効な証跡として維持する。
+- [x] 求人応募はPluginに依存させず、直接ATSと既存のBrowser/Companion応募レーンで実行する。
+- [x] Plugin blocker `zeabur_cli_authentication_unavailable`は、現行の求人応募・AOS利用のglobal blockerではなく、未使用機能の情報記録に降格した。
+- [x] 今回は応募送信を行っていない。新規の対象案件・候補者packetが指定されていないため、過去の`submitted_pending_confirmation`やunknown-effect候補を再送しない。
+
+### 最短の実行順
+
+1. 求人応募runをPluginなしで新規作成し、source snapshot、対象ATS URL、候補者packet、locale対応resume、dedupe key、承認範囲をfresh readbackする。
+2. 一候補ずつ、ATS画面の必須項目・添付・送信状態をread-only preflightする。CAPTCHA、OTP、本人確認、未確定の必須情報はその候補だけをexact blockerとして記録し、同じ送信keyは再送しない。
+3. 送信条件を満たす候補だけを直接ATS/Companionで一件実行し、visible success、provider receipt、source sync、reconciliation、cleanupを同一Runで確認する。
+4. 応募レーンと独立して、AOSの一件low-risk workflow、Brief delivery、natural tick、failure terminalization、複数日soakを順にreadbackする。
+5. `production_ready=true`、business completion=`6/6`を、実provider receipt・source sync・delivery receipt・soak証跡で判定する。local test、計画、queued、preflightだけでは完了にしない。
+
+### 進捗
+
+| 領域 | 状態 | 根拠 / 次の具体的アクション |
+|---|---|---|
+| AOSサイト入口・認証 | 完了 | AOS admin ingressで`認証: 書き込み許可`をreadback済み |
+| Company 1 scope・登録automation | 完了 | live route、6件、`status=ready`、`external_action=false`を確認済み |
+| Zeabur主要サービス | 完了 | `automation-os`、`aos-admin-ingress`、`codex-app-server`はいずれも`1/1`・domain provisioned |
+| Plugin | スコープ外 | 導入・設定変更せず、AOS/求人応募の停止条件にしない |
+| 求人応募 | 独立レーン準備済み | fresh run contract → 一候補preflight → 送信receipt/readbackを実行 |
+| AOS provider業務証跡 | 未完了 | 一件のlow-risk workflowをsame-Run proof chainへ進める |
+| Brief delivery・natural tick・soak | 未完了 | 実delivery receiptと自然tickを取得し、failure terminalizationを確認 |
+| 本番利用判定 | 未完了 | 現在`production_ready=false`、business completion=`2/6` |
+
+**Current execution state:** `site_access_resolved / aos_ingress_authenticated / live_company1_scope_verified / plugin_dependency_skipped / job_lane_independent / orchestration_verified / canary_verified / business_proof_in_progress`
+
+**External effect:** Pluginの導入・設定変更、求人応募送信、provider operation、secret変更、deploy、restart、schedule変更は今回0件。
+
+## 2026-09-04 未完了項目の実行結果と最新進捗 v567
+
+この節を最新の実行状態とする。過去のqueued・待機・旧task所有の状態は正本として再利用せず、今回のfresh readbackと同一runの証跡だけで判定する。
+
+### 今回、実行して完了した項目
+
+- [x] AOS ingress `https://aos-admin-ingress.zeabur.app/` のログイン済み状態を維持し、Company 1 route、`会社1 membership readback`、登録automation 6件、`status=ready`、`external_action=false`を確認した。
+- [x] AOS Adminで次回runのweb backendを `Browser Use CLI` に保存し、`revision=32`、`fresh readback=ok`、`local sync=ok`を同一runで確認した。求人用adapterのremote entrypoint不足は別のexact blockerとして記録した。
+- [x] ローカルruntimeを再検証した。`/readyz=HTTP 200`、server=`read_only`、worker=`enabled`、decision=`ready_for_authorized_admission`、external effect=false。`automation:health`は`9/9 active・9/9 ok・0 blocker・0 missing entrypoint`だった。
+- [x] Web build、Server build、求人Browser Use CLIのcandidate/preflight/submit関連42テスト、AOS portable/runtime/web-operation関連52テストを実行し、全件passした。build warningはbundle sizeのみで、機能failureではない。
+- [x] 朝Briefと夜Briefのlocal previewを当日（2026-09-04、Asia/Tokyo）に実行し、4社分のbundle生成、`delivery=not_attempted`、外部通知なしを確認した。実deliveryは行っていない。
+- [x] 求人のGoogle Sheet由来sourceをfresh exportし、`pipeline_rows=2413`、`submitted_application_rows=676`、`existing_keys=3185`、snapshot hashをrun-owned artifactへ固定した。対象runは`aos-plan-job-20260904T002300Z`、snapshot=`source-54a54fdfa1870fe937f2`。
+- [x] Plugin導入・設定変更を実施せず、求人レーンをPluginから独立させた。推奨Pluginのinstall requestも行っていない。
+- [x] Companionの今回task所有の失敗tab 1件を公式cleanupし、最後のreadbackで`clientOwnedLogicalSessionIds=[]`、`clientOwnedExactTabLeaseIds=[]`、`clientOwnedTaskTabs=[]`、`pendingOperationCount=0`、`activeReconciliationPendingCount=0`を確認した。foreign taskの4 tab/leaseは未変更。
+
+### 求人応募レーンの実行結果
+
+- [x] 期限切れsourceを再利用せず、AOS応募画面の「前回失敗を再利用せず安全に再準備」をfresh visual proof付きで一度実行した。同一run readbackは`target_admission_source_snapshot_expired`で、外部効果は0だった。
+- [x] Browser Use CLI候補供給を、batch transport失敗を再利用せず新しい供給runで再実行した。今回の逐次実行wrapperで録画領域にscreenshotを取得してからrun artifactへ複製する境界を適用し、`browser_flow_status=stage_finalized`、`browser_flow_finalized=true`、`cleanup_verified=true`、`external_action_executed=false`を確認した。canonical remote runner自体は未deployのため、実装完了とは分けて記録する。
+- [x] 最新の日本対象read-only supplyは候補1件を取得した。候補25件（remaining 20 + margin 5）条件には未達のため、状態は正しく`bucket_partial_blocked:japan_targeted`。この結果は応募送信へ自動昇格させていない。
+
+Evidence: [source-snapshot.v1.json](</Users/nichikatanaka/Documents/New project/work/aos-plan-execution-job-20260904-v2/source-snapshot.v1.json>)、[target-contract.v1.json](</Users/nichikatanaka/Documents/New project/work/aos-plan-execution-job-20260904-v2/target-contract.v1.json>)、[japan_targeted.json](</Users/nichikatanaka/Documents/New project/work/aos-plan-execution-job-20260904-v2/candidate-supply/browser-use-cli-sequential-v7/japan_targeted.json>)。
+
+### まだ完了と呼べない項目と、実行を止めている正確な理由
+
+- [ ] **provider応募送信** — AOS画面の`account_ref`が空、target admissionが`candidate=0 / approval=20`、ATS/provider account ref・一候補のtarget-bound approval・locale対応packetが未成立。したがってprovider receipt、source sync、reconciliation、submitted_confirmedは未開始。
+- [ ] **AOS remote job runner** — AOS Adminの保存値はBrowser Use CLIだが、remote readbackが`web_operation_browser_use_cli_runner_entrypoint_missing`。Zeabur CLIは`401 Unauthorized`で、remote deploy/restartを実行できない。デプロイ未実行のままを維持した。
+- [ ] **canonical company binding** — local diagnosticは`company_9588eaafb46d7cbaead81811`、live登録triggerは`company_2560580981cedfd106b66245`で、`canonical_company_unresolved`。推測で会社選択、schedule materialization、trigger rewiringをしない。
+- [ ] **Brief delivery / natural tick / soak** — local previewは生成済みだが`delivery=not_attempted`。delivery destination、朝夕の送信時刻、service identityが未設定のため、通知やscheduleを推測して変更しない。
+- [ ] **production readiness** — 現在`production_ready=false`、business completion=`2/6`。local test、build、preview、queued、preflight、候補供給だけでは完了扱いにしない。
+
+### 待機状態を残さないための現行アクション
+
+1. 既に確認済みのAOS ingress・Company 1 scopeは維持し、remote deployを再試行せず、Zeabur CLI 401を認証修復の単独課題として扱う。
+2. 求人は新しいcandidate/ATS account ref/target-bound approvalがない限り応募送信を作らず、既存key・旧URL・unknown-effect候補を再送しない。次に進める実行単位は、fresh candidate供給→一候補preflight→packet/readback→provider receipt→source sync→reconciliation→cleanupである。
+3. company bindingは二つのIDから自動選択せず、live AOS protected readbackとlocal runtimeの同一scope証拠を揃える実装・readbackを先に行う。
+4. Briefはdelivery先・時刻・service identityが未設定のままなので、local previewとruntime/auditは完了済みとし、外部通知・schedule変更は発生させない。
+
+**Current execution state:** `site_access_resolved / aos_ingress_authenticated / live_company1_scope_verified / plugin_dependency_skipped / job_lane_independent / local_runtime_verified / job_source_snapshot_verified / candidate_supply_partial / provider_business_proof_not_started / brief_delivery_not_attempted / remote_deploy_auth_blocked`
+
+**External effect:** 今回はAOS Admin設定revision 32の保存以外、read-only検証・build・artifact生成・Companion cleanupのみ。求人応募送信、provider operation、Brief通知、secret変更、deploy、restart、schedule変更、foreign task resource変更は0件。
+
+## 2026-09-04 本番配布・公開反映・最新状態 v568
+
+この節を最新の実行状態とする。今回の作業では、待機や条件付きの再試行を残さず、実行可能なコード修正・テスト・本番配布・公開readbackまでを自分たちで実施した。外部業務効果が未完了の箇所は、推測で対象・アカウント・通知先を選ばず、正確な契約不足として残している。
+
+### 今回、自分たちで完了した項目
+
+- [x] `apps/web/src/App.tsx`の受動的な「待つ」表示を、Browser Use CLIのruntime確認と同一Run readbackを明示する表示へ修正した。
+- [x] Web build、Server build、Web typecheckを通過した。
+- [x] 統合テストは`1356 pass / 0 fail / 17 skipped`。skipは未設定の条件付きPostgreSQL fixtureとlive adaptive prerequisiteのみ。
+- [x] Zeabur公式CLIの認証を復旧し、fresh target（personal workspace / `automation-wiled` / production / `automation-os`）を再確認した。
+- [x] 対象を`automation-os`サービスだけに限定してlocal-source deployを実行し、deployment=`6a999d65524448986d737662`、status=`RUNNING`、build=`completed`を確認した。他サービスは変更していない。
+- [x] 公開`https://automation-os.zeabur.app/readyz`と`/api/health`をともにHTTP 200で確認し、公開JS/CSSとlocal build assetのhash parity、および新しいUI markerをreadbackした。
+- [x] AOS ingressのOwner認証済みHome／PC状態をCompanion専用tabでreadbackした。Company 1、登録automation 7件、heartbeat fresh、worker heartbeat=`ok`、remote targetのregistry sync status=`ok`を確認した。
+- [x] Companionのforeign task資源は変更していない。自分の専用tab以外の求人応募tab、送信、応募receipt、通知、provider operationは実行していない。
+- [x] 証跡を[work/aos-production-deploy-readback-20260904.json](work/aos-production-deploy-readback-20260904.json)へ保存した。秘密値は保存していない。
+
+### まだ「本番完全利用」と呼べない項目
+
+- [ ] **provider業務効果** — account ref、target-bound approval、対象packetが未成立。provider receipt → source sync → reconciliation → cleanup → `submitted_confirmed`のchainは未開始。求人応募を推測送信していない。
+- [ ] **canonical companyの業務DB反映** — live Company 1のIDとlocal診断DBの旧IDが異なる。現在のLaunchAgent設定にはOwner選択済みのcanonical mappingがあるが、DBの全scheduleを推測でrewire・materializeしていない。
+- [ ] **Brief外部delivery** — Home previewは生成済みだが、実通知先・朝夕時刻・delivery service identityが未確定。通知やschedule変更を推測で実行していない。
+- [ ] **自然tick・複数日soak** — heartbeatとlocal previewは確認済みだが、自然scheduler tickと継続soakの業務proofはまだない。
+- [ ] **remote Browser Use CLI runner** — worker heartbeatは`ok`、remote registry sync statusも`ok`だが、対象業務のremote runner entrypoint／実provider権限のsame-run proofはない。Mac workerとZeabur control planeを混同しない。
+- [ ] **管理画面の新marker visual readback** — `#/system/pc-status`のfresh visual readbackは成功した。`#/admin`への遷移要求はCompanion transactionがdispatch前にtimeoutし、transaction statusで`no_dispatch`を確認したため、同じkeyを再送していない。公開assetのmarker readbackは済んでいる。
+
+### 待機状態を残さないための現行判断
+
+1. AOS本体のソース・配布・公開health・公開asset parityは完了扱いにした。
+2. 外部業務は、対象ID・account ref・approval・packet・delivery destinationがない状態で自動送信・自動通知・自動会社切替を行わない。これは待機ではなく、誤対象への本番効果を防ぐterminal safe-stopである。
+3. Plugin registryはユーザー指定どおりスコープ外のまま。求人応募レーンもPlugin非依存のままにした。
+4. Zeabur変数のreadbackでは、今後の値露出を防ぐためキー名のみ取得する運用へ固定する。今回の証跡・Plan・artifactsには値を保存していない。CLIにはsecret-safeなstdin更新経路がないため、値を引数にして再設定する処理は実行していない。
+
+**Current execution state:** `site_access_resolved / aos_ingress_authenticated / live_company1_scope_verified / plugin_dependency_skipped / job_lane_independent / local_runtime_verified / production_source_deployed / production_public_health_verified / worker_heartbeat_verified / remote_registry_sync_verified / provider_business_proof_not_started / brief_delivery_not_attempted / natural_tick_soak_not_proven`
+
+**判定:** `production_ready=false`、business completion=`2/6`。AOS本体の本番配布は完了したが、provider業務完了・外部Brief delivery・自然tick/soakの証跡がないため、AOS全体を「完全利用可能」とはまだclaimしない。
+
+**External effect:** 本番`automation-os`へのdeployment 1件、既存AOS Admin設定revision 32の保存、Companionの自分のUI遷移・readback以外は0。求人応募送信、provider operation、Brief通知、secret変更、schedule変更、foreign task資源変更は0。
+
+## 2026-09-04 canonical company診断の自己修復 v569
+
+- [x] `scripts/aos-company-binding-readiness.mjs`が、明示されたOwner canonical authorityを読み込まず常に未選択扱いにしていた差分を修正した。環境に明示設定がない場合の未選択挙動は維持し、推測による会社選択は追加していない。
+- [x] `node --check scripts/aos-company-binding-readiness.mjs`と既存のcompany binding CLI test（1/1）を通過した。
+- [x] LaunchAgentに保存された明示mappingを同一runの診断入力として与えて再実行した。結果は`status=blocked`のままで、canonical候補とlocal診断DBの会社ID不一致、account ref不足、provider/browser authority不足、Brief delivery未設定などを別々のexact blockerとして確認した。外部効果は0。
+
+**現行判断:** 旧診断の「canonical未選択」という誤った一括表示は修正済み。ただし会社ID不一致を自動解決してscheduleを付け替えることはせず、AOS protected readbackとlocal DBの同一scope証拠が揃うまで業務Runのproduction claimは行わない。
+
+**Current execution state:** `site_access_resolved / aos_ingress_authenticated / live_company1_scope_verified / plugin_dependency_skipped / job_lane_independent / local_runtime_verified / production_source_deployed / production_public_health_verified / canonical_authority_diagnostic_fixed / worker_heartbeat_verified / remote_registry_sync_verified / provider_business_proof_not_started / brief_delivery_not_attempted / natural_tick_soak_not_proven`
+
+**External effect:** 診断スクリプト修正・test・read-only再実行のみ。AOS本番deployment、provider operation、求人応募送信、Brief通知、secret変更、schedule変更、foreign task資源変更は追加0。
+
+## 2026-09-04 本番UI文言の反映とIngress同一Run確認 v570
+
+- [x] AOS Web UIの残存していたreadback待ち表現を、`readbackを取得する`／`取得できなければexact blockerとして確定`へ変更した。承認待ちは外部操作前の明示承認という別の安全状態として維持した。
+- [x] 再度対象を`automation-os`サービスだけに限定してZeaburへ配布した。deployment=`6a99a223524448986d737752`、build finished=`2026-09-03T16:41:06.174Z`、status=`RUNNING`。旧deploymentを停止する操作はしていない。
+- [x] 公開`/readyz=200`、`/api/health=200`、JS=`index-BZPTInm8.js`、CSS=`index-Du09ZuYo.css`をfresh確認した。新readback markerは存在し、`readback待ち`と`待っています`は公開JSから消えている。
+- [x] 認証済み`aos-admin-ingress.zeabur.app/#/admin`をCompanionで強制reloadし、`Browser Use CLIのruntimeを確認`と`Mac workerのBrowser Use同一Run readbackを取得します（認証・画面状態を確認） / 取得できなければexact blockerとして確定`をfresh visual／semantic readbackした。旧待ち表現はIngress画面でも不在。
+- [x] 最新証跡を[work/aos-production-release-readback-20260904-v2.json](work/aos-production-release-readback-20260904-v2.json)へ保存した。秘密値は保存していない。
+
+**現在の本番判定:** AOS本体の配布・公開health・Ingress認証済みUI反映は完了。一方で`production_ready=false`、business completion=`2/6`は維持。account ref、provider receipt chain、外部Brief delivery、自然tick/soak、remote provider authority、local DBとlive Company 1のID差分は未解消で、推測を混ぜずに別ゲートとして残す。
+
+**Current execution state:** `site_access_resolved / aos_ingress_authenticated / live_company1_scope_verified / plugin_dependency_skipped / job_lane_independent / local_runtime_verified / production_source_deployed / production_public_health_verified / production_ui_copy_verified / canonical_authority_diagnostic_fixed / worker_heartbeat_verified / remote_registry_sync_verified / provider_business_proof_not_started / brief_delivery_not_attempted / natural_tick_soak_not_proven`
+
+**External effect:** `automation-os`への本番deployment 1件、Ingressの画面reload/readback、診断コード修正以外は追加0。求人応募送信、provider operation、Brief通知、secret変更、schedule変更、foreign task資源変更は0。
+
+## 2026-09-04 最終same-run readbackとcleanup v571
+
+- [x] 最新deployment=`6a99a223524448986d737752`が`RUNNING`であることをfresh確認した。
+- [x] 公開`readyz=200`、`api/health=200`、新UI asset=`index-BZPTInm8.js`を確認し、公開JSで旧`readback待ち`／`待っています`が不在、新readback文言が存在することを確認した。
+- [x] 認証済みIngressの`#/admin`をreload後にreadbackし、Owner認証、Company 1、Browser Use CLI、revision 32、Profile 2、local sync=`ok`、Worker heartbeat fresh、旧待ち文言なしを確認した。
+- [x] Companionの自分のcleanupを実行し、`clientOwnedLogicalSessionIds=[]`、`clientOwnedExactTabLeaseIds=[]`、`clientOwnedTaskTabs=[]`、`pendingOperationCount=0`、`activeReconciliationPendingCount=0`を確認した。foreign taskのタブ・lease・実行は変更していない。
+- [x] AOS local health/runtime、Codex account/thread/turn no-effect readback、build/typecheck、company binding CLI testの最新結果を確認した。
+
+**現在の結論:** 本番AOS入口・本体サービス・UI反映・Worker heartbeatは稼働状態。完全な業務利用claimに必要なprovider account/authority、target-bound approval/packet、same-run provider receipt→source sync→reconciliation→cleanup、外部Brief destination、自然tick/soakはまだ成立していないため、`production_ready=false`、business completion=`2/6`を維持する。
+
+**安全境界:** Zeabur variable一覧は値を保存・artifact化せず、今後はキー名だけ取得する。CLIのsecret-safeなstdin更新経路が確認できないため、secret値を引数にして更新する処理は行っていない。AOSの共有秘密を含む設定変更が必要になった場合は、Zeaburのsecret-safe編集面で対象サービス双方を同一変更として更新し、再起動後に値を出さずhealth／Ingress auth／upstream readbackを確認する。
+
+**Current execution state:** `site_access_resolved / aos_ingress_authenticated / live_company1_scope_verified / plugin_dependency_skipped / job_lane_independent / local_runtime_verified / production_source_deployed / production_public_health_verified / production_ui_copy_verified / canonical_authority_diagnostic_fixed / worker_heartbeat_verified / remote_registry_sync_verified / companion_cleanup_verified / provider_business_proof_not_started / brief_delivery_not_attempted / natural_tick_soak_not_proven`
+
+**External effect:** 本番`automation-os` deployment、UI reload、診断コード修正、Companion自分のtab cleanup以外は0。求人応募送信、provider operation、Brief通知、secret変更、schedule変更、foreign task資源変更は0。
+
+## 2026-09-04 会社スコープをCompany 1へ固定 v572
+
+ユーザーの明示決定により、当面の会社スコープは「ユーザー本人のCompany 1のみ」とする。二社目の作成、会社選択UIの追加、複数会社向けのschedule materializationは実施しない。
+
+- [x] live AOSのCompany 1（`company_2560580981cedfd106b66245`）を唯一のcanonical companyとして扱う方針を確定した。
+- [x] LaunchAgentのcanonical mappingが同じCompany 1を指していることを確認した。
+- [x] Company 1のlive認証・membership・登録automation・worker target scopeはfresh readback済み。
+- [ ] local診断DBに残る旧ID（`company_9588eaafb46d7cbaead81811`）を、実DB backendと関連schedule/runの参照を確認した上で、バックアップ付き・transactionalにCompany 1へ整合させる。これは新しい会社を作る作業ではない。
+
+### 1社固定後の最短実行順
+
+1. **会社ID整合を完了する。** local診断DBを正本とみなして無条件に書き換えず、実行中runtimeのDB backend、外部キー、schedule、run、unknown-effect履歴をread-onlyで棚卸しし、移行対象を限定してからbackup→transaction→same-run readbackを行う。
+2. **本人の実アカウントだけをprovider authorityとして登録・確認する。** Gmail/ATS/Browser Use CLI等のaccount refを推測せず、Company 1に紐づく本人のものだけを対象にする。remote runnerのentrypoint不足とZeabur CLI 401は別課題として修復する。
+3. **求人は一件の安全なcanaryでreceipt chainを完成する。** fresh candidate、target-bound approval、言語対応packetが揃った一件だけを対象に、provider receipt→source sync→reconciliation→cleanup→`submitted_confirmed`を同一Runで確認する。候補や応募先を推測して送信しない。
+4. **BriefはAOS Homeのみを既定のdelivery先として先に成立させる。** Home-onlyでよければ外部通知先を増やさず、service identityと朝夕時刻だけを明示設定して一回のdelivery/readbackを行う。メール等を使う場合だけ、その送信先を別途確定する。
+5. **自然tickと短期soakを実行し、最後にproduction readinessを再判定する。** 「見えるまで待つ」ではなく、scheduler tickを起動→各Runのreceipt/readback→異常時はexact blocker確定→必要なら自動修復→再検証、というrun単位で実施する。
+
+### 現時点の残り
+
+`production_ready=false`、business completion=`2/6`。1社固定で解消するのはcanonical companyの選択 ambiguityだけであり、provider authority、remote runner、求人receipt chain、Brief delivery、自然tick/soak、secret-safeな設定変更経路は別に残っている。待機状態は残さず、各項目を実行またはexact blockerとして確定する。
+
+**External effect:** 会社スコープの方針記録のみ。会社作成、schedule変更、DB書換え、求人応募、Brief通知、secret変更、remote deploy/restartは0。
+
+## 2026-09-04 1社固定のlocal DB read-only監査 v573
+
+- [x] local SQLiteの`companies`をread-onlyで確認した。`会社1`は旧ID `company_9588eaafb46d7cbaead81811`で存在し、live Company 1の新IDはlocal SQLiteには存在しない。テスト用の別会社行も存在するが、本番Company 1の候補には含めない。
+- [x] 旧ID側の関連件数をread-onlyで確認した。`mvp_automations=6`、`mvp_automation_schedules=6`、`mvp_automation_versions=18`、`company_memberships=2`、`company_audit_events=296`。新ID側のlocal件数は0。
+- [x] 会社IDが外部キー・一意制約付きで複数テーブルに分散していることをschemaで確認した。無条件の全置換、旧履歴の削除、unknown-effect Runの移し替えは実施しない。
+
+**判断:** Company 1への意志決定は完了している。残る会社作業は「新会社を作ること」ではなく、runtimeが実際に使うDB backendを確定し、旧IDの業務データをバックアップ付き・参照整合性付きでlive Company 1へrebindするか、local SQLiteが診断専用なら本番判定から切り離すこと。現時点では後者を含めたbackend確認が必要で、DB書換えは未実施。
+
+**External effect:** read-only DB監査のみ。会社作成、DB書換え、schedule変更、求人応募、Brief通知、secret変更、remote deploy/restartは0。
+
+## 2026-09-04 Company 1 live integrations readback v574
+
+- [x] Companion専用タブでlive Company 1の正確なscopeを再確認した。IDは`company_2560580981cedfd106b66245`で、会社画面・automation画面・integration画面が同じIDを指している。
+- [x] Company 1のautomation画面をfresh readbackした。登録automationは6件、company-scoped readbackは`status=ready / count=6 / external_action=false`。画面上の求人登録・同一Run束縛・承認・既存応募照合の入口も確認したが、広域の定期実行や応募送信は実行していない。
+- [x] Company 1の本人アカウント接続inventoryをfresh readbackした。Gmail、Google Drive、Supabaseは本人の`nichika2000823@gmail.com`参照で`connected / verified`。少なくともこの3接続について、account ref不足は現在の主阻害要因ではない。
+- [x] `Project A`は履歴・automation・auditの扱いが未確定で削除せず、Company 1だけを実行対象として維持した。二社目は作成していない。
+
+**更新後の正確な残り:** Company 1のlive scopeは確定済み。残るのは、local診断SQLite旧IDと実DB backendの扱い、Browser Use CLI job runner entrypoint、求人のfresh candidate/target-bound approval/packetとprovider receipt chain、Home-only Briefの実delivery、scheduler natural tick/soakである。接続inventoryのreadbackだけではprovider業務完了や本番完全利用をclaimしない。
+
+**External effect:** Company 1のページ遷移・read-only exportのみ。会社作成、DB書換え、integration再認証・revoke、定期実行、求人応募、Brief通知、secret変更、deploy/restart、foreign task資源変更は0。
+
+## 2026-09-04 AOS Chrome Companion本番実行面への切替とsame-run readback v575
+
+- [x] AOS Web UIに`AOS Chrome Companion`の実行面選択肢と、選択中runtimeを正確に示すAdmin表示を追加した。`npm run build:web`、`npm run typecheck:web`、`npm run build:server`、今回の実行面に関係する契約テスト`65/65 pass / 0 fail`を確認した。
+- [x] `automation-os`だけをZeaburへ再配布し、deployment=`6a99af07524448986d737970`、status=`RUNNING`をfresh readbackした。公開`/readyz=200`、`/api/health=200`、公開JSに`AOS Chrome Companion`／`Browser Use CLI`／`Playwright` markerがあり、旧`readback待ち`／`待っています`は存在しない。
+- [x] 認証済みAOS Admin (`https://aos-admin-ingress.zeabur.app/#/admin`)をCompanion Profile 2で開き、native selectの`AOS Chrome Companion`をvisual proof付きで選択、`保存`を一度だけ実行した。保存後の同一画面exportは`current=aos_chrome_companion / revision=33 / Profile=Profile 2 / local sync=ok`で、次回Runから選択面が固定されることを確認した。既存Runはbackendを変更しない。
+- [x] AOS local health=`HTTP 200`、runtime=`ready_for_authorized_admission`、server effects=`read_only`、worker effects=`enabled`、Mac portable worker PIDは生存、Codex account/thread/turn no-effect readbackは完了。6本のscheduler canaryも`checked=6 / completed=6 / browser_started=false / connector_called=false / external_action_executed=false`で完了した。
+- [x] Companion操作中に発生した2回の`transaction_action_target_page_mismatch`は送信前の`no_dispatch / external_action_executed=false`として記録し、同じidempotency keyを再送しなかった。成功した選択・保存はそれぞれ新しいkeyで実行し、foreign Job taskのtab/session/lease/pending operationは操作していない。
+
+**この時点の判定:** AOS入口・本番配布・Admin実行面・Company 1 scope・worker heartbeat・scheduler-to-worker no-effect contractは完了。`production_ready=false`、business completion=`2/6`は維持する。Adminのadapterが`effectful`と表示されても、target-bound admissionとprovider業務のsame-run証跡が揃った意味ではない。
+
+**残りを待機状態にしない実行方針:** 各項目を「自然に何かが見えるまで待つ」のではなく、実行単位で起動し、直後にreceipt/readbackを取得し、成立しなければその場でexact blockerとして確定する。すでに確定している未完了項目は次のとおり。
+
+1. **Company 1のlocal診断DB整合:** local SQLite旧IDとlive canonical IDの関係、実DB backend、外部キー、schedule/run、unknown-effect履歴を再確認し、診断専用なら本番判定から切り離す。業務DBのバックアップなし書換えはしない。
+2. **Provider authorityと業務canary:** 本人のCompany 1だけを対象に、fresh account ref・exact target・target-bound approval・payload/packetを作成またはreadbackしてから、1件だけprovider receipt→source sync→reconciliation→cleanupを同一Runで実行する。求人はこの条件が揃うまで送信しない。
+3. **Home-only Brief:** delivery先をAOS Homeに固定したまま、朝夕の一回を明示起動し、delivery receipt・source sync・reconciliation・cleanupを取得する。設定済みreadbackだけをdelivery成功とは呼ばない。
+4. **自然tick/soak:** no-effect canaryで入口契約は完了したため、次は本番workerの定期Runを起動単位で確認し、provider/Briefの実receiptがないものはexact blockerとして確定する。複数日soakは実時間が必要なため、証跡なしで完了扱いにしない。
+
+**継続しない／スコープ外:** Pluginはユーザー指定どおり導入しない。会社はCompany 1（`company_2560580981cedfd106b66245`）一社だけ。Project Aは履歴不明のため削除・統合しない。求人送信、provider外部操作、Brief通知、secret変更、schedule変更、旧queued/unknown-effect Runのreplay、foreign task資源変更は今回0件。
+
+**Current execution state:** `site_access_resolved / aos_ingress_authenticated / live_company1_scope_verified / plugin_dependency_skipped / job_lane_independent / local_runtime_verified / production_source_deployed / production_public_health_verified / production_ui_copy_verified / canonical_authority_diagnostic_fixed / worker_heartbeat_verified / remote_registry_sync_verified / companion_backend_selected_and_readback / scheduler_no_effect_canary_verified / companion_cleanup_pending / provider_business_proof_not_started / brief_delivery_receipt_not_observed / natural_tick_soak_not_proven`
+
+**External effect:** 本番`automation-os` deployment 1件、AOS Adminの実行面設定保存1件、CompanionのAOS Admin遷移・選択・readback、local no-effect canary artifact以外は0。求人応募、provider operation、Brief通知、secret変更、schedule変更、foreign task資源変更は0。
+
+Evidence: [work/aos-portable-scheduler-canary-20260904.json](work/aos-portable-scheduler-canary-20260904.json) and [work/aos-production-release-readback-20260904-v2.json](work/aos-production-release-readback-20260904-v2.json)。
+
+## 2026-09-04 Company 1 task-owned Companion cleanup complete v576
+
+- [x] 先行cleanupでleaseを解放した後、同じtask IDに限定したterminal cleanup passを実行し、AOS Admin tab `1980912319`を閉じた。`closed=[1980912319] / preserved=[] / unknown_effect=[]`。
+- [x] 最終Companion statusで`clientOwnedLogicalSessionIds=[]`、`clientOwnedExactTabLeaseIds=[]`、`clientOwnedTaskTabs=[]`、`activeReconciliationPendingCount=0`、`terminalCleanupPendingTaskTabCount=0`を確認した。cleanup receiptは`ok=true / status=completed / foreign_tabs_mutated=false / external_action_executed=false`。
+- [x] 残るCompanionのpending operation=1、lease=3、task tab=3、active tab=1はforeign Job taskの資源として確認し、採用・replay・cleanupしていない。
+
+**Current execution state:** `site_access_resolved / aos_ingress_authenticated / live_company1_scope_verified / plugin_dependency_skipped / job_lane_independent / local_runtime_verified / production_source_deployed / production_public_health_verified / production_ui_copy_verified / canonical_authority_diagnostic_fixed / worker_heartbeat_verified / remote_registry_sync_verified / companion_backend_selected_and_readback / scheduler_no_effect_canary_verified / companion_cleanup_verified / provider_business_proof_not_started / brief_delivery_receipt_not_observed / natural_tick_soak_not_proven`
+
+**External effect:** 自分のAOS Admin tab cleanup以外のprovider/job/notification/secret/schedule/foreign task変更は0。
+
+## 2026-09-04 Company 1 Brief両時間帯の本番readbackと残件確定 v577
+
+この節を今回の「残りをすべて実行」の最新状態とする。待機を残さない方針で、実行可能なreadback・診断・テスト・cleanupをこのrunで完了させ、外部効果が必要なのに契約がない項目は、その場でexact blockerとして確定した。
+
+### 今回、追加で完了した項目
+
+- [x] 認証済みAOS AdminでCompany 1（`company_2560580981cedfd106b66245`）の朝Brief APIをfresh readbackした。`schema=aos.local_brief_bundle.v1`、`status=complete`、`item_count=15`、`input_records=15`、`excluded_records=0`、`source_of_truth=production_aos_database`、`company_scope.enforced=true`、`read_only=true`、`external_action_executed=false`を確認した。
+- [x] 同じCompany 1・同じ営業日（2026-09-04、Asia/Tokyo）で夜Brief APIもfresh visual／semantic readbackした。朝と同じく`status=complete`、1社のみ、15件、除外0件、本番AOS DB、外部効果なしを確認した。夜Briefのoutput fingerprintは`2b23e194d85c43e1f2f283e9a1ec86b8089e5a6f8035d79cea7af9424792b50d`である。
+- [x] 夜BriefのCompanion transaction wrapperが画面遷移後のread-only `page.delay`で`operation_timeout`になったが、遷移自体は完了し、effect stateは`known_no_effect`、dispatchは1回、unknown effectではなかった。直後に同一タブをfresh readbackし、再送・replayを行わずに内容を確認した。
+- [x] Company 1用Companion sessionの終了とlease解放を実行した。最終statusで自分のlogical session=0、exact lease=0、pending operation=0、active reconciliation=0を確認した。現在グループの確認タブ1枚は、Companionのterminal cleanupが`active_group_tab`として保留した所有タブであり、foreign Job taskのタブは変更していない。
+- [x] AOS Admin Homeのfresh readbackを再確認した。Company 1の6 automation、3 account reference（Gmail／Google Drive／Supabase）、6 scheduleが表示され、Home表示自体は`source=AOS DB / read_only=true / delivery=not_attempted / external_action=false`であることを確認した。`Project A`は削除・統合せず、Company 1だけを実行対象として維持した。
+- [x] delivery実装境界をソースで再確認した。現在の本番Brief入口は`GET /api/v1/companies/:companyId/brief`のread-only readbackだけで、レスポンスも`delivery.attempted=false / status=not_attempted`を明示する。Home配信の送信・receiptを偽装する変更は行っていない。
+
+### 現在の確定状態
+
+`site_access_resolved / aos_ingress_authenticated / live_company1_scope_verified / plugin_dependency_skipped / job_lane_independent / local_runtime_verified / production_source_deployed / production_public_health_verified / production_ui_copy_verified / canonical_authority_diagnostic_fixed / worker_heartbeat_verified / remote_registry_sync_verified / companion_backend_selected_and_readback / scheduler_no_effect_canary_verified / company1_brief_morning_readback_verified / company1_brief_evening_readback_verified / local_sqlite_diagnostic_non_authoritative / companion_cleanup_verified / brief_delivery_receipt_not_observed / provider_business_proof_not_started / natural_tick_soak_not_proven`
+
+### 残りの項目と、待機ではないexact blocker
+
+1. **Home-only Briefの外部delivery** — 生成・両時間帯readbackまでは完了したが、現在のAOSにはHomeへ送信するdelivery route／receiptがなく、APIはread-onlyで`not_attempted`を返す。通知先・service identity・送信時刻を推測して外部通知を発生させることはできない。必要な最短実装は、Company 1固定のHome delivery adapter、delivery receipt、source sync、reconciliation、cleanupを1 Run契約で追加し、同一Runで実送信readbackすること。
+2. **Provider業務効果（求人を含む）** — fresh candidate、exact target、本人account ref、target-bound approval、locale対応packet、canonical Browser Use runner、provider receiptの一式が同時に成立していない。求人用のforeign task／タブも別所有であるため、既存応募を再送せず、送信は未開始のまま正しく止めている。必要な最短実装は、Company 1の一候補に限定したadmission→preflight→一度のprovider action→receipt→source sync→reconciliation→cleanupである。
+3. **自然tick・複数日soak** — scheduler no-effect canary（6/6）は完了したが、providerまたはBriefの実効果receiptを伴う自然tickはまだない。証跡のないまま時間経過を待って完了扱いにはしない。実effectful Runのreceipt chainが追加された時点で、短期soakを実行して再判定する。
+4. **local SQLiteの旧Company ID** — local diagnostic SQLiteの旧IDと、production PostgreSQLでreadbackしたCompany 1のIDは異なる。今回、production endpointが本番DBをsource of truthとして明示したため、local SQLiteは診断専用として本番判定から切り離した。無バックアップのID置換・schedule rewire・履歴移送は不要な破壊的変更なので実行しない。
+5. **Companionの自分の確認タブ** — session／lease／pending operationは0で、foreign resourceは不変。自分のタブは現在グループのactive tabとしてcleanup APIが保留しただけで、操作は終了している。所有権外のタブを閉じることはしない。
+
+**判定:** AOSサイト入口、本番配布、Company 1の実行面、Worker heartbeat、Companion選択、Homeの朝夕Brief生成・readbackは使用可能。外部delivery・provider業務receipt・自然tick/soakが未成立なので、全体の`production_ready=false`、business completion=`2/6`は維持する。これは「何かが見えるまで待つ」状態ではなく、実行済み証拠と、実装・権限・対象不足のexact blockerを分離して確定した状態である。
+
+**External effect:** Company 1の朝夕Brief read-only readback、AOS Admin/Homeのreadback、Companionの自分のsession／lease cleanup、既存のAOS本番配布とAdmin実行面保存以外は0。求人応募、provider operation、Brief通知、secret変更、schedule変更、会社作成／削除、Project A変更、foreign task resource変更は0。
+
+## 2026-09-04 3段階実行の本番反映と残件確定 v578
+
+ユーザー指示の3段階（Company 1 Home Brief receipt、求人を除く低リスクcanary、残りの非求人workflow拡張）を、待機ではなく実行→same-run readback→exact blocker確定の順で実施した。この節を最新の実行状態とする。
+
+### Stage 1: Company 1専用Home Brief delivery
+
+- [x] `brief_deliveries`の追加migrationを、既存のPostgres bootstrap markerが進んでいても自己修復するように修正した。production marker=`version 14`、table=`brief_deliveries`をfresh readbackした。
+- [x] Server build、Web typecheck/build、Company Brief API契約テスト2/2を通過した。全体テストは既存の起動待ちテストが約96秒で停止したため全件完走とは扱わず、対象テストの結果だけを採用した。
+- [x] `automation-os`サービスだけを再配布し、新deployment=`6a99be20c3fffb61baebf4eb`、status=`RUNNING`、公開`/readyz=200`を確認した。他サービスは変更していない。
+- [x] AOS Chrome Companionのfresh visual proofで、HomeのCompany 1カードの`AOS Homeに配信`を一度だけ実行した。same-run receiptは`verified`、delivery=`delivered`、source sync=`synced`、reconciliation=`reconciled`、cleanup=`verified`、external notification=`false`、external action=`false`となった。
+- [x] production DBでCompany 1、2026-09-04、morning、`aos_home`のdelivery record 1件をreadbackした。15件中15件を含み、除外0件である。Home表示とDB receiptの両方が揃ったため、Home-only Brief deliveryは完了扱いに更新した。
+
+### Stage 2: 求人を除く低リスクproduction canary
+
+- [x] Daily AIのno-effect runをCompany 1のAOS durable queueへfresh idempotency keyで登録した。最初のCompanion task-id付き試行は`task_session_owner_conflict`でdispatch前に停止し、外部効果0を確認した。
+- [x] Companion sessionを閉じ、task-idを渡さないworker専用のfresh runへ切り替えた。run=`run_mtlvqc7s_82cnx5`は`complete`、`external_action_executed=false`、same-run receipt/readback/cleanup=`verified`となった。Xへの投稿・返信・外部公開は行っていない。
+
+### Stage 3: 残りの非求人workflowと短時間soak相当
+
+- [x] Obsidian、日次バックアップ、メール、NisenPrintsの4本を各1回、Company 1 scopeのAOS no-effect queueへ登録した。各triggerは`queued=true`、`external_action_executed=false`である。
+- [x] 日次バックアップは`complete`、`readback_verified=true`、`cleanup_verified=true`、external effectなしとなった。
+- [x] Obsidianは`blocked / obsidian_artifact_write_requires_approval`、メールは`blocked / gmail_provider_read_only_call_not_executed`、NisenPrintsは`blocked / chrome_plugin_backend_snapshot_missing`となった。いずれも求人・公開・返信・商品変更は発生していない。Obsidianとメールはreadback/cleanupまで確認済み、NisenPrintsはbrowser snapshot不足のためreadback/cleanup未成立である。
+- [x] 4本のrunをproduction DBで再照合し、receipt status、exact blocker、external action、readback、cleanupを個別に確認した。別workerが先にclaimしたrunを再送していない。
+- [x] 今回のAOS確認tab `1980912346`はowner-scoped cleanupで閉じた。NisenPrintsのtask-owned Canva tab `1980912344/1980912345`はactive group保護のため保持され、foreign Job taskのtab・lease・pending operationは変更していない。最終readbackは自分のsession=0、lease=0、pending operation=0、active reconciliation=0である。
+
+### Natural tick / soakの実行結果
+
+- [x] 本番コードでCompany 1の`POST /api/v1/companies/:companyId/scheduler/run-once`が外部効果なしのdurable materialization routeであることを確認した。UIにはこのrouteを呼ぶ操作がないため、手動workflow triggerとnatural scheduler tickを混同していない。
+- [x] 保護write tokenをKeychainから取得する直接tickを1回試行したが、結果は`blocked / scheduler_write_token_unavailable / external_action_executed=false`だった。ブラウザsessionや認証境界を迂回せず、直接DB materializationや別tokenの推測は行っていない。
+- [ ] よって、自然時刻経過を伴うtickと複数日soakは未証明のまま。これは「何かが見えるまで待つ」状態ではなく、AOS scheduler routeの認証設定が存在しないという確定blockerである。短時間のno-effect実行・worker readbackはStage 2/3で完了したが、natural tick/soakのbusiness proofには昇格させない。
+
+### 3段階後の現在地
+
+`site_access_resolved / aos_ingress_authenticated / live_company1_scope_verified / plugin_dependency_skipped / job_lane_independent / local_runtime_verified / production_source_deployed / production_public_health_verified / production_ui_copy_verified / canonical_authority_diagnostic_fixed / worker_heartbeat_verified / remote_registry_sync_verified / companion_backend_selected_and_readback / scheduler_no_effect_canary_verified / company1_brief_morning_readback_verified / company1_brief_evening_readback_verified / company1_brief_home_delivery_verified / production_schema_self_healed_v14 / stage2_daily_ai_readonly_complete / stage3_backup_readonly_complete / stage3_obsidian_readback_complete_with_approval_blocker / stage3_email_readback_complete_with_provider_call_blocker / stage3_nisenprints_readback_blocked / natural_tick_soak_not_proven / provider_business_proof_not_started`
+
+**判定:** AOS本体、Company 1固定、Home-only Brief delivery、Daily AI no-effect canary、非求人4本の個別run/readbackは実行済み。`production_ready=false`、business completionは従来どおり`2/6`。provider業務効果、NisenPrintsのbrowser/provider authority、メールprovider read-only call、Obsidian artifact write approval、外部Brief通知、自然tick/soak、求人応募は未完了である。
+
+**次の実行可能な最短単位:** (1) scheduler用のCompany 1-scoped write/session authorityをAOS管理面で設定し、natural tickを一回実行してmaterialized runをreadbackする、(2) NisenPrintsのCompanion/browser snapshotとprovider receipt契約を復旧する、(3) Gmailの本人account refに対するread-only provider callを同一Runで確認する、(4) 実際の外部効果を行う場合だけ、target・payload・本人account・approval・provider receipt・source sync・reconciliation・cleanupを一つのRunへ束縛する。旧Run replay、対象推測、求人応募、メール返信、公開、商品更新は行わない。
+
+**外部効果:** Company 1 Home内delivery recordの内部保存、AOS no-effect queue/run、worker readback、production schema修正・deployment以外は0。求人応募、メール送信、SNS投稿、NisenPrints公開・商品更新、Brief外部通知、secret変更、foreign task資源変更は0。Pluginはユーザー指定どおり導入していない。
+
+## 2026-09-04 残りの実行・Obsidian完了・Home朝夕delivery確定 v579
+
+ユーザーの「残りを全て実行する」指示に基づき、今回の実行可能な項目を再度実行し、各項目をAOS正本のsame-run readbackまたはexact blockerまで確定した。自然時刻や外部側の不明状態を完了条件にせず、実行可能なものはこのrunで処理した。
+
+### 今回完了した項目
+
+- [x] `automation-os`サービスだけを最新ソースで再配布した。新deployment=`6a99dc04524448986d737e0e`、status=`RUNNING`、公開`/readyz=200`を確認した。他サービス・secret・scheduleは変更していない。
+- [x] 本番UIをCompanion Profile 2でfresh visual/semantic readbackした。`schedulerを今すぐ確認`、`Obsidianを同期準備`、Home Briefの操作面が反映されていることを確認した。UI文言・control manifest・server buildの本番/ローカル差分は解消した。
+- [x] Company 1（`company_2560580981cedfd106b66245`）の夜Briefを、fresh visual proof付きの1回の`visual.click`でAOS Home内部へ配信した。結果は`delivery=delivered`、`receipt=verified`、`source sync=synced`、`reconciliation=reconciled`、`cleanup=verified`、`external notification=false`、`external_action=false`。Companionの旧document instance不一致による2回のdispatch前停止は`no_dispatch`として扱い、同じkeyを再送していない。
+- [x] 朝Brief（v578）と今回の夜Briefの両方について、Company 1・当日・15件・除外0件・本番AOS DBのreadbackを成立させた。Home-only Brief deliveryは朝夕とも完了扱いに更新する。
+- [x] Obsidianの固定business runを再実行せず、AOS正本をfresh reload/readbackした。`run_mtlyto7a_vqas26`は`complete`、step=`completed`、同一Run worker receipt=`proof_mtlzcu5m_vuzbd3`、`same_run_receipt=true`、`readback_verified=true`、`cleanup_verified=true`、`business_proof_verified=true`、`same_run_source_sync=true`を確認した。
+- [x] Obsidian workerの固定対象をreadbackした。Company 1の非公開`nick353/obsidian-vault-backup`、`main`、local/remote commit=`5452586f1c24c623f1acbb29a9c83a7d19e2540a`、clean tree、maintenance/export/git sync/private remote parityが成立し、業務効果の完了をAOS receiptとremote parityの両方で確認した。
+- [x] ローカル検証を再確認した。Web typecheck、Web build、Server build、`git diff --check`は成功。今回のUI/control contract対象テストは`65 pass / 0 fail`。Web buildのchunk-size warningは機能失敗ではない。
+
+### 残件の確定状態（待機ではない）
+
+1. **Gmail確認・返信管理:** 本人Gmail profile readback（`nichika2000823@gmail.com`）は成功したが、AOSの同一Run内でGmailのread-only provider callを実行し、provider receipt・source sync・reconciliation・cleanupを受け取るbridgeはまだ存在しない。AOSのexact blockerは`gmail_provider_read_only_call_not_executed`。今回、メール本文の読取・下書き・返信・送信は0件。次の最短作業は、AOS workerが同じRunでGmail read-only snapshotを呼び、provider receiptを保存してから再照合すること。
+2. **NisenPrints:** exact blockerは`chrome_plugin_backend_snapshot_missing`。ユーザー指定どおりPluginは導入せず、Canvaの既存task-owned tabはforeign resourceを触らず保持している。商品更新・Etsy公開・Pinterest投稿は0件。次の最短作業は、Pluginなしで代替する場合でも、CompanionでCanva/Printify/Etsy/Pinterestの各fresh target、payload、本人account、provider receiptを同一Runに束縛する実装を用意すること。対象商品・公開内容を推測して実行しない。
+3. **求人応募:** ユーザー指定どおり求人応募laneは今回の対象外。既存のforeign PPIH task/tabは採用・再送・cleanupしていない。候補・応募先・packet・provider receiptが同一Runで固定されていないため、応募送信は0件。次の作業は、Company 1の本人対象についてfresh candidateとtarget-bound approvalを作成し、1件だけreceipt chainを成立させること。
+4. **自然tick / 複数日soak:** schedulerのno-effect canaryと手動run-onceは完了済みだが、直接tick経路の確定阻害は`scheduler_write_token_unavailable`。認証済みブラウザのログイン状態や別tokenを推測して自然tickを偽装していない。次の作業は、Company 1-scoped scheduler write/session authorityをAOS正規管理面に設定し、自然tickを1回起動してmaterialized runのreceiptをreadbackすること。その後に短期soakを実施する。
+5. **local SQLiteの旧Company ID:** 本番PostgreSQLのcanonical Company 1とlocal診断SQLiteの旧IDは別物。local SQLiteは診断専用として本番判定から切り離した。無バックアップのID置換・schedule rewire・履歴移送は実施しない。必要になった場合のみbackup→外部キー監査→transaction→same-run readbackで扱う。
+
+### 進捗
+
+`site_access_resolved / aos_ingress_authenticated / live_company1_scope_verified / plugin_dependency_skipped / job_lane_independent / local_runtime_verified / production_source_deployed / production_public_health_verified / production_ui_copy_verified / canonical_authority_diagnostic_fixed / worker_heartbeat_verified / remote_registry_sync_verified / companion_backend_selected_and_readback / scheduler_no_effect_canary_verified / company1_brief_morning_readback_verified / company1_brief_evening_readback_verified / company1_brief_home_delivery_verified_morning_and_evening / production_schema_self_healed_v14 / stage2_daily_ai_readonly_complete / stage3_backup_readonly_complete / obsidian_business_completion_verified / gmail_provider_call_not_executed / nisenprints_browser_snapshot_missing / job_lane_excluded / natural_tick_soak_not_proven`
+
+**判定:** AOSサイト、Company 1一社固定、本番UI、worker、Companion、Home Brief朝夕delivery、Daily AI no-effect canary、Obsidian private backup business runは利用可能または完了。主要業務証跡の進捗は`3/6`（Home Brief delivery、Daily AI、Obsidian）。全体の`production_ready=false`は、Gmail同一Run provider receipt、NisenPrints各provider authority、求人を対象外とした未実行、自然tick/soakが未成立のため維持する。これらは「何かが見えるまで待つ」ではなく、上記のexact blockerと次の実装単位が確定している。
+
+**External effect:** AOS Home内のCompany 1朝夕delivery record、Obsidianの固定非公開remote同期、今回の`automation-os` deployment、AOS UIのreadback以外は0。メール本文操作、メール送信、SNS投稿、NisenPrints商品更新・公開、求人応募、secret変更、schedule変更、会社作成／削除、Project A変更、foreign task resource変更は0。Companionの夜Brief操作はdispatchされたが、AOS内部Home deliveryであり外部通知は発生していない。
+
+## 2026-09-04 最終owner-scoped cleanupと確定状態 v580
+
+- [x] 最終Companion cleanupを同一task scopeで実行し、AOS確認tab `1980912356`〜`1980912362`を閉じた。cleanup receiptは`ok=true / status=completed / unknown_effect=[] / foreign_tabs_mutated=false / external_action_executed=false`。
+- [x] NisenPrints継続対象のCanva tab `1980912344`、`1980912345`だけは`active_group_tab`として保持した。求人のforeign task/tab/session/lease/pending operationは採用・再送・cleanupしていない。
+- [x] 最終Companion statusで`logicalSessions=0 / exactTabLeases=0 / pendingOperations=0 / activeReconciliation=0`を確認した。今回の作業由来のブラウザ状態は残していない。
+
+**最終判定:** `Plan.md`の最新進捗はv580。AOSサイト入口、本番配布、Company 1一社固定、Home Brief朝夕delivery、Daily AI no-effect canary、Obsidian private backup business runは完了または利用可能。主要業務証跡は`3/6`。全体`production_ready=false`の理由は、GmailのAOS同一Run provider receipt bridge（`gmail_provider_read_only_call_not_executed`）、NisenPrintsのPluginなし代替provider authority（`chrome_plugin_backend_snapshot_missing`）、求人laneの明示的対象外、自然tickの認証設定（`scheduler_write_token_unavailable`）である。待機状態は残さず、各項目の次の実装単位をv579に固定した。
+
+**External effect:** 最終cleanup以外の本番・AOS・provider・job・notification・secret・schedule・foreign taskへの追加変更は0。
+
+## 2026-09-04 Owner-visible AOS morning Brief readback v581
+
+今回の朝起動は`brief_type=morning`、`business_date=2026-09-04`、timezone=`Asia/Tokyo`で実行した。固定会社IDを決め打ちせず、Owner-visible AOSのcompany registryをfresh readbackした結果、対象は会社1（`company_2560580981cedfd106b66245`）の1社だった。6 registered automations、6 active schedules、verified account refs 3件を確認した。
+
+### Company 1 morning Brief
+
+- [x] 正式APIを同一Runでreadbackした。`aos.local_brief_bundle.v1`、source=`production_aos_database`、status=`complete`、15件、excluded=0、generated company=1。
+- [x] NisenPrintsはlatest `blocked (read-only)`、exact blocker=`chrome_plugin_backend_snapshot_missing`、次回08:30。今日の実行前にfresh Companion/Profile 2 backend snapshotとtarget readbackが必要。
+- [x] メール確認・返信管理はlatest `blocked (read-only)`、exact blocker=`gmail_provider_read_only_call_not_executed`、次回07:30。Gmail provider callと同一Runのreceipt chainが必要。
+- [x] 日次AIはlatest `complete (read-only)`、次回09:00。read-only worker receiptのみで、provider/source/reconciliation/cleanupがないため業務成功ではない。
+- [x] 求人応募管理はlatest `blocked (read-only)`、exact blocker=`chrome_plugin_backend_snapshot_missing`、次回07:30。応募送信は実行していない。
+- [x] 日次バックアップはlatest `complete (read-only)`、次回09:00。read-only完了であり、同一Runの業務証跡が揃うまで成功扱いにしない。
+- [x] Obsidianはlatest `blocked (read-only)`、exact blocker=`obsidian_artifact_write_requires_approval`、次回月曜09:30。承認なしのartifact writeは行っていない。
+- [x] `mutation.attempted=false`、`delivery.attempted=false/status=not_attempted`、external action=false。Brief生成を業務deliveryと混同しない。
+
+### Fresh runtime and cleanup
+
+- [x] AOS healthはHTTP 200、runtimeは`ready_for_authorized_admission`、server effects=`read_only`、worker effects=`enabled`。
+- [x] Brief確認用のCompanion task-owned sessionをcleanupし、最終current Goal resourcesはsession/lease/tab/pending/reconciliation=0。foreign tabs/resourcesは変更していない。
+
+**判定:** Goalは`active/incomplete`、`production_ready=false`。AOS会社registryと会社1朝Briefのfresh readbackは成立したが、deliveryは未実行であり、主要残件はprovider same-Run proof、NisenPrints/求人のbrowser authority、Gmail call、自然tick認証、unattended soakである。Brief readbackだけで6/6や自動運転完成とは呼ばない。
+
+**次の実行可能な最短単位:** 08:30/09:00の対象runをfresh readbackし、各workflowをprovider receipt→source sync→reconciliation→cleanupの一連の証跡で判定する。メール、NisenPrints、求人、自然tickはexact blockerが解消したものだけ進め、送信・公開・応募等はtarget/payload/account/approval/receiptを同一Runに束縛してから実行する。
+
+**External effect:** Brief API readback、AOS health/runtime readback、Companion cleanup以外のprovider、応募、返信、公開、決済、権限、secret、schedule、foreign taskへの変更は0。
+
+Evidence: [work/aos-morning-brief-20260904-company1-readback.json](work/aos-morning-brief-20260904-company1-readback.json)、[work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-04 Owner-visible AOS evening Brief readback blocked v582
+
+夜起動はAsia/Tokyo 21:46頃、`brief_type=evening`、`business_date=2026-09-04`。会社registryのfresh readbackを先行したが、Companionのread-only `tabs.list` がtimeoutし、`operation_timeout` で停止した。会社IDを推測せず、会社別Brief APIも実行していない。
+
+- [x] timeout後のfresh Companion statusでconnected profile=1、logical session=1、lease=0、pending=0、active reconciliation=0を確認した。
+- [x] 同じfingerprintのtargetを機械的に再送しなかった。session close/owner cleanupはcompleted、foreign tabs/resourcesは未変更。
+- [x] AOS healthはHTTP 200、runtimeは`ready_for_authorized_admission`、server=`read_only`、worker=`enabled`。
+- [x] 本runのprovider/business effect、Brief delivery、source sync、reconciliation、cleanup以外のprovider操作、応募、返信、公開、決済、権限変更、通知は0。会社別の業務成功・失敗は判定していない。
+- [x] selectorはCompanion surfaceだが、legacy Profile 2 preflightは`chrome_profile2_preflight_backend_mismatch`。この不一致を理由にBrowser Use/IAB/Playwrightへfallbackしていない。
+
+**判定:** evening Briefは`blocked`。Company registryが読めないため、朝の会社1結果やlocal diagnostic dataを夜の会社別結果へ流用しない。次回はfresh lifecycleでCompanion target readbackを一度だけ試し、成立後に全Owner-visible会社へBrief APIを実行する。
+
+**External effect:** timeout、status、AOS health/runtime、owner cleanupのみ。provider、job、通知、secret、schedule、foreign taskへの変更は0。
+
+Evidence: [work/aos-evening-brief-20260904-readback-blocked.json](work/aos-evening-brief-20260904-readback-blocked.json)、[work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-08 Company 1 five-workflow local UI/guide acceptance v593
+
+- [x] 会社1固定の隔離fixture上で、Gmail、Daily AI、NisenPrints、Backup、Obsidianの5 workflowを共通App契約へ束ねた。
+- [x] 各workflowでBuilder/Chat入力→persisted readback、承認不足・foreign bindingのfail-closed、予定のtimezone/停止・再開・同一期限duplicate防止、known-no-effectとunknown-effectのno-replay、ガイドの次操作mappingを確認。
+- [x] `scripts/tests/company1FiveWorkflowLocalAcceptance.test.mjs`をRootで再実行し、7 pass / 0 fail。`jq empty`、`git diff --check`も成功。
+- [x] fixtureは`connect-src 'none'`、production connection=false、provider call=0、simulation receiptのみ。SSO、本番API、外部provider、実schedule、外部効果は触れていない。
+- [ ] これは隔離UI/ガイド受入であり、認証済み本番UI、実provider receipt、実source sync/reconciliation/cleanup、自然実行、business completionを証明しない。Goalは`active/incomplete`、`production_ready=false`を維持する。
+
+Evidence: [work/aos-company1-five-workflow-local-acceptance-20260908.json](work/aos-company1-five-workflow-local-acceptance-20260908.json)、[scripts/tests/company1FiveWorkflowLocalAcceptance.test.mjs](scripts/tests/company1FiveWorkflowLocalAcceptance.test.mjs)。
+
+## 2026-09-08 Company 1 current runtime and protected-state readback v594
+
+- [x] local healthはHTTP 200、runtime=`ready_for_authorized_admission`、server=`read_only`、worker=`enabled`、Codex account/thread/turnはcompleted、local worker processは存在。
+- [x] 公開protected `/api/auth/session` と `/api/mvp/state?projection=summary&fresh=1` をfresh readbackし、双方HTTP401、exact blocker=`owner_sso_required`を確認。
+- [x] このreadbackではSSO、OTP、CAPTCHA、provider、runner、schedule、外部効果を実行していない。保存済みjobも再送していない。
+
+Evidence: [work/aos-company1-current-runtime-sso-readback-20260908.json](work/aos-company1-current-runtime-sso-readback-20260908.json)。
+
+## 2026-09-08 Company 1 local implementation verification v592
+
+- [x] `npm run build:server`を実行し、server型検査とdist生成が成功。
+- [x] Daily AI/Gmail/Portable worker focused suiteは55 pass / 0 fail / PostgreSQL fixture 3 skip。Python source-sync suiteは21 pass / 0 fail。
+- [x] 非同期DB境界の旧文字列assertionを、現行の承認・target更新を一つの`runSqlTransactionAsync`で行う契約へ更新し、対象テスト1 passを確認。`git diff --check`も成功。
+- [x] local acceptance artifactへ検証結果を追記。provider、SSO、deploy、runner、外部効果はこの検証では0。
+- [ ] protected `/api/auth/session` と Company 1 `/api/mvp/state?projection=summary&fresh=1` のHTTP401 `owner_sso_required`は未解消。provider receipt→source sync→reconciliation→cleanup、runner admission、business completionは未確認。
+
+**判定:** 実装・ローカル検証は前進したが、Goalは`active/incomplete`、`production_ready=false`を維持する。次の再開条件はOwnerが正規SSOを本人操作で完了し、同じCompany 1 scopeでfresh state readbackが成立すること。その後も保存済みDaily AI jobをblind replayせず、provider receiptを持つ新しい明示的Runだけを照合する。
+
+Evidence: [work/aos-company1-local-acceptance-20260908.json](work/aos-company1-local-acceptance-20260908.json)。
+
+## 2026-09-05 Owner-visible AOS morning Brief readback v589
+
+- [x] Asia/Tokyo 07:45頃にOwner-visible会社registryをfresh readbackし、会社1（`company_2560580981cedfd106b66245`）、6 automation、6 active schedule、verified account refs 3件を確認。
+- [x] 会社1の`brief_type=morning`、`business_date=2026-09-05`を同じCompanion runでreadback。bundleは`aos.local_brief_bundle.v1`、production DB、15件、excluded=0、status=`complete`。
+- [x] 6 automationの朝状態と次回動作を会社scope内で確認。NisenPrints/AI/backupはread-only complete、メール/求人/Obsidianはread-only blockedでexact blockerを保持。
+- [x] `mutation=false`、`delivery=not_attempted`、external effect=false。exported fresh evidenceを保存し、task-owned tab cleanupとpost-readbackを完了。
+- [ ] provider receipt、source sync、reconciliation、cleanupの同一Run proof、actual Brief delivery、unattended soakは未達。read-only completeは業務成功へ格上げしない。
+
+**next_action_now:** 次のscheduled runを会社1 scopeでreadbackし、4段階proofが揃うworkflowだけsuccessと判定する。揃わない場合はexact blockerを会社別Briefへ反映する。
+
+**resume_trigger:** Gmail canary、Chrome Companion backend snapshot、Obsidian write approval、scheduler write/session authority。
+
+Evidence: [work/aos-morning-brief-20260905-company1-readback.json](work/aos-morning-brief-20260905-company1-readback.json)、[work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-05 Owner-visible AOS evening Brief delivery v590
+
+- [x] 会社1のscope、6 automation、6 active schedule、Brief 15件をfresh確認。
+- [x] `brief_type=evening`、`business_date=2026-09-05`をAOS Homeへ一度配信し、Home fresh readbackで`delivery=delivered`を確認。
+- [x] 同一Run proof `receipt=verified / source sync=synced / reconciliation=reconciled / cleanup=verified`、internal-only、external effect=falseを確認。
+- [x] 5業務の最新状態を確認。バックアップは`backup_snapshot_outdated`でblocked、その他のcompleteはread-onlyであり業務成功ではない。求人応募は除外。
+- [ ] provider effectful receiptを伴う5業務のunattended successと継続soakは未達。
+
+**next_action_now:** 次回scheduled runをfresh readbackし、backup snapshot更新と各workflowの4段階proofを確認する。
+
+**resume_trigger:** backup fresh snapshot、workflowごとのprovider/account/target/payload/approval。
+
+Evidence: [work/aos-evening-brief-20260905-company1-delivery-readback.json](work/aos-evening-brief-20260905-company1-delivery-readback.json)、[work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-06 朝Brief配信・fresh runtime readback v591
+
+- [x] Company 1（`company_2560580981cedfd106b66245`）をOwner-visible Homeでfresh確認。対象automation 7、補助readback 10、意図的対象外6、excluded=0、当日digestは10 Run／complete 6／running・waiting 1／needs attention 3／approval 0。
+- [x] 対象5業務をreadback。NisenPrints、メール、日次AI、Obsidianはread-only complete、バックアップはread-only running・proof未確認、求人応募は対象外。下書き2件は未実行で保持。
+- [x] Home内配信を一度だけ実行し、`brief_home_mtoz52kz_b16lpi`、`delivery=delivered`、`receipt=verified`、`source sync=synced`、`reconciliation=reconciled`、`cleanup=verified`をfresh Home readback。直接API URL遷移は行わず、Home GET-backed readbackを採用。
+- [x] AOS health=HTTP 200、runtime=`ready_for_authorized_admission`、server=`read_only`、worker=`enabled`。Companion fresh statusはconnected profile=1、session/lease/pending/queue/active reconciliation=0、historical reconciliation=45。作成タブ1980912896を閉じ、foreign resourceは変更なし。
+- [x] 配信の外部通知・メール送信・公開・決済・応募・権限変更は0。Brief Home deliveryは完了だが、5業務のprovider receipt→source sync→reconciliation→cleanup一式は未成立。
+
+**stop_class:** `warn_and_continue`。
+
+**next_action_now:** 次回scheduled runをfresh readbackし、backup proofのterminal化とworkflow別same-Run proof chainを確認する。配信済みkey、旧Run、foreign resourceは再利用・再送しない。
+
+Evidence: [work/aos-morning-brief-20260906-company1-delivery-readback.json](work/aos-morning-brief-20260906-company1-delivery-readback.json)、[work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+
+## 2026-09-04 完全自動運転の制御骨格・Plugin認証導線 v582
+
+ユーザー要望「外部サービスを含む自動運転」「自然tick・soak」「PluginボタンからCodex App Server認証」を反映した。Company 1（`company_2560580981cedfd106b66245`）一社だけを対象とし、求人laneは既存方針どおり対象外のままにする。
+
+### 今回実装したもの
+
+- [x] Company 1限定の`POST /api/v1/companies/:companyId/scheduler/natural-tick`を追加した。実時刻のscheduler tickを1回だけ実行し、durable queueへのmaterialization、service user source、Company scope、`external_action_executed=false`を同じレスポンスで返す。
+- [x] Company 1限定の`POST /api/v1/companies/:companyId/scheduler/soak`を追加した。既定3回・最大5回・各間隔最大10秒のbounded soakで、run ID重複を検出し、exact blockerが出た時点で即時停止する。同じtickを自動再送しない。
+- [x] schedulerのservice identityを、環境変数で明示設定済みならそれを使い、未設定でも「activeなCompany 1・operator権限・service userが一つだけ」の場合に限り自動推定する。複数候補や不一致は推測せずexact blockerにする。
+- [x] Homeに`自然tickを実行`と`短期soakを実行`を追加し、結果のstatus・materialized数・service user source・重複数・外部効果なしを表示する。
+- [x] Pluginの開始ボタンを、まず専用Codex App Serverの`auth/status`で確認し、未認証なら公式device authの`auth/start`を開始して公式verification URLを開く流れへ変更した。Codex Homeへ遷移するだけの導線は使わない。
+- [x] Plugin OAuthはAOS内の無期限pollを削除した。公式承認後は同じ画面の`認証状態を再確認`で一度だけfresh readbackし、会社scopeのverified参照が確認できた場合だけ利用可能と表示する。認証不可の詳細URLでもボタンを押せば一回だけ再取得できる。
+- [x] device code、OTP、CAPTCHA、パスワードはAOSが入力・保存・自動突破しない。これは外部サービス側の本人操作を無限待機にせず、`codex_device_code_entry_required`または`plugin_auth_user_action_required`として明示するためである。
+
+### 検証
+
+- [x] `npm run build`、`npm run typecheck:web`を通過した。
+- [x] natural scheduler soak専用テストで、3回bounded実行・run ID重複なし・blocker時1回で停止・再送なしを確認した。
+- [x] UI truthfulnessテストで、Plugin install/auth route、Codex device auth route、無期限poll不在、自然tick/soak control manifestを確認した。
+- [ ] Zeabur本番deploymentと、認証済みAOS Adminの入口から自然tick→readback→soak→readbackを実行する。ここで外部サービスのprovider receiptがない場合はscheduler完成とprovider業務完成を分け、exact blockerとして記録する。
+
+### 現時点の判定と残り
+
+制御骨格は実装済みだが、これだけで外部サービスの業務完了を意味しない。`production_ready=false`は維持する。残る最短作業は、(1)本番deploy、(2)Company 1の認証済みAdminからnatural tickと短期soakのsame-run readback、(3)Plugin対象の公式承認後にfresh会社scope readback、(4)Gmail/NisenPrints等の各workflowでprovider receipt→source sync→reconciliation→cleanupを同一Runで取得すること。providerがOAuth URLを返さない場合、AOSはCodex Homeへの遷移や推測URLを使わず、そのexact blockerで停止する。
+
+**Current execution state:** `site_access_resolved / aos_ingress_authenticated / live_company1_scope_verified / production_source_pending_deploy / plugin_codex_auth_bounded / plugin_no_infinite_poll / natural_tick_soak_implemented_not_live_proven / provider_business_proof_not_started / production_ready_false`
+
+**External effect:** 本番deployとAOS内部のno-effect scheduler materialization以外の外部送信、投稿、応募、決済、権限変更、secret変更、foreign task resource変更は0。Pluginのdevice auth／OAuth承認は公式画面でユーザーが明示的に行った場合だけ発生する。
+
+## 2026-09-04 本番完全自動運転骨格のlive readback v583
+
+### 本番反映
+
+- [x] ローカルで`npm run build`、server typecheck、Web build、`git diff --check`を完了した。対象のnatural scheduler / Plugin UIテストは`65 pass / 0 fail`。
+- [x] Zeaburの正本対象を変更せず、既存の`automation-os`サービス（project=`69df815a554543d46b0f2485`、service=`6a47122e24bec8372d3e1a31`、environment=`69df815a5ae0a69725e92048`）へ一度だけ再deployした。deployment=`6a9a5284c2f0ed37446d6096`は`RUNNING`。前回FAILED deploymentのnull型エラーは修正済みで、他サービス・secret・foreign taskは変更していない。
+- [x] 新deploymentの公開readbackを同一runで確認した。`/readyz`=`200`、`status=ready`、`/api/health`=`200`。公開入口は新UIへ切り替わった。
+
+### Company 1 natural tick / soak
+
+- [x] 認証済みAOS AdminのHomeから`自然tickを実行`を押し、fresh semantic readbackを取得した。`status=completed`、`materialized=0`、`service_user=configured`、`duplicate=0`、`external_action=false`。
+- [x] 同じCompany 1 scopeで`短期soakを実行`を押し、bounded 3-cycle実装の完了readbackを取得した。`status=completed`、`materialized=0`、`service_user=readback`、`duplicate=0`、`external_action=false`。外部サービスへの送信・通知・公開は発生していない。
+- [x] サーバー起動時のnatural scheduler timerは既定60秒で稼働する実装を維持し、同じ会社scope・service identity・no-replay境界で実行する。blockerが出た場合はsoakをその時点で停止する。
+
+### Plugin認証導線のlive readback
+
+- [x] Plugin画面のfresh readbackで、専用Codex App Serverが`already_authenticated`、runtime=`running`、Codex login=`logged_in`、Gmail / Google Drive / Supabaseが`verified`、Company 1が選択済みであることを確認した。
+- [x] 既存Gmailを選択して`認証状態を再確認`を実行した。`会社scopeのverified readbackを確認済み`、`公式認証の完了がAOS側のfresh readbackに反映されています`、registry exact blocker=`なし`。Codex Homeへ遷移するだけの挙動は発生していない。
+- [x] 未接続linearで`Pluginを追加して認証を開始`を一度実行した。AOSは無期限pollやCodex Home遷移をせず、`codex_app_server_request_rejected_code_-32600`を同一画面のexact blockerとして表示して停止した。外部OAuth・外部業務効果は`false`。
+- [ ] 未接続Pluginの新規追加は、専用App Server（codex-cli=`0.148.0`）のremote catalog `plugin/install`がJSON-RPC `-32600`を返すため未成立。既存のverified Plugin利用には影響しない。新規Pluginを追加する場合の次の実装単位は、App Server側のremote catalog install許可／認証を解消した後に、同じボタンから一回だけinstall→公式OAuth URL→fresh company-scope readbackを再実行すること。AOS側で推測URL・認証情報入力・無限pollは行わない。
+
+### 現在の判定
+
+`production_source_deployed / production_public_health_verified / production_ui_live_readback_verified / company1_natural_tick_live_proven / company1_soak_live_proven / plugin_codex_auth_live_readback_verified / plugin_existing_verified_scope_live_proven / plugin_new_install_remote_catalog_blocked / gmail_provider_business_receipt_pending / nisenprints_provider_authority_pending / job_lane_excluded / production_ready_false`
+
+自然tick・短期soak・既存verified Pluginの認証状態は、本番入口から実行・readbackできる状態になった。まだ`production_ready=false`なのは、Gmailの同一Run provider receipt/source sync/reconciliation/cleanup、NisenPrintsのfresh provider authority、求人laneを対象外とした未実行、新規Plugin追加のApp Server側`-32600`が残るためである。これらを完了扱いにせず、各exact blockerを次の実装単位として固定する。
+
+**External effect:** 本番deployment、AOS内部のnatural tick / bounded soak materialization、既存Gmailのread-only認証・会社scope readback以外の外部送信・投稿・応募・決済・権限変更・secret変更・foreign task resource変更は0。Plugin新規追加はremote catalog拒否前に停止し、OAuth承認は発生していない。
+
+## 2026-09-04 NisenPrints canonical Browser Use CLI route and runtime drift resolved v584
+
+残件を「何かが見えるまで待つ」状態にせず、実行可能な単位をその場で一度だけ実行し、同一Runのreceipt/readback/cleanupで判定した。対象はCompany 1（`company_2560580981cedfd106b66245`）一社のみで、求人応募laneはユーザー指定どおり対象外のまま維持した。
+
+### 今回、解消したもの
+
+- [x] NisenPrintsの登録bridge preflightを修正し、provider-neutral no-effect triggerと外部効果readbackの意味的な表記揺れを正しく受理するようにした。fresh preflightは`status=ready`、`command_ready=true`、`exact_blocker=null`。
+- [x] NisenPrintsのAOS UI／bridge入口を、Companionへ暗黙に流さず、workflow IDによりCanonical Browser Use CLIへ固定した。AOS側の入口バインディングテストは`18 pass / 0 fail`。
+- [x] `automation-os`だけを再deployし、deployment=`6a9a6bd3057ebe4c799e0b51`が`RUNNING`、公開`/readyz=200`、`/api/health=200`であることをfresh readbackした。他サービス・secret・foreign task resourceは変更していない。
+- [x] route修正後のrun=`run_mtmm1bow_uyqm11`で、Browser Use CLI到達後にChrome executable hash driftを確定した。旧設定は`152.0.7977.65`、実Chromeは`152.0.7977.76`だったため、同じrunを再送しなかった。
+- [x] `/Users/nichikatanaka/.browser-use-cli/browser-use-runtime.toml`を実Chromeのversion/hashへ同期した。`codex-browser-use runtime-readback`と`validate`はともに`exact_blocker=null`、runtime driftなし。
+- [x] 新しいidempotency keyで一度だけrun=`run_mtmm4abl_5ne9kc`を実行した。`status=complete`、`browser_surface=browser_use_cli`、`backend=browser_use_cli`、`profile_id=profile2`、Canva origin一致、`same_run_receipt=true`、`readback_verified=true`、`cleanup_verified=true`、`exact_blocker=null`を確認した。
+- [x] このrunはread-only reference readbackであり、`external_action_executed=false`、商品更新・Printify操作・Etsy公開・Pinterest投稿は0件。従ってNisenPrintsの「実際の業務効果」完了とは分けて記録した。
+- [x] Workerのfresh statusは`heartbeat_status=ok`、`claim_status=idle`、`exact_blocker=null`。実行後にworkerが残留していないことを確認した。
+
+### 現在も未完了の残件（待機ではないexact blocker）
+
+1. **Gmail provider業務canary:** Gmail Pluginのprofile readは同一App Server runで実行されたが、Company 1の正本`account_ref`（hash=`e37a3a5f0ba841d5f2fdbbd94c60e77cfae5818317e30d5f0294f12b9451c8db`）とprovider側readback（hash=`406fb694fa26f2d95dd8db514f24ca38c20d323568e1b78c5010d66851c24c0`）が不一致で、exact blockerは`gmail_provider_account_ref_mismatch`。誤ったアカウントを自動採用せず、provider receipt・source sync・reconciliationを成功扱いにしていない。最短の次単位は、公式Gmail Pluginで本人の正本アカウントへ再認証し、状態が変わった後に新しいread-only canaryを一度だけ実行すること。メール本文・添付・送信・返信・下書き・ラベル変更は行わない。
+2. **新規Plugin追加:** 既存verified Pluginの認証・会社scopeはlive readback済み。未接続Pluginの追加はremote Codex App Server（codex-cli=`0.148.0`）の`plugin/install`がJSON-RPC `-32600`を返し、AOSは同一画面で停止した。Codex Homeへの遷移、推測URL、無限pollは行っていない。App Server側がremote catalog installを受理できる状態になった後に限り、同じボタンから一回だけ再実行する。
+3. **NisenPrintsのeffectful business run:** read-onlyのBrowser Use CLI到達・goal/readback/cleanupは完了したが、現行の外部業務runnerのexact blockerは`printify_auth_required`。本人のPrintify認証、workflow-owned target、payload、approval、provider receiptが同一Runで揃うまでは、商品更新・公開・投稿を実行しない。
+4. **自然tick／soak:** Company 1のnatural tickとbounded 3-cycle soakは本番入口からlive proven済み。外部providerのeffectful receiptを伴う自然tickは未成立であり、既存のscheduler proofを業務完了へ格上げしない。
+5. **求人応募:** ユーザー指定により対象外。既存foreign task/tab/session/leaseを採用・再送・cleanupしていない。
+
+### 進捗と判定
+
+`site_access_resolved / aos_ingress_authenticated / live_company1_scope_verified / production_source_deployed / production_public_health_verified / production_ui_live_readback_verified / company1_natural_tick_live_proven / company1_soak_live_proven / plugin_codex_auth_live_readback_verified / plugin_existing_verified_scope_live_proven / nisenprints_bridge_preflight_ready / nisenprints_browser_use_cli_route_fixed / nisenprints_runtime_drift_resolved / nisenprints_browser_use_cli_readonly_complete / worker_heartbeat_verified / gmail_provider_account_ref_mismatch / plugin_new_install_remote_catalog_blocked / nisenprints_effectful_business_proof_pending / job_lane_excluded / production_ready_false`
+
+**判定:** AOSサイト、Company 1一社固定、本番配布、worker、natural tick／bounded soak、既存verified Pluginの認証導線、NisenPrintsのCanonical Browser Use CLI read-only経路は使用可能。主要業務証跡は既存の`3/6`（Home Brief delivery、Daily AI、Obsidian）を維持する。`production_ready=false`は、Gmailの本人アカウント不一致、NisenPrintsのPrintify認証とeffectful receipt、新規PluginのApp Server `-32600`、求人lane対象外が残るためである。これは無期限待機ではなく、各項目の次の一回操作と停止条件が確定した状態である。
+
+**External effect:** `automation-os` deployment、NisenPrintsのAOS queue／read-only Browser Use CLI goal/readback、runtime設定同期、worker readback以外のメール操作、NisenPrints商品・公開・投稿、求人応募、新規Plugin追加、外部通知、secret変更、schedule変更、会社変更、foreign task resource変更は0。
+
+Evidence: [data/artifacts/portable-remote-worker/run_mtmm4abl_5ne9kc/portable-protected-readback.v1.json](data/artifacts/portable-remote-worker/run_mtmm4abl_5ne9kc/portable-protected-readback.v1.json)、[data/artifacts/portable-remote-worker/run_mtmm4abl_5ne9kc/portable-runner-receipt.v1.json](data/artifacts/portable-remote-worker/run_mtmm4abl_5ne9kc/portable-runner-receipt.v1.json)、[work/aos-nisenprints-status-20260904-final.json](work/aos-nisenprints-status-20260904-final.json)。
+
+## 2026-09-04 Codex App Server Marketplace名の本番修正 v585
+
+新規Plugin追加ボタンがCodex Homeへ遷移するだけで終わらないようにした既存の認証導線について、専用App Serverの正本設定とAOSの送信値を照合した。専用サービスのMarketplaceは`openai-curated`、App Server v2の`PluginInstallParams`は`pluginName`、`remoteMarketplaceName`、`installAttemptId`を受理するため、AOSが`openai-curated`を`openai-curated-remote`へ書き換えていたことを実装不整合として修正した。
+
+### 今回完了したもの
+
+- [x] `apps/server/src/codex/appServerClient.ts`のMarketplace正規化を修正し、canonicalな`openai-curated`をそのまま送信するようにした。過去のalias入力`openai-curated-remote`だけはcanonical名へ戻す。
+- [x] install／plugin readのclient契約テストを更新し、Codex App Serverの送信値とreadbackが`openai-curated`で一致することを確認した。
+- [x] server build、Codex App Server client／natural scheduler／Gmail canaryの対象テストを`21 pass / 0 fail`で完了し、`git diff --check`も成功した。
+- [x] AOSの既存`automation-os`サービスだけへ再deployした。最新deployment=`6a9a71794e43204d5880f0dc`、status=`RUNNING`、finished=`2026-09-04T07:25:10.298Z`。
+- [x] 本番readbackで`https://automation-os.zeabur.app/readyz`、`https://automation-os.zeabur.app/api/health`、`https://aos-admin-ingress.zeabur.app/readyz`がすべてHTTP 200であることを確認した。
+- [x] 専用App Serverのservice-exec readbackで、実際のinstalled PluginがGmail／Google Drive／Supabase、configured Marketplaceが`openai-curated`であることを確認した。認証情報・token・secretはreadbackへ保存していない。
+
+### Pluginの扱い
+
+- [x] 既存verified Pluginの認証状態・Company 1 scope確認は引き続き利用可能。開始ボタンは`auth/status`→必要時のみ公式認証URL→同じ画面のfresh readbackというbounded flowで、無期限pollを持たない。
+- [x] 新規Pluginの実インストール／OAuth承認は、ユーザーの「Pluginは今はスキップ」指定を守って今回も実行していない。したがって、AOS側の送信値修正は本番反映済みだが、未接続Pluginの実追加が完了したとは記録しない。
+- [ ] 新規Pluginを追加する場合は、ユーザーが対象を指定した後、正しい`openai-curated`名で同じボタンを一度だけ押し、成功時の公式OAuth URL・Company 1 scope・fresh readbackを確認する。対象指定なしにlinear等を勝手に追加しない。
+
+### 最新の未完了項目（待機ではない）
+
+1. **Gmail:** `gmail_provider_account_ref_mismatch`。Company 1の正本アカウントとGmail Plugin provider readbackが不一致のため、誤アカウントを採用しない。本人アカウントへ公式再認証した後、新しいread-only canaryを一度だけ行う。
+2. **NisenPrints:** Browser Use CLIのread-only route、runtime、goal/readback/cleanupは完了。effectful business runは`printify_auth_required`で停止中で、Printify認証・target・payload・approval・provider receiptが同一Runで揃うまで商品更新／公開／投稿は行わない。
+3. **新規Plugin:** AOS側のMarketplace送信不整合は修正済み。実追加はユーザーの対象指定と公式Provider側の受理が必要で、勝手なインストールはしない。
+4. **求人応募:** ユーザー指定どおり対象外。foreign task／tab／session／leaseは触らない。
+5. **自然tick／soak:** Company 1の本番natural tickとbounded soakはlive proven済み。ただしproviderのeffectful receiptを伴う業務完了とは別である。
+
+### 最新判定
+
+`site_access_resolved / aos_ingress_authenticated / live_company1_scope_verified / production_source_deployed / production_public_health_verified / production_ui_live_readback_verified / company1_natural_tick_live_proven / company1_soak_live_proven / plugin_codex_auth_live_readback_verified / plugin_existing_verified_scope_live_proven / plugin_marketplace_canonical_name_fixed / nisenprints_bridge_preflight_ready / nisenprints_browser_use_cli_route_fixed / nisenprints_runtime_drift_resolved / nisenprints_browser_use_cli_readonly_complete / worker_heartbeat_verified / gmail_provider_account_ref_mismatch / nisenprints_effectful_business_proof_pending / plugin_new_install_user_skipped / job_lane_excluded / production_ready_false`
+
+**判定:** AOSの本番入口、Company 1一社固定、worker、natural tick／soak、既存verified Plugin認証導線、NisenPrintsのCanonical Browser Use CLI read-only経路は利用可能。`production_ready=false`は、Gmailの正本アカウント不一致、NisenPrintsのPrintify認証とeffectful receipt、新規Plugin実追加のユーザー指定待ち、求人lane対象外のため維持する。未成立項目に無期限の「見えるまで待つ」は残していない。
+
+**External effect:** deployment=`6a9a71794e43204d5880f0dc`、AOS内部readback、local code/config/test変更以外のメール操作、NisenPrints商品・公開・投稿、Plugin実インストール、OAuth承認、求人応募、外部通知、secret変更、schedule変更、会社変更、foreign task resource変更は0。
+
+## 2026-09-04 Codex Server全Plugin認証カタログ表示・厳密ID導線 v586
+
+### 今回完了したもの
+
+- [x] 専用Codex Server（Zeabur service=`6a7777cde4a69d66638d2141`）へfresh service-exec readbackを行い、インストール済み3件・追加可能177件・合計180件を確認した。全180件に公式認証ポリシーがあり、`ON_INSTALL=177`、`ON_USE=3`。代表的な正本identityは`plugin_id`（例：`gmail@openai-curated`）＋`marketplace_name=openai-curated`。
+- [x] `pluginId`、`marketplaceName`、`authPolicy`をAOSのCodex Server registryへ保持し、available／uninstalled Pluginの`authStatus`を`unknown`として誤った認証済み表示を防いだ。
+- [x] Plugin catalogの重複マージを修正し、remote Codex Serverの正本metadataを静的候補より優先した。Codex Serverのavailable catalogを全件表示できる。
+- [x] UIに「Codex Server公式認証可」、`ON_INSTALL`／`ON_USE`、fresh catalog件数、認証可能件数を表示するようにした。
+- [x] 追加ボタンは表示名から推測せず、厳密な`plugin_id`とcanonicalな`marketplace_name`をserverへ渡す。Server側もregistry identityをresolveし、未登録・対象外Pluginを拒否する。
+- [x] 認証導線はCodex App Serverの`auth/status`→必要時のみ`auth/start`→公式認証URL→Company 1 scopeのfresh readbackというbounded flow。パスワード、OTP、CAPTCHAの入力や保存、無期限poll、Codex Homeへの誤遷移は行わない。
+- [x] focused tests `116 pass / 0 fail`、server build、web typecheck、web build、`git diff --check`を完了した。
+- [x] 既存の`automation-os`だけをdeployし、deployment=`6a9a8ebac2f0ed37446d68d4`が`RUNNING`。AOS公開入口とadmin ingressのhealthはHTTP 200、公開JS hashはlocal buildと一致した。
+
+### 現在の未完了項目（無期限待機ではない）
+
+- [ ] 180件を一括インストール・一括OAuth承認は実行していない。以前の「Pluginは今はスキップ」指定を維持し、必要なPluginのカードを個別に押せば、そのPluginだけが公式追加・認証フローへ進む。
+- [ ] 未インストールPluginの実追加を実行した際、専用App Serverの`plugin/install`がJSON-RPC `-32600`を返した実績がある。AOS側のMarketplace不整合は修正済みで、次の一回操作は同じ厳密IDでの再実行。成功しない場合のexact blockerはApp Server側のremote catalog install受理／認証であり、推測URLや再送はしない。
+- [ ] 各ProviderのOAuth承認完了はProvider公式画面で本人が承認する必要がある。認証可能表示・認証開始機能の実装完了と、全Providerの実認証済み・業務利用完了は別判定。
+- [ ] Companionでの今回のUI visual readbackは`extension_operation_failed: image readback failed`でno-effect停止した。外部効果はなく、task-owned tabは同一runでcleanup verified。AOS側はCodex Server service-exec、公開asset hash、health readbackで検証済み。
+- [ ] 全体の`production_ready=false`は維持する。既存のGmail provider account mismatch、NisenPrintsの`printify_auth_required`、求人lane対象外など、Pluginカタログとは独立した残件がある。
+
+### 最新判定
+
+`site_access_resolved / aos_ingress_authenticated / live_company1_scope_verified / production_source_deployed / production_public_health_verified / codex_server_plugin_catalog_live_readback_verified / codex_server_plugin_catalog_180_entries / codex_server_plugin_auth_policy_180_entries / plugin_exact_id_auth_route_deployed / plugin_existing_verified_scope_live_proven / plugin_new_install_remote_catalog_blocked / companion_ui_readback_no_effect_image_blocked / gmail_provider_account_ref_mismatch / nisenprints_effectful_business_proof_pending / job_lane_excluded / production_ready_false`
+
+**判定:** 新規PluginはCodex Serverのfresh catalogから全件表示可能で、各カードから厳密なPlugin IDを使った個別の公式認証導線へ進める本番実装になった。既存のGmail／Google Drive／Supabaseは認証済みのまま利用可能。全Providerを勝手に一括追加・認証済み扱いにはしていないため、未完了は「表示・導線」ではなく、個別Providerの公式承認とApp Server側remote install受理である。
+
+**External effect:** `automation-os` deployment、Codex Server read-only catalog readback、AOS UI／server／workerのlocal変更、Companion no-effect readbackとtask-owned cleanup以外のPlugin実インストール、OAuth承認、メール操作、NisenPrints商品・公開・投稿、求人応募、外部通知、secret変更、schedule変更、会社変更、foreign task resource変更は0。
+
+## 2026-09-04 4段階実行: Codex Server Plugin追加・認証・workflow接続 v587
+
+ユーザー指定の4段階をCompany 1（`company_2560580981cedfd106b66245`）一社に固定して実行した。未成立項目を「何かが見えるまで待つ」にせず、実装・readback・公式本人操作の境界を分離した。
+
+### 1. Codex ServerのPlugin追加経路を実装して本番反映
+
+- [x] 現行remote App Serverの`plugin/install`が`-32600`を返す場合だけ、AOSの同一install操作から固定argvの`codex plugin add <exact-plugin>@<exact-marketplace> --json`へ一度だけ切り替えるfallbackを追加した。shell文字列化、任意コマンド実行、blind retryはない。
+- [x] `externalSandbox`＋`networkAccess=enabled`、Company 1のremote cwd、厳密なPlugin ID／Marketplaceを束縛し、CLI stdoutは`pluginId/name/marketplaceName/authPolicy`だけに縮約した。stderr、token、credential、installed pathはAPIへ返さない。
+- [x] CLI成功後に`plugin/read`→`app/read`を同じconnectionでreadbackし、必要な公式認証URLだけを返すテストを追加した。Codex App Server client対象テストは`16/16 pass`。
+- [x] 実サービスで`linear@openai-curated`の`codex plugin add --json`を一度実行し、`installed=true / enabled=true / authPolicy=ON_INSTALL`をreadbackした。現在の専用Codex Serverはinstalled 4件（linear、gmail、google-drive、supabase）、available 0件。
+- [x] AOS `automation-os`だけをdeployment=`6a9ab073c2f0ed37446d6c30`へ反映し、Zeabur status=`RUNNING`をfresh readbackした。公開`/readyz`、`/api/health`、admin ingress`/readyz`はすべてHTTP 200。
+
+### 2. Codex App-like認証センターを本番入口で確認
+
+- [x] 公開assetは`index-B2PFgpOa.js`、SHA-256=`04dddef707884423a220caa942c023bc05c4121136494eec543e6a27693f959d`で、`Codex Server公式認証可`、`truthful.plugins.codex-server-auth-summary`、`plugin_id`、`Codex Serverで追加して認証`を含むことを確認した。
+- [x] UIは静的なPlugin名から推測せず、fresh catalogの厳密`plugin_id`＋`marketplace_name`をAOS serverへ送り、`auth/status`→必要時のみ公式認証→同じ画面でfresh readbackする。Codex Homeへ遷移するだけの導線、無期限poll、認証情報入力はない。
+- [x] 新しい認証サマリーのcontrol manifestを追加し、control-manifest／UI／Codex client／scheduler／registered workflow対象テストを`32/32 pass`した。
+
+### 3. 主要Pluginの認証状態を確認
+
+- [x] Gmail、Google Drive、Supabaseは専用Codex Serverのenabled状態と、既存のCompany 1 verified scope readbackを維持している。LinearはPlugin自体の追加・enabled readbackまで成立した。
+- [ ] Linearを含むProvider OAuthの本人承認は自動実行していない。公式認証画面の承認後にAOSの`再確認`を一度押し、Company 1 scopeとprovider access stateをreadbackして初めてverifiedとする。
+- [ ] Gmailの残件は`gmail_provider_account_ref_mismatch`。正本Company 1 accountとprovider側identityが違うため、誤アカウントを採用しない。次の一回操作は本人Gmailを公式画面で再認証し、新しいread-only canaryを実行すること。
+
+### 4. Workflow・schedulerへ接続して実行境界を確認
+
+- [x] Company 1の既存6 registered workflow、natural tick、bounded 3-cycle soak、worker／AOS control-plane接続は既存live readbackを維持している。schedulerはAOS内部materializationまで、provider業務完了とは別に判定する。
+- [x] `npm run build:server`、`npm run typecheck:web`、`npm run build:web`、`git diff --check`を完了し、本番入口healthと配信assetを同一runで確認した。
+- [x] scheduler identityのstale test fixtureを修正し、現行の「Company 1にactive operator service userが一つだけなら安全に推定する」仕様と一致させた。Canonical Browser Use CLIへ固定済みのNisenPrints test期待値も更新した。
+- [ ] NisenPrintsのeffectful business runは`printify_auth_required`。本人Printify公式認証、workflow-owned target/payload、approval、provider receipt、source sync、reconciliation、cleanupが同一Runで揃うまで商品更新・Etsy公開・Pinterest投稿は行わない。
+- [ ] 求人応募laneはユーザー指定どおり対象外。応募送信は0件で、foreign task/tab/session/leaseは採用・再送・cleanupしていない。
+
+### 4段階後の判定
+
+`codex_server_plugin_add_fallback_implemented / codex_server_linear_install_live_readback / codex_server_plugin_catalog_live / plugin_auth_center_live / plugin_exact_id_route_live / plugin_existing_verified_scope_live / company1_workflow_connections_live / company1_natural_tick_live_proven / company1_soak_live_proven / gmail_provider_account_ref_mismatch / nisenprints_printify_auth_required / provider_oauth_user_action_required / job_lane_excluded / production_ready_false`
+
+**判定:** AOSのPlugin一覧表示、Codex Server公式認証可能表示、厳密IDでの追加、`-32600`時の自動CLI fallback、公式認証URLへのbounded handoff、Company 1 scope readback、既存workflow／scheduler接続は本番利用可能になった。`production_ready=false`は、Provider公式OAuthの本人承認、Gmailの正本アカウント不一致、NisenPrintsのPrintify認証とeffectful provider receipt、求人lane対象外を業務完了へ格上げしていないためである。これらは待機状態ではなく、各々の次の一回操作と停止条件が固定されている。
+
+**External effect:** AOS deployment、Codex Server上の`linear@openai-curated`追加、AOS内部のreadback、local code/test/manifest変更以外のOAuth承認、メール本文・返信・送信、NisenPrints商品更新・公開・投稿、求人応募、決済、secret変更、schedule変更、会社変更、foreign task resource変更は0。
+
+Evidence: 公開`/readyz`・`/api/health`・admin ingress`/readyz` fresh readback、専用service `codex plugin list --json` fresh readback、deployment=`6a9ab073c2f0ed37446d6c30`。
+
+## 2026-09-04 夜Brief readback blocked v588
+
+夜起動（Asia/Tokyo 21:46頃）で`brief_type=evening`、`business_date=2026-09-04`を算出した。最初にOwner-visible AOSの会社registryをfresh readbackする条件を守ったが、AOS Chrome Companionのread-only `tabs.list` が15秒timeoutし、`operation_timeout`で会社一覧を取得できなかった。
+
+- [x] 会社ID・会社数を推測せず、朝Briefの会社1結果やlocal diagnostic dataを夜Briefへ流用しなかった。会社別evening Brief APIは未実行。
+- [x] timeout後にfresh Companion statusを確認し、connected profile=1、lease=0、pending=0、active reconciliation=0を確認した。
+- [x] 同じfingerprintの操作を再送せず、task-owned sessionをclose。cleanup=`completed`、foreign tabs/resources変更なし、external effect=false。
+- [x] AOS healthはHTTP 200、runtime=`ready_for_authorized_admission`、server=`read_only`、worker=`enabled`。
+- [x] selectorは`aos_chrome_companion`／`aos_chrome_companion_profile_instance`で、legacy Profile 2 preflightの`chrome_profile2_preflight_backend_mismatch`は別の診断証跡として保持した。Browser Use/IAB/Playwrightへの暗黙fallbackは行っていない。
+
+**判定:** 夜Briefは会社一覧readback未成立のため`blocked`。provider receipt、source sync、reconciliation、delivery、メール、応募、公開、決済、通知は本runで0であり、会社ごとの成功・失敗は未判定。Goalは`active/incomplete`、`production_ready=false`を維持する。
+
+**次の実行可能な最短単位:** 次のfresh lifecycleでCompanion/Profile 2の新規preflightとtask-owned target readbackを一度だけ行う。registryが読めた場合のみ全会社のevening Brief APIを実行し、読めない場合は同じexact blockerを保持してAOS health/runtimeとauditを継続する。旧timeout keyの再送はしない。
+
+**External effect:** Companion read-only status、AOS health/runtime、owner-scoped session cleanup以外のprovider、job、notification、secret、schedule、会社、foreign taskへの変更は0。
+
+Evidence: [work/aos-evening-brief-20260904-readback-blocked.json](work/aos-evening-brief-20260904-readback-blocked.json)、[work/current-goal-multicompany-worker-heartbeat-fix-v484.json](work/current-goal-multicompany-worker-heartbeat-fix-v484.json)。
+## 2026-09-08T04:24:57+09:00 JST — Preserved Daily AI job exact API readback v609
+
+- [x] GET-only readback of the exact preserved planner job `create_planner_job_mtrh1emr_kudqvr` returned HTTP 401 with `production_token_required`.
+- [x] Fresh local health/runtime/Codex readbacks remained healthy (`health=200`, `ready_for_authorized_admission`, server `read_only`, worker `enabled`, account/thread/turn completed).
+- [x] No provider call, new request, runner start, schedule mutation, replay, or external effect occurred.
+
+**判定:** the preserved job remains unverified; the 401 is an authentication boundary, not evidence of absence or completion. Provider receipt, source sync, reconciliation, runner admission, and business completion remain unverified. Goal remains `active/incomplete` with the protected Owner/production-token blocker.
+
+Evidence: [work/aos-company1-preserved-job-api-readback-20260908-v609.json](work/aos-company1-preserved-job-api-readback-20260908-v609.json).
+
+**next_action_now:** after official Owner SSO/production token establishment, fresh-read this exact job and linked Company 1 state; do not replay it while delivery remains unknown.
+## 2026-09-08T04:32:00+09:00 JST — Control manifest 385→387 delta audit v610
+
+- [x] Compared the 385 definitions captured in the prior inventory with the current source manifest: 385 unchanged, 2 added, 0 removed.
+- [x] Explained both additions: `chat.workflow-run-result` and `chat.workflow-draft-open`, both read-only navigation controls registered by the v600 static QA repair.
+- [x] Kept evidence classes separate: static registration is not production UI acceptance, and neither is a provider/business receipt. The prior representative crosswalk count 129 was not incorrectly relabeled as 129/387 complete.
+- [x] No provider call, SSO input, schedule mutation, runner start, replay, or external effect occurred.
+
+**判定:** current manifest count is 387. The two new controls have static evidence only; a fresh same-company Chat workflow result/draft link readback remains required. Goal remains `active/incomplete` and `production_ready=false`.
+
+Evidence: [work/aos-control-manifest-delta-audit-20260908-v610.json](work/aos-control-manifest-delta-audit-20260908-v610.json).
+
+**next_action_now:** after protected Company 1 access is restored, fresh-read the exact preserved job/linked state and separately read the two newly added Chat links; do not replay unknown jobs.
+## 2026-09-08T04:30:37+09:00 JST — Chat delta-link readback v611
+
+- [x] Fresh same-company Companion readback reached `http://localhost:8787/#/chat?company_id=company_2560580981cedfd106b66245` with visual verification, Company 1 scope, Chat `idle`, and 49 visible controls.
+- [x] Neither `chat.workflow-run-result` nor `chat.workflow-draft-open` was visible in the current idle conversation; both remain static-only for this run and are not counted as production UI acceptance.
+- [x] Task-owned tab/session cleanup completed: tab closed, one lease released, `foreign_tabs_mutated=false`, `external_action_executed=false`.
+
+**判定:** the 385→387 manifest delta is now explained and the two new controls are fail-closed as unverified until a persisted same-company workflow result/draft is available. Goal remains `active/incomplete`.
+
+Evidence: [work/aos-control-manifest-delta-audit-20260908-v610.json](work/aos-control-manifest-delta-audit-20260908-v610.json).
+
+## 2026-09-07T19:36:52Z UTC — Company 1 Plugin UI readback
+
+- [x] Fresh AOS Chrome Companion Profile instance readback verified the Company 1 route visually and semantically. The selector displayed `会社1` with role `owner`; selected target `github` and listed `Canva` both displayed `会社認証が必要`. Wizard progress was `2/4`: `1会社選択` and `2Plugin追加` complete, `3公式認証` next, and `4会社scope` not started.
+- [x] The UI top status reported `github authentication recheck failed` with blocker `codex_app_server_remote_required_for_plugin_access`. This is UI evidence only; official GitHub OAuth and fresh Company-scope verification remain incomplete.
+- [x] User/official auth is the next action. No password, OTP, or CAPTCHA was entered; no provider call, schedule mutation, or external effect occurred. Companion cleanup closed tab `1980913553`, released one lease, and recorded `foreign_tabs_mutated=false` and `external_action_executed=false`.
+
+**判定:** the artifact records read-only visual+semantic Plugin UI evidence, separately from official OAuth/company-scope verification and from provider receipt, source sync, reconciliation, runner admission, or business completion. Goal remains `active/incomplete`; the current protected blocker remains `owner_sso_required`.
+
+Evidence: [work/aos-company1-plugin-readback-20260908.json](work/aos-company1-plugin-readback-20260908.json).
+## 2026-09-08T05:00:32+09:00 JST — Company 1 Plugin final cleanup readback
+
+- [x] Fresh official AOS Chrome Companion Plugin page readback for canonical Company 1 (`company_2560580981cedfd106b66245`) was visual+semantic verified with session `session_21990a3b-768e-4252-83f6-1d0a2d1a871a` and tab `1980913567`. Linear was selected; wizard was `2/4`; official auth remained required and was not executed.
+- [x] Supabase, Gmail, and Google Drive connection refs remained unconfirmed; catalog items remained unadded. No auth secrets, OTP, CAPTCHA, provider, schedule, runner, or external effect was used.
+- [x] Lease `lease_dc9e4196-d653-4f36-b865-d8f9635f1457` was released and confirmed. `close_session` completed with `taskTerminal=true`, closed tab `[1980913567]`, empty `missing/retained/skipped/unknown_effect`, `foreign_tabs_mutated=false`, and `external_action_executed=false`.
+
+**判定:** cleanup is complete for this task-owned surface, but official Plugin authentication and business completion remain unverified. Goal remains `active/incomplete`.
+
+Evidence: [work/aos-company1-plugin-final-cleanup-readback-20260908.json](work/aos-company1-plugin-final-cleanup-readback-20260908.json).
+## 2026-09-08T05:00:32+09:00 JST — Company 1 Chat connect probe readback
+
+- [x] Canonical Company 1 (`company_2560580981cedfd106b66245`) was read back on official AOS Chat with session `session_41457b04-b067-442f-844d-f1fce80b8631`, tab `1980913561`, and one exact visualProof-bound `接続状態を確認` click.
+- [x] Initial UI state was `未確認`; the fresh same-tab readback was `status=ok / blocker=none / external_action=false`, `Codex App Server: 確認済み`, `state readback=ok`, Chat `idle`, and `registered lanes=7`.
+- [x] The click recorded `external_action_dispatched=true / external_action_executed=null`. The result was reconciled by the fresh same-tab readback and was not replayed. No provider workflow, schedule change, runner start, sensitive authentication input, or business completion occurred.
+
+**判定:** this is bounded Chat connection/readback evidence only. Goal remains `active/incomplete`; provider receipt, source sync, reconciliation, runner admission, and business completion are not claimed.
+
+Evidence: [work/aos-company1-chat-connect-probe-readback-20260908.json](work/aos-company1-chat-connect-probe-readback-20260908.json).
+
+2026-09-08追記（Company 1 portable Gmail 502）: canonical Company 1 (`company_2560580981cedfd106b66245`) / `run_mtqdxw4j_i59bsa` の `portable_remote_http_502` は、claim後・worker receipt確認前のcompany-bound Gmail review endpointで観測。上流サブステージは不明で、provider/business completionを証明しない。retry/cancel/approval/provider call/external effect/replayはなし。Goalは`active/incomplete`。次はOwner SSO/production token後のfresh authenticated log correlation。unknown runは再送しない。アプリコードとscheduleは変更しない。証拠: [portable 502 diagnosis](work/aos-company1-portable-502-diagnosis-20260908.json)
+
+2026-09-08追記（preserved Daily AI post-parser readback）: parser/runtime deployment後のfresh official AOS Chat routeはvisual+semantic verifiedだが、preserved planner job ID query matches=0で画面に出なかった。これはjob不存在・完了・照合済みの証明ではなく、provider receipt/source sync/reconciliation/runner/business completionは未確認。query only、再送/provider/runner/schedule/external effectなし、session/tab/lease cleanup完了。Goalは`active/incomplete`。次はOwner SSO/production token後にexact job+linked stateをGETし、unknown requestはreplay禁止。証拠: [post-parser readback](work/aos-company1-preserved-dailyai-post-parser-readback-20260908.json)
+## 2026-09-08T11:32:28+09:00 JST — Company 1 Companion/worker boundary fresh readback
+
+- [x] Companion fresh Chat readback: Company 1 scope, Codex App Server `status=ok`, `state readback=ok`, seven registered lanes, and no external action.
+- [x] Admin/PC fresh readback: Owner write permission, AOS Chrome Companion selected, Local Agent connected, Worker `running`, heartbeat `fresh`.
+- [x] Preserved no-replay boundary: Queue scope absent, Heartbeat transport unverified, Portable remote worker absent, Browser Use live resource unregistered; no historical queued or unknown job was reused.
+- [x] Task-owned cleanup completed; no foreign tabs/resources changed and no external effect occurred.
+
+**判定:** authentication and Companion/Codex read-only admission are confirmed, but business-run admission remains unverified until the same-run Browser Use live resource and heartbeat transport are registered/read back. Evidence: `work/aos-company1-companion-worker-readback-20260908.json`.
+
+**next_action_now:** establish the missing same-run worker/resource readback, then perform one newly authorized Company 1 target-bound workflow with provider receipt → source sync → reconciliation → cleanup. Preserve no-replay for all historical queued/unknown jobs.
+
+## 2026-09-08T06:09:07Z — Current control-plane boundary readback
+
+- [x] Local health/runtime readback: HTTP 200, `ready_for_authorized_admission`, server `read_only`, worker `enabled`, resident worker `pid=45715`.
+- [x] Current task-scoped Companion cleanup/readback: `done/fully_idle`, zero task sessions, leases, pending operations, active/reconciliation/terminal tabs.
+- [x] Foreign/profile-global resources were left informational and untouched.
+- [x] No provider call, schedule/approval mutation, historical replay, secret read, or external effect.
+
+**判定:** this confirms the current task boundary only. Canonical company binding, protected production state, same-run Browser Use live-resource/heartbeat transport, and provider receipt → source sync → reconciliation → business completion remain unverified. Goal remains active/incomplete.
+
+Evidence: [work/aos-company1-current-control-plane-readback-20260908.json](work/aos-company1-current-control-plane-readback-20260908.json).
+
+**next_action_now:** Owner confirms the protected AOS company/project mapping, then fresh-read the same company before one newly authorized target-bound workflow; do not adopt foreign resources or replay unknown jobs.
+
+## 2026-09-08T08:49:29Z UTC — Production remote WSS canary boundary
+
+- [x] Ran one read-only canary from the production `automation-os` container to the dedicated Codex App Server private endpoint. `initialize`, `account/read`, `thread/start`, `turn/start`, and `turn/completed` all completed in the same canary; external action remained false.
+- [x] Saved the no-secret readback in [work/aos-company1-codex-app-server-production-wss-canary-20260908.json](work/aos-company1-codex-app-server-production-wss-canary-20260908.json).
+- [ ] Do not promote this path yet: transport is experimental and `production_remote_cutover_allowed=false`. Company 1 Owner SSO, provider receipt, source sync, reconciliation, cleanup, and business completion are still separate gates.
+
+**next_action_now:** preserve the canary as read-only evidence; once the promotion policy and Owner SSO boundaries are cleared, fresh-read Company 1 and start only one newly approved target-bound workflow.
+
+## 2026-09-08T08:55:33Z UTC — Owner SSO is persistent; avoid unnecessary re-login
+
+- [x] Closed the prior task-owned session and opened two fresh task-owned sessions without invoking `/auth/login`; both reached the AOS Home and showed `認証: 書き込み許可`.
+- [x] Confirmed the Google account chooser appeared only because `/auth/login` was explicitly opened. The earlier curl 401 had no browser cookie and was not a browser-session failure.
+- [x] Saved the no-secret evidence in [work/aos-company1-owner-sso-cookie-persistence-readback-20260908.json](work/aos-company1-owner-sso-cookie-persistence-readback-20260908.json).
+- [ ] Keep the normal path as: reuse the authenticated AOS browser session → protected fresh readback. Start OAuth only when that same-browser readback returns `owner_sso_required`.
+
+**next_action_now:** fresh-read Company 1 using the existing authenticated session, then proceed to one newly approved target-bound read-only workflow after all runner/resource gates are satisfied.
+
+## 2026-09-08T08:57:48Z UTC — Auth gate fix and session persistence verified
+
+- [x] Confirmed the existing Owner session survives new task-owned browser sessions; no account selection or `/auth/login` was needed for the fresh readbacks.
+- [x] Added exact protected-blocker routing to the App bootstrap/retry auth gate and verified the focused source test (50/50), web typecheck/build, server build, and `git diff --check`.
+- [ ] Do not interpret cookie-free curl 401s as a browser logout. Use the existing authenticated browser session first; open `/auth/login` only when that same browser readback actually returns `owner_sso_required`.
+
+**next_action_now:** continue from the authenticated AOS session with a fresh Company 1 target readback. The separate same-run worker/resource and provider receipt gates still apply.
+
+## 2026-09-08T09:04:05Z UTC — Chat connection and PC/worker boundary refreshed
+
+- [x] Reused the persistent authenticated Companion route; Company 1 scope and Owner write permission were confirmed without opening `/auth/login`.
+- [x] Executed one fresh visual-proof-bound Chat connection check and reconciled the same tab to `Codex App Server status=ok`, `state readback=ok`, `external_action=false`, Chat `idle`, and `registered lanes=7`.
+- [x] Fresh PC状態 readback confirmed worker heartbeat and queue scope: Local Agent connected, Worker `idle`, Heartbeat `fresh`, Queue `fresh=0 / historical=2`, scope `matched`, and heartbeat transport `受理済み`.
+- [ ] Browser Use live resource remains unregistered (`0`, mismatch `0`); no business workflow was started. Historical queue records remain no-replay.
+
+Evidence: [Company 1 PC/worker fresh readback](work/aos-company1-pc-worker-fresh-readback-20260908.json).
+
+**next_action_now:** establish a workflow-owned Browser Use live-resource binding in the same authorized Run, then perform only one newly approved target-bound read-only workflow and verify its receipt/source sync/reconciliation/cleanup chain.
+
+## 2026-09-08T09:09:41Z UTC — Same-browser protected state readback
+
+- [x] Reused the persistent authenticated Companion browser session without opening `/auth/login`; protected `/api/auth/session` returned HTTP 200, `authenticated=true`, `scope=write`, and `session_transport=http_only_secure_cookie` with no token value exposed.
+- [x] Fresh protected Company 1 `mvp/state` returned HTTP 200 and non-empty JSON with one matching project and one matching company. The raw response was not saved.
+- [x] The cookie-free direct-HTTP 401 boundary is now separated from browser-session state; it is not treated as logout. No SSO input, provider call, runner start, schedule/approval mutation, historical replay, or external effect occurred.
+- [ ] Browser Use live-resource registration remains unverified (`0`, mismatch `0`); provider receipt → source sync → reconciliation → cleanup and business completion remain unverified.
+
+Evidence: [same-browser protected state readback](work/aos-company1-same-browser-protected-state-readback-20260908.json).
+
+**next_action_now:** establish the workflow-owned Browser Use live-resource binding in the same authorized Run, then execute only one newly approved target-bound workflow and verify the complete receipt/source-sync/reconciliation/cleanup chain. Preserve no-replay for all historical or unknown jobs.
+## 2026-09-08T10:40:57Z — Fresh Home visual proof blocker closed safely
+
+- [x] Rechecked the task-scoped Companion profile and exact retained tab; no active lease or pending task operation remained.
+- [x] Two attempts (`...-06`, `...-07`) stopped pre-dispatch at `visual_target_proof_invalid`; no browser mutation, provider call, replay, or external effect.
+- [x] Terminally closed the task-owned session/tab and verified `done/fully_idle`, `foreign_tabs_mutated=false`, and `external_action_executed=false`.
+
+**判定:** this is a terminal no-effect browser-boundary result, not business completion. Goal remains `active/incomplete`; provider receipt, source sync, reconciliation, runner admission, and business completion are still unverified.
+
+Evidence: [Home fresh-readback blocker](work/aos-company1-home-fresh-readback-blocker-20260908-v2.json).
+
+**next_action_now:** after a material Companion proof/viewport/page state change, fresh-read and inspect the exact target once; do not replay either blocked attempt.
+## 2026-09-08T10:43:30Z — Local binding probe confirms diagnostic-scope mismatch
+
+- [x] Ran the read-only Company binding readiness probe; server build completed and the SQLite fingerprint remained unchanged.
+- [x] Confirmed trigger scope `company_2560580981cedfd106b66245` versus diagnostic SQLite scope `company_9588eaafb46d7cbaead81811`.
+- [x] Kept canonical selection, schedule materialization, workflow Run, provider/browser start, and external effect at zero.
+
+**判定:** local diagnostic scope is not authoritative production binding. Goal remains `active/incomplete`; provider receipt, source sync, reconciliation, and business completion remain unverified.
+
+Evidence: [local binding readiness](work/aos-company1-local-binding-readiness-20260908-v2.json).
+
+**next_action_now:** fresh-read the protected Company 1 state using the authenticated browser session; require explicit owner authority for any mapping decision.
+## 2026-09-08T10:46:04Z — Protected semantic surface remains unreliable
+
+- [x] Fresh protected route transaction returned visual readback verified, while `Company 1` query returned zero matches; no empty-state conclusion was made.
+- [x] A separate `書き込み許可` query stopped at `operation_timeout` with zero mutation dispatch and automatic cleanup.
+- [x] Session close completed with no foreign resource mutation and no external effect.
+
+**判定:** semantic query/readback is not currently a reliable binding proof for this route. Goal remains `active/incomplete`; do not replay the timed-out query or infer logout/business completion.
+
+Evidence: [protected binding semantic timeout](work/aos-company1-protected-binding-semantic-timeout-20260908.json).
+
+**next_action_now:** use a material runtime/route change or dedicated protected-state readback path before another semantic query.
+## 2026-09-08T10:47:00Z — Guide aligned with current blockers
+
+- [x] Added the current semantic `0 matches / operation_timeout` interpretation and no-replay restart boundary to the user guide.
+- [x] Added the diagnostic SQLite versus registered-trigger company-ID distinction and explicit-owner decision boundary.
+- [x] Preserved the five-workflow, approval, same-run evidence, and recovery instructions without claiming business completion.
+
+**判定:** the guide is more accurate for the current state; production provider receipt, source sync, reconciliation, and business completion remain unverified.
+
+Evidence: [AOS user guide](outputs/aos-user-guide.md).
+## 2026-09-08T10:48:00Z — Five-workflow local acceptance matrix
+
+- [x] Verified all five fixed workflow IDs through the isolated local acceptance matrix.
+- [x] Verified guide auth/company-scope fail-closed behavior and UI truthfulness coverage.
+- [x] Test result: 118/118 pass, provider calls 0, external effect false.
+- [ ] Production same-run provider receipt → source sync → reconciliation → cleanup and business completion remain unverified.
+
+Evidence: [five-workflow guide acceptance](work/aos-company1-five-workflow-guide-acceptance-20260908.json).
+
+**next_action_now:** establish fresh authorized production target/account/resource authority before one new production Run; do not infer business completion from this local matrix.
+## 2026-09-08T10:50:00Z — Production target/deployment parity boundary
+
+- [x] Freshly resolved the exact Zeabur project, environment, existing services, and latest deployment IDs.
+- [x] Confirmed both services are RUNNING with expected plan types (`nodejs` for AOS, `docker` for Codex App Server).
+- [ ] Source parity for the current deployment is not proven because the deployment readback has no commit/hash; no deploy was attempted.
+
+Evidence: [production deployment readback](work/aos-company1-production-deployment-readback-20260908-v2.json).
+
+**next_action_now:** obtain explicit promotion scope before any staged deployment, or use a supported runtime/source parity readback while leaving production unchanged.
+## 2026-09-08T10:50:59Z — Public ingress requires auth boundary
+
+- [x] Confirmed direct unauthenticated ingress returns HTTP 302 to the login boundary.
+- [x] Did not open OAuth or enter credentials; no external effect.
+- [ ] Protected Company 1 state must continue through the existing authenticated Companion session.
+
+Evidence: [public ingress auth boundary](work/aos-company1-public-ingress-auth-boundary-20260908.json).
+
+## 2026-09-08T10:52:28Z — Fresh clean restart boundary
+
+- [x] Fresh runtime and local health readback: `ready_for_authorized_admission`, HTTP 200, no external action.
+- [x] Fresh task-scoped Companion readback: `done/fully_idle`, zero sessions, leases, pending operations, and active task tabs.
+- [x] No foreign resource adoption and no replay of the prior visual-proof blockers.
+- [ ] Browser Use live-resource binding and same-Run provider receipt → source sync → reconciliation → cleanup remain unverified; business completion remains unverified.
+
+Evidence: [fresh idle boundary](work/aos-company1-fresh-idle-boundary-readback-20260908.json).
+
+**next_action_now:** obtain explicit Owner-scoped target/resource authority, then run one newly approved target-bound read-only workflow and verify its complete evidence chain.
+
+## 2026-09-08T10:57:28Z — Protected auth and Company 1 scope fresh readback
+
+- [x] Fresh protected Home readback showed `認証: 書き込み許可`.
+- [x] Fresh UI scope showed Company 1's five workflows: Gmail, Daily AI, NisenPrints, Backup, and Obsidian; `対象内automation 7件 / 状態=generated`.
+- [x] Same-tab visual evidence verified; no business Run or provider effect was started.
+- [x] Task-owned session closed cleanly: tab `1980914924` closed, lease released, no retained/unknown entries, `foreign_tabs_mutated=false`.
+- [ ] Business-Run Browser Use live-resource binding, provider receipt, source sync, reconciliation, cleanup, business completion, and production source parity remain unverified.
+
+Evidence: [protected auth/binding readback](work/aos-company1-protected-auth-binding-fresh-readback-20260908-v2.json).
+
+**next_action_now:** obtain explicit Owner-scoped target/resource authority, then admit one newly approved target-bound read-only workflow and verify the complete same-Run evidence chain.
+
+Focused continuation checks passed 19/19: Company binding readiness/reconciliation, five-workflow local acceptance, and workflow-start guide. These are local/no-provider checks only and do not replace the production same-Run evidence chain.
+
+## 2026-09-08T11:01:45Z — Companion canary stopped on stale registration
+
+- [x] Fresh visual preflight of the Home `canary` control succeeded.
+- [x] One dispatch/readback completed and stopped with exact blocker `portable_registered_companion_surface_required`.
+- [x] No provider call; no replay; task-owned tab closed and lease released cleanly.
+- [ ] Production registered-workflow definitions must be explicitly refreshed/migrated from legacy Browser Use surface to the current Companion surface before another canary.
+
+Evidence: [Companion canary blocker](work/aos-company1-companion-canary-blocked-20260908.json).
+
+**next_action_now:** Owner-authorized registration refresh/migration, then one fresh no-effect canary; do not replay this attempt.
+
+## 2026-09-08T11:12:00Z — Companion surface refresh導線
+
+- [x] AutomationsPageに会社1の5 Workflow限定の「Companion経路へ同期」を追加した。
+- [x] owner-scoped adoption API、明示的idempotency、schedule設定保持、完了後fresh readbackの導線を実装した。
+- [x] Web typecheck/build、全ページmanifest QA 2/2、5 Workflow local acceptance、workflow-start-guide、registered catalog testsを通過した。
+- [ ] productionでの実行、adoption receiptのfresh確認、scheduler no-effect canary、provider receipt/source sync/reconciliation/業務完了は未確認。
+
+Evidence: [Companion surface refresh implementation](work/aos-company1-companion-surface-refresh-ui-implementation-20260908.json)
+
+@@
+**next_action_now:** fresh Company 1 readback後、新導線を一度実行し、登録定義のsurface同期とschedule保持を同一readbackで確認する。前回canaryの再送は禁止。
+
+## 2026-09-08T11:31:12Z — Companion surface sync conflict
+
+- [x] Same-tab readback after the single sync dispatch; no replay.
+- [x] POST adoption resource observed once; same-tab console reported HTTP 409.
+- [x] UI remained `Companion surface同期未確認`; external action and provider calls remained false.
+- [ ] Resolve the owner-scoped registered-automation definition conflict (`registered_automation_adoption_conflict:*`) before a new sync attempt.
+- [ ] Adoption receipt, schedule preservation, scheduler canary, provider receipt, source sync, reconciliation, and business completion remain unverified.
+
+Evidence: [surface sync conflict readback](work/aos-company1-companion-surface-refresh-conflict-20260908.json).
+
+**next_action_now:** resolve the existing registered-definition conflict, then use a new fresh readback and new idempotency key; do not replay this dispatch.
+
+## 2026-09-08T12:00:00Z UTC — Latest production deployment
+
+- [x] 同一のproduction targetへbounded retryを1回だけ実施。
+- [x] Deployment `6a9ff78f7b89d694354a066f` が `RUNNING`。
+- [x] Production root HTTP 200、`/readyz` HTTP 200、served JSに `companion-surface-refresh` markerをfresh確認。
+- [ ] Owner-scoped adoption receipt、schedule保持、fresh Companion canary、provider receipt/source sync/reconciliation/業務完了、source commit parityは未確認。
+- [x] 旧deploymentは操作せず、前回409 dispatchも再送していない。
+
+Evidence: [latest production deploy readback](work/aos-company1-latest-production-deploy-readback-20260908.json)
+
+**next_action_now:** fresh authenticated Owner/write Company 1 target readback後、新しいtask/sessionとidempotency keyでsurface syncを1回だけ検証する。前回409 dispatchの再送は禁止。
+
+## 2026-09-08T12:06:00Z UTC — Fresh auth boundary
+
+- [x] Latest production root readback reached the protected `安全な管理セッション` / `Google認証を開始` boundary.
+- [x] OAuth開始、credential入力、token/cookie read、adoption、provider call、external effectは0件。
+- [x] task-owned tabを閉じ、残留resourceなし。
+- [ ] Owner/write Company 1 fresh readbackが未取得のため、surface syncは未実行。
+
+Evidence: [latest production auth boundary](work/aos-company1-latest-production-auth-boundary-20260908.json)
+
+**next_action_now:** ユーザーが公開入口で許可アカウントのGoogle認証を完了した後、新しいtask/sessionとidempotency keyでsurface syncを1回だけ検証する。
+
+## 2026-09-08T12:10:00Z UTC — Auth return-to usability fix
+
+- [x] Owner SSO link now returns to AOS root via `return_to=/` after authentication.
+- [x] Post-auth instruction explicitly points to 「認証状態を再確認」 before Company 1 readback.
+- [x] web typecheck/build and dashboard sanitizer tests 50/50 passed.
+- [x] Production deployment `6a9ff9f811e40dee1a694bf7` is `RUNNING`; `/readyz` 200 and served asset contains the new URL.
+- [ ] OAuth/Owner SSO completion, Company 1 fresh readback, surface adoption receipt, provider/source-sync/reconciliation/business completion remain unverified.
+
+Evidence: [auth return-to deploy readback](work/aos-company1-auth-return-to-deploy-readback-20260908.json)
+
+**next_action_now:** ユーザーのSSO完了後、認証再確認→Company 1 fresh readback→新しいidempotency keyでsurface syncを1回だけ実行。
+
+## 2026-09-08T12:20:00Z UTC — 要件別完了監査 v6
+
+- [x] Companion、auth/binding、5 Workflow、guide、approval/evidence/recovery、本番反映を要件単位で再評価。
+- [x] `active_incomplete`を維持し、local acceptance/runtime readinessをbusiness completionへ昇格していない。
+- [x] 前回409 dispatch・historical/unknown Run・provider actionの再送なし。
+- [ ] Owner SSO後のprotected Company 1 readback、surface adoption receipt、同一Run provider/source-sync/reconciliation/cleanup/business completion。
+
+Evidence: [goal completion audit v6](work/aos-goal-completion-audit-20260908-v6.json)
+
+**next_action_now:** 公式Owner SSO完了後、認証再確認→Company 1 fresh readback→新しいidempotency keyでsurface syncを1回だけ実行。
+
+## 2026-09-08T12:25:00Z UTC — Auth step-list deployment queue
+
+- [x] 認証画面を3段階の見える手順へ変更。
+- [x] web typecheck/build、関連テスト159/159、diff check成功。
+- [x] deployment `6a9ffc0511e40dee1a694ccd` は同じtargetへ1回だけ送信済み。
+- [ ] deploymentはfresh readback時点で `BUILDING`（開始時刻・build logなし）。step-listのproduction反映は未確認。
+- [x] 旧稼働deploymentは操作せず、再デプロイもしていない。
+
+**next_action_now:** 同じdeploymentのterminal statusをfresh readbackし、成功時のみ配信assetを確認する。認証済みOwner/writeが戻るまでsurface syncは実行しない。
+
+## 2026-09-08T12:25:00Z UTC — Auth step-list production verification
+
+- [x] Deployment `6a9ffc0511e40dee1a694ccd` が `RUNNING`。
+- [x] `/readyz` HTTP 200。
+- [x] served assetに3段階の認証手順、`return_to=%2F`、Owner/write表示文言を確認。
+- [x] OAuth・credential入力・provider call・外部効果・再デプロイなし。
+- [ ] ユーザー側SSO、Company 1 protected readback、surface adoption receipt、5 Workflowのproduction同一Run証跡は未確認。
+
+Evidence: production served asset `/assets/index-CWAEmdrF.js`、deployment list、`/readyz` readback。
+
+**next_action_now:** ユーザーが公式Owner SSOを完了後、認証再確認→Company 1 fresh readback→新しいsession/idempotency keyでsurface syncを1回だけ実行。
+
+## 2026-09-08T12:30:00Z UTC — Same-tab auth flow production verification
+
+- [x] 同一タブで公式SSOを開く導線を本番反映。
+- [x] Deployment `6a9ffe8d11e40dee1a694d91`：`RUNNING`。
+- [x] `/readyz` HTTP 200、served assetに3段階手順・`return_to=/`・再確認文言を確認。
+- [x] OAuth・credential入力・provider call・外部効果なし。
+- [ ] Owner SSO、Company 1 protected readback、Companion adoption receipt、5 Workflowのproduction同一Run証跡は未確認。
+
+Evidence: served asset `/assets/index-COJUGlpZ.js`、deployment list、`/readyz`。
+
+**next_action_now:** ユーザーがSSO完了後、同じAOS画面で認証再確認→Company 1 fresh readback→新しいsession/idempotency keyでsurface syncを1回だけ実行。
+
+## 2026-09-08T12:40:00Z UTC — Authenticated Company 1 readback and unresolved sync
+
+- [x] Google account chooserで許可アカウントを選択し、Owner/write・Company 1 canonical scopeを確認。
+- [x] 5 Workflow対象（Gmail、Daily AI、NisenPrints、Backup、Obsidian）と登録readback `ready / count=6` を確認。
+- [x] surface sync UI clickは1回だけ試行、provider call・business external effectなし。
+- [x] completion receipt未確認のため、結果不明操作を再送せず、認証済みtabを保持。
+- [ ] adoption receipt・schedule保持・fresh scheduler canary・5 Workflow同一Runのprovider/source-sync/reconciliation/cleanup/business completion。
+
+Evidence: [authenticated readback / unresolved sync](work/aos-company1-authenticated-readback-sync-uncertain-20260908.json)
+
+**next_action_now:** 保持tabでadoption結果をfresh target-bound readbackし、最初のclickの効果を確定する。surface sync再送は禁止。
+
+## 2026-09-08T13:15:00Z UTC — Sync read-only recheck
+
+- [x] 保持中の認証済みCompany 1 tabで登録状態をread-only再確認。
+- [x] `status=ready / count=6`を再確認。
+- [x] 同期receipt・画面差分なし。結果不明のため同期ボタンは再送していない。
+- [ ] adoption receipt、schedule保持、fresh scheduler canary、5 Workflowのprovider/source-sync/reconciliation/cleanup/business completion。
+
+Evidence: [sync uncertain readback](work/aos-company1-authenticated-readback-sync-uncertain-20260908.json)
+
+**next_action_now:** adoption結果を別のfresh target-bound server readbackから照合する。結果不明操作は再クリックしない。
+
+## 2026-09-08T13:36:00Z — Start guide production projection remains unresolved
+
+- [x] 保存済み会社automationを開始ガイドの入力へ優先し、builder spec内canonical IDも認識。
+- [x] web typecheck/build、workflowStartGuide 3/3、diff check。
+- [x] 同じZeabur service/environmentへ反映、production `/readyz` 200。
+- [ ] authenticated production UIが新しいguide projectionを表示すること。fresh reload後もGmail/Backup/Obsidianが `registered_workflow_missing` のまま。
+- [ ] adoption receipt、schedule保持、fresh scheduler canary、5 Workflowのprovider/source-sync/reconciliation/cleanup/business completion。
+
+Exact blocker: production UI readback does not reflect the deployed guide projection, despite successful deployment and local tests.
+
+**next_action_now:** 配信asset/revisionと実行中UIのsource parityをread-onlyで確認する。surface syncは再送しない。
+
+## 2026-09-08T13:45:00Z — Correct ingress deployment and partial guide readback
+
+- [x] 実際の表示サービス `aos-admin-ingress` をfresh target確認。
+- [x] Web修正を同serviceへデプロイ、Company 1 Owner/write tabをfresh reload。
+- [x] Gmail/Backup/Obsidianは `readback確認待ち` へ改善し、新bundleの実行を確認。
+- [x] 保存済みautomationとrunner readbackをworkflow単位で補完する修正をtypecheck/build、回帰3/3後に反映。
+- [ ] Daily AI/NisenPrintsが `registered_workflow_missing` のまま。二つのproduction projectionのsource差分が未解消。
+- [ ] adoption receipt、schedule保持、fresh scheduler canary、5 Workflowのprovider/source-sync/reconciliation/cleanup/business completion。
+
+Exact blocker: production guide still lacks Daily AI/NisenPrints in its combined source readback, although the separate runner panel lists them.
+
+**next_action_now:** Daily AI/NisenPrintsの正規source projectionをread-onlyで照合する。surface syncは再送しない。
+
+## 2026-09-08T14:00:00Z — Combined guide source deployed
+
+- [x] 保存済みautomationとrunner readbackをworkflow単位で統合。
+- [x] runner count確定時のDaily AI/NisenPrints補助レコードを追加。
+- [x] typecheck/build、workflowStartGuide 3/3、diff check、aos-admin-ingress deploy成功。
+- [ ] 補助レコード反映後のproduction UI fresh readback。CUA reconnect exact blocker=`Browser is not available: iab`。
+- [ ] adoption receipt、schedule保持、fresh scheduler canary、5 Workflowのprovider/source-sync/reconciliation/cleanup/business completion。
+
+**next_action_now:** CUA復旧後、cache-busting Company 1 readback。結果不明のsurface syncは再クリックしない。
+
+## 2026-09-08T13:56:00Z — Correct-service deployment discrepancy isolated
+
+- [x] Fresh Zeabur target readback: project `69df815a554543d46b0f2485`, environment `69df815a5ae0a69725e92048`, service `automation-os` (`6a47122e24bec8372d3e1a31`).
+- [x] Latest deployment `6aa0139f7b89d694354a0e75` is `FAILED`, `planType=nodejs`; build log shows DNS failure resolving `dockerhub.zeabur.cloud` while fetching `node:22`.
+- [x] Older deployment `6aa00f1911e40dee1a695216` remains `RUNNING`; therefore the authenticated ingress Guide is still served by the old artifact.
+- [x] No redeploy, restart, registration mutation, workflow execution, sync retry, provider call, or business external effect.
+- [ ] Production acceptance of the local Guide fix remains unverified until a successful correct-service deployment is available and fresh ingress readback shows Daily AI/NisenPrints consistently.
+
+Exact blocker: Zeabur build infrastructure DNS failure (`lookup dockerhub.zeabur.cloud ... no such host`) on the correct service; latest deploy did not activate.
+
+**next_action_now:** After the platform/build-image DNS issue is cleared, perform one verified deployment from the intended source and then fresh authenticated Company 1 Guide readback. Do not replay surface sync.
+
+## 2026-09-08T14:10:00Z — Build-path fallback prepared locally
+
+- [x] Added root `Dockerfile` only; application code, lockfile, auth, database, scheduler, and service settings were not changed.
+- [x] Preserved `npm ci` → `npm run build` → `npm run start:server` and selected `public.ecr.aws/docker/library/node:22-bookworm-slim` instead of the failing generated DockerHub base.
+- [x] `npm run build` passed; runtime parity manifest was regenerated by the existing build script. `git diff --check` passed.
+- [ ] Container build and Zeabur deployment remain unverified because local Docker is unavailable and the prior Zeabur build failed at platform DNS resolution.
+
+Limit: this is a candidate build-path fix, not production activation. Do not claim the AOS Guide or any workflow is production-complete until a Docker-plan deployment is `RUNNING`, health/source parity are fresh-read, and authenticated Company 1 Guide readback confirms all five rows.
+
+**next_action_now:** When the Zeabur build infrastructure is available, deploy the exact `automation-os` target once and read back deployment plan/status, runtime health, served artifact parity, then the authenticated Guide. Do not replay surface sync.
+
+## 2026-09-09T01:51:01+09:00 JST — Protected Company 1 authority and inventory confirmed
+
+- [x] Same-transaction Companion GET-only readback confirmed HTTP-only authenticated Owner/write scope and canonical Company 1 `company_2560580981cedfd106b66245`; token value was not exposed.
+- [x] Registered inventory returned read-only `automation_count=6`, company-scope check pass, HTTP external-action block pass, `can_preflight=true`, and `can_run=false`.
+- [x] Temporary readback tabs were closed, leases released, the logical session was closed, and foreign tabs were unchanged. Two older same-task target-bound tabs remain retained because the overall task capsule is active.
+- [ ] Execute no workflow yet. The next workflow must be newly authorized, target-bound, no-effect first, and must produce same-Run Companion receipt → source sync → reconciliation → cleanup evidence before any effect stage.
+
+Evidence: [protected auth/state/inventory readback](work/aos-company1-protected-auth-state-inventory-readback-20260908.json).
+
+**next_action_now:** select one newly authorized target-bound read-only workflow and capture its same-Run evidence chain. Do not replay historical or uncertain runs.
+
+## 2026-09-09T01:55:36+09:00 JST — Next admission boundary
+
+- [x] Fresh Companion sessionを開き、利用可能なタブを確認した。
+- [x] 過去の保持タブのclaim、他用途タブの採用、別surface fallback、workflow実行を行わず、leaseゼロでsessionを閉じた。
+- [ ] 新しいauthorized target-bound Companion tabで、まずread-only preflightを1件だけ実行し、同一Runのreceipt → source sync → reconciliation → cleanupを記録する。
+
+Evidence: [next workflow admission boundary](work/aos-company1-next-workflow-admission-boundary-20260909.json).
+
+**next_action_now:** fresh authorized target-bound Companion tabで一件のread-only preflightを開始する。登録workflowのeffect stageは `can_run=false` のため開始しない。
+
+## 2026-09-09T02:02:00+09:00 JST — Guide operationalization
+
+- [x] User guideのdeployment待ち・surface sync再送案内を現状に合わせて修正。
+- [x] Company 1、Owner/write、登録6件、preflight可・実行不可、新規target-bound tab要件、no-replay/fallback禁止を短い再開手順へ整理。
+- [x] `git diff --check` PASS。provider/runner/schedule/business external effect=0。
+- [ ] Fresh target-bound Companion tabでread-only preflightを1件開始し、同一Runのreceipt → source sync → reconciliation → cleanupを確認。
+
+Evidence: [updated user guide](outputs/aos-user-guide.md).
+
+## 2026-09-09T02:07:36+09:00 JST — Companion transport recovery boundary
+
+- [x] 正規authorized transactionでfresh target tab作成を確認した。
+- [x] snapshotの`extension_transport_disconnected`を`known_no_effect / dispatch=0`として記録し、target-provision runをreplay不可にした。
+- [x] safe idleのextension reloadは1回だけ試行したが、`operation_effect_unknown / reconciliationRequired=true`。再送していない。
+- [x] Fresh statusでprofile disconnected、session/lease/pending=0、unresolved timeout=1、recovery blockedを確認。
+- [ ] Companionを再接続し、fresh status後に新しいsessionとtarget-bound read-only preflightを開始する。復旧前は全workflowを停止する。
+
+Evidence: [Companion recovery readback](work/aos-company1-companion-fresh-tab-recovery-readback-20260909.json).
+
+**next_action_now:** Companion profileを再接続し、fresh statusを取得する。target-provision/reloadの既存runは再送しない。
+
+## 2026-09-09T02:29:06+09:00 JST — Read-only preflight boundary verified
+
+- [x] Companion再接続後のfresh status、fresh session、fresh target-bound tabを確認。
+- [x] Daily AIのread-only preflightを1件だけ実施し、AOS同一Run `run_mtsxudwe_3g5d3r` のread-only worker receipt、readback、cleanupをGETで確認。
+- [x] recovery GETで `status=complete`、claim inactive、receipt present、cancel/retry blocker=`portable_recovery_workflow_unsupported` を確認。
+- [x] session closeでtab cleanup、lease release、foreign tab非変更、unknown effectなしを確認。fresh statusはfully idle、task recovery=`done`。
+- [ ] 登録workflowのeffect stage admission、5 workflowのprovider/business receipt、source sync、reconciliation、business completion。
+
+Evidence: [Daily AI read-only preflight readback](work/aos-company1-daily-ai-readonly-preflight-readback-20260909.json), [goal completion audit](work/aos-company1-goal-completion-audit-20260909.json)。
+
+**Exact blocker:** `registered_automation_effect_stage_not_admitted`。
+**next_action_now:** fresh target/account/payload/approval boundaryが揃った時だけ、新しいidempotencyで1 workflowのbusiness stageを開始し、provider receipt → source sync → reconciliation → cleanup → business completionまで同一Runで確認する。read-only preflightの追加実行、履歴Run replay、surface sync再送はしない。
+
+## 2026-09-09T02:07:36+09:00 JST — Goal audit and recovery hold
+
+- [x] Objective requirementsを5項目に分け、現行evidenceで`not_proven`監査を作成。
+- [x] Company 1 auth/binding、guide/local acceptance、Companion target creation attemptを個別に分類。
+- [x] target-provisionは`known_no_effect / dispatch=0`、extension reloadは`unknown_effect / reconciliation required`として、両方のreplayを禁止。
+- [ ] Companion profileを再接続し、fresh status/reconciliationを取得するまでworkflowを開始しない。
+- [ ] 復旧後、新しいtarget-bound tabでread-only preflightを1件実行し、同一Runのreceipt → source sync → reconciliation → cleanupを確認。
+
+Evidence: [current goal completion audit](work/aos-company1-goal-completion-audit-20260909.json).
+
+## 2026-09-09T02:44:13+09:00 JST — Companion profile connection boundary rechecked
+
+- [x] Fresh task-scoped Companion status confirmed broker connected but profile `connected=false`; recovery `blocked` with `profile_not_connected`.
+- [x] Sessions, leases, pending operations, unresolved timeouts, queue, active reconciliation, and task tabs are all zero.
+- [x] A new read-only guide transaction was rejected with `session_not_owned` before dispatch; no browser/workflow/provider/schedule/business effect occurred and no foreign tab was changed.
+- [ ] Reconnect Companion, fresh-read status, and only then start a new task-owned target-bound read-only guide trace. Do not replay the rejected transaction or historical runs.
+
+Evidence: [current Companion connection readback](work/aos-company1-companion-current-connection-readback-20260909.json).
+
+**Exact blocker:** `profile_not_connected`.
+
+## 2026-09-09T02:50:02+09:00 JST — Five-workflow guide accepted; blocker matrix recorded
+
+- [x] Fresh Companion Home and Company 1 `定期実行` readback completed on one task-owned generation/tab with semantic and visual verification.
+- [x] Production guide displayed exactly five rows and explicit truthful blockers: Gmail candidate ambiguity; Daily AI/NisenPrints Mac-worker same-Run readback wait; Backup/Obsidian registered readback pending.
+- [x] Shared boundary recorded: Company 1/Owner/write, registered count 6, `can_preflight=true`, `can_run=false`, worker blocked, no provider/business completion.
+- [x] Per-workflow matrix records blocker cause, minimum resolution, approval requirement, completion evidence, and recovery start point.
+- [ ] Resolve/read back one named blocker through an authorized read-only path; keep effect-stage admission closed and do not replay unknown or historical Runs.
+
+Evidence: [production guide readback](work/aos-company1-production-guide-readback-20260909.json), [five-workflow blocker matrix](work/aos-company1-five-workflow-blocker-matrix-20260909.json).
+
+## 2026-09-09T03:01:24+09:00 JST — Guide trace transport boundary rechecked
+
+- [x] Fresh authorized trace created task-owned tab `1980915444`; `tabs.create` timed out with `operation_effect_unknown`, so the trace was not replayed.
+- [x] Same-target visual readback succeeded and showed the deployed five-workflow guide, Company 1, Owner/write, registered count 6, `can_run=false`, and `worker=blocked`.
+- [x] Semantic snapshot timed out with `broker_request_timeout`; same-tab query and terminal session close returned `session_not_owned`. Lease was released; fresh status later showed `profile_not_connected` and ledger-only tab retention.
+- [x] No provider call, workflow start, schedule mutation, replay, foreign-tab mutation, or business external effect.
+- [ ] Restore Companion ownership/transport, then obtain a fresh semantic-plus-visual guide readback. Keep effect-stage admission closed and do not replay the timed-out trace.
+
+Evidence: [guide trace recovery readback](work/aos-company1-guide-trace-recovery-readback-20260909.json), [goal completion audit](work/aos-company1-goal-completion-audit-20260909.json).
+
+**Exact blocker / next action:** `profile_not_connected` and `companion_semantic_snapshot_timeout_and_session_not_owned`; reconnect Companion, fresh-read status, and only then begin one new target-bound read-only trace.
+
+## 2026-09-09T03:40:35+09:00 JST — Production guide scope promotion accepted
+
+- [x] Fresh Zeabur identity/target readback matched personal workspace, project `automation-wiled` (`69df815a554543d46b0f2485`), production (`69df815a5ae0a69725e92048`), and existing `automation-os` service (`6a47122e24bec8372d3e1a31`). `aos-admin-ingress` remained unchanged.
+- [x] Minimal task-owned staging `/tmp/aos-company1-runtime.QKJ3BR` excluded local state, generated output, dependencies, databases, environment files, and secrets; clean staging install/build passed.
+- [x] One explicit official CLI deployment created `6aa054cc11e40dee1a69669b`, `planType=docker`, `status=RUNNING`; build completed from public ECR Node 22 and runtime log readback was empty.
+- [x] Public `/readyz=200` and `/api/health=200`; served JS/CSS hashes matched local build byte-for-byte. JS contains the registered-inventory aggregate wording and `external_action=false` boundary.
+- [x] Fresh Companion semantic+visual readback verified the production Company 1 guide, Owner/write, registered count 6, five workflow rows, aggregate `can_run=false` / `can_preflight=false`, and the named row blockers. Session/tab cleanup completed with no foreign mutation or unknown effect.
+- [ ] Registered workflow effect-stage admission and five-workflow provider receipt → source sync → reconciliation → cleanup → business completion remain unproven by design.
+
+Evidence: `work/aos-company1-guide-scope-production-promotion-readback-20260909.json`.
+
+**Exact blocker / next action:** `registered_automation_effect_stage_not_admitted`; maintain the fail-closed gate. Restart only from a fresh target/account/payload/approval boundary for one newly authorized workflow and capture its full same-Run evidence chain. Do not replay historical or uncertain Runs.
+
+## 2026-09-09T03:58:33+09:00 JST — Company 1 global Runs readback and terminal cleanup
+
+- [x] Company-scoped `/runs` route read-only check recorded `mvp_state_readback_unavailable`; no unsupported company history was inferred.
+- [x] Global `/#/runs` fresh readback verified `runs=500`, `proofs=500`, project=all, 2 queued/processing, 0 approval-waiting, and the unactivated Company 1 filter.
+- [x] Existing Daily AI/Backup/Gmail blocker records and NisenPrints completed record were recorded as historical inventory only; no same-Run business receipt was claimed.
+- [x] Companion terminal cleanup closed tab `1980915458`, released one lease, left foreign tabs unchanged, and fresh status showed task recovery done with zero active session/lease/pending/unresolved/reconciliation state.
+- [ ] Registered workflow effect-stage admission and five-workflow provider receipt → source sync → reconciliation → cleanup → business completion.
+
+Evidence: [five-workflow practical readback](work/aos-company1-five-workflow-practical-readback-20260909.json).
+
+**Exact blocker:** `registered_automation_effect_stage_not_admitted`.
+
+## 2026-09-09T05:52:31+09:00 JST — Authoritative live binding correction (latest)
+
+- [x] Fresh protected API readback confirmed the live Company 1 binding: requested/canonical/trigger/local IDs all match `company_2560580981cedfd106b66245`.
+- [x] Confirmed Postgres, service identity, three verified account refs, five registered workflow references, nine schedules, and completed task-owned Companion cleanup.
+- [ ] Fresh provider/browser authority and the complete same-Run provider receipt → source sync → reconciliation → cleanup → business completion remain unproven.
+
+The env-less SQLite result is retained as diagnostic-only evidence and no longer drives the production blocker. Keep `registered_automation_effect_stage_not_admitted` closed; resume with one fresh named-workflow target/account/payload/approval boundary, without replay.
+
+2026-09-09T11:19:13+09:00 JST: Implemented the local continuation for the Gmail binding blocker. `readMvpAutomations`, MVP create/patch/builder-spec responses, and the Postgres UI state now expose company-scoped Gmail `execution_target` readback. Builder adds a Gmail execution-target selector sourced from the company connection inventory and persists the explicit ref/account pair into `builder_spec`; blank selection clears the binding, while account-only existing bindings are retained. Existing Run propagation and pre-provider exact-ref revalidation remain fail-closed.
+
+Validation: `npm run build:server`, `npm run typecheck:web`, `npm run build:web`, focused API/Gmail/guide/UI tests, and `git diff --check` passed. Full `npm test` reached 76/83 tests before seven existing `apiFirstStageCompat` registered-workflow rehearsal assertions failed on reference-canary status expectations; none exercised the new Gmail target path. No external effect or deployment.
+
+## 2026-09-09T11:32:08+09:00 JST — Explicit Gmail target persistence production readback
+
+- [x] The single staged Docker deployment `6aa0c3527b89d694354a2f63` reached `RUNNING` on the exact existing `automation-os` service.
+- [x] Public `/readyz` and `/api/health` returned HTTP 200; served JS `/assets/index-DGn59Q-2.js` and CSS `/assets/index-BUlNaG9q.css` matched the local build byte-for-byte by SHA-256.
+- [x] Fresh authenticated AOS Chrome Companion UI readback opened canonical Company 1 automation `automation_813091820198928c10c54297` / `email-review-reply` and showed the Gmail target selector, account_ref field, verified Company 1 ref `company_connection_mt0j11fd_5n8qhu`, and fail-closed `未設定（Gmail Runは停止）` state.
+- [x] Companion terminal cleanup closed tab `1980915841`; foreign tabs were untouched and unknown effect was empty.
+- [ ] Saving the target, provider receipt, source sync, reconciliation, and business completion remain unperformed/unverified; no Gmail read or workflow Run was started.
+
+Evidence: [production Gmail target persistence readback](work/aos-gmail-target-persistence-production-readback-20260909.json).
+
+**Exact blocker:** `execution_target_unbound` for the existing production Gmail automation; the broader effect-stage gate `registered_automation_effect_stage_not_admitted` remains closed.
+**next_action_now:** keep production effect closed. Any next step must explicitly save the target first, then use a newly admitted target-bound read-only Run with same-Run receipt/sync/reconciliation/cleanup proof; do not replay historical or uncertain Runs.
+
+## 2026-09-09T01:55:32Z — Gmail execution-target trace and cleanup (latest)
+
+- [x] Fresh Company 1 read-only trace linked canonical automation `automation_813091820198928c10c54297` / `email-review-reply` to Run `run_mtt8wkwa_0nkoxm` and verified Gmail connection ref `company_connection_mt0j11fd_5n8qhu`.
+- [x] Confirmed the connection is verified at Company scope, but the automation row and Run input contain no explicit `account_ref`, `connection_ref_id`, `connection_id`, mailbox, or portable input bundle.
+- [x] Confirmed the current path reduces any verified Company 1 Gmail ref to a boolean; no row-level target is selected. This is a binding-missing/implicit-selection defect, not proof of a binding.
+- [x] Task-owned Companion cleanup completed: session closed, tab `1980915838` closed, one lease released, foreign tabs unchanged, unknown effect empty, fresh status `done_fully_idle`.
+- [ ] Persist and propagate one explicit Company 1 Gmail connection/account pair into the canonical automation and Run input, then require exact target/company/scope readback before provider execution.
+- [ ] Provider receipt → source sync → reconciliation → cleanup → business completion remains unproven; no provider or business effect was started.
+
+Evidence: `work/aos-company1-gmail-run-identity-readback-20260909.json`.
+
+**Exact blocker / restart point:** keep `registered_automation_effect_stage_not_admitted` closed. Resume only after explicit row-level target/account/payload/approval binding is fresh and exact; do not replay the blocked or uncertain Run.
+
+## 2026-09-09T01:23:34Z — Company 1 Gmail connection reference readback
+
+- [x] Fresh protected `connection-account-refs` GET through task-owned AOS Chrome Companion confirmed Company 1 scope and three refs. Gmail `company_connection_mt0j11fd_5n8qhu` is `verified / connected`, scope `read`, and account ref `nichika2000823@gmail.com`; no expiry or revocation is present in the readback.
+- [x] The canonical Gmail registration remains `automation_813091820198928c10c54297`; the separate chat-created draft remains unarchived and unmodified.
+- [x] This readback supplies verified Company 1-level account evidence and is now projected into the five-row guide as `account_ref` without exposing the value in UI. It does not promote the automation row to row-level mailbox binding because the immutable row still exposes no `account_ref`, `connection_id`, mailbox, or provider-account field.
+- [x] Companion session `session_18bab2fc-a70b-4a35-9a24-91aaba795bd7` reached `done / fully_idle`; tab `1980915836` was closed, lease release was confirmed, foreign tabs were unchanged, and unknown effect was empty.
+- [x] Current focused guide test passed `16/16`; Web typecheck, Web build, artifact JSON validation, and `git diff --check` passed.
+- [ ] Provider receipt, source sync, reconciliation, and business completion remain unproven; `registered_automation_effect_stage_not_admitted` stays closed.
+
+Evidence: `work/aos-company1-gmail-run-identity-readback-20260909.json`.
+
+**Exact blocker:** `row_level_gmail_mailbox_binding_and_same_run_provider_proof_missing`.
+**next_action_now:** keep the canonical ID and Company 1 account ref as read-only context, then proceed only after an explicit row-level target/account/payload/approval boundary; do not archive the draft or replay historical/uncertain Runs.
+
+## 2026-09-09T07:51:24+09:00 JST — Registration evidence inventory
+
+- [x] Current six-entry catalog, five Company 1 guide rows, immutable registration IDs, company scope, version IDs, and dated schedule/revision snapshots were reconciled without mutation.
+- [x] Existing Run/proof IDs and row-level blockers were recorded as snapshot/reconciliation evidence only; no historical or uncertain Run was promoted to business completion.
+- [x] Gmail's two-candidate identity conflict and the minimum read-only fields needed for a canonical/supersession decision were documented.
+- [ ] Fresh row-level account/provider authority and same-Run provider receipt → source sync → reconciliation → cleanup → business completion.
+
+Evidence: `work/aos-company1-five-workflow-registration-evidence-audit-20260909.json`.
+
+**Exact blocker:** `registered_automation_effect_stage_not_admitted` / fresh provider and row-level account binding absent.
+**next_action_now:** read Gmail candidate records and reconcile the other four existing Runs without replay; keep effect-stage admission closed.
+
+## 2026-09-09T07:30:28+09:00 JST — Fresh guide detail settled after Companion reconnect
+
+- [x] Companion reconnected on the expected build and a new task-owned session read the exact Company 1 automations route.
+- [x] The detail readback settled in the same tab: registered status `ready/count=6`, Company 1, Owner/write, and the `会社1 開始ガイド（5ワークフロー）` heading were confirmed.
+- [x] Current aggregate gate remains truthful: `can_run=false`, `can_preflight=false`, exact blocker `external_post_send_delete_submit_publish_auth_captcha_otp_payment_gate`, `external_action=false`.
+- [x] Terminal cleanup closed tab `1980915734`, confirmed lease release, changed no foreign tabs, and returned no unknown effect.
+- [ ] Fresh named-workflow target/account/payload/approval admission and same-Run provider receipt → source sync → reconciliation → cleanup → business completion remain unproven.
+
+Evidence: `work/aos-company1-guide-detail-settled-readback-20260909.json`.
+
+**Exact blocker:** keep the high-impact external-effect gate closed; do not replay timed-out or historical requests.
+
+## 2026-09-09T05:57:16+09:00 JST — Local-only preflight blockers made concrete
+
+- [x] Backup read-only preflight verified remote parity, git integrity, and representative restore; no snapshot creation or push occurred.
+- [x] Backup exact blocker is `backup_snapshot_outdated` (snapshot age 44.88h); its business-effect stage is approval-bound.
+- [x] Obsidian read-only audit covered 11 projects with `ok=5`, `attention=5`, `blocked=1`; no Vault/Git write occurred.
+- [ ] Obsidian exact blocker is `obsidian_audit_findings_present`; Vault/Git changes require explicit approval and unresolved findings must be handled first.
+
+Evidence: `work/aos-company1-local-only-preflight-20260909.json`.
+
+Keep the aggregate effect gate closed. **next_action_now:** resolve the fixed Backup snapshot approval boundary or the Obsidian findings/approval boundary; provider workflows remain separately blocked on fresh provider/browser authority and same-Run evidence.
+
+## 2026-09-09T05:52:31+09:00 JST — Live Company 1 binding confirmed
+
+- [x] Fresh protected Company 1 readiness API readback through AOS Chrome Companion matched requested/canonical/trigger/local Company ID `company_2560580981cedfd106b66245`.
+- [x] Confirmed Postgres backend, configured service identity, and three verified account references (Gmail, Google Drive, Supabase; values hidden).
+- [x] Confirmed five registered workflow references, nine schedules/six active, Brief and Chat read-only/preview readiness, and task-owned Companion cleanup.
+- [ ] Provider/browser authority freshness and same-Run provider receipt → source sync → reconciliation → cleanup → business completion remain unproven.
+
+Evidence: `work/aos-company1-live-api-readback-20260909.json`.
+
+**Correction:** the earlier env-less SQLite `canonical_company_unresolved` result is diagnostic-only and does not describe live launchd/production binding. **Exact blocker:** `registered_automation_effect_stage_not_admitted`. **next_action_now:** obtain one fresh named-workflow target/account/payload/approval boundary, then follow the same-Run proof chain without replaying historical or uncertain Runs.
+
+## 2026-09-09T05:45:36+09:00 JST — Readiness cleanup recovery boundary
+
+- [x] Readiness readback completed with known no effect.
+- [x] Cleanup timeout was classified as known no effect and not replayed; fresh status found zero leases/pending operations.
+- [ ] One terminal tab remains cleanup-pending until Companion profile reconnects (`profile_not_connected`).
+
+Evidence: `work/aos-company1-readiness-live-20260909.json` and fresh Companion status.
+
+**Exact blocker:** `profile_not_connected` for cleanup recovery; independently, `fresh_selected_provider_and_browser_authority_missing` and missing same-Run business proof remain.
+**next_action_now:** reconnect Companion profile, fresh-read status, then one owner-scoped cleanup; afterward proceed only with a named workflow having fresh target/account/payload/approval.
+
+## 2026-09-09T05:18:35+09:00 JST — Fresh Companion admission-route read-only check
+
+- [x] Fresh Companion status had exactly one connected Profile/generation and zero active lease, pending operation, or task tab before opening the target.
+- [x] Company 1 automations route was provisioned/read with semantic and visual target agreement; session close and terminal task-tab cleanup completed.
+- [x] Production `/readyz` and `/api/health` returned 200; mutation dispatch count remained 0 and `external_action_executed=false`.
+- [ ] Protected Company 1 registration fields and any workflow-level provider/business proof remain unverified by this bounded adapter readback.
+- [ ] Effect-stage admission and same-Run provider receipt → source sync → reconciliation → cleanup → business completion remain unproven.
+
+Evidence: `work/aos-company1-admission-readonly-20260909.json`.
+
+**Exact blocker / next action:** `registered_automation_effect_stage_not_admitted`; obtain one named workflow's fresh target/account/payload/approval boundary before any workflow preflight or effectful action. Historical/uncertain Runs remain no-replay.
+
+## 2026-09-09T05:22:29+09:00 JST — Fresh company-binding readiness read-only diagnostic
+
+- [x] Local SQLite integrity and fingerprint stability were confirmed with no writes; runs/proofs/durable jobs remain zero in this diagnostic database.
+- [x] Registered trigger scope (`company_2560580981cedfd106b66245`) and local diagnostic scope (`company_9588eaafb46d7cbaead81811`) are explicitly recorded as mismatched, with six local automations/schedules.
+- [x] Canonical company selection, trigger rewrite, schedule materialization, provider/browser operation, Brief delivery, Chat registration, and external effect remain false.
+- [ ] Owner-authorized canonical company mapping, service identity, current account refs, and protected AOS binding readback remain missing.
+- [ ] Effect-stage admission and same-Run provider receipt → source sync → reconciliation → cleanup → business completion remain unproven.
+
+Evidence: `work/aos-company1-binding-readiness-20260909.json`.
+
+**Exact blocker / next action:** `canonical_company_unresolved`; confirm the protected Company 1 ↔ local AOS company mapping before any schedule materialization or workflow preflight. Do not auto-select from recency/count and do not replay historical Runs.
+
+## 2026-09-09T05:23:49+09:00 JST — Post-cleanup Companion status confirmation
+
+- [x] Fresh post-cleanup Companion status returned one connected Profile/generation, zero leases, pending operations, and task tabs; blocker is null and external effect is false.
+- [ ] Company binding and effect-stage proof remain unresolved.
+
+Evidence: `work/aos-company1-admission-readonly-20260909.json`.
+
+## 2026-09-09T05:10:24+09:00 JST — Five-workflow Runs/detail audit
+
+- [x] Fresh Companion readback verified Company 1-scoped Runs: 500 total, 406 stopped, 94 completed, queued jobs 2, active jobs 0, approval waiting 0, proofs 500, and external-operation boundary none.
+- [x] Read one representative persisted Run detail for each of the five guide workflows and recorded the Run IDs, status, blockers, proof IDs, timestamps, and routes in `work/aos-company1-five-workflow-practical-readback-20260909.json`.
+- [x] Kept historical records separate from current execution proof; no provider call, workflow start, schedule change, approval decision, source sync, replay, or business effect occurred.
+- [x] Terminal Companion cleanup closed tab `1980915473`, released one lease, left foreign tabs unchanged, and returned no unknown effect.
+- [ ] Registered workflow effect-stage admission and five-workflow same-Run provider receipt → source sync → reconciliation → cleanup → business completion.
+
+**Exact blocker:** `registered_automation_effect_stage_not_admitted`.
+**next_action_now:** Keep the gate closed. Resolve one named workflow through a fresh target/account/payload/approval boundary; never replay historical or uncertain Runs.
+
+## 2026-09-09T04:52:30+09:00 JST — Scoped Runs correction deployed
+
+- [x] Scoped Runs now filters approvals by company, uses scoped state for status/proof interpretation, and validates scoped Run details through the company guard.
+- [x] Added regression coverage for foreign pending approvals; targeted UI/guide tests pass 22/22, Web typecheck and production/staging builds pass.
+- [x] Deployed once to existing `automation-os` (`6aa066e311e40dee1a696985`, Docker/RUNNING); `/readyz=200`; unauthenticated health/index responses correctly remain behind `owner_sso_required` / login redirect.
+- [x] Fresh authenticated Companion semantic+visual readback verified Company 1 scoped Runs (`runs=500`, `proofs=500`, queued=2, active=0, approval waiting=0, external operation none); terminal cleanup and fresh idle status completed.
+- [ ] Registered workflow effect-stage admission and five-workflow provider receipt → source sync → reconciliation → cleanup → business completion remain unproven.
+
+Evidence: [five-workflow practical readback](work/aos-company1-five-workflow-practical-readback-20260909.json).
+
+**Exact blocker:** `registered_automation_effect_stage_not_admitted`.
+**next_action_now:** Keep the fail-closed gate. Resolve one named workflow through a fresh target/account/payload/approval boundary before any business effect; never replay historical or uncertain Runs.
+
+## 2026-09-09T05:03:39+09:00 JST — Local-only preflight correction deployed
+
+- [x] Local-only registered workflows no longer inherit the Chrome bridge blocker when their explicit Mac-local read-only route is present; effectful run remains blocked.
+- [x] Server `automationApi` targeted suite passes 14/14; staging/server/web build passes.
+- [x] Second deployment reached `RUNNING` (`6aa0695d7b89d694354a21d5`) on existing `automation-os`; ingress was not modified; `/readyz=200` and unauthenticated health remains explicitly `owner_sso_required`.
+- [x] Fresh Companion readback verified Company 1 guide and terminal cleanup; aggregate `can_run=false`, `can_preflight=false`, five row blockers, and `external_action=false` remain truthful.
+- [ ] Registered workflow effect-stage admission and five-workflow same-Run provider/source/reconciliation/business completion remain unproven.
+
+Evidence: [five-workflow practical readback](work/aos-company1-five-workflow-practical-readback-20260909.json).
+
+**Exact blocker:** `registered_automation_effect_stage_not_admitted`.
+**next_action_now:** Keep external effect closed. Start one workflow only after fresh target/account/payload/approval binding; no historical replay.
+**next_action_now:** Keep the fail-closed gate. Only a fresh target/account/payload/approval boundary may start one new workflow Run; do not replay historical or uncertain Runs.
+
+## 2026-09-09T05:42:32+09:00 JST — Option 1 live readiness confirmed
+
+- [x] Company 1 `company_2560580981cedfd106b66245` のcanonical selection/auth bindingをlive APIでfresh確認。
+- [x] Postgres backend、service identity、11 automations、9 schedules、3 account refs（全てverified表示）を同時点で確認。
+- [x] no-effect readinessは利用可能。Brief/Chatのread-only境界もreadyとして確認。
+- [x] provider/browser authority fresh=false、same-Run provider/source/reconciliation/cleanup未確認を明示。
+- [x] Backup/Obsidianのlocal-only scheduleだけmaterialization eligible、provider/browser laneはauthority不足でblocked。
+- [x] Schedule/run/provider/browser/approval/sync/replay/external mutationは0。Companion owner-scoped cleanup完了。
+- [ ] named workflowのfresh target/account/payload/approval境界とsame-Run completion proof。
+
+Evidence: [live readiness readback](work/aos-company1-readiness-live-20260909.json).
+
+**Exact blocker:** `fresh_selected_provider_and_browser_authority_missing` / `real_provider_receipt_source_sync_reconciliation_cleanup_not_proven`。
+**next_action_now:** fresh境界が揃ったnamed workflowを1件だけ進める。履歴・不明Runは再送しない。
+
+## 2026-09-09T05:36:11+09:00 JST — Option 1 Company 1 binding correction
+
+- [x] Owner指定のOption 1（本番Company 1 `company_2560580981cedfd106b66245`を正本）を採用した。
+- [x] 稼働中localhost APIのfresh reconciliation readbackで、canonical/trigger/local source Company IDの一致、service identity configured、account refs=3、Brief delivery configured、Chat registration readyを確認した。
+- [x] env-less SQLite診断の不一致を `local_sqlite_readonly_diagnostic` に限定し、元artifactを保持したままlive correctionを別artifactへ保存した。
+- [x] Company rewire、migration、schedule materialization、provider/workflow/approval/sync/replay/business effectは0のまま。
+- [ ] provider/browser authority fresh、named workflowのsame-Run provider receipt → source sync → reconciliation → cleanup → business completion。
+
+Evidence: [live Company 1 binding correction](work/aos-company1-binding-correction-live-20260909.json).
+
+**Exact blocker:** `registered_automation_effect_stage_not_admitted`。
+**next_action_now:** fresh target/account/payload/approval boundaryが揃った時だけ、named workflowを1件進める。履歴・不明Runは再送しない。
+
+## 2026-09-09T04:14:24+09:00 JST — Admission panel and scoped Runs verification
+
+- [x] Added a five-workflow start guide model with explicit company/account/binding/approval/proof/effect fields and exact blockers.
+- [x] Added company-scoped Runs readback via `company_id`; absent or mismatched scope remains unavailable and never falls back to global history.
+- [x] Local acceptance, isolated UI, and guide tests passed 26/26; Web typecheck and diff check passed.
+- [ ] Production effect-stage admission and same-Run provider receipt → source sync → reconciliation → cleanup → business completion remain unproven.
+
+Evidence: `work/aos-company1-admission-panel-local-verification-20260909.json`.
+
+**Exact blocker:** `registered_automation_effect_stage_not_admitted`.
+**next_action_now:** begin only one fresh, target/account/payload/approval-bound workflow Run when authorized; keep historical/uncertain Runs no-replay.
+
+## 2026-09-09T04:25:00+09:00 JST — Candidate evidence fail-closed correction
+
+- [x] Candidate records without `company_id` remain `company_scope_missing` rather than scope-confirmed.
+- [x] Removed synthetic Daily AI/NisenPrints candidates derived only from registered count.
+- [x] Regression suite passes 28/28; Web typecheck, production build, and diff check pass.
+- [ ] Deploy once to existing `automation-os`, then fresh-read asset parity and Companion semantic/visual guide output.
+
+Evidence: `work/aos-company1-admission-panel-local-verification-20260909.json`.
+
+**Exact blocker:** `registered_automation_effect_stage_not_admitted` remains intentionally closed.
+**next_action_now:** fresh-read Zeabur target identity, stage the exact source, deploy only the existing app service once, and perform read-only runtime verification.
+
+## 2026-09-09T04:34:00+09:00 JST — Corrected guide deployed and read back
+
+- [x] Fresh Zeabur target identity matched project `automation-wiled`, production environment, and existing `automation-os`; `aos-admin-ingress` was excluded.
+- [x] One Docker deployment reached `RUNNING`; `/readyz` and `/api/health` returned 200; served JS/CSS matched the staged build hashes.
+- [x] Companion semantic+visual readback verified Company 1, Owner/write, six registrations, five guide rows, and fail-closed evidence labels; terminal cleanup succeeded.
+- [ ] Effect-stage admission and five-workflow provider receipt → source sync → reconciliation → cleanup → business completion remain unproven.
+
+Evidence: `work/aos-company1-admission-panel-local-verification-20260909.json`.
+
+**Exact blocker:** `registered_automation_effect_stage_not_admitted`.
+**next_action_now:** resolve one named workflow blocker through a fresh target/account/payload/approval boundary, then verify one complete same-Run business chain without replaying historical Runs.
+
+## 2026-09-09T04:37:00+09:00 JST — Approval/recovery read-only verification
+
+- [x] Approval queue readback is Company 1 scoped; unknown Standing Approval scope is not applied, and no approval decision was made.
+- [x] Recovery readback is Company 1 scoped (`jobs=30`, `external_action=false`, recovery candidates=0); no retry/cancel action was made.
+- [x] Companion terminal cleanup and fresh idle status completed.
+- [ ] Provider/business evidence for the five workflows remains unproven behind the effect-stage gate.
+
+Evidence: `work/aos-company1-admission-panel-local-verification-20260909.json`.
+
+**Exact blocker:** `registered_automation_effect_stage_not_admitted`.
+
+## 2026-09-09T05:52:31+09:00 JST — Authoritative live binding correction (latest)
+
+- [x] Fresh protected API readback confirmed the live Company 1 binding: requested/canonical/trigger/local IDs all match `company_2560580981cedfd106b66245`.
+- [x] Confirmed Postgres, service identity, three verified account refs, five registered workflow references, nine schedules, and completed task-owned Companion cleanup.
+- [ ] Fresh provider/browser authority and the complete same-Run provider receipt → source sync → reconciliation → cleanup → business completion remain unproven.
+
+The env-less SQLite result is retained as diagnostic-only evidence and no longer drives the production blocker. Keep `registered_automation_effect_stage_not_admitted` closed; resume with one fresh named-workflow target/account/payload/approval boundary, without replay.
+## 2026-09-09T03:20:07Z — Post-deploy guide readback
+
+- [x] Second production UI deploy後、Company 1の開始ガイドを同一task-owned Companionでfresh semantic+visual readbackした。Owner/write、登録6件、5行、worker=`blocked / runs=500`、aggregate `can_run=false` / `can_preflight=true` / `external_action=false`を確認した。
+- [x] Gmailの誤った`registered_workflow_ambiguous`表示は解消し、会社接続=`verified`、実行対象=`binding確認済み`、binding=`canonical_id`へ更新された。row blockerは`unknown_readback`のまま。Daily AI/NisenPrintsはMac worker同一Run readback待ち、Backup/Obsidianは`unknown_readback`。
+- [x] Companion session/tabをterminal cleanupし、lease解放、foreign非変更、unknown effectなしを確認した。provider call、workflow開始、schedule/approval mutation、replay、外部効果は0。
+- [ ] provider receipt → source sync → reconciliation → cleanup → business completionは未確認。`can_preflight=true`はread-only確認可能性であり、外部実行許可ではない。
+
+Evidence: `work/aos-company1-postdeploy-guide-readback-20260909.json`。
+
+**Next action:** effect stageを閉じたまま、Gmail row-level readbackが解消し、fresh target/account/payload/approvalが明確な場合だけ、新しい同一Run read-only/provider receipt照合へ進む。既存Runは再送しない。
+## 2026-09-09T03:27:36Z — Gmail provider canary and local metadata checks
+
+- [x] Company 1 Gmail provider read-only canaryを1回実行し、profile_readのprovider receipt、account hash、source sync、reconciliation、cleanupを同一Runで確認した。本文・添付・送信・下書き・ラベル・Calendarは未操作、`external_action=false`、`data_persisted=false`。
+- [x] Backupのlocal-only checkでsnapshot/integrity metadata、runs=24、proofs=0、latest=blockedを表示し、Obsidianのlocal-only checkでproject/Vault parity metadata、runs=8、proofs=0、latest=completeを表示した。Provider接続・認証・queue・外部サイト・snapshot作成・Git/Vault書込みは0、業務完了claimは未実施。
+- [x] Companion session/tabをterminal cleanupし、lease解放、foreign非変更、unknown effectなしを確認した。
+- [ ] Gmail message review、Daily AI/NisenPrints Mac worker同一Run readback、5 workflowのprovider receipt → source sync → reconciliation → business completionは未確認。
+
+Evidence: `work/aos-company1-readonly-progress-20260909.json`。
+
+**Next action:** effect stageを閉じたまま、fresh target/account/payload/approvalが明示された新規同一Runでのみ次のread-only証跡へ進む。既存Runの再送、Gmail送信・下書き、Backup snapshot作成、Obsidian Vault更新はしない。
+## 2026-09-09T04:02:17Z — Gmail既存Run detailのfresh readback
+
+- [x] Company 1 canonical routeで`run_mtt8wkwa_0nkoxm`と`proof_mtt92tnp_fsoivq`を同一task-owned Companion/Profile 2でsemantic+visual確認した。
+- [x] Runは`要確認` / `codex_app_server_turn_timeout` / 外部効果なし、proofは`worker_receipt / 保存済み / 未claim`。`readback_verified=false`、`same_run_receipt=false`、`business_proof_verified=false`、`cleanup_verified=true`、effects=`read_only`を確認した。
+- [x] 4件の`page.query`のみを行い、transactionは`known_no_effect`、`reconciliation_required=false`、`replay_allowed=false`。provider call、再送、送信、返信、Calendar、承認・予定変更、外部効果は0。
+- [x] session/tab/leaseをterminal cleanupし、closed tab 1、lease解放1、retained/unknown/foreignなし。fresh statusもtask idleを確認した。
+- [ ] provider receipt → source sync → reconciliation → cleanup → business completionは未確認。row-level target/account/payload/approvalが明示されるまでeffect stageは開始しない。
+
+Evidence: `work/aos-company1-gmail-run-detail-readback-20260909-0402.json`。
+## 2026-09-09T04:06:33Z — 承認・Recoveryの実画面readback
+
+- [x] Company 1 approvals routeをsemantic+visual確認し、Standing Approval scope=`未確認`、承認状態未確認/期限切れ/外部効果未確認の表示、承認操作非表示境界を確認した。
+- [x] Company 1 recovery routeをsemantic+visual確認し、会社membership scope、5業務に関係するRun一覧、外部投稿・送信・削除・認証は別gate、実行前かつ外部効果なし確認済みのRunだけ再試行可能、完了済み・結果不明は再送しない方針を確認した。
+- [x] read-only transactionのみで、承認決定、retry、cancel、provider call、外部効果、foreign resource変更は0。session/tab cleanup完了、unknown effectなし。
+- [ ] 選択したRunのRecovery詳細、各workflowのprovider receipt/source sync/reconciliation/business completionは未確認。承認/recoveryのmutation stageは閉じたまま。
+
+Evidence: `work/aos-company1-approval-recovery-readback-20260909-0406.json`。
+## 2026-09-09T04:08:29Z — 3 workflow detailのfresh readback
+
+- [x] Daily AI `run_mttc34n8_f6sy6`を確認し、画面はcompleteでも`mvp_state_readback_unavailable`でCompany 1 scopeと同一Run receiptが未確認であることを記録した。
+- [x] NisenPrints `run_mttb0orn_0crcf3`を確認し、`完了`・外部効果なし・`proof_mttb2be9_f5zzad`保存済み・未claimを確認した。provider receipt/source sync/reconciliationは未確認。
+- [x] Backup `run_mttc1rw1_xqmrjx`を確認し、`要確認`・`backup_integrity_readback_failed`・外部効果なし・`proof_mttc4eak_quakr8`保存済み・未claimを確認した。
+- [x] 3件ともread-only transactionでprovider call、再送、外部効果、foreign resource変更なし。session/tab cleanup完了、unknown effectなし。
+- [ ] Daily AI scope復旧、NisenPrints同一Run receipt/source/reconciliation、Backup integrity readback/reconciliation/business completionは未確認。
+
+Evidence: `work/aos-company1-three-workflow-detail-readback-20260909-0408.json`。
+## 2026-09-09T04:08:29Z — 要件別completion audit v4
+
+- [x] Companion route、Company 1 Owner/write表示、ガイド文書、承認のfail-closed表示、Recovery/no-replay方針、local runtimeを要件別に分類した。
+- [x] 5 workflowについて、Gmail blocked、Daily AI scope unavailable、NisenPrints complete display/unclaimed、Backup integrity blocked、Obsidian未fresh確認を現行readbackに基づき固定した。
+- [x] `provider receipt / source sync / reconciliation / business completion`を全体未確認として保持し、登録・完了表示・health・queueを業務完了へ昇格させないことを明記した。
+- [ ] Obsidian detail、Gmail row-level binding、各workflowの同一Run証跡照合は未完了。effect stageは閉じたまま。
+
+Evidence: `work/aos-company1-goal-completion-audit-20260909-0408.json`。
+## 2026-09-09T04:10:26Z — Obsidian detailのfresh readback
+
+- [x] Company 1 Obsidian Run `run_mtqi8of9_0dnaxp` / `proof_mtqia7f6_jlveyb`を確認し、`完了`、`あり（照合済み）`、proof保存済み、同一Runの実行記録/source同期/結果照合/cleanup確認済み表示を確認した。
+- [x] 画面の保存済みcompletion claimと、今回のread-only operationで独立provider receiptを取得していない事実を分離した。provider/replay/Vault/Git/外部効果は0、cleanup完了。
+- [ ] Obsidianの独立provider receipt/source/reconciliationと、他workflowの同一Run business completionは未確認。完了Runは再送しない。
+
+Evidence: `work/aos-company1-obsidian-detail-readback-20260909-0410.json`。
+## 2026-09-09T04:23:06Z — Daily AI Run scope consistency fix
+
+- [x] Company 1 summaryに残るRunとexact detail/recovery readbackの不一致をfresh UI read-onlyで確認した。
+- [x] company-scoped Run detail GETを追加し、詳細UIを同経路へ変更した。
+- [x] Recoveryがsummaryにないrequested Runを選択肢として表示・操作しないfail-closed境界を追加した。
+- [x] server build、Web typecheck/build、関連4テスト、`git diff --check`をPASSした。
+- [ ] 公開環境への配信後に、同じRunのsummary/detail/recoveryをfresh readbackで確認する。配信・provider・retry・cancel・replayは未実行。
+
+Evidence: `work/aos-company1-run-scope-consistency-fix-20260909.json`.
+
+**Next action:** 配信承認がある場合のみ公開環境をfresh readbackし、過去Runは再送しない。
+
+## 2026-09-09T04:30:39Z — Current guide settle evidence
+
+- [x] Production Company 1 guideをCompanion/Profile 2でfresh semantic+visual readbackし、登録6件、5行、Owner/write、`can_run=false` / `can_preflight=true`、worker blockedを確認した。
+- [x] Gmail/Daily AI/NisenPrints/Backup/Obsidianのrow-level blockerを未確認のまま保持し、未照合Runを実行対象にしない表示を確認した。
+- [x] provider call、workflow開始、schedule/approval変更、source sync、replay、business external effectは0。session/tab cleanup、foreign非変更、unknown effectなし。
+- [ ] 5 workflowの同一Run provider receipt/source sync/reconciliation/business completionは未確認。effect stageは閉じる。
+
+Evidence: `work/aos-company1-guide-detail-settle-followup-20260909.json`.
+
+## 2026-09-14T04:20Z — Company 1 no-effect preflight
+
+- [x] Canonical Company 1 `daily-backup-safety-check` was admitted once through the local `preflight_no_effect` trigger with explicit idempotency and `external_action_allowed=false`.
+- [x] Trigger receipt bound the run to Company 1 and returned `accepted=true`, `queued=true`, `provider_neutral=true`, `worker_protocol=mac_worker_polling_required`, and `external_action_executed=false`.
+- [x] Independent automation health returned 7/7 active and OK, with zero warnings, blockers, DB drift, or missing entrypoints.
+- [x] Same-run protected Companion readback found the Run `complete` with one proof, `same_run_receipt=true`, `readback_verified=true`, `cleanup_verified=true`, and `effects_mode=read_only`; business proof, snapshot creation, and Git push remain false.
+- [ ] Obsidian preflight was safely rejected as `automation_not_found`; resolve the actual registered automation ID from the registry readback before retrying any no-effect trigger.
+
+Evidence: `outputs/aos-company1-backup-preflight-readback-20260914.json`.
+
+**Next action:** make an owner-scoped decision on whether to adopt Obsidian into Company 1 with schedules disabled first. Until that decision is explicit, keep it canonical-only and do not infer or retry an ID.
+
+**Next action:** fresh target/account/payload/approvalが揃った新規named workflowを1件だけ同一Run証跡で検証する。過去・不明Runは再送しない。
+
+## 2026-09-09T04:34:00Z — Local acceptance recheck
+
+- [x] Gmail execution-target control IDsをmanifestへ追加し、literal control ID auditをPASSした。
+- [x] Builder保存テストのGmail target state fixtureとRecovery guideのOwner SSO文言を整合させた。
+- [x] server build、Web typecheck/production build、UI truthfulness 109/109、Company 1 five-workflow local acceptance 37/37、diff checkをPASSした。
+- [ ] productionの5 workflow同一Run provider receipt/source sync/reconciliation/business completionは未確認。effect stageは閉じる。
+
+Evidence: `work/aos-company1-local-acceptance-recheck-20260909.json`.
+
+**Next action:** fresh target/account/payload/approval境界が揃うまで新規Runを開始せず、揃ったらnamed workflowを1件だけ同一Run証跡で検証する。
+
+## 2026-09-09T13:52:06+09:00 JST — Current guide readback supersedes loading snapshot
+
+- [x] Company 1 protected routeのfresh semantic+visual readbackが`readyState=complete`へsettleし、Owner/write、登録6件、5行、`can_run=false` / `can_preflight=true`、worker=`blocked`を確認した。
+- [x] Gmailは接続=`verified`、実行対象=`binding確認済み`、`binding=canonical_id`まで表示されたが、row-level blocker=`unknown_readback`。古い`loading`および`unbound` snapshotは現行状態として扱わない。
+- [x] read-only only、provider/workflow/approval/schedule/replay/external effectなし。Companion cleanup完了。
+- [ ] provider receipt → source sync → reconciliation → cleanup → business completionは未確認。effect-stage gateは閉鎖継続。
+
+Evidence: `work/aos-company1-guide-fresh-readback-20260909-0452.json`。
+
+**Next action:** 明示されたfresh target/account/payload/approval境界なしにRunを開始せず、次はnamed workflow 1件の同一Run read-only証跡から進める。
+
+## 2026-09-09T05:00:05Z — Backup local-only readback
+
+- [x] Company 1 Backup行のローカル確認を、既取得stateだけに限定して1回実行し、`snapshot/integrity metadata=あり / runs=24 / proofs=0 / latest=blocked`を同一画面で確認した。
+- [x] viewport外による未dispatchの初回試行は再送せず、scroll後に1回だけ実行。clickのgeneric receiptは外部効果フィールド未確定だが、アプリhandlerはlocal-onlyでProvider接続・認証・queue・外部サイト・snapshot作成・Git/Vault書込み・workflow Runを呼ばず、cleanup receiptは外部効果なし・unknown effectなし。
+- [x] session/tab/leaseをterminal cleanupし、foreign非変更、unknown effectなしを確認した。
+- [ ] Backupの業務完了、provider receipt、source sync、reconciliation、snapshot作成は未確認。effect stageは閉鎖継続。
+
+Evidence: `work/aos-company1-backup-local-check-readback-20260909.json`。
+
+## 2026-09-09T05:07:02Z — Local check latest-order fix
+
+- [x] Backup/Obsidian local-only checkの`latest`表示を、配列先頭依存から`updated_at`優先・`created_at` fallbackの時刻比較へ修正した。
+- [x] Web typecheck、production build、workflow guide 19/19、UI isolated 12/12、`git diff --check`をPASSした。
+- [x] Provider call、queue write、workflow start、snapshot/Vault/Git write、production deploy、外部効果は0。
+- [ ] provider receipt → source sync → reconciliation → cleanup → business completionは未確認。effect stageは閉鎖継続。
+
+Evidence: `work/aos-company1-local-check-latest-order-fix-20260909.json`。
+
+**Next action:** fresh target/account/payload/approvalが明示されたnamed workflow 1件だけを、同一Run証跡のread-only照合から進める。既存・不明Runは再送しない。
+
+## 2026-09-09T09:00:00Z — Companion-first portable route regression follow-up
+
+- [x] portable HTTP/scheduler admissionをCompanion-first routerへ統一し、明示的なBrowser Use/official-extension要件だけはその指定を保持するよう修正した。
+- [x] staleなbrowser surface、route metadata、旧Profile 2 auth注入のテスト期待値を現行契約へ整合した。
+- [x] focused suites 104/104 pass。全体suite v2の唯一の失敗も、registeredWorkflowE2Eの旧Chrome Plugin直選択期待だったため更新し、同suite 9/9 passを確認した。
+- [ ] Companion Profile 2は`profile_not_connected`、retained task tab 1件。production provider receipt/source sync/reconciliation/business completionは未確認で、effect stageは閉鎖継続。
+
+Evidence: `work/aos-company1-local-regression-runtime-readback-20260909.json`。
+
+**Next action:** 全体suite v3はexit 0で完了。Companion Profile 2 reconnectがある場合のみCompany 1 routeを1回fresh readbackする。接続復旧前はworkflow開始・既存Run再送・retained tabの手動closeを行わない。
+
+## 2026-09-09T05:13:11Z — Local AOS UI fresh readback
+
+- [x] launchd実稼働のlocal AOS port `8787`で`/api/health`・`/readyz` HTTP 200を確認した。dev-only port `4173`は待受なしだが、実運用portとは別である。
+- [x] Companion/Profile 2のfresh visual+semantic readbackで、Owner/write、Company 1、登録6件、5ワークフロー開始ガイド、`external_action=false`を確認した。
+- [x] read-only transaction、task-owned session cleanup、foreign非変更、unknown effectなしを確認した。
+- [ ] provider receipt → source sync → reconciliation → cleanup → business completion、production deployは未確認。effect stageは閉鎖継続。
+
+Evidence: `work/aos-local-ui-fresh-readback-20260909.json`。
+
+**Next action:** fresh target/account/payload/approvalが明示されたnamed workflow 1件だけを、同一Run証跡のread-only照合から進める。既存・不明Runは再送しない。
+
+## 2026-09-09T08:58:17Z — Companion reconnect and retained-tab readback completed
+
+- [x] Companion/Profile 2が同一generationで`connected=true`へ復旧していることをfresh statusで確認した。
+- [x] 同一task-owned tab `1980915960` / session `session_802821c3-4d1f-4553-953c-4b75f21e3ded` / lease `lease_2033f665-f992-41dd-9489-f7d2bbb953a1`をread-onlyでreadbackし、Company 1 protected routeの`readyState=complete`、Owner/write、登録6件、5ワークフロー、`can_run=false` / `can_preflight=true`、`external_action=false`をsemantic+visualで確認した。
+- [x] terminal session closeとowner-scoped cleanup dry-runを完了。leaseは解放、session/lease/pending/timeoutは0、foreign変更・unknown effect・provider/workflow開始は0。partial-actions tabは`retain_until_resume`かつcleanup候補0のため保持した。
+- [ ] provider receipt → source sync → reconciliation → cleanup → business completion、および部分適用actionの残りを実行するかの判断は未確認。effect stageは閉じたまま。
+
+Evidence: `work/aos-company1-local-regression-runtime-readback-20260909.json`。
+
+**Next action:** retained tabを手動close・再送せず、fresh target/account/payload/approvalが明示されたnamed workflow 1件の同一Run証跡照合が成立した場合だけ、残りactionの扱いを決める。

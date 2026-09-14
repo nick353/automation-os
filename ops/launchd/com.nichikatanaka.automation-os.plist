@@ -74,7 +74,10 @@
     <key>AUTOMATION_OS_DURABLE_SERVICE_USER_ID</key>
     <string>aos_service_0f4e6b6c65edf796364e</string>
     <key>AUTOMATION_OS_DURABLE_SCHEDULER_MS</key>
-    <string>60000</string>
+    <!-- Zeabur schedules this shared production database; Mac consumes its queue. -->
+    <string>0</string>
+    <key>AUTOMATION_OS_CREATE_PLANNER_WORKER_INTERVAL_MS</key>
+    <string>0</string>
     <key>AUTOMATION_OS_REPO_ROOT</key>
     <string>/Users/nichikatanaka/Documents/Codex/automation-os</string>
     <key>AUTOMATION_OS_SKIP_BUILD_CHECK</key>

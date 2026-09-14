@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { serializeAutomationOsChatSnapshot } from "../codex/chatSnapshot.js";
+import { serializeAutomationOsChatSnapshot, buildChatPluginConnections } from "../codex/chatSnapshot.js";
+import { missingZeaburConnectorRegistryReadback } from "../codex/zeaburConnectorRouting.js";
 
 test("chat snapshot stays valid and bounded when project history is large", () => {
   const snapshot = {
@@ -16,6 +17,8 @@ test("chat snapshot stays valid and bounded when project history is large", () =
     registeredWorkflows: Array.from({ length: 160 }, (_, index) => ({ id: `workflow-${index}`, name: "W".repeat(700), next_action_label: "履歴で確認" })),
     worker: { status: "blocked", exact_blocker: "stored_postgres_secret_invalid_url", external_action_executed: false },
     browserUse: { status: "verified", surface: "browser_use_cli" },
+    toolPreference: { selected: { id: "gmail@openai-curated", status: "ready" }, connectorExecution: { owner: "zeabur_codex_app_server", status: "ready" } },
+    pluginConnections: [{ companyId: "project-a", installed: [{ id: "gmail", authStatus: "verified" }, { id: "canva", authStatus: "unverified" }] }],
     freshness: { stalePolicy: "show_stale_and_exact_blocker" },
     boundaries: { externalActionExecuted: false, approvalRequired: true, secretsIncluded: false, rawPrivatePathsIncluded: false }
   };
@@ -28,6 +31,21 @@ test("chat snapshot stays valid and bounded when project history is large", () =
   assert.equal(freshness.snapshotTier, "minimal");
   assert.equal((parsed.boundaries as Record<string, unknown>).secretsIncluded, false);
   assert.equal((parsed.worker as Record<string, unknown>).exact_blocker, "stored_postgres_secret_invalid_url");
+  assert.deepEqual(parsed.toolPreference, snapshot.toolPreference);
+  assert.deepEqual(parsed.pluginConnections, snapshot.pluginConnections);
+});
+
+test("plugin Chat context is company-scoped and omits account identifiers and scopes", () => {
+  const registry = missingZeaburConnectorRegistryReadback();
+  registry.pluginRegistry.installed = [{ id: "gmail", name: "Gmail", installed: true, authStatus: "verified" }];
+  const result = buildChatPluginConnections("company-one", registry, [
+    { companyId: "company-one", platform: "gmail", status: "active", accountRef: "private-account", scopes: ["private-scope"], verificationStatus: "verified" },
+    { companyId: "foreign", platform: "canva", accountRef: "foreign-account" }
+  ] as any);
+  assert.equal(result.installed.length, 1);
+  assert.equal(result.companyConnections.length, 1);
+  assert.doesNotMatch(JSON.stringify(result), /private-account|private-scope|foreign-account/);
+  assert.equal(result.verificationScope, "registry_and_company_refs_only_not_a_new_provider_call");
 });
 
 test("small chat snapshot keeps the complete readback and remains valid JSON", () => {

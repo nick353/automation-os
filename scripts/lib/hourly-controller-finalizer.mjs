@@ -1,7 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import { buildControllerExecutionReceipt, buildVerifierProjection } from "../aos-hourly-companion-audit.mjs";
+// A natural heartbeat reuses node_repl. Carry its cache boundary through to
+// receipt projection too, so a fixed finalizer does not retain an old builder.
+const receiptBuilderUrl = new URL("../aos-hourly-companion-audit.mjs", import.meta.url);
+receiptBuilderUrl.searchParams.set("current_root_turn", new URL(import.meta.url).searchParams.get("current_root_turn") || "finalizer");
+const { buildControllerExecutionReceipt, buildVerifierProjection } = await import(receiptBuilderUrl.href);
 
 export const HOURLY_CONTROLLER_RECEIPT_SCHEMA = "aos.companion_hourly_controller_receipt.v1";
 const HOST_METADATA_HEADER = "x-codex-turn-metadata";
@@ -14,9 +18,11 @@ const FINALIZABLE_ACTIONS = new Set([
   "continuation",
   "independent_continuation",
 ]);
-const CANONICAL_STATE_PATH = "/Users/nichikatanaka/.codex/automations/aos-companion-2/STATE.md";
+const CANONICAL_STATE_PATH = "/Users/nichikatanaka/.codex/automations/aos-companion/STATE.md";
 const STATE_SYNC_START = "<!-- aos-companion-2:latest-finalizer-sync:start -->";
 const STATE_SYNC_END = "<!-- aos-companion-2:latest-finalizer-sync:end -->";
+const currentProcess = globalThis.process;
+const currentPid = Number.isInteger(currentProcess?.pid) ? currentProcess.pid : 0;
 
 // These blockers describe a missing scheduler callback, not a safety reason
 // to suppress an official-App-only candidate. If the audit explicitly
@@ -165,7 +171,7 @@ function synchronizeStateFile({ statePath, receipt, receiptPath }) {
   let current;
   try { current = fs.readFileSync(statePath, "utf8"); } catch { throw exactError("hourly_controller_state_read_failed"); }
   if (current !== before) throw exactError("hourly_controller_state_changed_during_sync");
-  const temporary = `${statePath}.tmp-${process.pid}-${crypto.randomUUID().slice(0, 8)}`;
+  const temporary = `${statePath}.tmp-${currentPid}-${crypto.randomUUID().slice(0, 8)}`;
   let descriptor;
   try {
     descriptor = fs.openSync(temporary, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY, stat.mode & 0o777);
@@ -202,6 +208,7 @@ function currentRootMetadata(globals) {
     sessionId: boundedText(metadata.session_id, "session_id", 256),
     threadId: boundedText(metadata.thread_id, "thread_id", 256),
     turnId: boundedText(metadata.turn_id, "turn_id", 256),
+    turnTrigger: boundedText(metadata.turn_trigger, "turn_trigger", 80),
   };
 }
 
@@ -213,10 +220,23 @@ function resultStatus(value) {
 function readbackSummary(value) {
   const source = value?.readback ?? value?.result?.readback ?? value?.readbackResult ?? value?.statusReadback ?? null;
   if (!source || typeof source !== "object") return { status: null, exactBlocker: null };
+  const deliveryProof = source.deliveryProof ?? source.delivery_proof;
+  const compactProof = deliveryProof && typeof deliveryProof === "object" && !Array.isArray(deliveryProof)
+    ? {
+        kind: boundedText(deliveryProof.kind, "delivery_proof_kind", 100),
+        turnId: boundedText(deliveryProof.turnId, "delivery_proof_turn_id", 256),
+        turnStatus: boundedText(deliveryProof.turnStatus, "delivery_proof_turn_status", 80),
+        beforeTurnId: boundedText(deliveryProof.beforeTurnId ?? deliveryProof.before_turn_id, "delivery_proof_before_turn_id", 256),
+        afterTurnId: boundedText(deliveryProof.afterTurnId ?? deliveryProof.after_turn_id, "delivery_proof_after_turn_id", 256),
+        afterTurnStatus: boundedText(deliveryProof.afterTurnStatus ?? deliveryProof.after_turn_status, "delivery_proof_after_turn_status", 80),
+        markerVisible: deliveryProof.markerVisible === true || deliveryProof.marker_visible === true,
+      }
+    : null;
   return {
     status: boundedText(source.status, "readback_status", 80),
     exactBlocker: boundedText(source.exact_blocker ?? source.exactBlocker, "readback_exact_blocker", 300),
     goalPlanState: boundedText(source.goal_plan_state ?? source.goalPlanState, "goal_plan_state", 80),
+    deliveryProof: compactProof,
   };
 }
 
@@ -244,6 +264,7 @@ function compactCallbackEvidence(entries) {
       readbackStatus: readback.status,
       readbackExactBlocker: readback.exactBlocker,
       goalPlanState: readback.goalPlanState,
+      deliveryProof: readback.deliveryProof,
       externalActionExecuted: result.external_action_executed === true || result.externalActionExecuted === true,
       reflected: result.reflected === true || result.status === "reflected",
     };
@@ -255,26 +276,47 @@ function compactFreshStatus(value) {
   return {
     connected: source.connected === true,
     generation: boundedText(source.generation ?? source.runtimeGeneration ?? source.runtime_generation, "generation", 256),
-    activeLeaseCount: Number.isFinite(Number(source.activeLeaseCount)) ? Number(source.activeLeaseCount) : null,
-    pendingCount: Number.isFinite(Number(source.pendingCount)) ? Number(source.pendingCount) : null,
-    queueCount: Number.isFinite(Number(source.queueCount)) ? Number(source.queueCount) : null,
-    activeReconciliationCount: Number.isFinite(Number(source.activeReconciliationCount)) ? Number(source.activeReconciliationCount) : null,
+    activeLeaseCount: typeof source.activeLeaseCount === "number" && Number.isFinite(source.activeLeaseCount) ? source.activeLeaseCount : null,
+    pendingCount: typeof source.pendingCount === "number" && Number.isFinite(source.pendingCount) ? source.pendingCount : null,
+    queueCount: typeof source.queueCount === "number" && Number.isFinite(source.queueCount) ? source.queueCount : null,
+    activeReconciliationCount: typeof source.activeReconciliationCount === "number" && Number.isFinite(source.activeReconciliationCount) ? source.activeReconciliationCount : null,
   };
 }
 
+function continuationResult(entry) {
+  if (entry?.result && typeof entry.result === "object" && !Array.isArray(entry.result)) {
+    return entry.result;
+  }
+  // The scheduled controller passes direct dispatch results, while older
+  // callers/tests pass { threadId, idempotencyKey, result }.  Preserve the
+  // direct form instead of silently compacting it to an empty result.
+  return entry && typeof entry === "object" && !Array.isArray(entry) ? entry : {};
+}
+
 function compactContinuation(entry) {
-  const result = entry?.result && typeof entry.result === "object" ? entry.result : {};
+  const result = continuationResult(entry);
   const readback = readbackSummary(result);
+  const sendError = result?.sendError && typeof result.sendError === "object" && !Array.isArray(result.sendError)
+    ? { message: boundedText(result.sendError.message, "send_error_message", 300) }
+    : null;
   return {
     threadId: boundedText(entry?.threadId ?? entry?.thread_id, "continuation_thread_id", 256),
     idempotencyKey: boundedText(entry?.idempotencyKey ?? entry?.idempotency_key, "idempotency_key", 256),
     result: {
       status: boundedText(result.status, "continuation_status", 80),
       exactBlocker: boundedText(result.exact_blocker ?? result.exactBlocker, "continuation_exact_blocker", 300),
+      sendError,
       readbackStatus: readback.status,
       readbackExactBlocker: readback.exactBlocker,
       goalPlanState: readback.goalPlanState,
+      deliveryProof: readback.deliveryProof,
       replayAllowed: result.replay_allowed === true || result.replayAllowed === true,
+      goalStatus: boundedText(result.readback?.goalStatus, "goal_status", 80),
+      planStatus: boundedText(result.readback?.planStatus, "plan_status", 80),
+      goalStateSource: boundedText(result.readback?.goalStateSource, "goal_state_source", 100),
+      goalReadback: boundedText(result.readback?.goalReadback, "goal_readback", 80),
+      continuationTurnId: boundedText(result.completionWait?.turnId, "continuation_turn_id", 256),
+      workStatus: boundedText(result.completionWait?.status, "work_status", 80),
       externalActionExecuted: result.external_action_executed === true || result.externalActionExecuted === true,
     },
   };
@@ -424,7 +466,7 @@ function validateCompletion(controller, receipt, evidence) {
     ...(Array.isArray(controller.independentContinuations) ? controller.independentContinuations : []),
   ];
   for (const continuation of continuations) {
-    const result = continuation?.result;
+    const result = continuationResult(continuation);
     const status = String(result?.status || "");
     if (!["sent", "queued", "duplicate_suppressed"].includes(status)) {
       throw exactError("hourly_controller_continuation_result_not_terminal", { status });

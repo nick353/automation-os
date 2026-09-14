@@ -10,10 +10,12 @@ import { dbBackend, execSql, execSqlAsync, initDb, initializePostgresSchemaAsync
 import { importCodexAssets } from "./ingest/codexAssets.js";
 import { seedDailyAiDemo } from "./seedDailyAiDemo.js";
 import { seedResearchKnowledge } from "./planner/advisor.js";
-import { sanitizeDashboardRows } from "./dashboardSanitizer.js";
+import { sanitizeDashboardMetadata, sanitizeDashboardRows } from "./dashboardSanitizer.js";
+import { automationExecutionContract } from "./automations/executionContract.js";
 import { getBrowserHealth } from "./browser/health.js";
 import { buildBrowserUseRuntimeSnapshot, buildBrowserUseRuntimeSnapshotAsync, publicBrowserUseLaneBinding } from "./browser/runtimeSnapshot.js";
-import { applyProjectPresentationProfileOverride, buildProjectPresentationProfile, parseProjectPresentationProfileOverride, type ProjectPresentationProfile } from "./projects/presentationProfile.js";
+import { sanitizePortableRemoteWorkerHeartbeat, type PortableRemoteWorkerHeartbeatReadback } from "./browser/liveResourceReadback.js";
+import { buildProjectPresentationProfile, parseProjectPresentationProfileOverride, restoreProjectPresentationProfile, type ProjectPresentationProfile } from "./projects/presentationProfile.js";
 import { readCanonicalIabOwnerDiagnostics } from "./browser/iabCanonicalLoader.js";
 import {
   readReferenceBrowserUseWorkflowAdaptersV1,
@@ -44,15 +46,18 @@ import { CodexAppServerClient, normalizeMarketplaceName } from "./codex/appServe
 import { readCodexDeviceAuth, startCodexDeviceAuth } from "./codex/authRecovery.js";
 import { buildCapabilityRouterSnapshot, buildToolPreferenceSnapshot } from "./codex/capabilityRouter.js";
 import { buildGmailReadOnlyCanaryReadback } from "./connectors/gmailReadOnlyCanary.js";
+import { runGmailProviderReadOnlyCanary, type GmailProviderReadOnlyCanaryReadback } from "./connectors/gmailProviderReadOnlyCanary.js";
+import { runGmailReviewReadOnly } from "./connectors/gmailReviewReadOnly.js";
 import { canBootstrapInstalledPluginAuth, missingZeaburConnectorRegistryReadback, readZeaburConnectorRegistryReadback } from "./codex/zeaburConnectorRouting.js";
 import {
   ConnectorRegistryRepositoryError,
   getCompanyCodexRegistryReadback,
   getCompanyCodexRegistryReadbackAsync,
+  registryAfterPluginInstall,
   saveCompanyCodexRegistryReadback,
   saveCompanyCodexRegistryReadbackAsync
 } from "./codex/connectorRegistryRepository.js";
-import { serializeAutomationOsChatSnapshot } from "./codex/chatSnapshot.js";
+import { serializeAutomationOsChatSnapshot, buildChatPluginConnections } from "./codex/chatSnapshot.js";
 import {
   buildCodexAppParityLedger,
   type CodexParityBridgeExecution,
@@ -67,6 +72,7 @@ import {
 } from "./codex/automationMigrationLedger.js";
 import { refreshKnowledgeNotes } from "./knowledge/refresh.js";
 import { createPlannerResponse, buildLocalPlanner, type CreatePlannerMessage } from "./planner/createPlanner.js";
+import { readChatWorkflowActions, executeChatWorkflowAction } from "./planner/chatWorkflowActions.js";
 import { cancelCreatePlannerJob, closeSharedAppServerClient, enqueueCreatePlannerJob, enqueueCreatePlannerJobAsync, getCreatePlannerJob, listCreateChatThreads, processQueuedCreatePlannerJobs, type CreatePlannerJob } from "./planner/createPlannerJobs.js";
 import { createSkillDraft } from "./planner/skillFactory.js";
 import {
@@ -95,8 +101,13 @@ import {
 } from "./runs/canonicalCompanyConsultationReadback.js";
 import { isWebOperationAdapter, webOperationBackendAdapterReadOnlyBlocker } from "./runs/webOperationBackendAdapters.js";
 import type { WebOperationBackend } from "./runs/webOperationBackendSettings.js";
-import { portableWorkerHeartbeatId, PORTABLE_WORKER_HEARTBEAT_KIND, resolvePortableWorkerHeartbeatAt, validatePortableWorkerHeartbeat } from "./runs/portableWorkerHeartbeat.js";
+import { classifyPortableWorkerHeartbeat, portableWorkerHeartbeatId, PORTABLE_WORKER_HEARTBEAT_KIND, PORTABLE_WORKER_HEARTBEAT_TRANSPORT_ACK_SCHEMA, resolvePortableWorkerHeartbeatAt, validatePortableWorkerHeartbeat } from "./runs/portableWorkerHeartbeat.js";
 import { portableExternalRunnerConfigured } from "./runs/portableExternalRunnerConfig.js";
+import { syncGmailReviewResult } from "./runs/gmailReviewResultSync.js";
+import { resolveGmailExecutionTarget } from "./runs/gmailAccountBinding.js";
+import { bindGmailExecutionTargetToRunInput, requireGmailRunConnectionRef } from "./runs/gmailExecutionTargetPropagation.js";
+import { admitGmailReplyEffect } from "./runs/gmailReplyAdmission.js";
+import { acquireGmailSource, createApprovedGmailSourceTransport } from "./runs/gmailSourceAcquisition.js";
 import {
   cancelDurableJob,
   enqueueAutomationDryRun,
@@ -225,6 +236,7 @@ import {
   saveCompanyConnectionRef,
   saveCompanyConnectionRefAsync,
   saveCompanyMemory,
+  saveCompanyMemoryAsync,
   setAutomationSchedulePaused,
   updateAutomationRecord,
   type AutomationRecord,
@@ -235,20 +247,25 @@ import {
   adoptRegisteredAutomationCatalogAsync,
   listRegisteredAutomationCatalog
 } from "./automations/registeredCatalog.js";
+import { buildCanonicalAutomationRegistryReadback } from "./automations/canonicalAutomationRegistry.js";
 import { buildRegisteredWorkflowInventoryReadback } from "./workflowInventory.js";
 import { IdempotencyError, runIdempotentSqlMutation, runIdempotentSqlMutationAsync } from "./automations/idempotency.js";
 import { buildCompanyAnalytics, buildCompanyAnalyticsAsync, CompanyAnalyticsError } from "./analytics/companyAnalytics.js";
 import { buildCompanyBriefReadback, buildCompanyBriefReadbackAsync, CompanyBriefReadbackError } from "./briefs/companyBriefReadback.js";
+import { CompanyBriefDeliveryError, deliverCompanyBriefHome, readLatestCompanyBriefDelivery, readLatestCompanyBriefDeliveryAsync } from "./briefs/companyBriefDelivery.js";
 import { computeNextAutomationOccurrence } from "./runs/automationScheduler.js";
 import { durableSchedulerOwner, runDurableAutomationSchedulerOnce } from "./runs/durableAutomationScheduler.js";
+import { runNaturalSchedulerSoak } from "./runs/naturalSchedulerSoak.js";
 import {
   PORTABLE_WORKER_CANARY_MODE,
   PORTABLE_WORKER_EXTERNAL_MODE,
   portableWorkflowIdForWorkerAdapter
 } from "./runs/portableWorkflowWorker.js";
 import { startPortableWorkflowRun } from "./runs/portableWorkflowEntrypoint.js";
-import { portableLocalReadOnlyStageForScheduledWorkflow, type PortableLocalWorkflowId } from "./runs/portableLocalWorkflow.js";
+import { preparePortableLocalObsidianBusinessAdmission, portableLocalReadOnlyStageForScheduledWorkflow, type PortableLocalWorkflowId } from "./runs/portableLocalWorkflow.js";
 import { startPortableLocalWorkflowRun } from "./runs/portableLocalWorkflowEntrypoint.js";
+import { readPortableRunRecovery, cancelPortableRun, retryPortableRun, requestPortableBackupPostEffectReconciliation } from "./runs/portableRunRecovery.js";
+import { buildPortableRunOperationProjection } from "./runs/portableRunOperationProjection.js";
 import { portableWorkflowManifests } from "./runs/portableWorkflowContract.js";
 import { portableReadOnlyStageForScheduledWorkflow, portableScheduleDispatchForRegisteredAutomation, portableWorkflowIdForRegisteredAutomation, portableLocalWorkflowIdForRegisteredAutomation } from "./runs/portableScheduleDispatch.js";
 import { runMvpStateInChild } from "./runs/mvpStateProcess.js";
@@ -256,10 +273,13 @@ import { projectMvpStateForUi, type MvpStateProjection } from "./runs/mvpStatePr
 import { browserAuthRefForBackendSnapshot, buildWebOperationBackendRunSnapshot, buildWebOperationBackendRunSnapshotAsync, readWebOperationBackendSetting, resolveWebOperationBackend, webOperationBackendReadbackAsync, writeWebOperationBackendSettingAsync } from "./runs/webOperationBackendSettings.js";
 import { refreshChromePluginReadback } from "./browser/chromePluginReadback.js";
 import { runResearchPlanSchedulerInChild } from "./runs/researchPlanSchedulerProcess.js";
-import { classifyPostgresMvpStateError, postgresMvpStateQueryTimeoutMs, readPostgresMvpState, startupMvpStateWarmupOptions, warmPostgresMvpState, warmPostgresMvpStatePool } from "./runs/postgresMvpState.js";
+import { classifyPostgresMvpStateError, postgresMvpStateQueryTimeoutMs, readPostgresMvpState, startupMvpStateWarmupOptions, warmPostgresMvpState, warmPostgresMvpStatePool, type MvpStateReadTiming } from "./runs/postgresMvpState.js";
 import {
   claimPortableMacWorker,
   claimPortableMacWorkerAsync,
+  claimPortableBackupPostEffectReconciliation,
+  claimPortableBackupPostEffectReconciliationAsync,
+  recordPortableBackupPostEffectEvidenceAsync,
   recordPortableMacWorkerReceipt,
   recordPortableMacWorkerReceiptAsync,
   requeuePortableMacWorkerAfterApproval,
@@ -519,15 +539,16 @@ app.get("/api/v1/companies/:companyId/automations", async (req, res) => {
       requireCompanyAccess(companyId);
     }
     const includeArchived = String(req.query.include_archived ?? "") === "true";
-    const [records, schedules] = dbBackend === "postgres"
+    const [records, schedules, connectionRefs] = dbBackend === "postgres"
       ? await Promise.all([
         listAutomationRecordsAsync(companyId, includeArchived),
-        listAutomationSchedulesAsync(companyId)
+        listAutomationSchedulesAsync(companyId),
+        listCompanyConnectionRefsAsync(companyId)
       ])
-      : [listAutomationRecords(companyId, includeArchived), listAutomationSchedules(companyId)];
+      : [listAutomationRecords(companyId, includeArchived), listAutomationSchedules(companyId), listCompanyConnectionRefs(companyId)];
     const scheduleMap = new Map(schedules.map((schedule) => [schedule.automationId, schedule]));
     const automations = records
-      .map((automation) => automationApiView(automation, scheduleMap.get(automation.id) ?? null));
+      .map((automation) => automationApiView(automation, scheduleMap.get(automation.id) ?? null, resolveGmailExecutionTarget(automation, connectionRefs)));
     res.json({ ok: true, automations, count: automations.length, company_scope: { enforced: true, company_id: companyId } });
   } catch (error) {
     sendAutomationApiError(res, error, "automation_list_failed");
@@ -541,6 +562,19 @@ app.get("/api/v1/registered-automation-catalog", (_req, res) => {
     catalog: listRegisteredAutomationCatalog(),
     external_action_executed: false
   });
+});
+
+app.get("/api/v1/companies/:companyId/canonical-automation-registry", async (req, res) => {
+  try {
+    if (dbBackend === "postgres") await initializePostgresSchemaAsync();
+    else initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    if (dbBackend === "postgres") await requireCompanyAccessAsync(companyId);
+    else requireCompanyAccess(companyId);
+    res.json({ ok: true, ...buildCanonicalAutomationRegistryReadback(companyId) });
+  } catch (error) {
+    sendAutomationApiError(res, error, "canonical_automation_registry_readback_failed");
+  }
 });
 
 app.post("/api/v1/companies/:companyId/registered-automations/adopt", async (req, res) => {
@@ -577,6 +611,44 @@ app.post("/api/v1/companies/:companyId/registered-automations/adopt", async (req
   }
 });
 
+app.post("/api/v1/companies/:companyId/brief/deliver", async (req, res) => {
+  try {
+    if (dbBackend === "postgres") await initializePostgresSchemaAsync();
+    else initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    if (dbBackend === "postgres") await requireCompanyAccessAsync(companyId, ["owner", "admin", "operator"]);
+    else requireCompanyAccess(companyId, ["owner", "admin", "operator"]);
+    const idempotencyKey = requireIdempotencyKey(req.header("idempotency-key"));
+    const body = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
+    const result = await deliverCompanyBriefHome({
+      companyId,
+      briefType: body.brief_type,
+      businessDate: body.business_date,
+      timezone: body.timezone,
+      templateVersion: body.template_version,
+      idempotencyKey
+    });
+    res.status(result.replayed ? 200 : 201).json({ ok: true, replayed: result.replayed, ...result.response });
+  } catch (error) {
+    const code = error instanceof CompanyBriefDeliveryError || error instanceof IdempotencyError
+      ? error.code
+      : error instanceof Error && (error.message === "company_scope_forbidden" || error.message === "company_not_found")
+        ? error.message
+        : "company_brief_delivery_failed";
+    const status = code === "company_scope_forbidden" || code === "company_not_found"
+      ? 404
+      : code.startsWith("idempotency_") ? 409
+        : error instanceof CompanyBriefDeliveryError || error instanceof AutomationContractError ? 400 : 500;
+    res.status(status).json({
+      ok: false,
+      error: code,
+      exact_blocker: code,
+      external_action_executed: false,
+      company_scope: { enforced: true, company_id: String(req.params.companyId ?? "").trim() }
+    });
+  }
+});
+
 app.get("/api/v1/companies/:companyId/brief", async (req, res) => {
   try {
     if (dbBackend === "postgres") await initializePostgresSchemaAsync();
@@ -599,10 +671,20 @@ app.get("/api/v1/companies/:companyId/brief", async (req, res) => {
     const bundle = dbBackend === "postgres"
       ? await buildCompanyBriefReadbackAsync({ companyId, briefType, businessDate, timezone, templateVersion })
       : buildCompanyBriefReadback({ companyId, briefType, businessDate, timezone, templateVersion });
+    const latestDelivery = dbBackend === "postgres"
+      ? await readLatestCompanyBriefDeliveryAsync({ companyId, briefType, businessDate, timezone, templateVersion })
+      : readLatestCompanyBriefDelivery({ companyId, briefType, businessDate, timezone, templateVersion });
+    const matchesCurrent = latestDelivery?.output_fingerprint === bundle.output_fingerprint;
+    const responseBundle = {
+      ...bundle,
+      delivery: matchesCurrent ? latestDelivery : bundle.delivery,
+      latest_delivery: latestDelivery,
+      latest_delivery_matches_current: Boolean(matchesCurrent)
+    };
     res.setHeader("Cache-Control", "private, no-store");
     res.json({
       ok: true,
-      ...bundle,
+      ...responseBundle,
       source_of_truth: dbBackend === "postgres" ? "production_aos_database" : "local_aos_database",
       read_only: true,
       external_action_executed: false,
@@ -641,7 +723,7 @@ app.get("/api/v1/companies/:companyId/analytics/performance", async (req, res) =
     const automationId = typeof req.query.automation_id === "string" && req.query.automation_id.trim()
       ? req.query.automation_id.trim()
       : null;
-    if (automationId && !getAutomationRecord(companyId, automationId, true)) {
+    if (automationId && !(dbBackend === "postgres" ? await getAutomationRecordAsync(companyId, automationId, true) : getAutomationRecord(companyId, automationId, true))) {
       res.status(404).json({ ok: false, error: "analytics_automation_not_found", exactBlocker: "analytics_automation_not_found" });
       return;
     }
@@ -677,9 +759,10 @@ app.post("/api/v1/companies/:companyId/automations", (req, res) => {
       idempotencyKey,
       idempotencyRequest: req.body
     });
+    const connectionRefs = listCompanyConnectionRefs(companyId);
     res.status(201).json({
       ok: true,
-      automation: automationApiView(automation),
+      automation: automationApiView(automation, undefined, resolveGmailExecutionTarget(automation, connectionRefs)),
       receipt: automationReceipt("automation.created", automation),
       external_action_executed: false
     });
@@ -701,9 +784,12 @@ app.get("/api/v1/companies/:companyId/automations/:automationId", async (req, re
     const schedule = (dbBackend === "postgres"
       ? (await listAutomationSchedulesAsync(companyId, automation.id))[0]
       : listAutomationSchedules(companyId, automation.id)[0]) ?? null;
+    const connectionRefs = dbBackend === "postgres"
+      ? await listCompanyConnectionRefsAsync(companyId)
+      : listCompanyConnectionRefs(companyId);
     res.json({
       ok: true,
-      automation: automationApiView(automation, schedule),
+      automation: automationApiView(automation, schedule, resolveGmailExecutionTarget(automation, connectionRefs)),
       schedule,
       deep_link: `#/projects/${encodeURIComponent(companyId)}/automations/${encodeURIComponent(automation.id)}/edit`,
       company_scope: { enforced: true, company_id: companyId }
@@ -725,7 +811,8 @@ app.patch("/api/v1/companies/:companyId/automations/:automationId", (req, res) =
       automationId: String(req.params.automationId ?? "").trim(),
       patch
     });
-    res.json({ ok: true, automation: automationApiView(automation), receipt: automationReceipt("automation.updated", automation), external_action_executed: false });
+    const connectionRefs = listCompanyConnectionRefs(companyId);
+    res.json({ ok: true, automation: automationApiView(automation, undefined, resolveGmailExecutionTarget(automation, connectionRefs)), receipt: automationReceipt("automation.updated", automation), external_action_executed: false });
   } catch (error) {
     sendAutomationApiError(res, error, "automation_patch_failed");
   }
@@ -758,7 +845,8 @@ app.delete("/api/v1/companies/:companyId/automations/:automationId", (req, res) 
       automationId: String(req.params.automationId ?? "").trim(),
       expectedRevision
     });
-    res.json({ ok: true, automation: automationApiView(automation), receipt: automationReceipt("automation.archived", automation), external_action_executed: false });
+    const connectionRefs = listCompanyConnectionRefs(companyId);
+    res.json({ ok: true, automation: automationApiView(automation, undefined, resolveGmailExecutionTarget(automation, connectionRefs)), receipt: automationReceipt("automation.archived", automation), external_action_executed: false });
   } catch (error) {
     sendAutomationApiError(res, error, "automation_archive_failed");
   }
@@ -874,6 +962,35 @@ app.post("/api/v1/companies/:companyId/automations/:automationId/dry-runs", (req
 });
 
 /**
+ * Authenticated Gmail source acquisition entrypoint. Source facts are supplied
+ * only by the approved server transport; this public route accepts no caller
+ * headers or message facts. The transport is intentionally explicit here so
+ * an unavailable production binding fails closed without creating a Run.
+ */
+app.post("/api/v1/companies/:companyId/runs/:runId/gmail-source-acquisition", async (req, res) => {
+  try {
+    if (dbBackend !== "postgres") initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    await requireCompanyAccessAsync(companyId, ["owner", "admin", "operator"]);
+    const messageId = typeof req.body?.message_id === "string" ? req.body.message_id.trim() : "";
+    if (!messageId || Object.keys(req.body ?? {}).some((key) => key !== "message_id")) throw new Error("gmail_source_acquisition_body_invalid");
+    const result = await acquireGmailSource({ companyId, sourceRunId: String(req.params.runId ?? "").trim(), messageId,
+      transport: createApprovedGmailSourceTransport({}) });
+    if ((result.acquisition.authenticated_context as { company_id?: unknown }).company_id !== companyId) throw new Error("gmail_source_acquisition_company_mismatch");
+    res.status(201).json({ ok: true, ...result });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "gmail_source_acquisition_failed";
+    const code = /^[a-z][a-z0-9_:.-]{0,180}$/u.test(message) ? message : "gmail_source_acquisition_failed";
+    res.status(/not_found|company_scope_forbidden/u.test(code) ? 404 : /body_invalid/u.test(code) ? 400 : 409).json({ ok: false, error: code,
+      provider_called: error && typeof error === "object" && "providerCalled" in error && (error as { providerCalled?: unknown }).providerCalled === true,
+      provider_call_uncertain: error && typeof error === "object" && "providerCallUncertain" in error && (error as { providerCallUncertain?: unknown }).providerCallUncertain === true,
+      run_started: false, approval_created: false,
+      external_action_executed: error && typeof error === "object" && "externalActionExecuted" in error ? (error as { externalActionExecuted?: unknown }).externalActionExecuted : false,
+      external_effect_uncertain: error && typeof error === "object" && "providerCallUncertain" in error && (error as { providerCallUncertain?: unknown }).providerCallUncertain === true });
+  }
+});
+
+/**
  * Stable provider-neutral entrypoint for Codex App, Claude, or another caller.
  * The trigger only admits an AOS control-plane preflight/no-effect job. An
  * external effect must be started by a later, workflow-specific adapter after
@@ -927,6 +1044,19 @@ app.post("/api/v1/companies/:companyId/automations/:automationId/trigger", async
     const localWorkflowId = registeredWorkflow
       ? portableLocalWorkflowIdForRegisteredAutomation({ workerCommandKind: registeredWorkflow.runner_kind })
       : portableLocalWorkflowIdForRegisteredAutomation(automation!);
+    const rawInputBundle = req.body?.input_bundle;
+    let triggerInputBundle = rawInputBundle;
+    if (automation && localWorkflowId === "email-review-reply"
+      && (rawInputBundle === undefined || rawInputBundle === null || (typeof rawInputBundle === "object" && !Array.isArray(rawInputBundle)))) {
+      const connectionRefs = postgres
+        ? await listCompanyConnectionRefsAsync(companyId)
+        : listCompanyConnectionRefs(companyId);
+      triggerInputBundle = bindGmailExecutionTargetToRunInput({
+        automation,
+        connectionRefs,
+        inputBundle: rawInputBundle ?? null
+      });
+    }
     if (portableWorkflowId || localWorkflowId) {
       const started = portableWorkflowId
         ? await startPortableWorkflowRun({
@@ -939,7 +1069,7 @@ app.post("/api/v1/companies/:companyId/automations/:automationId/trigger", async
             readOnlyStage: portableReadOnlyStageForScheduledWorkflow(portableWorkflowId, {
               hasInputBundle: req.body?.input_bundle !== undefined && req.body?.input_bundle !== null
             }),
-            ...(req.body?.input_bundle !== undefined ? { inputBundle: req.body.input_bundle } : {}),
+            ...(triggerInputBundle !== undefined ? { inputBundle: triggerInputBundle } : {}),
             ...(req.body?.web_operation_intent !== undefined ? { webOperationIntent: req.body.web_operation_intent } : {}),
             ...(req.body?.companion_task_id !== undefined ? { companionTaskId: req.body.companion_task_id } : {})
           })
@@ -952,7 +1082,7 @@ app.post("/api/v1/companies/:companyId/automations/:automationId/trigger", async
             companyId,
             readOnlyStage: req.body?.effect_stage ? undefined : portableLocalReadOnlyStageForScheduledWorkflow(localWorkflowId!),
             ...(req.body?.effect_stage !== undefined ? { effectStage: req.body.effect_stage } : {}),
-            ...(req.body?.input_bundle !== undefined ? { inputBundle: req.body.input_bundle } : {})
+            ...(triggerInputBundle !== undefined ? { inputBundle: triggerInputBundle } : {})
       });
       if (!started.replayed) recordRunAwaitingWorkerLoop(started.runId, "portable_workflow_aos_trigger");
       const operationSurface = portableWorkflowId && "webOperationBackendRunSnapshot" in started
@@ -1603,7 +1733,7 @@ app.post("/api/v1/companies/:companyId/scheduler/run-once", async (req, res) => 
     const companyId = String(req.params.companyId ?? "").trim();
     if (dbBackend === "postgres") await requireCompanyAccessAsync(companyId, ["owner", "admin", "operator"]);
     else requireCompanyAccess(companyId, ["owner", "admin", "operator"]);
-    const result = await runDurableAutomationSchedulerOnceSerialized();
+    const result = await runDurableAutomationSchedulerOnceSerialized({ companyId });
     if (result.status !== "idle" && !result.checkedCompanyIds.includes(companyId)) {
       res.status(404).json({ ok: false, error: "scheduler_company_not_found", exactBlocker: "scheduler_company_not_found", external_action_executed: false });
       return;
@@ -1618,6 +1748,123 @@ app.post("/api/v1/companies/:companyId/scheduler/run-once", async (req, res) => 
     });
   } catch (error) {
     sendAutomationApiError(res, error, "automation_scheduler_run_once_failed");
+  }
+});
+
+app.post("/api/v1/companies/:companyId/scheduler/natural-tick", async (req, res) => {
+  try {
+    if (dbBackend === "postgres") await initializePostgresSchemaAsync();
+    else initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    if (dbBackend === "postgres") await requireCompanyAccessAsync(companyId, ["owner", "admin", "operator"]);
+    else requireCompanyAccess(companyId, ["owner", "admin", "operator"]);
+    const result = await runDurableAutomationSchedulerOnceSerialized({ companyId, now: nowIso() });
+    res.status(result.status === "blocked" ? 503 : 200).json({
+      ok: result.status !== "blocked",
+      schema: "aos.natural_scheduler_tick.v1",
+      source_trigger: "aos_natural_scheduler_tick",
+      company_scope: { enforced: true, company_id: companyId },
+      tick: result,
+      external_action_executed: false,
+      secret_material_included: false
+    });
+  } catch (error) {
+    sendAutomationApiError(res, error, "natural_scheduler_tick_failed");
+  }
+});
+
+app.post("/api/v1/companies/:companyId/scheduler/soak", async (req, res) => {
+  try {
+    if (dbBackend === "postgres") await initializePostgresSchemaAsync();
+    else initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    if (dbBackend === "postgres") await requireCompanyAccessAsync(companyId, ["owner", "admin", "operator"]);
+    else requireCompanyAccess(companyId, ["owner", "admin", "operator"]);
+    const cycles = req.body?.cycles === undefined ? 3 : Number(req.body.cycles);
+    const intervalMs = req.body?.interval_ms === undefined ? 1_000 : Number(req.body.interval_ms);
+    const result = await runNaturalSchedulerSoak({
+      companyId,
+      cycles,
+      intervalMs,
+      runTick: (input) => runDurableAutomationSchedulerOnceSerialized(input)
+    });
+    res.status(result.status === "blocked" ? 503 : 200).json({
+      ok: result.status !== "blocked",
+      ...result,
+      source_trigger: "aos_natural_scheduler_soak",
+      company_scope: { enforced: true, company_id: companyId },
+      secret_material_included: false
+    });
+  } catch (error) {
+    sendAutomationApiError(res, error, "natural_scheduler_soak_failed");
+  }
+});
+
+/**
+ * Company 1-only entrypoint for the fixed Obsidian private-backup effect.
+ * The route performs a fresh no-effect admission first and creates the normal
+ * target-bound AOS approval. It never accepts a caller-supplied repository,
+ * branch, command, or arbitrary payload.
+ */
+app.post("/api/v1/companies/:companyId/portable-local/obsidian-project-memory-audit/business-run", async (req, res) => {
+  try {
+    if (dbBackend === "postgres") await initializePostgresSchemaAsync();
+    else initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    if (companyId !== "company_2560580981cedfd106b66245") {
+      res.status(404).json({ ok: false, error: "portable_local_company_not_allowed", exactBlocker: "portable_local_company_not_allowed", external_action_executed: false });
+      return;
+    }
+    if (dbBackend === "postgres") await requireCompanyAccessAsync(companyId, ["owner", "admin", "operator"]);
+    else requireCompanyAccess(companyId, ["owner", "admin", "operator"]);
+    const now = nowIso();
+    const admission = preparePortableLocalObsidianBusinessAdmission({
+      companyId,
+      dueKey: `manual:obsidian:${now}`,
+      scheduledFor: now
+    });
+    if (admission.status !== "ready" || !admission.inputBundle) {
+      res.status(409).json({
+        ok: false,
+        accepted: false,
+        workflow_id: "obsidian-project-memory-audit",
+        exactBlocker: admission.exact_blocker ?? "portable_local_source_snapshot_not_ready",
+        source_snapshot: admission.sourceSnapshot,
+        external_action_executed: false,
+        company_scope: { enforced: true, company_id: companyId }
+      });
+      return;
+    }
+    const idempotencyKey = `ui:obsidian-business:${now.replace(/[^0-9]/gu, "")}`;
+    const started = await startPortableLocalWorkflowRun({
+      workflowId: "obsidian-project-memory-audit",
+      sourceTrigger: "automation_os_ui",
+      idempotencyKey,
+      registeredAutomationId: "obsidian-project-memory-audit",
+      companyId,
+      effectStage: "business_execute",
+      inputBundle: admission.inputBundle,
+      sourceSnapshot: admission.sourceSnapshot
+    });
+    if (!started.replayed) recordRunAwaitingWorkerLoop(started.runId, "portable_local_obsidian_business_start");
+    const approval = (dbBackend === "postgres"
+      ? (await querySqlAsync<{ id: string; status: string }>(`SELECT id, status FROM approvals WHERE run_id=${sqlValue(started.runId)} ORDER BY created_at ASC LIMIT 1`))[0]
+      : querySql<{ id: string; status: string }>(`SELECT id, status FROM approvals WHERE run_id=${sqlValue(started.runId)} ORDER BY created_at ASC LIMIT 1`)[0]) ?? null;
+    res.status(202).json({
+      ok: true,
+      accepted: true,
+      replayed: started.replayed,
+      workflow_id: "obsidian-project-memory-audit",
+      run: { id: started.runId, status: started.status, company_id: companyId },
+      approval,
+      source_snapshot: admission.sourceSnapshot,
+      fixed_target: { account_ref: "github:nick353/obsidian-vault-backup", target_key: "obsidian-vault-backup:main", repository: "https://github.com/nick353/obsidian-vault-backup.git", branch: "main" },
+      next_action: approval?.status === "pending" ? "approve the exact AOS target-bound approval, then read back the Mac worker receipt" : "read back the run and Mac worker receipt",
+      external_action_executed: false,
+      company_scope: { enforced: true, company_id: companyId }
+    });
+  } catch (error) {
+    sendAutomationApiError(res, error, "portable_local_obsidian_business_run_failed");
   }
 });
 
@@ -1861,10 +2108,40 @@ app.get("/api/v1/companies/:companyId/approvals", async (req, res) => {
     const companyId = String(req.params.companyId ?? "").trim();
     if (dbBackend === "postgres") await requireCompanyAccessAsync(companyId);
     else requireCompanyAccess(companyId);
+    const rawLimit = req.query.limit;
+    if (rawLimit !== undefined && rawLimit !== "" && typeof rawLimit !== "string") {
+      throw new BoundApprovalError("approval_limit_scalar_required");
+    }
+    const limit = rawLimit === undefined || rawLimit === "" ? undefined : Number(rawLimit);
+    if (limit !== undefined && (!Number.isFinite(limit) || !Number.isInteger(limit) || limit < 1)) {
+      throw new BoundApprovalError("approval_limit_invalid");
+    }
+    const boundedLimit = limit === undefined ? 200 : Math.min(500, limit);
+    const rawRunId = req.query.run_id;
+    const rawStatus = req.query.status;
+    const rawActionKind = req.query.action_kind;
+    if ((rawRunId !== undefined && typeof rawRunId !== "string")
+      || (rawStatus !== undefined && typeof rawStatus !== "string")
+      || (rawActionKind !== undefined && typeof rawActionKind !== "string")) {
+      throw new BoundApprovalError("approval_query_scalar_required");
+    }
+    const runId = typeof rawRunId === "string" ? rawRunId.trim() : undefined;
+    const status = typeof rawStatus === "string" ? rawStatus.trim() : undefined;
+    const actionKind = typeof rawActionKind === "string" ? rawActionKind.trim() : undefined;
+    if (status && !new Set(["pending", "approved", "rejected", "cancelled"]).has(status)) {
+      throw new BoundApprovalError("approval_status_invalid");
+    }
+    const query = { limit: boundedLimit, runId, status, actionKind };
     const approvals = dbBackend === "postgres"
-      ? await listCompanyApprovalsAsync(companyId)
-      : listCompanyApprovals(companyId);
-    res.json({ ok: true, approvals: approvals.map(boundApprovalApiView), company_scope: { enforced: true, company_id: companyId } });
+      ? await listCompanyApprovalsAsync(companyId, query)
+      : listCompanyApprovals(companyId, query);
+    res.json({
+      ok: true,
+      approvals: approvals.map(boundApprovalApiView),
+      count: approvals.length,
+      query: { limit: boundedLimit, run_id: runId ?? null, status: status ?? null, action_kind: actionKind ?? null },
+      company_scope: { enforced: true, company_id: companyId }
+    });
   } catch (error) {
     sendBoundApprovalError(res, error, "approval_list_failed");
   }
@@ -1894,7 +2171,7 @@ app.post("/api/v1/companies/:companyId/approvals", (req, res) => {
   }
 });
 
-app.patch("/api/v1/companies/:companyId/approvals/:approvalId", (req, res) => {
+app.patch("/api/v1/companies/:companyId/approvals/:approvalId", async (req, res) => {
   try {
     initDb();
     const companyId = String(req.params.companyId ?? "").trim();
@@ -1906,7 +2183,7 @@ app.patch("/api/v1/companies/:companyId/approvals/:approvalId", (req, res) => {
     const approval = decideBoundApproval({ companyId, approvalId: String(req.params.approvalId ?? "").trim(), actorUserId: currentActorUserId(), decision, expectedRevision, note: typeof req.body?.note === "string" ? req.body.note : null });
     const targetAdmission = syncTargetAdmissionApproval({ companyId, approvalId: approval.id, approvalStatus: approval.status });
     if (approval.status === "rejected" && approval.runId) {
-      blockRunAfterApprovalReject(approval.runId);
+      await stopRunBeforeApprovalEffect(companyId, approval.runId, "rejected");
     }
     const effectKey = targetAdmission ? targetAdmissionEffectKey({ companyId, admissionId: targetAdmission.id }) : null;
     const effectLedger = approval.status === "approved" && effectKey && getDurableTaskEffect(companyId, effectKey)
@@ -1958,17 +2235,17 @@ app.get("/api/v1/companies/:companyId/memory", async (req, res) => {
   }
 });
 
-app.get("/api/v1/companies/:companyId/presentation-profile", (req, res) => {
+app.get("/api/v1/companies/:companyId/presentation-profile", async (req, res) => {
   try {
-    initDb();
+    if (dbBackend !== "postgres") initDb();
     const companyId = String(req.params.companyId ?? "").trim();
-    const company = requireCompanyAccess(companyId);
-    const profile = buildPersistedProjectPresentationProfile(company, readMvpAutomations([companyId]));
-    const memory = listCompanyMemory(companyId).find((entry) => entry.key === "project_profile");
+    const company = dbBackend === "postgres" ? await requireCompanyAccessAsync(companyId) : requireCompanyAccess(companyId);
+    const profile = dbBackend === "postgres" ? await buildPersistedProjectPresentationProfileAsync(company)
+      : buildPersistedProjectPresentationProfile(company, readMvpAutomations([companyId]));
     res.json({
       ok: true,
       profile,
-      revision: memory?.revision ?? 0,
+      revision: profile.revision ?? 0,
       source: profile.source,
       company_scope: { enforced: true, company_id: companyId }
     });
@@ -1977,14 +2254,15 @@ app.get("/api/v1/companies/:companyId/presentation-profile", (req, res) => {
   }
 });
 
-app.put("/api/v1/companies/:companyId/presentation-profile", (req, res) => {
+app.put("/api/v1/companies/:companyId/presentation-profile", async (req, res) => {
   try {
-    initDb();
+    if (dbBackend !== "postgres") initDb();
     const companyId = String(req.params.companyId ?? "").trim();
-    const company = requireCompanyAccess(companyId, ["owner", "admin", "operator"]);
+    const company = dbBackend === "postgres" ? await requireCompanyAccessAsync(companyId, ["owner", "admin", "operator"])
+      : requireCompanyAccess(companyId, ["owner", "admin", "operator"]);
     const body = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body as Record<string, unknown> : {};
     const override = parseProjectPresentationProfileOverride(body.profile ?? body.presentation_profile ?? {});
-    const existing = listCompanyMemory(companyId).find((entry) => entry.key === "project_profile");
+    const existing = (dbBackend === "postgres" ? await listCompanyMemoryAsync(companyId) : listCompanyMemory(companyId)).find((entry) => entry.key === "project_profile");
     const expectedRevision = body.expected_revision === undefined || body.expected_revision === null
       ? null
       : Number(body.expected_revision);
@@ -2000,7 +2278,7 @@ app.put("/api/v1/companies/:companyId/presentation-profile", (req, res) => {
       }
       mergedOverride = { ...previousOverride, ...override };
     }
-    const memory = saveCompanyMemory({
+    const memory = await (dbBackend === "postgres" ? saveCompanyMemoryAsync : saveCompanyMemory)({
       companyId,
       actorUserId: currentActorUserId(),
       memory: {
@@ -2011,7 +2289,8 @@ app.put("/api/v1/companies/:companyId/presentation-profile", (req, res) => {
         expectedRevision
       }
     });
-    const profile = buildPersistedProjectPresentationProfile(company, readMvpAutomations([companyId]));
+    const profile = dbBackend === "postgres" ? await buildPersistedProjectPresentationProfileAsync(company)
+      : buildPersistedProjectPresentationProfile(company, readMvpAutomations([companyId]));
     res.json({
       ok: true,
       profile,
@@ -2043,6 +2322,24 @@ app.put("/api/v1/companies/:companyId/memory/:memoryKey", (req, res) => {
   }
 });
 
+app.get("/api/v1/companies/:companyId/lanes/readback", async (req, res) => {
+  try {
+    if (dbBackend !== "postgres") initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    if (dbBackend === "postgres") await requireCompanyAccessAsync(companyId);
+    else requireCompanyAccess(companyId);
+    const sql = `SELECT s.lane_id, COUNT(*) AS step_count, COUNT(DISTINCT r.id) AS run_count,
+      MAX(COALESCE(s.completed_at, s.started_at, r.updated_at)) AS last_observed_at
+      FROM run_steps s JOIN runs r ON r.id=s.run_id AND r.company_id=s.company_id
+      WHERE r.company_id=${sqlValue(companyId)} AND s.lane_id IS NOT NULL AND TRIM(s.lane_id)<>''
+      GROUP BY s.lane_id ORDER BY s.lane_id`;
+    const observed = await (dbBackend === "postgres" ? querySqlAsync : querySql)(sql);
+    res.setHeader("Cache-Control", "private, no-store");
+    res.json({ ok: true, company_id: companyId, company_scope: { enforced: true, company_id: companyId },
+      source: "company_run_steps", observed, captured_at: nowIso(), external_action_executed: false });
+  } catch (error) { sendAutomationApiError(res, error, "company_lanes_read_failed"); }
+});
+
 app.get("/api/v1/companies/:companyId/connection-account-refs", async (req, res) => {
   try {
     if (dbBackend !== "postgres") initDb();
@@ -2067,6 +2364,26 @@ app.get("/api/v1/companies/:companyId/connectors/gmail/read-only-canary", async 
     const companyConnectionRefs = dbBackend === "postgres"
       ? await listCompanyConnectionRefsAsync(companyId)
       : listCompanyConnectionRefs(companyId);
+    const gmailRef = companyConnectionRefs.find((ref) => {
+      const platform = String(ref.platform ?? "").trim().toLowerCase();
+      return (platform === "gmail" || platform === "mail")
+        && ref.status === "verified"
+        && ref.verificationStatus === "verified"
+        && ref.oauthState === "connected";
+    });
+    const persisted = gmailRef ? await readLatestGmailProviderCanaryReadback(companyId, gmailRef.accountRef) : null;
+    if (persisted) {
+      res.setHeader("Cache-Control", "private, no-store");
+      res.json({
+        ok: persisted.status === "completed",
+        readback: persisted,
+        persisted: true,
+        external_action_executed: false,
+        secret_material_included: false,
+        company_scope: { enforced: true, company_id: companyId }
+      });
+      return;
+    }
     const capabilities = getCodexCapabilities({ allowStoredSecretRead: false });
     const registryRecord = dbBackend === "postgres"
       ? await getCompanyCodexRegistryReadbackAsync(companyId)
@@ -2084,6 +2401,172 @@ app.get("/api/v1/companies/:companyId/connectors/gmail/read-only-canary", async 
     sendAutomationApiError(res, error, "gmail_read_only_canary_failed");
   }
 });
+
+app.post(["/api/v1/companies/:companyId/connectors/gmail/provider-read-only-canary", "/api/v1/companies/:companyId/connectors/gmail/review-read-only"], async (req, res) => {
+  const companyId = String(req.params.companyId ?? "").trim();
+  let canaryRunId = "not_started";
+  try {
+    if (dbBackend !== "postgres") initDb();
+    const reviewRequested = req.path.endsWith("/review-read-only");
+    if (dbBackend === "postgres") await requireCompanyAccessAsync(companyId, reviewRequested ? ["owner", "admin", "operator"] : ["owner", "admin"]);
+    else requireCompanyAccess(companyId, reviewRequested ? ["owner", "admin", "operator"] : ["owner", "admin"]);
+    const companyConnectionRefs = dbBackend === "postgres"
+      ? await listCompanyConnectionRefsAsync(companyId)
+      : listCompanyConnectionRefs(companyId);
+    const gmailRef = companyConnectionRefs.find((ref) => {
+      const platform = String(ref.platform ?? "").trim().toLowerCase();
+      return (platform === "gmail" || platform === "mail")
+        && ref.status === "verified"
+        && ref.verificationStatus === "verified"
+        && ref.oauthState === "connected";
+    });
+    if (!gmailRef) throw new Error("gmail_company_connection_unverified");
+    const runId = reviewRequested ? String(req.body?.run_id ?? "").trim()
+      : `gmail-provider-canary-${createHash("sha256").update(`${companyId}:${gmailRef.accountRef}:${Date.now()}`, "utf8").digest("hex").slice(0, 24)}`;
+    canaryRunId = runId || canaryRunId;
+    if (reviewRequested) {
+      if (!runId) throw new Error("gmail_review_run_id_required");
+      const sql = `SELECT metadata_json FROM runs WHERE id=${sqlValue(runId)} AND company_id=${sqlValue(companyId)} AND status='running' LIMIT 1`;
+      const rows = dbBackend === "postgres" ? await querySqlAsync<{ metadata_json: string }>(sql) : querySql<{ metadata_json: string }>(sql);
+      const metadata = rows[0] ? JSON.parse(rows[0].metadata_json) : {};
+      if (metadata.portable_workflow_invocation?.workflow_id !== "email-review-reply") throw new Error("gmail_review_company_run_binding_invalid");
+      const runBundle = metadata.portable_input_bundle?.input;
+      const boundRef = requireGmailRunConnectionRef({ companyId, inputBundle: runBundle, connectionRefs: companyConnectionRefs });
+      const review = await runGmailReviewReadOnly({ runId, companyId, accountRef: boundRef.accountRef });
+      res.json({ ok: review.status === "complete", review, company_scope: { enforced: true, company_id: companyId } });
+      return;
+    }
+    const readback = await runGmailProviderReadOnlyCanary({
+      runId,
+      companyId,
+      accountRef: gmailRef.accountRef
+    });
+    await persistGmailProviderCanaryReadback(readback);
+    res.status(readback.status === "completed" ? 200 : 409).json({
+      ok: readback.status === "completed",
+      readback,
+      external_action_executed: false,
+      secret_material_included: false,
+      company_scope: { enforced: true, company_id: companyId }
+    });
+  } catch (error) {
+    const blocked = gmailProviderReadOnlyCanaryErrorReadback({ companyId, runId: canaryRunId, error });
+    res.status(503).json({
+      ok: false,
+      status: "blocked",
+      readback: blocked,
+      external_action_executed: false,
+      secret_material_included: false,
+      company_scope: { enforced: true, company_id: companyId }
+    });
+  }
+});
+
+async function persistGmailProviderCanaryReadback(readback: GmailProviderReadOnlyCanaryReadback): Promise<void> {
+  const capturedAt = nowIso();
+  const stages = [
+    { name: "provider_receipt", status: readback.providerReceipt ? "completed" : "blocked", verified: Boolean(readback.providerReceipt) },
+    { name: "source_sync", status: readback.sourceSync.status === "verified" ? "completed" : "blocked", verified: readback.sourceSync.status === "verified" },
+    { name: "reconciliation", status: readback.reconciliation.status === "verified" ? "completed" : "blocked", verified: readback.reconciliation.status === "verified" },
+    { name: "cleanup", status: readback.cleanup.status === "verified" ? "completed" : "blocked", verified: readback.cleanup.status === "verified" }
+  ] as const;
+  const proofIds = Object.fromEntries(stages.map((stage) => [stage.name, makeId("proof_gmail_canary")])) as Record<string, string>;
+  const stepIds = Object.fromEntries(stages.map((stage) => [stage.name, makeId("step_gmail_canary")])) as Record<string, string>;
+  const metadata = {
+    schema: readback.schema,
+    gmail_provider_canary: readback,
+    external_action_executed: false,
+    secret_material_included: false,
+    persisted_at: capturedAt
+  };
+  const resourceSteps = [
+    {
+      sql: `INSERT INTO runs
+        (id, company_id, automation_id, automation_version_id, name, status, objective, created_at, updated_at, metadata_json, execution_source, quarantined, readback_proof_id)
+        VALUES (${sqlValue(readback.runId)}, ${sqlValue(readback.companyId)}, NULL, NULL,
+          ${sqlValue("Gmail provider read-only canary")}, ${sqlValue(readback.status)},
+          ${sqlValue("Verify the company-scoped Gmail profile provider receipt without message access or external effects")},
+          ${sqlValue(capturedAt)}, ${sqlValue(capturedAt)}, ${sqlValue(metadata)},
+          'aos_gmail_provider_canary', 0, ${sqlValue(proofIds.cleanup)})`,
+      expectChanges: 1
+    },
+    ...stages.map((stage) => ({
+      sql: `INSERT INTO run_steps
+        (id, run_id, company_id, name, status, lane_id, started_at, completed_at, metadata_json)
+        VALUES (${sqlValue(stepIds[stage.name])}, ${sqlValue(readback.runId)}, ${sqlValue(readback.companyId)}, ${sqlValue(stage.name)}, ${sqlValue(stage.status)}, NULL, ${sqlValue(capturedAt)}, ${sqlValue(capturedAt)}, ${sqlValue({ schema: readback.schema, stage: stage.name, verified: stage.verified, external_action_executed: false })})`,
+      expectChanges: 1
+    })),
+    ...stages.map((stage) => ({
+      sql: `INSERT INTO proofs
+        (id, company_id, run_id, step_id, artifact_id, attempt_id, fencing_token, proof_type, label, uri, size_bytes, created_at, metadata_json)
+        VALUES (${sqlValue(proofIds[stage.name])}, ${sqlValue(readback.companyId)}, ${sqlValue(readback.runId)}, ${sqlValue(stepIds[stage.name])}, NULL, NULL, NULL, ${sqlValue(stage.name)}, ${sqlValue(`Gmail provider canary ${stage.name}`)}, ${sqlValue(`aos://gmail-provider-canary/${readback.runId}/${stage.name}`)}, 0, ${sqlValue(capturedAt)}, ${sqlValue({ schema: readback.schema, stage: stage.name, verified: stage.verified, external_action_executed: false, provider_account_hash: readback.providerAccountHash })})`,
+      expectChanges: 1
+    }))
+  ];
+  if (dbBackend === "postgres") await runSqlTransactionAsync(resourceSteps);
+  else runSqlTransaction(resourceSteps);
+}
+
+async function readLatestGmailProviderCanaryReadback(companyId: string, accountRef: string): Promise<GmailProviderReadOnlyCanaryReadback | null> {
+  const accountHash = createHash("sha256").update(accountRef.trim().toLowerCase(), "utf8").digest("hex");
+  const sql = `SELECT metadata_json FROM runs WHERE company_id=${sqlValue(companyId)} AND execution_source='aos_gmail_provider_canary' ORDER BY updated_at DESC LIMIT 20`;
+  const rows = dbBackend === "postgres"
+    ? await querySqlAsync<{ metadata_json: string }>(sql)
+    : querySql<{ metadata_json: string }>(sql);
+  for (const row of rows) {
+    try {
+      const metadata = JSON.parse(row.metadata_json) as { gmail_provider_canary?: GmailProviderReadOnlyCanaryReadback };
+      const candidate = metadata.gmail_provider_canary;
+      if (!candidate || candidate.providerAccountHash !== accountHash) continue;
+      return candidate;
+    } catch {
+      // Ignore malformed historical metadata and continue to the next scoped row.
+    }
+  }
+  return null;
+}
+
+function gmailProviderReadOnlyCanaryErrorReadback(input: {
+  companyId: string;
+  runId: string;
+  error: unknown;
+}) {
+  const diagnostic = input.error instanceof Error
+    ? `${input.error.name} ${input.error.message}`.toLowerCase()
+    : "";
+  const exactBlocker = /gmail_company_connection_unverified/u.test(diagnostic)
+    ? "gmail_company_connection_unverified"
+    : /authrequired|authentication|required auth|auth(?:entication)?[_ -]?(?:required|failed|missing)|unauthori[sz]ed|login[_ -]?required|oauth|credential|token/u.test(diagnostic)
+    ? "gmail_provider_auth_required"
+    : /transport|websocket|socket|connection|econn|epipe|app server|codex.*server/u.test(diagnostic)
+      ? "gmail_provider_transport_unavailable"
+      : /network|fetch failed|dns|eai_again|enetunreach|enotfound|timeout|timed out/u.test(diagnostic)
+        ? "gmail_provider_network_unavailable"
+        : "gmail_provider_read_only_canary_failed";
+
+  return {
+    schema: "aos.gmail_provider_read_only_canary.v1" as const,
+    status: "blocked" as const,
+    runId: input.runId,
+    companyId: input.companyId,
+    connector: "gmail" as const,
+    operation: "profile_read" as const,
+    transport: "codex_app_server_plugin" as const,
+    providerToolCallObserved: false,
+    providerAccountPresent: false,
+    providerAccountHash: null,
+    exactBlocker,
+    nextAction: "exact blockerを解消してから、新しいRunでprovider read-only canaryを再開する。",
+    externalActionExecuted: false as const,
+    dataRead: false,
+    dataPersisted: false as const,
+    secretMaterialIncluded: false as const,
+    providerReceipt: null,
+    sourceSync: { status: "blocked" as const, exactBlocker },
+    reconciliation: { required: true as const, status: "blocked" as const, exactBlocker },
+    cleanup: { status: "verified" as const, ephemeralThread: true as const }
+  };
+}
 
 app.put("/api/v1/companies/:companyId/connection-account-refs/:platform/:accountRef", async (req, res) => {
   try {
@@ -2167,6 +2650,28 @@ app.post("/api/v1/companies/:companyId/connection-account-refs/:connectionId/rev
   }
 });
 
+app.get("/api/v1/companies/:companyId/production/readback", async (req, res) => {
+  try {
+    if (dbBackend !== "postgres") initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    if (dbBackend === "postgres") await requireCompanyAccessAsync(companyId, ["owner", "admin"]);
+    else requireCompanyAccess(companyId, ["owner", "admin"]);
+    const { browserHealth } = getDashboardExpensiveSnapshot({ allowStoredSecretRead: false });
+    res.setHeader("Cache-Control", "no-store");
+    res.json({
+      ok: true, source: "api_host_runtime", checked_at: nowIso(),
+      company_scope: { enforced: true, company_id: companyId },
+      persistence: { adapter: dbBackend }, deployment: getDashboardDeploymentReadback(),
+      browser: { chromeExtension: browserHealth.chromeExtension },
+      readiness: { status: "unverified", goal_complete: null, production_ready: null,
+        source: "no_company_acceptance_aggregate", next_action: "会社別の業務結果と画面受入を確認してください。配信情報だけでは完了を判定しません。" },
+      external_action_executed: false
+    });
+  } catch (error) {
+    sendAutomationApiError(res, error, "production_readback_failed");
+  }
+});
+
 app.get("/api/v1/admin/diagnostics", async (_req, res) => {
   try {
     if (dbBackend !== "postgres") initDb();
@@ -2240,12 +2745,13 @@ app.put("/api/v1/settings/web-operation-backend", async (req, res) => {
   }
 });
 
-app.get("/api/v1/companies/:companyId/feedback-artifacts/:artifactId", (req, res) => {
+app.get("/api/v1/companies/:companyId/feedback-artifacts/:artifactId", async (req, res) => {
   try {
-    initDb();
+    if (dbBackend !== "postgres") initDb();
     const companyId = String(req.params.companyId ?? "").trim();
-    requireCompanyAccess(companyId, ["owner"]);
-    const artifact = readFeedbackArtifact(companyId, String(req.params.artifactId ?? "").trim());
+    if (dbBackend === "postgres") await requireCompanyAccessAsync(companyId, ["owner"]);
+    else requireCompanyAccess(companyId, ["owner"]);
+    const artifact = await readFeedbackArtifact(companyId, String(req.params.artifactId ?? "").trim());
     if (!artifact) {
       res.status(404).json({ ok: false, error: "feedback_artifact_not_found", exactBlocker: "feedback_artifact_not_found" });
       return;
@@ -2268,11 +2774,17 @@ app.get("/api/v1/companies/:companyId/feedback-artifacts/:artifactId", (req, res
   }
 });
 
-app.get("/api/mvp/feedback", (req, res) => {
-  initDb();
+app.get("/api/mvp/feedback", async (req, res) => {
   try {
-    const scope = resolveCompanyScope(req, false);
-    const feedbacks = readMvpFeedbacks(scope.companyIds);
+    if (dbBackend !== "postgres") initDb();
+    const selectedCompany = requestedCompanyId(req, false);
+    const companyIds = dbBackend === "postgres" ? await actorCompanyIdsAsync() : actorCompanyIds();
+    if (selectedCompany && !companyIds.includes(selectedCompany)) throw new Error("company_scope_forbidden");
+    const scope = { companyIds: selectedCompany ? [selectedCompany] : companyIds };
+    const feedbackId = typeof req.query.feedback_id === "string" ? req.query.feedback_id.trim() : "";
+    if (feedbackId.length > 160) throw new Error("feedback_id_invalid");
+    const feedbacks = dbBackend === "postgres" ? await readMvpFeedbacksAsync(scope.companyIds, feedbackId) : readMvpFeedbacks(scope.companyIds, feedbackId);
+    res.setHeader("Cache-Control", "no-store");
     res.json({
       ok: true,
       feedbacks,
@@ -2286,7 +2798,33 @@ app.get("/api/mvp/feedback", (req, res) => {
   }
 });
 
+function mvpStateTimingHeader(timing: MvpStateReadTiming, routeMs: number): string {
+  const metrics: string[] = [];
+  const add = (name: string, durationMs: number | undefined) => {
+    if (durationMs === undefined || !Number.isFinite(durationMs)) return;
+    metrics.push(`${name};dur=${Math.max(0, Math.round(durationMs))}`);
+  };
+  add("aos_mvp_membership", timing.membershipMs);
+  add("aos_mvp_db_fanout", timing.dbFanoutMs);
+  add("aos_mvp_mapping", timing.mappingMs);
+  add("aos_mvp_runtime", timing.runtimeSnapshotMs);
+  add("aos_mvp_read", timing.totalMs);
+  add("aos_mvp_route", routeMs);
+  const slowQueries = [...(timing.queryTimings ?? [])]
+    .sort((left, right) => right.durationMs - left.durationMs)
+    .slice(0, 8);
+  slowQueries.forEach((query, index) => add(`aos_mvp_q${index + 1}_${query.label}`, query.durationMs));
+  return metrics.join(", ");
+}
+
+function boundedMvpDiagnosticValue(value: unknown, fallback: string): string {
+  const candidate = typeof value === "string" ? value.trim() : "";
+  return /^[A-Za-z0-9:_-]{1,96}$/u.test(candidate) ? candidate : fallback;
+}
+
 app.get("/api/mvp/state", async (req, res) => {
+  const routeStartedAt = Date.now();
+  const diagnostics = req.query.diagnostics === "1";
   try {
     const companyId = requestedCompanyId(req, false);
     const projection: MvpStateProjection = req.query.projection === "summary"
@@ -2295,11 +2833,19 @@ app.get("/api/mvp/state", async (req, res) => {
         ? "chat"
         : req.query.projection === "ui" ? "ui" : "full";
     if (dbBackend === "postgres") {
+      const timing: MvpStateReadTiming | undefined = diagnostics ? {} : undefined;
       const state = await readPostgresMvpState({
         companyId: companyId || undefined,
         projection,
-        forceFresh: req.query.fresh === "1"
+        forceFresh: req.query.fresh === "1",
+        timing
       });
+      if (timing) {
+        res.setHeader("Server-Timing", mvpStateTimingHeader(timing, Date.now() - routeStartedAt));
+        res.setHeader("X-AOS-MVP-Diagnostics", "server-timing-v1");
+        res.setHeader("X-AOS-MVP-Read-Origin", boundedMvpDiagnosticValue(req.query.read_origin, "unknown"));
+        res.setHeader("X-AOS-MVP-Read-Id", boundedMvpDiagnosticValue(req.query.read_id, "unknown"));
+      }
       res.json(state);
       return;
     }
@@ -2425,9 +2971,10 @@ app.post("/api/mvp/automations", (req, res) => {
       idempotencyKey,
       idempotencyRequest: req.body
     });
+    const connectionRefs = listCompanyConnectionRefs(companyId);
     res.status(201).json({
       ok: true,
-      automation: automationApiView(automation),
+      automation: automationApiView(automation, undefined, resolveGmailExecutionTarget(automation, connectionRefs)),
       receipt: automationReceipt("automation.created", automation),
       state: getMvpStateReadback(actorCompanyIds()),
       external_action_executed: false
@@ -2458,9 +3005,10 @@ app.patch("/api/mvp/automations/:automationId", (req, res) => {
       automationId,
       patch: parseAutomationPatch(legacyAutomationPatch(req.body), req.header("if-match"))
     });
+    const connectionRefs = listCompanyConnectionRefs(current.company_id);
     res.json({
       ok: true,
-      automation: automationApiView(automation),
+      automation: automationApiView(automation, undefined, resolveGmailExecutionTarget(automation, connectionRefs)),
       receipt: automationReceipt("automation.updated", automation),
       state: getMvpStateReadback(actorCompanyIds()),
       external_action_executed: false
@@ -2491,11 +3039,12 @@ app.put("/api/mvp/automations/:automationId/builder-spec", (req, res) => {
       automationId,
       patch: parseAutomationPatch({ expected_revision: expectedRevision, builder_spec: nextSpec })
     });
+    const connectionRefs = listCompanyConnectionRefs(current.company_id);
     res.json({
       ok: true,
       automation_id: automationId,
       spec: automation.builderSpec,
-      automation: automationApiView(automation),
+      automation: automationApiView(automation, undefined, resolveGmailExecutionTarget(automation, connectionRefs)),
       receipt: automationReceipt("automation.updated", automation),
       state: getMvpStateReadback(actorCompanyIds()),
       external_action_executed: false
@@ -2515,9 +3064,9 @@ let createPlannerWorkerTimer: ReturnType<typeof setInterval> | undefined;
 let createPlannerWorkerInFlight = false;
 
 /** Serialize manual and resident scheduler ticks over the same Postgres pool. */
-function runDurableAutomationSchedulerOnceSerialized() {
+function runDurableAutomationSchedulerOnceSerialized(input: Parameters<typeof runDurableAutomationSchedulerOnce>[0] = {}) {
   if (durableAutomationSchedulerInFlightPromise) return durableAutomationSchedulerInFlightPromise;
-  const promise = runDurableAutomationSchedulerOnce();
+  const promise = runDurableAutomationSchedulerOnce(input);
   durableAutomationSchedulerInFlightPromise = promise;
   void promise.then(
     () => { if (durableAutomationSchedulerInFlightPromise === promise) durableAutomationSchedulerInFlightPromise = undefined; },
@@ -2526,13 +3075,14 @@ function runDurableAutomationSchedulerOnceSerialized() {
   return promise;
 }
 
-app.post("/api/mvp/feedback", (req, res) => {
-  initDb();
+app.post("/api/mvp/feedback", async (req, res) => {
+  if (dbBackend !== "postgres") initDb();
   const body = req.body ?? {};
   let companyId: string;
   try {
     companyId = requestedCompanyId(req);
-    requireCompanyAccess(companyId, ["owner", "admin", "operator", "viewer"]);
+    if (dbBackend === "postgres") await requireCompanyAccessAsync(companyId, ["owner", "admin", "operator", "viewer"]);
+    else requireCompanyAccess(companyId, ["owner", "admin", "operator", "viewer"]);
   } catch (error) {
     sendCompanyScopeError(res, error, "feedback_create_failed");
     return;
@@ -2554,7 +3104,12 @@ app.post("/api/mvp/feedback", (req, res) => {
     res.status(400).json({ ok: false, error: "feedback_screenshot_sensitive_confirmation_required", exactBlocker: "feedback_screenshot_sensitive_confirmation_required" });
     return;
   }
-  const feedbackId = makeId("feedback");
+  const clientFeedbackId = body.feedback_id;
+  if (clientFeedbackId !== undefined && (typeof clientFeedbackId !== "string" || !/^feedback_ui_[a-zA-Z0-9_-]{16,100}$/.test(clientFeedbackId))) {
+    res.status(400).json({ ok: false, error: "feedback_id_invalid" });
+    return;
+  }
+  const feedbackId = clientFeedbackId ?? makeId("feedback");
   let screenshot: ReturnType<typeof parseFeedbackScreenshotDataUrl> = null;
   try {
     screenshot = screenshotDataUrl ? parseFeedbackScreenshotDataUrl(screenshotDataUrl) : null;
@@ -2605,7 +3160,8 @@ app.post("/api/mvp/feedback", (req, res) => {
     created_at: createdAt,
     payload_json: JSON.stringify(payload)
   };
-  runSqlTransaction([
+  try {
+  await (dbBackend === "postgres" ? runSqlTransactionAsync : runSqlTransaction)([
     ...(screenshot && screenshotArtifactId ? [{
       sql: `INSERT INTO feedback_artifacts (id, company_id, feedback_id, kind, mime_type, checksum_sha256, size_bytes, content_base64, status, created_at, updated_at) VALUES (${sqlValue(screenshotArtifactId)}, ${sqlValue(companyId)}, ${sqlValue(feedbackId)}, 'screenshot', ${sqlValue(screenshot.mimeType)}, ${sqlValue(screenshot.checksumSha256)}, ${screenshot.sizeBytes}, ${sqlValue(screenshot.contentBase64)}, 'available', ${sqlValue(createdAt)}, ${sqlValue(createdAt)})`,
       expectChanges: 1
@@ -2623,10 +3179,13 @@ app.post("/api/mvp/feedback", (req, res) => {
       screenshot_artifact_id: screenshotArtifactId,
       screenshot: screenshot ? { id: screenshotArtifactId, mime_type: screenshot.mimeType, checksum_sha256: screenshot.checksumSha256, size_bytes: screenshot.sizeBytes, view_url: artifactUri } : null
     },
-    state: getMvpStateReadback(actorCompanyIds()),
+    ...(dbBackend !== "postgres" ? { state: getMvpStateReadback(actorCompanyIds()) } : {}),
     inbox_forward: { status: "local", sink: "mvp_feedback" },
     external_action_executed: false
   });
+  } catch (error) {
+    sendCompanyScopeError(res, error, "feedback_create_failed");
+  }
 });
 
 app.post("/api/mvp/approvals", (req, res) => {
@@ -2690,8 +3249,9 @@ app.post("/api/mvp/approvals", (req, res) => {
   }
 });
 
-app.patch("/api/mvp/feedback/:feedbackId", (req, res) => {
-  initDb();
+app.patch("/api/mvp/feedback/:feedbackId", async (req, res) => {
+  try {
+  if (dbBackend !== "postgres") initDb();
   const feedbackId = typeof req.params.feedbackId === "string" ? req.params.feedbackId.trim() : "";
   const status = typeof req.body?.status === "string" ? req.body.status.trim() : "";
   if (!feedbackId) {
@@ -2702,10 +3262,11 @@ app.patch("/api/mvp/feedback/:feedbackId", (req, res) => {
     res.status(400).json({ ok: false, error: "feedback_status_invalid", exactBlocker: "feedback_status_invalid" });
     return;
   }
-  const existingRows = querySql<{ id: string; company_id: string; feedback_id: string; status: string }>(
+  const companyIds = dbBackend === "postgres" ? await actorCompanyIdsAsync(["owner"]) : actorCompanyIds(["owner"]);
+  const existingRows = await (dbBackend === "postgres" ? querySqlAsync : querySql)<{ id: string; company_id: string; feedback_id: string; status: string }>(
     `SELECT id, company_id, feedback_id, status FROM mvp_feedback
      WHERE feedback_id=${sqlValue(feedbackId)}
-       AND ${scopedCompanyPredicate("company_id", actorCompanyIds(["owner"]))}
+       AND ${scopedCompanyPredicate("company_id", companyIds)}
      LIMIT 1`
   );
   const existing = existingRows[0];
@@ -2713,13 +3274,16 @@ app.patch("/api/mvp/feedback/:feedbackId", (req, res) => {
     res.status(404).json({ ok: false, error: "feedback_not_found", exactBlocker: "feedback_not_found" });
     return;
   }
-  execSql(`UPDATE mvp_feedback SET status=${sqlValue(status)} WHERE feedback_id=${sqlValue(feedbackId)} AND company_id=${sqlValue(existing.company_id)};`);
+  await (dbBackend === "postgres" ? execSqlAsync : execSql)(`UPDATE mvp_feedback SET status=${sqlValue(status)} WHERE feedback_id=${sqlValue(feedbackId)} AND company_id=${sqlValue(existing.company_id)};`);
   res.json({
     ok: true,
     feedback_id: feedbackId,
     status,
     updated_at: nowIso()
   });
+  } catch (error) {
+    sendCompanyScopeError(res, error, "feedback_update_failed");
+  }
 });
 
 app.patch("/api/mvp/approvals/:approvalId", async (req, res, next) => {
@@ -2747,18 +3311,11 @@ app.patch("/api/mvp/approvals/:approvalId", async (req, res, next) => {
     }
     const status = decision === "approve" ? "approved" : "rejected";
     const result = dbBackend === "postgres"
-      ? await decideStoredApprovalAsync(approvalId, status, allowedCompanyIds)
-      : await decideStoredApproval(approvalId, status, allowedCompanyIds);
+      ? await decideStoredApprovalAsync(approvalId, status, allowedCompanyIds, req.body?.expected_binding, req.header("if-match") ?? req.body?.expected_revision ?? req.body?.decision_revision, note)
+      : await decideStoredApproval(approvalId, status, allowedCompanyIds, req.body?.expected_binding, req.header("if-match") ?? req.body?.expected_revision ?? req.body?.decision_revision, note);
     if (result.statusCode && result.statusCode !== 200) {
       res.status(result.statusCode).json(result.body);
       return;
-    }
-    if (note) {
-      if (dbBackend === "postgres") {
-        await execSqlAsync(`UPDATE approvals SET decision_note = ${sqlValue(note)} WHERE id = ${sqlValue(approvalId)} AND company_id=${sqlValue(existing.company_id)};`);
-      } else {
-        execSql(`UPDATE approvals SET decision_note = ${sqlValue(note)} WHERE id = ${sqlValue(approvalId)} AND company_id=${sqlValue(existing.company_id)};`);
-      }
     }
     res.json({
       ok: true,
@@ -2793,12 +3350,109 @@ app.get("/api/mvp/registered-automations", async (req, res) => {
   }
 });
 
-app.post("/api/mvp/registered-automations/:id/run", (req, res) => {
+app.post("/api/mvp/registered-automations/:id/run", async (req, res) => {
   try {
-    initDb();
     const projectId = requestedCompanyId(req);
-    requireCompanyAccess(projectId, ["owner", "admin", "operator"]);
-    const result = buildCompanyRegisteredAutomationRunResponse(req.params.id, projectId);
+    const postgres = dbBackend === "postgres";
+    if (postgres) {
+      await requireCompanyAccessAsync(projectId, ["owner", "admin", "operator"]);
+    } else {
+      initDb();
+      requireCompanyAccess(projectId, ["owner", "admin", "operator"]);
+    }
+    const body = req.body && typeof req.body === "object" && !Array.isArray(req.body)
+      ? req.body as Record<string, unknown>
+      : {};
+    if (Object.prototype.hasOwnProperty.call(body, "effect_stage")
+      || Object.prototype.hasOwnProperty.call(body, "business_execute")) {
+      res.status(400).json({
+        ok: false,
+        error: "registered_automation_effect_stage_forbidden",
+        exact_blocker: "registered_automation_effect_stage_forbidden",
+        external_action_executed: false,
+        company_scope: { enforced: true, company_id: projectId }
+      });
+      return;
+    }
+
+    const automationId = String(req.params.id ?? "").trim();
+    const automation = postgres
+      ? await getAutomationRecordAsync(projectId, automationId, false)
+      : getAutomationRecord(projectId, automationId, false);
+    let registeredWorkflow: RegisteredWorkflowRow | undefined;
+    if (!automation) {
+      if (postgres) {
+        await initRegisteredWorkflowsAsync();
+        registeredWorkflow = await getRegisteredWorkflowForCompaniesAsync(automationId, [projectId]);
+      } else {
+        initRegisteredWorkflows();
+        registeredWorkflow = getRegisteredWorkflowForCompanies(automationId, [projectId]);
+      }
+      if (registeredWorkflow && filterRegisteredWorkflowList([registeredWorkflow]).length === 0) {
+        registeredWorkflow = undefined;
+      }
+    }
+
+    const localWorkflowId = automation
+      ? portableLocalWorkflowIdForRegisteredAutomation(automation)
+      : registeredWorkflow
+        ? portableLocalWorkflowIdForRegisteredAutomation({ workerCommandKind: registeredWorkflow.runner_kind })
+        : null;
+    if (localWorkflowId) {
+      const bodyKey = typeof body.idempotency_key === "string" ? body.idempotency_key.trim() : "";
+      const headerKey = req.get("idempotency-key")?.trim() ?? "";
+      const rawIdempotencyKey = bodyKey || headerKey;
+      if (!rawIdempotencyKey) throw new AutomationContractError("idempotency_key_required");
+      const idempotencyKey = requireIdempotencyKey(rawIdempotencyKey);
+      const gmailExecutionTargetInput = automation && localWorkflowId === "email-review-reply"
+        ? bindGmailExecutionTargetToRunInput({
+            automation,
+            connectionRefs: postgres
+              ? await listCompanyConnectionRefsAsync(projectId)
+              : listCompanyConnectionRefs(projectId),
+            inputBundle: body.input_bundle && typeof body.input_bundle === "object" && !Array.isArray(body.input_bundle)
+              ? body.input_bundle as Record<string, unknown>
+              : null
+          })
+        : null;
+      const started = await startPortableLocalWorkflowRun({
+        workflowId: localWorkflowId,
+        sourceTrigger: "automation_os_ui",
+        idempotencyKey,
+        registeredAutomationId: automation?.id ?? registeredWorkflow?.id ?? automationId,
+        registeredAutomationVersionId: automation?.currentVersionId ?? null,
+        companyId: projectId,
+        readOnlyStage: portableLocalReadOnlyStageForScheduledWorkflow(localWorkflowId),
+        ...(gmailExecutionTargetInput ? { inputBundle: gmailExecutionTargetInput } : {})
+      });
+      if (!started.replayed) recordRunAwaitingWorkerLoop(started.runId, "registered_automation_legacy_run");
+      res.status(202).json({
+        ok: true,
+        schema: "aos.portable_workflow_trigger.v1",
+        accepted: true,
+        queued: true,
+        portable: true,
+        workflow_id: localWorkflowId,
+        run: {
+          id: started.runId,
+          status: started.status ?? "queued",
+          company_id: projectId,
+          automation_id: automation?.id ?? registeredWorkflow?.id ?? automationId,
+          automation_version_id: automation?.currentVersionId ?? null
+        },
+        registered_root_admission: started.registeredRoot ?? null,
+        source_trigger: "automation_os_ui",
+        execution_authority: "automation_os_control_plane",
+        worker_protocol: "mac_worker_polling_required",
+        provider_neutral: true,
+        operation_surface: "mac_local_worker",
+        external_action_executed: false,
+        company_scope: { enforced: true, company_id: projectId }
+      });
+      return;
+    }
+
+    const result = registeredAutomationRunResponse(automationId, projectId, registeredWorkflow);
     if (result.statusCode) {
       res.status(result.statusCode).json(result.body);
       return;
@@ -2913,50 +3567,161 @@ app.post("/api/portable-worker/claim", async (req, res, next) => {
     const workerInstanceId = typeof req.body?.worker_instance_id === "string" ? req.body.worker_instance_id.trim() : null;
     const runId = typeof req.body?.run_id === "string" ? req.body.run_id.trim() : null;
     const run = dbBackend === "postgres"
-      ? await claimPortableMacWorkerAsync({ companyId, workerId, workerInstanceId, requestedRunId: runId })
-      : claimPortableMacWorker({ companyId, workerId, workerInstanceId, requestedRunId: runId });
+      ? await claimPortableBackupPostEffectReconciliationAsync({ companyId, workerId, workerInstanceId, requestedRunId: runId })
+        ?? await claimPortableMacWorkerAsync({ companyId, workerId, workerInstanceId, requestedRunId: runId })
+      : claimPortableBackupPostEffectReconciliation({ companyId, workerId, workerInstanceId, requestedRunId: runId })
+        ?? claimPortableMacWorker({ companyId, workerId, workerInstanceId, requestedRunId: runId });
     res.json({ ok: true, claimed: Boolean(run), external_action_executed: false, run });
   } catch (error) {
     next(error);
   }
 });
 
-app.post("/api/portable-worker/heartbeat", (req, res, next) => {
+app.post("/api/portable-worker/heartbeat", async (req, res, next) => {
   try {
-    initDb();
+    if (dbBackend === "postgres") await initializePostgresSchemaAsync();
+    else initDb();
     const companyId = requestedCompanyId(req);
-    requireCompanyAccess(companyId, ["owner", "admin", "operator"]);
-    const validated = validatePortableWorkerHeartbeat(req.body);
+    if (dbBackend === "postgres") await requireCompanyAccessAsync(companyId, ["owner", "admin", "operator"]);
+    else requireCompanyAccess(companyId, ["owner", "admin", "operator"]);
+    const body = req.body && typeof req.body === "object" && !Array.isArray(req.body)
+      ? req.body as Record<string, unknown>
+      : {};
+    const validationBody = Object.prototype.hasOwnProperty.call(body, "company_id")
+      ? body
+      : { ...body, company_id: companyId };
+    const validated = validatePortableWorkerHeartbeat(validationBody, { expectedCompanyId: companyId });
     if (!validated.ok) {
       res.status(400).json({ ok: false, error: validated.exactBlocker, exact_blocker: validated.exactBlocker, external_action_executed: false });
       return;
     }
     const capturedAt = nowIso();
     const heartbeat = validated.value;
-    upsert("system_checks", {
-      id: portableWorkerHeartbeatId(companyId, heartbeat.workerId),
-      kind: PORTABLE_WORKER_HEARTBEAT_KIND,
+    const heartbeatMetadata: Record<string, unknown> = {
+      schema: heartbeat.schema ?? "aos.portable_worker_heartbeat.v1",
+      company_id: companyId,
+      worker_id: heartbeat.workerId,
+      heartbeat_at: capturedAt,
       status: heartbeat.status,
-      target_url: null,
-      summary: `Portable Mac worker heartbeat: ${heartbeat.status}`,
-      artifact_uri: null,
-      created_at: capturedAt,
-        metadata_json: {
-          schema: "aos.portable_worker_heartbeat.v1",
-          company_id: companyId,
-          worker_id: heartbeat.workerId,
-          heartbeat_at: capturedAt,
-          queue_depth: heartbeat.queueDepth,
-          exact_blocker: heartbeat.exactBlocker,
-          chrome_plugin_readback: heartbeat.chromePluginReadback,
-          external_action_executed: false
-        }
+      queue_depth: heartbeat.queueDepth,
+      exact_blocker: heartbeat.exactBlocker,
+      run_id: heartbeat.runId ?? null,
+      chrome_plugin_readback: heartbeat.chromePluginReadback,
+      external_action_executed: false
+    };
+    if (heartbeat.workerInstanceId) heartbeatMetadata.worker_instance_id = heartbeat.workerInstanceId;
+    if (heartbeat.generation) heartbeatMetadata.generation = heartbeat.generation;
+    if (heartbeat.observedAt) heartbeatMetadata.observed_at = heartbeat.observedAt;
+    if (heartbeat.runtimeObservation) heartbeatMetadata.runtime_observation = portableRuntimeObservationMetadata(heartbeat.runtimeObservation);
+    if (heartbeat.transportAck) heartbeatMetadata.transport_ack = portableTransportAckMetadata(heartbeat.transportAck);
+    const systemCheckId = portableWorkerHeartbeatId(companyId, heartbeat.workerId);
+    await runSqlTransactionAsync([{
+      sql: `INSERT INTO system_checks (id, kind, status, target_url, summary, artifact_uri, created_at, metadata_json)
+        VALUES (${sqlValue(systemCheckId)}, ${sqlValue(PORTABLE_WORKER_HEARTBEAT_KIND)}, ${sqlValue(heartbeat.status)}, NULL,
+          ${sqlValue(`Portable Mac worker heartbeat: ${heartbeat.status}`)}, NULL, ${sqlValue(capturedAt)}, ${sqlValue(heartbeatMetadata)})
+        ON CONFLICT(id) DO UPDATE SET kind=excluded.kind, status=excluded.status, target_url=excluded.target_url,
+          summary=excluded.summary, artifact_uri=excluded.artifact_uri, created_at=excluded.created_at,
+          metadata_json=excluded.metadata_json;`
+    }]);
+    const persisted = (dbBackend === "postgres"
+      ? await querySqlAsync<{ metadata_json: unknown }>(`SELECT metadata_json FROM system_checks WHERE id=${sqlValue(systemCheckId)} LIMIT 1`)
+      : querySql<{ metadata_json: unknown }>(`SELECT metadata_json FROM system_checks WHERE id=${sqlValue(systemCheckId)} LIMIT 1`))[0];
+    const persistedMetadata = typeof persisted?.metadata_json === "string"
+      ? parseJson<Record<string, unknown>>(persisted.metadata_json, heartbeatMetadata)
+      : persisted?.metadata_json ?? heartbeatMetadata;
+    const persistedHeartbeat = sanitizePortableRemoteWorkerHeartbeat(
+      persistedMetadata,
+      { fallbackCompanyId: companyId, fallbackHeartbeatAt: capturedAt }
+    );
+    const transportAck = {
+      schema: PORTABLE_WORKER_HEARTBEAT_TRANSPORT_ACK_SCHEMA,
+      status: "acknowledged",
+      observed_at: heartbeat.observedAt ?? capturedAt,
+      ack_at: capturedAt,
+      worker_instance_id: heartbeat.workerInstanceId ?? null,
+      generation: heartbeat.generation ?? null,
+      binding_status: heartbeat.workerInstanceId && heartbeat.generation ? "verified" : "legacy_unbound"
+    } as const;
+    res.json({
+      ok: true,
+      heartbeat_at: capturedAt,
+      heartbeat_metadata: heartbeatMetadata,
+      heartbeat: persistedHeartbeat,
+      transport_ack: transportAck,
+      external_action_executed: false
     });
-    res.json({ ok: true, heartbeat_at: capturedAt, external_action_executed: false });
   } catch (error) {
     next(error);
   }
 });
+
+function portableRuntimeObservationMetadata(value: unknown): Record<string, unknown> {
+  const observation = value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  const browserUse = observation.browserUse && typeof observation.browserUse === "object" && !Array.isArray(observation.browserUse)
+    ? observation.browserUse as Record<string, unknown>
+    : null;
+  const process = browserUse?.process && typeof browserUse.process === "object" && !Array.isArray(browserUse.process)
+    ? browserUse.process as Record<string, unknown>
+    : null;
+  const room = browserUse?.room && typeof browserUse.room === "object" && !Array.isArray(browserUse.room)
+    ? browserUse.room as Record<string, unknown>
+    : null;
+  const transport = browserUse?.transport && typeof browserUse.transport === "object" && !Array.isArray(browserUse.transport)
+    ? browserUse.transport as Record<string, unknown>
+    : null;
+  return {
+    schema: observation.schema,
+    status: observation.status,
+    observed_at: observation.observedAt,
+    run_id: observation.runId ?? null,
+    room_id: observation.roomId ?? null,
+    browser_use: browserUse ? {
+      runtime_status: browserUse.runtimeStatus,
+      process: process ? {
+        status: process.status,
+        pid: process.pid ?? null,
+        process_count: process.processCount ?? null,
+        profile_ref: process.profileRef ?? null,
+        port: process.port ?? null
+      } : null,
+      room: room ? {
+        status: room.status,
+        room_id: room.roomId ?? null,
+        state: room.state ?? null,
+        lifecycle: room.lifecycle ?? null,
+        owner_kind: room.ownerKind ?? null,
+        owner_id: room.ownerId ?? null,
+        task_id: room.taskId ?? null,
+        automation_id: room.automationId ?? null,
+        profile_ref: room.profileRef ?? null,
+        port: room.port ?? null,
+        current_activity: room.currentActivity ?? null,
+        updated_at: room.updatedAt ?? null
+      } : null,
+      transport: transport ? {
+        status: transport.status,
+        last_seen_at: transport.lastSeenAt ?? null
+      } : null
+    } : null
+  };
+}
+
+function portableTransportAckMetadata(value: unknown): Record<string, unknown> {
+  const ack = value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  return {
+    schema: ack.schema,
+    status: ack.status,
+    observed_at: ack.observedAt ?? null,
+    ack_at: ack.ackAt ?? null,
+    worker_instance_id: ack.workerInstanceId ?? null,
+    generation: ack.generation ?? null,
+    binding_status: ack.bindingStatus
+  };
+}
 
 app.post("/api/portable-worker/:runId/receipt", async (req, res, next) => {
   try {
@@ -2978,6 +3743,15 @@ app.post("/api/portable-worker/:runId/receipt", async (req, res, next) => {
       runId: req.params.runId,
       receipt: req.body?.receipt
     };
+    if (req.body?.receipt?.evidence_only === true) {
+      const result = await recordPortableBackupPostEffectEvidenceAsync(receiptInput);
+      // Backup evidence has no job-application target admission. Any
+      // workflow-owned finalization is performed by the evidence transaction
+      // itself; do not issue a second post-commit ledger mutation here.
+      res.json({ ok: true, ...result, target_admission: null, effect_ledger: null,
+        external_action_executed: result.receipt.external_action_executed });
+      return;
+    }
     const result = dbBackend === "postgres"
       ? await recordPortableMacWorkerReceiptAsync(receiptInput)
       : recordPortableMacWorkerReceipt(receiptInput);
@@ -3138,6 +3912,35 @@ app.get("/api/v1/companies/:companyId/codex/app-server/auth/status", async (req,
   }
 });
 
+app.get("/api/v1/companies/:companyId/codex/app-server/plugins/access", async (req, res) => {
+  let client: CodexAppServerClient | undefined;
+  try {
+    if (dbBackend !== "postgres") initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    if (dbBackend === "postgres") await requireCompanyAccessAsync(companyId);
+    else requireCompanyAccess(companyId);
+    const pluginId = typeof req.query.plugin_id === "string" ? req.query.plugin_id.trim().toLowerCase() : "";
+    const record = dbBackend === "postgres"
+      ? await getCompanyCodexRegistryReadbackAsync(companyId)
+      : getCompanyCodexRegistryReadback(companyId);
+    const plugin = record?.registry.pluginRegistry.installed.find((entry) => entry.id.toLowerCase() === pluginId);
+    if (!plugin) throw new Error("zeabur_plugin_not_in_company_registry");
+    const connection = getCodexAppServerConnectionReadback();
+    if (connection.mode !== "remote_websocket") throw new Error("codex_app_server_remote_required_for_plugin_access");
+    if (connection.exact_blocker) throw new Error(connection.exact_blocker);
+    client = new CodexAppServerClient({ timeoutMs: 30_000 });
+    const access = await client.readPluginAccess({ pluginName: plugin.name,
+      remoteMarketplaceName: normalizeMarketplaceName(plugin.marketplaceName || plugin.id.split("@")[1] || "openai-curated") });
+    res.set("Cache-Control", "no-store").json({ ok: true, access,
+      company_scope: { enforced: true, company_id: companyId },
+      external_action_executed: false, secret_material_included: false });
+  } catch (error) {
+    sendAutomationApiError(res, error, "plugin_access_readback_failed");
+  } finally {
+    client?.close();
+  }
+});
+
 app.post("/api/v1/companies/:companyId/codex/app-server/plugins/install", async (req, res) => {
   try {
     if (dbBackend !== "postgres") initDb();
@@ -3145,7 +3948,13 @@ app.post("/api/v1/companies/:companyId/codex/app-server/plugins/install", async 
     if (dbBackend === "postgres") await requireCompanyAccessAsync(companyId, ["owner", "admin"]);
     else requireCompanyAccess(companyId, ["owner", "admin"]);
 
-    const requestedName = requiredBodyString(req.body?.plugin_name ?? req.body?.pluginName, "codex_app_server_plugin_name_required").toLowerCase();
+    const requestedPluginId = typeof (req.body?.plugin_id ?? req.body?.pluginId) === "string"
+      ? String(req.body.plugin_id ?? req.body.pluginId).trim().toLowerCase()
+      : "";
+    const requestedName = typeof (req.body?.plugin_name ?? req.body?.pluginName) === "string"
+      ? String(req.body.plugin_name ?? req.body.pluginName).trim().toLowerCase()
+      : requestedPluginId.split("@")[0] ?? "";
+    if (!requestedName && !requestedPluginId) throw new Error("codex_app_server_plugin_name_required");
     const requestedMarketplace = typeof (req.body?.marketplace_name ?? req.body?.marketplaceName) === "string"
       ? String(req.body.marketplace_name ?? req.body.marketplaceName).trim().toLowerCase()
       : "";
@@ -3154,22 +3963,25 @@ app.post("/api/v1/companies/:companyId/codex/app-server/plugins/install", async 
       : getCompanyCodexRegistryReadback(companyId);
     const registry = record?.registry ?? missingZeaburConnectorRegistryReadback();
     if (!record) throw new Error("zeabur_codex_app_server_registry_readback_missing");
-    const authBootstrapAllowed = canBootstrapInstalledPluginAuth({ registry, pluginName: requestedName });
-    if (registry.exactBlocker && !authBootstrapAllowed) throw new Error(registry.exactBlocker);
     const plugin = [...registry.pluginRegistry.installed, ...registry.pluginRegistry.available]
-      .find((entry) => entry.name.trim().toLowerCase() === requestedName);
+      .find((entry) => requestedPluginId
+        ? entry.id.trim().toLowerCase() === requestedPluginId
+        : entry.name.trim().toLowerCase() === requestedName
+          && (!requestedMarketplace || (entry.marketplaceName ?? entry.id.split("@")[1] ?? "").trim().toLowerCase() === requestedMarketplace));
     if (!plugin) throw new Error("zeabur_plugin_not_in_company_registry");
+    const authBootstrapAllowed = canBootstrapInstalledPluginAuth({ registry, pluginName: plugin.name });
+    if (registry.exactBlocker && !authBootstrapAllowed) throw new Error(registry.exactBlocker);
 
     const connection = getCodexAppServerConnectionReadback();
     if (connection.mode !== "remote_websocket") throw new Error("codex_app_server_remote_required_for_plugin_install");
     if (connection.exact_blocker) throw new Error(connection.exact_blocker);
-    const marketplaceName = normalizeMarketplaceName(requestedMarketplace || plugin.id.split("@")[1] || "openai-curated");
+    const marketplaceName = normalizeMarketplaceName(requestedMarketplace || plugin.marketplaceName || plugin.id.split("@")[1] || "openai-curated");
     const client = new CodexAppServerClient({ timeoutMs: 60_000 });
     try {
       if (plugin.installed) {
         const installedApps = await client.readInstalledApps({ forceRefresh: true });
-        const pluginApps = await client.readPluginApps({ pluginName: plugin.name, remoteMarketplaceName: marketplaceName });
-        const readableApps = (await Promise.all(pluginApps.apps.map((app) => client.readApp({ appId: app.id })))).filter((app): app is NonNullable<typeof app> => Boolean(app));
+        const access = await client.readPluginAccess({ pluginName: plugin.name, remoteMarketplaceName: marketplaceName });
+        const readableApps = access.apps;
         const appsNeedingAuth = readableApps
           .filter((app) => !app.accessStateAvailable || !app.isAccessible || !app.isEnabled)
           .map((app) => ({
@@ -3184,10 +3996,11 @@ app.post("/api/v1/companies/:companyId/codex/app-server/plugins/install", async 
           .filter((value): value is string => Boolean(value));
         res.json({
           ok: true,
-          plugin: { id: plugin.id, name: plugin.name, installed_before: true, marketplace_name: marketplaceName },
+          plugin: { id: plugin.id, name: plugin.name, installed_before: true, marketplace_name: marketplaceName, auth_policy: plugin.authPolicy ?? null },
+          registry,
           app_server_readback: {
             installed_apps: installedApps.map((app) => ({ id: app.id, enabled: app.enabled, callable: app.callable })),
-            plugin_apps: pluginApps.apps.map((app) => ({ id: app.id, name: app.name })),
+            plugin_apps: readableApps.map((app) => ({ id: app.id, name: app.name })),
             accessible_apps: readableApps.filter((app) => app.accessStateAvailable && app.isAccessible && app.isEnabled).map((app) => app.id),
             access_state_available: readableApps.every((app) => app.accessStateAvailable)
           },
@@ -3210,12 +4023,20 @@ app.post("/api/v1/companies/:companyId/codex/app-server/plugins/install", async 
         remoteMarketplaceName: marketplaceName,
         installAttemptId: `aos-${companyId}-${plugin.name}-${Date.now()}`
       });
+      const latestRecord = dbBackend === "postgres"
+        ? await getCompanyCodexRegistryReadbackAsync(companyId)
+        : getCompanyCodexRegistryReadback(companyId);
+      const installedRegistry = registryAfterPluginInstall(latestRecord?.registry ?? registry, plugin.id);
+      const updatedRecord = dbBackend === "postgres"
+        ? await saveCompanyCodexRegistryReadbackAsync({ companyId, registry: installedRegistry, actorUserId: currentActorUserId() })
+        : saveCompanyCodexRegistryReadback({ companyId, registry: installedRegistry, actorUserId: currentActorUserId() });
       const authorizationUrls = install.appsNeedingAuth
         .map((app) => app.installUrl)
         .filter((value): value is string => Boolean(value));
       res.json({
         ok: true,
-        plugin: { id: plugin.id, name: plugin.name, installed_before: false, marketplace_name: marketplaceName },
+        plugin: { id: plugin.id, name: plugin.name, installed_before: false, marketplace_name: marketplaceName, auth_policy: plugin.authPolicy ?? install.authPolicy },
+        registry: updatedRecord.registry,
         auth: {
           required: install.appsNeedingAuth.length > 0,
           policy: install.authPolicy,
@@ -3257,8 +4078,14 @@ app.post("/api/v1/companies/:companyId/codex/app-server/plugins/company-scope", 
     if (!record) throw new Error("zeabur_codex_app_server_registry_readback_missing");
     const installed = registry.pluginRegistry?.installed ?? [];
     const plugin = installed.find((entry) => entry.name.trim().toLowerCase() === pluginName);
-    const registryVerified = plugin?.authStatus === "verified" || registry.connectorAuth?.[pluginName] === "verified";
-    if (!plugin || !registryVerified) throw new Error("zeabur_connector_auth_not_verified");
+    if (!plugin) throw new Error("zeabur_plugin_not_in_company_registry");
+    const connectionReadback = getCodexAppServerConnectionReadback();
+    if (connectionReadback.mode !== "remote_websocket" || connectionReadback.exact_blocker) throw new Error(connectionReadback.exact_blocker ?? "codex_app_server_remote_required_for_plugin_access");
+    const accessClient = new CodexAppServerClient({ timeoutMs: 30_000 });
+    const access = await accessClient.readPluginAccess({ pluginName: plugin.name,
+      remoteMarketplaceName: normalizeMarketplaceName(plugin.marketplaceName || plugin.id.split("@")[1] || "openai-curated")
+    }).finally(() => accessClient.close());
+    if (!access.apps.length || !access.apps.every((app) => app.accessStateAvailable && app.isAccessible && app.isEnabled && app.callable)) throw new Error("zeabur_connector_auth_not_verified");
 
     const refs = dbBackend === "postgres"
       ? await listCompanyConnectionRefsAsync(companyId)
@@ -3286,7 +4113,7 @@ app.post("/api/v1/companies/:companyId/codex/app-server/plugins/company-scope", 
       external_oauth_action_executed: false,
       secret_material_included: false,
       company_scope: { enforced: true, company_id: companyId },
-      registry_proof: { captured_at: record.capturedAt, plugin_auth_status: "verified" }
+      registry_proof: { captured_at: access.checkedAt, plugin_auth_status: "verified", source: "app/list+app/installed", provider_identity_verified: false }
     });
   } catch (error) {
     sendAutomationApiError(res, error, "codex_app_server_plugin_company_scope_failed");
@@ -3553,6 +4380,51 @@ app.post("/api/create/chat", async (req, res, next) => {
       return;
     }
     next(error);
+  }
+});
+
+app.get("/api/v1/companies/:companyId/chat-jobs/:jobId/workflow-actions", async (req, res) => {
+  try {
+    if (dbBackend === "postgres") await initializePostgresSchemaAsync();
+    else initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    await requireCompanyAccessAsync(companyId);
+    const result = await readChatWorkflowActions({ companyId, actorUserId: currentActorUserId(), jobId: String(req.params.jobId ?? "") });
+    res.json({ ok: true, ...result });
+  } catch (error) {
+    const exact = error instanceof Error ? error.message : "chat_workflow_read_failed";
+    const code = /company_scope|company_not_found|job_scope|job_not_found/.test(exact) ? "chat_workflow_job_not_found"
+      : /^[a-z][a-z0-9_:.-]{0,180}$/.test(exact) ? exact : "chat_workflow_read_failed";
+    res.status(code === "chat_workflow_job_not_found" ? 404 : 500).json({ ok: false, exact_blocker: code, external_action_executed: false });
+  }
+});
+
+app.post("/api/v1/companies/:companyId/chat-jobs/:jobId/workflow-actions", async (req, res) => {
+  try {
+    if (dbBackend === "postgres") await initializePostgresSchemaAsync();
+    else initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    await requireCompanyAccessAsync(companyId, ["owner", "admin", "operator"]);
+    const body = req.body;
+    if (!body || typeof body !== "object" || Array.isArray(body)
+      || Object.keys(body).some((key) => !["action", "automation_id", "expected_revision", "definition_sha256"].includes(key))
+      || !["run_once", "save_draft"].includes(body.action) || typeof body.automation_id !== "string"
+      || !Number.isSafeInteger(body.expected_revision) || body.expected_revision < 1
+      || typeof body.definition_sha256 !== "string" || !/^[a-f0-9]{64}$/.test(body.definition_sha256)) {
+      throw new AutomationContractError("chat_workflow_action_body_invalid");
+    }
+    const result = await executeChatWorkflowAction({ companyId, actorUserId: currentActorUserId(), jobId: String(req.params.jobId ?? ""),
+      action: body.action, automationId: body.automation_id, expectedRevision: body.expected_revision,
+      definitionSha256: body.definition_sha256, idempotencyKey: requireIdempotencyKey(req.header("idempotency-key")) });
+    res.status(result.action === "run_once" ? 202 : result.replayed ? 200 : 201).json({ ok: true, ...result });
+  } catch (error) {
+    const exact = error instanceof Error ? error.message : "chat_workflow_action_failed";
+    const code = /company_scope|company_not_found|job_scope|job_not_found/.test(exact) ? "chat_workflow_job_not_found"
+      : /^[a-z][a-z0-9_:.-]{0,180}$/.test(exact) ? exact : "chat_workflow_action_result_unconfirmed";
+    // A failed response after admission is not proof that nothing was saved.
+    // The client must use the GET endpoint to discover this job's exact result.
+    res.status(code === "chat_workflow_job_not_found" ? 404 : /body_invalid/.test(code) ? 400 : 409)
+      .json({ ok: false, exact_blocker: code, result_readback_required: true, external_action_executed: false });
   }
 });
 
@@ -4454,6 +5326,112 @@ app.post("/api/obsidian/url-capture", async (req, res, next) => {
   }
 });
 
+app.post("/api/v1/companies/:companyId/runs/:runId/gmail-review-result", async (req, res) => {
+  try {
+    if (dbBackend !== "postgres") initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    await requireCompanyAccessAsync(companyId, ["owner", "admin", "operator"]);
+    if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)
+      || Object.keys(req.body).length !== 1 || !Object.hasOwn(req.body, "review_result")) throw new Error("gmail_review_body_invalid");
+    const result = await syncGmailReviewResult({ companyId, runId: String(req.params.runId ?? "").trim(),
+      reviewResult: req.body.review_result, idempotencyKey: requireIdempotencyKey(req.header("idempotency-key")) });
+    res.status(result.replayed ? 200 : 201).json({ ok: true, ...result });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "gmail_review_sync_failed";
+    const code = /^[a-z][a-z0-9_:.-]{0,180}$/u.test(message) ? message : "gmail_review_sync_failed";
+    res.status(/not_found|company_scope_forbidden|company_not_found/u.test(code) ? 404
+      : /body_invalid|idempotency_key_required/u.test(code) ? 400 : 409).json({ ok: false, error: code,
+      result_readback_required: true, provider_called: false, run_started: false, external_action_executed: false });
+  }
+});
+
+/**
+ * No-send Gmail reply admission. The source Run and company connection are
+ * re-read here; the producer result is recomputed server-side, then the
+ * existing portable local admission creates the immutable Run and pending
+ * approval. This route never calls Gmail or queues a provider effect.
+ */
+app.post("/api/v1/companies/:companyId/runs/:runId/gmail-reply-admission", async (req, res) => {
+  try {
+    if (dbBackend !== "postgres") initDb();
+    const companyId = String(req.params.companyId ?? "").trim();
+    await requireCompanyAccessAsync(companyId, ["owner", "admin", "operator"]);
+    if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)
+      || Object.keys(req.body).length !== 1 || !Object.hasOwn(req.body, "source_candidate")) {
+      throw new Error("gmail_reply_admission_body_invalid");
+    }
+    const result = await admitGmailReplyEffect({
+      companyId,
+      sourceRunId: String(req.params.runId ?? "").trim(),
+      idempotencyKey: requireIdempotencyKey(req.header("idempotency-key")),
+      sourceCandidate: req.body.source_candidate
+    });
+    res.status(result.replayed ? 200 : 201).json({ ok: true, ...result });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "gmail_reply_admission_failed";
+    const code = /^[a-z][a-z0-9_:.-]{0,180}$/u.test(message) ? message : "gmail_reply_admission_failed";
+    res.status(/not_found|company_scope_forbidden/u.test(code) ? 404
+      : /body_invalid|key_required|idempotency_key_required/u.test(code) ? 400 : 409).json({
+        ok: false,
+        error: code,
+        provider_called: false,
+        external_action_executed: false,
+        result_readback_required: true
+      });
+  }
+});
+
+app.get("/api/v1/companies/:companyId/runs/:runId", async (req, res) => {
+  try {
+    const companyId = String(req.params.companyId ?? "").trim();
+    const runId = String(req.params.runId ?? "").trim();
+    await requireCompanyAccessAsync(companyId);
+    const detail = await getRunDetailAsync(runId, [companyId]);
+    if (!detail) {
+      res.status(404).json({ error: "run_not_found" });
+      return;
+    }
+    res.json(detail);
+  } catch (error) {
+    const code = error instanceof Error && /^[a-z][a-z0-9_:-]{0,180}$/u.test(error.message)
+      ? error.message : "run_detail_read_failed";
+    res.status(/not_found|forbidden/u.test(code) ? 404 : 409).json({ ok: false, error: code });
+  }
+});
+
+app.get("/api/v1/companies/:companyId/runs/:runId/recovery", async (req, res) => {
+  try {
+    await requireCompanyAccessAsync(req.params.companyId);
+    res.json({ ok: true, recovery: await readPortableRunRecovery({ companyId: req.params.companyId, runId: req.params.runId }) });
+  } catch (error) {
+    const code = error instanceof Error && /^[a-z][a-z0-9_:-]{0,180}$/u.test(error.message)
+      ? error.message : "portable_recovery_read_failed";
+    res.status(/not_found|forbidden/u.test(code) ? 404 : 409).json({ ok: false, error: code });
+  }
+});
+
+app.post("/api/v1/companies/:companyId/runs/:runId/recovery/:action", async (req, res) => {
+  try {
+    await requireCompanyAccessAsync(req.params.companyId, ["owner", "admin", "operator"]);
+    const action = req.params.action;
+    if (action !== "cancel" && action !== "retry" && action !== "reconcile-post-effect") throw new Error("portable_recovery_action_invalid");
+    if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)
+      || Object.keys(req.body).length !== 1 || !/^[a-f0-9]{64}$/u.test(String(req.body.expected_readback_token ?? ""))) {
+      throw new Error("portable_recovery_body_invalid");
+    }
+    const scope = { companyId: req.params.companyId, runId: req.params.runId, expectedReadbackToken: req.body.expected_readback_token };
+    const result = action === "cancel" ? await cancelPortableRun(scope)
+      : action === "retry" ? await retryPortableRun({ ...scope, idempotencyKey: requireIdempotencyKey(req.header("idempotency-key")) })
+        : await requestPortableBackupPostEffectReconciliation({ ...scope, idempotencyKey: requireIdempotencyKey(req.header("idempotency-key")) });
+    res.status(200).json({ ok: true, ...result });
+  } catch (error) {
+    const code = error instanceof Error && /^[a-z][a-z0-9_:-]{0,180}$/u.test(error.message)
+      ? error.message : "portable_recovery_action_unconfirmed";
+    res.status(/not_found|forbidden/u.test(code) ? 404 : /invalid|key_required/u.test(code) ? 400 : 409)
+      .json({ ok: false, error: code, result_readback_required: true });
+  }
+});
+
 app.get("/api/runs/:id", async (req, res, next) => {
   try {
     // The PostgreSQL schema boundary is owned by startup.  Never re-enter
@@ -4905,14 +5883,14 @@ function feedbackScreenshotMagicMatches(mimeType: FeedbackScreenshot["mimeType"]
   return content.length >= 12 && content.toString("ascii", 0, 4) === "RIFF" && content.toString("ascii", 8, 12) === "WEBP";
 }
 
-function readFeedbackArtifact(companyId: string, artifactId: string): { id: string; mimeType: string; checksumSha256: string; content: Buffer } | null {
+async function readFeedbackArtifact(companyId: string, artifactId: string): Promise<{ id: string; mimeType: string; checksumSha256: string; content: Buffer } | null> {
   if (!companyId || !artifactId) throw new Error("feedback_artifact_id_invalid");
-  const row = querySql<{ id: string; mime_type: string; checksum_sha256: string; size_bytes: number; content_base64: string }>(`
+  const row = (await (dbBackend === "postgres" ? querySqlAsync : querySql)<{ id: string; mime_type: string; checksum_sha256: string; size_bytes: number; content_base64: string }>(`
     SELECT id, mime_type, checksum_sha256, size_bytes, content_base64
     FROM feedback_artifacts
     WHERE company_id=${sqlValue(companyId)} AND id=${sqlValue(artifactId)} AND status='available'
     LIMIT 1
-  `)[0];
+  `))[0];
   if (!row) return null;
   const content = Buffer.from(row.content_base64, "base64");
   const checksum = createHash("sha256").update(content).digest("hex");
@@ -5093,8 +6071,8 @@ app.post("/api/approvals/:id/approve", async (req, res, next) => {
       ? await actorCompanyIdsAsync(["owner", "admin", "approver"])
       : actorCompanyIds(["owner", "admin", "approver"]);
     const result = dbBackend === "postgres"
-      ? await decideStoredApprovalAsync(req.params.id, "approved", companyIds)
-      : await decideStoredApproval(req.params.id, "approved", companyIds);
+      ? await decideStoredApprovalAsync(req.params.id, "approved", companyIds, req.body?.expected_binding, req.header("if-match") ?? req.body?.expected_revision ?? req.body?.decision_revision, typeof req.body?.note === "string" ? req.body.note : null)
+      : await decideStoredApproval(req.params.id, "approved", companyIds, req.body?.expected_binding, req.header("if-match") ?? req.body?.expected_revision ?? req.body?.decision_revision, typeof req.body?.note === "string" ? req.body.note : null);
     res.status(result.statusCode).json(result.body);
   } catch (error) {
     next(error);
@@ -5107,8 +6085,8 @@ app.post("/api/approvals/:id/reject", async (req, res, next) => {
       ? await actorCompanyIdsAsync(["owner", "admin", "approver"])
       : actorCompanyIds(["owner", "admin", "approver"]);
     const result = dbBackend === "postgres"
-      ? await decideStoredApprovalAsync(req.params.id, "rejected", companyIds)
-      : await decideStoredApproval(req.params.id, "rejected", companyIds);
+      ? await decideStoredApprovalAsync(req.params.id, "rejected", companyIds, req.body?.expected_binding, req.header("if-match") ?? req.body?.expected_revision ?? req.body?.decision_revision, typeof req.body?.note === "string" ? req.body.note : null)
+      : await decideStoredApproval(req.params.id, "rejected", companyIds, req.body?.expected_binding, req.header("if-match") ?? req.body?.expected_revision ?? req.body?.decision_revision, typeof req.body?.note === "string" ? req.body.note : null);
     res.status(result.statusCode).json(result.body);
   } catch (error) {
     next(error);
@@ -5121,8 +6099,8 @@ app.post("/api/approvals/:id/cancel", async (req, res, next) => {
       ? await actorCompanyIdsAsync(["owner", "admin", "approver"])
       : actorCompanyIds(["owner", "admin", "approver"]);
     const result = dbBackend === "postgres"
-      ? await decideStoredApprovalAsync(req.params.id, "cancelled", companyIds)
-      : await decideStoredApproval(req.params.id, "cancelled", companyIds);
+      ? await decideStoredApprovalAsync(req.params.id, "cancelled", companyIds, req.body?.expected_binding, req.header("if-match") ?? req.body?.expected_revision ?? req.body?.decision_revision, typeof req.body?.note === "string" ? req.body.note : null)
+      : await decideStoredApproval(req.params.id, "cancelled", companyIds, req.body?.expected_binding, req.header("if-match") ?? req.body?.expected_revision ?? req.body?.decision_revision, typeof req.body?.note === "string" ? req.body.note : null);
     res.status(result.statusCode).json(result.body);
   } catch (error) {
     next(error);
@@ -5370,7 +6348,7 @@ function requestedCompanyId(req: Parameters<RequestHandler>[0], required = true)
   return companyId;
 }
 
-function automationApiView(automation: AutomationRecord, schedule?: AutomationScheduleRecord | null) {
+function automationApiView(automation: AutomationRecord, schedule?: AutomationScheduleRecord | null, executionTarget?: ReturnType<typeof resolveGmailExecutionTarget>) {
   const execution = automationExecutionContract(automation.workerCommandKind);
   const portableDispatch = portableScheduleDispatchForRegisteredAutomation(automation);
   const resolvedSchedule = schedule === undefined
@@ -5403,6 +6381,7 @@ function automationApiView(automation: AutomationRecord, schedule?: AutomationSc
     approval_policy: automation.approvalPolicy,
     worker_command_kind: automation.workerCommandKind,
     ...execution,
+    execution_target: executionTarget ?? resolveGmailExecutionTarget(automation, []),
     portable_dispatch: portableDispatch,
     create_approval: automation.createApproval,
     builder_spec: automation.builderSpec,
@@ -5411,45 +6390,6 @@ function automationApiView(automation: AutomationRecord, schedule?: AutomationSc
     created_at: automation.createdAt,
     updated_at: automation.updatedAt,
     deep_link: `#/projects/${encodeURIComponent(automation.companyId)}/automations/${encodeURIComponent(automation.id)}/edit`
-  };
-}
-
-function automationExecutionContract(workerCommandKind: unknown): {
-  execution_mode: "control_plane_dry_run" | "registered_workflow_readback" | "portable_mac_worker_queue" | "unverified";
-  execution_label: string;
-  scheduler_effect: "queues_scheduled_dry_run" | "queues_portable_mac_worker" | "requires_registered_runner_readback" | "not_configured";
-  external_action_allowed: false;
-} {
-  const kind = typeof workerCommandKind === "string" ? workerCommandKind.trim().toLowerCase() : "";
-  if (kind === "safe_local_demo") {
-    return {
-      execution_mode: "control_plane_dry_run",
-      execution_label: "制御面の予約・dry-runのみ（外部処理なし）",
-      scheduler_effect: "queues_scheduled_dry_run",
-      external_action_allowed: false
-    };
-  }
-  if (["daily_ai_registered", "job_submit_registered", "nisenprints_registered"].includes(kind)) {
-    return {
-      execution_mode: "portable_mac_worker_queue",
-      execution_label: "AOS portable workflow → Mac Browser Use CLI worker queue",
-      scheduler_effect: "queues_portable_mac_worker",
-      external_action_allowed: false
-    };
-  }
-  if (kind.includes("registered")) {
-    return {
-      execution_mode: "registered_workflow_readback",
-      execution_label: "登録workflow契約（実行readback待ち）",
-      scheduler_effect: "requires_registered_runner_readback",
-      external_action_allowed: false
-    };
-  }
-  return {
-    execution_mode: "unverified",
-    execution_label: "実行契約未確認（保存のみ）",
-    scheduler_effect: "not_configured",
-    external_action_allowed: false
   };
 }
 
@@ -6498,14 +7438,109 @@ function buildPersistedProjectPresentationProfile(
     automations: automations.filter((automation) => String(automation.company_id ?? automation.project_id ?? "") === company.id)
   });
   const memory = listCompanyMemory(company.id).find((entry) => entry.key === "project_profile");
-  if (!memory) return derived;
-  try {
-    const override = parseProjectPresentationProfileOverride(JSON.parse(memory.body));
-    return applyProjectPresentationProfileOverride(derived, override, memory.revision);
-  } catch (error) {
-    const exactBlocker = error instanceof Error ? error.message : "project_profile_invalid";
-    return { ...derived, source: "persisted_project_profile", revision: memory.revision, exactBlocker };
+  return restoreProjectPresentationProfile(derived, memory);
+}
+
+async function buildPersistedProjectPresentationProfileAsync(company: { id: string; name: string }): Promise<ProjectPresentationProfile> {
+  const [automations, memory] = await Promise.all([listAutomationRecordsAsync(company.id), listCompanyMemoryAsync(company.id)]);
+  return restoreProjectPresentationProfile(buildProjectPresentationProfile({ ...company, automations }), memory.find((entry) => entry.key === "project_profile"));
+}
+
+function readPersistedPortableWorkerHeartbeat(companyIds: string[]): {
+  metadata: Record<string, unknown>;
+  readback: PortableRemoteWorkerHeartbeatReadback;
+} | null {
+  const allowedCompanyIds = new Set(companyIds);
+  const rows = querySql<{ status: string; created_at: string; metadata_json: unknown }>(
+    `SELECT status, created_at, metadata_json FROM system_checks WHERE kind=${sqlValue(PORTABLE_WORKER_HEARTBEAT_KIND)} ORDER BY created_at DESC LIMIT 100`
+  );
+  for (const row of rows) {
+    const metadata = parseJson<Record<string, unknown>>(row.metadata_json, {});
+    const metadataCompanyId = typeof metadata.company_id === "string" ? metadata.company_id.trim() : "";
+    if (!metadataCompanyId || !allowedCompanyIds.has(metadataCompanyId)) continue;
+    const readback = sanitizePortableRemoteWorkerHeartbeat(metadata, {
+      fallbackCompanyId: metadataCompanyId,
+      fallbackHeartbeatAt: typeof row.created_at === "string" ? row.created_at : null
+    });
+    if (readback) return { metadata, readback };
   }
+  return null;
+}
+
+const workflowStartGuideRunIds = new Set([
+  "email-review-reply",
+  "daily-ai-research-publish-run",
+  "nisenprints-daily-product-canva-printify-etsy-pinterest",
+  "daily-backup-safety-check",
+  "obsidian-project-memory-audit"
+]);
+
+function workflowStartGuideRunCanonicalIds(
+  row: Record<string, unknown>,
+  automationCanonicalIds: Map<string, string>
+): Set<string> {
+  const metadata = parseJson<Record<string, unknown>>(row.metadata_json, {});
+  const builderSpec = row.builder_spec ?? row.builderSpec;
+  const builder = builderSpec && typeof builderSpec === "object" && !Array.isArray(builderSpec)
+    ? builderSpec as Record<string, unknown>
+    : {};
+  const automationId = String(row.automation_id ?? row.automationId ?? "").trim();
+  const values = [
+    row.canonical_workflow_id,
+    row.canonicalWorkflowId,
+    row.workflow_id,
+    row.workflowId,
+    row.automation_type,
+    builder.canonicalWorkflowId,
+    builder.canonical_workflow_id,
+    metadata.canonicalWorkflowId,
+    metadata.canonical_workflow_id,
+    metadata.workflow_id,
+    metadata.workflowId,
+    metadata.automation_type,
+    automationCanonicalIds.get(`${String(row.company_id ?? row.project_id ?? "").trim()}:${automationId}`),
+    automationId
+  ];
+  return new Set(values
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .map((value) => value.trim().toLowerCase())
+    .filter((value) => workflowStartGuideRunIds.has(value)));
+}
+
+function readWorkflowStartGuideRuns(
+  companyPredicate: string,
+  automations: Array<Record<string, unknown>>
+) {
+  const automationCanonicalIds = new Map<string, string>();
+  for (const automation of automations) {
+    const companyId = String(automation.company_id ?? automation.project_id ?? "").trim();
+    const automationId = String(automation.id ?? "").trim();
+    const builderSpec = automation.builder_spec;
+    const builder = builderSpec && typeof builderSpec === "object" && !Array.isArray(builderSpec)
+      ? builderSpec as Record<string, unknown>
+      : {};
+    const canonical = String(
+      builder.canonicalWorkflowId
+      ?? builder.canonical_workflow_id
+      ?? automation.canonicalWorkflowId
+      ?? automation.canonical_workflow_id
+      ?? automation.automation_type
+      ?? ""
+    ).trim().toLowerCase();
+    if (companyId && automationId && workflowStartGuideRunIds.has(canonical)) {
+      automationCanonicalIds.set(`${companyId}:${automationId}`, canonical);
+    }
+  }
+  // This is intentionally separate from the general LIMIT 500 runs list. Read
+  // every scoped row so Guide can reject a newer malformed/incomplete run
+  // without incorrectly falling back to an older successful one. The query is
+  // plain SQL shared by SQLite and the local readback adapter.
+  const rows = sanitizeDashboardRows(
+    querySql<Record<string, unknown>>(`SELECT * FROM runs WHERE ${companyPredicate} ORDER BY created_at DESC`),
+    { compactMetadata: true }
+  );
+  return rows.filter((row) => workflowStartGuideRunIds.size > 0
+    && workflowStartGuideRunCanonicalIds(row, automationCanonicalIds).size > 0);
 }
 
 export function getMvpStateReadback(companyIds: string[]) {
@@ -6534,6 +7569,7 @@ export function getMvpStateReadback(companyIds: string[]) {
   const automations = readMvpAutomations(scopedIds);
   initRegisteredWorkflows();
   const registeredWorkflows = listRegisteredWorkflowsForCompanies(scopedIds);
+  const workflowStartGuideRuns = readWorkflowStartGuideRuns(companyPredicate, automations);
   const feedbacks = readMvpFeedbacks(scopedIds);
   const presentationProfiles = allowed.map((company) => buildPersistedProjectPresentationProfile(company, automations));
   const durableJobs = scopedIds.flatMap((companyId) => listDurableJobs(companyId, 500));
@@ -6542,6 +7578,7 @@ export function getMvpStateReadback(companyIds: string[]) {
   const queuedJobs = durableJobs.filter((job) => job.status === "queued");
   const leasedJobs = durableJobs.filter((job) => job.status === "leased");
   const latestHeartbeat = durableJobs.map((job) => job.heartbeatAt).filter((value): value is string => Boolean(value)).sort().at(-1) ?? null;
+  const portableHeartbeat = readPersistedPortableWorkerHeartbeat(scopedIds);
   const storedWorkerState = readStoredWorkerState();
   const storedWorkerStatus = storedWorkerState?.status === "blocked" || storedWorkerState?.status === "running"
     ? storedWorkerState.status
@@ -6551,16 +7588,38 @@ export function getMvpStateReadback(companyIds: string[]) {
     controlPlaneCompanyIds: companyIds,
     selectedBackend: webOperationBackend.backend,
     targetScopedReadback: true,
+    remoteWorkerHeartbeat: portableHeartbeat?.readback ?? null
   });
   const workerScope = browserRuntime.processReadback.portableRemoteWorker.scopeReadback;
   const liveTransport = browserRuntime.processReadback.portableRemoteWorker.transportReadback;
   const projectedHeartbeatAt = resolvePortableWorkerHeartbeatAt({
     liveLastSuccessfulHeartbeatAt: liveTransport.lastSuccessfulHeartbeatAt,
     liveHeartbeatAt: liveTransport.heartbeatAt,
-    persistedHeartbeatAt: storedWorkerState?.updatedAt ?? latestHeartbeat
+    persistedHeartbeatAt: portableHeartbeat?.readback.heartbeatAt ?? storedWorkerState?.updatedAt ?? latestHeartbeat
   });
-  const workerBlocker = storedWorkerState?.exactBlocker ?? workerScope.exactBlocker ?? null;
-  const resolvedWorkerStatus = workerScope.exactBlocker ? "blocked" : workerStatus;
+  const persistedHeartbeatFreshness = portableHeartbeat?.readback.heartbeatAt
+    ? classifyPortableWorkerHeartbeat({
+      heartbeatAt: portableHeartbeat.readback.heartbeatAt,
+      staleAfterSeconds: Number(process.env.AUTOMATION_OS_PORTABLE_WORKER_HEARTBEAT_STALE_SECONDS ?? 300)
+    })
+    : null;
+  const heartbeatHealthy = liveTransport.heartbeatStatus === "ok"
+    && (persistedHeartbeatFreshness?.heartbeatFresh === true || liveTransport.lastSuccessfulHeartbeatAt !== null);
+  const persistedBlocker = storedWorkerState?.exactBlocker ?? workerScope.exactBlocker ?? null;
+  const heartbeatBlockerOnly = persistedBlocker === "portable_worker_heartbeat_stale"
+    || persistedBlocker === "portable_worker_heartbeat_blocked"
+    || persistedBlocker === "portable_worker_heartbeat_unreadable";
+  const workerBlocker = heartbeatHealthy && heartbeatBlockerOnly ? null : persistedBlocker;
+  const remoteHeartbeatStatus = portableHeartbeat?.readback.status;
+  const resolvedWorkerStatus = workerScope.exactBlocker
+    ? "blocked"
+    : remoteHeartbeatStatus === "blocked"
+      ? "blocked"
+      : heartbeatHealthy && remoteHeartbeatStatus === "running"
+        ? "running"
+        : heartbeatHealthy && remoteHeartbeatStatus === "idle"
+          ? leasedJobs.length > 0 ? "running" : "idle"
+          : workerStatus;
   return {
     projects: allowed.map((company) => ({ id: company.id, project_id: company.id, name: company.name, status: company.status, role: company.role })),
     companies: allowed,
@@ -6586,6 +7645,7 @@ export function getMvpStateReadback(companyIds: string[]) {
       updated_at: schedule.updatedAt
     }))),
     runs,
+    workflowStartGuideRuns,
     jobs: durableJobs.map(durableJobApiView),
     job_attempts: durableAttempts.map(durableAttemptApiView),
     schedule_occurrences: scheduleOccurrences.map((occurrence) => ({
@@ -6666,6 +7726,8 @@ export function getMvpStateReadback(companyIds: string[]) {
       queue_scope: { source: dbBackend === "postgres" ? "postgres" : "local_sqlite", company_ids: companyIds },
       worker_scope: workerScope,
       portable_remote_worker: browserRuntime.processReadback.portableRemoteWorker,
+      heartbeat_metadata: browserRuntime.processReadback.portableRemoteWorker.heartbeatMetadata,
+      remote_report: browserRuntime.processReadback.portableRemoteWorker.remoteReport,
       external_action_executed: false
     },
     browser_use_runtime: browserRuntime,
@@ -6686,17 +7748,17 @@ export function getMvpStateReadback(companyIds: string[]) {
  */
 export async function getMvpStateReadbackAsync(companyIds: string[]) {
   const state = getMvpStateReadback(companyIds);
+  const portableRemoteWorker = (state.worker as Record<string, unknown>).portable_remote_worker as Record<string, unknown> | undefined;
   const browserRuntime = await buildBrowserUseRuntimeSnapshotAsync({
     controlPlaneCompanyIds: companyIds,
     selectedBackend: state.web_operation_backend.backend,
     targetScopedReadback: true,
+    remoteWorkerHeartbeat: portableRemoteWorker?.remoteReport ?? null,
   });
   return { ...state, browser_use_runtime: browserRuntime };
 }
 
-function readMvpFeedbacks(companyIds: string[] = actorCompanyIds(["owner"])) {
-  initDb();
-  return querySql<{
+type FeedbackRow = {
     id: string;
     company_id: string;
     feedback_id: string;
@@ -6715,7 +7777,23 @@ function readMvpFeedbacks(companyIds: string[] = actorCompanyIds(["owner"])) {
     captured_at: string;
     created_at: string;
     payload_json: string;
-  }>(`SELECT * FROM mvp_feedback WHERE ${scopedCompanyPredicate("company_id", companyIds)} ORDER BY created_at DESC LIMIT 500`).map((row) => ({
+  };
+
+function readMvpFeedbacks(companyIds: string[] = actorCompanyIds(["owner"]), feedbackId = "") {
+  initDb();
+  return querySql<FeedbackRow>(feedbackReadbackSql(companyIds, feedbackId)).map(publicFeedbackRow);
+}
+
+async function readMvpFeedbacksAsync(companyIds: string[], feedbackId = "") {
+  return (await querySqlAsync<FeedbackRow>(feedbackReadbackSql(companyIds, feedbackId))).map(publicFeedbackRow);
+}
+
+function feedbackReadbackSql(companyIds: string[], feedbackId: string) {
+  return `SELECT * FROM mvp_feedback WHERE ${scopedCompanyPredicate("company_id", companyIds)}${feedbackId ? ` AND feedback_id=${sqlValue(feedbackId)}` : ""} ORDER BY created_at DESC LIMIT ${feedbackId ? 1 : 500}`;
+}
+
+function publicFeedbackRow(row: FeedbackRow) {
+  return {
     id: row.id,
     company_id: row.company_id,
     project_id: row.company_id,
@@ -6735,7 +7813,7 @@ function readMvpFeedbacks(companyIds: string[] = actorCompanyIds(["owner"])) {
     captured_at: row.captured_at,
     created_at: row.created_at,
     payload: safeJsonParse<Record<string, unknown>>(row.payload_json, {})
-  }));
+  };
 }
 
 function readMvpAutomations(companyIds?: string[]) {
@@ -6743,9 +7821,10 @@ function readMvpAutomations(companyIds?: string[]) {
   const scopedIds = companyIds ?? actorCompanyIds();
   return scopedIds.flatMap((companyId) => {
     const schedules = new Map(listAutomationSchedules(companyId).map((schedule) => [schedule.automationId, schedule]));
+    const connectionRefs = listCompanyConnectionRefs(companyId);
     return listAutomationRecords(companyId).map((automation) => {
       const schedule = schedules.get(automation.id);
-      return automationApiView(automation, schedule ?? null);
+      return automationApiView(automation, schedule ?? null, resolveGmailExecutionTarget(automation, connectionRefs));
     });
   });
 }
@@ -7649,13 +8728,14 @@ function buildSafeReferenceWorkflowPaths(
       ledgerItem?.actualOperationConfirmed === true &&
       ledgerItem.proofConfirmed === true &&
       completionLineageVerified;
+    const routeGuarded = workflow?.runner_kind === reference.adapter &&
+      policy.classification === "aos_chrome_companion" &&
+      policy.evidence.includes("surface:aos_chrome_companion_profile_instance") &&
+      policy.evidence.includes("no_fallback:true");
     const stages = {
       definition_registered: Boolean(workflow && workflow.status === "active"),
       schedule_registered: schedule.kind === "cron" && typeof schedule.rrule === "string" && schedule.rrule.trim() !== "",
-      route_guarded: workflow?.runner_kind === reference.adapter &&
-        policy.classification === "browser_use_cli" &&
-        policy.evidence.includes("surface:browser_use_cli") &&
-        policy.evidence.includes("no_fallback:true"),
+      route_guarded: routeGuarded,
       approval_boundary: safety.externalActionBoundary === "billing_purchase_payment_checkout_hard_stop"
         && Array.isArray(safety.humanInputRequiredWithEvidence)
         && ["captcha", "otp", "security_code", "identity_verification"].every((item) => safety.humanInputRequiredWithEvidence.includes(item)),
@@ -7734,7 +8814,7 @@ function readFreshReferenceWorkflowCanary(): Map<string, { definitionFingerprint
         !runId ||
         runIds.has(runId) ||
         path.status !== "proof_backed_safe_stop_verified" ||
-        path.exact_blocker !== "browser_use_cli_required" ||
+        path.exact_blocker !== "aos_chrome_companion_task_id_missing" ||
         path.run_blocked !== true ||
         path.step_blocked !== true ||
         path.proof_gate_ok !== false ||
@@ -7983,6 +9063,32 @@ async function buildCompanyRegisteredAutomationReadback(projectId: string, optio
     storedWorkflows = await listRegisteredWorkflowsForCompaniesAsync([projectId]);
   }
   const workflows = filterRegisteredWorkflowList(storedWorkflows);
+  const companyAutomations = await listAutomationRecordsAsync(projectId);
+  const companyRegistrationProjection = listRegisteredAutomationCatalog()
+    .filter((entry) => entry.canonicalWorkflowId !== "job-application-manager")
+    .map((entry) => {
+      const automation = companyAutomations.find((candidate) => {
+        const spec = candidate.builderSpec;
+        if (!spec || typeof spec !== "object" || Array.isArray(spec)) return false;
+        const canonical = spec.canonicalWorkflowId ?? spec.canonical_workflow_id;
+        return typeof canonical === "string" && canonical.trim() === entry.canonicalWorkflowId;
+      });
+      return {
+        // Keep the company-scoped projection consumable by the Guide without
+        // changing the separate global runner inventory below.  The ID is
+        // copied only from the matched saved automation; it is never
+        // synthesized from a display name.
+        id: automation?.id ?? null,
+        name: automation?.name ?? entry.name,
+        sourceAutomationId: entry.sourceAutomationId,
+        canonicalWorkflowId: entry.canonicalWorkflowId,
+        companyId: projectId,
+        automationId: automation?.id ?? null,
+        revision: automation?.revision ?? null,
+        status: automation?.status ?? null
+      };
+    })
+    .filter((item) => item.automationId !== null);
   // The normal inventory is used by the UI to choose a provider-neutral
   // no-effect manual trigger.  Do not make that read wait for the historical
   // migration ledger (runs/proofs/approvals across hundreds of rows).  A
@@ -7998,13 +9104,24 @@ async function buildCompanyRegisteredAutomationReadback(projectId: string, optio
     const paused = isRegisteredWorkflowSchedulePaused(workflow);
     const portableWorkflowId = portableWorkflowIdForWorkerAdapter(workflow.runner_kind);
     const portableManifest = portableWorkflowId ? portableWorkflowManifests[portableWorkflowId] : undefined;
-    const routePreflightBlocker = portableReadOnlyPreflightBlocker(
-      portableWorkflowId,
-      selectedBackend.resolved_backend,
-      Boolean(portableWorkflowId && portableManifest),
-      workflow.runner_kind,
-    );
-    const preflightBlocker = routePreflightBlocker ?? backendReadbackBlocker;
+    const localWorkflowId = portableLocalWorkflowIdForRegisteredAutomation({ workerCommandKind: workflow.runner_kind });
+    const routePreflightBlocker = portableWorkflowId
+      ? portableReadOnlyPreflightBlocker(
+          portableWorkflowId,
+          selectedBackend.resolved_backend,
+          Boolean(portableManifest),
+          workflow.runner_kind,
+        )
+      : null;
+    // Local-only read-only workflows do not depend on the browser backend or
+    // its Mac bridge. Their explicit local runner is the preflight route.
+    const preflightBlocker = routePreflightBlocker ?? (portableWorkflowId ? backendReadbackBlocker : null);
+    const noEffectRouteReady = Boolean((portableWorkflowId && portableManifest) || localWorkflowId);
+    const effectfulBlocker = paused
+      ? "registered_automation_schedule_paused"
+      : preflightBlocker ?? (noEffectRouteReady
+        ? "registered_automation_effect_stage_not_admitted"
+        : "registered_automation_local_runner_not_wired_to_http");
     const canPreflight = !paused && preflightBlocker === null;
     const latestProof = ledger && ledger.latestProofTypes.length > 0 && ledger.evidenceUpdatedAt
       ? {
@@ -8040,12 +9157,14 @@ async function buildCompanyRegisteredAutomationReadback(projectId: string, optio
       preflight_exact_blocker: paused
         ? "registered_automation_schedule_paused"
         : preflightBlocker,
-      exact_blocker: paused ? "registered_automation_schedule_paused" : "registered_automation_local_runner_not_wired_to_http",
+      exact_blocker: effectfulBlocker,
       ui_action: "read-only preflight",
       action_label: "read-only preflight",
       resume_condition: paused
         ? "この定期実行を再開してから、local runnerのreadbackを確認してください。"
-        : "local runnerでpreflightを実行し、proof/readbackを確認してください。HTTP APIから外部作用は開始しません。",
+        : noEffectRouteReady && preflightBlocker === null
+          ? "読み取り専用の確認要求は受付可能です。業務実行は未許可です。"
+          : "local runnerでpreflightを実行し、proof/readbackを確認してください。HTTP APIから外部作用は開始しません。",
       latest_proof: latestProof,
       manual_trigger: {
         available: !paused,
@@ -8076,11 +9195,10 @@ async function buildCompanyRegisteredAutomationReadback(projectId: string, optio
               read_only_stage: canPreflight ? "reference_readback" : null
             }
           : (() => {
-              const localId = portableLocalWorkflowIdForRegisteredAutomation({ workerCommandKind: workflow.runner_kind });
-              return localId
+              return localWorkflowId
                 ? {
                     supported: true,
-                    workflow_id: localId,
+                    workflow_id: localWorkflowId,
                     execution_mode: "read_only",
                     external_runner_configured: false,
                     app_dependency: false,
@@ -8115,6 +9233,7 @@ async function buildCompanyRegisteredAutomationReadback(projectId: string, optio
       : { status: "deferred", exact_blocker: "registered_automation_ledger_readback_deferred", next_action: "Runs/Proofsのreadbackを明示的に確認してください。" },
     safety_boundary: "read-only preflight; 外部投稿・応募・削除・送信・公開・認証突破・課金はHTTPから開始しない",
     automation_count: automations.length,
+    company_registration_projection: companyRegistrationProjection,
     checks: [
       { id: "company_scoped_registered_workflows", status: "pass" },
       { id: "external_actions_http_blocked", status: "pass" }
@@ -8123,10 +9242,11 @@ async function buildCompanyRegisteredAutomationReadback(projectId: string, optio
   };
 }
 
-function buildCompanyRegisteredAutomationRunResponse(automationId: string, projectId: string): { statusCode?: number; body: Record<string, unknown> } {
-  initRegisteredWorkflows();
-  const workflows = filterRegisteredWorkflowList(listRegisteredWorkflowsForCompanies([projectId]));
-  const workflow = workflows.find((item) => item.id === automationId);
+function registeredAutomationRunResponse(
+  automationId: string,
+  projectId: string,
+  workflow?: RegisteredWorkflowRow
+): { statusCode?: number; body: Record<string, unknown> } {
   if (!workflow) {
     return {
       statusCode: 404,
@@ -8155,6 +9275,12 @@ function buildCompanyRegisteredAutomationRunResponse(automationId: string, proje
       ui_action: "read-only preflight"
     }
   };
+}
+
+function buildCompanyRegisteredAutomationRunResponse(automationId: string, projectId: string): { statusCode?: number; body: Record<string, unknown> } {
+  initRegisteredWorkflows();
+  const workflows = filterRegisteredWorkflowList(listRegisteredWorkflowsForCompanies([projectId]));
+  return registeredAutomationRunResponse(automationId, projectId, workflows.find((item) => item.id === automationId));
 }
 
 function readRegisteredWorkflowRows(): ReturnType<typeof initRegisteredWorkflows> {
@@ -8400,18 +9526,54 @@ export function resetResearchPlanStartRunnerForTests(): void {
   researchPlanStartRunner = startCommandRun;
 }
 
-export function getRunDetail(runId: string, companyIds?: readonly string[]) {
+function runDetailApprovalId(metadata: Record<string, unknown>): string | null {
+  const value = metadata.approval_id;
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function buildRunDetailPortableOperationProjection(
+  rawRun: Record<string, unknown>,
+  metadata: Record<string, unknown>,
+  approval: Record<string, unknown> | null,
+) {
+  const receipt = metadata.remote_worker_receipt && typeof metadata.remote_worker_receipt === "object"
+    && !Array.isArray(metadata.remote_worker_receipt)
+    ? metadata.remote_worker_receipt as Record<string, unknown>
+    : null;
+  return buildPortableRunOperationProjection({ run: rawRun, approval, receipt });
+}
+
+type RunDetailReadback = {
+  run: Record<string, any>;
+  executionRouting: Record<string, unknown> | null;
+  steps: Record<string, unknown>[];
+  proofs: Record<string, unknown>[];
+  children: Record<string, unknown>[];
+  workerEvents: Record<string, unknown>[];
+};
+
+export function getRunDetail(runId: string, companyIds?: readonly string[]): RunDetailReadback | undefined {
   if (!companyIds) normalizeReceiptOnlyRuns();
   const rawRun = companyIds ? findScopedRun(runId, companyIds) : querySql(`SELECT * FROM runs WHERE id=${sqlValue(runId)} LIMIT 1`)[0];
-  const run = rawRun ? sanitizeDashboardRows([rawRun])[0] : undefined;
+  const run = rawRun ? sanitizeDashboardRows([rawRun as Record<string, unknown>])[0] : undefined;
   if (!run) return undefined;
   const companyId = String((rawRun as Record<string, unknown>).company_id ?? "");
+  const rawMetadata = parseJson<Record<string, unknown>>(typeof (rawRun as Record<string, unknown>).metadata_json === "string"
+    ? (rawRun as Record<string, unknown>).metadata_json : "{}", {});
   const metadata = parseJson<Record<string, unknown>>(typeof run.metadata_json === "string" ? run.metadata_json : "{}", {});
   const executionRouting =
-    metadata.execution_routing && typeof metadata.execution_routing === "object" ? metadata.execution_routing : null;
+    metadata.execution_routing && typeof metadata.execution_routing === "object" ? metadata.execution_routing as Record<string, unknown> : null;
+  const approvalId = runDetailApprovalId(metadata);
+  const approval = approvalId
+    ? (querySql<Record<string, unknown>>(`SELECT * FROM approvals
+        WHERE id=${sqlValue(approvalId)} AND run_id=${sqlValue(runId)} AND company_id=${sqlValue(companyId)} LIMIT 1`)[0] ?? null)
+    : null;
+  const portableOperationProjection = sanitizeDashboardMetadata(
+    buildRunDetailPortableOperationProjection(rawRun as Record<string, unknown>, rawMetadata, approval)
+  );
 
   return {
-    run,
+    run: { ...(run as Record<string, any>), portable_operation_projection: portableOperationProjection },
     executionRouting,
     steps: sanitizeDashboardRows(
       querySql(`SELECT * FROM run_steps WHERE run_id=${sqlValue(runId)} ORDER BY COALESCE(started_at, completed_at, '') ASC LIMIT 500`)
@@ -8426,28 +9588,38 @@ export function getRunDetail(runId: string, companyIds?: readonly string[]) {
   };
 }
 
-export async function getRunDetailAsync(runId: string, companyIds?: readonly string[]) {
+export async function getRunDetailAsync(runId: string, companyIds?: readonly string[]): Promise<RunDetailReadback | undefined> {
   if (!companyIds && dbBackend === "postgres") throw new Error("postgres_async_company_scope_required");
   if (!companyIds) normalizeReceiptOnlyRuns();
   const rawRun = companyIds
     ? await findScopedRunAsync(runId, companyIds)
     : (await querySqlAsync(`SELECT * FROM runs WHERE id=${sqlValue(runId)} LIMIT 1`))[0];
-  const run = rawRun ? sanitizeDashboardRows([rawRun])[0] : undefined;
+  const run = rawRun ? sanitizeDashboardRows([rawRun as Record<string, unknown>])[0] : undefined;
   if (!run) return undefined;
   const companyId = String((rawRun as Record<string, unknown>).company_id ?? "");
+  const rawMetadata = parseJson<Record<string, unknown>>(typeof (rawRun as Record<string, unknown>).metadata_json === "string"
+    ? (rawRun as Record<string, unknown>).metadata_json : "{}", {});
   const metadata = parseJson<Record<string, unknown>>(typeof run.metadata_json === "string" ? run.metadata_json : "{}", {});
   const executionRouting =
-    metadata.execution_routing && typeof metadata.execution_routing === "object" ? metadata.execution_routing : null;
-  const [rawSteps, rawProofs, rawChildren, rawWorkerEvents] = await Promise.all([
+    metadata.execution_routing && typeof metadata.execution_routing === "object" ? metadata.execution_routing as Record<string, unknown> : null;
+  const approvalId = runDetailApprovalId(metadata);
+  const [rawSteps, rawProofs, rawChildren, rawWorkerEvents, rawApproval] = await Promise.all([
     querySqlAsync(`SELECT * FROM run_steps WHERE run_id=${sqlValue(runId)} ORDER BY COALESCE(started_at, completed_at, '') ASC LIMIT 500`),
     querySqlAsync(companyIds
       ? `SELECT * FROM proofs WHERE run_id=${sqlValue(runId)} AND company_id=${sqlValue(companyId)} ORDER BY created_at ASC LIMIT 1000`
       : `SELECT * FROM proofs WHERE run_id=${sqlValue(runId)} ORDER BY created_at ASC LIMIT 1000`),
     querySqlAsync(`SELECT * FROM child_runs WHERE parent_run_id=${sqlValue(runId)} ORDER BY created_at ASC LIMIT 1000`),
-    querySqlAsync(`SELECT * FROM worker_events WHERE run_id=${sqlValue(runId)} ORDER BY created_at ASC LIMIT 2000`)
+    querySqlAsync(`SELECT * FROM worker_events WHERE run_id=${sqlValue(runId)} ORDER BY created_at ASC LIMIT 2000`),
+    approvalId
+      ? querySqlAsync<Record<string, unknown>>(`SELECT * FROM approvals
+          WHERE id=${sqlValue(approvalId)} AND run_id=${sqlValue(runId)} AND company_id=${sqlValue(companyId)} LIMIT 1`)
+      : Promise.resolve([] as Record<string, unknown>[])
   ]);
+  const portableOperationProjection = sanitizeDashboardMetadata(buildRunDetailPortableOperationProjection(
+    rawRun as Record<string, unknown>, rawMetadata, rawApproval[0] ?? null
+  ));
   return {
-    run,
+    run: { ...(run as Record<string, any>), portable_operation_projection: portableOperationProjection },
     executionRouting,
     steps: sanitizeDashboardRows(rawSteps),
     proofs: sanitizeDashboardRows(rawProofs),
@@ -10652,7 +11824,184 @@ async function jobApplicationApprovalConnectionGateAsync(companyId: string, runI
     : { exactBlocker: "job_application_account_ref_not_verified", nextAction: "Integrationsで対象account_refを再認証・検証し、fresh readbackでverifiedを確認する" };
 }
 
-async function decideStoredApproval(id: string, status: "approved" | "rejected" | "cancelled", companyIds?: readonly string[]) {
+const storedApprovalBindingFields = ["company_id", "run_id", "action_kind", "target_account_ref_id", "payload_hash", "policy_version", "expires_at"] as const;
+type StoredApprovalDecisionStatus = "approved" | "rejected" | "cancelled";
+
+function storedApprovalBindingValue(binding: Record<string, unknown>, field: string): unknown {
+  if (field === "target_account_ref_id") {
+    const value = Object.prototype.hasOwnProperty.call(binding, field)
+      ? binding[field]
+      : binding.target_account_ref;
+    // The control panel renders a nullable target as the Japanese label
+    // "なし". It is a display value, never a durable account reference.
+    return value === "なし" ? null : value;
+  }
+  return binding[field];
+}
+
+function storedApprovalExpectedBindingMatches(existing: Record<string, unknown>, expected: unknown): boolean {
+  if (!expected || typeof expected !== "object" || Array.isArray(expected)) return false;
+  const binding = expected as Record<string, unknown>;
+  const allowed = new Set([...storedApprovalBindingFields, "decision_revision", "expected_revision", "target_account_ref"]);
+  if (Object.keys(binding).some((field) => !allowed.has(field))) return false;
+  return storedApprovalBindingFields.every((field) => {
+    const value = storedApprovalBindingValue(binding, field);
+    return value !== undefined && value === (existing[field] ?? null);
+  });
+}
+
+function storedApprovalExpectedRevision(existing: Record<string, unknown>, expectedBinding: unknown, requestedRevision?: unknown): number | null {
+  const binding = expectedBinding && typeof expectedBinding === "object" && !Array.isArray(expectedBinding)
+    ? expectedBinding as Record<string, unknown>
+    : null;
+  const candidate = requestedRevision ?? binding?.decision_revision ?? binding?.expected_revision;
+  if (candidate === undefined || candidate === null || candidate === "") {
+    const current = Number(existing.decision_revision ?? 1);
+    return Number.isSafeInteger(current) && current >= 1 ? current : null;
+  }
+  const revision = typeof candidate === "number"
+    ? candidate
+    : typeof candidate === "string" && /^\d+$/u.test(candidate.trim())
+      ? Number(candidate.trim())
+      : Number.NaN;
+  return Number.isSafeInteger(revision) && revision >= 1 ? revision : null;
+}
+
+function storedApprovalExpired(existing: Record<string, unknown>): boolean {
+  if (existing.expires_at === null || existing.expires_at === undefined || existing.expires_at === "") return false;
+  const expiresAt = Date.parse(String(existing.expires_at));
+  return !Number.isFinite(expiresAt) || expiresAt <= Date.now();
+}
+
+function storedApprovalDecisionSql(
+  existing: Record<string, unknown>,
+  status: StoredApprovalDecisionStatus,
+  decidedAt: string,
+  expectedRevision = Number(existing.decision_revision ?? 1),
+  expectedBinding?: unknown,
+  note?: string | null
+): string {
+  // The approval row is the first CAS in the transaction. Every immutable
+  // binding field is repeated in the WHERE clause so a stale read cannot
+  // decide a changed target, payload, policy, or expiry.
+  const binding = expectedBinding && typeof expectedBinding === "object" && !Array.isArray(expectedBinding)
+    ? expectedBinding as Record<string, unknown>
+    : null;
+  const unchanged = [...storedApprovalBindingFields, "resource_locks_json"]
+    .map((field) => {
+      const value = field === "resource_locks_json"
+        ? existing[field]
+        : binding
+          ? storedApprovalBindingValue(binding, field)
+          : existing[field];
+      return value === null || value === undefined
+        ? `${field} IS NULL`
+        : `${field}=${sqlValue(value)}`;
+    })
+    .join(" AND ");
+  const defaultNote = status === "approved" ? "Approved from Control Panel" : status === "cancelled" ? "Cancelled from Control Panel" : "Rejected from Control Panel";
+  const decisionNote = typeof note === "string" && note.trim() ? note.trim() : defaultNote;
+  return `UPDATE approvals SET status=${sqlValue(status)}, decided_at=${sqlValue(decidedAt)},
+    decision_revision=decision_revision+1, decision_note=${sqlValue(decisionNote)}
+    WHERE id=${sqlValue(String(existing.id))} AND company_id=${sqlValue(String(existing.company_id ?? ""))}
+      AND status='pending' AND decision_revision=${expectedRevision}
+      AND (expires_at IS NULL OR expires_at='' OR expires_at>${sqlValue(decidedAt)})
+      AND ${unchanged} RETURNING *`;
+}
+
+function storedApprovalDecisionConflictBody(id: string, current: Record<string, unknown> | undefined, expectedBinding: unknown, expectedRevision: number | null, status: StoredApprovalDecisionStatus) {
+  if (!current) return { statusCode: 404, body: { error: "approval_not_found" } };
+  if (current.status !== "pending") {
+    const portableRecovery = status === "approved" && current.status === "approved" && current.run_id
+      ? { requeued: false, reason: "approval_recovery_deferred_after_response", approval_id: current.id }
+      : null;
+    if (portableRecovery && current.run_id) deferPortableMacWorkerRecovery(String(current.run_id));
+    return { statusCode: 409, body: { error: "approval_already_decided", id, status: current.status, portable_recovery: portableRecovery } };
+  }
+  if (expectedBinding !== undefined && !storedApprovalExpectedBindingMatches(current, expectedBinding)) {
+    return { statusCode: 409, body: { error: "approval_binding_changed", id } };
+  }
+  const currentRevision = Number(current.decision_revision ?? 1);
+  if (expectedRevision === null || currentRevision !== expectedRevision) {
+    return { statusCode: 409, body: { error: "approval_revision_conflict", id, decision_revision: currentRevision } };
+  }
+  if (storedApprovalExpired(current)) return { statusCode: 409, body: { error: "approval_expired", id } };
+  return { statusCode: 409, body: { error: "approval_changed_read_again", id } };
+}
+
+function storedApprovalRunEvidence(value: unknown): boolean {
+  const record = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+  if (!record) return false;
+  return Boolean(record.remote_worker_claim || record.remote_worker_receipt)
+    || record.external_action_executed === true
+    || record.external_action_executed === null
+    || record.operation_effect_state === "unknown"
+    || record.reconciliation_required === true;
+}
+
+async function prepareStoredApprovalRunTransition(existing: Record<string, unknown>, status: StoredApprovalDecisionStatus): Promise<{
+  companyId: string;
+  runId: string;
+  runStatus: "blocked" | "cancelled";
+  reason: string;
+  previousMetadataJson: string;
+  nextMetadata: Record<string, unknown>;
+  transitionAt: string;
+} | null> {
+  if (status === "approved" || !existing.company_id || !existing.run_id) return null;
+  const runId = String(existing.run_id);
+  const companyId = String(existing.company_id);
+  const [run, steps, events] = await Promise.all([
+    querySqlAsync<{ status: string; metadata_json: string }>(`SELECT status, metadata_json FROM runs WHERE id=${sqlValue(runId)} AND company_id=${sqlValue(companyId)} LIMIT 1`).then((rows) => rows[0]),
+    querySqlAsync<{ metadata_json: string }>(`SELECT metadata_json FROM run_steps WHERE run_id=${sqlValue(runId)}`),
+    querySqlAsync<{ metadata_json: string }>(`SELECT metadata_json FROM worker_events WHERE run_id=${sqlValue(runId)} ORDER BY created_at DESC LIMIT 200`)
+  ]);
+  if (!run || !["waiting_approval", "queued"].includes(run.status)) return null;
+  const parsedMetadata = parseJson<unknown>(run.metadata_json, null);
+  if (!parsedMetadata || typeof parsedMetadata !== "object" || Array.isArray(parsedMetadata)) return null;
+  if ([parsedMetadata, ...steps.map((step) => parseJson<unknown>(step.metadata_json, null)), ...events.map((event) => parseJson<unknown>(event.metadata_json, null))].some(storedApprovalRunEvidence)) return null;
+  const transitionAt = nowIso();
+  const reason = `approval_${status}`;
+  return {
+    companyId,
+    runId,
+    runStatus: status === "rejected" ? "blocked" : "cancelled",
+    reason,
+    previousMetadataJson: run.metadata_json,
+    nextMetadata: {
+      ...(parsedMetadata as Record<string, unknown>),
+      stop_reason: reason,
+      exact_blocker: reason,
+      approval_status: status,
+      external_action_executed: false
+    },
+    transitionAt
+  };
+}
+
+function storedApprovalRunTransitionSteps(transition: Awaited<ReturnType<typeof prepareStoredApprovalRunTransition>>): Array<{ sql: string; expectChanges?: number }> {
+  if (!transition) return [];
+  const nextMetadataJson = sqlValue(transition.nextMetadata);
+  const runChanged = `EXISTS (SELECT 1 FROM runs WHERE id=${sqlValue(transition.runId)} AND company_id=${sqlValue(transition.companyId)}
+    AND status=${sqlValue(transition.runStatus)} AND updated_at=${sqlValue(transition.transitionAt)} AND metadata_json=${nextMetadataJson})`;
+  return [
+    { sql: `UPDATE runs SET status=${sqlValue(transition.runStatus)}, updated_at=${sqlValue(transition.transitionAt)}, metadata_json=${nextMetadataJson}
+      WHERE id=${sqlValue(transition.runId)} AND company_id=${sqlValue(transition.companyId)}
+        AND status IN ('waiting_approval', 'queued') AND metadata_json=${sqlValue(transition.previousMetadataJson)}` },
+    { sql: `UPDATE run_steps SET status=${sqlValue(transition.runStatus)}, completed_at=COALESCE(completed_at, ${sqlValue(transition.transitionAt)})
+      WHERE run_id=${sqlValue(transition.runId)} AND status IN ('waiting_approval', 'queued') AND completed_at IS NULL AND ${runChanged}` },
+    { sql: `UPDATE lanes SET status=${sqlValue(transition.runStatus === "cancelled" ? "idle" : "blocked")},
+        health=${sqlValue(transition.runStatus)}, current_task=${sqlValue(transition.reason)}, updated_at=${sqlValue(transition.transitionAt)}
+      WHERE run_id=${sqlValue(transition.runId)} AND ${runChanged}` },
+    { sql: `INSERT INTO worker_events (id, company_id, run_id, step_id, lane_id, event_type, message, created_at, metadata_json)
+      SELECT ${sqlValue(makeId("evt"))}, ${sqlValue(transition.companyId)}, ${sqlValue(transition.runId)}, NULL, NULL,
+        ${sqlValue(`run_${transition.runStatus}`)}, ${sqlValue(`Approval ${transition.reason.replace("approval_", "")}; unclaimed run stopped before execution`)},
+        ${sqlValue(transition.transitionAt)}, ${sqlValue({ stop_reason: transition.reason, exact_blocker: transition.reason, external_action_executed: false })}
+      WHERE ${runChanged}` }
+  ];
+}
+
+async function decideStoredApproval(id: string, status: StoredApprovalDecisionStatus, companyIds?: readonly string[], expectedBinding?: unknown, requestedRevision?: unknown, note?: string | null) {
   const existing = companyIds ? findScopedApproval(id, companyIds) : querySql<{
     id: string;
     company_id: string | null;
@@ -10663,7 +12012,7 @@ async function decideStoredApproval(id: string, status: "approved" | "rejected" 
     resource_locks_json: string;
     created_at: string;
   }>(
-    `SELECT id, company_id, run_id, status, requested_by, approval_group_id, resource_locks_json, created_at FROM approvals WHERE id=${sqlValue(id)} LIMIT 1`
+    `SELECT * FROM approvals WHERE id=${sqlValue(id)} LIMIT 1`
   )[0];
   if (!existing) {
     return { statusCode: 404, body: { error: "approval_not_found" } };
@@ -10679,6 +12028,12 @@ async function decideStoredApproval(id: string, status: "approved" | "rejected" 
     }
     return { statusCode: 409, body: { error: "approval_already_decided", id, status: existing.status } };
   }
+  if (expectedBinding !== undefined && !storedApprovalExpectedBindingMatches(existing, expectedBinding)) {
+    return { statusCode: 409, body: { error: "approval_binding_changed", id } };
+  }
+  const expectedRevision = storedApprovalExpectedRevision(existing, expectedBinding, requestedRevision);
+  if (expectedRevision === null) return { statusCode: 400, body: { error: "approval_expected_revision_required", id } };
+  if (storedApprovalExpired(existing)) return { statusCode: 409, body: { error: "approval_expired", id } };
   if (status === "approved" && existing.company_id) {
     const connectionGate = jobApplicationApprovalConnectionGate(String(existing.company_id), existing.run_id);
     if (connectionGate) {
@@ -10696,30 +12051,17 @@ async function decideStoredApproval(id: string, status: "approved" | "rejected" 
     }
   }
   const decidedAt = nowIso();
-  execSql(
-    `UPDATE approvals SET status=${sqlValue(status)}, decided_at=${sqlValue(decidedAt)}, decision_note=${sqlValue(
-      status === "approved"
-        ? "Approved from Control Panel"
-        : status === "cancelled"
-          ? "Cancelled from Control Panel"
-          : "Rejected from Control Panel"
-    )} WHERE id=${sqlValue(id)} AND company_id=${sqlValue(String(existing.company_id ?? ""))};`
-  );
-  const approval = querySql(`SELECT * FROM approvals WHERE id=${sqlValue(id)} AND company_id=${sqlValue(String(existing.company_id ?? ""))} LIMIT 1`)[0];
+  const approval = querySql(storedApprovalDecisionSql(existing, status, decidedAt, expectedRevision, expectedBinding, note))[0];
+  if (!approval) return { statusCode: 409, body: { error: "approval_changed_read_again", id } };
   const targetAdmission = existing.company_id
     ? syncTargetAdmissionApproval({ companyId: String(existing.company_id), approvalId: id, approvalStatus: status })
     : null;
   if (status === "approved" && existing.run_id) {
     startWorkerOnceAfterApproval(existing.run_id);
   }
-  if (status === "rejected" && existing.run_id) {
-    blockRunAfterApprovalReject(existing.run_id);
-  }
+  if (status !== "approved" && existing.run_id) await stopRunBeforeApprovalEffect(String(existing.company_id ?? ""), existing.run_id, status);
   if (status === "approved" && existing.requested_by === "trusted-bridge") {
     storeExecutorNotConnectedForApprovedBridgeApproval(existing);
-  }
-  if (status === "cancelled" && existing.run_id) {
-    cancelRunAfterApprovalCancel(existing.run_id);
   }
   // Approval persistence and worker wake-up are the durable response path.
   // Keep the optional Obsidian export out of this PostgreSQL request: the
@@ -10735,7 +12077,7 @@ async function decideStoredApproval(id: string, status: "approved" | "rejected" 
  * not enter its synchronous query/exec path or the approval UI can hang while
  * the event loop waits on the old database boundary.
  */
-async function decideStoredApprovalAsync(id: string, status: "approved" | "rejected" | "cancelled", companyIds?: readonly string[]) {
+async function decideStoredApprovalAsync(id: string, status: StoredApprovalDecisionStatus, companyIds?: readonly string[], expectedBinding?: unknown, requestedRevision?: unknown, note?: string | null) {
   const existing = companyIds ? await findScopedApprovalAsync(id, companyIds) : (await querySqlAsync<{
     id: string;
     company_id: string | null;
@@ -10746,7 +12088,7 @@ async function decideStoredApprovalAsync(id: string, status: "approved" | "rejec
     resource_locks_json: string;
     created_at: string;
   }>(
-    `SELECT id, company_id, run_id, status, requested_by, approval_group_id, resource_locks_json, created_at FROM approvals WHERE id=${sqlValue(id)} LIMIT 1`
+    `SELECT * FROM approvals WHERE id=${sqlValue(id)} LIMIT 1`
   ))[0];
   if (!existing) {
     return { statusCode: 404, body: { error: "approval_not_found" } };
@@ -10758,6 +12100,12 @@ async function decideStoredApprovalAsync(id: string, status: "approved" | "rejec
     if (portableRecovery && existing.run_id) deferPortableMacWorkerRecovery(existing.run_id);
     return { statusCode: 409, body: { error: "approval_already_decided", id, status: existing.status, portable_recovery: portableRecovery } };
   }
+  if (expectedBinding !== undefined && !storedApprovalExpectedBindingMatches(existing, expectedBinding)) {
+    return { statusCode: 409, body: { error: "approval_binding_changed", id } };
+  }
+  const expectedRevision = storedApprovalExpectedRevision(existing, expectedBinding, requestedRevision);
+  if (expectedRevision === null) return { statusCode: 400, body: { error: "approval_expected_revision_required", id } };
+  if (storedApprovalExpired(existing)) return { statusCode: 409, body: { error: "approval_expired", id } };
   if (status === "approved" && existing.company_id) {
     const connectionGate = await jobApplicationApprovalConnectionGateAsync(String(existing.company_id), existing.run_id);
     if (connectionGate) {
@@ -10775,18 +12123,38 @@ async function decideStoredApprovalAsync(id: string, status: "approved" | "rejec
     }
   }
   const decidedAt = nowIso();
-  await execSqlAsync(
-    `UPDATE approvals SET status=${sqlValue(status)}, decided_at=${sqlValue(decidedAt)}, decision_note=${sqlValue(
-      status === "approved"
-        ? "Approved from Control Panel"
-        : status === "cancelled"
-          ? "Cancelled from Control Panel"
-          : "Rejected from Control Panel"
-    )} WHERE id=${sqlValue(id)} AND company_id=${sqlValue(String(existing.company_id ?? ""))};`
-  );
+  const targetAdmissionRow = existing.company_id
+    ? (await querySqlAsync<{ id: string; status: string; approval_status: string; run_id: string | null }>(`SELECT id, status, approval_status, run_id FROM job_application_target_admissions WHERE company_id=${sqlValue(String(existing.company_id))} AND approval_id=${sqlValue(id)} LIMIT 1`))[0] ?? null
+    : null;
+  const runTransition = await prepareStoredApprovalRunTransition(existing, status);
+  const targetApprovalStatus = status === "cancelled" ? "rejected" : status;
+  const targetStatusSql = status === "approved"
+    ? "CASE WHEN run_id IS NOT NULL THEN 'approved' ELSE status END"
+    : sqlValue(status === "cancelled" ? "cancelled" : "rejected");
+  const targetAdmissionStep = targetAdmissionRow && existing.company_id
+    ? [{ sql: `UPDATE job_application_target_admissions
+          SET approval_status=${sqlValue(targetApprovalStatus)}, status=${targetStatusSql}, updated_at=${sqlValue(decidedAt)}
+          WHERE id=${sqlValue(targetAdmissionRow.id)} AND company_id=${sqlValue(String(existing.company_id))}
+            AND status=${sqlValue(targetAdmissionRow.status)} AND approval_status=${sqlValue(targetAdmissionRow.approval_status)}
+            AND ${targetAdmissionRow.run_id === null ? "run_id IS NULL" : `run_id=${sqlValue(targetAdmissionRow.run_id)}`}` }]
+    : [];
+  try {
+    await runSqlTransactionAsync([
+      { sql: storedApprovalDecisionSql(existing, status, decidedAt, expectedRevision, expectedBinding, note), expectChanges: 1 },
+      ...targetAdmissionStep,
+      ...storedApprovalRunTransitionSteps(runTransition)
+    ]);
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.includes("sql_transaction_expected_changes")) throw error;
+    const current = existing.company_id
+      ? (await querySqlAsync<Record<string, unknown>>(`SELECT * FROM approvals WHERE id=${sqlValue(id)} AND company_id=${sqlValue(String(existing.company_id))} LIMIT 1`))[0]
+      : undefined;
+    return storedApprovalDecisionConflictBody(id, current, expectedBinding, expectedRevision, status);
+  }
   const approval = (await querySqlAsync(`SELECT * FROM approvals WHERE id=${sqlValue(id)} AND company_id=${sqlValue(String(existing.company_id ?? ""))} LIMIT 1`))[0];
-  const targetAdmission = existing.company_id
-    ? await syncTargetAdmissionApprovalAsync({ companyId: String(existing.company_id), approvalId: id, approvalStatus: status })
+  if (!approval) return { statusCode: 409, body: { error: "approval_changed_read_again", id } };
+  const targetAdmission = targetAdmissionRow && existing.company_id
+    ? await getTargetAdmissionAsync(String(existing.company_id), targetAdmissionRow.id)
     : null;
   const portableRecovery = status === "approved" && existing.run_id
     ? { requeued: false, reason: "approval_recovery_deferred_after_response", approval_id: id }
@@ -11191,72 +12559,41 @@ function markWorkerOnceLaunchBlocked(runId: string, exactBlocker: string, extra:
   });
 }
 
-function cancelRunAfterApprovalCancel(runId: string) {
-  const current = querySql<{ metadata_json: string }>(`SELECT metadata_json FROM runs WHERE id=${sqlValue(runId)} LIMIT 1`)[0];
-  if (!current) return;
+async function stopRunBeforeApprovalEffect(companyId: string, runId: string, decision: "rejected" | "cancelled") {
+  const current = (await querySqlAsync<{ metadata_json: string; status: string }>(
+    `SELECT metadata_json, status FROM runs WHERE id=${sqlValue(runId)} AND company_id=${sqlValue(companyId)} LIMIT 1`
+  ))[0];
+  if (!current || !["waiting_approval", "queued"].includes(current.status)) return;
   const metadata = parseJson<Record<string, unknown>>(current.metadata_json, {});
+  // A late rejection is not evidence that a prior effect did not happen.
+  // Stop only the unclaimed pre-effect row, preserving running, terminal,
+  // positive, and unknown-effect records for their own reconciliation path.
+  if (metadata.remote_worker_claim || metadata.remote_worker_receipt
+    || metadata.external_action_executed === true || metadata.external_action_executed === null) return;
+  const status = decision === "rejected" ? "blocked" : "cancelled";
+  const reason = `approval_${decision}`;
   const now = nowIso();
-  execSql(
-    `UPDATE runs
-     SET status='cancelled',
-         updated_at=${sqlValue(now)},
-         metadata_json=${sqlValue({ ...metadata, stop_reason: "approval_cancelled" })}
-     WHERE id=${sqlValue(runId)};
-     UPDATE run_steps
-     SET status='cancelled', completed_at=COALESCE(completed_at, ${sqlValue(now)})
-     WHERE run_id=${sqlValue(runId)} AND status NOT IN ('completed', 'skipped');
-     UPDATE lanes
-     SET status='idle',
-         health='cancelled',
-         current_task='cancelled by approval',
-         updated_at=${sqlValue(now)}
-     WHERE run_id=${sqlValue(runId)};`
-  );
-  insert("worker_events", {
-    id: `evt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
-    company_id: readRunCompanyId(runId),
-    run_id: runId,
-    step_id: null,
-    lane_id: null,
-    event_type: "run_cancelled",
-    message: "Approval was cancelled from Control Panel",
-    created_at: now,
-    metadata_json: { stop_reason: "approval_cancelled" }
-  });
-}
-
-function blockRunAfterApprovalReject(runId: string) {
-  const current = querySql<{ metadata_json: string; status: string }>(`SELECT metadata_json, status FROM runs WHERE id=${sqlValue(runId)} LIMIT 1`)[0];
-  if (!current || !["waiting_approval", "queued", "running"].includes(current.status)) return;
-  const metadata = parseJson<Record<string, unknown>>(current.metadata_json, {});
-  const now = nowIso();
-  execSql(
-    `UPDATE runs
-     SET status='blocked',
-         updated_at=${sqlValue(now)},
-         metadata_json=${sqlValue({ ...metadata, stop_reason: "approval_rejected", exact_blocker: "approval_rejected", external_action_executed: false })}
-     WHERE id=${sqlValue(runId)} AND status IN ('waiting_approval', 'queued', 'running');
-     UPDATE run_steps
-     SET status='blocked', completed_at=COALESCE(completed_at, ${sqlValue(now)})
-     WHERE run_id=${sqlValue(runId)} AND status IN ('waiting_approval', 'queued', 'running') AND completed_at IS NULL;
-     UPDATE lanes
-     SET status='blocked',
-         health='blocked',
-         current_task='blocked by rejected approval',
-         updated_at=${sqlValue(now)}
-     WHERE run_id=${sqlValue(runId)};`
-  );
-  insert("worker_events", {
-    id: `evt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
-    company_id: readRunCompanyId(runId),
-    run_id: runId,
-    step_id: null,
-    lane_id: null,
-    event_type: "run_blocked",
-    message: "Approval was rejected; the run was stopped before any external effect",
-    created_at: now,
-    metadata_json: { stop_reason: "approval_rejected", exact_blocker: "approval_rejected", external_action_executed: false }
-  });
+  try {
+    await runSqlTransactionAsync([
+      { sql: `UPDATE runs SET status=${sqlValue(status)}, updated_at=${sqlValue(now)},
+          metadata_json=${sqlValue({ ...metadata, stop_reason: reason, exact_blocker: reason,
+            approval_status: decision, external_action_executed: false })}
+        WHERE id=${sqlValue(runId)} AND company_id=${sqlValue(companyId)}
+          AND status IN ('waiting_approval', 'queued') AND metadata_json=${sqlValue(current.metadata_json)}`, expectChanges: 1 },
+      { sql: `UPDATE run_steps SET status=${sqlValue(status)}, completed_at=COALESCE(completed_at, ${sqlValue(now)})
+        WHERE run_id=${sqlValue(runId)} AND status IN ('waiting_approval', 'queued') AND completed_at IS NULL` },
+      { sql: `UPDATE lanes SET status=${sqlValue(decision === "cancelled" ? "idle" : "blocked")},
+          health=${sqlValue(status)}, current_task=${sqlValue(reason)}, updated_at=${sqlValue(now)} WHERE run_id=${sqlValue(runId)}` },
+      { sql: `INSERT INTO worker_events (id, company_id, run_id, step_id, lane_id, event_type, message, created_at, metadata_json)
+        VALUES (${sqlValue(makeId("evt"))}, ${sqlValue(companyId)}, ${sqlValue(runId)}, NULL, NULL,
+          ${sqlValue(`run_${status}`)}, ${sqlValue(`Approval ${decision}; unclaimed run stopped before execution`)}, ${sqlValue(now)},
+          ${sqlValue({ stop_reason: reason, exact_blocker: reason, external_action_executed: false })})` }
+    ]);
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.startsWith("sql_transaction_expected_changes:1:actual:0")) throw error;
+    // The Run changed after the read. Leave its newer state intact; the
+    // rejected/cancelled approval already prevents a new business claim.
+  }
 }
 
 function normalizeCreatePlannerRequestMessages(body: unknown): CreatePlannerMessage[] {
@@ -11373,7 +12710,10 @@ function buildAutomationOsChatSnapshot(companyIds: string[], command = ""): stri
   initRegisteredWorkflows();
   const registeredWorkflows = publicRegisteredWorkflowRows(listRegisteredWorkflowsForCompanies(companyIds));
   const capturedAt = new Date().toISOString();
+  const pluginConnections = companyIds.map((companyId) => buildChatPluginConnections(companyId,
+    getCompanyCodexRegistryReadback(companyId)?.registry ?? null, listCompanyConnectionRefs(companyId)));
   return serializeAutomationOsChatSnapshot({
+    pluginConnections,
     capturedAt,
     source: "automation_os_control_plane_readback",
     companyScope: companyIds,
@@ -11444,14 +12784,18 @@ async function buildAutomationOsChatSnapshotAsync(companyIds: string[], command 
     companyId: requestedCompanyId,
     projection: "chat"
   });
-  const [registeredWorkflows, toolPreference, browserUse] = await Promise.all([
+  const [registeredWorkflows, toolPreference, browserUse, pluginConnections] = await Promise.all([
     listRegisteredWorkflowRowsAsync(companyIds),
     buildCompanyToolPreferenceAsync(companyIds, command),
     buildBrowserUseRuntimeSnapshotAsync({
       controlPlaneCompanyIds: companyIds,
       selectedBackend: resolveWebOperationBackend((state.web_operation_backend as Record<string, unknown> | undefined)?.backend),
       targetScopedReadback: true
-    })
+    }),
+    Promise.all(companyIds.map(async (companyId) => {
+      const [registry, refs] = await Promise.all([getCompanyCodexRegistryReadbackAsync(companyId), listCompanyConnectionRefsAsync(companyId)]);
+      return buildChatPluginConnections(companyId, registry?.registry ?? null, refs);
+    }))
   ]);
   return serializeAutomationOsChatSnapshot(buildAutomationOsChatSnapshotPayload({
     companyIds,
@@ -11459,7 +12803,8 @@ async function buildAutomationOsChatSnapshotAsync(companyIds: string[], command 
     command,
     registeredWorkflows,
     toolPreference,
-    browserUse
+    browserUse,
+    pluginConnections
   }));
 }
 
@@ -11474,10 +12819,12 @@ function buildAutomationOsChatSnapshotPayload(input: {
   registeredWorkflows: unknown;
   toolPreference: unknown;
   browserUse: unknown;
+  pluginConnections: unknown;
 }) {
   const { companyIds, state, registeredWorkflows, toolPreference, browserUse } = input;
   const capturedAt = new Date().toISOString();
   return {
+    pluginConnections: input.pluginConnections,
     capturedAt,
     source: "automation_os_control_plane_readback",
     companyScope: companyIds,
@@ -11555,7 +12902,10 @@ function buildCompanyToolPreference(
     command,
     capabilities,
     companyIds,
-    companyConnectionRefs: listCompanyConnectionRefsForCompanies(companyIds)
+    companyConnectionRefs: listCompanyConnectionRefsForCompanies(companyIds),
+    zeaburConnectorRegistry: companyIds.length === 1
+      ? getCompanyCodexRegistryReadback(companyIds[0]!)?.registry ?? missingZeaburConnectorRegistryReadback()
+      : missingZeaburConnectorRegistryReadback()
   });
 }
 
@@ -11568,5 +12918,7 @@ async function buildCompanyToolPreferenceAsync(
     [...new Set(companyIds.map((value) => value.trim()).filter(Boolean))]
       .map((companyId) => listCompanyConnectionRefsAsync(companyId))
   )).flat();
-  return buildToolPreferenceSnapshot({ command, capabilities, companyIds, companyConnectionRefs });
+  const registryRecord = companyIds.length === 1 ? await getCompanyCodexRegistryReadbackAsync(companyIds[0]!) : null;
+  return buildToolPreferenceSnapshot({ command, capabilities, companyIds, companyConnectionRefs,
+    zeaburConnectorRegistry: registryRecord?.registry ?? missingZeaburConnectorRegistryReadback() });
 }

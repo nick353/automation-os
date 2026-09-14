@@ -202,7 +202,7 @@ test("portable worker keeps the selected backend surface consistent across run a
   const runner = join(root, "surface-fixture-runner.mjs");
   const runnerSource = [
     "#!/usr/bin/env node",
-    "console.log(JSON.stringify({status:'blocked',exact_blocker:'fixture_surface_readback',external_action_executed:false,browser_surface:process.env.AOS_WEB_OPERATION_BACKEND === 'chrome_plugin' ? process.env.AOS_CHROME_PROFILE_SURFACE : process.env.AOS_WEB_OPERATION_BACKEND}));",
+    "console.log(JSON.stringify({status:'blocked',exact_blocker:'fixture_surface_readback',external_action_executed:false,browser_surface:process.env.AOS_WEB_OPERATION_BACKEND === 'aos_chrome_companion' ? 'aos_chrome_companion_profile_instance' : process.env.AOS_WEB_OPERATION_BACKEND}));",
     "",
   ].join("\n");
   writeFileSync(runner, runnerSource, { mode: 0o700 });
@@ -212,7 +212,7 @@ test("portable worker keeps the selected backend surface consistent across run a
   process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_APPROVAL = "approved";
   process.env.AUTOMATION_OS_ARTIFACT_ROOT = root;
   try {
-    for (const backend of ["chrome_plugin", "playwright"] as const) {
+    for (const backend of ["aos_chrome_companion"] as const) {
       const runId = `run_backend_surface_${backend}`;
       const stepId = `step_${backend}`;
       const result = await runPortableExternalWorker({
@@ -227,7 +227,9 @@ test("portable worker keeps the selected backend surface consistent across run a
           requested_backend: backend,
           resolved_backend: backend,
           revision: 7,
-          chrome_profile: { id: "profile2", name: "Profile 2", directory: "Profile 2", surface: "signed_chrome_extension_profile2" },
+          fallback_allowed: false,
+          chrome_profile: { id: "companion", name: "AOS Companion", directory: "companion", surface: "aos_chrome_companion_profile_instance" },
+          browser_surface: "aos_chrome_companion_profile_instance",
         },
         webOperationIntent: {
           schema: "automation_os_web_operation_intent.v1",
@@ -248,7 +250,7 @@ test("portable worker keeps the selected backend surface consistent across run a
       });
       assert.equal(result.exactBlocker, "fixture_surface_readback");
       assert.equal(result.externalActionExecuted, false);
-      const expectedSurface = backend === "chrome_plugin" ? "signed_chrome_extension_profile2" : backend;
+      const expectedSurface = "aos_chrome_companion_profile_instance";
       const admission = JSON.parse(readFileSync(result.admissionPath!, "utf8")) as Record<string, unknown>;
       const actionPlan = JSON.parse(readFileSync(result.actionPlanPath!, "utf8")) as Record<string, unknown>;
       const intent = JSON.parse(readFileSync(result.webOperationIntentPath!, "utf8")) as Record<string, unknown>;

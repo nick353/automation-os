@@ -173,7 +173,12 @@ export function buildToolPreferenceSnapshot(input: {
     })
     : undefined;
   const candidates: ToolPreferenceCandidate[] = [];
-  const plugins = input.capabilities.capabilities.plugins.filter((plugin) => !plugin.hiddenFromSuggestions);
+  const localPlugins = input.capabilities.capabilities.plugins.filter((plugin) => !plugin.hiddenFromSuggestions);
+  // Dedicated-server connector plugins need not be installed in the AOS
+  // process's local Codex home. Use the company registry for that placement.
+  const remotePlugins = zeaburConnectorRegistry.pluginRegistry.installed
+    .filter((plugin) => connector && plugin.installed && plugin.name.toLowerCase() === connector);
+  const plugins = [...remotePlugins, ...localPlugins.filter((plugin) => !remotePlugins.some((remote) => remote.name.toLowerCase() === plugin.name.toLowerCase()))];
 
   for (const plugin of plugins) {
     const commandMatch = toolMatchesCommand(plugin.name, lowerCommand);

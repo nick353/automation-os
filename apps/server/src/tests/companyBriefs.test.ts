@@ -31,6 +31,30 @@ const base = {
   ]
 };
 
+test("intentional usage exclusions remain visible and fingerprinted without becoming technical failures", () => {
+  const scopedInput = {
+    ...base, scopeNote: "Jobs excluded; source settings unchanged",
+    records: base.records.map((record) => ({ ...record, ...(record.recordId === "record-b" ? { scopeExcludedReason: "user_excluded_jobs" } : {}) }))
+  };
+  const result = generateCompanyBriefs(scopedInput);
+  assert.equal(result.status, "complete");
+  assert.equal(result.counts.input_records, 2);
+  assert.equal(result.counts.included_records, 1);
+  assert.equal(result.counts.excluded_records, 0);
+  assert.equal(result.counts.scope_excluded_records, 1);
+  assert.deepEqual(result.scope_exclusions, [{ record_id: "record-b", reason: "user_excluded_jobs" }]);
+  assert.equal(result.companies[1]?.status, "empty");
+  assert.equal(result.delivery.status, "not_attempted");
+  assert.equal(result.mutation.attempted, false);
+  assert.notEqual(result.output_fingerprint, generateCompanyBriefs(base).output_fingerprint);
+  assert.equal(result.output_fingerprint, generateCompanyBriefs({ ...scopedInput, records: [...scopedInput.records].reverse() }).output_fingerprint);
+  assert.notEqual(result.output_fingerprint, generateCompanyBriefs({ ...scopedInput, scopeNote: "Different scope" }).output_fingerprint);
+  const corrupt = generateCompanyBriefs({ ...scopedInput, records: scopedInput.records.map((record) => ({ ...record, ...(record.recordId === "record-b" ? { matchClass: "conflict" } : {}) })) });
+  assert.equal(corrupt.status, "partial");
+  assert.equal(corrupt.counts.excluded_records, 1);
+  assert.equal(corrupt.scope_exclusions, undefined);
+});
+
 test("generates explicit morning and evening bundles with stable company isolation", () => {
   const morning = generateCompanyBriefs(base);
   const evening = generateCompanyBriefs({ ...base, briefType: "evening" });

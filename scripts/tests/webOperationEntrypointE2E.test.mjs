@@ -48,7 +48,6 @@ function fixtureIntent({ root, operation, runId = `entrypoint-${operation}`, sou
   const targetText = targetTextFor(operation);
   const payload = operation === "create" || operation === "update" ? { text: `${operation} fixture content` } : {};
   const payloadHash = sha256(JSON.stringify(payload));
-  const targetDigest = sha256(targetText);
   const actionPlan = {
     schema: "automation_os_web_operation_action_plan.v1",
     steps: [
@@ -61,6 +60,35 @@ function fixtureIntent({ root, operation, runId = `entrypoint-${operation}`, sou
   };
   const runRoot = join(root, runId);
   mkdirSync(runRoot, { recursive: true, mode: 0o700 });
+  const contentKey = `fixture-content-${operation}`;
+  const targetKey = `${contentKey}:x`;
+  const bundleInput = {
+    account_ref: accountRef,
+    target_key: targetKey,
+    content_key: contentKey,
+    payload_hash: payloadHash,
+    source_snapshot_id: `fixture-source-${runId}`,
+  };
+  const bundleTarget = Object.fromEntries([
+    "account_ref", "target_key", "payload_hash", "content_key", "source_snapshot_id",
+  ].map((key) => [key, bundleInput[key]]));
+  const inputBundle = writeJson(join(runRoot, "portable-input-bundle.v1.json"), {
+    schema: "automation_os_portable_workflow_input_bundle.v1",
+    workflow_id: WORKFLOW_ID,
+    run_id: runId,
+    input: bundleInput,
+  });
+  // The generic Browser Use cases intentionally keep the simple semantic
+  // target digest. The one wrapper-delegation case exercises the Daily AI
+  // business contract, which binds the digest to the run input bundle.
+  const targetDigest = runId === "business-entrypoint-publish"
+    ? sha256(JSON.stringify(bundleTarget))
+    : sha256(targetText);
+  const queuePath = join(root, "posting_queue.tsv");
+  writeFileSync(queuePath, "fixture-content-x\tfixture\n", { encoding: "utf8", mode: 0o600 });
+  const dailyAiRunner = join(root, `daily-ai-runner-${runId}.mjs`);
+  writeFileSync(dailyAiRunner, `// browser-use-cli stage-adapter\nimport { mkdirSync, writeFileSync } from "node:fs";\nimport { join } from "node:path";\nconst runId = process.env.DAILY_AI_CLI_RUN_ID;\nconst outputDir = process.env.DAILY_AI_CLI_OUTPUT_DIR;\nmkdirSync(outputDir, { recursive: true });\nconst summaryPath = join(outputDir, "registered-browser-summary.json");\nwriteFileSync(summaryPath, JSON.stringify({ run_id: runId, direct_publish: { receipts: [{ post_url: "https://fixture.example.com/post/1" }] }, post_publish_feed_study: { artifact: "feed.json" }, direct_engagement: { no_candidate_proof: true }, postflight_sync: { run_id: runId, status: "completed", queue_readback: { sha256: "${"a".repeat(64)}" } }, cleanup_proof: { cleanup_verified: true } }));\nconsole.log(JSON.stringify({ schema: "daily_ai_browser_use_cli_registered_runner_result.v1", run_id: runId, status: "complete", exact_blocker: null, browser_surface: "browser_use_cli", external_action_executed: true, same_run_receipt: true, cleanup_verified: true, summary_path: summaryPath }));\n`, { encoding: "utf8", mode: 0o700 });
+  chmodSync(dailyAiRunner, 0o700);
   const authorityBody = {
     schema: "automation_os_portable_external_effect_authority.v1",
     authority_id: `entrypoint-authority-${operation}`,
@@ -76,7 +104,7 @@ function fixtureIntent({ root, operation, runId = `entrypoint-${operation}`, sou
     approval_status: authorityApproval,
     idempotency_key: idempotencyKey,
     target_digest: targetDigest,
-    input_bundle_sha256: sha256(`${runId}:fixture-input`),
+    input_bundle_sha256: inputBundle.sha256,
     payload_hash: payloadHash,
     issued_at: new Date(Date.now() - 1000).toISOString(),
     expires_at: new Date(Date.now() + 60 * 60_000).toISOString(),
@@ -140,7 +168,7 @@ function fixtureIntent({ root, operation, runId = `entrypoint-${operation}`, sou
     approval_status: "approved",
     allowed_stages: plan.stages,
     required_business_proofs: plan.required_business_proofs,
-    input_bundle_sha256: null,
+    input_bundle_sha256: inputBundle.sha256,
     expires_at: new Date(Date.now() + 60 * 60_000).toISOString(),
     web_operation_contract: plan.web_operation_contract,
   });
@@ -155,6 +183,9 @@ function fixtureIntent({ root, operation, runId = `entrypoint-${operation}`, sou
     intentFile,
     admission,
     actionPlanFile,
+    inputBundle,
+    dailyAiRunner,
+    queuePath,
     intent,
   };
 }
@@ -191,6 +222,10 @@ function operationEnvironment(fixture, root, routePath, extras = {}) {
     AUTOMATION_OS_PORTABLE_EFFECT_AUTHORITY_ID: readJson(fixture.authority.path).authority_id,
     AUTOMATION_OS_PORTABLE_BUSINESS_ACTION_PLAN_PATH: fixture.actionPlanFile.path,
     AUTOMATION_OS_PORTABLE_BUSINESS_ACTION_PLAN_SHA256: fixture.actionPlanFile.sha256,
+    AUTOMATION_OS_PORTABLE_BUSINESS_INPUT_BUNDLE_PATH: fixture.inputBundle.path,
+    AUTOMATION_OS_PORTABLE_EXTERNAL_INPUT_BUNDLE_PATH: fixture.inputBundle.path,
+    AUTOMATION_OS_DAILY_AI_BROWSER_USE_RUNNER: fixture.dailyAiRunner,
+    DAILY_AI_QUEUE_PATH: fixture.queuePath,
     ...extras,
   };
 }

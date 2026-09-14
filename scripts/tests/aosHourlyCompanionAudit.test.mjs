@@ -3,8 +3,30 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildAuditExecutionReceipt, buildAuditFingerprint, buildAuditSummary, buildBlockerProgressPlan, buildProactiveRepairPlan, buildRepairPlan, buildResumeAssessment, buildThreadInspectionPlan, buildVerifierProjection, classifyOperationalBlocker, classifyThreadTail, confirmSoftAnomalyFindings, inspectRecentUserThreads, readLiveCompanionStatus, recordCompanionLearningOutcome, runBoundedHourlyController, runHourlyAudit, runHourlyAuditLive, runSameRunCompanionRepairLoop, selectDeepReadCandidates } from "../aos-hourly-companion-audit.mjs";
+import { buildAuditExecutionReceipt, buildAuditFingerprint, buildAuditSummary, buildBlockerProgressPlan, buildProactiveRepairPlan, buildRepairPlan, buildResumeAssessment, buildThreadInspectionPlan, buildVerifierProjection, classifyOperationalBlocker, classifyThreadTail, collectRecentUserSessions, confirmSoftAnomalyFindings, inspectRecentUserThreads, readLiveCompanionStatus, recordCompanionLearningOutcome, runBoundedHourlyController, runHourlyAudit, runHourlyAuditLive, runSameRunCompanionRepairLoop, selectDeepReadCandidates } from "../aos-hourly-companion-audit.mjs";
 import { createThreadAlias, createThreadReadbackProjection } from "../lib/thread-readback-projection.mjs";
+import { buildControllerExecutionReceipt } from "../aos-hourly-companion-audit.mjs";
+
+test("does not promote deferred compact verification or a busy/unknown status to completed proof", () => {
+  const input = { status: "deferred", actions: ["verification"],
+    exact_blocker: "companion_installed_artifact_drift",
+    verification: { resultStatus: "deferred", continuationAllowed: false },
+    freshStatus: { connected: true, activeLeaseCount: 2, pendingCount: 0, queueCount: 0, activeReconciliationCount: null } };
+  const stages = buildControllerExecutionReceipt(input).stageReceipts;
+  assert.equal(stages.focused_verification.status, "deferred");
+  assert.equal(stages.idle_reconciled_check.status, "deferred");
+  for (const resultStatus of ["failed", "blocked", "passed", "deferred", "unknown"]) {
+    const actual = buildControllerExecutionReceipt({ ...input, verification: { resultStatus } }).stageReceipts.focused_verification.status;
+    assert.equal(actual, ["failed", "blocked"].includes(resultStatus) ? "failed" : resultStatus === "passed" ? "completed" : "deferred");
+  }
+  const idle = { connected: true, activeLeaseCount: 0, pendingCount: 0, queueCount: 0, activeReconciliationCount: 0 };
+  assert.equal(buildControllerExecutionReceipt({ freshStatus: idle }).stageReceipts.idle_reconciled_check.status, "completed");
+  for (const field of ["activeLeaseCount", "pendingCount", "queueCount", "activeReconciliationCount"]) {
+    for (const value of [null, undefined, 1, "0"]) {
+      assert.equal(buildControllerExecutionReceipt({ freshStatus: { ...idle, [field]: value } }).stageReceipts.idle_reconciled_check.status, "deferred");
+    }
+  }
+});
 
 test("classifies Companion timeout and ownership markers without treating auth as a repair candidate", () => {
   const companion = classifyThreadTail("session_not_owned after iframe frame origin mismatch; pending operation=1; timeout");
@@ -48,6 +70,87 @@ test("does not promote policy prose into a live blocker", () => {
   assert.equal(policy.companionIssue, false);
 });
 
+test("ignores injected Goal continuation context when classifying a task tail", () => {
+  const injected = JSON.stringify({
+    payload: {
+      type: "message",
+      content: [{
+        text: "<codex_internal_context source=\"goal\">\n"
+          + "objective: keep the Goal active; status=blocked, timeout, blocked, CAPTCHA, interrupted, and Companion errors are policy terms.\n"
+          + "</codex_internal_context>",
+      }],
+    },
+  });
+  const result = classifyThreadTail(injected);
+  assert.equal(result.companionIssue, false);
+  assert.deepEqual(result.companionMarkers, []);
+  assert.equal(result.userHelpRequired, false);
+  assert.equal(result.blocked, false);
+  assert.equal(result.completed, false);
+  assert.equal(result.interrupted, false);
+});
+
+test("does not classify assistant status prose as a new task incident", () => {
+  const assistantReport = JSON.stringify({
+    payload: {
+      type: "message",
+      role: "assistant",
+      content: [{ text: "Companion timeout is blocked and the previous attempt was interrupted." }],
+    },
+  });
+  const result = classifyThreadTail(assistantReport);
+  assert.equal(result.companionIssue, false);
+  assert.deepEqual(result.companionMarkers, []);
+  assert.equal(result.blocked, false);
+  assert.equal(result.interrupted, false);
+});
+
+test("ignores captured exec wrappers instead of treating their stdout as task evidence", () => {
+  const wrapped = JSON.stringify({
+    payload: {
+      type: "custom_tool_call_output",
+      output: [
+        { type: "input_text", text: "Script completed\\nOutput:" },
+        { type: "input_text", text: "result: blocked; Companion timeout; previous assistant report" },
+      ],
+    },
+  });
+  const result = classifyThreadTail(wrapped);
+  assert.equal(result.companionIssue, false);
+  assert.equal(result.blocked, false);
+});
+
+test("drops a partial JSONL tail record before classifying recent user sessions", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "aos-partial-session-tail-"));
+  const sessionFile = path.join(root, "session.jsonl");
+  const sessionId = "01partial-tail-session";
+  fs.writeFileSync(sessionFile, [
+    JSON.stringify({
+      type: "session_meta",
+      payload: {
+        thread_source: "user",
+        session_id: sessionId,
+        cwd: root,
+        timestamp: "2026-09-03T00:00:00.000Z",
+      },
+    }),
+    `{"payload":{"type":"message","role":"assistant","content":[{"text":"${"x".repeat(60_000)} status=blocked Companion timeout"}]}}`,
+    JSON.stringify({
+      payload: {
+        type: "message",
+        role: "assistant",
+        content: [{ text: "Companion timeout was only a prior report." }],
+      },
+    }),
+  ].join("\n") + "\n");
+  const [session] = collectRecentUserSessions({ sessionRoot: root, recentDays: 0 })
+    .filter((item) => item.threadId === sessionId);
+  assert.ok(session);
+  assert.equal(session.companionIssue, false);
+  assert.equal(session.blocked, false);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("reports recent-tail soft anomalies separately from hard repair candidates", () => {
   const observed = classifyThreadTail([
     "Scope drifted from the requested target and unrelated work was performed.",
@@ -74,6 +177,18 @@ test("reports recent-tail soft anomalies separately from hard repair candidates"
 
   const sameLineRecovery = classifyThreadTail("最初の試行は timeout で失敗したが、再試行後の結果: 成功");
   assert.ok(sameLineRecovery.softAnomalies.some((item) => item.type === "recovered_near_miss"));
+});
+
+test("detects small workflow deviation and one observed web-operation wobble", () => {
+  const observed = classifyThreadTail([
+    "The browser click did not work on the first attempt, but no external submission occurred.",
+    "The page looked slightly off from the requested target; status: continuing.",
+  ].join("\n"));
+  const types = observed.softAnomalies.map((item) => item.type);
+  assert.ok(types.includes("web_operation_friction"));
+  assert.ok(types.includes("workflow_deviation"));
+  assert.equal(observed.companionIssue, false);
+  assert.ok(observed.softAnomalies.every((item) => item.disposition === "report_only"));
 });
 
 test("requires fresh root evidence before a confirmed soft anomaly becomes a proactive repair", () => {
@@ -164,6 +279,49 @@ test("inspects every authoritative recent task lightly and deep-reads only selec
   }).map((item) => item.threadId), ["changed", "stalled"]);
 });
 
+test("deep-reads stable active tasks and carries deep blocker state into the record", async () => {
+  const deep = [];
+  const result = await inspectRecentUserThreads({
+    tasks: [{
+      threadId: "active-stable",
+      owner: "user",
+      status: "active",
+      revision: "r1",
+      updatedAt: "2026-08-31T00:00:00.000Z",
+    }],
+    previousInspections: [{
+      threadId: "active-stable",
+      owner: "user",
+      status: "active",
+      revision: "r1",
+      updatedAt: "2026-08-31T00:00:00.000Z",
+      lastSeenAt: "2026-08-31T00:10:00.000Z",
+    }],
+    previousInspectionRunAt: "2026-08-31T00:10:00.000Z",
+    now: Date.parse("2026-08-31T01:00:00.000Z"),
+    inspectThread: async () => ({
+      status: "active",
+      owner: "user",
+      revision: "r1",
+      updatedAt: "2026-08-31T00:00:00.000Z",
+    }),
+    readThread: async (input) => {
+      deep.push(input);
+      return {
+        status: "active",
+        owner: "user",
+        exactBlocker: "page_execution_timeout",
+      };
+    },
+  });
+  assert.equal(result.deepReadCandidateCount, 1);
+  assert.equal(result.deepReadCount, 1);
+  assert.deepEqual(deep.map((input) => input.threadId), ["active-stable"]);
+  assert.equal(result.records[0].active, true);
+  assert.equal(result.records[0].exactBlocker, "page_execution_timeout");
+  assert.equal(result.records[0].deepRead.status, "observed");
+});
+
 test("uses lightweight readback fields when selecting same-run deep-read candidates", async () => {
   const deep = [];
   const result = await inspectRecentUserThreads({
@@ -230,7 +388,7 @@ test("normalizes official App Unix-second timestamps before change and stall det
     stalledTaskThresholdMs: 300_000,
   });
   assert.equal(stalled.records[0].stalled, true);
-  assert.deepEqual(stalled.records[0].deepReadReasons, ["changed", "stalled"]);
+  assert.deepEqual(stalled.records[0].deepReadReasons, ["changed", "stalled", "active"]);
 });
 
 test("does not trust a contradictory automation owner over a userOwned flag", () => {
@@ -406,6 +564,12 @@ test("builds a read-only, no-effect audit contract", () => {
   assert.equal(summary.controller.implementationContract.discoveryIsNotTerminal, true);
   assert.equal(summary.controller.implementationContract.runtimeReflectionTool, "companion_refresh_extension");
   assert.equal(summary.controller.implementationContract.continuation, "one send-or-queue message per eligible user task (active or inactive) after fresh readback; record sent, queued, and deferred IDs with reasons");
+  assert.equal(summary.controller.implementationContract.continuationTransportProof.kind, "same_task_new_turn_completed");
+  assert.deepEqual(summary.controller.implementationContract.continuationTransportProof.doesNotProve, [
+    "continuation marker visibility",
+    "Goal/Plan resumption",
+    "business completion",
+  ]);
   assert.equal(summary.controller.implementationContract.activeTaskDelivery, "queue at the next message boundary; never interrupt an executing turn or browser operation");
   assert.deepEqual(summary.controller.implementationContract.runtimeReflectionProof, [
     "result=reflected",
@@ -537,6 +701,66 @@ test("keeps a partial thread readback task-level and continues the audit", () =>
   assert.equal(receipt.stageReceipts.lightweight_thread_inspection.deferredTaskCount, 0);
 });
 
+test("keeps a partial official-App readback failure as an actionable task blocker", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "aos-partial-official-readback-"));
+  const summary = buildAuditSummary({
+    now: "2026-09-03T00:00:00.000Z",
+    sessionRoot: path.join(root, "sessions"),
+    artifactDir: path.join(root, "artifact"),
+    companionSource: path.join(root, "missing-source"),
+    companionInstall: path.join(root, "missing-install"),
+    liveStatus: { connected: true, generation: "gen-1", exactTabLeaseCount: 0, pendingOperationCount: 0, queueCount: 0 },
+    threadInspection: {
+      schema: "aos.companion_thread_inspection.v1",
+      source: "codex_app_thread_list",
+      listedCount: 2,
+      eligibleTaskCount: 2,
+      lightweightInspectionCount: 2,
+      lightweightReadCount: 1,
+      deepReadCandidateCount: 0,
+      records: [
+        {
+          threadId: "failed-readback-task",
+          owner: "user",
+          status: "active",
+          goalStatus: "unknown",
+          planStatus: "unknown",
+          exactBlocker: null,
+          deepReadEligible: false,
+          lightweight: { status: "failed", exactBlocker: "thread_readback_unavailable" },
+          deepRead: { status: "not_run", exactBlocker: "not_a_deep_read_candidate" },
+        },
+        {
+          threadId: "healthy-readback-task",
+          owner: "user",
+          status: "idle",
+          goalStatus: "active",
+          planStatus: "active",
+          exactBlocker: null,
+          deepReadEligible: false,
+          lightweight: { status: "observed" },
+          deepRead: { status: "not_run", exactBlocker: "not_a_deep_read_candidate" },
+        },
+      ],
+    },
+  });
+
+  const candidate = summary.threadReadbackBlockerCandidates.find((item) => item.threadId === "failed-readback-task");
+  assert.ok(candidate);
+  assert.equal(candidate.exactBlocker, "thread_readback_unavailable");
+  assert.equal(candidate.blocked, true);
+  assert.equal(candidate.blockerProgress.reason, "thread_readback_unavailable");
+  assert.equal(candidate.blockerProgress.replayAllowed, false);
+  assert.equal(summary.repairCandidates.some((item) => item.threadId === "failed-readback-task"), true);
+  const receipt = buildAuditExecutionReceipt({
+    runId: "partial-official-readback-receipt",
+    schedulerDecision: "inspect_and_repair",
+    summary,
+  });
+  assert.equal(receipt.rootActionRequired, true);
+  assert.equal(receipt.rootAction.blockerCandidateCount, 1);
+});
+
 test("blocks the audit only when every lightweight task read fails", () => {
   const receipt = buildAuditExecutionReceipt({
     runId: "run-all-readback-failed",
@@ -609,6 +833,87 @@ test("consumes a bounded root readback projection and records real lightweight/d
     assert.equal(result.executionReceipt.exactBlocker, null);
   } finally {
     fs.rmSync(artifactDir, { recursive: true, force: true });
+  }
+});
+
+test("promotes a notLoaded interrupted task after the projection deep read", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "aos-hourly-notloaded-relay-"));
+  const sessionRoot = path.join(root, "sessions");
+  const artifactDir = path.join(root, "artifact");
+  const threadId = "01f22222222222222222222222222222";
+  const alias = createThreadAlias(threadId);
+  fs.mkdirSync(sessionRoot, { recursive: true });
+  fs.writeFileSync(path.join(sessionRoot, "paused.jsonl"), [
+    JSON.stringify({ type: "session_meta", payload: { thread_source: "user", session_id: threadId, cwd: root, timestamp: "2026-09-05T00:00:00.000Z" } }),
+    JSON.stringify({ type: "event_msg", message: "<turn_aborted> the existing Goal was interrupted before completion" }),
+  ].join("\n") + "\n");
+
+  const projection = createThreadReadbackProjection({
+    automationId: "aos-companion-2",
+    rootRunId: "root-notloaded-relay",
+    childAuditId: "child-notloaded-relay",
+    lightweight: [{
+      alias,
+      outcome: "success",
+      state: {
+        taskStatus: "notLoaded",
+        latestTurnStatus: "unknown",
+        goalStatus: "unknown",
+        planStatus: "unknown",
+        owner: "user",
+        userOwned: true,
+        actionable: false,
+        stalled: false,
+        changed: false,
+        revision: "rev-light",
+        updatedAt: "2026-09-05T00:00:00.000Z",
+        generation: null,
+        exactBlocker: null,
+        softAnomalyTypes: [],
+      },
+    }],
+    deep: [{
+      alias,
+      outcome: "success",
+      state: {
+        taskStatus: "notLoaded",
+        latestTurnStatus: "interrupted",
+        goalStatus: "active",
+        planStatus: "active",
+        owner: "user",
+        userOwned: true,
+        actionable: false,
+        stalled: false,
+        changed: false,
+        revision: "rev-deep",
+        updatedAt: "2026-09-05T00:00:01.000Z",
+        generation: null,
+        exactBlocker: null,
+        softAnomalyTypes: [],
+      },
+    }],
+  });
+
+  try {
+    const result = await runHourlyAuditLive({
+      now: "2026-09-05T00:01:00.000Z",
+      sessionRoot,
+      artifactDir,
+      learningLedgerPath: path.join(root, "learning-ledger.v1.json"),
+      companionSource: path.join(root, "missing-source"),
+      companionInstall: path.join(root, "missing-install"),
+      liveStatus: { available: true, connected: true, generation: "gen-current", activeLeaseCount: 0, pendingCount: 0, queueCount: 0 },
+      threadReadbackProjection: projection,
+    });
+
+    assert.equal(result.threadInspection.deepReadCandidateCount, 1);
+    assert.equal(result.threadInspection.deepReadCount, 1);
+    assert.deepEqual(result.officialAppOnlyContinuationCandidates.map((item) => item.threadId), [threadId]);
+    assert.equal(result.officialAppOnlyContinuationCandidates[0].officialLatestTurnStatus, "interrupted");
+    assert.equal(result.officialAppOnlyContinuationCandidates[0].resumeAssessment.state, "ready");
+    assert.equal(result.officialAppOnlyContinuationCandidates[0].resumeAssessment.automaticActionAllowed, true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
@@ -897,6 +1202,7 @@ test("exposes fresh ready tasks as official-App-only continuation candidates", (
 
   assert.equal(summary.officialAppOnlyContinuationCandidateCount, 1);
   assert.deepEqual(summary.officialAppOnlyContinuationCandidates.map((item) => item.threadId), [threadId]);
+  assert.equal(summary.officialAppOnlyContinuationCandidates[0].threadAlias, createThreadAlias(threadId));
   assert.equal(summary.officialAppOnlyContinuationCandidates[0].currentTaskReadback, true);
   const receipt = buildAuditExecutionReceipt({
     runId: "official-app-only-receipt",
@@ -958,8 +1264,8 @@ test("exposes an inactive Companion task as a task-owned relay candidate", () =>
       threadId: `t-${threadId.replaceAll("-", "").slice(0, 24)}`,
       hostId: "local",
       owner: "user",
-      status: "idle",
-      latestTurnStatus: "completed",
+      status: "notLoaded",
+      latestTurnStatus: "unknown",
       goalStatus: "active",
       planStatus: "active",
     }],
@@ -968,6 +1274,7 @@ test("exposes an inactive Companion task as a task-owned relay candidate", () =>
   assert.equal(summary.officialAppOnlyContinuationCandidateCount, 0);
   assert.equal(summary.taskOwnedContinuationCandidateCount, 1);
   assert.deepEqual(summary.taskOwnedContinuationCandidates.map((item) => item.threadId), [threadId]);
+  assert.equal(summary.taskOwnedContinuationCandidates[0].threadAlias, createThreadAlias(threadId));
   assert.equal(summary.taskOwnedContinuationCandidates[0].hostId, "local");
   assert.equal(summary.taskOwnedContinuationCandidates[0].requiresTaskOwnedCompanionCallback, true);
   const receipt = buildAuditExecutionReceipt({
@@ -977,6 +1284,44 @@ test("exposes an inactive Companion task as a task-owned relay candidate", () =>
   });
   assert.equal(receipt.rootActionRequired, true);
   assert.equal(receipt.rootAction.taskOwnedContinuationCandidateCount, 1);
+});
+
+test("keeps the real task ID, opaque alias, and host on repair candidates", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "aos-repair-candidate-identities-"));
+  const sessionRoot = path.join(root, "sessions");
+  fs.mkdirSync(sessionRoot, { recursive: true });
+  const threadId = "01cccccccccccccccccccccccccccccc";
+  fs.writeFileSync(path.join(sessionRoot, "candidate.jsonl"), [
+    JSON.stringify({ type: "session_meta", payload: { thread_source: "user", session_id: threadId, cwd: root, timestamp: "2026-09-02T00:00:00.000Z" } }),
+    JSON.stringify({ type: "event_msg", message: "Companion timeout occurred; continue the existing Goal after a fresh owner readback" }),
+  ].join("\n") + "\n");
+
+  const summary = buildAuditSummary({
+    now: "2026-09-03T00:00:00.000Z",
+    recentDays: 0,
+    sessionRoot,
+    artifactDir: path.join(root, "artifact"),
+    companionSource: path.join(root, "missing-source"),
+    companionInstall: path.join(root, "missing-install"),
+    liveStatus: { connected: true, generation: "gen-current" },
+    recentTasks: [{
+      threadId: `t-${threadId.replaceAll("-", "").slice(0, 24)}`,
+      hostId: "local",
+      owner: "user",
+      status: "notLoaded",
+      latestTurnStatus: "unknown",
+      goalStatus: "active",
+      planStatus: "active",
+    }],
+  });
+
+  const candidate = summary.repairCandidates.find((item) => item.threadId === threadId);
+  assert.ok(candidate);
+  assert.equal(candidate.threadAlias, createThreadAlias(threadId));
+  assert.equal(candidate.hostId, "local");
+  assert.equal(summary.taskOwnedContinuationCandidateCount, 1);
+  assert.equal(summary.taskOwnedContinuationCandidates[0].relayRequiresFreshOfficialReadback, true);
+  fs.rmSync(root, { recursive: true, force: true });
 });
 
 test("does not expose active or unknown-effect Companion tasks as task-owned relays", () => {
@@ -1056,6 +1401,110 @@ test("exposes an inactive capability-missing task for destination-owned repair",
   assert.equal(summary.taskOwnedContinuationCandidateCount, 1);
   assert.equal(summary.taskOwnedContinuationCandidates[0].threadId, threadId);
   assert.equal(summary.taskOwnedContinuationCandidates[0].requiresTaskOwnedCompanionCallback, true);
+});
+
+test("selects notLoaded official tasks for a bounded deep read", () => {
+  const plan = buildThreadInspectionPlan({
+    source: "codex_app_thread_list",
+    tasks: [{
+      threadId: "01ffffffffffffffffffffffffffffff",
+      owner: "user",
+      status: "notLoaded",
+      latestTurnStatus: "unknown",
+    }],
+  });
+
+  assert.equal(plan.deepReadCandidateCount, 1);
+  assert.ok(plan.deepReadCandidates[0].reasons.includes("not_loaded"));
+});
+
+test("keeps a notLoaded signal after lightweight readback so the deep read runs", async () => {
+  const light = [];
+  const deep = [];
+  const result = await inspectRecentUserThreads({
+    tasks: [{ threadId: "notloaded-after-light", owner: "user", status: "notLoaded", latestTurnStatus: "unknown" }],
+    inspectThread: async (input) => {
+      light.push(input);
+      return { status: "notLoaded", latestTurnStatus: "unknown" };
+    },
+    readThread: async (input) => {
+      deep.push(input);
+      return { status: "notLoaded", latestTurnStatus: "interrupted", goalStatus: "active", planStatus: "active" };
+    },
+    now: Date.parse("2026-09-05T00:00:00.000Z"),
+  });
+
+  assert.deepEqual(light.map((input) => input.threadId), ["notloaded-after-light"]);
+  assert.deepEqual(deep.map((input) => input.threadId), ["notloaded-after-light"]);
+  assert.equal(result.deepReadCandidateCount, 1);
+  assert.equal(result.deepReadAttemptedCount, 1);
+  assert.equal(result.deepReadCount, 1);
+  assert.equal(result.records[0].deepRead.status, "observed");
+  assert.equal(result.records[0].latestTurnStatus, "interrupted");
+});
+
+test("relays an officially proven interrupted capability checkpoint to its own task Root", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "aos-interrupted-capability-relay-"));
+  const sessionRoot = path.join(root, "sessions");
+  fs.mkdirSync(sessionRoot, { recursive: true });
+  const threadId = "01f11111111111111111111111111111";
+  fs.writeFileSync(path.join(sessionRoot, "capability-interrupted.jsonl"), [
+    JSON.stringify({ type: "session_meta", payload: { thread_source: "user", session_id: threadId, cwd: root, timestamp: "2026-09-01T00:00:00.000Z" } }),
+    JSON.stringify({ type: "event_msg", message: "<turn_aborted> Companion capability_missing; resume the existing Goal after current-generation verification" }),
+  ].join("\n") + "\n");
+
+  const summary = buildAuditSummary({
+    now: "2026-09-03T00:00:00.000Z",
+    recentDays: 0,
+    sessionRoot,
+    artifactDir: path.join(root, "artifact"),
+    companionSource: path.join(root, "missing-source"),
+    companionInstall: path.join(root, "missing-install"),
+    liveStatus: { connected: true, generation: "gen-current", capabilities: [] },
+    recentTasks: [{
+      threadId: `t-${threadId.replaceAll("-", "").slice(0, 24)}`,
+      hostId: "local",
+      owner: "user",
+      status: "notLoaded",
+      latestTurnStatus: "interrupted",
+      goalStatus: "unknown",
+      planStatus: "unknown",
+    }],
+    threadInspection: {
+      schema: "aos.companion_thread_inspection.v1",
+      source: "codex_app_thread_list",
+      mode: "lightweight_all_then_deep_read_candidates",
+      listedCount: 1,
+      eligibleTaskCount: 1,
+      skippedNonUserOwnedCount: 0,
+      lightweightInspectionCount: 1,
+      lightweightReadCount: 1,
+      deepReadCandidateCount: 1,
+      deepReadAttemptedCount: 1,
+      deepReadCount: 1,
+      deepReadTruncated: false,
+      records: [{
+        threadId: `t-${threadId.replaceAll("-", "").slice(0, 24)}`,
+        hostId: "local",
+        owner: "user",
+        status: "notloaded",
+        latestTurnStatus: "interrupted",
+        goalStatus: "unknown",
+        planStatus: "unknown",
+        exactBlocker: null,
+        actionable: false,
+        stalled: false,
+        lightweight: { status: "observed" },
+        deepRead: { status: "observed" },
+      }],
+    },
+  });
+
+  assert.equal(summary.taskOwnedContinuationCandidateCount, 1);
+  assert.equal(summary.taskOwnedContinuationCandidates[0].threadId, threadId);
+  assert.equal(summary.taskOwnedContinuationCandidates[0].relayReason, "capability_missing");
+  assert.equal(summary.taskOwnedContinuationCandidates[0].requiresTaskOwnedCompanionCallback, true);
+  fs.rmSync(root, { recursive: true, force: true });
 });
 
 test("promotes a fresh user-owned interrupted ready task into the resume queue", () => {
@@ -1488,7 +1937,7 @@ test("records a verified controller outcome without activating a new playbook", 
   assert.equal(ledger.playbookProposals.length, 0);
 });
 
-test("runs lightweight inspection on an unchanged healthy thread before heartbeat", () => {
+test("runs lightweight inspection and bounded deep health inspection on an unchanged active thread", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "aos-companion-lightweight-heartbeat-"));
   const sessionRoot = path.join(root, "sessions");
   const ledgerPath = path.join(root, "learning-ledger.v1.json");
@@ -1517,13 +1966,13 @@ test("runs lightweight inspection on an unchanged healthy thread before heartbea
     learningLedgerPath: ledgerPath,
     recentDays: 0,
   });
-  assert.equal(second.changeDetection.heartbeatOnly, true);
+  assert.equal(second.changeDetection.heartbeatOnly, false);
   assert.equal(second.threadInspection.eligibleTaskCount, 1);
   assert.equal(second.threadInspection.lightweightInspectionCount, 1);
-  assert.equal(second.threadInspection.deepReadCandidateCount, 0);
+  assert.equal(second.threadInspection.deepReadCandidateCount, 1);
   assert.equal(second.threadInspection.records[0].lightweight.status, "metadata_only");
   assert.equal(second.executionReceipt.stageReceipts.lightweight_thread_inspection.inspectedCount, 1);
-  assert.equal(second.executionReceipt.stageReceipts.deep_read_selection.candidateCount, 0);
+  assert.equal(second.executionReceipt.stageReceipts.deep_read_selection.candidateCount, 1);
 });
 
 test("live audit records App task inspections and bounded deep reads", async () => {
@@ -1755,6 +2204,38 @@ test("foreign owner progress stays deferred until owner and target proof are exp
   assert.equal(result.blockerProgress.replayAllowed, false);
 });
 
+test("clears a thread readback blocker only after same-task readback proof", async () => {
+  let probes = 0;
+  const summary = {
+    auditFingerprint: "thread-readback-recovery",
+    repairCandidates: [{ threadId: "readback-task", blocked: true, exactBlocker: "thread_readback_unavailable" }],
+    liveCandidates: [{ threadId: "readback-task", completed: false, userHelpRequired: false, resumeAssessment: { reason: "task_blocked" } }],
+  };
+  const result = await runBoundedHourlyController({
+    summary,
+    freshStatus: { connected: true, activeLeaseCount: 0, pendingCount: 0, queueCount: 0 },
+    progressBlocked: async () => {
+      probes += 1;
+      return {
+        status: "observed",
+        readbackStatus: "observed",
+        readbackVerified: true,
+        sameTask: true,
+        threadId: "readback-task",
+        resumeAllowed: true,
+        external_action_executed: false,
+        freshStatus: { connected: true, activeLeaseCount: 0, pendingCount: 0, queueCount: 0 },
+      };
+    },
+    eligibleTasks: summary.liveCandidates,
+    continueTask: async () => ({ status: "queued", external_action_executed: false }),
+  });
+  assert.equal(probes, 1);
+  assert.equal(result.status, "completed");
+  assert.equal(result.blockerProgress.status, "reconciled");
+  assert.equal(result.continuations.length, 1);
+});
+
 test("hourly controller runs one repair, focused verification, reflected refresh, then one continuation per eligible task", async () => {
   const events = [];
   const status = { connected: true, unknown_effect: false, foreign_owner: false, active_reconciliation: false, human_auth_required: false, activeLeaseCount: 0, pendingCount: 0, queueCount: 0, generation: "gen-before" };
@@ -1790,6 +2271,52 @@ test("hourly controller runs one repair, focused verification, reflected refresh
   assert.equal(result.executionReceipt.stages.bounded_repair.status, "completed");
   assert.equal(result.executionReceipt.stages.signed_refresh.status, "completed");
   assert.equal(result.executionReceipt.stages.one_continuation_per_eligible_task.attempted, 2);
+});
+
+test("hourly controller consumes the task-owned relay queue and preserves its lane", async () => {
+  const calls = [];
+  const threadId = "task-owned-relay-controller";
+  const result = await runBoundedHourlyController({
+    summary: {
+      auditFingerprint: "task-owned-relay-controller",
+      liveCandidates: [],
+      taskOwnedContinuationCandidates: [{
+        threadId,
+        hostId: "local",
+        owner: "user",
+        currentTaskReadback: true,
+        officialTaskStatus: "idle",
+        officialLatestTurnStatus: "completed",
+        requiresTaskOwnedCompanionCallback: true,
+        relayMode: "same_task_root_companion_repair_or_resume",
+        relayReason: "capability_missing",
+        relayRequiresFreshOfficialReadback: true,
+        stateScope: "live_candidate",
+      }],
+    },
+    freshStatus: { connected: true, activeLeaseCount: 0, pendingCount: 0, queueCount: 0 },
+    continueTask: async (request) => {
+      calls.push(request);
+      return { status: "queued", external_action_executed: false };
+    },
+  });
+  assert.equal(result.status, "completed");
+  assert.deepEqual(calls.map((call) => ({
+    stage: call.stage,
+    lane: call.lane,
+    threadId: call.task.threadId,
+    sourceThreadOnly: call.sourceThreadOnly,
+    requiresTaskOwnedCompanionCallback: call.requiresTaskOwnedCompanionCallback,
+    relayRequiresFreshOfficialReadback: call.relayRequiresFreshOfficialReadback,
+  })), [{
+    stage: "continuation",
+    lane: "task_owned_companion_relay",
+    threadId,
+    sourceThreadOnly: true,
+    requiresTaskOwnedCompanionCallback: true,
+    relayRequiresFreshOfficialReadback: true,
+  }]);
+  assert.equal(result.continuations.length, 1);
 });
 
 test("resumes a stalled existing Goal after same-run repair and E2E readback", async () => {

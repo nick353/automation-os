@@ -260,6 +260,7 @@ export function webOperationBackendAdapterReadOnlyBlocker(
 }
 
 export function webOperationBackendAdapterCoverage(): WebOperationAdapterCoverage[] {
+  const companionRunnerEntrypoint = resolve(process.cwd(), "scripts", "aos-portable-browser-use-runner.mjs");
   return (Object.entries(ADAPTER_DEFINITIONS) as [WebOperationAdapter, AdapterDefinition][]).map(([adapter, definition]) => {
     const chromePlugin = effectiveSurface({
       backend: "chrome_plugin",
@@ -287,7 +288,7 @@ export function webOperationBackendAdapterCoverage(): WebOperationAdapterCoverag
       mode: "effectful",
       exactBlocker: null,
       nextAction: "use fresh Companion authority, provider receipt, same-run source sync, reconciliation/no-replay, and terminal task-tab cleanup",
-      runnerEntrypoint: "automation-os/scripts/aos-portable-browser-use-runner.mjs",
+      runnerEntrypoint: companionRunnerEntrypoint,
     });
     return {
       adapter,

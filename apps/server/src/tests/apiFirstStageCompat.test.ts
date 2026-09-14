@@ -101,7 +101,11 @@ function writeValidReferenceCanaryReceipt(path: string, overrides: Record<string
       adapter,
       run_id: `canary_${id}`,
       status: "proof_backed_safe_stop_verified",
-      exact_blocker: "browser_use_cli_required",
+      // The reference canary is intentionally blocked before any worker
+      // action because the Companion task identity is absent in this
+      // isolated fixture. Keep this aligned with referenceWorkflowCanary's
+      // current fail-closed admission contract.
+      exact_blocker: "aos_chrome_companion_task_id_missing",
       run_blocked: true,
       step_blocked: true,
       proof_gate_ok: false,

@@ -342,6 +342,7 @@ test("generic web-operation intent dispatches Daily AI and NisenPrints through t
         AUTOMATION_OS_ARTIFACT_ROOT: root,
         AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS: "enabled",
         AOS_WEB_OPERATION_BACKEND: "browser_use_cli",
+        AUTOMATION_OS_PORTABLE_BUSINESS_RUNNER_DAILY_AI: genericRunner,
         AUTOMATION_OS_PORTABLE_EXTERNAL_APPROVAL: "approved",
         AUTOMATION_OS_PORTABLE_EXTERNAL_ADMISSION_PATH: files.admissionPath,
         AUTOMATION_OS_PORTABLE_EXTERNAL_ADMISSION_SHA256: files.admissionSha256,

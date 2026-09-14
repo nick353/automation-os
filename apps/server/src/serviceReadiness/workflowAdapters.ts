@@ -13,6 +13,43 @@ import { BROWSER_USE_HELPER_PATH, BROWSER_USE_RUNTIME_CONFIG_PATH } from "./brow
  */
 export const REFERENCE_IAB_WORKFLOW_ADAPTER_SCHEMA_V1 = "service_readiness_iab_workflow_adapter.v1" as const;
 export const REFERENCE_BROWSER_USE_WORKFLOW_ADAPTER_SCHEMA_V1 = "service_readiness_browser_use_workflow_adapter.v1" as const;
+export const REFERENCE_COMPANION_WORKFLOW_ADAPTER_SCHEMA_V1 = "service_readiness_aos_chrome_companion_workflow_adapter.v1" as const;
+
+export type ReferenceAosChromeCompanionWorkflowAdapterV1 = {
+  schema: typeof REFERENCE_COMPANION_WORKFLOW_ADAPTER_SCHEMA_V1;
+  workflow_id: "daily-ai" | "job-application-manager" | "nisenprints";
+  browser_surface: "aos_chrome_companion_profile_instance";
+  adapter_entrypoint: "scripts/aos-portable-browser-use-runner.mjs";
+  no_fallback: true;
+  receipt_discriminator: "aos_chrome_companion_read_only_receipt.v1";
+  external_intent_schema: "service_readiness_aos_chrome_companion_external_intent.v1";
+  external_effect_ready: false;
+  external_executor_status: "authorized_business_runner_pending";
+  business_runner_entrypoint: "scripts/aos-portable-business-runner.mjs";
+  status: "configured";
+};
+
+const companionAdapters: readonly ReferenceAosChromeCompanionWorkflowAdapterV1[] = ([
+  "daily-ai",
+  "job-application-manager",
+  "nisenprints"
+] as const).map((workflow_id) => ({
+  schema: REFERENCE_COMPANION_WORKFLOW_ADAPTER_SCHEMA_V1,
+  workflow_id,
+  browser_surface: "aos_chrome_companion_profile_instance",
+  adapter_entrypoint: "scripts/aos-portable-browser-use-runner.mjs",
+  no_fallback: true,
+  receipt_discriminator: "aos_chrome_companion_read_only_receipt.v1",
+  external_intent_schema: "service_readiness_aos_chrome_companion_external_intent.v1",
+  external_effect_ready: false,
+  external_executor_status: "authorized_business_runner_pending",
+  business_runner_entrypoint: "scripts/aos-portable-business-runner.mjs",
+  status: "configured"
+})) as ReferenceAosChromeCompanionWorkflowAdapterV1[];
+
+export function readReferenceAosChromeCompanionWorkflowAdaptersV1(): ReferenceAosChromeCompanionWorkflowAdapterV1[] {
+  return companionAdapters.map((adapter) => ({ ...adapter }));
+}
 
 export type ReferenceBrowserUseWorkflowAdapterV1 = {
   schema: typeof REFERENCE_BROWSER_USE_WORKFLOW_ADAPTER_SCHEMA_V1;

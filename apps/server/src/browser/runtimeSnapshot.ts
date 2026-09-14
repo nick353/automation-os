@@ -76,6 +76,10 @@ type BrowserUseRuntimeSnapshotOptions = {
   selectedBackend?: WebOperationBackend;
   targetScopedReadback?: boolean;
   remoteChromePluginReadback?: PortableWorkerChromePluginReadback | null;
+  /** Sanitized or persisted portable Mac heartbeat metadata for readback. */
+  remoteWorkerHeartbeat?: unknown;
+  /** Backward-compatible metadata alias used by callers. */
+  heartbeatMetadata?: unknown;
 };
 
 /**
@@ -120,7 +124,9 @@ export function publicBrowserUseLaneBinding(lane: RegisteredBrowserLane | undefi
 export function buildBrowserUseRuntimeSnapshot(options: BrowserUseRuntimeSnapshotOptions = {}) {
   const processReadback = buildBrowserRuntimeProcessReadback({
     controlPlaneCompanyIds: options.controlPlaneCompanyIds,
-    readLiveProcessTable: shouldReadLiveProcessTable()
+    readLiveProcessTable: shouldReadLiveProcessTable(),
+    remoteWorkerHeartbeat: options.remoteWorkerHeartbeat,
+    heartbeatMetadata: options.heartbeatMetadata
   });
   return buildBrowserUseRuntimeSnapshotFromReadback(options, processReadback);
 }
@@ -128,11 +134,16 @@ export function buildBrowserUseRuntimeSnapshot(options: BrowserUseRuntimeSnapsho
 export async function buildBrowserUseRuntimeSnapshotAsync(options: BrowserUseRuntimeSnapshotOptions = {}) {
   const processReadback = await buildBrowserRuntimeProcessReadbackAsync({
     controlPlaneCompanyIds: options.controlPlaneCompanyIds,
-    readLiveProcessTable: shouldReadLiveProcessTable()
+    readLiveProcessTable: shouldReadLiveProcessTable(),
+    remoteWorkerHeartbeat: options.remoteWorkerHeartbeat,
+    heartbeatMetadata: options.heartbeatMetadata
   });
+  const heartbeatChromePluginReadback = processReadback.portableRemoteWorker.remoteReport?.chromePluginReadback ?? null;
   const chromePluginReadback = options.selectedBackend === "chrome_plugin"
     ? options.remoteChromePluginReadback
       ? chromePluginReadbackFromPortableWorkerHeartbeat(options.remoteChromePluginReadback)
+      : heartbeatChromePluginReadback
+        ? chromePluginReadbackFromPortableWorkerHeartbeat(heartbeatChromePluginReadback)
       : isHostedControlPlane()
         ? chromePluginRemoteWorkerReadbackPending(options.targetScopedReadback === true)
         : await refreshChromePluginReadback({ targetScopedReadback: options.targetScopedReadback === true })
@@ -149,6 +160,9 @@ function buildBrowserUseRuntimeSnapshotFromReadback(
   const chromePluginReadback = selectedBackend === "chrome_plugin"
     ? chromePluginReadbackOverride
       ?? (options.remoteChromePluginReadback ? chromePluginReadbackFromPortableWorkerHeartbeat(options.remoteChromePluginReadback) : null)
+      ?? (processReadback.portableRemoteWorker.remoteReport?.chromePluginReadback
+        ? chromePluginReadbackFromPortableWorkerHeartbeat(processReadback.portableRemoteWorker.remoteReport.chromePluginReadback)
+        : null)
       ?? readChromePluginReadback(Date.now(), { targetScopedReadback: options.targetScopedReadback === true })
     : null;
   const runtimeRole = process.env.AUTOMATION_OS_RUNTIME_ROLE === "mac_worker" ? "mac_worker" : "control_plane";
@@ -265,9 +279,13 @@ function isHostedControlPlane(): boolean {
 
 export function buildBrowserOperationalReadback(processReadback: ReturnType<typeof buildBrowserRuntimeProcessReadback>): BrowserOperationalReadback {
   const transport = processReadback.portableRemoteWorker.transportReadback;
-  const workerProcessStatus = processReadback.portableRemoteWorker.status === "present"
+  // `portableRemoteWorker.status` may be `remote_reported` when a hosted
+  // control plane has a fresh Mac heartbeat but no same-host process table.
+  // Operational process status must remain a local observation and must not
+  // turn a remote report into a process claim.
+  const workerProcessStatus = processReadback.portableRemoteWorker.processStatus === "present"
     ? "present"
-    : processReadback.portableRemoteWorker.status === "absent"
+    : processReadback.portableRemoteWorker.processStatus === "absent"
       ? "absent"
       : "unknown";
   return {

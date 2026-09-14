@@ -22,7 +22,10 @@ try {
   } = await import(
     pathToFileURL(join(repositoryRoot, "apps", "server", "dist", "runs", "companyBindingReadiness.js")).href
   );
-  const { buildCompanyBindingReconciliationV1 } = await import(
+  const {
+    buildCompanyBindingReconciliationV1,
+    readConfiguredCanonicalCompanyAuthority
+  } = await import(
     pathToFileURL(join(repositoryRoot, "apps", "server", "dist", "runs", "companyBindingReconciliation.js")).href
   );
   const { buildCanonicalCompanyConsultationV1 } = await import(
@@ -82,6 +85,7 @@ try {
   }));
 
   const serviceUserId = String(process.env.AUTOMATION_OS_DURABLE_SERVICE_USER_ID || "").trim();
+  const canonicalAuthority = readConfiguredCanonicalCompanyAuthority();
   const serviceIdentityConfigured = serviceUserId.length > 0 && Boolean(
     db.prepare(`
       SELECT users.id
@@ -112,6 +116,7 @@ try {
   const graphReceiptStatus = ["none", "fresh", "stale_or_tampered"].includes(process.env.AOS_GRAPH_RECEIPT_STATUS || "")
     ? process.env.AOS_GRAPH_RECEIPT_STATUS
     : "stale_or_tampered";
+  const briefDeliveryConfigured = process.env.AOS_BRIEF_DELIVERY_MODE === "home_only";
   const readiness = buildCompanyBindingReadinessV1({
     now: process.env.AOS_COMPANY_BINDING_READINESS_NOW || new Date().toISOString(),
     trigger_company_id: triggerCompanyId,
@@ -125,14 +130,14 @@ try {
         ? "environment_plus_active_operator_membership_readonly_readback"
         : "missing_environment_service_identity"
     },
-    canonical_company_id: null,
-    canonical_authority_fresh: false,
+    canonical_company_id: canonicalAuthority?.applied === true ? canonicalAuthority.company_id : null,
+    canonical_authority_fresh: canonicalAuthority?.fresh === true && canonicalAuthority.applied === true,
     source_company_id: localCompanies.length === 1 ? localCompanies[0].company_id : null,
     source_authority_fresh: localCompanies.length === 1,
     worker_company_id: null,
     worker_authority_fresh: false,
-    runtime_company_id: null,
-    runtime_authority_fresh: false,
+    runtime_company_id: canonicalAuthority?.applied === true ? canonicalAuthority.company_id : null,
+    runtime_authority_fresh: canonicalAuthority?.fresh === true && canonicalAuthority.applied === true,
     provider_authority_fresh: false,
     browser_authority_fresh: false,
     provider_receipt_contract_ready: false,
@@ -140,7 +145,7 @@ try {
     reconciliation_contract_ready: false,
     cleanup_contract_ready: false,
     brief_home_readback_available: true,
-    brief_delivery_configured: false,
+    brief_delivery_configured: briefDeliveryConfigured,
     chat_consultation_available: true,
     chat_read_only_demo_available: true,
     chat_approval_preview_available: true,
@@ -172,7 +177,7 @@ try {
       provider_authority_fresh: false,
       browser_authority_fresh: false,
       brief_home_readback_available: true,
-      brief_delivery_configured: false,
+      brief_delivery_configured: briefDeliveryConfigured,
       chat_consultation_available: true,
       chat_read_only_demo_available: true,
       chat_approval_preview_available: true,
@@ -219,8 +224,14 @@ try {
     },
     source_scope: {
       kind: "local_sqlite_diagnostic",
-      canonical_selection: "not_selected",
-      protected_aos_endpoint_read: false
+      canonical_selection: canonicalAuthority?.applied === true ? "owner_selected" : "not_selected",
+      protected_aos_endpoint_read: canonicalAuthority?.fresh === true && canonicalAuthority.applied === true
+    },
+    authority_scope: {
+      kind: "local_sqlite_diagnostic",
+      production_claim_allowed: false,
+      protected_readback_required: true,
+      reason: "This CLI reads local SQLite only; production readiness must come from the protected AOS/Postgres readback."
     },
     external_effects: {
       provider_called: false,

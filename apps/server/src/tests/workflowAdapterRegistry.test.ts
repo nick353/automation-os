@@ -18,7 +18,7 @@ test("AOS owns provider-neutral adapter definitions for all six registered workf
     assert.equal(definition.codex_is_not_authority, true);
     assert.equal(definition.default_mode, "preflight_no_effect");
     assert.equal(definition.external_action_default, false);
-    if (definition.browser_surface === "browser_use_cli") {
+    if (definition.browser_surface === "aos_chrome_companion_profile_instance") {
       assert.equal(definition.web_operation_contract_binding?.adaptive_target_resolution, "live_semantic_candidate_unique_match");
       assert.equal(definition.web_operation_contract_binding?.fixed_locator_authority, false);
       assert.equal(definition.web_operation_contract_binding?.fixed_playbook_authority, false);
@@ -38,8 +38,8 @@ test("AOS owns provider-neutral adapter definitions for all six registered workf
   }
 });
 
-test("all Browser Use workflows bind the same provider-neutral adaptive Web contract", () => {
-  const browser = listWorkflowAdapterDefinitions().filter((definition) => definition.browser_surface === "browser_use_cli");
+test("all Companion workflows bind the same provider-neutral adaptive Web contract", () => {
+  const browser = listWorkflowAdapterDefinitions().filter((definition) => definition.browser_surface === "aos_chrome_companion_profile_instance");
   assert.deepEqual(browser.map((definition) => definition.workflow_id), [
     "daily-ai-research-publish-run",
     "job-application-manager",

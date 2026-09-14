@@ -93,6 +93,18 @@ test("tool preference keeps Plugin first and binds a verified company connection
   assert.equal(new Set(snapshot.toolPreference.candidates.filter((item) => item.kind !== "plugin").map((item) => item.rank)).size, 1);
 });
 
+test("a dedicated-server Gmail plugin does not require installation in the AOS process", () => {
+  const capabilities = fixtureCapabilities();
+  capabilities.capabilities.plugins = [];
+  const snapshot = buildCapabilityRouterSnapshot({ command: "Gmailの状態を確認", capabilities,
+    bridgeActions: listTrustedBridgeActions(), companyIds: ["company-a"],
+    companyConnectionRefs: [{ platform: "gmail", status: "verified", oauth_state: "connected", verification_status: "verified" }],
+    zeaburConnectorRegistry: verifiedZeaburRegistry() });
+  assert.equal(snapshot.toolPreference.selected?.kind, "plugin");
+  assert.equal(snapshot.toolPreference.selected?.status, "ready");
+  assert.equal(snapshot.toolPreference.selected?.executionOwner, "zeabur_codex_app_server");
+});
+
 test("tool preference exposes an unauthenticated Plugin gate instead of silently falling back", () => {
   const capabilities = fixtureCapabilities();
   capabilities.capabilities.plugins.push({

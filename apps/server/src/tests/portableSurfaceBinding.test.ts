@@ -81,3 +81,41 @@ test("target-bound approval and effect authority preserve Chrome Plugin Profile 
     browser_surface: "signed_chrome_extension_profile2",
   }));
 });
+
+test("target-bound approval receipt accepts the canonical AOS Chrome Companion surface", () => {
+  const binding = buildPortableExternalApprovalBinding({
+    companyId: "company-companion-surface",
+    workflowId: "daily-ai-research-publish-run",
+    runId: "run-companion-surface",
+    stepId: "step-companion-surface",
+    effectStage: "publish",
+    idempotencyKey: "companion-surface-publish",
+    inputBundleSha256: "b".repeat(64),
+    inputBundle: {
+      account_ref: "account:daily-ai",
+      target_key: "content:companion",
+      content_key: "content:companion",
+      payload_hash: "c".repeat(64),
+      source_snapshot_id: "snapshot:companion",
+    },
+    browserSurface: "aos_chrome_companion_profile_instance",
+  });
+  const approval = buildPortableTargetBoundApprovalReceipt({
+    approvalId: "approval-companion-surface",
+    approvalStatus: "approved",
+    decidedAt: new Date().toISOString(),
+    binding,
+  });
+  const validated = validatePortableTargetBoundApprovalReceipt(approval, {
+    company_id: "company-companion-surface",
+    workflow_id: "daily-ai-research-publish-run",
+    run_id: "run-companion-surface",
+    step_id: "step-companion-surface",
+    effect_stage: "publish",
+    idempotency_key: "companion-surface-publish",
+    input_bundle_sha256: "b".repeat(64),
+    target_digest: binding.target_digest,
+    browser_surface: "aos_chrome_companion_profile_instance",
+  });
+  assert.equal(validated.binding.browser_surface, "aos_chrome_companion_profile_instance");
+});

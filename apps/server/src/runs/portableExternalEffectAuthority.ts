@@ -76,7 +76,7 @@ function parseTime(value: string, field: string): number {
 
 /**
  * Issue the portable authority used by the AOS scheduler -> durable run ->
- * Mac Browser Use CLI lane.  It is deliberately data-only: it contains no
+ * Mac Companion lane.  It is deliberately data-only: it contains no
  * cookie, token, password, provider secret, or Codex App identity.
  */
 export function issuePortableExternalEffectAuthorityV1(
@@ -112,7 +112,7 @@ export function issuePortableExternalEffectAuthorityV1(
     step_id: stepId,
     effect_stage: effectStage,
     effect_class: "external_non_idempotent",
-    browser_surface: input.browserSurface ?? "browser_use_cli",
+    browser_surface: input.browserSurface ?? "aos_chrome_companion_profile_instance",
     approval_id: approvalId,
     approval_status: "approved",
     idempotency_key: idempotencyKey,
@@ -142,7 +142,7 @@ export function validatePortableExternalEffectAuthorityV1(
   if (body.schema !== PORTABLE_EXTERNAL_EFFECT_AUTHORITY_SCHEMA_V1
     || body.issued_by !== PORTABLE_EXTERNAL_EFFECT_AUTHORITY_ISSUER_V1
     || body.effect_class !== "external_non_idempotent"
-    || (body.browser_surface !== "browser_use_cli" && body.browser_surface !== "signed_chrome_extension_profile2")
+    || (body.browser_surface !== "aos_chrome_companion_profile_instance" && body.browser_surface !== "signed_chrome_extension_profile2" && body.browser_surface !== "browser_use_cli")
     || body.approval_status !== "approved"
     || body.timeout_controller !== "automation_os_portable_controller"
     || body.reconciliation_required !== true

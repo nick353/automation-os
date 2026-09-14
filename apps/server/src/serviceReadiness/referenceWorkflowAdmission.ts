@@ -13,18 +13,18 @@ import {
   workflowAdapterReadback
 } from "../providers/workflowAdapterRegistry.js";
 import {
-  prepareReferenceBrowserUseExternalIntentV1,
-  type PreparedReferenceBrowserUseExternalIntentV1
+  prepareReferenceBrowserUseExternalIntentV1
 } from "./workflowAdapters.js";
 import {
-  readReferenceBrowserUseWorkflowAdaptersV1,
-  type ReferenceBrowserUseWorkflowAdapterV1
+  readReferenceAosChromeCompanionWorkflowAdaptersV1,
+  type ReferenceAosChromeCompanionWorkflowAdapterV1
 } from "./workflowAdapters.js";
 
 export { IAB_EXTERNAL_EFFECT_CAPABILITY_BLOCKER };
 
 export const REFERENCE_WORKFLOW_ADMISSION_SCHEMA_V1 = "service_readiness_reference_workflow_admission.v1" as const;
-export const REFERENCE_BROWSER_USE_WORKFLOW_ADMISSION_SCHEMA_V1 = "service_readiness_browser_use_reference_workflow_admission.v1" as const;
+export const REFERENCE_BROWSER_USE_WORKFLOW_ADMISSION_SCHEMA_V1 = "service_readiness_aos_chrome_companion_reference_workflow_admission.v1" as const;
+export const REFERENCE_COMPANION_WORKFLOW_ADMISSION_SCHEMA_V1 = REFERENCE_BROWSER_USE_WORKFLOW_ADMISSION_SCHEMA_V1;
 
 export type ReferenceWorkflowAdmissionInputV1 = {
   workflow_id: string;
@@ -137,8 +137,8 @@ export type ReferenceBrowserUseWorkflowAdmissionProjectionV1 = {
   schema: typeof REFERENCE_BROWSER_USE_WORKFLOW_ADMISSION_SCHEMA_V1;
   workflow_id: string;
   contract_schema: string;
-  adapter: ReferenceBrowserUseWorkflowAdapterV1 | null;
-  browser_surface: "browser_use_cli";
+  adapter: ReferenceAosChromeCompanionWorkflowAdapterV1 | null;
+  browser_surface: "aos_chrome_companion_profile_instance";
   legacy_surfaces_forbidden: true;
   prior_receipt_reuse: false;
   capability_mode: "read_only";
@@ -152,20 +152,20 @@ export type ReferenceBrowserUseWorkflowAdmissionProjectionV1 = {
     exact_blocker: string;
   };
   aos_workflow_adapter: Record<string, unknown>;
-  external_intent: PreparedReferenceBrowserUseExternalIntentV1 | null;
+  external_intent: Record<string, unknown> | null;
 };
 
 /**
- * Current reference-canary admission projection.  The historical IAB
- * projection above remains readable for old artifacts, but no current
- * reference workflow may use it as its browser authority.  This projection
- * is deliberately non-live: it records the Browser Use CLI contract and
- * stops until a fresh same-run authority/readback is supplied.
+ * Current reference-canary admission projection. The historical IAB and
+ * Browser Use projections remain readable for old artifacts, but current
+ * reference workflows use the task-owned AOS Chrome Companion surface.
+ * This projection is deliberately non-live and stops until a fresh same-run
+ * task authority/readback is supplied.
  */
 export function projectReferenceBrowserUseWorkflowAdmission(
   input: ReferenceWorkflowAdmissionInputV1
 ): ReferenceBrowserUseWorkflowAdmissionProjectionV1 {
-  const adapter = readReferenceBrowserUseWorkflowAdaptersV1().find((candidate) => candidate.workflow_id === input.workflow_id) ?? null;
+  const adapter = readReferenceAosChromeCompanionWorkflowAdaptersV1().find((candidate) => candidate.workflow_id === input.workflow_id) ?? null;
   const contractProvided = contractWasProvided(input);
   const externalIntent = adapter && contractProvided
     ? prepareReferenceBrowserUseExternalIntentV1({
@@ -176,8 +176,17 @@ export function projectReferenceBrowserUseWorkflowAdmission(
   const exactBlocker = !adapter
     ? "reference_workflow_admission_unknown_workflow"
     : externalIntent?.status === "blocked"
-      ? (externalIntent.exact_blocker ?? "browser_use_external_contract_invalid")
-      : "browser_use_cli_authority_missing";
+      ? (externalIntent.exact_blocker?.replaceAll("browser_use_cli", "aos_chrome_companion") ?? "aos_chrome_companion_external_contract_invalid")
+      : "aos_chrome_companion_task_id_missing";
+  const normalizedExternalIntent = externalIntent
+    ? {
+        ...externalIntent,
+        schema: "service_readiness_aos_chrome_companion_external_intent.v1",
+        browser_surface: "aos_chrome_companion_profile_instance",
+        exact_blocker: externalIntent.exact_blocker?.replaceAll("browser_use_cli", "aos_chrome_companion") ?? null,
+        safe_resume_step: externalIntent.safe_resume_step?.replaceAll("browser_use_cli", "aos_chrome_companion") ?? null
+      }
+    : null;
   return {
     schema: REFERENCE_BROWSER_USE_WORKFLOW_ADMISSION_SCHEMA_V1,
     workflow_id: input.workflow_id,
@@ -189,7 +198,7 @@ export function projectReferenceBrowserUseWorkflowAdmission(
           ? "nisenprints.service_readiness.v1"
           : "unknown",
     adapter,
-    browser_surface: "browser_use_cli",
+    browser_surface: "aos_chrome_companion_profile_instance",
     legacy_surfaces_forbidden: true,
     prior_receipt_reuse: false,
     capability_mode: "read_only",
@@ -203,7 +212,7 @@ export function projectReferenceBrowserUseWorkflowAdmission(
       exact_blocker: exactBlocker
     },
     aos_workflow_adapter: workflowAdapterReadback(workflowAdapterIdForReferenceWorkflow(input.workflow_id) ?? input.workflow_id),
-    external_intent: externalIntent
+    external_intent: normalizedExternalIntent
   };
 }
 

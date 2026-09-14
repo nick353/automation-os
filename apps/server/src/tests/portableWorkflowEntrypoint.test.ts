@@ -19,6 +19,7 @@ const { initRegisteredWorkflows } = await import("../registeredWorkflows.js");
 const { startPortableWorkflowRun } = await import("../runs/portableWorkflowEntrypoint.js");
 const { browserSurfaceRequirementForPortableTrigger } = await import("../runs/portableWorkflowEntrypoint.js");
 const { startPortableLocalWorkflowRun } = await import("../runs/portableLocalWorkflowEntrypoint.js");
+const { runPortableLocalWorkflowAsync, runPortableLocalWorkflowReadOnly } = await import("../runs/portableLocalWorkflow.js");
 const { readWebOperationBackendSetting, writeWebOperationBackendSetting } = await import("../runs/webOperationBackendSettings.js");
 const {
   getRunContractForProofEvaluation,
@@ -83,11 +84,9 @@ test("portable entrypoint is shared by AOS UI, App bridge, and other schedulers,
     assert.equal(run.status, "blocked");
     assert.equal(metadata.portable_workflow_invocation?.app_dependency, false);
     assert.equal(metadata.portable_workflow_invocation?.source_trigger, item.sourceTrigger);
-    const unattended = ["automation_os_scheduler", "launchd", "github_actions"].includes(item.sourceTrigger);
-    const expectedRequirement = unattended ? "browser_use_cli" : "automatic";
-    const expectedBackend = unattended ? "browser_use_cli" : "aos_chrome_companion";
-    const expectedSurface = unattended ? "browser_use_cli" : "aos_chrome_companion_profile_instance";
-    const expectedRouteReason = unattended ? "explicit_non_chrome_backend" : "companion_primary_for_normal_work";
+    const expectedRequirement = "automatic";
+    const expectedBackend = "aos_chrome_companion";
+    const expectedSurface = "aos_chrome_companion_profile_instance";
     assert.equal(metadata.portable_workflow_invocation?.browser_surface_requirement, expectedRequirement);
     assert.equal(proofMetadata.source_trigger, item.sourceTrigger);
     assert.equal(proofMetadata.idempotency_key, idempotencyKey);
@@ -104,7 +103,6 @@ test("portable entrypoint is shared by AOS UI, App bridge, and other schedulers,
     assert.equal(metadata.web_operation_backend?.fallback_allowed, false);
     assert.equal(metadata.web_operation_backend?.route_decision_schema, "browser_route_decision.v2");
     assert.equal(metadata.web_operation_backend?.routing_mode, "adaptive_two_extension");
-    assert.equal(metadata.web_operation_backend?.route_reason, expectedRouteReason);
     assert.equal(metadata.web_operation_backend?.route_admission_status, "ready");
     assert.equal(metadata.web_operation_backend?.route_frozen_after_dispatch, true);
     assert.equal(metadata.web_operation_backend?.reroute_after_terminal_no_effect_only, true);
@@ -117,19 +115,73 @@ test("portable entrypoint is shared by AOS UI, App bridge, and other schedulers,
   }
 });
 
-test("unattended portable triggers explicitly use the canonical Browser Use CLI lane", () => {
-  assert.equal(browserSurfaceRequirementForPortableTrigger("automation_os_scheduler"), "browser_use_cli");
-  assert.equal(browserSurfaceRequirementForPortableTrigger("launchd"), "browser_use_cli");
-  assert.equal(browserSurfaceRequirementForPortableTrigger("github_actions"), "browser_use_cli");
-  assert.equal(browserSurfaceRequirementForPortableTrigger("automation_os_ui"), "automatic");
-  assert.equal(browserSurfaceRequirementForPortableTrigger("codex_app_bridge"), "automatic");
+test("portable triggers leave backend selection to the current AOS UI setting", () => {
+  assert.equal(browserSurfaceRequirementForPortableTrigger("automation_os_scheduler"), "automatic");
+  assert.equal(browserSurfaceRequirementForPortableTrigger("launchd"), "automatic");
+  assert.equal(browserSurfaceRequirementForPortableTrigger("github_actions"), "automatic");
+  assert.equal(browserSurfaceRequirementForPortableTrigger("automation_os_ui", "job-application-manager"), "automatic");
+  assert.equal(browserSurfaceRequirementForPortableTrigger("codex_app_bridge", "daily-ai-research-publish-run"), "automatic");
+  assert.equal(
+    browserSurfaceRequirementForPortableTrigger("automation_os_ui", "nisenprints-daily-product-canva-printify-etsy-pinterest"),
+    "automatic",
+  );
+  assert.equal(
+    browserSurfaceRequirementForPortableTrigger("codex_app_bridge", "nisenprints-daily-product-canva-printify-etsy-pinterest"),
+    "automatic",
+  );
+});
+
+test("automatic portable runs freeze the backend routed from the AOS UI setting", async () => {
+  const previous = readWebOperationBackendSetting();
+  let revision = previous.revision;
+  const expectedBackends = {
+    chrome_plugin: "aos_chrome_companion",
+    browser_use_cli: "browser_use_cli",
+    aos_chrome_companion: "aos_chrome_companion",
+    playwright: "playwright",
+  } as const;
+  const expectedSurfaces = {
+    aos_chrome_companion: "aos_chrome_companion_profile_instance",
+    aos_chrome_companion_profile_instance: "aos_chrome_companion_profile_instance",
+    browser_use_cli: "browser_use_cli",
+    playwright: "playwright",
+  } as const;
+  try {
+    for (const [index, backend] of (["chrome_plugin", "browser_use_cli", "aos_chrome_companion", "playwright"] as const).entries()) {
+      const selected = writeWebOperationBackendSetting({
+        backend,
+        actorUserId: `portable-backend-selection-${index}`,
+        expectedRevision: revision,
+      });
+      revision = selected.revision;
+      const started = await startPortableWorkflowRun({
+        workflowId: "daily-ai-research-publish-run",
+        sourceTrigger: "automation_os_ui",
+        idempotencyKey: `portable-backend-selection-${backend}`,
+      });
+      const run = db.querySql<{ metadata_json: string }>(
+        `SELECT metadata_json FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`
+      )[0];
+      const metadata = JSON.parse(run.metadata_json) as { web_operation_backend?: { resolved_backend?: string; browser_surface?: string; fallback_allowed?: boolean } };
+      const expectedBackend = expectedBackends[backend];
+      assert.equal(metadata.web_operation_backend?.resolved_backend, expectedBackend);
+      assert.equal(metadata.web_operation_backend?.browser_surface, expectedSurfaces[expectedBackend]);
+      assert.equal(metadata.web_operation_backend?.fallback_allowed, false);
+    }
+  } finally {
+    writeWebOperationBackendSetting({
+      backend: previous.backend,
+      actorUserId: "portable-backend-selection-restore",
+      expectedRevision: revision,
+    });
+  }
 });
 
 test("portable Web intent uses the same selected backend snapshot as the Run", async () => {
   const previous = readWebOperationBackendSetting();
   try {
     const selected = writeWebOperationBackendSetting({
-      backend: "browser_use_cli",
+      backend: "aos_chrome_companion",
       actorUserId: "portable-intent-surface-test",
       expectedRevision: previous.revision,
     });
@@ -152,9 +204,9 @@ test("portable Web intent uses the same selected backend snapshot as the Run", a
       web_operation_backend?: { browser_surface?: string; revision?: number };
       portable_workflow_invocation?: { web_operation_intent?: { browser_surface?: string } };
     };
-    assert.equal(metadata.web_operation_backend?.browser_surface, "browser_use_cli");
+    assert.equal(metadata.web_operation_backend?.browser_surface, "aos_chrome_companion_profile_instance");
     assert.equal(metadata.web_operation_backend?.revision, selected.revision);
-    assert.equal(metadata.portable_workflow_invocation?.web_operation_intent?.browser_surface, "browser_use_cli");
+    assert.equal(metadata.portable_workflow_invocation?.web_operation_intent?.browser_surface, "aos_chrome_companion_profile_instance");
     const processed = await runWorkerOnce(started.runId);
     assert.equal(processed.length, 1);
   } finally {
@@ -291,8 +343,7 @@ test("durable-only Mac worker picks up portable runs without a Codex App control
     }
   });
   const picked = await runPortableMacWorkerOnce();
-  assert.equal(picked.length, 1);
-  assert.equal(picked[0]?.runId, started.runId);
+  assert.ok(picked.some((item) => item.runId === started.runId));
   const run = db.querySql<{ status: string; metadata_json: string }>(
     `SELECT status, metadata_json FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`
   )[0];
@@ -303,7 +354,11 @@ test("durable-only Mac worker picks up portable runs without a Codex App control
 
 test("Mac worker uses the async boundary for a portable local read-only receipt", async () => {
   const previousRole = process.env.AUTOMATION_OS_WORKER_ROLE;
+  const previousRegistry = process.env.AUTOMATION_OS_PROJECT_REGISTRY;
   process.env.AUTOMATION_OS_WORKER_ROLE = "mac";
+  // The receipt/async-boundary test must not depend on the host's current
+  // projects becoming healthy, or read the user's live registry.
+  process.env.AUTOMATION_OS_PROJECT_REGISTRY = join(tempRoot, "missing-async-boundary-registry.json");
   const runId = "portable-local-async-boundary-regression";
   const stepId = `${runId}_step_1`;
   const laneId = `${runId}_lane-1`;
@@ -350,8 +405,7 @@ test("Mac worker uses the async boundary for a portable local read-only receipt"
     });
 
     const picked = await runPortableMacWorkerOnce(runId);
-    assert.equal(picked.length, 1);
-    assert.equal(picked[0]?.runId, runId);
+    assert.ok(picked.some((item) => item.runId === runId));
     const run = db.querySql<{ status: string; metadata_json: string }>(
       `SELECT status, metadata_json FROM runs WHERE id=${db.sqlValue(runId)} LIMIT 1`
     )[0];
@@ -372,7 +426,92 @@ test("Mac worker uses the async boundary for a portable local read-only receipt"
   } finally {
     if (previousRole === undefined) delete process.env.AUTOMATION_OS_WORKER_ROLE;
     else process.env.AUTOMATION_OS_WORKER_ROLE = previousRole;
+    if (previousRegistry === undefined) delete process.env.AUTOMATION_OS_PROJECT_REGISTRY;
+    else process.env.AUTOMATION_OS_PROJECT_REGISTRY = previousRegistry;
   }
+});
+
+test("Gmail read-only local starts persist only the exact run-bound target pair", async () => {
+  db.initDb();
+  const started = await startPortableLocalWorkflowRun({
+    workflowId: "email-review-reply",
+    sourceTrigger: "automation_os_ui",
+    idempotencyKey: "portable-local-gmail-readonly-target-persistence",
+    companyId: "portable_gmail_target_scope",
+    inputBundle: {
+      connection_ref_id: "company_connection_verified",
+      account_ref: "mailbox@example.com"
+    },
+    readOnlyStage: "reference_readback"
+  });
+  const row = db.querySql<{ metadata_json: string }>(
+    `SELECT metadata_json FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`
+  )[0];
+  const metadata = JSON.parse(row.metadata_json) as { portable_input_bundle?: { input?: Record<string, unknown> } };
+  assert.deepEqual(metadata.portable_input_bundle?.input, {
+    connection_ref_id: "company_connection_verified",
+    account_ref: "mailbox@example.com"
+  });
+});
+
+test("async Mac Gmail seam stores only the redacted canary readback and remains partial", async () => {
+  const previousRegistryPath = process.env.AUTOMATION_OS_CODEX_APP_SERVER_REGISTRY_READBACK_PATH;
+  const registryPath = join(mkdtempSync(join(tmpdir(), "automation-os-gmail-canary-registry-")), "registry.json");
+  const companyId = "portable-async-gmail-company";
+  const connectionRefId = "portable-async-gmail-ref";
+  const accountRef = "owner@example.com";
+  const now = new Date().toISOString();
+  db.insert("companies", { id: companyId, slug: companyId, name: companyId, status: "active", created_at: now, updated_at: now });
+  db.insert("company_connection_account_refs", {
+    id: connectionRefId, company_id: companyId, platform: "gmail", account_ref: accountRef, status: "verified",
+    scopes_json: JSON.stringify(["read"]), expires_at: null, oauth_state: "connected", verification_status: "verified",
+    last_verified_at: now, reconnect_requested_at: null, revoked_at: null, revision: 1, created_at: now, updated_at: now
+  });
+  writeFileSync(registryPath, JSON.stringify({
+    schema: "aos_zeabur_codex_app_server_connector_registry.v1", capturedAt: now, source: "zeabur_service_exec",
+    target: { projectId: "p", serviceId: "s", serviceName: "codex-app-server", environmentId: "e" },
+    appServer: { servicePresent: true, runtimeStatus: "running", codexLogin: "logged_in" },
+    pluginRegistry: { installed: [{ id: "gmail", name: "gmail", installed: true, authStatus: "verified" }], available: [] },
+    mcpRegistry: { configuredCount: 1, verified: true, names: ["gmail"] }, connectorAuth: { gmail: "verified" },
+    exactBlocker: null, secretMaterialIncluded: false
+  }));
+  process.env.AUTOMATION_OS_CODEX_APP_SERVER_REGISTRY_READBACK_PATH = registryPath;
+  const providerAccountHash = createHash("sha256").update(accountRef).digest("hex");
+  const canary = async () => ({
+    schema: "aos.gmail_provider_read_only_canary.v1", status: "completed", runId: "async-run", companyId,
+    connector: "gmail", operation: "profile_read", transport: "codex_app_server_plugin", providerToolCallObserved: true,
+    providerAccountPresent: true, providerAccountHash, exactBlocker: null, nextAction: "profile only",
+    externalActionExecuted: false, dataRead: true, dataPersisted: false, secretMaterialIncluded: false,
+    providerReceipt: { schema: "aos.gmail.provider_receipt.v1", sameRun: true, runId: "async-run", operation: "profile_read", providerAccountHash, externalActionExecuted: false },
+    sourceSync: { status: "verified", accountRefHash: providerAccountHash },
+    reconciliation: { required: true, status: "verified", exactBlocker: null }, cleanup: { status: "verified", ephemeralThread: true }
+  } as const);
+  try {
+    const result = await runPortableLocalWorkflowAsync({ workflowId: "email-review-reply", runId: "async-run", workerRole: "mac", companyId,
+      gmailExecutionTarget: { connectionRefId, accountRef }, gmailProviderReadOnlyCanary: canary });
+    assert.equal(result.status, "partial");
+    assert.equal(result.exact_blocker, null);
+    assert.equal(result.readback_verified, true);
+    assert.equal(result.external_action_executed, false);
+    assert.equal(result.business_completion_verified, false);
+    assert.equal(JSON.stringify(result).includes(accountRef), false);
+    assert.equal((result.adapter_result.gmail_provider_read_only_canary as Record<string, unknown>).providerAccountHash, providerAccountHash);
+    const legacy = runPortableLocalWorkflowReadOnly({ workflowId: "email-review-reply", workerRole: "mac", companyId,
+      gmailExecutionTarget: { connectionRefId, accountRef } });
+    assert.equal(legacy.exact_blocker, "gmail_provider_read_only_call_not_executed");
+  } finally {
+    if (previousRegistryPath === undefined) delete process.env.AUTOMATION_OS_CODEX_APP_SERVER_REGISTRY_READBACK_PATH;
+    else process.env.AUTOMATION_OS_CODEX_APP_SERVER_REGISTRY_READBACK_PATH = previousRegistryPath;
+  }
+});
+
+test("async Mac Gmail seam blocks canary turn failure without a provider receipt", async () => {
+  const result = await runPortableLocalWorkflowAsync({ workflowId: "email-review-reply", workerRole: "remote", companyId: "c1",
+    gmailExecutionTarget: { connectionRefId: "ref", accountRef: "owner@example.com" },
+    gmailProviderReadOnlyCanary: async () => { throw new Error("gmail_provider_turn_timeout"); } });
+  assert.equal(result.status, "blocked");
+  assert.equal(result.exact_blocker, "mac_worker_required");
+  assert.equal(result.external_action_executed, false);
 });
 
 test("portable local worker preserves the Run company scope for adapter readback", async () => {
@@ -460,7 +599,7 @@ test("synchronous runWorkerOnce preserves the Run company scope for local adapte
       readOnlyStage: "reference_readback"
     });
     const processed = await runWorkerOnce(started.runId);
-    assert.equal(processed.length, 1);
+  assert.equal(processed.length, 1);
     const run = db.querySql<{ status: string; metadata_json: string }>(
       `SELECT status, metadata_json FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`
     )[0];

@@ -45,12 +45,14 @@ import { runSnsMultiPosterRegisteredRunner, snsMultiPosterArtifactSize } from ".
 import { registeredBrowserWorkflowCommonBoundaryBlocker } from "./registeredBrowserBoundary.js";
 import {
   buildServiceReadinessBrowserUseRuntimeBindingV1,
+  buildServiceReadinessAosChromeCompanionRuntimeBindingV1,
   buildServiceReadinessRuntimeBindingV1,
   deriveServiceReadinessRootId,
   referenceWorkflowIdFromMetadata,
   validateServiceReadinessBrowserUseAuthorizedAdapterContractV1,
   SERVICE_READINESS_BROWSER_USE_AUTHORIZED_ADAPTER_CONTRACT_BLOCKER,
   type ServiceReadinessBrowserUseRuntimeBindingV1,
+  type ServiceReadinessAosChromeCompanionRuntimeBindingV1,
   type ServiceReadinessRuntimeBindingV1
 } from "../serviceReadiness/runtimeBinding.js";
 import { BROWSER_USE_HELPER_PATH, BROWSER_USE_RUNTIME_CONFIG_PATH } from "../serviceReadiness/browserUseCanonical.js";
@@ -72,7 +74,7 @@ import {
   runPortableWorkflowNoEffect
 } from "./portableWorkflowWorker.js";
 import { portableWorkflowManifests, type PortableWorkflowId } from "./portableWorkflowContract.js";
-import { localWorkflowIdForWorkerAdapter, runPortableLocalWorkflowReadOnly } from "./portableLocalWorkflow.js";
+import { localWorkflowIdForWorkerAdapter, runPortableLocalWorkflowAsync, runPortableLocalWorkflowReadOnly } from "./portableLocalWorkflow.js";
 import {
   buildPortableExternalApprovalBinding,
   buildPortableTargetBoundApprovalReceipt,
@@ -101,6 +103,8 @@ export type WorkerAdapter =
   | "email_review_registered"
   | "local_backup_registered"
   | "obsidian_audit_registered"
+  | "nisenprints_inventory_registered"
+  | "daily_ai_research_sync_registered"
   | "local_worker";
 export type WorkerMode =
   | "execute_child_codex"
@@ -126,7 +130,7 @@ export type WorkerCommandSpec = {
   display: string;
 };
 
-export type WorkerAdapterPolicyClassification = "browser_use_cli" | "legacy_browser_backed" | "in_app_browser_root_owned" | "extension_backed" | "non_browser";
+export type WorkerAdapterPolicyClassification = "browser_use_cli" | "aos_chrome_companion" | "legacy_browser_backed" | "in_app_browser_root_owned" | "extension_backed" | "non_browser";
 
 export type WorkerAdapterPolicySnapshot = {
   adapter: WorkerAdapter;
@@ -190,6 +194,7 @@ type CodexProofRow = {
 const browserUseAdapterEntryPoint = "/Users/nichikatanaka/.codex/skills/automation-kernel-run/scripts/browser-use-cli-stage-adapter.mjs";
 const browserUseHelper = BROWSER_USE_HELPER_PATH;
 const browserUseRuntimeConfig = BROWSER_USE_RUNTIME_CONFIG_PATH;
+const companionAdapterEntryPoint = resolve(process.cwd(), "scripts", "aos-portable-browser-use-runner.mjs");
 export const BROWSER_USE_CLI_REQUIRED_BLOCKER = "browser_use_cli_required";
 export const BROWSER_USE_CLI_WORKFLOW_ADAPTER_MISSING_BLOCKER = "browser_use_cli_workflow_adapter_missing";
 export const BROWSER_USE_CLI_EXTERNAL_EFFECTS_DISABLED_BLOCKER = "browser_use_cli_external_effects_disabled";
@@ -287,6 +292,8 @@ export type RunWorkerProgressState = {
 
 export function chooseWorkerAdapter(task: Pick<PlannedTask, "name" | "resources">): WorkerAdapter {
   const haystack = `${task.name} ${task.resources.join(" ")}`.toLowerCase();
+  if (haystack.trim() === "nisenprints-existing-product-audit" || /^nisenprints-existing-product-audit\s/u.test(haystack)) return "nisenprints_inventory_registered";
+  if (haystack.trim() === "daily-ai-research-source-sync") return "daily_ai_research_sync_registered";
   const dailyAiIntent = /daily[\s_-]*ai|daily-ai-research-publish-run/.test(haystack);
   const nisenPrintsIntent = /nisenprints|nisenprints-daily-product-canva-printify-etsy-pinterest/.test(haystack);
   const jobSubmitIntent = /job application manager|job-application-manager|job application daily submit queue|job-application-daily-submit-queue/.test(haystack);
@@ -391,6 +398,10 @@ export function buildWorkerCommand(input: {
   taskName: string;
   lane?: Pick<LaneRow, "cdp_port" | "profile_dir" | "workdir">;
   nisenprintsDefaultRunnerPath?: string;
+  /** Isolated reference canaries intentionally omit the task owner and stop on the Companion boundary. */
+  referenceWorkflowCanary?: boolean;
+  /** Immutable backend selected by the AOS UI for this run. */
+  webOperationBackend?: WebOperationBackend;
 }): WorkerCommandSpec {
   if (input.adapter === "child_codex") {
     const childCwd = resolveWorkerWorkspacePath(
@@ -456,6 +467,60 @@ export function buildWorkerCommand(input: {
       display: `node ${JSON.stringify(browserUseAdapterEntryPoint)} AUTOMATION_OS_BROWSER_SURFACE=browser_use_cli AUTOMATION_OS_BROWSER_WORKFLOW_ID=${JSON.stringify(workflowId)} AUTOMATION_OS_BROWSER_LIFECYCLE=${automaticLane.lifecycle} AUTOMATION_OS_BROWSER_PORT=${lanePort} AUTOMATION_OS_BROWSER_PROFILE=${JSON.stringify(laneProfile)} AUTOMATION_OS_BROWSER_REQUIREMENT=${JSON.stringify(requirement)} AUTOMATION_OS_BROWSER_SESSION=${JSON.stringify(session)}`
     };
   };
+  const companionCommand = (workflowId: string, requirement: string, requireTaskId = true): WorkerCommandSpec => {
+    const taskId = requireTaskId ? process.env.AOS_CHROME_COMPANION_TASK_ID?.trim() || "" : "";
+    return {
+      bin: "/usr/local/bin/node",
+      args: [companionAdapterEntryPoint],
+      env: {
+        AUTOMATION_OS_BROWSER_SURFACE: "aos_chrome_companion_profile_instance",
+        AUTOMATION_OS_BROWSER_DRIVER: "aos_chrome_companion",
+        AUTOMATION_OS_BROWSER_ADAPTER: companionAdapterEntryPoint,
+        AUTOMATION_OS_BROWSER_NO_FALLBACK: "1",
+        AUTOMATION_OS_BROWSER_WORKFLOW_ID: workflowId,
+        AUTOMATION_OS_BROWSER_REQUIRED: "1",
+        AUTOMATION_OS_BROWSER_REQUIREMENT: requirement,
+        AOS_WEB_OPERATION_BACKEND: "aos_chrome_companion",
+        ...(taskId ? { AOS_CHROME_COMPANION_TASK_ID: taskId } : {})
+      },
+      display: `node ${JSON.stringify(companionAdapterEntryPoint)} AUTOMATION_OS_BROWSER_SURFACE=aos_chrome_companion_profile_instance AUTOMATION_OS_BROWSER_WORKFLOW_ID=${JSON.stringify(workflowId)}${taskId ? ` AOS_CHROME_COMPANION_TASK_ID=${JSON.stringify(taskId)}` : ""}`
+    };
+  };
+  const chromePluginCommand = (workflowId: string, requirement: string): WorkerCommandSpec => ({
+    bin: "aos-chrome-plugin-registered-runner",
+    args: [workflowId],
+    env: {
+      AUTOMATION_OS_BROWSER_SURFACE: "signed_chrome_extension_profile2",
+      AUTOMATION_OS_BROWSER_DRIVER: "chrome_plugin",
+      AUTOMATION_OS_BROWSER_NO_FALLBACK: "1",
+      AUTOMATION_OS_BROWSER_WORKFLOW_ID: workflowId,
+      AUTOMATION_OS_BROWSER_REQUIRED: "1",
+      AUTOMATION_OS_BROWSER_REQUIREMENT: requirement,
+      AOS_WEB_OPERATION_BACKEND: "chrome_plugin",
+      AOS_CHROME_PROFILE_SURFACE: "signed_chrome_extension_profile2"
+    },
+    display: `aos-chrome-plugin-registered-runner ${JSON.stringify(workflowId)} AUTOMATION_OS_BROWSER_SURFACE=signed_chrome_extension_profile2`
+  });
+  const selectedBackend = input.webOperationBackend ?? "aos_chrome_companion";
+  const registeredCommand = (workflowId: string, requirement: string): WorkerCommandSpec => {
+    if (selectedBackend === "chrome_plugin") return chromePluginCommand(workflowId, requirement);
+    if (selectedBackend === "browser_use_cli") return browserUseCliCommand(workflowId, requirement);
+    if (selectedBackend === "playwright") {
+      return {
+        bin: "aos-playwright-business-runner",
+        args: [workflowId],
+        env: {
+          AUTOMATION_OS_BROWSER_SURFACE: "playwright",
+          AUTOMATION_OS_BROWSER_DRIVER: "playwright",
+          AUTOMATION_OS_BROWSER_NO_FALLBACK: "1",
+          AUTOMATION_OS_BROWSER_WORKFLOW_ID: workflowId,
+          AOS_WEB_OPERATION_BACKEND: "playwright"
+        },
+        display: `aos-playwright-business-runner ${JSON.stringify(workflowId)} AUTOMATION_OS_BROWSER_SURFACE=playwright`
+      };
+    }
+    return companionCommand(workflowId, requirement, !input.referenceWorkflowCanary);
+  };
   if (input.adapter === "browser_use_cli") {
     return browserUseCliCommand("browser-use-cli", "current_run_authority_and_same_session_readback_required");
   }
@@ -463,24 +528,24 @@ export function buildWorkerCommand(input: {
     return browserUseCliCommand("browser-check", BROWSER_USE_CLI_REQUIRED_BLOCKER);
   }
   if (input.adapter === "daily_ai_registered") {
-    return browserUseCliCommand("daily-ai-research-publish-run", "current_run_authority_and_same_session_readback_required");
+    return registeredCommand("daily-ai-research-publish-run", "current_run_authority_and_same_session_readback_required");
   }
   if (input.adapter === "nisenprints_registered") {
-    return browserUseCliCommand("nisenprints-daily-product-canva-printify-etsy-pinterest", "current_run_authority_and_same_session_readback_required");
+    return registeredCommand("nisenprints-daily-product-canva-printify-etsy-pinterest", "current_run_authority_and_same_session_readback_required");
   }
   if (input.adapter === "prompt_transfer_registered") {
-    return browserUseCliCommand("prompt-transfer-ukiyoe", BROWSER_USE_CLI_WORKFLOW_ADAPTER_MISSING_BLOCKER);
+    return registeredCommand("prompt-transfer-ukiyoe", "current_run_authority_and_same_session_readback_required");
   }
   if (input.adapter === "sns_multi_poster_registered") {
-    return browserUseCliCommand("sns-multi-poster-ukiyoe", BROWSER_USE_CLI_WORKFLOW_ADAPTER_MISSING_BLOCKER);
+    return registeredCommand("sns-multi-poster-ukiyoe", "current_run_authority_and_same_session_readback_required");
   }
   if (input.adapter === "job_submit_registered" || input.adapter === "job_followup_registered") {
     const workflowId = "job-application-manager";
-    return browserUseCliCommand(workflowId, "current_run_authority_and_same_session_readback_required");
+    return registeredCommand(workflowId, "current_run_authority_and_same_session_readback_required");
   }
   if (isHumanInputRequiredWithEvidenceAdapter(input.adapter)) {
     const workflowId = humanInputRequiredWithEvidenceWorkflowId(input.adapter);
-    return browserUseCliCommand(workflowId, "human_input_required_with_evidence");
+    return registeredCommand(workflowId, "human_input_required_with_evidence");
   }
   return {
     bin: "automation-os-local-worker",
@@ -516,6 +581,8 @@ export function workerModeForAdapter(adapter: WorkerAdapter): WorkerMode {
     case "email_review_registered":
     case "local_backup_registered":
     case "obsidian_audit_registered":
+    case "nisenprints_inventory_registered":
+    case "daily_ai_research_sync_registered":
       return "execute_portable_local_read_only";
     case "local_worker":
       return "receipt_only";
@@ -524,8 +591,54 @@ export function workerModeForAdapter(adapter: WorkerAdapter): WorkerMode {
   }
 }
 
-export function resolveWorkerAdapterPolicy(adapter: WorkerAdapter): WorkerAdapterPolicySnapshot {
+function resolveRegisteredBrowserAdapterPolicy(input: {
+  adapter: Extract<WorkerAdapter, WebOperationAdapter>;
+  webOperationBackend?: WebOperationBackend;
+  companionEvidence: string[];
+  workflowEvidence: string[];
+}): WorkerAdapterPolicySnapshot {
+  const backend = input.webOperationBackend ?? "aos_chrome_companion";
+  if (backend === "aos_chrome_companion") {
+    return {
+      adapter: input.adapter,
+      classification: "aos_chrome_companion",
+      exactBlocker: null,
+      evidence: input.companionEvidence
+    };
+  }
+  const surface = backend === "chrome_plugin"
+    ? "signed_chrome_extension_profile2"
+    : backend;
+  const classification: WorkerAdapterPolicyClassification = backend === "browser_use_cli"
+    ? "browser_use_cli"
+    : backend === "chrome_plugin"
+      ? "extension_backed"
+      : "legacy_browser_backed";
+  const entrypoint = backend === "browser_use_cli"
+    ? browserUseAdapterEntryPoint
+    : backend === "chrome_plugin"
+      ? "aos-chrome-plugin-registered-runner"
+      : "aos-playwright-business-runner";
+  return {
+    adapter: input.adapter,
+    classification,
+    exactBlocker: null,
+    evidence: [
+      `entrypoint:${entrypoint}`,
+      `surface:${surface}`,
+      ...input.workflowEvidence,
+      `web_operation_backend:${backend}`,
+      "no_fallback:true"
+    ]
+  };
+}
+
+export function resolveWorkerAdapterPolicy(adapter: WorkerAdapter, webOperationBackend?: WebOperationBackend): WorkerAdapterPolicySnapshot {
   switch (adapter) {
+    case "daily_ai_research_sync_registered":
+      return { adapter, classification: "non_browser", exactBlocker: null,
+        evidence: ["surface:mac_local_worker", "worker_protocol:mac_worker_polling_required",
+          "execution_mode:fixed_existing_sheet_business_admission", "no_generation_or_publication:true"] };
     case "playwright_cli":
       return {
         adapter,
@@ -555,107 +668,110 @@ export function resolveWorkerAdapterPolicy(adapter: WorkerAdapter): WorkerAdapte
         ]
       };
     case "daily_ai_registered":
-      return {
+      return resolveRegisteredBrowserAdapterPolicy({
         adapter,
-        classification: "browser_use_cli",
-        exactBlocker: null,
-        evidence: [
-          `entrypoint:${browserUseAdapterEntryPoint}`,
-          `helper:${browserUseHelper}`,
-          `runtime:${browserUseRuntimeConfig}`,
-          "surface:browser_use_cli",
+        webOperationBackend,
+        companionEvidence: [
+          `entrypoint:${companionAdapterEntryPoint}`,
+          "surface:aos_chrome_companion_profile_instance",
           "workflow_adapter_registry:aos.workflow_adapter_registry.v1",
           "workflow_adapter:daily-ai-research-publish-run",
           "workflow_authority:automation_os_control_plane",
           "workflow_provider_selectable:true",
           "workflow_external_action_allowed:false",
           "no_fallback:true"
+        ],
+        workflowEvidence: [
+          "workflow_adapter_registry:aos.workflow_adapter_registry.v1",
+          "workflow_adapter:daily-ai-research-publish-run",
+          "workflow_authority:automation_os_control_plane",
+          "workflow_external_action_allowed:false"
         ]
-      };
+      });
     case "nisenprints_registered":
-      return {
+      return resolveRegisteredBrowserAdapterPolicy({
         adapter,
-        classification: "browser_use_cli",
-        exactBlocker: null,
-        evidence: [
-          `entrypoint:${browserUseAdapterEntryPoint}`,
-          `helper:${browserUseHelper}`,
-          `runtime:${browserUseRuntimeConfig}`,
-          "surface:browser_use_cli",
+        webOperationBackend,
+        companionEvidence: [
+          `entrypoint:${companionAdapterEntryPoint}`,
+          "surface:aos_chrome_companion_profile_instance",
           "workflow_adapter_registry:aos.workflow_adapter_registry.v1",
           "workflow_adapter:nisenprints-daily-product-canva-printify-etsy-pinterest",
           "workflow_authority:automation_os_control_plane",
           "workflow_provider_selectable:true",
           "workflow_external_action_allowed:false",
           "no_fallback:true"
+        ],
+        workflowEvidence: [
+          "workflow_adapter_registry:aos.workflow_adapter_registry.v1",
+          "workflow_adapter:nisenprints-daily-product-canva-printify-etsy-pinterest",
+          "workflow_authority:automation_os_control_plane",
+          "workflow_external_action_allowed:false"
         ]
-      };
+      });
     case "job_submit_registered":
     case "job_followup_registered":
-      return {
+      return resolveRegisteredBrowserAdapterPolicy({
         adapter,
-        classification: "browser_use_cli",
-        exactBlocker: null,
-        evidence: [
-          `entrypoint:${browserUseAdapterEntryPoint}`,
-          `helper:${browserUseHelper}`,
-          `runtime:${browserUseRuntimeConfig}`,
-          "surface:browser_use_cli",
+        webOperationBackend,
+        companionEvidence: [
+          `entrypoint:${companionAdapterEntryPoint}`,
+          "surface:aos_chrome_companion_profile_instance",
           "workflow:job-application-manager",
           "registered_codex_browser_fallback:disabled",
           "live_route:portable_external_worker",
           "no_fallback:true"
+        ],
+        workflowEvidence: [
+          "workflow:job-application-manager",
+          "live_route:portable_external_worker"
         ]
-      };
+      });
     case "prompt_transfer_registered":
-      return {
+      return resolveRegisteredBrowserAdapterPolicy({
         adapter,
-        classification: "browser_use_cli",
-        exactBlocker: BROWSER_USE_CLI_WORKFLOW_ADAPTER_MISSING_BLOCKER,
-        evidence: [
-          `entrypoint:${browserUseAdapterEntryPoint}`,
-          `helper:${browserUseHelper}`,
-          `runtime:${browserUseRuntimeConfig}`,
-          "surface:browser_use_cli",
-          "legacy_prompt_transfer_runner:disabled",
-          "required:workflow-owned-browser-use-cli-adapter",
+        webOperationBackend,
+        companionEvidence: [
+          `entrypoint:${companionAdapterEntryPoint}`,
+          "surface:aos_chrome_companion_profile_instance",
+          "required:workflow-owned-companion-adapter",
           "no_fallback:true"
-        ]
-      };
+        ],
+        workflowEvidence: ["required:workflow-owned-browser-adapter"]
+      });
     case "sns_multi_poster_registered":
-      return {
+      return resolveRegisteredBrowserAdapterPolicy({
         adapter,
-        classification: "browser_use_cli",
-        exactBlocker: BROWSER_USE_CLI_WORKFLOW_ADAPTER_MISSING_BLOCKER,
-        evidence: [
-          `entrypoint:${browserUseAdapterEntryPoint}`,
-          `helper:${browserUseHelper}`,
-          `runtime:${browserUseRuntimeConfig}`,
-          "surface:browser_use_cli",
-          "legacy_sns_multi_poster_runner:disabled",
-          "required:workflow-owned-browser-use-cli-adapter",
+        webOperationBackend,
+        companionEvidence: [
+          `entrypoint:${companionAdapterEntryPoint}`,
+          "surface:aos_chrome_companion_profile_instance",
+          "required:workflow-owned-companion-adapter",
           "no_fallback:true"
-        ]
-      };
+        ],
+        workflowEvidence: ["required:workflow-owned-browser-adapter"]
+      });
     case "x_authenticated_browser_lane_registered":
-      return {
+      return resolveRegisteredBrowserAdapterPolicy({
         adapter,
-        classification: "browser_use_cli",
-        exactBlocker: null,
-        evidence: [
+        webOperationBackend,
+        companionEvidence: [
           "workflow:x-authenticated-browser-lane",
-          `entrypoint:${browserUseAdapterEntryPoint}`,
-          `helper:${browserUseHelper}`,
-          `runtime:${browserUseRuntimeConfig}`,
-          "surface:browser_use_cli",
+          `entrypoint:${companionAdapterEntryPoint}`,
+          "surface:aos_chrome_companion_profile_instance",
           "mode:human_input_required_with_evidence",
           "legacy_extension_surface:disabled",
           "no_fallback:true"
+        ],
+        workflowEvidence: [
+          "workflow:x-authenticated-browser-lane",
+          "mode:human_input_required_with_evidence"
         ]
-      };
+      });
     case "email_review_registered":
     case "local_backup_registered":
     case "obsidian_audit_registered":
+    case "nisenprints_inventory_registered":
       return {
         adapter,
         classification: "non_browser",
@@ -686,6 +802,13 @@ export function classifyWorkerCommandSpec(command: WorkerCommandSpec): {
   classification: WorkerAdapterPolicyClassification;
   signals: string[];
 } {
+  if (
+    command.env?.AUTOMATION_OS_BROWSER_SURFACE === "aos_chrome_companion_profile_instance" &&
+    command.env?.AUTOMATION_OS_BROWSER_DRIVER === "aos_chrome_companion" &&
+    command.env?.AUTOMATION_OS_BROWSER_NO_FALLBACK === "1"
+  ) {
+    return { classification: "aos_chrome_companion", signals: ["aos-chrome-companion", "shared-adapter"] };
+  }
   if (
     command.env?.AUTOMATION_OS_BROWSER_SURFACE === "browser_use_cli" &&
     command.env?.AUTOMATION_OS_BROWSER_DRIVER === "browser_use_cli" &&
@@ -869,9 +992,9 @@ async function startCommandRunPostgresFast(input: {
       ...(metadata.execution_context ? { execution_context: metadata.execution_context } : {}),
       routing_source: routeDecision.source,
       routing_controller: routeDecision.controller.name,
-      ...(serviceReadinessWorkflowId && (selectedWebBackend === "browser_use_cli" || referenceWorkflowCanary)
+      ...(serviceReadinessWorkflowId && (selectedWebBackend === "browser_use_cli" || selectedWebBackend === "aos_chrome_companion")
         ? {
-            service_readiness_runtime_binding: buildBrowserUseRuntimeBindingForLane({
+            service_readiness_runtime_binding: buildServiceReadinessBindingForBackend({
               runId,
               workflowId: serviceReadinessWorkflowId,
               stageId: stepId,
@@ -880,7 +1003,9 @@ async function startCommandRunPostgresFast(input: {
               port: lane.cdpPort,
               profileRoot: lane.browserUseProfile,
               requestedSessionId: lane.browserUseSession,
-              lifecycle: lane.lifecycle
+              lifecycle: lane.lifecycle,
+              backend: selectedWebBackend,
+              taskId: typeof metadata.companion_task_id === "string" ? metadata.companion_task_id : null
             })
           }
         : {}),
@@ -980,7 +1105,7 @@ function serviceReadinessRuntimeBindingForStep(
   runId: string,
   stepId: string,
   runMetadata: Record<string, unknown> = getRunMetadata(runId)
-): ServiceReadinessRuntimeBindingV1 | ServiceReadinessBrowserUseRuntimeBindingV1 | null {
+): ServiceReadinessRuntimeBindingV1 | ServiceReadinessBrowserUseRuntimeBindingV1 | ServiceReadinessAosChromeCompanionRuntimeBindingV1 | null {
   const workflowId = referenceWorkflowIdFromMetadata(runMetadata);
   if (!workflowId) return null;
   const rootId = typeof runMetadata.service_readiness_root_id === "string" && runMetadata.service_readiness_root_id.trim()
@@ -988,7 +1113,23 @@ function serviceReadinessRuntimeBindingForStep(
     : deriveServiceReadinessRootId(runId);
   const step = querySql<{ metadata_json: string; lane_id: string | null }>(`SELECT metadata_json, lane_id FROM run_steps WHERE id=${sqlValue(stepId)} AND run_id=${sqlValue(runId)} LIMIT 1`)[0];
   const stepMetadata = parseJson<Record<string, unknown>>(step?.metadata_json ?? "{}", {});
-  if (runMetadata.service_readiness_surface === "browser_use_cli" || runMetadata.reference_workflow_canary === true) {
+  if (runMetadata.service_readiness_surface === "aos_chrome_companion_profile_instance") {
+    const taskId = typeof runMetadata.companion_task_id === "string" && runMetadata.companion_task_id.trim()
+      ? runMetadata.companion_task_id.trim()
+      : null;
+    return buildServiceReadinessAosChromeCompanionRuntimeBindingV1({
+      root_id: rootId,
+      workflow_id: workflowId,
+      run_id: runId,
+      stage_id: stepId,
+      attempt_id: `attempt:${runId}:step:${stepId}`,
+      task_id: taskId,
+      session_id: null,
+      profile_instance_id: null,
+      readback_status: "required"
+    });
+  }
+  if (runMetadata.service_readiness_surface === "browser_use_cli") {
     const lane = step?.lane_id
       ? querySql<LaneRow>(`SELECT cdp_port, profile_dir, browser_use_session, browser_use_profile FROM lanes WHERE id=${sqlValue(step.lane_id)} LIMIT 1`)[0]
       : undefined;
@@ -1031,6 +1172,35 @@ function serviceReadinessRuntimeBindingForStep(
     attempt_id: `attempt:${runId}:step:${stepId}`,
     fencing_token: 1
   });
+}
+
+function buildServiceReadinessBindingForBackend(input: {
+  runId: string;
+  workflowId: string;
+  stageId: string;
+  attemptId: string;
+  ownerKey: string;
+  port: number;
+  profileRoot: string;
+  requestedSessionId: string;
+  lifecycle?: "scheduled" | "single_use" | "temporary";
+  backend: WebOperationBackend;
+  taskId?: string | null;
+}): ServiceReadinessBrowserUseRuntimeBindingV1 | ServiceReadinessAosChromeCompanionRuntimeBindingV1 {
+  if (input.backend === "aos_chrome_companion") {
+    return buildServiceReadinessAosChromeCompanionRuntimeBindingV1({
+      root_id: deriveServiceReadinessRootId(input.runId),
+      workflow_id: input.workflowId,
+      run_id: input.runId,
+      stage_id: input.stageId,
+      attempt_id: input.attemptId,
+      task_id: input.taskId ?? null,
+      session_id: null,
+      profile_instance_id: null,
+      readback_status: "required"
+    });
+  }
+  return buildBrowserUseRuntimeBindingForLane(input);
 }
 
 function browserUseLifecycleForPort(port: number): "scheduled" | "single_use" | "temporary" {
@@ -1091,7 +1261,7 @@ export async function startCommandRun(command: string, options: StartCommandRunO
   const baseMetadata = sanitizeRunMetadata(options.metadata);
   const referenceWorkflowCanary = options.referenceWorkflowCanary === true;
   const backendSnapshot = options.webOperationBackendSnapshot
-    ?? buildWebOperationBackendRunSnapshot(referenceWorkflowCanary ? "browser_use_cli" : undefined);
+    ?? buildWebOperationBackendRunSnapshot(referenceWorkflowCanary ? "aos_chrome_companion" : undefined);
   const selectedWebBackend = backendSnapshot.web_operation_backend.resolved_backend;
   const selectedBrowserSurface = backendSnapshot.web_operation_backend.browser_surface;
   const laneBindings = plan.lanes.map((lane) => ({
@@ -1231,9 +1401,9 @@ export async function startCommandRun(command: string, options: StartCommandRunO
         ...(metadata.execution_context ? { execution_context: metadata.execution_context } : {}),
         routing_source: routeDecision.source,
         routing_controller: routeDecision.controller.name,
-        ...(serviceReadinessWorkflowId && (selectedWebBackend === "browser_use_cli" || referenceWorkflowCanary)
+        ...(serviceReadinessWorkflowId && (selectedWebBackend === "browser_use_cli" || selectedWebBackend === "aos_chrome_companion")
           ? {
-                service_readiness_runtime_binding: buildBrowserUseRuntimeBindingForLane({
+                service_readiness_runtime_binding: buildServiceReadinessBindingForBackend({
                   runId,
                   workflowId: serviceReadinessWorkflowId,
                   stageId: `${runId}_step_${index + 1}`,
@@ -1242,7 +1412,9 @@ export async function startCommandRun(command: string, options: StartCommandRunO
                   port: lane.cdpPort,
                   profileRoot: lane.browserUseProfile,
                   requestedSessionId: lane.browserUseSession,
-                  lifecycle: lane.lifecycle
+                  lifecycle: lane.lifecycle,
+                  backend: selectedWebBackend,
+                  taskId: typeof (metadata as Record<string, unknown>).companion_task_id === "string" ? (metadata as Record<string, unknown>).companion_task_id as string : null
                 })
             }
           : {}),
@@ -1395,10 +1567,12 @@ async function runPortableLocalWorkerCycle(runId: string) {
     `UPDATE lanes SET status='active', progress=50, updated_at=${sqlValue(now)} WHERE id=${sqlValue(step.lane_id)}`
   ]);
 
-  const receipt = runPortableLocalWorkflowReadOnly({
+  const receipt = await runPortableLocalWorkflowAsync({
     workflowId,
+    runId,
     workerRole: process.env.AUTOMATION_OS_WORKER_ROLE?.trim(),
-    companyId: run.company_id ?? undefined
+    companyId: run.company_id ?? undefined,
+    gmailExecutionTarget: gmailExecutionTargetFromRunMetadata(runMetadata)
   });
   const artifact = writeNamedWorkerArtifact(runId, `${step.id}-portable-local-worker.json`, {
     schema: "aos.portable_local_worker_receipt.v1",
@@ -1408,7 +1582,17 @@ async function runPortableLocalWorkerCycle(runId: string) {
     adapter: selectedAdapter,
     created_at: now
   });
-  const completed = receipt.status === "complete" && receipt.exact_blocker === null;
+  const gmailProviderCanary = receipt.adapter_result
+    && typeof receipt.adapter_result === "object"
+    && !Array.isArray(receipt.adapter_result)
+    && (receipt.adapter_result as Record<string, unknown>).gmail_provider_read_only_canary;
+  const readOnlyCanaryCompleted = gmailProviderCanary
+    && typeof gmailProviderCanary === "object"
+    && !Array.isArray(gmailProviderCanary)
+    && (gmailProviderCanary as Record<string, unknown>).status === "completed"
+    && (gmailProviderCanary as Record<string, unknown>).providerReceipt !== null;
+  const completed = receipt.exact_blocker === null
+    && (receipt.status === "complete" || (workflowId === "email-review-reply" && readOnlyCanaryCompleted === true));
   const stepStatus = completed ? "completed" : "blocked";
   const laneStatus = completed ? "idle" : "blocked";
   const proofGate = completed
@@ -1564,6 +1748,7 @@ export async function runWorkerCycle(runId: string) {
     const portableBackendSnapshotBlocker = WEB_OPERATION_ADAPTERS.has(portableSelectedAdapter)
       && readOnlyStage === null
       && !isPortableWorkerCanaryRun(runId)
+      && !isReferenceWorkflowCanaryRun(runId)
       ? dailyAiBackendSnapshotBlocker(portableSelectedAdapter, portableSelectedWebBackendSnapshot, readOnlyStage, false, metadata)
       : null;
     if (portableBackendSnapshotBlocker) {
@@ -1580,6 +1765,7 @@ export async function runWorkerCycle(runId: string) {
     const portableWebOperationBackendUnbound = WEB_OPERATION_ADAPTERS.has(portableSelectedAdapter)
       && readOnlyStage === null
       && !isPortableWorkerCanaryRun(runId)
+      && !isReferenceWorkflowCanaryRun(runId)
       && !isWebOperationBackendAdapterBound(portableSelectedWebBackend, portableSelectedAdapter as WebOperationAdapter);
     if (portableWebOperationBackendUnbound) {
       blockUnboundWebOperationBackend({
@@ -2935,11 +3121,7 @@ function localPortableExternalEffectAuthority(input: {
     : "";
   if (!payloadHash) return null;
   try {
-    const backend = isRecord(input.runMetadata.web_operation_backend) ? input.runMetadata.web_operation_backend : null;
-    const browserSurface = String(backend?.resolved_backend || backend?.requested_backend || "browser_use_cli") === "chrome_plugin"
-      ? String(isRecord(backend?.chrome_profile) ? backend?.chrome_profile.surface : "signed_chrome_extension_profile2")
-      : "browser_use_cli";
-    if (browserSurface !== "browser_use_cli" && browserSurface !== "signed_chrome_extension_profile2") return null;
+    const browserSurface = portableBrowserSurfaceForRunMetadata(input.runMetadata);
     return issuePortableExternalEffectAuthorityV1({
       companyId: input.companyId,
       workflowId: input.workflowId,
@@ -2988,13 +3170,7 @@ function portableExternalApprovalBindingForRun(
   const bundleSha = typeof bundleRecord.sha256 === "string" ? bundleRecord.sha256 : "";
   const effectStage = typeof invocationRecord.effect_stage === "string" ? invocationRecord.effect_stage : "";
   const idempotencyKey = typeof invocationRecord.idempotency_key === "string" ? invocationRecord.idempotency_key : "";
-  const backend = isRecord(metadata.web_operation_backend) ? metadata.web_operation_backend : null;
-  const browserSurface = String(backend?.resolved_backend || backend?.requested_backend || "browser_use_cli") === "chrome_plugin"
-    ? String(isRecord(backend?.chrome_profile) ? backend?.chrome_profile.surface : "signed_chrome_extension_profile2")
-    : "browser_use_cli";
-  if (browserSurface !== "browser_use_cli" && browserSurface !== "signed_chrome_extension_profile2") {
-    throw new Error("portable_external_approval_browser_surface_invalid");
-  }
+  const browserSurface = portableBrowserSurfaceForRunMetadata(metadata);
   return buildPortableExternalApprovalBinding({
     companyId: getRunCompanyId(runId) || "",
     workflowId,
@@ -3006,6 +3182,20 @@ function portableExternalApprovalBindingForRun(
     inputBundle,
     browserSurface: browserSurface as PortableBrowserSurface
   });
+}
+
+function portableBrowserSurfaceForRunMetadata(metadata: Record<string, unknown>): PortableBrowserSurface {
+  const backend = isRecord(metadata.web_operation_backend) ? metadata.web_operation_backend : null;
+  const rawSurface = typeof backend?.browser_surface === "string" ? backend.browser_surface : "";
+  if (rawSurface === "aos_chrome_companion_profile_instance" || rawSurface === "signed_chrome_extension_profile2" || rawSurface === "browser_use_cli") {
+    return rawSurface;
+  }
+  const resolvedBackend = String(backend?.resolved_backend || backend?.requested_backend || "browser_use_cli");
+  if (resolvedBackend === "aos_chrome_companion") return "aos_chrome_companion_profile_instance";
+  if (resolvedBackend === "chrome_plugin") {
+    return String(isRecord(backend?.chrome_profile) ? backend.chrome_profile.surface : "signed_chrome_extension_profile2") as PortableBrowserSurface;
+  }
+  return "browser_use_cli";
 }
 
 function approvalStatusForPortableBinding(
@@ -3346,6 +3536,11 @@ async function completePortableExternalWorkerStep(input: {
     idempotencyKey,
     approvalGranted: input.approvalGranted,
     inputBundlePath: localInputBundlePath ?? inputBundlePath,
+    companionTaskId: typeof runMetadata.companion_task_id === "string" && runMetadata.companion_task_id.trim()
+      ? runMetadata.companion_task_id.trim()
+      : typeof invocation.companion_task_id === "string" && invocation.companion_task_id.trim()
+        ? invocation.companion_task_id.trim()
+        : null,
     readOnlyStage,
     effectAuthority,
     webOperationIntent,
@@ -3654,17 +3849,31 @@ function isPortableLocalRun(metadata: Record<string, unknown>, workflowId: strin
     && metadata.worker_mode === "queued_for_mac_worker";
 }
 
+function gmailExecutionTargetFromRunMetadata(metadata: Record<string, unknown>): { connectionRefId: string; accountRef: string } | undefined {
+  const bundle = metadata.portable_input_bundle;
+  if (!bundle || typeof bundle !== "object" || Array.isArray(bundle)) return undefined;
+  const input = (bundle as Record<string, unknown>).input;
+  if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
+  const record = input as Record<string, unknown>;
+  const connectionRefId = typeof record.connection_ref_id === "string" ? record.connection_ref_id.trim() : "";
+  const accountRef = typeof record.account_ref === "string" ? record.account_ref.trim() : "";
+  return connectionRefId && accountRef ? { connectionRefId, accountRef } : undefined;
+}
+
 function completePortableLocalWorkerStep(input: {
   step: StepRow;
   metadata: Record<string, unknown>;
+  runMetadata: Record<string, unknown>;
   selectedAdapter: WorkerAdapter;
   workflowId: Parameters<typeof runPortableLocalWorkflowReadOnly>[0]["workflowId"];
   now: string;
 }): RegisteredExecutionResult {
   const receipt = runPortableLocalWorkflowReadOnly({
     workflowId: input.workflowId,
+    runId: input.step.run_id,
     workerRole: process.env.AUTOMATION_OS_WORKER_ROLE?.trim(),
-    companyId: input.step.company_id ?? undefined
+    companyId: input.step.company_id ?? undefined,
+    gmailExecutionTarget: gmailExecutionTargetFromRunMetadata(input.runMetadata)
   });
   const artifact = writeNamedWorkerArtifact(input.step.run_id, `${input.step.id}-portable-local-worker.json`, {
     schema: "aos.portable_local_worker_receipt.v1",
@@ -3845,7 +4054,14 @@ async function completeWorkerStep(
   if (localWorkflowId && isPortableLocalRun(runMetadataForPortableLocal, localWorkflowId)) {
     execSql(`UPDATE run_steps SET status='running', started_at=COALESCE(started_at, ${sqlValue(now)}) WHERE id=${sqlValue(step.id)};
       UPDATE lanes SET status='active', progress=50, updated_at=${sqlValue(now)} WHERE id=${sqlValue(step.lane_id)};`);
-    return completePortableLocalWorkerStep({ step, metadata, selectedAdapter, workflowId: localWorkflowId, now });
+    return completePortableLocalWorkerStep({
+      step,
+      metadata,
+      runMetadata: runMetadataForPortableLocal,
+      selectedAdapter,
+      workflowId: localWorkflowId,
+      now
+    });
   }
   const portableWorkflowId = portableWorkflowIdForWorkerAdapter(selectedAdapter);
   const selectedWebBackendSnapshot = selectedWebOperationBackendSnapshotForRun(step.run_id);
@@ -3856,7 +4072,7 @@ async function completeWorkerStep(
   const backendSnapshotBlocker = WEB_OPERATION_ADAPTERS.has(selectedAdapter)
     && portableReadOnlyStage === null
     && !isPortableWorkerCanaryRun(step.run_id)
-    ? dailyAiBackendSnapshotBlocker(selectedAdapter, selectedWebBackendSnapshot, portableReadOnlyStage, false, metadata)
+    ? dailyAiBackendSnapshotBlocker(selectedAdapter, selectedWebBackendSnapshot, portableReadOnlyStage, isReferenceWorkflowCanaryRun(step.run_id), metadata)
     : null;
   const webOperationBackendUnbound = WEB_OPERATION_ADAPTERS.has(selectedAdapter)
     // Reference/candidate readback is a no-effect Browser Use CLI contract;
@@ -6217,13 +6433,16 @@ function buildCanonicalRouteBlockContext(input: {
   const routeDecisionReadback = readCanonicalExecutionRoutingDecision(runMetadata.route_decision, runMetadata.route_decision_fingerprint);
   const routeDecision = routeDecisionReadback.routeDecision;
   const routeSource = routeDecision?.source ?? inferExecutionRoutingSource(runMetadata);
-  const adapterPolicy = resolveWorkerAdapterPolicy(input.adapter);
+  const selectedWebBackend = selectedWebOperationBackendForRun(input.step.run_id);
+  const adapterPolicy = resolveWorkerAdapterPolicy(input.adapter, selectedWebBackend);
   // The isolated reference canary must prove the canonical Browser Use CLI
   // stop boundary without ever invoking a registered workflow runner.  This
   // is deliberately scoped to canary metadata; live runs still use the
   // adapter's normal admission policy below.
-  const referenceCanaryBrowserUseSafeStop = runMetadata.reference_workflow_canary === true &&
-    adapterPolicy.classification === "browser_use_cli";
+  const referenceCanaryRun = querySql<{ automation_id: string | null }>(
+    `SELECT automation_id FROM runs WHERE id=${sqlValue(input.step.run_id)} LIMIT 1`
+  )[0]?.automation_id === "reference_workflow_canary";
+  const referenceCanaryCompanionSafeStop = referenceCanaryRun && runMetadata.reference_workflow_canary === true;
   const workerMode = workerModeForAdapter(input.adapter);
   const lane = input.step.lane_id
     ? querySql<LaneRow>(
@@ -6232,7 +6451,13 @@ function buildCanonicalRouteBlockContext(input: {
         )} LIMIT 1`
       )[0]
     : undefined;
-  const command = buildWorkerCommand({ adapter: input.adapter, taskName: input.step.name, lane });
+  const command = buildWorkerCommand({
+    adapter: input.adapter,
+    taskName: input.step.name,
+    lane,
+    referenceWorkflowCanary: referenceCanaryCompanionSafeStop,
+    webOperationBackend: selectedWebBackend
+  });
   const rawRouteReadback = buildExecutionRoutingSnapshot({
     command: getRoutingCommandFromMetadata(runMetadata, input.step),
     source: routeSource,
@@ -6253,18 +6478,24 @@ function buildCanonicalRouteBlockContext(input: {
     && command.env?.DAILY_AI_CLI_REQUIRE_BROWSER_USE === "1"
     && command.env?.DAILY_AI_CLI_RECORDING_REQUIRED === "1"
   );
-  const routeReadback = browserUseAdmitted && (rawRouteReadback.exactBlocker === "in_app_browser_required" || rawRouteReadback.exactBlocker === BROWSER_USE_CLI_REQUIRED_BLOCKER)
+  const companionDeclared = command.env?.AUTOMATION_OS_BROWSER_SURFACE === "aos_chrome_companion_profile_instance"
+    && command.env?.AUTOMATION_OS_BROWSER_DRIVER === "aos_chrome_companion"
+    && command.env?.AUTOMATION_OS_BROWSER_NO_FALLBACK === "1";
+  const chromePluginDeclared = command.env?.AUTOMATION_OS_BROWSER_SURFACE === "signed_chrome_extension_profile2"
+    && command.env?.AUTOMATION_OS_BROWSER_DRIVER === "chrome_plugin"
+    && command.env?.AUTOMATION_OS_BROWSER_NO_FALLBACK === "1";
+  const routeReadback = (browserUseAdmitted || companionDeclared || chromePluginDeclared) && (rawRouteReadback.exactBlocker === "in_app_browser_required" || rawRouteReadback.exactBlocker === BROWSER_USE_CLI_REQUIRED_BLOCKER)
     ? {
         ...rawRouteReadback,
         allowed: true,
         exactBlocker: null,
-        fallbackReason: "route=browser_use_cli",
-        controller: { ...rawRouteReadback.controller, status: "readback" as const, reason: "browser_use_cli_route_readback" },
-        evidence: uniqueStrings([...rawRouteReadback.evidence, "browser_use_cli_manifest_surface=browser_use_cli", "browser_use_cli_no_fallback=true"])
+        fallbackReason: companionDeclared ? "route=aos_chrome_companion" : chromePluginDeclared ? "route=chrome_plugin" : "route=browser_use_cli",
+        controller: { ...rawRouteReadback.controller, status: "readback" as const, reason: companionDeclared ? "aos_chrome_companion_route_readback" : chromePluginDeclared ? "chrome_plugin_route_readback" : "browser_use_cli_route_readback" },
+        evidence: uniqueStrings([...rawRouteReadback.evidence, companionDeclared ? "aos_chrome_companion_manifest_surface=aos_chrome_companion_profile_instance" : chromePluginDeclared ? "chrome_plugin_manifest_surface=signed_chrome_extension_profile2" : "browser_use_cli_manifest_surface=browser_use_cli", "no_fallback=true"])
       }
     : rawRouteReadback;
-  const exactBlocker = referenceCanaryBrowserUseSafeStop
-    ? BROWSER_USE_CLI_REQUIRED_BLOCKER
+  const exactBlocker = referenceCanaryCompanionSafeStop
+    ? "aos_chrome_companion_task_id_missing"
     : routeReadback.exactBlocker ?? adapterPolicy.exactBlocker;
   const effectiveRouteReadback = exactBlocker
     ? {

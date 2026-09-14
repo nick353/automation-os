@@ -2,7 +2,7 @@ import { constants, chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdi
 import { createHash } from "node:crypto";
 import { dirname, resolve, sep } from "node:path";
 import { getPortableExternalBusinessPlan } from "./portableExternalBusinessPlan.js";
-import { getWebOperationContract, getWebOperationContractForSurface } from "./webOperationContract.js";
+import { getWebOperationContractForSurface } from "./webOperationContract.js";
 
 export const PORTABLE_EXTERNAL_ACTION_PLAN_SCHEMA_V1 = "automation_os_portable_external_action_plan.v1" as const;
 export const PORTABLE_EXTERNAL_ACTION_PLAN_ISSUE_FAILED = "portable_external_action_plan_issue_failed" as const;
@@ -62,28 +62,27 @@ export function issuePortableExternalActionPlan(input: {
 }): { path: string; sha256: string } {
   const plan = getPortableExternalBusinessPlan(input.workflowId);
   if (!plan) throw new Error("portable_external_action_plan_workflow_invalid");
-  const backend = String(input.webOperationBackend?.resolved_backend || input.webOperationBackend?.requested_backend || "browser_use_cli").trim();
+  const backend = String(input.webOperationBackend?.resolved_backend || input.webOperationBackend?.requested_backend || "aos_chrome_companion").trim();
   const profile = input.webOperationBackend?.chrome_profile && typeof input.webOperationBackend.chrome_profile === "object"
     ? input.webOperationBackend.chrome_profile as Record<string, unknown>
     : {};
-  const browserSurface = backend === "chrome_plugin"
-    ? String(profile.surface || "signed_chrome_extension_profile2")
-    : backend === "aos_chrome_companion"
-      ? "aos_chrome_companion_profile_instance"
+  const browserSurface = backend === "aos_chrome_companion"
+    ? "aos_chrome_companion_profile_instance"
+    : backend === "chrome_plugin"
+      ? String(profile.surface || "signed_chrome_extension_profile2")
       : backend;
   if (!new Set(["chrome_plugin", "browser_use_cli", "playwright", "aos_chrome_companion"]).has(backend)) {
     throw new Error(`portable_external_action_plan_backend_invalid:${backend || "empty"}`);
   }
-  if (backend === "chrome_plugin" && browserSurface !== "signed_chrome_extension_profile2") {
-    throw new Error("chrome_plugin_web_operation_contract_mismatch");
-  }
-  const webOperationContract = browserSurface === "signed_chrome_extension_profile2"
-    ? getWebOperationContractForSurface("signed_chrome_extension_profile2")
-    : browserSurface === "aos_chrome_companion_profile_instance"
-      ? getWebOperationContractForSurface("aos_chrome_companion_profile_instance")
-    : browserSurface === "browser_use_cli"
-      ? getWebOperationContract()
-      : plan.required_runner_contract.web_operation_contract;
+  const webOperationContractSurface = backend === "aos_chrome_companion"
+    ? "aos_chrome_companion_profile_instance"
+    : backend === "chrome_plugin"
+      ? "signed_chrome_extension_profile2"
+      : backend === "browser_use_cli"
+        ? "browser_use_cli"
+        : null;
+  if (!webOperationContractSurface) throw new Error(`portable_external_action_plan_backend_not_bound:${backend}`);
+  const webOperationContract = getWebOperationContractForSurface(webOperationContractSurface);
   const runRoot = safeRunRoot(input.runId);
   mkdirSync(runRoot, { recursive: true, mode: 0o700 });
   chmodSync(runRoot, 0o700);
@@ -101,9 +100,9 @@ export function issuePortableExternalActionPlan(input: {
       || existing.source_trigger !== input.sourceTrigger
       || existing.idempotency_key !== input.idempotencyKey
       || existing.approval_status !== "approved"
-    || String(existing.web_operation_backend || "browser_use_cli") !== backend
+    || String(existing.web_operation_backend || "aos_chrome_companion") !== backend
     || Number(existing.web_operation_backend_revision || 1) !== Number(input.webOperationBackend?.revision || 1)
-    || String(existing.browser_surface || "browser_use_cli") !== browserSurface
+    || String(existing.browser_surface || "aos_chrome_companion_profile_instance") !== browserSurface
       || JSON.stringify(existing.web_operation_contract) !== JSON.stringify(webOperationContract)) {
       throw new Error("portable_external_action_plan_immutable_collision");
     }

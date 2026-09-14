@@ -311,6 +311,8 @@ function validateChromeLeaseContract(contract: JsonObject): void {
   const surface = String(contract.surface || "");
   const expected: Record<string, unknown> = surface === "in_app_browser"
     ? { schema: "automation_kernel_browser_stage_lease.v1", ...common, surface: "in_app_browser" }
+    : surface === "aos_chrome_companion_profile_instance"
+      ? { schema: "automation_kernel_companion_stage_lease.v1", ...common, surface: "aos_chrome_companion_profile_instance" }
     : surface === "browser_use_cli"
       ? { schema: "automation_kernel_browser_use_stage_lease.v1", ...common, surface: "browser_use_cli" }
       : {
@@ -418,6 +420,12 @@ function validateBrowserUseStageBinding(browserUse: JsonObject, chromeLeaseContr
 }
 
 function validateStageChrome(stage: AutomationKernelManifestStageV1): void {
+  if (stage.browser_surface === "aos_chrome_companion_profile_instance") {
+    if (stage.needs_chrome || stage.chrome_lease !== null || stage.lane !== "aos_chrome_companion") {
+      throw new AutomationKernelManifestError(`automation_kernel_manifest_companion_stage_invalid:${stage.id}`);
+    }
+    return;
+  }
   if (stage.browser_surface === "browser_use_cli") {
     if (stage.needs_chrome || stage.chrome_lease !== null || stage.lane !== "browser_use_cli") {
       throw new AutomationKernelManifestError(`automation_kernel_manifest_browser_use_cli_stage_invalid:${stage.id}`);

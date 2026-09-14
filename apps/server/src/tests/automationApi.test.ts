@@ -10,6 +10,8 @@ import test from "node:test";
 
 const tempRoot = mkdtempSync(join(tmpdir(), "automation-os-api-"));
 process.env.AUTOMATION_OS_DB = join(tempRoot, "automation-os.sqlite");
+// Readback can repair the backend mirror: keep that write inside this fixture.
+process.env.AOS_WEB_OPERATION_BACKEND_CONFIG = join(tempRoot, "web-operation-backend.json");
 const chromeReadbackPath = join(tempRoot, "chrome-plugin-readback.json");
 process.env.AOS_CHROME_PLUGIN_READBACK_PATH = chromeReadbackPath;
 const bridgeServer = createServer((req, res) => {
@@ -159,6 +161,48 @@ test("v1 automation reads are company-isolated and viewer/operator/admin permiss
   assert.equal(adminArchive.json.automation.status, "archived");
 });
 
+test("company approval readback supports exact bounded filters and rejects ambiguous query values", async () => {
+  seedMembership("api_approval_query", "api_approval_query_owner", "owner");
+  seedMembership("api_approval_query_other", "api_approval_query_other_owner", "owner");
+  seedCompanyApproval("api_approval_query", "approval_query_target", "run_query_target", "pending", "2029-01-01T00:00:00.000Z");
+  seedCompanyApproval("api_approval_query", "approval_query_other", "run_query_other", "approved", "2030-01-01T00:00:00.000Z");
+  seedCompanyApproval("api_approval_query_other", "approval_query_foreign", "run_query_target", "pending");
+  setActor("api_approval_query_owner");
+
+  const filtered = await requestJson(
+    "GET",
+    "/api/v1/companies/api_approval_query/approvals?run_id=run_query_target&status=pending&action_kind=business_execute&limit=1"
+  );
+  assert.equal(filtered.status, 200, filtered.raw);
+  assert.deepEqual(filtered.json.approvals.map((approval: any) => approval.id), ["approval_query_target"]);
+  assert.equal(filtered.json.count, 1);
+  assert.deepEqual(filtered.json.query, {
+    limit: 1,
+    run_id: "run_query_target",
+    status: "pending",
+    action_kind: "business_execute"
+  });
+  assert.doesNotMatch(filtered.raw, /approval_query_foreign/);
+
+  const capped = await requestJson("GET", "/api/v1/companies/api_approval_query/approvals?limit=999");
+  assert.equal(capped.status, 200, capped.raw);
+  assert.equal(capped.json.query.limit, 500);
+
+  const arrayValue = await requestJson("GET", "/api/v1/companies/api_approval_query/approvals?run_id=run_query_target&run_id=run_query_other");
+  assert.equal(arrayValue.status, 400, arrayValue.raw);
+  assert.equal(arrayValue.json.exactBlocker, "approval_query_scalar_required");
+  const invalidStatus = await requestJson("GET", "/api/v1/companies/api_approval_query/approvals?status=done");
+  assert.equal(invalidStatus.status, 400, invalidStatus.raw);
+  assert.equal(invalidStatus.json.exactBlocker, "approval_status_invalid");
+  const invalidLimit = await requestJson("GET", "/api/v1/companies/api_approval_query/approvals?limit=not-a-number");
+  assert.equal(invalidLimit.status, 400, invalidLimit.raw);
+  assert.equal(invalidLimit.json.exactBlocker, "approval_limit_invalid");
+
+  setActor("api_approval_query_other_owner");
+  const foreign = await requestJson("GET", "/api/v1/companies/api_approval_query/approvals?run_id=run_query_target");
+  assert.equal(foreign.status, 404, foreign.raw);
+});
+
 test("automation readback exposes the truthful scheduled dry-run contract", async () => {
   seedMembership("api_execution_contract", "api_execution_owner", "owner");
   setActor("api_execution_owner");
@@ -183,9 +227,63 @@ test("automation readback exposes the truthful scheduled dry-run contract", asyn
   assert.equal(item.cadence, "daily");
   assert.equal(item.schedule_status, "active");
   assert.equal(item.schedule_enabled, true);
+  assert.equal(item.status, "active");
+  assert.equal(item.revision, 2);
   assert.equal(item.schedule_timezone, "Asia/Tokyo");
   assert.equal(item.pinned_schedule_version_id, schedule.json.schedule.automationVersionId);
   assert.ok(Number.isFinite(Date.parse(item.next_run_at)), listed.raw);
+});
+
+test("automation readback separates verified company Gmail connection from explicit execution target", async () => {
+  seedMembership("api_gmail_execution_target", "api_gmail_execution_owner", "owner");
+  setActor("api_gmail_execution_owner");
+  const connection = await requestJson(
+    "PUT",
+    "/api/v1/companies/api_gmail_execution_target/connection-account-refs/gmail/company-account",
+    { status: "verified", scopes: ["read"], oauth_state: "connected", verification_status: "verified", last_verified_at: "2026-07-15T00:00:00.000Z" }
+  );
+  assert.equal(connection.status, 200, connection.raw);
+  const gmailRefId = connection.json.connection.id;
+  const unbound = await requestJson(
+    "POST",
+    "/api/v1/companies/api_gmail_execution_target/automations",
+    { ...automationBody("Gmail unbound"), builder_spec: { canonicalWorkflowId: "email-review-reply" } },
+    { "idempotency-key": "api-gmail-unbound" }
+  );
+  assert.equal(unbound.status, 201, unbound.raw);
+  assert.equal(unbound.json.automation.execution_target.state, "unbound");
+  assert.equal(unbound.json.automation.execution_target.connection_evidence, "verified");
+  assert.equal(unbound.json.automation.execution_target.exact_blocker, "execution_target_unbound");
+  assert.equal(unbound.json.automation.external_action_allowed, false);
+
+  const bound = await requestJson(
+    "POST",
+    "/api/v1/companies/api_gmail_execution_target/automations",
+    { ...automationBody("Gmail bound"), builder_spec: { canonicalWorkflowId: "email-review-reply", execution_target: { connection_ref_id: gmailRefId } } },
+    { "idempotency-key": "api-gmail-bound" }
+  );
+  assert.equal(bound.status, 201, bound.raw);
+  assert.equal(bound.json.automation.execution_target.state, "bound");
+  assert.equal(bound.json.automation.execution_target.connection_ref_id, gmailRefId);
+  assert.equal(bound.json.automation.execution_target.account_ref, "company-account");
+
+  const listed = await requestJson("GET", "/api/v1/companies/api_gmail_execution_target/automations");
+  assert.equal(listed.status, 200, listed.raw);
+  const listedBound = listed.json.automations.find((item: any) => item.id === bound.json.automation.id);
+  assert.equal(listedBound.execution_target.state, "bound");
+  const listedUnbound = listed.json.automations.find((item: any) => item.id === unbound.json.automation.id);
+  assert.equal(listedUnbound.execution_target.state, "unbound");
+
+  const mvpListed = await requestJson("GET", "/api/mvp/automations?project_id=api_gmail_execution_target");
+  assert.equal(mvpListed.status, 200, mvpListed.raw);
+  const mvpBound = mvpListed.json.automations.find((item: any) => item.id === bound.json.automation.id);
+  assert.equal(mvpBound.execution_target.state, "bound");
+  assert.equal(mvpBound.execution_target.connection_ref_id, gmailRefId);
+
+  const detail = await requestJson("GET", `/api/v1/companies/api_gmail_execution_target/automations/${bound.json.automation.id}`);
+  assert.equal(detail.status, 200, detail.raw);
+  assert.equal(detail.json.automation.execution_target.state, "bound");
+  assert.equal(detail.json.company_scope.company_id, "api_gmail_execution_target");
 });
 
 test("AOS control-plane readiness is a company-scoped no-effect bridge contract", async () => {
@@ -462,6 +560,8 @@ test("registered automation readback is company-scoped and HTTP execution remain
   assert.ok(readback.json.automation_count > 0, readback.raw);
   assert.equal(readback.json.external_action_executed, false);
   assert.equal(readback.json.automations[0].can_run, false);
+  assert.equal(readback.json.automations[0].exact_blocker, "registered_automation_effect_stage_not_admitted");
+  assert.equal(readback.json.automations[0].resume_condition, "読み取り専用の確認要求は受付可能です。業務実行は未許可です。");
   assert.equal(readback.json.automations[0].can_preflight, true);
   assert.equal(readback.json.automations[0].preflight_stage, "reference_readback");
   assert.equal(readback.json.automations[0].portable.read_only_preflight, true);
@@ -675,6 +775,77 @@ test("registered automation readback is company-scoped and HTTP execution remain
   setActor("api_registered_other_owner");
   const forbidden = await requestJson("GET", "/api/mvp/registered-automations?project_id=api_registered_company");
   assert.equal(forbidden.status, 403, forbidden.raw);
+});
+
+test("legacy registered automation run queues one read-only run for a saved local mvp automation", async () => {
+  const companyId = "api_registered_local_company";
+  seedMembership(companyId, "api_registered_local_owner", "owner");
+  setActor("api_registered_local_owner");
+
+  const adopted = await requestJson(
+    "POST",
+    `/api/v1/companies/${companyId}/registered-automations/adopt`,
+    { source_automation_ids: ["daily-backup-safety-check"], enable_schedules: false },
+    { "idempotency-key": "api-registered-local-adopt" }
+  );
+  assert.equal(adopted.status, 201, adopted.raw);
+  const automation = adopted.json.adopted[0].automation;
+  assert.equal(automation.workerCommandKind, "local_backup_registered");
+
+  const runsBefore = countRows("runs", `company_id=${sqlValue(companyId)}`);
+  const invocationsBefore = countRows("portable_workflow_invocations", `company_scope=${sqlValue(companyId)}`);
+  const idempotencyKey = "api-legacy-local-run";
+  const queued = await requestJson(
+    "POST",
+    `/api/mvp/registered-automations/${encodeURIComponent(automation.id)}/run?project_id=${companyId}`,
+    { project_id: companyId, idempotency_key: idempotencyKey }
+  );
+  assert.equal(queued.status, 202, queued.raw);
+  assert.equal(queued.json.schema, "aos.portable_workflow_trigger.v1");
+  assert.equal(queued.json.queued, true);
+  assert.equal(queued.json.provider_neutral, true);
+  assert.equal(queued.json.workflow_id, "daily-backup-safety-check");
+  assert.equal(queued.json.run.status, "queued");
+  assert.equal(queued.json.run.company_id, companyId);
+  assert.equal(queued.json.run.automation_id, automation.id);
+  assert.equal(queued.json.run.automation_version_id, automation.currentVersionId);
+  assert.equal(queued.json.source_trigger, "automation_os_ui");
+  assert.equal(queued.json.operation_surface, "mac_local_worker");
+  assert.equal(queued.json.worker_protocol, "mac_worker_polling_required");
+  assert.equal(queued.json.external_action_executed, false);
+  assert.equal(countRows("runs", `company_id=${sqlValue(companyId)}`), runsBefore + 1);
+  assert.equal(countRows("portable_workflow_invocations", `company_scope=${sqlValue(companyId)}`), invocationsBefore + 1);
+
+  const metadataRow = querySql<{ metadata_json: string }>(
+    `SELECT metadata_json FROM runs WHERE id=${sqlValue(queued.json.run.id)} AND company_id=${sqlValue(companyId)} LIMIT 1`
+  )[0];
+  const metadata = JSON.parse(metadataRow.metadata_json) as Record<string, any>;
+  assert.equal(metadata.read_only_stage, "reference_readback");
+  assert.equal(metadata.effect_stage, undefined);
+  assert.equal(metadata.portable_workflow_invocation.read_only_stage, "reference_readback");
+  assert.equal(metadata.portable_workflow_invocation.effect_stage, undefined);
+  assert.equal(metadata.portable_worker.mode, "read_only");
+
+  const replay = await requestJson(
+    "POST",
+    `/api/mvp/registered-automations/${encodeURIComponent(automation.id)}/run?project_id=${companyId}`,
+    { project_id: companyId },
+    { "idempotency-key": idempotencyKey }
+  );
+  assert.equal(replay.status, 202, replay.raw);
+  assert.equal(replay.json.run.id, queued.json.run.id);
+  assert.equal(countRows("runs", `company_id=${sqlValue(companyId)}`), runsBefore + 1);
+  assert.equal(countRows("portable_workflow_invocations", `company_scope=${sqlValue(companyId)}`), invocationsBefore + 1);
+
+  const effectAttempt = await requestJson(
+    "POST",
+    `/api/mvp/registered-automations/${encodeURIComponent(automation.id)}/run?project_id=${companyId}`,
+    { project_id: companyId, idempotency_key: "api-legacy-local-effect", effect_stage: "business_execute" }
+  );
+  assert.equal(effectAttempt.status, 400, effectAttempt.raw);
+  assert.equal(effectAttempt.json.external_action_executed, false);
+  assert.equal(countRows("runs", `company_id=${sqlValue(companyId)}`), runsBefore + 1);
+  assert.equal(countRows("portable_workflow_invocations", `company_scope=${sqlValue(companyId)}`), invocationsBefore + 1);
 });
 
 test("connection lifecycle is revisioned and Admin diagnostics are owner-only", async () => {
@@ -936,7 +1107,7 @@ test("state reload includes schedules, memory, and account refs, and archive pau
     "DELETE",
     `/api/v1/companies/api_company_state/automations/${automation.id}`,
     undefined,
-    { "if-match": "1" }
+    { "if-match": "2" }
   );
   assert.equal(archived.status, 200, archived.raw);
   assert.equal(archived.json.automation.status, "archived");
@@ -971,6 +1142,15 @@ test("AOS catalog adopts all six flows and routes browser schedules through the 
   assert.ok(adopted.json.adopted.every((item: any) => item.automation.companyId === "api_company_aos"));
   assert.ok(adopted.json.adopted.every((item: any) => item.adoption.externalActionAllowed === false));
   assert.equal(adopted.json.adopted.find((item: any) => item.sourceAutomationId === "automation-3").adoption.stages[2].id, "identity_admission");
+
+  const registeredReadback = await requestJson("GET", "/api/mvp/registered-automations?project_id=api_company_aos");
+  assert.equal(registeredReadback.status, 200, registeredReadback.raw);
+  assert.deepEqual(
+    registeredReadback.json.company_registration_projection.map((item: any) => item.canonicalWorkflowId),
+    ["email-review-reply", "daily-ai-research-publish-run", "daily-backup-safety-check", "nisenprints-daily-product-canva-printify-etsy-pinterest", "obsidian-project-memory-audit"]
+  );
+  assert.ok(registeredReadback.json.company_registration_projection.every((item: any) => item.companyId === "api_company_aos" && item.automationId && item.revision));
+  assert.equal(registeredReadback.json.external_action_executed, false);
 
   const list = await requestJson("GET", "/api/v1/companies/api_company_aos/automations");
   assert.equal(list.status, 200, list.raw);
@@ -1084,6 +1264,23 @@ function seedMembership(companyId: string, userId: string, role: "owner" | "admi
     VALUES (
       ${sqlValue(`membership_${companyId}_${userId}`)}, ${sqlValue(companyId)}, ${sqlValue(userId)}, ${sqlValue(role)},
       'active', ${sqlValue(timestamp)}, ${sqlValue(timestamp)}
+    );
+  `);
+}
+
+function seedCompanyApproval(companyId: string, id: string, runId: string, status: "pending" | "approved", createdAt = new Date().toISOString()): void {
+  execSql(`
+    INSERT OR IGNORE INTO approvals (
+      id, company_id, run_id, job_id, step_id, title, requested_by, status, priority,
+      approval_group_id, action_kind, target_account_ref_id, payload_hash, policy_version,
+      expires_at, decided_by_user_id, decision_revision, consumed_at, consumed_by_attempt_id,
+      resource_locks_json, created_at, decided_at, decision_note
+    ) VALUES (
+      ${sqlValue(id)}, ${sqlValue(companyId)}, ${sqlValue(runId)}, NULL, NULL,
+      ${sqlValue(id)}, ${sqlValue(`${companyId}_owner`)}, ${sqlValue(status)}, 'normal',
+      ${sqlValue(`portable:${runId}`)}, 'business_execute', 'auth:profile2', ${sqlValue("a".repeat(64))},
+      'policy-v1', '2030-01-01T00:00:00.000Z', NULL, 1, NULL, NULL, '[]',
+      ${sqlValue(createdAt)}, NULL, NULL
     );
   `);
 }

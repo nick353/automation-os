@@ -34,7 +34,7 @@ export type WorkflowProviderAdapter = {
   id: string;
   provider: string;
   capability: string;
-  browser_surface: "browser_use_cli" | "none";
+  browser_surface: "aos_chrome_companion_profile_instance" | "none";
   required_readback: string[];
   external_action_allowed: false;
 };
@@ -52,7 +52,7 @@ export type WorkflowAdapterDefinition = {
   schema: typeof WORKFLOW_ADAPTER_REGISTRY_SCHEMA;
   workflow_id: WorkflowAdapterWorkflowId;
   adapter: WorkflowAdapterKind;
-  browser_surface: "browser_use_cli" | "none";
+  browser_surface: "aos_chrome_companion_profile_instance" | "none";
   web_operation_contract_binding: WorkflowWebOperationContractBinding | null;
   execution_authority: "automation_os_control_plane";
   provider_selectable: boolean;
@@ -89,10 +89,10 @@ const controlPlaneAdapter: WorkflowProviderAdapter = {
 };
 
 const browserUseAdapter: WorkflowProviderAdapter = {
-  id: "browser-use-cli",
-  provider: "browser_use_cli",
+  id: "aos-chrome-companion",
+  provider: "aos_chrome_companion",
   capability: "same_session_readback",
-  browser_surface: "browser_use_cli",
+  browser_surface: "aos_chrome_companion_profile_instance",
   required_readback: ["current_run_authority", "profile_port_lease", "same_session_state", "cleanup_receipt"],
   external_action_allowed: false
 };
@@ -110,7 +110,7 @@ const definitions: readonly WorkflowAdapterDefinition[] = [
     schema: WORKFLOW_ADAPTER_REGISTRY_SCHEMA,
     workflow_id: "daily-ai-research-publish-run",
     adapter: "daily_ai_registered",
-    browser_surface: "browser_use_cli",
+    browser_surface: "aos_chrome_companion_profile_instance",
     web_operation_contract_binding: browserWebOperationContractBinding,
     execution_authority: "automation_os_control_plane",
     provider_selectable: true,
@@ -132,7 +132,7 @@ const definitions: readonly WorkflowAdapterDefinition[] = [
         id: "social-platform",
         provider: "social_platform",
         capability: "publish_and_platform_readback",
-        browser_surface: "browser_use_cli",
+        browser_surface: "aos_chrome_companion_profile_instance",
         required_readback: ["same_run_publish_receipt", "published_url", "platform_reflection"],
         external_action_allowed: false
       }
@@ -140,19 +140,19 @@ const definitions: readonly WorkflowAdapterDefinition[] = [
     stages: [
       { id: "research_queue_refresh", kind: "read", effect_class: "internal_idempotent", provider_adapter_ids: ["aos-control-plane"], required_proof: ["source_snapshot", "local_queue_readback"], external_action_allowed: false },
       { id: "media_readiness", kind: "admission", effect_class: "internal_idempotent", provider_adapter_ids: ["runway-mcp"], required_proof: ["provider_media_receipt"], external_action_allowed: false },
-      { id: "browser_no_post_qa", kind: "admission", effect_class: "internal_idempotent", provider_adapter_ids: ["browser-use-cli"], required_proof: ["browser_use_cli_canary", "visual_qa_pass"], external_action_allowed: false },
+      { id: "browser_no_post_qa", kind: "admission", effect_class: "internal_idempotent", provider_adapter_ids: ["aos-chrome-companion"], required_proof: ["aos_chrome_companion_canary", "visual_qa_pass"], external_action_allowed: false },
       { id: "publish", kind: "effect", effect_class: "external_non_idempotent", provider_adapter_ids: ["social-platform"], required_proof: ["approval_binding", "same_run_publish_receipt"], external_action_allowed: false },
       { id: "feed_study_and_engagement", kind: "effect", effect_class: "external_non_idempotent", provider_adapter_ids: ["social-platform"], required_proof: ["approval_binding", "platform_readback", "bounded_action_receipts"], external_action_allowed: false },
       { id: "queue_and_sheets_sync", kind: "readback", effect_class: "internal_idempotent", provider_adapter_ids: ["aos-control-plane"], required_proof: ["source_of_truth_sync"], external_action_allowed: false },
-      { id: "cleanup", kind: "cleanup", effect_class: "internal_idempotent", provider_adapter_ids: ["browser-use-cli", "aos-control-plane"], required_proof: ["browser_cleanup", "automation_kernel_result.v2"], external_action_allowed: false }
+      { id: "cleanup", kind: "cleanup", effect_class: "internal_idempotent", provider_adapter_ids: ["aos-chrome-companion", "aos-control-plane"], required_proof: ["browser_cleanup", "automation_kernel_result.v2"], external_action_allowed: false }
     ],
-    exact_blockers: ["runway_mcp_result_handoff_missing", "browser_use_cli_authority_missing", "publish_readback_missing", "ambiguous_external_effect"]
+    exact_blockers: ["runway_mcp_result_handoff_missing", "aos_chrome_companion_authority_missing", "publish_readback_missing", "ambiguous_external_effect"]
   },
   {
     schema: WORKFLOW_ADAPTER_REGISTRY_SCHEMA,
     workflow_id: "job-application-manager",
     adapter: "job_submit_registered",
-    browser_surface: "browser_use_cli",
+    browser_surface: "aos_chrome_companion_profile_instance",
     web_operation_contract_binding: browserWebOperationContractBinding,
     execution_authority: "automation_os_control_plane",
     provider_selectable: true,
@@ -166,7 +166,7 @@ const definitions: readonly WorkflowAdapterDefinition[] = [
         id: "job-board",
         provider: "job_board",
         capability: "candidate_discovery_and_submit_readback",
-        browser_surface: "browser_use_cli",
+        browser_surface: "aos_chrome_companion_profile_instance",
         required_readback: ["candidate_id", "visible_submission_confirmation", "submitted_receipt"],
         external_action_allowed: false
       },
@@ -183,19 +183,19 @@ const definitions: readonly WorkflowAdapterDefinition[] = [
       { id: "source_snapshot", kind: "read", effect_class: "internal_idempotent", provider_adapter_ids: ["aos-control-plane"], required_proof: ["source_snapshot.v1"], external_action_allowed: false },
       { id: "candidate_supply", kind: "read", effect_class: "internal_idempotent", provider_adapter_ids: ["job-board"], required_proof: ["candidate_supply.v1", "dedupe_readback"], external_action_allowed: false },
       { id: "identity_admission", kind: "admission", effect_class: "internal_idempotent", provider_adapter_ids: ["aos-control-plane"], required_proof: ["applicant_profile_hash", "identity_capability_readback", "current_run_binding"], external_action_allowed: false },
-      { id: "browser_admission", kind: "admission", effect_class: "internal_idempotent", provider_adapter_ids: ["browser-use-cli"], required_proof: ["browser_use_cli_authority", "profile_port_lease", "same_run_readback"], external_action_allowed: false },
+      { id: "browser_admission", kind: "admission", effect_class: "internal_idempotent", provider_adapter_ids: ["aos-chrome-companion"], required_proof: ["aos_chrome_companion_authority", "task_session_lease", "same_run_readback"], external_action_allowed: false },
       { id: "candidate_submit", kind: "effect", effect_class: "external_non_idempotent", provider_adapter_ids: ["job-board"], required_proof: ["approval_binding", "one_candidate_idempotency", "visible_submission_confirmation"], external_action_allowed: false },
       { id: "submit_readback", kind: "readback", effect_class: "internal_idempotent", provider_adapter_ids: ["job-board"], required_proof: ["source_of_truth_readback", "same_run_receipt"], external_action_allowed: false },
       { id: "ledger_sync", kind: "readback", effect_class: "internal_idempotent", provider_adapter_ids: ["aos-control-plane"], required_proof: ["opportunity_ledger_append", "submitted_confirmed_or_pending_confirmation"], external_action_allowed: false },
-      { id: "cleanup", kind: "cleanup", effect_class: "internal_idempotent", provider_adapter_ids: ["browser-use-cli", "aos-control-plane"], required_proof: ["flow_lease_cleanup", "run_terminal_artifact", "automation_kernel_result.v2"], external_action_allowed: false }
+      { id: "cleanup", kind: "cleanup", effect_class: "internal_idempotent", provider_adapter_ids: ["aos-chrome-companion", "aos-control-plane"], required_proof: ["flow_lease_cleanup", "run_terminal_artifact", "automation_kernel_result.v2"], external_action_allowed: false }
     ],
-    exact_blockers: ["identity_capability_unavailable", "browser_use_cli_authority_missing", "applicant_unknown_required_fact", "captcha_or_otp_required", "submit_readback_missing"]
+    exact_blockers: ["identity_capability_unavailable", "aos_chrome_companion_authority_missing", "applicant_unknown_required_fact", "captcha_or_otp_required", "submit_readback_missing"]
   },
   {
     schema: WORKFLOW_ADAPTER_REGISTRY_SCHEMA,
     workflow_id: "nisenprints-daily-product-canva-printify-etsy-pinterest",
     adapter: "nisenprints_registered",
-    browser_surface: "browser_use_cli",
+    browser_surface: "aos_chrome_companion_profile_instance",
     web_operation_contract_binding: browserWebOperationContractBinding,
     execution_authority: "automation_os_control_plane",
     provider_selectable: true,
@@ -209,7 +209,7 @@ const definitions: readonly WorkflowAdapterDefinition[] = [
         id: "canva",
         provider: "canva",
         capability: "asset_generation_and_export",
-        browser_surface: "browser_use_cli",
+        browser_surface: "aos_chrome_companion_profile_instance",
         required_readback: ["asset_hash", "export_artifact"],
         external_action_allowed: false
       },
@@ -217,7 +217,7 @@ const definitions: readonly WorkflowAdapterDefinition[] = [
         id: "printify",
         provider: "printify",
         capability: "product_copy_and_publish_readback",
-        browser_surface: "browser_use_cli",
+        browser_surface: "aos_chrome_companion_profile_instance",
         required_readback: ["provider_product_id", "provider_receipt_hash"],
         external_action_allowed: false
       },
@@ -225,7 +225,7 @@ const definitions: readonly WorkflowAdapterDefinition[] = [
         id: "etsy",
         provider: "etsy",
         capability: "listing_snapshot_and_link_readback",
-        browser_surface: "browser_use_cli",
+        browser_surface: "aos_chrome_companion_profile_instance",
         required_readback: ["etsy_listing_id", "etsy_listing_url"],
         external_action_allowed: false
       },
@@ -233,7 +233,7 @@ const definitions: readonly WorkflowAdapterDefinition[] = [
         id: "pinterest",
         provider: "pinterest",
         capability: "pin_publish_and_etsy_link_readback",
-        browser_surface: "browser_use_cli",
+        browser_surface: "aos_chrome_companion_profile_instance",
         required_readback: ["pinterest_pin_url", "pin_to_etsy_url_match"],
         external_action_allowed: false
       }
@@ -245,9 +245,9 @@ const definitions: readonly WorkflowAdapterDefinition[] = [
       { id: "etsy_and_pinterest_publish", kind: "effect", effect_class: "external_non_idempotent", provider_adapter_ids: ["etsy", "pinterest"], required_proof: ["approval_binding", "visible_publish_receipt"], external_action_allowed: false },
       { id: "product_link_readback", kind: "readback", effect_class: "internal_idempotent", provider_adapter_ids: ["etsy", "pinterest"], required_proof: ["pin_to_etsy_url_match"], external_action_allowed: false },
       { id: "source_sync", kind: "readback", effect_class: "internal_idempotent", provider_adapter_ids: ["aos-control-plane"], required_proof: ["queue_status_sync"], external_action_allowed: false },
-      { id: "cleanup", kind: "cleanup", effect_class: "internal_idempotent", provider_adapter_ids: ["browser-use-cli", "aos-control-plane"], required_proof: ["browser_cleanup", "automation_kernel_result.v2"], external_action_allowed: false }
+      { id: "cleanup", kind: "cleanup", effect_class: "internal_idempotent", provider_adapter_ids: ["aos-chrome-companion", "aos-control-plane"], required_proof: ["browser_cleanup", "automation_kernel_result.v2"], external_action_allowed: false }
     ],
-    exact_blockers: ["browser_use_cli_authority_missing", "provider_auth_missing", "provider_idempotency_missing", "publish_readback_missing", "etsy_url_mismatch"]
+    exact_blockers: ["aos_chrome_companion_authority_missing", "provider_auth_missing", "provider_idempotency_missing", "publish_readback_missing", "etsy_url_mismatch"]
   },
   {
     schema: WORKFLOW_ADAPTER_REGISTRY_SCHEMA,
@@ -370,8 +370,8 @@ export function validateWorkflowAdapterContract(
   const providerIds = new Set(definition.provider_adapters.map((provider) => provider.id));
   const stageIds = new Set<string>();
 
-  if (definition.browser_surface !== "browser_use_cli" && definition.browser_surface !== "none") errors.push("browser_surface_not_canonical");
-  if (definition.browser_surface === "browser_use_cli") {
+  if (definition.browser_surface !== "aos_chrome_companion_profile_instance" && definition.browser_surface !== "none") errors.push("browser_surface_not_canonical");
+  if (definition.browser_surface === "aos_chrome_companion_profile_instance") {
     const binding = definition.web_operation_contract_binding;
     if (!binding
       || binding.schema !== WEB_OPERATION_CONTRACT_SCHEMA_V1

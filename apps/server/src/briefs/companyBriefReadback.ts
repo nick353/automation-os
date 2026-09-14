@@ -7,7 +7,7 @@ type AutomationRow = { record_id: string; company_id: string; name: string; work
 type ScheduleRow = { record_id: string; company_id: string; automation_id: string; kind: string; expression: string | null; timezone: string; enabled: number | boolean; status: string; next_run_at: string | null };
 type WorkflowRow = { record_id: string; company_id: string | null; runner_kind: string; status: string };
 type AccountRefRow = { record_id: string; company_id: string; provider: string; status: string };
-type RunRow = { id: string; automation_id: string | null; status: string; updated_at: string };
+type RunRow = { id: string; automation_id: string | null; status: string; updated_at: string; metadata_json: unknown };
 type RunStepRow = { run_id: string; status: string; metadata_json: unknown; started_at: string | null; completed_at: string | null };
 type ProofRow = { run_id: string; proof_type: string; created_at: string };
 
@@ -41,7 +41,7 @@ export function buildCompanyBriefReadback(input: CompanyBriefReadbackInput): Loc
   `)[0];
   if (!company) throw new CompanyBriefReadbackError("company_not_found");
   const runs = querySql<RunRow>(`
-    SELECT id, automation_id, status, updated_at
+    SELECT id, automation_id, status, updated_at, metadata_json
     FROM runs
     WHERE company_id=${sqlValue(companyId)} AND automation_id IS NOT NULL
     ORDER BY updated_at DESC, id ASC
@@ -130,7 +130,7 @@ export async function buildCompanyBriefReadbackAsync(input: CompanyBriefReadback
     ORDER BY id
   `);
   const runs = await querySqlAsync<RunRow>(`
-    SELECT id, automation_id, status, updated_at
+    SELECT id, automation_id, status, updated_at, metadata_json
     FROM runs
     WHERE company_id=${sqlValue(companyId)} AND automation_id IS NOT NULL
     ORDER BY updated_at DESC, id ASC
@@ -188,6 +188,20 @@ function toGeneratorInput(
     knownCompanies: [{ companyId: company.company_id }],
     fingerprintKey: `company-brief-readback-${company.company_id}`
   });
+  const personalScope = company.company_id === "company_2560580981cedfd106b66245";
+  const excludedJobAutomation = "automation_c304872764579ce2db1c5c90";
+  const scopeExcludedRecords = new Map((personalScope ? [
+    `mvp_automation:${excludedJobAutomation}`,
+    "registered_workflow:job-application-manager",
+    ...rows.schedules.filter((row) => row.automation_id === excludedJobAutomation).map((row) => `mvp_schedule:${row.record_id}`)
+  ] : []).map((id) => [id, "user_excluded_job_applications"]));
+  // Archived definitions stay in the registry/history, but are not current
+  // work and must never produce a request to enable their schedule again.
+  const archivedAutomationIds = new Set(rows.automations.filter((row) => row.status === "archived").map((row) => row.record_id));
+  for (const id of archivedAutomationIds) scopeExcludedRecords.set(`mvp_automation:${id}`, "archived_automation_history");
+  for (const row of rows.schedules) {
+    if (archivedAutomationIds.has(row.automation_id)) scopeExcludedRecords.set(`mvp_schedule:${row.record_id}`, "archived_automation_history");
+  }
   const recordDescriptions = new Map(registryRecords.map((row) => [row.recordId, {
     title: typeof (row.safeFields as Record<string, unknown>).name === "string" && String((row.safeFields as Record<string, unknown>).name).trim()
       ? String((row.safeFields as Record<string, unknown>).name)
@@ -201,6 +215,7 @@ function toGeneratorInput(
     timezone: input.timezone,
     templateVersion: input.templateVersion ?? "v1",
     companies: [{ companyId: company.company_id, displayName: company.display_name }],
+    ...(personalScope ? { scopeNote: "今回の利用対象は会社1のGmail・Daily AI・NisenPrints・Backup・Obsidianです。求人応募は表示集計の対象外（既存設定・履歴は保持）。Runway導入とRunway必須の生成・公開は対象外で、Daily AI・NisenPrintsの非依存部分は引き続き未完項目を含めて表示します。" } : {}),
     records: reconciliation.records.map((row) => {
       const description = recordDescriptions.get(row.record_id);
       if (!description) throw new CompanyBriefReadbackError("brief_description_missing");
@@ -208,6 +223,7 @@ function toGeneratorInput(
         recordId: row.record_id,
         companyId: row.company_id,
         matchClass: row.match_class,
+        ...(scopeExcludedRecords.has(row.record_id) ? { scopeExcludedReason: scopeExcludedRecords.get(row.record_id) } : {}),
         ...description
       };
     })
@@ -230,7 +246,7 @@ function summaryFor(row: SummaryRow, briefType: LocalBriefType, businessDate: st
     const period = briefType === "morning" ? "朝" : "夜";
     const observation = latestRun ? observeRun(latestRun, rows.runSteps) : null;
     const run = latestRun
-      ? `直近Run=${safeStatus(latestRun.status)}${observation?.externalActionExecuted === false ? "（read-only）" : ""}（${safeTimestamp(latestRun.updated_at)}）`
+      ? `直近Run=${safeStatus(latestRun.status)}${observation?.effectUnknown ? "（外部結果未確認）" : observation?.externalActionExecuted === false ? "（read-only）" : ""}（${safeTimestamp(latestRun.updated_at)}）`
       : "直近Run=未実行";
     const proof = latestRun ? proofSummary(latestRun.id, rows.proofs) : "同一Run proof=未確認";
     const blocker = observation?.exactBlocker ? ` / exact blocker=${observation.exactBlocker}` : "";
@@ -262,19 +278,26 @@ function nextActionFor(row: SummaryRow, briefType: LocalBriefType, businessDate:
       : "未実行のため、最初のRunをread-only preflightから確認する";
 }
 
-function observeRun(run: RunRow, steps: RunStepRow[]): { exactBlocker: string | null; externalActionExecuted: boolean | null } {
+function observeRun(run: RunRow, steps: RunStepRow[]): { exactBlocker: string | null; externalActionExecuted: boolean | null; effectUnknown: boolean } {
   const step = steps.find((candidate) => candidate.run_id === run.id);
-  if (!step) return { exactBlocker: null, externalActionExecuted: null };
-  const metadata = parseObject(step.metadata_json);
-  const receipt = parseObject(metadata?.portable_external_receipt);
-  const exactBlocker = safeBlocker(metadata?.exact_blocker) ?? safeBlocker(receipt?.exact_blocker);
-  const externalActionExecuted = typeof metadata?.external_action_executed === "boolean"
-    ? metadata.external_action_executed
-    : typeof receipt?.external_action_executed === "boolean" ? receipt.external_action_executed : null;
-  return { exactBlocker, externalActionExecuted };
+  const metadata = parseObject(step?.metadata_json);
+  const runMetadata = parseObject(run.metadata_json);
+  const receipt = parseObject(metadata?.portable_external_receipt) ?? parseObject(runMetadata?.remote_worker_receipt);
+  const claim = parseObject(runMetadata?.remote_worker_claim);
+  const exactBlocker = safeBlocker(metadata?.exact_blocker) ?? safeBlocker(receipt?.exact_blocker) ?? safeBlocker(runMetadata?.exact_blocker);
+  const effectUnknown = metadata?.operation_effect_state === "unknown" || runMetadata?.operation_effect_state === "unknown"
+    || (exactBlocker === "portable_remote_claim_expired_without_receipt" && !receipt && claim?.execution_mode !== "read_only");
+  const positiveEffect = metadata?.external_action_executed === true || receipt?.external_action_executed === true || runMetadata?.external_action_executed === true;
+  const externalActionExecuted = positiveEffect ? true : effectUnknown ? null
+    : typeof receipt?.external_action_executed === "boolean" ? receipt.external_action_executed
+    : typeof metadata?.external_action_executed === "boolean" ? metadata.external_action_executed : null;
+  return { exactBlocker, externalActionExecuted, effectUnknown };
 }
 
 function nextActionForBlocker(blocker: string): string {
+  if (blocker === "portable_remote_claim_expired_without_receipt") {
+    return "同じRunのworker記録と実際の保存先を照合する。外部結果が未確認なら再実行・再送しない";
+  }
   if (blocker === "gmail_provider_read_only_call_not_executed") {
     return "Gmail provider canaryを同一Runで実行し、provider receipt・source同期・reconciliation・cleanupを確認する";
   }
@@ -309,9 +332,10 @@ function safeBlocker(value: unknown): string | null {
   return /^[A-Za-z0-9_.:-]{1,160}$/u.test(normalized) ? normalized : null;
 }
 
-function scheduleIsStale(schedule: ScheduleRow, businessDate: string, _timezone: string): boolean {
+function scheduleIsStale(schedule: ScheduleRow, businessDate: string, timezone: string): boolean {
   if (!schedule.next_run_at || !Number.isFinite(Date.parse(schedule.next_run_at))) return false;
-  const nextDate = localDateKey(schedule.next_run_at, schedule.timezone.trim() || _timezone);
+  // businessDate belongs to the Brief, not to the schedule's timezone.
+  const nextDate = localDateKey(schedule.next_run_at, timezone);
   return nextDate !== null && nextDate < businessDate;
 }
 

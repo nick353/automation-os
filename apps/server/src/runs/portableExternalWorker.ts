@@ -51,6 +51,7 @@ export type PortableExternalWorkerResult = {
   webOperationIntentPath?: string;
   webOperationIntentSha256?: string;
   processGroupCleanup?: OwnedProcessGroupCleanup;
+  diagnostics?: { runnerPath: string; cwd: string; childPid: number | undefined; childPpid: number; spawnedAt: string; childExitedAt: string | null; processGroupCleanupAt: string | null };
 };
 
 function boundedTimeoutMs(): number {
@@ -110,7 +111,7 @@ function selectedBrowserSurface(
   // A caller-selected backend is authoritative. A missing snapshot remains a
   // legacy Browser Use CLI path only when the caller did not select Chrome.
   const requested = requestedWebOperationBackend || value.resolved_backend || value.requested_backend;
-  const backend = (requested ? resolveWebOperationBackend(requested) : "browser_use_cli") as WebOperationBackend;
+  const backend = (requested ? resolveWebOperationBackend(requested) : "aos_chrome_companion") as WebOperationBackend;
   const profile = value.chrome_profile && typeof value.chrome_profile === "object" && !Array.isArray(value.chrome_profile)
     ? value.chrome_profile as Record<string, unknown>
     : {};
@@ -147,7 +148,7 @@ function issuePortableExternalAdmission(input: {
     source_trigger: input.sourceTrigger,
     idempotency_key: input.idempotencyKey,
     effect_class: "external_non_idempotent",
-    browser_surface: input.browserSurface || "browser_use_cli",
+    browser_surface: input.browserSurface || "aos_chrome_companion_profile_instance",
     external_effects: portableExternalEffectsEnabled() ? "enabled" : "read_only",
     approval_status: input.approvalStatus ?? (input.approvalGranted ? "approved" : "missing"),
     issued_at: issuedAt,
@@ -238,6 +239,7 @@ function materializePortableWebOperationIntent(input: {
     account_ref: input.intent.account_ref,
     allowed_origins: input.intent.allowed_origins,
     ...(input.intent.entry_url !== undefined ? { entry_url: input.intent.entry_url } : {}),
+    ...(input.intent.route !== undefined ? { route: input.intent.route } : {}),
     target: input.intent.target,
     ...(input.intent.target_binding !== undefined ? { target_binding: input.intent.target_binding } : {}),
     ...(input.intent.action_plan !== undefined ? { action_plan: input.intent.action_plan } : {}),
@@ -257,6 +259,7 @@ function materializePortableWebOperationIntent(input: {
     idempotency_key: validated.idempotency_key,
     operation: validated.operation,
     account_ref: validated.account_ref,
+    ...(typeof input.intent.provider_identity === "string" ? { provider_identity: input.intent.provider_identity } : {}),
     allowed_origins: [...validated.allowed_origins],
     ...(validated.entry_url ? { entry_url: validated.entry_url } : {}),
     target: { ...validated.target },
@@ -301,6 +304,35 @@ function materializePortableWebOperationIntent(input: {
   return { path: intentPath, sha256 };
 }
 
+/** Narrow source seam for registered DailyAI integration tests and the local
+ * producer handoff. All four artifacts are still issued by the canonical
+ * worker functions above; callers receive paths/digests, never hand-built
+ * authority or admission envelopes. */
+export function issuePortableDailyAiCanonicalArtifacts(input: {
+  workflowId: string;
+  runId: string;
+  stepId: string;
+  sourceTrigger: string;
+  idempotencyKey: string;
+  approvalGranted: boolean;
+  inputBundlePath: string;
+  effectAuthority: PortableExternalEffectAuthorityV1;
+  webOperationIntent: Record<string, unknown>;
+  webOperationBackend: Record<string, unknown>;
+  companionTaskId: string;
+}) {
+  const admission = issuePortableExternalAdmission({ ...input, approvalStatus: "approved" });
+  const actionPlan = issuePortableExternalActionPlan({ ...input });
+  const authority = materializePortableExternalEffectAuthority({ runId: input.runId, authority: input.effectAuthority });
+  const intent = materializePortableWebOperationIntent({
+    workflowId: input.workflowId, runId: input.runId, stepId: input.stepId,
+    sourceTrigger: input.sourceTrigger, idempotencyKey: input.idempotencyKey,
+    intent: input.webOperationIntent, authoritySha256: authority.sha256,
+    browserSurface: "aos_chrome_companion_profile_instance",
+  });
+  return { admission, actionPlan, authority, intent, companionTaskId: input.companionTaskId };
+}
+
 export async function runPortableExternalWorker(input: {
   workflowId: string;
   runId: string;
@@ -309,6 +341,8 @@ export async function runPortableExternalWorker(input: {
   idempotencyKey: string;
   approvalGranted: boolean;
   inputBundlePath?: string | null;
+  /** Current run-owned Companion task binding; never derive this from runId. */
+  companionTaskId?: string | null;
   readOnlyStage?: "candidate_supply" | "reference_readback" | "web_operation_read" | null;
   effectAuthority?: PortableExternalEffectAuthorityV1 | null;
   webOperationIntent?: Record<string, unknown> | null;
@@ -465,7 +499,7 @@ export async function runPortableExternalWorker(input: {
   }
 
   let admission: { path: string; sha256: string };
-  let browserSurface = "browser_use_cli";
+  let browserSurface = "aos_chrome_companion_profile_instance";
   try {
     browserSurface = selectedBrowserSurface(input.webOperationBackend, requestedWebOperationBackend);
     admission = issuePortableExternalAdmission({
@@ -601,6 +635,7 @@ export async function runPortableExternalWorker(input: {
         ...(input.readOnlyStage ? { AUTOMATION_OS_PORTABLE_EXTERNAL_READ_ONLY_STAGE: input.readOnlyStage } : {}),
         ...(readOnlyInvocation && !webOperationEffect ? { AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS: "read_only" } : {}),
         ...(input.inputBundlePath ? { AUTOMATION_OS_PORTABLE_EXTERNAL_INPUT_BUNDLE_PATH: input.inputBundlePath } : {}),
+        ...(input.companionTaskId ? { AOS_CHROME_COMPANION_TASK_ID: input.companionTaskId } : {}),
         ...(webOperationIntentFile ? {
           AUTOMATION_OS_PORTABLE_WEB_OPERATION_INTENT_PATH: webOperationIntentFile.path,
           AUTOMATION_OS_PORTABLE_WEB_OPERATION_INTENT_SHA256: webOperationIntentFile.sha256,
@@ -608,7 +643,7 @@ export async function runPortableExternalWorker(input: {
           ...(!webOperationEffect ? { AUTOMATION_OS_PORTABLE_EXTERNAL_READ_ONLY_STAGE: input.readOnlyStage || "web_operation_read" } : {}),
         } : {}),
         ...(input.webOperationBackend || requestedWebOperationBackend ? {
-          AOS_WEB_OPERATION_BACKEND: String(requestedWebOperationBackend || input.webOperationBackend?.resolved_backend || input.webOperationBackend?.requested_backend || "browser_use_cli"),
+          AOS_WEB_OPERATION_BACKEND: String(requestedWebOperationBackend || input.webOperationBackend?.resolved_backend || input.webOperationBackend?.requested_backend || "aos_chrome_companion"),
           AOS_WEB_OPERATION_BACKEND_REVISION: String(input.webOperationBackend?.revision || "1"),
           AOS_WEB_OPERATION_BACKEND_SOURCE: String(input.webOperationBackend?.source || ""),
           AOS_WEB_OPERATION_BACKEND_FALLBACK_ALLOWED: String(input.webOperationBackend?.fallback_allowed ?? ""),
@@ -630,6 +665,7 @@ export async function runPortableExternalWorker(input: {
     stdio: ["ignore", "pipe", "pipe"],
     detached: process.platform !== "win32"
   });
+  const diagnostics = { runnerPath: command, cwd: process.env.AUTOMATION_OS_PORTABLE_EXTERNAL_WORKDIR?.trim() || process.cwd(), childPid: child.pid, childPpid: process.pid, spawnedAt: new Date().toISOString(), childExitedAt: null as string | null, processGroupCleanupAt: null as string | null };
   let stdout = "";
   let stderr = "";
   child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString("utf8"); });
@@ -647,6 +683,7 @@ export async function runPortableExternalWorker(input: {
       if (cleanupStarted) return;
       cleanupStarted = true;
       void cleanupOwnedProcessGroup(child, graceMs).then((processGroupCleanup) => {
+        diagnostics.processGroupCleanupAt = new Date().toISOString();
         finish({ code: child.exitCode ?? code, signal: child.signalCode ?? signal, timedOut, processGroupCleanup });
       });
     };
@@ -658,6 +695,7 @@ export async function runPortableExternalWorker(input: {
       cleanup(1_000, false, null, null);
     });
     child.once("exit", (code, signal) => {
+      diagnostics.childExitedAt = new Date().toISOString();
       clearTimeout(timer);
       cleanup(1_000, false, code, signal);
     });
@@ -692,5 +730,6 @@ export async function runPortableExternalWorker(input: {
     actionPlanSha256: actionPlan.sha256,
     ...(webOperationIntentFile ? { webOperationIntentPath: webOperationIntentFile.path, webOperationIntentSha256: webOperationIntentFile.sha256 } : {}),
     processGroupCleanup: result.processGroupCleanup,
+    diagnostics,
   };
 }

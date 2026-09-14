@@ -111,7 +111,51 @@ test("optional input bundle is carried through the no-effect trigger without bei
   }
 });
 
-test("current Codex task id is bound to the portable no-effect trigger", async () => {
+test("explicit business effect stage is opt-in and carries the existing input bundle to the official trigger API", async () => {
+  let requestBody = "";
+  const { server, baseUrl } = await listen((req, res) => {
+    req.setEncoding("utf8");
+    req.on("data", (chunk) => { requestBody += chunk; });
+    req.on("end", () => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ ok: true, schema: "aos.portable_workflow_trigger.v1", accepted: true, queued: true, portable: true, worker_protocol: "mac_worker_polling_required", external_action_executed: false }));
+    });
+  });
+  const bundleDir = fs.mkdtempSync(join(tmpdir(), "aos-trigger-business-bundle-"));
+  const bundlePath = join(bundleDir, "input-bundle.json");
+  fs.writeFileSync(bundlePath, `${JSON.stringify({ account_ref: "github:nick353/daily-workspace-backup", target_key: "daily-workspace-backup:main", payload_hash: "a".repeat(64), source_snapshot_id: "b".repeat(64) })}\n`, { mode: 0o600 });
+  try {
+    const result = await runTrigger([
+      "--company", "company-a", "--automation", "automation-a", "--base-url", baseUrl,
+      "--effect-stage", "business_execute", "--input-bundle-file", bundlePath
+    ], envWithoutTokens());
+    assert.equal(result.status, 0, result.stderr);
+    const request = JSON.parse(requestBody);
+    assert.equal(request.execution_mode, "business_execute");
+    assert.equal(request.effect_stage, "business_execute");
+    assert.equal(request.external_action_allowed, false);
+    assert.deepEqual(request.input_bundle, {
+      account_ref: "github:nick353/daily-workspace-backup",
+      target_key: "daily-workspace-backup:main",
+      payload_hash: "a".repeat(64),
+      source_snapshot_id: "b".repeat(64)
+    });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    fs.rmSync(bundleDir, { recursive: true, force: true });
+  }
+});
+
+test("unsupported effect stages fail closed before dispatch", async () => {
+  const result = await runTrigger([
+    "--company", "company-a", "--automation", "automation-a", "--effect-stage", "publish"
+  ], envWithoutTokens());
+  assert.equal(result.status, 2);
+  assert.equal(jsonStdout(result).exact_blocker, "aos_trigger_effect_stage_unsupported");
+  assert.equal(jsonStdout(result).external_action_executed, false);
+});
+
+test("current Codex task id is not implicitly bound to the portable no-effect trigger", async () => {
   let requestBody = "";
   const { server, baseUrl } = await listen((req, res) => {
     req.setEncoding("utf8");
@@ -127,6 +171,30 @@ test("current Codex task id is bound to the portable no-effect trigger", async (
     const result = await runTrigger(
       ["--company", "company-a", "--automation", "automation-a", "--base-url", baseUrl],
       triggerEnv
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const request = JSON.parse(requestBody);
+    assert.equal(request.companion_task_id, undefined);
+    assert.doesNotMatch(result.stdout, /01a03cec-7585-7823-9114-d504e9161bc8/u);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("explicit companion task id remains bound to the portable no-effect trigger", async () => {
+  let requestBody = "";
+  const { server, baseUrl } = await listen((req, res) => {
+    req.setEncoding("utf8");
+    req.on("data", (chunk) => { requestBody += chunk; });
+    req.on("end", () => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ ok: true, schema: "aos.portable_workflow_trigger.v1", accepted: true, queued: true, portable: true, worker_protocol: "mac_worker_polling_required", external_action_executed: false }));
+    });
+  });
+  try {
+    const result = await runTrigger(
+      ["--company", "company-a", "--automation", "automation-a", "--base-url", baseUrl, "--companion-task-id", "01a03cec-7585-7823-9114-d504e9161bc8"],
+      envWithoutTokens({ CODEX_THREAD_ID: "untrusted-current-task" })
     );
     assert.equal(result.status, 0, result.stderr);
     const request = JSON.parse(requestBody);

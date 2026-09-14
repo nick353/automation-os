@@ -74,11 +74,16 @@ function signedValue(secret, payload) {
 function verifiedValue(secret, value) {
   const [body, signature] = text(value).split(".");
   if (!body || !signature) return null;
+  const bodyBytes = decodeBase64Url(body);
   const provided = decodeBase64Url(signature);
+  // Base64url has non-canonical spellings for values whose final sextet
+  // contains unused bits. Reject those spellings so a cookie cannot be
+  // altered while still decoding to the same HMAC bytes.
+  if (encodeBase64Url(bodyBytes) !== body || encodeBase64Url(provided) !== signature) return null;
   const expected = hmac(secret, body);
   if (provided.length !== expected.length || !timingSafeEqual(provided, expected)) return null;
   try {
-    return JSON.parse(decodeBase64Url(body).toString("utf8"));
+    return JSON.parse(bodyBytes.toString("utf8"));
   } catch {
     return null;
   }

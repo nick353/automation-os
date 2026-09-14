@@ -26,6 +26,7 @@ type ApprovalRow = {
 };
 
 type AutomationRow = { id: string; name: string };
+type RunRow = { id: string; automation_id: string; status: string; created_at: string; updated_at: string };
 
 export type CompanyAnalyticsQuery = {
   companyId: string;
@@ -55,40 +56,29 @@ export function buildCompanyAnalytics(input: CompanyAnalyticsQuery) {
     WHERE company_id=${sqlValue(companyId)} AND job_id IN (${jobIds.join(", ")})
     ORDER BY created_at ASC, id ASC
   `) : [];
-  const automationIds = [...new Set(jobs.map((job) => job.automation_id))];
+  const runs = querySql<RunRow>(nonDurableRunsQuery(normalized));
+  const automationIds = [...new Set([...jobs, ...runs].map((row) => row.automation_id))];
   const automations = automationIds.length > 0 ? querySql<AutomationRow>(`
     SELECT id, name FROM mvp_automations
     WHERE company_id=${sqlValue(companyId)} AND id IN (${automationIds.map(sqlValue).join(", ")})
   `) : [];
-  const legacyAutomationPredicate = automationId ? ` AND legacy_run.automation_id=${sqlValue(automationId)}` : "";
-  const excludedLegacyRuns = Number(querySql<{ count: number }>(`
-    SELECT COUNT(*) AS count FROM runs legacy_run
-    WHERE legacy_run.company_id=${sqlValue(companyId)}
-      AND legacy_run.created_at>=${sqlValue(from)} AND legacy_run.created_at<=${sqlValue(to)}${legacyAutomationPredicate}
-      AND NOT EXISTS (
-        SELECT 1 FROM durable_jobs durable_job
-        WHERE durable_job.company_id=legacy_run.company_id AND durable_job.run_id=legacy_run.id
-      )
-  `)[0]?.count ?? 0);
-
-  return buildCompanyAnalyticsFromRows({ companyId, from, to, automationId, jobs, approvals, automations, excludedLegacyRuns });
+  return buildCompanyAnalyticsFromRows({ companyId, from, to, automationId, jobs, approvals, automations, runs });
 }
 
 export async function buildCompanyAnalyticsAsync(input: CompanyAnalyticsQuery) {
   const normalized = normalizeAnalyticsQuery(input);
   const { companyId, from, to, automationId } = normalized;
   const automationPredicate = automationId ? ` AND automation_id=${sqlValue(automationId)}` : "";
-  const legacyAutomationPredicate = automationId ? ` AND legacy_run.automation_id=${sqlValue(automationId)}` : "";
-  const jobs = await querySqlAsync<JobRow>(`
+  const [jobs, runs] = await Promise.all([querySqlAsync<JobRow>(`
     SELECT id, automation_id, status, last_error, created_at, updated_at
     FROM durable_jobs
     WHERE company_id=${sqlValue(companyId)}
       AND created_at>=${sqlValue(from)} AND created_at<=${sqlValue(to)}${automationPredicate}
     ORDER BY created_at ASC, id ASC
-  `);
+  `), querySqlAsync<RunRow>(nonDurableRunsQuery(normalized))]);
   const jobIds = jobs.map((job) => sqlValue(job.id));
-  const automationIds = [...new Set(jobs.map((job) => job.automation_id))];
-  const [approvals, automations, excludedLegacyRows] = await Promise.all([
+  const automationIds = [...new Set([...jobs, ...runs].map((row) => row.automation_id))];
+  const [approvals, automations] = await Promise.all([
     jobIds.length > 0 ? querySqlAsync<ApprovalRow>(`
       SELECT id, job_id, status, created_at, decided_at
       FROM approvals
@@ -98,16 +88,7 @@ export async function buildCompanyAnalyticsAsync(input: CompanyAnalyticsQuery) {
     automationIds.length > 0 ? querySqlAsync<AutomationRow>(`
       SELECT id, name FROM mvp_automations
       WHERE company_id=${sqlValue(companyId)} AND id IN (${automationIds.map(sqlValue).join(", ")})
-    `) : Promise.resolve([] as AutomationRow[]),
-    querySqlAsync<{ count: number }>(`
-      SELECT COUNT(*) AS count FROM runs legacy_run
-      WHERE legacy_run.company_id=${sqlValue(companyId)}
-        AND legacy_run.created_at>=${sqlValue(from)} AND legacy_run.created_at<=${sqlValue(to)}${legacyAutomationPredicate}
-        AND NOT EXISTS (
-          SELECT 1 FROM durable_jobs durable_job
-          WHERE durable_job.company_id=legacy_run.company_id AND durable_job.run_id=legacy_run.id
-        )
-    `)
+    `) : Promise.resolve([] as AutomationRow[])
   ]);
   return buildCompanyAnalyticsFromRows({
     companyId,
@@ -117,8 +98,16 @@ export async function buildCompanyAnalyticsAsync(input: CompanyAnalyticsQuery) {
     jobs,
     approvals,
     automations,
-    excludedLegacyRuns: Number(excludedLegacyRows[0]?.count ?? 0)
+    runs
   });
+}
+
+function nonDurableRunsQuery(input: ReturnType<typeof normalizeAnalyticsQuery>): string {
+  return `SELECT r.id, r.automation_id, r.status, r.created_at, r.updated_at FROM runs r
+    WHERE r.company_id=${sqlValue(input.companyId)} AND r.created_at>=${sqlValue(input.from)} AND r.created_at<=${sqlValue(input.to)}
+      ${input.automationId ? `AND r.automation_id=${sqlValue(input.automationId)}` : ""}
+      AND NOT EXISTS (SELECT 1 FROM durable_jobs j WHERE j.company_id=r.company_id AND j.run_id=r.id)
+    ORDER BY r.created_at ASC, r.id ASC`;
 }
 
 function normalizeAnalyticsQuery(input: CompanyAnalyticsQuery) {
@@ -141,9 +130,10 @@ function buildCompanyAnalyticsFromRows(input: {
   jobs: JobRow[];
   approvals: ApprovalRow[];
   automations: AutomationRow[];
-  excludedLegacyRuns: number;
+  runs: RunRow[];
 }) {
-  const { companyId, from, to, automationId, jobs, approvals, automations, excludedLegacyRuns } = input;
+  const { companyId, from, to, automationId, jobs, approvals, automations, runs } = input;
+  const excludedLegacyRuns = runs.length;
   const automationNames = new Map(automations.map((item) => [item.id, item.name]));
   const outcomes = countOutcomes(jobs);
   const completionRate = jobs.length > 0 ? round(outcomes.completed / jobs.length, 4) : null;
@@ -217,6 +207,7 @@ function buildCompanyAnalyticsFromRows(input: {
     by_date: byDate,
     by_automation: byAutomation,
     by_stage: byStage,
+    run_readback: buildRunAnalytics(runs, automationNames),
     provenance: [
       { source: "durable_jobs", row_count: jobs.length, last_updated_at: latestTimestamp(jobs.map((job) => job.updated_at)) },
       { source: "approvals", row_count: approvals.length, last_updated_at: latestTimestamp(approvals.map((approval) => approval.decided_at ?? approval.created_at)) },
@@ -227,6 +218,31 @@ function buildCompanyAnalyticsFromRows(input: {
       excluded_legacy_runs: excludedLegacyRuns,
       unavailable_metrics: ["cost", "time_saved", "sla"]
     }
+  };
+}
+
+function buildRunAnalytics(runs: RunRow[], automationNames: Map<string, string>) {
+  const complete = (row: RunRow) => ["complete", "completed", "success", "succeeded"].includes(row.status);
+  const statuses: Record<string, number> = Object.create(null);
+  const dates = new Map<string, RunRow[]>();
+  const automations = new Map<string, RunRow[]>();
+  for (const row of runs) {
+    statuses[row.status] = (statuses[row.status] ?? 0) + 1;
+    const date = row.created_at.slice(0, 10);
+    dates.set(date, [...(dates.get(date) ?? []), row]);
+    automations.set(row.automation_id, [...(automations.get(row.automation_id) ?? []), row]);
+  }
+  return {
+    source: "runs_without_durable_job_lineage", data_state: runs.length ? "available" : "empty",
+    unit: "runs", total_runs: runs.length, completed_runs: runs.filter(complete).length, statuses,
+    active_runs: runs.filter((row) => ["queued", "running", "waiting_approval", "approval_required"].includes(row.status)).length,
+    stopped_runs: runs.filter((row) => ["blocked", "failed", "cancelled", "canceled", "timed_out", "reconciliation_required"].includes(row.status)).length,
+    by_date: [...dates.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([date, rows]) => ({ date, total_runs: rows.length, completed_runs: rows.filter(complete).length })),
+    by_automation: [...automations.entries()].map(([id, rows]) => ({ automation_id: id, automation_name: automationNames.get(id) ?? id ?? "未紐付け",
+      total_runs: rows.length, completed_runs: rows.filter(complete).length, last_updated_at: latestTimestamp(rows.map((row) => row.updated_at)) })),
+    last_updated_at: latestTimestamp(runs.map((row) => row.updated_at)),
+    excludes_durable_job_runs: true, business_completion_inferred: false,
+    duration: { availability: "unavailable", reason: "run_status_timestamps_are_not_execution_duration" }
   };
 }
 

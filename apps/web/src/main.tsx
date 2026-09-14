@@ -3,6 +3,22 @@ import { createRoot } from "react-dom/client";
 import App from "./App";
 import "./styles.css";
 
+// The service origin remains the worker/API endpoint, but it is not the
+// browser's authenticated UI origin. Redirect only top-level UI documents so
+// a user who opens the old URL does not get trapped in a permanently stale
+// "再確認" state. API requests and local development are untouched.
+const LEGACY_UI_ORIGIN = "https://automation-os.zeabur.app";
+const CANONICAL_UI_ORIGIN = "https://aos-admin-ingress.zeabur.app";
+
+function redirectLegacyUiDocument(): boolean {
+  if (typeof window === "undefined" || window.location.origin !== LEGACY_UI_ORIGIN) return false;
+  if (window.location.pathname.startsWith("/api")) return false;
+  const target = `${CANONICAL_UI_ORIGIN}${window.location.pathname}${window.location.search}${window.location.hash}`;
+  if (target === window.location.href) return false;
+  window.location.replace(target);
+  return true;
+}
+
 type AppErrorBoundaryState = { hasError: boolean };
 
 class AppErrorBoundary extends React.Component<React.PropsWithChildren, AppErrorBoundaryState> {
@@ -33,10 +49,12 @@ class AppErrorBoundary extends React.Component<React.PropsWithChildren, AppError
   }
 }
 
-createRoot(document.getElementById("root")!).render(
-  <React.StrictMode>
-    <AppErrorBoundary>
-      <App />
-    </AppErrorBoundary>
-  </React.StrictMode>
-);
+if (!redirectLegacyUiDocument()) {
+  createRoot(document.getElementById("root")!).render(
+    <React.StrictMode>
+      <AppErrorBoundary>
+        <App />
+      </AppErrorBoundary>
+    </React.StrictMode>
+  );
+}

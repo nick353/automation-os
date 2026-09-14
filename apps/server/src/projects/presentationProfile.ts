@@ -37,7 +37,8 @@ export function parseProjectPresentationProfileOverride(value: unknown): Project
   }
   for (const key of ["label", "purpose", "browserUseLane", "stopBoundary", "explanation"] as const) {
     if (input[key] === undefined) continue;
-    if (typeof input[key] !== "string" || input[key].trim().length === 0 || input[key].length > (key === "explanation" ? 1000 : 240)) throw new Error(`project_profile_${key}_invalid`);
+    const optional = key === "purpose" || key === "browserUseLane" || key === "stopBoundary";
+    if (typeof input[key] !== "string" || (!optional && input[key].trim().length === 0) || input[key].length > (key === "explanation" ? 1000 : 240)) throw new Error(`project_profile_${key}_invalid`);
     output[key] = input[key].trim();
   }
   if (input.freshnessSlaMinutes !== undefined) {
@@ -78,6 +79,19 @@ export function applyProjectPresentationProfileOverride(
   };
 }
 
+export function restoreProjectPresentationProfile(
+  derived: ProjectPresentationProfile,
+  memory?: { body: string; revision: number }
+): ProjectPresentationProfile {
+  if (!memory) return derived;
+  try {
+    return applyProjectPresentationProfileOverride(derived, parseProjectPresentationProfileOverride(JSON.parse(memory.body)), memory.revision);
+  } catch (error) {
+    return { ...derived, source: "persisted_project_profile", revision: memory.revision,
+      exactBlocker: error instanceof Error ? error.message : "project_profile_invalid" };
+  }
+}
+
 export function buildProjectPresentationProfile(input: {
   id: string;
   name: string;
@@ -87,6 +101,18 @@ export function buildProjectPresentationProfile(input: {
     .filter((value): value is string => typeof value === "string")
     .join(" ")
     .toLowerCase();
+  const kinds = [
+    /求人|応募|job|application|submit|apply/u.test(text),
+    /etsy|printify|商品|commerce|shop|nisenprints/u.test(text),
+    /sns|social|投稿|publish|instagram|twitter|pinterest|daily ai|日次ai|ニュース/u.test(text),
+    /backup|バックアップ|obsidian|メール確認/u.test(text)
+  ].filter(Boolean).length;
+  if (kinds > 1) return {
+    id: input.id, kind: "operations", label: "会社の業務運用", source: "derived_from_project_automation_catalog",
+    primaryMetrics: ["実行件数", "状態別件数", "確認記録", "データ鮮度"],
+    widgets: ["kpi", "timeline", "failure_table", "evidence_timeline", "lane_status"], preferredGrouping: "day",
+    explanation: "複数種類の自動化があるため、会社全体の実行履歴と確認記録を表示します。集計対象は各表の来歴で確認できます。"
+  };
   if (/求人|応募|job|application|submit|apply/u.test(text)) {
     return {
       id: input.id,

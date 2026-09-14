@@ -151,23 +151,30 @@ export function readbackFromReceipt(receipt, intent) {
 
 function companionEffectReceipt({ input, intent, route, authority, adapterReceipt, readback, exactBlocker }) {
   const externalActionExecuted = adapterReceipt?.external_action_executed === true;
-  const providerTrusted = adapterReceipt?.provider_receipt_trusted === true;
+  const outcome = adapterReceipt?.outcome;
+  const browserDispatched = externalActionExecuted || outcome?.applied_action_indices?.length > 0
+    || outcome?.uncertain_action_indices?.length > 0 || outcome?.reconciliation_required === true;
+  // The generic broker cannot interpret a provider's completion message.
+  // This executor can verify the readback declared in the approved intent;
+  // keep that web operation proof separate from whole-workflow completion.
+  const browserReceiptTrusted = adapterReceipt?.browser_receipt_verified === true || adapterReceipt?.provider_receipt_trusted === true;
+  const providerTrusted = adapterReceipt?.provider_receipt_trusted === true || (browserReceiptTrusted && readback.verified === true);
   const cleanupVerified = adapterReceipt?.cleanup_verified === true;
   const sourceSyncVerified = readback.verified === true;
   const complete = !exactBlocker && externalActionExecuted && providerTrusted && sourceSyncVerified && cleanupVerified;
   const blocker = complete
     ? null
     : exactBlocker
-      || (!externalActionExecuted ? "web_operation_no_effect_dispatched"
+      || (!externalActionExecuted ? (browserDispatched ? "web_operation_browser_effect_observed_provider_unverified" : "web_operation_no_effect_dispatched")
         : !providerTrusted ? "aos_chrome_companion_provider_receipt_unverified"
           : !sourceSyncVerified ? "web_operation_source_readback_mismatch"
             : "aos_chrome_companion_cleanup_unverified");
   const lifecycle = {
     schema: "automation_os_web_operation_lifecycle.v1",
-    state: complete ? "cleaned" : externalActionExecuted ? "effect_unknown" : "blocked",
+    state: complete ? "cleaned" : browserDispatched ? "effect_unknown" : "blocked",
     status: complete ? "complete" : "blocked",
     exact_blocker: blocker,
-    restart_point: complete ? null : externalActionExecuted ? "same-run source-of-truth reconciliation; do not replay" : "fresh target-bound admission with a new idempotency key",
+    restart_point: complete ? null : browserDispatched ? "same-run source-of-truth reconciliation; continue only remaining actions; do not replay" : "fresh target-bound admission with a new idempotency key",
     run_id: input.run_id,
     step_id: input.step_id,
     idempotency_key: input.idempotency_key,
@@ -175,8 +182,10 @@ function companionEffectReceipt({ input, intent, route, authority, adapterReceip
     target_digest: intent.target_binding.target_digest,
     source_state_digest: intent.target_binding.source_state_digest,
     payload_hash: intent.payload_hash,
-    dispatch_state: externalActionExecuted ? (complete ? "executed" : "unknown") : "not_attempted",
+    dispatch_state: browserDispatched ? (complete ? "executed" : "unknown") : "not_attempted",
     external_action_executed: externalActionExecuted,
+    browser_mutation_executed: Boolean(browserDispatched),
+    outcome: outcome ?? null,
     same_run_receipt: complete,
     readback_verified: sourceSyncVerified,
     cleanup_verified: cleanupVerified,
@@ -186,6 +195,8 @@ function companionEffectReceipt({ input, intent, route, authority, adapterReceip
     status: complete ? "complete" : "blocked",
     exact_blocker: blocker,
     external_action_executed: externalActionExecuted,
+    browser_mutation_executed: Boolean(browserDispatched),
+    outcome: outcome ?? null,
     browser_backend: "aos_chrome_companion",
     browser_surface: AOS_CHROME_COMPANION_EFFECT_SURFACE,
     execution_context: adapterReceipt?.execution_context ?? null,
@@ -195,6 +206,8 @@ function companionEffectReceipt({ input, intent, route, authority, adapterReceip
     step_id: input.step_id,
     operation: intent.operation,
     generic_web_operation: true,
+    completion_scope: "approved_web_operation_and_declared_readback",
+    workflow_completion: "unverified",
     effects_mode: "enabled",
     authority_path: authority.path,
     authority_sha256: authority.sha256,
@@ -212,10 +225,13 @@ function companionEffectReceipt({ input, intent, route, authority, adapterReceip
       provider: "aos_chrome_companion",
       transaction_result: adapterReceipt?.result || "blocked",
       provider_receipt_trusted: providerTrusted,
+      browser_receipt_verified: browserReceiptTrusted,
+      evidence_scope: "declared_provider_page_readback",
       visual_readback_verified: adapterReceipt?.visual_readback_verified === true,
       input_recovery: inputRecoveryFromReceipt(adapterReceipt),
       readback,
-      source_sync: { schema: "aos.chrome_companion.source_sync.v1", same_run: true, verified: sourceSyncVerified },
+      source_sync: { schema: "aos.chrome_companion.source_sync.v1", same_run: true, verified: sourceSyncVerified,
+        scope: "declared_browser_readback", workflow_source_sync: "unverified" },
       cleanup: adapterReceipt?.cleanup || null,
       reconciliation: adapterReceipt?.reconciliation || { attempted: false, verified: false, replayed: false },
     },
@@ -304,7 +320,7 @@ export async function runAosChromeCompanionWebOperationEffect(
     result.same_run_receipt = false;
     result.web_operation_lifecycle = {
       ...result.web_operation_lifecycle,
-      state: result.external_action_executed ? "effect_unknown" : "blocked",
+      state: result.browser_mutation_executed ? "effect_unknown" : "blocked",
       status: "blocked",
       exact_blocker: result.exact_blocker,
       restart_point: "inspect the run-owned claim and reconcile; do not replay",

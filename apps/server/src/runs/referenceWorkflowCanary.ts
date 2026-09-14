@@ -10,7 +10,6 @@ import {
   registeredWorkflowScheduleFingerprint
 } from "../registeredWorkflows.js";
 import { resolveWorkerAdapterPolicy, runWorkerOnce, startCommandRun, type WorkerAdapter } from "./workerEngine.js";
-import { BROWSER_USE_CLI_REQUIRED_BLOCKER } from "./workerEngine.js";
 import {
   projectReferenceBrowserUseWorkflowAdmission,
   type ReferenceBrowserUseWorkflowAdmissionProjectionV1
@@ -18,6 +17,7 @@ import {
 import {
   deriveServiceReadinessRootId,
   referenceWorkflowIdFromMetadata,
+  validateServiceReadinessAosChromeCompanionRuntimeBindingV1,
   validateServiceReadinessBrowserUseRuntimeBindingV1
 } from "../serviceReadiness/runtimeBinding.js";
 import {
@@ -157,6 +157,7 @@ export async function runReferenceWorkflowCanary(): Promise<ReferenceWorkflowCan
     };
     const policy = resolveWorkerAdapterPolicy(reference.adapter);
     const referenceWorkflowAdmission = projectReferenceBrowserUseWorkflowAdmission({ workflow_id: reference.adapterWorkflowId });
+    const registeredBrowserRouteOk = policy.classification === "aos_chrome_companion" && policy.evidence.includes("surface:aos_chrome_companion_profile_instance");
     const registrationOk = Boolean(
       registration &&
         registration.status === "active" &&
@@ -165,8 +166,7 @@ export async function runReferenceWorkflowCanary(): Promise<ReferenceWorkflowCan
         registeredSchedule.kind === "cron" &&
         typeof registeredSchedule.rrule === "string" &&
         registeredSchedule.rrule.trim() !== "" &&
-        policy.classification === "browser_use_cli" &&
-        policy.evidence.includes("surface:browser_use_cli") &&
+        registeredBrowserRouteOk &&
         policy.evidence.includes("no_fallback:true")
     );
     if (!registrationOk) {
@@ -239,7 +239,7 @@ export async function runReferenceWorkflowCanary(): Promise<ReferenceWorkflowCan
       registrationOk &&
       before.runStatus === "blocked" &&
       before.stepStatus === "blocked" &&
-      before.exactBlocker === BROWSER_USE_CLI_REQUIRED_BLOCKER &&
+        before.exactBlocker === "aos_chrome_companion_task_id_missing" &&
       before.proofGateOk === false &&
       before.runnerExitStatus === null &&
       !before.runnerStarted &&
@@ -333,10 +333,10 @@ function readCanaryState(runId: string, exitStatusKey: string, expected: {
   const guardMetadata = parseObject(guardProof?.metadata_json);
   const guardLineage = parseRecord(guardMetadata.registered_workflow_start);
   const expectedServiceWorkflowId = referenceWorkflowIdFromMetadata({ registeredWorkflowId: expected.workflowId });
-  const runtimeBindingResult = validateServiceReadinessBrowserUseRuntimeBindingV1(stepMetadata.service_readiness_runtime_binding);
+  const runtimeBindingResult = validateServiceReadinessAosChromeCompanionRuntimeBindingV1(stepMetadata.service_readiness_runtime_binding);
   const runtimeBindingVerified = runtimeBindingResult.ok && runtimeBindingResult.value.status === "blocked" &&
-    runtimeBindingResult.value.exact_blocker === "service_readiness_browser_use_effective_session_missing" &&
-    runtimeBindingResult.value.surface === "browser_use_cli" &&
+    runtimeBindingResult.value.exact_blocker === "aos_chrome_companion_task_id_missing" &&
+    runtimeBindingResult.value.surface === "aos_chrome_companion_profile_instance" &&
     runtimeBindingResult.value.root_id === deriveServiceReadinessRootId(runId) &&
     runtimeBindingResult.value.workflow_id === expectedServiceWorkflowId &&
     runtimeBindingResult.value.run_id === runId &&
@@ -392,7 +392,7 @@ function readCanaryState(runId: string, exitStatusKey: string, expected: {
     validFingerprint(routeReadbackFingerprint) &&
     guardMetadata.route_decision_fingerprint === routeDecisionFingerprint &&
     guardMetadata.route_readback_fingerprint === routeReadbackFingerprint &&
-    guardMetadata.exact_blocker === BROWSER_USE_CLI_REQUIRED_BLOCKER &&
+    guardMetadata.exact_blocker === "aos_chrome_companion_task_id_missing" &&
     guardMetadata.worker_outcome === "blocked_before_runner" &&
     guardMetadata.completion_claimed === false &&
     guardMetadata.operation_proof_gate_ok === false &&
@@ -492,10 +492,10 @@ function readCanaryCleanupReceipt(artifactRoot: string, runId: string): { ok: tr
 }
 
 function validateGuardRuntimeBinding(value: unknown, runId: string, stepId: string, workflowId: string): boolean {
-  const result = validateServiceReadinessBrowserUseRuntimeBindingV1(value);
+  const result = validateServiceReadinessAosChromeCompanionRuntimeBindingV1(value);
   if (!result.ok || result.value.status !== "blocked") return false;
-  return result.value.exact_blocker === "service_readiness_browser_use_effective_session_missing" &&
-    result.value.surface === "browser_use_cli" &&
+  return result.value.exact_blocker === "aos_chrome_companion_task_id_missing" &&
+    result.value.surface === "aos_chrome_companion_profile_instance" &&
     result.value.root_id === deriveServiceReadinessRootId(runId) &&
     result.value.workflow_id === workflowId &&
     result.value.run_id === runId &&
@@ -588,7 +588,7 @@ function verifyGuardArtifact(
       lineageMatches(parseRecord(artifact.registered_workflow_start), input.expected) &&
       artifact.route_decision_fingerprint === input.routeDecisionFingerprint &&
       artifact.route_readback_fingerprint === input.routeReadbackFingerprint &&
-      artifact.exact_blocker === BROWSER_USE_CLI_REQUIRED_BLOCKER &&
+      artifact.exact_blocker === "aos_chrome_companion_task_id_missing" &&
       artifact.worker_outcome === "blocked_before_runner" &&
       artifact.completion_claimed === false &&
       artifact.operation_proof_gate_ok === false &&

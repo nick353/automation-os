@@ -9,6 +9,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const sourceFiles = [
   ["ops/zeabur/Dockerfile.codex-app-server", "Dockerfile"],
   ["ops/zeabur/start-codex-app-server.sh", "ops/zeabur/start-codex-app-server.sh"],
+  ["scripts/codex-app-server-auth-readback.mjs", "scripts/codex-app-server-auth-readback.mjs"],
 ];
 
 function fail(message) {
@@ -42,19 +43,26 @@ const staged = [];
 for (const [relativeSource, relativeTarget] of sourceFiles) {
   const source = path.join(repoRoot, relativeSource);
   const target = path.join(output, relativeTarget);
+  const sourceSha256 = await sha256(source);
   await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
   await fs.copyFile(source, target, fs.constants.COPYFILE_EXCL);
   if (relativeTarget.endsWith(".sh")) await fs.chmod(target, 0o755);
+  const stagedSha256 = await sha256(target);
+  if (sourceSha256 !== stagedSha256) fail(`staged source hash mismatch: ${relativeSource}`);
   staged.push({
     source: relativeSource,
     target: relativeTarget,
-    sha256: await sha256(target),
+    sha256: stagedSha256,
+    source_sha256: sourceSha256,
   });
 }
 
 const dockerfile = await fs.readFile(path.join(output, "Dockerfile"), "utf8");
 if (!dockerfile.includes("COPY ops/zeabur/start-codex-app-server.sh /usr/local/bin/start-codex-app-server")) {
   fail("staged Dockerfile source boundary mismatch");
+}
+if (!dockerfile.includes("COPY scripts/codex-app-server-auth-readback.mjs /app/scripts/codex-app-server-auth-readback.mjs")) {
+  fail("staged Dockerfile readback source boundary mismatch");
 }
 
 console.log(JSON.stringify({

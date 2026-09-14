@@ -149,7 +149,10 @@ function handleMessage(text) {
     const account = message.result?.account;
     const accountPresent = Boolean(account && typeof account === "object");
     const requiresOpenaiAuth = message.result?.requiresOpenaiAuth === true;
-    if (!accountPresent || requiresOpenaiAuth) {
+    // `requiresOpenaiAuth` describes the server's supported auth mode.  When
+    // account/read also returns an account, the persisted ChatGPT login is
+    // present; keep that fact distinct from the capability flag.
+    if (!accountPresent) {
       finish({ status: "blocked", stage: "account/read", authenticated_wss: true, account_present: false, requires_openai_auth: requiresOpenaiAuth, exact_blocker: "zeabur_codex_app_server_chatgpt_login_required" }, 2);
       return;
     }

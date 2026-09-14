@@ -372,6 +372,29 @@ test("AOS no-effect bridge accepts the registered Never-use-Browser-Use wording"
   assert.equal(report.automations[0]?.video_qa.status, "not_required");
 });
 
+test("canonical AOS registered bridge prompts defer the visual gate to the worker", () => {
+  const fixture = tempFixture();
+  const id = "nisenprints-daily-product-canva-printify-etsy-pinterest";
+  const prompt = [
+    "/goal",
+    "AOS_SINGLE_CONTROL_PLANE_V1",
+    "AOS owns the workflow and the AOS worker only performs provider effects.",
+    "DIRECT_DISPATCH_FORBIDDEN_V2",
+    "AOS_OFFICIAL_BRIDGE_V1",
+    "Run exactly once through the registered AOS bridge.",
+    "publish only after the worker's receipt, source sync, reconciliation, and cleanup."
+  ].join("\\n");
+  const body = toml({ id, cwd: fixture.cwd, prompt });
+  writeAutomation(fixture.automationRoot, id, body);
+  createDb(fixture.dbPath, [{ id, prompt, status: "ACTIVE", rrule: "FREQ=DAILY;BYHOUR=8;BYMINUTE=30", cwds: [fixture.cwd] }]);
+
+  const report = runAutomationHealth({ automationRoot: fixture.automationRoot, dbPath: fixture.dbPath, outputRoot: fixture.outputRoot, psText: "" });
+
+  assert.equal(report.summary.video_qa_issues, 0);
+  assert.equal(report.automations[0]?.video_qa.likely_required, false);
+  assert.equal(report.automations[0]?.video_qa.status, "not_required");
+});
+
 test("parser supports multiline prompt and singular cwd TOML shape", () => {
   const parsed = parseAutomationToml(
     [

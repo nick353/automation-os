@@ -100,10 +100,10 @@ test("Browser Use admission exposes a normalized external intent without grantin
       blocker_owner: null
     }
   });
-  assert.equal(projection.browser_surface, "browser_use_cli");
-  assert.equal(projection.external_intent?.schema, "service_readiness_browser_use_external_intent.v1");
+  assert.equal(projection.browser_surface, "aos_chrome_companion_profile_instance");
+  assert.equal(projection.external_intent?.schema, "service_readiness_aos_chrome_companion_external_intent.v1");
   assert.equal(projection.external_intent?.external_effect_ready, false);
   assert.equal(projection.external_intent?.authority_required, true);
-  assert.equal(projection.external_intent?.exact_blocker, "daily_ai_linkedin_no_post_or_browser_use_cli_capability");
-  assert.equal(projection.root_admission.exact_blocker, "daily_ai_linkedin_no_post_or_browser_use_cli_capability");
+  assert.equal(projection.external_intent?.exact_blocker, "daily_ai_linkedin_no_post_or_aos_chrome_companion_capability");
+  assert.equal(projection.root_admission.exact_blocker, "daily_ai_linkedin_no_post_or_aos_chrome_companion_capability");
 });

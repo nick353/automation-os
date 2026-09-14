@@ -30,6 +30,14 @@ test("schedule calculations honor timezone, weekday, and cron cadence", () => {
   assert.throws(() => scheduler.computeNextAutomationOccurrence({ kind: "daily", expression: "09:00", timezone: "Invalid\/Zone" }, "2026-07-15T00:00:00.000Z"), /scheduler_timezone_invalid/);
 });
 
+test("midnight and annual schedules keep exact local time with a reused formatter", (t) => {
+  assert.equal(scheduler.computeNextAutomationOccurrence({ kind: "daily", expression: "00:00", timezone: "UTC" }, "2026-09-05T23:59:00.000Z"), "2026-09-06T00:00:00.000Z");
+  assert.equal(scheduler.computeNextAutomationOccurrence({ kind: "daily", expression: "00:00", timezone: "Asia/Tokyo" }, "2026-09-05T14:59:00.000Z"), "2026-09-05T15:00:00.000Z");
+  const started = performance.now();
+  assert.equal(scheduler.computeNextAutomationOccurrence({ kind: "cron", expression: "56 12 5 9 *", timezone: "UTC" }, "2026-09-05T12:56:00.000Z"), "2027-09-05T12:56:00.000Z");
+  t.diagnostic(`annual next occurrence calculated in ${Math.round(performance.now() - started)} ms`);
+});
+
 test("job no-effect dispatch uses reference readback unless a run-bound input bundle exists", () => {
   assert.equal(portableReadOnlyStageForScheduledWorkflow("job-application-manager"), "reference_readback");
   assert.equal(
@@ -50,11 +58,11 @@ test("portable browser dispatch keeps Zeabur connector ownership unless an expli
   );
   assert.equal(
     portableScheduleDispatchForRegisteredAutomation({ workerCommandKind: "job_submit_registered", builderSpec: {} })?.browser_surface,
-    "browser_use_cli"
+    "aos_chrome_companion_profile_instance"
   );
   assert.equal(
     portableScheduleDispatchForRegisteredAutomation({ workerCommandKind: "job_submit_registered", builderSpec: {} })?.operation_surface,
-    "browser_use_cli"
+    "aos_chrome_companion_profile_instance"
   );
   assert.equal(
     portableScheduleDispatchForRegisteredAutomation(base)?.connector_execution_owner,
@@ -71,13 +79,7 @@ test("portable browser dispatch keeps Zeabur connector ownership unless an expli
   );
 });
 
-test("registered browser surface requirements pass through unchanged and omitted values stay absent", () => {
-  assert.equal(
-    browserSurfaceRequirementForRegisteredAutomation({
-      builderSpec: { browserSurfaceRequirement: "official_extension" }
-    }),
-    "official_extension"
-  );
+test("registered browser surface requirements preserve explicit choices and leave automatic selection to AOS", () => {
   assert.equal(
     browserSurfaceRequirementForRegisteredAutomation({
       builderSpec: { browserSurfaceRequirement: "companion_extension" }
@@ -86,17 +88,17 @@ test("registered browser surface requirements pass through unchanged and omitted
   );
   assert.equal(
     browserSurfaceRequirementForRegisteredAutomation({
+      builderSpec: { browserSurfaceRequirement: "automatic" }
+    }),
+    "automatic"
+  );
+  assert.equal(browserSurfaceRequirementForRegisteredAutomation({ builderSpec: {} }), undefined);
+  assert.equal(
+    browserSurfaceRequirementForRegisteredAutomation({
       builderSpec: { browserSurfaceRequirement: "browser_use_cli" }
     }),
     "browser_use_cli"
   );
-  assert.equal(
-    browserSurfaceRequirementForRegisteredAutomation({
-      builderSpec: { browserSurface: "browser_use_cli" }
-    }),
-    "browser_use_cli"
-  );
-  assert.equal(browserSurfaceRequirementForRegisteredAutomation({ builderSpec: {} }), undefined);
   assert.throws(
     () => browserSurfaceRequirementForRegisteredAutomation({ builderSpec: { browserSurfaceRequirement: "unsupported_surface" } }),
     /portable_registered_browser_surface_requirement_invalid/
@@ -172,6 +174,19 @@ test("scheduler skips an overdue recurrence when the owner selected skip", () =>
   assert.deepEqual(result.blocked, []);
   assert.equal(db.querySql<{ count: number }>(`SELECT count(*) AS count FROM durable_schedule_occurrences WHERE schedule_id=${db.sqlValue(fixture.scheduleId)}`)[0].count, 0);
   assert.equal(db.querySql<{ next_run_at: string }>(`SELECT next_run_at FROM mvp_automation_schedules WHERE id=${db.sqlValue(fixture.scheduleId)}`)[0].next_run_at, "2026-07-16T09:00:00.000Z");
+});
+
+test("skip policy does not discard a natural tick a few seconds after the scheduled minute", () => {
+  const fixture = seedScheduleVariant("normal_dispatch_latency");
+  const dueAt = "2026-07-15T09:00:00.000Z";
+  db.execSql(`UPDATE mvp_automation_schedules SET next_run_at=${db.sqlValue(dueAt)}, catch_up_policy='skip' WHERE id=${db.sqlValue(fixture.scheduleId)}`);
+  const input = { companyId: fixture.companyId, serviceUserId: fixture.serviceUserId, now: "2026-07-15T09:00:03.246Z" };
+  const result = scheduler.materializeDueAutomationOccurrences(input);
+  assert.equal(result.occurrences.length, 1);
+  assert.deepEqual(result.blocked, []);
+  assert.equal(scheduler.materializeDueAutomationOccurrences(input).occurrences.length, 0);
+  assert.equal(scheduler.scheduleIsOverdue(dueAt, "2026-07-15T09:01:00.000Z"), false);
+  assert.equal(scheduler.scheduleIsOverdue(dueAt, "2026-07-15T09:01:00.001Z"), true);
 });
 
 test("stale scheduler snapshots cannot enqueue after a schedule revision or due-time edit", () => {
@@ -308,6 +323,10 @@ test("scheduled dry-runs take precedence over an older manual dry-run backlog", 
 test("AOS server-owned scheduler fails closed when active schedules have no service identity", async () => {
   db.execSql("UPDATE mvp_automation_schedules SET enabled=0, status='paused'");
   const fixture = seedScheduleVariant("missing_identity");
+  // This fixture must not accidentally exercise the single-company inference
+  // path; remove the only operator membership so the test models a genuinely
+  // missing scheduler identity.
+  db.execSql(`DELETE FROM company_memberships WHERE company_id=${db.sqlValue(fixture.companyId)} AND user_id=${db.sqlValue(fixture.serviceUserId)}`);
   db.execSql(`UPDATE mvp_automation_schedules SET next_run_at='2026-07-15T09:00:00.000Z' WHERE id=${db.sqlValue(fixture.scheduleId)}`);
   const result = await durableScheduler.runDurableAutomationSchedulerOnce({ now: "2026-07-15T09:00:00.000Z", serviceUserId: "" });
   assert.equal(result.status, "blocked");

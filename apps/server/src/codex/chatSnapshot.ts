@@ -1,8 +1,22 @@
 import { redactSensitiveText } from "../obsidian/redaction.js";
+import type { ZeaburConnectorRegistryReadback } from "./zeaburConnectorRouting.js";
+import type { CompanyConnectionRefRecord } from "../automations/repository.js";
 
 const DEFAULT_MAX_BYTES = 64 * 1024;
 
 type SnapshotRecord = Record<string, unknown>;
+
+export function buildChatPluginConnections(companyId: string, registry: ZeaburConnectorRegistryReadback | null, refs: CompanyConnectionRefRecord[]) {
+  return {
+    companyId,
+    registryCapturedAt: registry?.capturedAt ?? null,
+    registryAvailable: Boolean(registry),
+    verificationScope: "registry_and_company_refs_only_not_a_new_provider_call",
+    installed: registry?.pluginRegistry.installed.slice(0, 64).map(({ id, name, installed, authStatus }) => ({ id, name, installed, authStatus })) ?? [],
+    connectorAuth: registry?.connectorAuth ?? {},
+    companyConnections: refs.filter((ref) => ref.companyId === companyId).map(({ platform, status, oauthState, verificationStatus, lastVerifiedAt, expiresAt }) => ({ platform, status, oauthState, verificationStatus, lastVerifiedAt, expiresAt }))
+  };
+}
 
 type SnapshotTier = {
   name: string;
@@ -86,6 +100,8 @@ function buildMinimalSnapshot(snapshot: SnapshotRecord): SnapshotRecord {
     registeredWorkflows: compactRows(snapshot.registeredWorkflows, ["id", "name", "status", "schedule_label", "boundary_label", "needs_check", "check_kind", "trust_kind", "freshness_kind", "safety_kind", "last_action_label", "last_result_label", "next_action_label", "last_run_id", "next_action_view"], 16),
     worker: compactRecord(snapshot.worker, ["status", "label", "detail", "queue_depth", "active_leases", "heartbeat_at", "exact_blocker", "next_action", "external_action_executed"]),
     browserUse: compactRecord(snapshot.browserUse, ["status", "surface", "exact_blocker", "readback_status", "helper", "recording"]),
+    toolPreference: snapshot.toolPreference,
+    pluginConnections: snapshot.pluginConnections,
     freshness: {
       ...freshness,
       snapshotTruncated: true,

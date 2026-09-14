@@ -57,6 +57,39 @@ export type CreatePlannerJobProcessOptions = {
 
 let sharedAppServerClient: CodexAppServerClient | null = null;
 const defaultLeaseMs = 10 * 60 * 1000;
+const minLeaseMs = 30 * 1000;
+const maxLeaseMs = 15 * 60 * 1000;
+const defaultPlannerTurnTimeoutMs = 120 * 1000;
+const maxPlannerTurnTimeoutMs = 300 * 1000;
+const plannerLeaseSafetyMs = 60 * 1000;
+
+export function resolvePlannerTurnTimeoutMs(value: string | undefined = process.env.AUTOMATION_OS_CREATE_PLANNER_TURN_TIMEOUT_MS): number {
+  const configured = Number(value);
+  if (!Number.isFinite(configured) || configured <= 0) return defaultPlannerTurnTimeoutMs;
+  const normalized = Math.floor(configured);
+  if (normalized <= 0) return defaultPlannerTurnTimeoutMs;
+  return Math.min(normalized, maxPlannerTurnTimeoutMs);
+}
+
+/** Keep at most one write in flight and one latest snapshot in memory. */
+export function createPlannerProgressWriter(write: (metadata: Record<string, unknown>) => Promise<unknown>) {
+  let pending: Record<string, unknown> | null = null;
+  let active: Promise<void> | null = null;
+  const drain = () => {
+    if (active) return;
+    active = (async () => {
+      while (pending) {
+        const snapshot = pending;
+        pending = null;
+        try { await write(snapshot); } catch { /* Progress is advisory; final persistence remains mandatory. */ }
+      }
+    })().finally(() => { active = null; if (pending) drain(); });
+  };
+  return {
+    enqueue(metadata: Record<string, unknown>) { pending = metadata; drain(); },
+    async flush() { while (active) await active; }
+  };
+}
 
 function stripPlannerProgressDelta(event: unknown): Record<string, unknown> {
   if (!event || typeof event !== "object") return {};
@@ -196,17 +229,24 @@ export function listCreateChatThreads(input: {
     const threadId = typeof metadata.codexThreadId === "string" ? metadata.codexThreadId.trim() : "";
     if (!threadId || byThread.has(threadId)) continue;
     const result = job.result;
+    const messages = job.messages.map((message) => ({
+      role: message.role,
+      text: redactSensitiveText(message.text).slice(0, 12_000)
+    }));
+    const serverReply = job.status === "completed" && result?.reply
+      ? redactSensitiveText(result.reply).slice(0, 2_400) : "";
+    const lastMessage = messages.at(-1);
+    if (serverReply && (lastMessage?.role !== "assistant" || lastMessage.text !== serverReply)) {
+      messages.push({ role: "assistant", text: serverReply });
+    }
     byThread.set(threadId, {
       threadId,
       latestJobId: job.id,
       latestStatus: job.status,
       updatedAt: job.updatedAt,
       companyIds: companyIds.filter((companyId) => allowedCompanies.has(companyId)),
-      messages: job.messages.map((message) => ({
-        role: message.role,
-        text: redactSensitiveText(message.text).slice(0, 12_000)
-      })),
-      ...(result?.reply ? { serverReply: redactSensitiveText(result.reply).slice(0, 2_400) } : {}),
+      messages,
+      ...(serverReply ? { serverReply } : {}),
       ...(result?.title ? { resultTitle: redactSensitiveText(result.title).slice(0, 90) } : {})
     });
     if (byThread.size >= limit) break;
@@ -299,6 +339,12 @@ async function processCreatePlannerJob(row: CreatePlannerJobRow, options: Create
     : Math.min(24_000, legacyStreamText.length);
   let progressEvents = Array.isArray(metadata.events) ? metadata.events.filter((event) => event && typeof event === "object").slice(-160) : [];
   let lastProgressWriteAt = 0;
+  const progressWriter = createPlannerProgressWriter((progressMetadata) => querySqlAsync(
+    `UPDATE create_planner_jobs
+     SET metadata_json=${sqlValue(progressMetadata)}, updated_at=${sqlValue(nowIso())}
+     WHERE id=${sqlValue(row.id)} AND status='running' AND lease_owner=${sqlValue(workerId)}
+     RETURNING id`
+  ));
   const persistProgress = (event: { method: string; threadId?: string; turnId?: string; itemId?: string; delta?: string; status?: string; capturedAt: string }) => {
     if (event.delta) progressTextLength = Math.min(24_000, progressTextLength + redactSensitiveText(event.delta).length);
     progressEvents = [...progressEvents, stripPlannerProgressDelta(event)].slice(-160);
@@ -315,12 +361,8 @@ async function processCreatePlannerJob(row: CreatePlannerJobRow, options: Create
       streamTextLength: progressTextLength,
       events: progressEvents
     };
-    querySql(
-      `UPDATE create_planner_jobs
-       SET metadata_json=${sqlValue(progressMetadata)}, updated_at=${sqlValue(nowIso())}
-       WHERE id=${sqlValue(row.id)} AND status='running' AND lease_owner=${sqlValue(workerId)}
-       RETURNING id`
-    );
+    // Never block the App Server notification reader on a PostgreSQL round trip.
+    progressWriter.enqueue(progressMetadata);
   };
   try {
     const localPlannerSelected = (process.env.AUTOMATION_OS_CREATE_PLANNER_PROVIDER ?? "").trim().toLowerCase() === "local";
@@ -331,9 +373,10 @@ async function processCreatePlannerJob(row: CreatePlannerJobRow, options: Create
           threadId: typeof metadata.codexThreadId === "string" ? metadata.codexThreadId : undefined,
           context: typeof metadata.contextSnapshot === "string" ? metadata.contextSnapshot : undefined,
           client: options.appServerClient ?? getSharedAppServerClient(),
-        onEvent: persistProgress
+          onEvent: persistProgress
         })
       : null;
+    await progressWriter.flush();
     const result = resultWithMetadata?.result ?? await createPlannerResponse({
       messages,
       currentDraft,
@@ -390,6 +433,7 @@ async function processCreatePlannerJob(row: CreatePlannerJobRow, options: Create
     );
     if (terminal.length === 0) return getCreatePlannerJob(row.id) as CreatePlannerJob;
   } catch (error) {
+    await progressWriter.flush();
     const completedAt = nowIso();
     const blocker = safePlannerBlocker(error);
     querySql(
@@ -416,7 +460,11 @@ function safePlannerBlocker(error: unknown): string {
 }
 
 function getSharedAppServerClient(): CodexAppServerClient {
-  if (!sharedAppServerClient) sharedAppServerClient = new CodexAppServerClient();
+  if (!sharedAppServerClient) {
+    sharedAppServerClient = new CodexAppServerClient({
+      turnTimeoutMs: resolvePlannerTurnTimeoutMs()
+    });
+  }
   return sharedAppServerClient;
 }
 
@@ -452,8 +500,9 @@ function normalizeWorkerId(value?: string): string {
 
 function boundedLeaseMs(value?: number): number {
   const configured = value ?? Number(process.env.AUTOMATION_OS_CREATE_PLANNER_LEASE_MS);
-  if (!Number.isFinite(configured)) return defaultLeaseMs;
-  return Math.max(30_000, Math.min(15 * 60 * 1000, Math.floor(configured)));
+  const safeFloor = Math.min(maxLeaseMs, Math.max(minLeaseMs, resolvePlannerTurnTimeoutMs() + plannerLeaseSafetyMs));
+  if (!Number.isFinite(configured)) return Math.max(defaultLeaseMs, safeFloor);
+  return Math.max(safeFloor, Math.min(maxLeaseMs, Math.floor(configured)));
 }
 
 function plannerJobCompanyIds(metadata: Record<string, unknown>): string[] {

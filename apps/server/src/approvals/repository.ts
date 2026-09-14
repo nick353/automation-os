@@ -32,6 +32,31 @@ export type BoundApproval = {
   decisionNote: string | null;
 };
 
+export type CompanyApprovalListOptions = {
+  limit?: number;
+  runId?: string;
+  status?: string;
+  actionKind?: string;
+};
+
+function companyApprovalListQuery(companyId: string, options: number | CompanyApprovalListOptions = 200): { where: string; limit: number } {
+  const input = typeof options === "number" ? { limit: options } : options;
+  const requestedLimit = input.limit ?? 200;
+  const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(500, Math.floor(requestedLimit))) : 200;
+  const predicates = [
+    `company_id=${sqlValue(required(companyId, "company_id_required"))}`,
+    "action_kind IS NOT NULL AND payload_hash IS NOT NULL",
+    "(job_id IS NOT NULL OR policy_version IS NOT NULL)"
+  ];
+  const runId = input.runId?.trim();
+  const status = input.status?.trim();
+  const actionKind = input.actionKind?.trim();
+  if (runId) predicates.push(`run_id=${sqlValue(runId)}`);
+  if (status) predicates.push(`status=${sqlValue(status)}`);
+  if (actionKind) predicates.push(`action_kind=${sqlValue(actionKind)}`);
+  return { where: predicates.join(" AND "), limit };
+}
+
 export function getBoundApproval(companyId: string, approvalId: string): BoundApproval | undefined {
   const row = querySql<any>(`
     SELECT * FROM approvals
@@ -73,27 +98,23 @@ export async function listBoundApprovalsAsync(companyId: string, limit = 200): P
  * bound list and its consume/decision gates unchanged; this projection only
  * makes both persisted approval shapes visible to the company-scoped inbox.
  */
-export function listCompanyApprovals(companyId: string, limit = 200): BoundApproval[] {
-  const boundedLimit = Math.max(1, Math.min(500, Math.floor(limit)));
+export function listCompanyApprovals(companyId: string, options: number | CompanyApprovalListOptions = 200): BoundApproval[] {
+  const query = companyApprovalListQuery(companyId, options);
   return querySql<any>(`
     SELECT * FROM approvals
-    WHERE company_id=${sqlValue(required(companyId, "company_id_required"))}
-      AND action_kind IS NOT NULL AND payload_hash IS NOT NULL
-      AND (job_id IS NOT NULL OR policy_version IS NOT NULL)
+    WHERE ${query.where}
     ORDER BY created_at DESC, id DESC
-    LIMIT ${boundedLimit}
+    LIMIT ${query.limit}
   `).map(toBoundApproval);
 }
 
-export async function listCompanyApprovalsAsync(companyId: string, limit = 200): Promise<BoundApproval[]> {
-  const boundedLimit = Math.max(1, Math.min(500, Math.floor(limit)));
+export async function listCompanyApprovalsAsync(companyId: string, options: number | CompanyApprovalListOptions = 200): Promise<BoundApproval[]> {
+  const query = companyApprovalListQuery(companyId, options);
   const rows = await querySqlAsync<any>(`
     SELECT * FROM approvals
-    WHERE company_id=${sqlValue(required(companyId, "company_id_required"))}
-      AND action_kind IS NOT NULL AND payload_hash IS NOT NULL
-      AND (job_id IS NOT NULL OR policy_version IS NOT NULL)
+    WHERE ${query.where}
     ORDER BY created_at DESC, id DESC
-    LIMIT ${boundedLimit}
+    LIMIT ${query.limit}
   `);
   return rows.map(toBoundApproval);
 }

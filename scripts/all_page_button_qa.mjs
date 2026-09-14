@@ -14,7 +14,7 @@ const outputPath = outputArgIndex >= 0 && process.argv[outputArgIndex + 1]
   ? path.resolve(process.argv[outputArgIndex + 1])
   : path.join(repoRoot, "work/qa/all-page-button-static-preflight.json");
 
-const VALID_DISPOSITIONS = new Set(["real_read", "real_action", "justified_human_gate", "remove"]);
+const VALID_DISPOSITIONS = new Set(["real_read", "real_action", "justified_human_gate", "safe_local_action", "remove"]);
 
 function configuredBrowserSurface() {
   const configPath = process.env.AOS_WEB_OPERATION_BACKEND_CONFIG

@@ -31,6 +31,13 @@ test("records a host-bound pre-projection capability blocker with every stage de
   assert.equal(receipt.capabilityCheck.projectionCreated, false);
   assert.equal(receipt.capabilityCheck.registeredRootInvoked, false);
   assert.equal(receipt.externalActionExecuted, false);
+  assert.equal(receipt.manualRunRequired, true);
+  assert.equal(receipt.manualUserAction, "press Scheduled-page Run now once");
+  assert.match(receipt.manualReadback, /capability\/Kernel receipt/u);
+  assert.equal(receipt.capabilityCheck.manualRunRequired, true);
+  assert.equal(receipt.executionReceipt.manualRunRequired, true);
+  assert.equal(result.manualRunRequired, true);
+  assert.equal(result.readback.manualRunRequired, true);
   assert.deepEqual(receipt.executionReceipt.stageOrder, HOURLY_STAGE_ORDER);
   assert.equal(Object.values(receipt.executionReceipt.stageReceipts).length, HOURLY_STAGE_ORDER.length);
   assert.equal(Object.values(receipt.executionReceipt.stageReceipts).every((stage) => stage.status === "deferred"), true);

@@ -74,7 +74,7 @@ function digest(value) {
   return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
-function executionReceipt({ exactBlocker, nextActionNow, resumeTrigger, fallbackOrIndependentWork }) {
+function executionReceipt({ exactBlocker, nextActionNow, resumeTrigger, fallbackOrIndependentWork, manualRunRequired, manualUserAction, manualReadback }) {
   const stageReceipts = Object.fromEntries(HOURLY_EXECUTION_STAGE_ORDER.map((stage) => [stage, {
     status: "deferred",
     exactBlocker,
@@ -93,6 +93,9 @@ function executionReceipt({ exactBlocker, nextActionNow, resumeTrigger, fallback
     nextActionNow,
     resumeTrigger,
     fallbackOrIndependentWork,
+    manualRunRequired,
+    manualUserAction,
+    manualReadback,
     stageOrder: HOURLY_EXECUTION_STAGE_ORDER,
     stageReceipts,
     stages: stageReceipts,
@@ -126,6 +129,9 @@ export function recordHourlyCapabilityBlocker({
   nextActionNow = "re-check the official App callable registry, then build one fresh host-bound projection and invoke the registered Root exactly once",
   resumeTrigger = "all required official list/read/send tools are callable and a fresh host-bound projection validates",
   fallbackOrIndependentWork = "retain prior immutable receipts and continue read-only AOS/Companion monitoring without reusing them as current proof",
+  manualRunRequired = true,
+  manualUserAction = "press Scheduled-page Run now once",
+  manualReadback = "read back the new official-App execution task and capability/Kernel receipt in the same run",
 } = {}) {
   const root = currentRootMetadata(globals);
   const selectedAutomationId = safeRunPart(automationId, "automation_id");
@@ -135,6 +141,9 @@ export function recordHourlyCapabilityBlocker({
   const blocker = safeRunPart(exactBlocker, "exact_blocker");
   const missing = [...new Set((Array.isArray(unavailableTools) ? unavailableTools : []).map((value) => safeRunPart(value, "unavailable_tool")))].sort();
   if (missing.length === 0) throw exactError("hourly_capability_receipt_missing_tools");
+  const selectedManualRunRequired = manualRunRequired === true;
+  const selectedManualUserAction = boundedText(manualUserAction, "manual_user_action", 600);
+  const selectedManualReadback = boundedText(manualReadback, "manual_readback", 1_000);
   const receipt = {
     schema: HOURLY_CAPABILITY_BLOCKER_RECEIPT_SCHEMA,
     version: 1,
@@ -147,12 +156,16 @@ export function recordHourlyCapabilityBlocker({
       unavailableTools: missing,
       projectionCreated: false,
       registeredRootInvoked: false,
+      manualRunRequired: selectedManualRunRequired,
     },
     exactBlocker: blocker,
     progressAttemptNow: "fresh callable-registry and host-identity readback; no task API fallback",
     nextActionNow: boundedText(nextActionNow, "next_action_now", 1_000),
     resumeTrigger: boundedText(resumeTrigger, "resume_trigger", 600),
     fallbackOrIndependentWork: boundedText(fallbackOrIndependentWork, "fallback_or_independent_work", 1_000),
+    manualRunRequired: selectedManualRunRequired,
+    manualUserAction: selectedManualUserAction,
+    manualReadback: selectedManualReadback,
     externalActionExecuted: false,
   };
   receipt.executionReceipt = executionReceipt(receipt);
@@ -173,12 +186,16 @@ export function recordHourlyCapabilityBlocker({
     schema: stored.schema,
     receiptDigest: stored.receiptDigest,
     exactBlocker: stored.exactBlocker,
+    manualRunRequired: stored.manualRunRequired === true,
+    manualUserAction: stored.manualUserAction,
+    manualReadback: stored.manualReadback,
     executionReceipt: stored.executionReceipt,
     readback: {
       status: "observed",
       path: file,
       receiptDigest: stored.receiptDigest,
       externalActionExecuted: stored.externalActionExecuted === true,
+      manualRunRequired: stored.manualRunRequired === true,
     },
   };
 }

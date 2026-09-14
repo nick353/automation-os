@@ -477,25 +477,25 @@ test("kernel profile is derived per stage and external stages are always full", 
   );
 });
 
-test("Browser Use CLI is a strict manifest surface with no IAB or Chrome fallback", () => {
+test("Companion is a strict manifest surface with no IAB or Chrome fallback", () => {
   const source = JSON.parse(readFileSync(
     "/Users/nichikatanaka/Documents/New project/.codex/automation-kernel/manifests/job-application-manager.json",
     "utf8"
   )) as Record<string, unknown> & { stages: Array<Record<string, unknown>>; chrome_lease_contract: Record<string, unknown> };
   const manifest = manifestCompiler.parseAutomationKernelManifestTextV1(JSON.stringify(source));
   const rootControllerStage = manifest.stages.find((stage) => stage.id === "root_controller_bootstrap");
-  assert.equal(rootControllerStage?.browser_surface, "browser_use_cli");
-  assert.equal(rootControllerStage?.lane, "browser_use_cli");
-  assert.equal(manifest.chrome_lease_contract.surface, "browser_use_cli");
-  assert.equal(manifest.chrome_lease_contract.schema, "automation_kernel_browser_use_stage_lease.v1");
+  assert.equal(rootControllerStage?.browser_surface, "aos_chrome_companion_profile_instance");
+  assert.equal(rootControllerStage?.lane, "aos_chrome_companion");
+  assert.equal(manifest.chrome_lease_contract.surface, "aos_chrome_companion_profile_instance");
+  assert.equal(manifest.chrome_lease_contract.schema, "automation_kernel_companion_stage_lease.v1");
   const compiled = manifestCompiler.compileAutomationKernelManifestV1(manifest, "browser-use-surface-run");
-  assert.equal(compiled.definition.effects.find((effect) => effect.effect_id === "root_controller_bootstrap")?.payload.browser_surface, "browser_use_cli");
+  assert.equal(compiled.definition.effects.find((effect) => effect.effect_id === "root_controller_bootstrap")?.payload.browser_surface, "aos_chrome_companion_profile_instance");
 
   const wrongLane = structuredClone(source);
   wrongLane.stages.find((stage) => stage.id === "root_controller_bootstrap")!.lane = "in_app_browser";
   assert.throws(
     () => manifestCompiler.parseAutomationKernelManifestTextV1(JSON.stringify(wrongLane)),
-    /automation_kernel_manifest_browser_use_cli_stage_invalid:root_controller_bootstrap/
+    /automation_kernel_manifest_companion_stage_invalid:root_controller_bootstrap/
   );
 
   const mixedContract = structuredClone(source);

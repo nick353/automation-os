@@ -54,7 +54,7 @@ export type RegisteredWorkflowInventoryReadback = {
     lane_id: string;
     workflow_id: string;
     runner_kind: string;
-    canonical_browser_surface: "browser_use_cli";
+    canonical_browser_surface: "aos_chrome_companion_profile_instance";
     visibility: RegisteredBrowserLane["laneVisibility"];
     lifecycle: string;
     profile_ref: string;
@@ -94,7 +94,7 @@ export function buildRegisteredWorkflowInventoryReadback(): RegisteredWorkflowIn
     schema: REGISTERED_WORKFLOW_INVENTORY_SCHEMA,
     status: "ok",
     interpretation: {
-      registered_browser_workflows: "Browser Use CLI/portable execution registry (6 fixed workflows)",
+      registered_browser_workflows: "AOS Chrome Companion/portable execution registry (6 fixed workflows)",
       company_automation_catalog_workflows: "Company adoption catalog and adapter registry (6 workflows; includes local-only entries)",
       browser_lane_workflows: "Browser Use lane inventory (7 workflows; includes temporary YouTube transcript lane)"
     },
@@ -111,7 +111,7 @@ export function buildRegisteredWorkflowInventoryReadback(): RegisteredWorkflowIn
       lane_id: lane.id,
       workflow_id: lane.workflowId,
       runner_kind: lane.runnerKind,
-      canonical_browser_surface: "browser_use_cli" as const,
+      canonical_browser_surface: "aos_chrome_companion_profile_instance" as const,
       visibility: lane.laneVisibility,
       lifecycle: lane.lifecycle,
       profile_ref: publicProfileRef(lane.profileDir),

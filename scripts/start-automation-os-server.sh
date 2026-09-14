@@ -25,6 +25,8 @@ export AUTOMATION_OS_DATABASE_MODE="${AUTOMATION_OS_DATABASE_MODE:-auto}"
 # setting cannot re-enable a retired launch path.
 export AUTOMATION_OS_BROWSER_NO_FALLBACK="1"
 export AUTOMATION_OS_RESEARCH_PLAN_SCHEDULER_MS="${AUTOMATION_OS_RESEARCH_PLAN_SCHEDULER_MS:-0}"
+# The recovery Mac API must not race the cloud planner against the same DB.
+export AUTOMATION_OS_CREATE_PLANNER_WORKER_INTERVAL_MS="${AUTOMATION_OS_CREATE_PLANNER_WORKER_INTERVAL_MS:-0}"
 export AUTOMATION_OS_PORTABLE_WORKER_MODE="${AUTOMATION_OS_PORTABLE_WORKER_MODE:-external}"
 # Leave runner selection to the AOS-owned resolver.  It selects the
 # read-only Browser Use CLI adapter by default and switches to the business

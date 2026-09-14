@@ -14,6 +14,9 @@ test("run detail endpoint fetches run-scoped rows beyond dashboard limits", () =
   const appSource = readFileSync(resolve(process.cwd(), "apps/web/src/App.tsx"), "utf8");
 
   assert.match(serverSource, /app\.get\("\/api\/runs\/:id"/);
+  assert.match(serverSource, /app\.get\("\/api\/v1\/companies\/:companyId\/runs\/:runId"/);
+  assert.match(serverSource, /await requireCompanyAccessAsync\(companyId\)/);
+  assert.match(serverSource, /getRunDetailAsync\(runId, \[companyId\]\)/);
   assert.match(serverSource, /export function getRunDetail/);
   assert.match(serverSource, /export async function getRunDetailAsync/);
   assert.match(serverSource, /await getRunDetailAsync\(req\.params\.id, await actorCompanyIdsAsync\(\)\)/);
@@ -26,13 +29,14 @@ test("run detail endpoint fetches run-scoped rows beyond dashboard limits", () =
   assert.match(serverSource, /LIMIT 1000/);
   assert.match(serverSource, /LIMIT 2000/);
   assert.match(appSource, /fetchApiJson<RunDetail>\(`\/api\/runs\/\$\{encodeURIComponent\(currentRunId\)\}`/);
+  assert.match(appSource, /fetchApiJson<RunDetail>\(`\/api\/v1\/companies\/\$\{encodeURIComponent\(companyId\)\}\/runs\/\$\{encodeURIComponent\(runId\)\}`/);
   assert.match(appSource, /const selectedSteps = detailForCurrentRun\?\.steps \?\? \[\]/);
   assert.match(appSource, /const selectedProofs = detailForCurrentRun\?\.proofs/);
   assert.match(appSource, /const selectedWorkerEvents = detailForCurrentRun\?\.workerEvents \?\? \[\]/);
   const scopedRunDetailSource = appSource.slice(appSource.indexOf("function TruthfulRunDetailPage"), appSource.indexOf("function TruthfulRecoveryPage"));
   assert.match(scopedRunDetailSource, /const companyId = projectSlugFromRoute\(route\)/);
   assert.match(scopedRunDetailSource, /return Boolean\(companyId\) && \(item\.company_id \?\? item\.project_id \?\? automationCompanyId\) === companyId/);
-  assert.match(scopedRunDetailSource, /const proofs = \(model\.mvpState\.proofs \?\? \[\]\)\.filter\(\(proof\) => proof\.run_id === runId\s+&& \(\(!proof\.company_id && !proof\.project_id\) \|\| \(proof\.company_id \?\? proof\.project_id\) === companyId\)\);/);
+  assert.match(scopedRunDetailSource, /const proofs = \(currentDetail\?\.proofs \?\? model\.mvpState\.proofs \?\? \[\]\)\.filter\(\(proof\) => proof\.run_id === runId\s+&& \(\(!proof\.company_id && !proof\.project_id\) \|\| \(proof\.company_id \?\? proof\.project_id\) === companyId\)\);/);
 });
 
 test("proof viewer endpoint is id based and blocks unsafe raw paths", () => {

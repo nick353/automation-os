@@ -3,13 +3,13 @@ import assert from "node:assert/strict";
 import { getPortableExternalBusinessPlan, portableExternalBusinessPlans, PORTABLE_ACCOUNT_TARGET_PAYLOAD_RECEIPT_CONTRACT_SCHEMA_V1, PORTABLE_EXTERNAL_BUSINESS_PLAN_SCHEMA_V1, validatePortableBusinessInputBundle, validatePortableExternalBusinessPlan } from "../runs/portableExternalBusinessPlan.js";
 import { admitWebOperationEffect, getWebOperationContract, getWebOperationContractForSurface, resolveLiveSemanticTarget, validateWebOperationIntent } from "../runs/webOperationContract.js";
 
-test("portable external business plans are provider-neutral and bound to the canonical Browser Use CLI", () => {
+test("portable external business plans are provider-neutral and bound to the canonical AOS Chrome Companion", () => {
   const plans = Object.values(portableExternalBusinessPlans);
   assert.equal(plans.length, 6);
   for (const plan of plans) {
     assert.equal(plan.schema, PORTABLE_EXTERNAL_BUSINESS_PLAN_SCHEMA_V1);
-    assert.equal(plan.browser_surface, "browser_use_cli");
-    assert.equal(plan.browser_runtime, "browser_use_cli");
+    assert.equal(plan.browser_surface, "aos_chrome_companion_profile_instance");
+    assert.equal(plan.browser_runtime, "aos_chrome_companion");
     assert.deepEqual(plan.connector_priority, ["plugin", "mcp", "cli", "api"]);
     assert.equal(plan.connector_fallback_policy, "no_implicit_fallback");
     assert.equal(plan.llm_provider_neutral, true);
@@ -19,9 +19,9 @@ test("portable external business plans are provider-neutral and bound to the can
     assert.ok(plan.required_business_proofs.length > 0);
     assert.equal(plan.required_runner_contract.same_run_receipt, true);
     assert.equal(plan.required_runner_contract.web_operation_contract.schema, "automation_os_web_operation_contract.v1");
-    assert.equal(plan.required_runner_contract.web_operation_contract.browser_surface, "browser_use_cli");
-    assert.deepEqual(plan.required_runner_contract.web_operation_contract.browser_kernel.supported_surfaces, ["browser_use_cli"]);
-    assert.equal(plan.required_runner_contract.web_operation_contract.fixed_kernel.forbidden_surfaces.includes("extension"), true);
+    assert.equal(plan.required_runner_contract.web_operation_contract.browser_surface, "aos_chrome_companion_profile_instance");
+    assert.deepEqual(plan.required_runner_contract.web_operation_contract.browser_kernel.supported_surfaces, ["aos_chrome_companion_profile_instance"]);
+    assert.equal(plan.required_runner_contract.web_operation_contract.fixed_kernel.forbidden_surfaces.includes("browser_use_cli"), false);
     assert.equal(plan.required_runner_contract.web_operation_contract.fixed_kernel.workflow_owned_persistent_profile, true);
     assert.equal(plan.required_runner_contract.web_operation_contract.adaptive_layer.site_playbook_role, "hint_only");
     assert.equal(plan.required_runner_contract.web_operation_contract.adaptive_layer.no_fixed_css_selector_authority, true);
@@ -166,7 +166,7 @@ test("portable external business plan lookup returns a defensive copy", () => {
   assert.equal(getPortableExternalBusinessPlan("unknown"), null);
 });
 
-test("Browser Use CLI plans fail closed when their nested web contract drifts to Profile 2", () => {
+test("Companion plans fail closed when their nested web contract drifts to Profile 2", () => {
   const plan = getPortableExternalBusinessPlan("job-application-manager");
   assert.ok(plan);
   assert.throws(
@@ -180,6 +180,6 @@ test("Browser Use CLI plans fail closed when their nested web contract drifts to
         },
       },
     }),
-    /browser_use_cli_web_operation_contract_mismatch/,
+    /aos_chrome_companion_web_operation_contract_mismatch/,
   );
 });

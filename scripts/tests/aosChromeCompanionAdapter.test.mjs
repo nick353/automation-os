@@ -270,8 +270,9 @@ test("read-only transaction provisions a task-owned tab through a signed no-effe
   const transaction = calls.find((call) => call.method === "task.transaction");
   assert.equal(transaction.params.intent, "read_only_target_provision");
   assert.equal(transaction.params.actions[0].method, "page.delay");
+  assert.equal(transaction.params.actions[1].method, "page.screenshot");
   assert.equal(transaction.params.reuseTaskTab, false);
-  assert.equal(transaction.params.keepTaskTab, false);
+  assert.equal(transaction.params.keepTaskTab, true);
 });
 
 test("read-only target provisioning retries once after a cleaned-up visual miss", async () => {
@@ -661,4 +662,56 @@ test("authorized transaction requires an idempotency key before opening a sessio
     (error) => error.code === "companion_adapter_input_invalid",
   );
   assert.equal(client.calls.length, 0);
+});
+
+test('new outcomes keep browser proof separate from provider completion and use the shared file materializer', async () => {
+  let prepared = 0, dispatched = 0;
+  const inputActions = [{ method: 'page.uploadMultiple', params: { filePaths: ['/fixture/resume.pdf'], confirmationLocator: { text: 'Attached' } } }];
+  const client = {
+    async materializeTransactionActions(actions) {
+      prepared++; assert.deepEqual(actions, inputActions);
+      return [{ method: 'page.uploadMultiple', params: { locator: { text: 'Resume' },
+        files: [{ name: 'resume.pdf', size: 1024 * 1024, dataBase64: 'host-only-fixture' }] } }];
+    },
+    async request(method, params) {
+      if (method === 'session.open') return { sessionId: 'shared-files', generation: 'generation' };
+      if (method === 'session.close') return { closed: true, terminal_tab_cleanup: { status: 'completed' } };
+      throw Error(method);
+    },
+    async requestAuthorizedTransaction(request) {
+      dispatched++; assert.equal(request.actions[0].params.files[0].size, 1024 * 1024);
+      assert.deepEqual(request.actions[0].params.confirmationLocator, { text: 'Attached' });
+      assert.equal(request.actions[0].params.filePaths, undefined);
+      return { result: 'verified', external_action_executed: true, actions: [{ method: 'page.uploadMultiple', result: { ok: true } }],
+        outcome: { schema: 'aos.chrome_companion.transaction_outcome.v1', provider_completion: 'unverified', source_sync: 'unverified',
+          applied_action_indices: [0], remaining_action_indices: [], uncertain_action_indices: [] },
+        visual_readback: { dataBase64: Buffer.from('visual').toString('base64'), mimeType: 'image/png', tabId: 9 } };
+    },
+  };
+  const result = await executeAosChromeCompanionAuthorized({ runId: 'shared-files-run', taskId: 'shared-files-task', idempotencyKey: 'shared-files-key',
+    startUrl: ORIGIN + '/apply', allowedOrigins: [ORIGIN], actions: inputActions }, { client });
+  assert.equal(prepared, 1); assert.equal(dispatched, 1); assert.equal(result.browser_receipt_verified, true);
+  assert.equal(result.provider_receipt_trusted, false); assert.equal(result.same_run_receipt, false);
+  assert.equal(result.outcome.provider_completion, 'unverified');
+});
+
+test('missing visual readback preserves applied actions and closes only the session while remaining work is retained', async () => {
+  const closes = []; let dispatches = 0;
+  const outcome = { schema: 'aos.chrome_companion.transaction_outcome.v1', provider_completion: 'unverified', source_sync: 'unverified',
+    applied_action_indices: [0], remaining_action_indices: [1], uncertain_action_indices: [], reconciliation_required: false };
+  const client = {
+    async request(method, params) {
+      if (method === 'session.open') return { sessionId: 'partial-session', generation: 'generation' };
+      if (method === 'session.close') { closes.push(params); return { closed: true, terminal_tab_cleanup: { status: 'retained' } }; }
+      throw Error(method);
+    },
+    async requestAuthorizedTransaction() { dispatches++; return { result: 'blocked', actions: [{ method: 'page.type', result: { ok: true } }],
+      external_action_executed: false, outcome, visual_readback: null }; },
+    async requestTaskStatus() { return { state: 'partial', external_action_executed: false }; },
+  };
+  const result = await executeAosChromeCompanionAuthorized({ runId: 'partial-run', taskId: 'partial-task', idempotencyKey: 'partial-key',
+    startUrl: ORIGIN + '/apply', allowedOrigins: [ORIGIN], actions: [{ method: 'page.type', params: { text: 'A' } }, { method: 'page.click', params: { locator: { text: 'Submit' } } }] }, { client });
+  assert.equal(dispatches, 1); assert.equal(result.actions.length, 1); assert.deepEqual(result.outcome, outcome);
+  assert.equal(result.exact_blocker.code, 'companion_visual_readback_missing');
+  assert.equal(closes[0].taskTerminal, false); assert.equal(result.cleanup.remaining_work_retained, true);
 });

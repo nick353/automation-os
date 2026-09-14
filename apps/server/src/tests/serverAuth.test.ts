@@ -106,6 +106,30 @@ test("loopback recovery session bootstrap is scoped to localhost and does not ex
   assert.equal(readSessionScope({ cookie: cookie!.split(";", 1)[0] }, env), "write");
 });
 
+test("expired or tampered management sessions lose write access without affecting the live session", (t) => {
+  let now = Date.parse("2026-09-06T00:00:00Z");
+  t.mock.method(Date, "now", () => now);
+  const env = {
+    ...keychainDisabled,
+    AUTOMATION_OS_REQUIRE_API_TOKEN: "1",
+    AUTOMATION_OS_SESSION_SECRET: "isolated-expiry-sentinel",
+    AUTOMATION_OS_AUTH_SESSION_TTL_SECONDS: "3600",
+    AUTOMATION_OS_AUTH_COOKIE_SECURE: "1"
+  } as NodeJS.ProcessEnv;
+  const issued = issueSessionCookie("write", env);
+  assert.ok(issued);
+  const headers = { cookie: issued!.split(";", 1)[0] };
+  assert.equal(readSessionScope(headers, env), "write");
+  const originalScope = readRequestAuth({ method: "POST", path: "/api/mvp/approvals", headers }, env).scope;
+  assert.equal(originalScope, "write");
+  const tampered = { cookie: headers.cookie.replace("v1.write.", "v1.read.") };
+  assert.equal(readSessionScope(tampered, env), null);
+  now += 3600_000;
+  assert.equal(readSessionScope(headers, env), null);
+  assert.equal(readRequestAuth({ method: "POST", path: "/api/mvp/approvals", headers }, env).scope, "unknown");
+  assert.equal(readRequestAuth({ method: "POST", path: "/api/mvp/approvals", headers: {} }, env).scope, "unknown");
+});
+
 test("loopback portable worker auth is limited to claim heartbeat and receipt", () => {
   const env = {
     ...keychainDisabled,

@@ -38,12 +38,16 @@ import {
   X
 } from "lucide-react";
 import "./styles.css";
+import { buildWorkflowStartGuide, type WorkflowStartGuideItem } from "./workflowStartGuide";
+import { ApprovalReadbackPanel } from "./ApprovalReadbackPanel";
+import { companyApprovalListReadbackUrl, validateCompanyApprovalListReadback } from "./approvalReadFilters";
+import { unifiedManagementNavigation } from "./unifiedManagementModel";
 
 type Status = "running" | "waiting" | "approved" | "blocked" | "enabled" | "disabled" | "draft";
 type ApiTokenScope = "unknown" | "read" | "write" | "unrestricted";
 
 const subTabLabels = [
-  ["定期実行", "automations"],
+  ["仕事", "automations"],
   ["保存情報", "memory"],
   ["Lane", "lanes"],
   ["パフォーマンス", "performance"],
@@ -68,21 +72,59 @@ async function mvpFetch(input: RequestInfo | URL, init: RequestInit = {}) {
     return fetch(input, withMvpApiHeaders(init));
   }
   const controller = new AbortController();
+  const callerSignal = init.signal;
+  let timedOut = false;
+  const abortFromCaller = () => controller.abort();
+  if (callerSignal?.aborted) controller.abort();
+  else callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
   // The first authenticated read may include a cold Postgres control-plane
   // snapshot after the server has restarted.  The API is already bounded and
   // fails closed; give that bounded read enough time to complete instead of
   // converting a recoverable cold-start into a false local-mode timeout.
-  const timer = window.setTimeout(() => controller.abort(), 30_000);
+  const timer = window.setTimeout(() => { timedOut = true; controller.abort(); }, 30_000);
   try {
     return await fetch(input, withMvpApiHeaders({ ...init, signal: controller.signal }));
   } catch (error) {
-    if (error && typeof error === "object" && (error as { name?: unknown }).name === "AbortError") {
+    if (timedOut && error && typeof error === "object" && (error as { name?: unknown }).name === "AbortError") {
       throw new Error("mvp_state_request_timeout");
     }
     throw error;
   } finally {
     window.clearTimeout(timer);
+    callerSignal?.removeEventListener("abort", abortFromCaller);
   }
+}
+
+async function pluginAuthReadbackFetch(input: RequestInfo | URL, init: RequestInit = {}) {
+  if (typeof AbortController === "undefined") return mvpFetch(input, init);
+  const controller = new AbortController();
+  const callerSignal = init.signal;
+  let timedOut = false;
+  const abortFromCaller = () => controller.abort();
+  if (callerSignal?.aborted) controller.abort();
+  else callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
+  const timer = window.setTimeout(() => { timedOut = true; controller.abort(); }, 15_000);
+  try {
+    return await mvpFetch(input, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (timedOut && error && typeof error === "object" && (error as { name?: unknown }).name === "AbortError") {
+      throw new Error("plugin_auth_readback_timeout");
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timer);
+    callerSignal?.removeEventListener("abort", abortFromCaller);
+  }
+}
+
+function mvpDiagnosticsEnabled(): boolean {
+  const hashQuery = location.hash.split("?", 2)[1] ?? "";
+  return new URLSearchParams(hashQuery).get("mvp_diagnostics") === "1";
+}
+
+function mvpReadId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function newIdempotencyKey(scope: string) {
@@ -125,17 +167,26 @@ function redactDisplayPaths(value: unknown) {
 function pluginAuthUrlBlocker(value: string) {
   try {
     const url = new URL(value);
-    // The live Codex App Server currently returns this ChatGPT plugin-details
-    // route for Gmail. It is an official page, but it contains no connect or
-    // authorize control, so it must not be presented as an auth surface or
-    // kept in a polling state indefinitely.
-    if (url.hostname === "chatgpt.com" && url.pathname.startsWith("/plugins/plugin_connector_1p_")) {
-      return "official_auth_surface_not_actionable";
-    }
+    if (url.protocol !== "https:" || url.username || url.password) return "official_auth_url_invalid";
+    if (url.hostname === "chatgpt.com" && !/^\/(?:apps|plugins)\/[^/]+/.test(url.pathname)) return "official_auth_surface_not_actionable";
     return null;
   } catch {
     return "official_auth_url_invalid";
   }
+}
+
+function pluginAuthLinkLabel(value: string) {
+  try {
+    const url = new URL(value);
+    if (url.hostname === "chatgpt.com") return "公式接続・インストールページ";
+  } catch { /* Invalid URLs are disabled by pluginAuthUrlBlocker. */ }
+  return "公式接続ページ";
+}
+
+function pluginPlatformMatches(pluginName: string, platform: unknown) {
+  const aliases: Record<string, string> = { mail: "gmail", drive: "google-drive", calendar: "google-calendar" };
+  const value = String(platform ?? "").trim().toLowerCase();
+  return pluginName.trim().toLowerCase() === (aliases[value] ?? value);
 }
 
 function isActionablePluginAuthUrl(value: string) {
@@ -150,8 +201,26 @@ function publicRunStatus(status: unknown) {
   if (value === "reconciliation_required") return "照合待ち";
   if (value === "blocked" || value === "failed") return "要確認";
   if (value === "running") return "実行中";
-  if (value === "queued" || value === "pending" || value === "waiting_approval") return "待機中";
+  if (value === "waiting_approval" || value === "approval_required" || value === "approval_pending") return "承認待ち";
+  if (value === "queued" || value === "pending" || value === "waiting") return "待機中";
+  if (value.includes("sign_in") || value.includes("login") || value.includes("auth")) return "サインインが必要";
+  if (value === "unavailable" || value.endsWith("_unavailable")) return "利用不可";
   return "未確認";
+}
+
+function chatModePresentation(prompt: string) {
+  const value = prompt.trim();
+  if (!value) return { label: "入力待ち", consequence: "送信すると、まず質問・下書き・定期実行・実行依頼のどれかを判定します。" };
+  if (/[?？]|教えて|確認して|状況|一覧|ステータス|どうなって/iu.test(value)) {
+    return { label: "質問・確認", consequence: "回答とreadbackを返します。保存・スケジュール変更・外部操作は開始しません。" };
+  }
+  if (/毎日|毎週|毎月|定期|スケジュール|schedule|cron/iu.test(value)) {
+    return { label: "定期実行の相談", consequence: "予定の候補を確認します。保存しても停止中の下書きで、明示的な有効化と既存ゲートが必要です。" };
+  }
+  if (/今すぐ|実行して|開始して|run now|execute|送信して|投稿して|応募して/iu.test(value)) {
+    return { label: "実行依頼", consequence: "対象・認証・承認・同一Runのreadbackを満たすまで実行しません。結果不明時は再送しません。" };
+  }
+  return { label: "自動化の下書き", consequence: "仕様メモを作成します。保存後も外部操作は開始せず、承認と実行設定は別の明示操作です。" };
 }
 
 const READ_ONLY_BUSINESS_PROOF_PENDING_BLOCKERS = new Set([
@@ -203,7 +272,7 @@ function publicBlockerSummary(value: unknown) {
     return "Mac workerの同一Run readback待ち / 次: worker claimまたはexact blockerを確認";
   }
   if (normalized === "browser_use_worker_readback_pending") {
-    return "Mac workerのBrowser Use同一Run readback待ち（認証・画面状態は未確認） / 次: 同じRunのworker receiptを確認";
+    return "Mac workerのCompanion同一Run readback待ち（認証・画面状態は未確認） / 取得できなければexact blockerとして確定";
   }
   if (normalized === "same_run_receipt_required") {
     return "同一Runのreceiptが未確認です（外部効果は未確認） / 次: provider receipt・source sync・cleanupのreadbackを確認";
@@ -235,6 +304,18 @@ function publicBlockerSummary(value: unknown) {
   if (normalized === "production_token_required_or_private_ingress_gate_for_unauthenticated_direct_api") {
     return "AOS保護APIのOwner認証が必要です / 次: 公式AOS画面の認証後にprotected readbackを再確認";
   }
+  if (normalized === "profile_not_connected") {
+    return "AOS Chrome Companionプロファイルが未接続です / 次: Chromeの拡張でReconnect→Connectedを確認してから、新しいtask-owned sessionで対象をfresh readback";
+  }
+  if (["client_transport_disconnected", "extension_transport_disconnected"].includes(normalized)) {
+    return "Companion通信が切断されました / 次: 接続を復旧し、前回操作を再送せず新しいsessionで対象をfresh readback";
+  }
+  if (["unknown_effect", "unknown_effect_ledger_only"].includes(normalized)) {
+    return "外部効果が未確認です / 次: 同じRunのreceipt・対象readbackを照合し、再送しない";
+  }
+  if (normalized === "ledger_only") {
+    return "過去の台帳記録のみです / 次: live tabや操作可能なsessionとは扱わず、現在の対象を新しくreadback";
+  }
   if (normalized === "owner_sso_required" || normalized === "owner_sso_required_on_fresh_task_owned_ingress_session") {
     return "AOS OwnerのGoogle認証が必要です / 次: 公式AOS画面でnichika2000823@gmail.comの認証を完了してから、保護されたreadbackを再確認";
   }
@@ -254,10 +335,16 @@ function publicBlockerSummary(value: unknown) {
     return "応募の対象範囲が未承認です / 次: 対象限定approvalの範囲と期限を確認";
   }
   if (normalized === "portable_external_approval_required") {
-    return "外部応募の承認待ちです / 次: 対象1件の内容と送信権限を確認";
+    return "この処理の実行承認待ちです / 次: 同じRunの対象・内容・期限を確認";
   }
   if (normalized === "approval_expired_requires_fresh_target_bound_approval") {
-    return "応募承認の期限が切れています / 次: freshな対象1件に束縛した承認を確認";
+    return "実行承認の期限が切れています / 次: 対象と内容を確認し、新しい依頼の承認を準備";
+  }
+  if (normalized === "approval_rejected") {
+    return "承認が却下されたため、このRunは実行前に停止しました";
+  }
+  if (normalized === "approval_cancelled") {
+    return "承認が取り消されたため、このRunは実行前に停止しました";
   }
   if (normalized === "same_run_provider_receipt_source_sync_reconciliation_missing") {
     return "応募結果の同一Run証跡が不足しています / 次: provider receipt・source sync・reconciliationを確認";
@@ -271,8 +358,17 @@ function publicBlockerSummary(value: unknown) {
   if (normalized === "zeabur_connector_auth_not_verified") {
     return "会社1のPlugin認証が未完了です / 次: 公式Integrationsで認証状態を確認";
   }
+  if (normalized === "plugin_auth_readback_timeout") {
+    return "Plugin認証状態のreadbackがタイムアウトしました / 次: 接続状態を確認してから新しい確認を1回だけ実行";
+  }
+  if (normalized === "company_connection_ref_missing") {
+    return "会社1の接続参照がverifiedではありません / 次: 公式認証後に同じ会社scopeで再確認";
+  }
   if (normalized === "registered_automation_local_runner_not_wired_to_http") {
     return "手動実行の接続準備が完了していません / 次: 登録automationのfresh readback後に正規手動実行接続を確認";
+  }
+  if (normalized === "registered_automation_effect_stage_not_admitted") {
+    return "読み取り専用の確認要求は受付可能です。業務実行は未許可です / 次: 対象限定の承認・同一Run receipt・source syncを確認";
   }
   if (normalized === "chrome_selected_tab_readback_invalid") {
     return "Chromeの現在タブを取得できません / 次: Profile 2で対象タブを選択してから、正規Bridgeの登録状態を再確認";
@@ -482,6 +578,7 @@ function isChromePluginProfile2Backend(value: MvpState["web_operation_backend"] 
 function publicWebOperationBackendLabel(backend: unknown) {
   if (backend === "chrome_plugin") return "Chrome Plugin";
   if (backend === "browser_use_cli") return "Browser Use CLI";
+  if (backend === "aos_chrome_companion") return "AOS Chrome Companion";
   if (backend === "playwright") return "Playwright";
   return backend ? String(backend) : "Browser runtime";
 }
@@ -492,7 +589,7 @@ function publicBrowserUseRuntimeStatus(runtime: MvpState["browser_use_runtime"])
     const pluginReadback = runtime.chromePluginReadback;
     if (pluginReadback?.status === "ready" || runtime.status === "verified") return "確認済み";
     if (pluginReadback?.status === "stale" || pluginReadback?.exactBlocker || runtime.exactBlocker === "chrome_extension_bridge_readback_stale") return "要確認";
-    if (runtime.status === "readback_pending") return "Chrome Plugin確認待ち";
+    if (runtime.status === "readback_pending") return "Chrome Plugin readback未確定";
     if (runtime.status === "blocked") return "要確認";
     return "未確認";
   }
@@ -501,7 +598,7 @@ function publicBrowserUseRuntimeStatus(runtime: MvpState["browser_use_runtime"])
   if (processBlocker === "browser_use_live_process_binding_mismatch") return "profile / port不一致（照合待ち）";
   if (runtime.processReadback?.status === "unavailable") return "process readback取得不可";
   if (runtime.status === "verified") return "確認済み";
-  if (runtime.status === "readback_pending") return "Mac worker確認待ち";
+  if (runtime.status === "readback_pending") return "Mac worker readback未確定";
   if (runtime.status === "blocked") return "要確認";
   return "未確認";
 }
@@ -526,12 +623,12 @@ function publicBrowserUseLaneNextCheck(lane: BrowserUseLaneBinding, runtime: Mvp
   const readback = String(lane.liveReadbackStatus ?? "not_claimed");
   if (readback === "verified" || readback === "same_run_verified") return "同一Runのreceipt / cleanupを確認";
   if (readback === "blocked") return "exact blockerを解消して再読戻し";
-  if (runtime?.runtimeRole === "control_plane") return "Mac workerの同一Run readback待ち";
+  if (runtime?.runtimeRole === "control_plane") return "Mac workerの同一Run readbackを取得";
   return "profile/port lockとprocess identityを同一Runで確認";
 }
 
 function publicBrowserUseRuntimeNextCheck(runtime: MvpState["browser_use_runtime"]) {
-  if (!runtime) return "AOS stateを同期してBrowser Use runtimeを確認";
+  if (!runtime) return "AOS stateを同期してCompanion runtimeを確認";
   if (isChromePluginRuntime(runtime)) {
     const pluginBlocker = runtime.chromePluginReadback?.exactBlocker ?? runtime.exactBlocker;
     if (pluginBlocker) return `Chrome Plugin trusted bridgeとProfile 2のfresh readbackを確認（${pluginBlocker}）`;
@@ -542,10 +639,10 @@ function publicBrowserUseRuntimeNextCheck(runtime: MvpState["browser_use_runtime
   }
   if (runtime.processReadback?.exactBlocker) return `foreign / process bindingを変更せず、同一Runのroom・authority・recordingを照合（${runtime.processReadback.exactBlocker}）`;
   if (runtime.processReadback?.status === "unavailable") return "Mac workerからprocess identityとprofile/port lockのreadbackを取得";
-  if (runtime.status === "readback_pending") return "Mac worker heartbeatと同一RunのBrowser Use readbackを確認";
+  if (runtime.status === "readback_pending") return "Mac worker heartbeatと同一RunのCompanion readbackを確認";
   if (runtime.status === "blocked") return runtime.exactBlocker ? `exact blocker: ${runtime.exactBlocker}` : "Mac worker runtimeのexact blockerを確認";
   if (runtime.status === "verified") return "実行時はauthority・profile/port lock・receipt・cleanupを確認";
-  return runtime.nextAction ?? "Browser Use runtimeのreadbackを確認";
+  return runtime.nextAction ?? "Companion runtimeのreadbackを確認";
 }
 
 function publicBrowserUseProcessReadbackStatus(readback: BrowserUseProcessReadback | undefined) {
@@ -553,6 +650,35 @@ function publicBrowserUseProcessReadbackStatus(readback: BrowserUseProcessReadba
   if (readback.status === "available") return "同一ホストprocess実測済み";
   if (readback.status === "unavailable") return "同一ホストprocess未取得";
   return "未確認";
+}
+
+function publicPortableRemoteWorkerProcessReadback(worker: BrowserUseProcessReadback["portableRemoteWorker"] | undefined) {
+  if (!worker) return { label: "未確認", detail: "remote workerのreadbackを確認してください。" };
+  if (worker.processStatus === "present") {
+    return {
+      label: "同一ホストprocess検出",
+      detail: `process=${worker.processCount ?? 0}。process存在だけではheartbeat・queue claim・receipt・source syncを完了扱いにしません。`
+    };
+  }
+  if (worker.status === "remote_reported") {
+    const identity = worker.remoteReport?.identityStatus && worker.remoteReport.identityStatus !== "verified"
+      ? ` / identity=${worker.remoteReport.identityStatus}`
+      : "";
+    return {
+      label: "Mac heartbeat reportあり",
+      detail: `APIホストのprocessは未観測です${identity}。同一Runのreceipt/readbackを別に確認してください。`
+    };
+  }
+  if (worker.processReadbackStatus === "unavailable") {
+    return { label: "同一ホストprocess未取得", detail: "Mac workerのheartbeat reportと同一Runのreadbackを確認してください。" };
+  }
+  if (worker.status === "absent") {
+    return { label: "同一ホストprocess未観測", detail: "Mac停止とは判定せず、heartbeatでMac側を別に確認してください。" };
+  }
+  if (worker.remoteReport?.readbackStatus === "unreadable") {
+    return { label: "heartbeat report未読", detail: worker.remoteReport.exactBlocker ?? "保存されたheartbeat reportを再取得してください。" };
+  }
+  return { label: "未確認", detail: "remote workerのheartbeatとprocess readbackを確認してください。" };
 }
 
 function publicBrowserOperationalAuthenticationStatus(readback: BrowserUseOperationalReadback | undefined) {
@@ -612,6 +738,12 @@ function newerRunSnapshot(detailRun: any, dashboardRun: any) {
 type AutomationRow = {
   id: string;
   project_id: string;
+  /** Preserve identity metadata for the five-row start guide. */
+  company_id?: string;
+  builder_spec?: Record<string, unknown>;
+  execution_target?: Record<string, unknown>;
+  exact_blocker?: string;
+  latest_proof?: Record<string, unknown>;
   revision: number;
   automation_type: string;
   name: string;
@@ -621,7 +753,7 @@ type AutomationRow = {
   next_run_at: string;
   lane: string;
   last: string;
-  execution_mode: "control_plane_dry_run" | "registered_workflow_readback" | "unverified";
+  execution_mode: "control_plane_dry_run" | "registered_workflow_readback" | "portable_mac_worker_queue" | "unverified";
   execution_label: string;
   scheduler_effect: string;
   status: Status;
@@ -673,6 +805,9 @@ type BrowserUseProcessReadback = {
     remoteWorkerCompanyIds?: string[];
     remoteOrigins?: string[];
     workerIds?: string[];
+    remoteWorkerInstanceIds?: string[];
+    remoteWorkerGenerations?: string[];
+    identityStatus?: string;
     alignmentCandidates?: Array<{ scope?: string; status?: string; companyIds?: string[]; origins?: string[]; workerIds?: string[] }>;
     alignmentDecisionRequired?: boolean;
     exactBlocker?: string | null;
@@ -680,6 +815,8 @@ type BrowserUseProcessReadback = {
   };
   portableRemoteWorker?: {
     status?: string;
+    processStatus?: string;
+    processReadbackStatus?: string;
     processCount?: number;
     pids?: number[];
     mode?: string;
@@ -692,6 +829,9 @@ type BrowserUseProcessReadback = {
       remoteWorkerCompanyIds?: string[];
       remoteOrigins?: string[];
       workerIds?: string[];
+      remoteWorkerInstanceIds?: string[];
+      remoteWorkerGenerations?: string[];
+      identityStatus?: string;
       alignmentCandidates?: Array<{ scope?: string; status?: string; companyIds?: string[]; origins?: string[]; workerIds?: string[] }>;
       alignmentDecisionRequired?: boolean;
       exactBlocker?: string | null;
@@ -709,8 +849,20 @@ type BrowserUseProcessReadback = {
       updatedAt?: string | null;
       pid?: number | null;
       workerId?: string | null;
+      workerInstanceId?: string | null;
+      generation?: string | null;
+      observedAt?: string | null;
+      identityStatus?: string;
       remoteOrigin?: string | null;
     };
+    remoteReport?: {
+      readbackStatus?: string;
+      identityStatus?: string;
+      workerInstanceId?: string | null;
+      generation?: string | null;
+      exactBlocker?: string | null;
+      status?: string;
+    } | null;
   };
 };
 
@@ -727,7 +879,7 @@ type BrowserUseOperationalReadback = {
 };
 
 function normalizeScheduleKind(value: unknown): ScheduleKind {
-  return value === "manual" || value === "daily" || value === "weekly" || value === "cron" ? value : "daily";
+  return value === "manual" || value === "daily" || value === "weekly" || value === "cron" ? value : "manual";
 }
 type MvpState = {
   updated_at?: string;
@@ -780,10 +932,13 @@ type MvpState = {
     registered_workflow_count?: number;
     runs_count?: number;
   };
+  company_scope?: { enforced?: boolean; company_ids?: string[] };
   presentation_profiles?: Array<{ id: string; kind: string; label: string; source?: string; revision?: number; exactBlocker?: string | null; purpose?: string; freshnessSlaMinutes?: number; browserUseLane?: string; stopBoundary?: string; primaryMetrics?: string[]; widgets?: string[]; preferredGrouping?: string; explanation?: string }>;
   browser_use_runtime?: { backend?: string; surface?: string; helper?: string; runtimeRole?: string; status?: string; exactBlocker?: string | null; readbackStatus?: string; summary?: string; nextAction?: string; fallbackPolicy?: string; contract?: string[]; lanes?: BrowserUseLaneBinding[]; processReadback?: BrowserUseProcessReadback; chromePluginReadback?: { status?: string; exactBlocker?: string | null; capturedAt?: string | null; refreshStatus?: string | null; bridgeInstanceId?: string | null; bridgeUrl?: string | null; browser?: { metadata?: Record<string, string> } }; operationalReadback?: BrowserUseOperationalReadback; workflowInventory?: { sets?: Record<string, string[]>; relationships?: { browser_and_catalog_overlap?: string[]; browser_only?: string[]; catalog_only?: string[]; lane_only?: string[]; browser_and_portable_match?: boolean; catalog_and_adapter_match?: boolean } } };
   schedules?: any[];
   runs?: any[];
+  /** Dedicated company-scoped latest-run candidates for the five-row start guide. */
+  workflowStartGuideRuns?: any[];
   readback_projection?: "full" | "ui" | "summary" | string;
   run_summary?: { total_count?: number; blocked_count?: number; active_count?: number; completed_count?: number; today_count?: number; today_blocked_count?: number; today_active_count?: number; today_completed_count?: number };
   approval_summary?: { total_count?: number; waiting_count?: number; expired_count?: number };
@@ -904,6 +1059,15 @@ type RunDetail = {
   workerEvents: any[];
 };
 
+type PortableRunProjection = {
+  same_run?: boolean;
+  execution_mode_label?: string;
+  planned_operation_scope?: { status?: string; operation?: string | null; account_ref?: string | null; target_key?: string | null; payload_hash?: string | null; source_snapshot_id?: string | null; vault_path?: string | null; repository?: string | null; branch?: string | null; provenance?: Record<string, string> };
+  observed_results?: { status?: string; operation?: string | null; maintenance?: boolean | null; export?: boolean | null; git_sync?: boolean | null; provenance?: Record<string, string> };
+  missing?: string[];
+  mismatches?: string[];
+};
+
 type ProofView = {
   id: string;
   run_id?: string;
@@ -937,21 +1101,30 @@ type CapabilityItem = CapabilitySurface & {
   hiddenFromSuggestions?: boolean;
   catalogSource?: "installed" | "recommended" | "official";
   installHint?: string;
+  pluginId?: string;
+  marketplaceName?: string;
+  authPolicy?: "ON_INSTALL" | "ON_USE" | null;
 };
 
 type PluginAuthPollState = {
-  status: "polling" | "verified" | "blocked";
+  status: "verified" | "blocked" | "checking";
   attempt: number;
   exactBlocker: string | null;
+  runtimeReady?: boolean;
 };
 
 type GmailReadOnlyCanaryReadback = {
   schema?: string;
-  status?: "ready_for_provider_call" | "blocked" | string;
+  status?: "ready_for_provider_call" | "completed" | "blocked" | string;
+  runId?: string;
   companyId?: string;
   connector?: string;
+  operation?: string;
   transport?: string;
   selectedTool?: { id?: string; label?: string; kind?: string; status?: string } | null;
+  providerToolCallObserved?: boolean;
+  providerAccountPresent?: boolean;
+  providerAccountHash?: string | null;
   exactBlocker?: string | null;
   nextAction?: string;
   externalActionExecuted?: boolean;
@@ -959,7 +1132,9 @@ type GmailReadOnlyCanaryReadback = {
   dataPersisted?: boolean;
   secretMaterialIncluded?: boolean;
   providerReceipt?: unknown;
+  sourceSync?: { status?: string; accountRefHash?: string; exactBlocker?: string };
   reconciliation?: { required?: boolean; status?: string };
+  cleanup?: { status?: string; ephemeralThread?: boolean };
 };
 
 type ZeaburConnectorRegistryReadback = {
@@ -968,8 +1143,8 @@ type ZeaburConnectorRegistryReadback = {
   target?: { serviceName?: string; serviceId?: string; environmentId?: string };
   appServer?: { servicePresent?: boolean; runtimeStatus?: string; codexLogin?: string };
   pluginRegistry?: {
-    installed?: Array<{ id?: string; name?: string; installed?: boolean; authStatus?: string }>;
-    available?: Array<{ id?: string; name?: string; installed?: boolean; authStatus?: string }>;
+    installed?: Array<{ id?: string; name?: string; installed?: boolean; authStatus?: string; marketplaceName?: string; authPolicy?: "ON_INSTALL" | "ON_USE" | null }>;
+    available?: Array<{ id?: string; name?: string; installed?: boolean; authStatus?: string; marketplaceName?: string; authPolicy?: "ON_INSTALL" | "ON_USE" | null }>;
   };
   mcpRegistry?: { configuredCount?: number; verified?: boolean; names?: string[] };
   connectorAuth?: Record<string, string>;
@@ -1085,6 +1260,28 @@ type RegisteredAutomationReadback = {
   latest_proof_run_id?: string;
   automation_count?: number;
   automations?: any[];
+  company_registration_projection?: any[];
+};
+
+type CanonicalAutomationRegistryReadback = {
+  ok?: boolean;
+  schema?: string;
+  authority?: string;
+  companyId?: string;
+  status?: "ok" | string;
+  items?: Array<{
+    id: string;
+    source: "protected_postgres_catalog" | "codex_heartbeat" | string;
+    plane: "catalog" | "heartbeat" | string;
+    companyId: string;
+    name: string;
+    schedule?: { kind?: string; expression?: string; timezone?: string };
+    entry?: { sourceAutomationId?: string | null; workerCommandKind?: string; readOnlyDefault?: boolean };
+    effect?: { externalActionDefault?: boolean; executedInThisReadback?: boolean };
+  }>;
+  executionLaneAdapters?: string[];
+  promotedToRuntimeRegistry?: boolean;
+  externalActionExecuted?: boolean;
 };
 
 function workerStatusSummary(worker: MvpState["worker"]) {
@@ -1124,6 +1321,8 @@ type AutomationPlan = {
   title: string;
   schedule: string;
   cadence: string;
+  scheduleEnabled?: boolean;
+  scheduleTimezone?: string;
   targetLabel: string;
   steps: string[];
   questions: string[];
@@ -1326,10 +1525,17 @@ function isApprovalWaiting(status: unknown, expiresAt?: unknown): boolean {
 }
 
 function detectSchedule(text: string) {
-  const hourMatch = text.match(/(\d{1,2})\s*時/);
-  const hour = hourMatch ? Math.max(0, Math.min(23, Number(hourMatch[1]))) : text.includes("夕方") ? 18 : text.includes("夜") ? 20 : 9;
-  const cadence = text.includes("毎週") ? "weekly" : text.includes("毎月") ? "monthly" : "daily";
-  if (cadence === "monthly") return { schedule: `0 ${hour} 1 * *`, cadence };
+  const recurring = /毎日|毎週|毎月|\b(?:daily|weekly|monthly)\b/iu.test(text);
+  if (/手動.{0,8}(?:のみ|だけ|読み取り)|定期実行は(?:無効|なし|不要)|manual.only/iu.test(text)
+    || (!recurring && /[1１一]回|一度だけ|今回だけ|まだ実行しない|実行せず|保存(?:する)?だけ|\b(?:once|one[- ]off|one[- ]time|draft only)\b/iu.test(text))) {
+    return { schedule: "manual", cadence: "manual" };
+  }
+  const timeMatch = text.match(/\b([01]?\d|2[0-3]):([0-5]\d)\b/u) ?? text.match(/([01]?\d|2[0-3])\s*時(?:\s*([0-5]?\d)\s*分)?/u);
+  const hour = timeMatch ? Number(timeMatch[1]) : text.includes("夕方") ? 18 : text.includes("夜") ? 20 : 9;
+  const minute = Number(timeMatch?.[2] ?? 0);
+  const time = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+  const cadence = /毎週|\bweekly\b/iu.test(text) ? "weekly" : /毎月|\bmonthly\b/iu.test(text) ? "monthly" : "daily";
+  if (cadence === "monthly") return { schedule: `${minute} ${hour} 1 * *`, cadence };
   if (cadence === "weekly") {
     const weekday = /(?:毎週|週).*(?:日曜|日曜日)/u.test(text) ? "SUN"
       : /(?:毎週|週).*(?:月曜|月曜日)/u.test(text) ? "MON"
@@ -1338,15 +1544,48 @@ function detectSchedule(text: string) {
             : /(?:毎週|週).*(?:木曜|木曜日)/u.test(text) ? "THU"
               : /(?:毎週|週).*(?:金曜|金曜日)/u.test(text) ? "FRI"
                 : /(?:毎週|週).*(?:土曜|土曜日)/u.test(text) ? "SAT" : "MON";
-    return { schedule: `${weekday} ${String(hour).padStart(2, "0")}:00`, cadence };
+    return { schedule: `${weekday} ${time}`, cadence };
   }
-  return { schedule: `${String(hour).padStart(2, "0")}:00`, cadence };
+  return { schedule: time, cadence };
 }
 
 function scheduleKindForPlan(plan: AutomationPlan): ScheduleKind {
+  if (plan.cadence === "manual") return "manual";
   if (plan.cadence === "weekly") return "weekly";
   if (plan.cadence === "monthly") return "cron";
   return "daily";
+}
+
+function schedulePreferencesFromPrompt(prompt: string): Pick<AutomationPlan, "scheduleEnabled" | "scheduleTimezone"> {
+  const paused = /停止中のまま|停止して|無効(?:のまま|にして|に設定)|有効化(?:は|を)?しない|再開(?:は|を)?しない|(?:keep|leave).{0,15}(?:paused|disabled)|do not enable/iu.test(prompt);
+  const active = !paused && /(?:予定|定期実行|スケジュール).{0,12}(?:再開して|有効(?:化して|にして))|\b(?:enable|resume)\s+(?:the\s+)?schedule\b/iu.test(prompt);
+  const timezone = prompt.match(/\b[A-Za-z_]+\/[A-Za-z_]+(?:\/[A-Za-z_]+)?\b/u)?.[0];
+  let scheduleTimezone: string | undefined;
+  if (timezone) {
+    try { new Intl.DateTimeFormat("en", { timeZone: timezone }); scheduleTimezone = timezone; } catch { /* Not an IANA timezone. */ }
+  }
+  return { ...(paused || active ? { scheduleEnabled: active } : {}), ...(scheduleTimezone ? { scheduleTimezone } : {}) };
+}
+
+function plannedChatScheduleValues(plan: AutomationPlan, currentSchedule: any) {
+  const kind = scheduleKindForPlan(plan);
+  return { kind, expression: kind === "manual" ? null : plan.schedule.trim(),
+    timezone: plan.scheduleTimezone ?? String(currentSchedule?.timezone ?? "Asia/Tokyo"),
+    enabled: kind !== "manual" && (plan.scheduleEnabled ?? currentSchedule?.enabled === true) };
+}
+
+type ChatScheduleAdjustment = { companyId: string; automationId: string; kind: ScheduleKind;
+  expression: string | null; timezone: string; enabled: boolean; previousRevision: number };
+
+function matchesChatScheduleAdjustment(schedule: any, expected: ChatScheduleAdjustment): boolean {
+  if (!schedule || (schedule.company_id ?? schedule.companyId) !== expected.companyId
+    || (schedule.automation_id ?? schedule.automationId) !== expected.automationId
+    || schedule.kind !== expected.kind || (schedule.expression ?? null) !== expected.expression
+    || schedule.timezone !== expected.timezone || schedule.enabled !== expected.enabled
+    || Number(schedule.revision) !== expected.previousRevision + 1) return false;
+  const next = "next_run_at" in schedule ? schedule.next_run_at : schedule.nextRunAt;
+  return !expected.enabled || expected.kind === "manual" ? next === null
+    : typeof next === "string" && Number.isFinite(Date.parse(next));
 }
 
 function buildAutomationPlan(prompt: string, selectedPlatforms: string[]): AutomationPlan {
@@ -1622,7 +1861,7 @@ function builderConfigForAutomationType(type: string): BuilderConfig {
     automationName: "未確認の自動化",
     approvalPolicy: "未確認",
     steps: ["保存済みautomation_typeを確認してから編集します"],
-    inputSources: "API readback待ち",
+    inputSources: "API readback取得中",
     outputs: "未確認（保存しません）",
     riskBoundary: "未認識の自動化タイプは保存・承認・定期実行更新を行いません。"
   };
@@ -1630,6 +1869,176 @@ function builderConfigForAutomationType(type: string): BuilderConfig {
 
 function isSupportedAutomationType(type: string) {
   return Object.prototype.hasOwnProperty.call(builderConfigs, type);
+}
+
+function registeredWorkflowSteps(spec: Record<string, any> | undefined): Array<{ title: string; enabled: boolean }> {
+  if (!Array.isArray(spec?.stages)) return [];
+  return spec.stages.flatMap((stage: unknown) => {
+    if (!stage || typeof stage !== "object") return [];
+    const value = stage as Record<string, unknown>;
+    const title = [value.title, value.name, value.id].find((candidate) => typeof candidate === "string" && candidate.trim());
+    return typeof title === "string" ? [{ title: title.trim(), enabled: value.enabled !== false }] : [];
+  });
+}
+
+function registeredWorkflowBuilderConfig(automation: Record<string, any> | undefined, spec: Record<string, any> | undefined): BuilderConfig | null {
+  // Only an existing, company-scoped API record gets this metadata editor.
+  // Do not make /registered_workflow/edit a template or rewrite its runner spec.
+  if (!automation?.id || automation.automation_type !== "registered_workflow") return null;
+  return {
+    kindLabel: "登録業務",
+    automationName: String(automation.name ?? "登録業務"),
+    approvalPolicy: String(automation.approval_policy ?? "未確認"),
+    steps: registeredWorkflowSteps(spec).map((step) => step.title),
+    inputSources: typeof spec?.canonicalWorkflowId === "string" ? `登録workflow: ${spec.canonicalWorkflowId}` : "登録runnerの入力契約（詳細はRunで確認）",
+    outputs: "同じRunの実行結果・保存成果物・照合証拠",
+    riskBoundary: "処理契約・接続先・承認ポリシーは登録値を保持します。名前・目的の編集だけでは処理内容は変わりません。予定の変更は別に保存します。"
+  };
+}
+
+type ChatWorkflowOption = { automation_id: string; automation_revision: number; automation_version_id: string;
+  workflow_id: string; name: string; scope: string; definition_sha256: string;
+  can_run_once: boolean; can_save_draft: boolean; requires_approval: boolean; manual_blocker: string | null };
+type ChatWorkflowResult = { binding_id: string; job_id: string; company_id: string; action: "run_once" | "save_draft";
+  status: string; run_id?: string | null; run_status?: string | null; automation_id?: string | null; scope: string };
+type ChatWorkflowReadback = { schema: string; job_id: string; company_id: string; options: ChatWorkflowOption[];
+  actions: ChatWorkflowResult[]; exact_blocker: string | null };
+
+async function requestChatWorkflowActions(companyId: string, jobId: string, signal?: AbortSignal): Promise<ChatWorkflowReadback> {
+  const response = await mvpFetch(`/api/v1/companies/${encodeURIComponent(companyId)}/chat-jobs/${encodeURIComponent(jobId)}/workflow-actions`,
+    { cache: "no-store", signal });
+  const body = await response.json().catch(() => null);
+  if (!response.ok || body?.ok !== true || body.schema !== "aos.chat_workflow_options.v1" || body.company_id !== companyId || body.job_id !== jobId
+    || !Array.isArray(body.options) || !Array.isArray(body.actions)
+    || body.options.some((option: ChatWorkflowOption) => !option || typeof option.automation_id !== "string"
+      || !Number.isSafeInteger(option.automation_revision) || option.automation_revision < 1
+      || !/^[a-f0-9]{64}$/.test(option.definition_sha256))
+    || body.actions.some((action: ChatWorkflowResult) => action.company_id !== companyId || action.job_id !== jobId)) {
+    throw new Error(body?.exact_blocker || "chat_workflow_readback_mismatch");
+  }
+  return body;
+}
+
+function fixedChatWorkflowConfirmed(readback: ChatWorkflowReadback | null, companyId: string, jobId?: string): boolean {
+  return Boolean(readback && jobId && readback.company_id === companyId && readback.job_id === jobId
+    && readback.schema === "aos.chat_workflow_options.v1" && !readback.exact_blocker && readback.options.length === 1
+    && (readback.options[0].can_run_once || readback.actions.some((action) => action.action === "run_once")));
+}
+
+function ChatWorkflowActionsPanel({ model, companyId, jobId, onBusy, onReadback }: {
+  model: AppModel; companyId: string; jobId: string; onBusy: (busy: boolean) => void; onReadback?: (value: ChatWorkflowReadback | null) => void;
+}) {
+  const [readback, setReadback] = useState<ChatWorkflowReadback | null>(null);
+  const [selectedId, setSelectedId] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [readbackRequired, setReadbackRequired] = useState(false);
+  const inFlight = useRef(false);
+  const mounted = useRef(true);
+  const load = async (signal?: AbortSignal) => {
+    setLoading(true);
+    onReadback?.(null);
+    try {
+      const next = await requestChatWorkflowActions(companyId, jobId, signal);
+      if (!mounted.current || signal?.aborted) return;
+      setReadback(next);
+      onReadback?.(next);
+      setReadbackRequired(false);
+      setSelectedId((current) => next.options.some((option) => option.automation_id === current)
+        ? current : next.options.length === 1 ? next.options[0].automation_id : "");
+      setError("");
+    } catch (cause) {
+      if (mounted.current && !signal?.aborted) setError(publicBlockerSummary(cause instanceof Error ? cause.message : "chat_workflow_read_failed"));
+    } finally { if (mounted.current && !signal?.aborted) setLoading(false); }
+  };
+  useEffect(() => {
+    mounted.current = true;
+    const controller = new AbortController();
+    void load(controller.signal);
+    return () => { mounted.current = false; controller.abort(); onReadback?.(null); };
+  }, [companyId, jobId]);
+  const selected = readback?.options.find((option) => option.automation_id === selectedId);
+  const perform = async (action: "run_once" | "save_draft") => {
+    if (inFlight.current || loading || readbackRequired || !selected || model.mvpLoadStatus !== "ready"
+      || readback?.company_id !== companyId || readback.job_id !== jobId
+      || readback.actions.some((item) => item.action === action)
+      || (action === "run_once" ? !selected.can_run_once : !selected.can_save_draft)) return;
+    inFlight.current = true;
+    setBusy(true);
+    onBusy(true);
+    setError("");
+    try {
+      const response = await mvpFetch(`/api/v1/companies/${encodeURIComponent(companyId)}/chat-jobs/${encodeURIComponent(jobId)}/workflow-actions`, {
+        method: "POST", headers: { "content-type": "application/json", "idempotency-key": `chat-workflow-${jobId}-${action}` },
+        body: JSON.stringify({ action, automation_id: selected.automation_id, expected_revision: selected.automation_revision,
+          definition_sha256: selected.definition_sha256 })
+      });
+      const result = await response.json().catch(() => null) as (ChatWorkflowResult & { ok?: boolean; exact_blocker?: string }) | null;
+      if (!response.ok || result?.ok !== true || result.company_id !== companyId || result.job_id !== jobId || result.action !== action) {
+        throw new Error(result?.exact_blocker || "chat_workflow_action_result_unconfirmed");
+      }
+      if (!mounted.current) return;
+      // Read the same saved action before displaying or navigating to a result.
+      const confirmed = await requestChatWorkflowActions(companyId, jobId);
+      const saved = confirmed.actions.find((item) => item.binding_id === result.binding_id && item.action === action);
+      if (!saved || saved.run_id !== result.run_id || saved.automation_id !== result.automation_id) throw new Error("chat_workflow_action_readback_mismatch");
+      if (!mounted.current) return;
+      setReadback(confirmed);
+      if (action === "run_once" && saved.run_id) {
+        model.setReceipt(`会話の依頼を登録済み処理のRunへ結び付けました。run=${saved.run_id} / 受付は完了ではありません。結果はこのRunで確認します。`);
+        go(`#/projects/${companyId}/runs/${saved.run_id}`);
+      } else if (action === "save_draft" && saved.status === "draft_saved" && saved.automation_id) {
+        const state = await readMvpState("ui", { fresh: true });
+        if (!mounted.current) return;
+        const persisted = state.automations?.find((automation: Record<string, any>) => automation.id === saved.automation_id && automation.company_id === companyId);
+        if (!persisted || persisted.automation_type !== "registered_workflow") throw new Error("chat_workflow_draft_state_readback_mismatch");
+        model.setMvpState(state);
+        model.setAutomationRows(toAutomationRows(state.automations ?? []));
+        model.setReceipt(`登録済み処理に接続した下書きを保存しました。automation=${saved.automation_id} / 実行・予定有効化はしていません。`);
+        go(`#/projects/${companyId}/automations/${saved.automation_id}/edit`);
+      }
+    } catch (cause) {
+      if (mounted.current) {
+        setReadbackRequired(true);
+        setError(`結果は未確認です: ${publicBlockerSummary(cause instanceof Error ? cause.message : "chat_workflow_action_failed")}。同じ依頼の結果を再取得してください。自動で再実行はしません。`);
+      }
+    } finally {
+      inFlight.current = false;
+      if (mounted.current) setBusy(false);
+      onBusy(false);
+    }
+  };
+  if (!loading && !error && readback && !readback.actions.length
+    && ["chat_workflow_registered_target_not_identified", "chat_workflow_answer_only_no_execution_requested"].includes(readback.exact_blocker ?? "")) return null;
+  return <section className="question-box" data-control-id="chat.workflow-actions" aria-label="登録済み処理への接続">
+    <strong>登録済み処理で実行・保存</strong>
+    <p>会話の提案とは別に、実行する固定処理と対象を確認します。仕様メモの変更だけでは処理は変わりません。</p>
+    {loading && <p role="status">この会社・会話に使える登録処理と保存済みの結果を確認しています。</p>}
+    {error && <p role="alert">{error}</p>}
+    {readback?.exact_blocker && readback.exact_blocker !== "chat_workflow_answer_only_no_execution_requested" && <p>{publicBlockerSummary(readback.exact_blocker)}。この依頼をそのまま実行できる登録処理は確認できていません。</p>}
+    {Boolean(readback?.options.length) && <>
+      <label>実行対象の登録業務
+        <select data-control-id="chat.workflow-target" aria-label="実行対象の登録業務" value={selectedId} disabled={busy || loading} onChange={(event) => setSelectedId(event.target.value)}>
+          <option value="">対象を選んでください</option>
+          {readback!.options.map((option) => <option key={option.automation_id} value={option.automation_id}>{option.name}</option>)}
+        </select>
+      </label>
+      {selected && <p>{selected.scope}</p>}
+      {selected?.requires_approval && selected.can_run_once && <p>既存Sheetを更新するため、実行前にこのRunの対象・内容・期限を承認画面で確認します。承認前は調査・同期を開始しません。予定の常時許可とは別です。</p>}
+      {selected?.manual_blocker && <p>この業務のChatからの手動実行はまだ未接続です。登録済み予定の結果とは別です。</p>}
+      <div className="button-row">
+        {selected?.can_run_once && <Button controlId="chat.workflow-run" disabled={busy || loading || readbackRequired || readback!.actions.some((item) => item.action === "run_once")} onClick={() => { void perform("run_once"); }}>{selected.requires_approval ? "この処理の実行承認を準備" : "この処理を1回実行"}</Button>}
+        {selected?.can_save_draft && <Button controlId="chat.workflow-save" disabled={busy || loading || readbackRequired || readback!.actions.some((item) => item.action === "save_draft")} onClick={() => { void perform("save_draft"); }}>実処理に接続した下書きを保存</Button>}
+      </div>
+    </>}
+    {readback?.actions.map((item) => <p key={item.binding_id}>
+      {item.status === "draft_saved" ? "下書き保存済み・予定なし" : item.status === "draft_archived" ? "下書きはアーカイブ済み" : item.run_id ? `Run受付済み（${item.run_status ?? "結果確認中"}）` : "依頼の紐付けは保存済み・実行結果は未確認"}
+      {item.run_id && <> — <a data-control-id="chat.workflow-run-result" href={`#/projects/${companyId}/runs/${item.run_id}`}>同じRunの結果を開く</a></>}
+      {item.action === "save_draft" && item.automation_id && <> — <a data-control-id="chat.workflow-draft-open" href={`#/projects/${companyId}/automations/${item.automation_id}/edit`}>保存した下書きを開く</a></>}
+    </p>)}
+    <Button controlId="chat.workflow-readback" disabled={busy || loading} onClick={() => { void load(); }}>同じ依頼の結果を再取得</Button>
+  </section>;
 }
 
 async function requestChatPlan(
@@ -1686,7 +2095,11 @@ async function requestChatPlan(
       throw new Error(workerReadback.exactBlocker);
     }
   }
-  if (job.status !== "completed" || !job.result || typeof job.result.title !== "string") {
+  return plannerReadbackFromJob(job, prompt, selectedPlatforms, options.projectId);
+}
+
+function plannerReadbackFromJob(job: PlannerJobReadback, prompt: string, selectedPlatforms: string[], projectId?: string): PlannerReadback {
+  if (!job.id || job.status !== "completed" || !job.result || typeof job.result.title !== "string") {
     throw new Error(job.exactBlocker || "codex_app_server_unavailable");
   }
   const serverPlan = job.result;
@@ -1707,17 +2120,18 @@ async function requestChatPlan(
   return {
     ok: true,
     planner_adapter: serverPlan.source ?? "server_planner",
-    planner_mode: serverPlan.executionDecision ?? "server_readback",
+    planner_mode: serverPlan.operation === "answer_question" && questions.length === 0 ? "answer_only" : serverPlan.executionDecision ?? "server_readback",
     planner_model_ref: serverPlan.model ?? null,
     planner_schema_version: "create-plan-v1",
     planner_operation: serverPlan.operation ?? "answer_question",
     // Keep the planner readback bound to the same project that was sent to the
     // server. Falling back to session storage is only for legacy callers that
     // do not provide an explicit project scope.
-    project_id: options.projectId?.trim() || projectSlugFromPrompt(prompt),
+    project_id: projectId?.trim() || projectSlugFromPrompt(prompt),
     automation_type: explicitAutomationType ?? "answer-only",
     plan: {
       ...productDefaults,
+      ...schedulePreferencesFromPrompt(prompt),
       title: serverPlan.title!,
       kind: explicitAutomationType ? productConfig.kindLabel : serverPlan.title!,
       targetLabel: explicitAutomationType ? productDefaults.targetLabel : "会社内の作業",
@@ -1728,7 +2142,7 @@ async function requestChatPlan(
     },
     exact_blocker: serverPlan.exactBlocker ?? null,
     can_create: canCreate,
-    creation_blocker: canCreate ? null : questions.length
+    creation_blocker: canCreate || (serverPlan.operation === "answer_question" && questions.length === 0) ? null : questions.length
       ? "確認事項への回答が必要です"
       : serverPlan.operation !== "create_automation"
         ? "新規自動化の作成依頼として確認できませんでした"
@@ -1736,12 +2150,12 @@ async function requestChatPlan(
         ? "自動化の種類を明記してください"
         : "実行可能な自動化プランとして確認できませんでした",
     server_reply: serverPlan.reply?.trim() || serverPlan.nextAction?.trim() || "プランを確認しました。",
-    chat_job_id: body.job.id,
+    chat_job_id: job.id,
     chat_thread_id: typeof job.metadata?.codexThreadId === "string" ? job.metadata.codexThreadId : null,
     chat_turn_id: typeof job.metadata?.codexTurnId === "string" ? job.metadata.codexTurnId : null,
     chat_status: job.status,
     chat_stream_text_length: typeof job.metadata?.streamTextLength === "number" ? job.metadata.streamTextLength : 0,
-    chat_events: plannerProgressFromJob(body.job.id!, job).events,
+    chat_events: plannerProgressFromJob(job.id, job).events,
     tool_preference: job.metadata?.toolPreference && typeof job.metadata.toolPreference === "object"
       ? job.metadata.toolPreference as ToolPreferenceReadback
       : null,
@@ -1749,6 +2163,20 @@ async function requestChatPlan(
     requires_confirmation: Array.isArray(serverPlan.requiresConfirmation) ? serverPlan.requiresConfirmation : [],
     web_operation_intake: serverPlan.webOperationIntake
   };
+}
+
+async function requestSavedChatPlan(thread: ChatThreadReadback, projectId: string, signal?: AbortSignal): Promise<PlannerReadback> {
+  if (!projectId || !thread.companyIds.includes(projectId) || !thread.latestJobId) throw new Error("chat_history_scope_mismatch");
+  const response = await mvpFetch(`/api/create/plan/jobs/${encodeURIComponent(thread.latestJobId)}`, { cache: "no-store", signal });
+  const body = await response.json().catch(() => null) as { ok?: boolean; job?: PlannerJobReadback } | null;
+  const job = body?.job;
+  if (!response.ok || !body?.ok || !job || job.id !== thread.latestJobId || job.metadata?.codexThreadId !== thread.threadId) {
+    throw new Error("chat_history_plan_readback_mismatch");
+  }
+  const prompt = [...thread.messages].reverse().find((message) => message.role === "user")?.text ?? "";
+  // Read the persisted result only. Resuming never queues another model turn
+  // or creates an automation, and the normal result mapper keeps save gates.
+  return plannerReadbackFromJob(job, prompt, [], projectId);
 }
 
 async function storeChatSecrets(rawText: string, projectId?: string): Promise<{ sanitizedText: string; storedCount: number; runnerPendingCount: number }> {
@@ -1780,7 +2208,7 @@ async function storeChatSecrets(rawText: string, projectId?: string): Promise<{ 
 
 function secretRunnerNote(readback: { runnerPendingCount: number }): string {
   return readback.runnerPendingCount > 0
-    ? ` / Mac worker確認待ち=${readback.runnerPendingCount}件`
+    ? ` / Mac worker readback未確定=${readback.runnerPendingCount}件`
     : "";
 }
 
@@ -1901,10 +2329,10 @@ function ChatProgressPanel({ progress, planning }: { progress: PlannerProgress |
         <div className="chat-progress-events">
           {progress.events.slice(-5).map((event, index) => <span key={`${event.method}-${event.capturedAt ?? index}`}>{plannerEventLabel(event.method)}</span>)}
         </div>
-      ) : <p className="muted">workerから進捗を待っています。</p>}
+      ) : <p className="muted">workerのfresh進捗readbackを取得します。</p>}
       {progress?.streamTextLength ? <details><summary>受信進捗（内部JSONは表示しません）</summary><p className="muted">Codexから {progress.streamTextLength.toLocaleString("ja-JP")} 文字を受信しました。</p></details> : null}
       {progress?.workerBlocker && <p className="muted">Mac worker: {publicBlockerSummary(progress.workerBlocker)}{progress.workerNextAction ? ` / 次: ${progress.workerNextAction}` : ""}</p>}
-      {!planning && status === "completed" && <p className="muted">外部操作は実行していません。内容確認後に保存へ進みます。</p>}
+      {!planning && status === "completed" && <p className="muted">回答・計画の受信が完了しました。外部操作は実行していません。</p>}
     </div>
   );
 }
@@ -1913,6 +2341,20 @@ function toAutomationRows(items: any[]): AutomationRow[] {
   return items.map((item) => ({
     id: String(item.id),
     project_id: String(item.project_id ?? item.company_id ?? "未確認"),
+    company_id: typeof item.company_id === "string" ? item.company_id : undefined,
+    // The start guide must correlate saved company-scoped records by their
+    // immutable canonical workflow ID. Keep the nested adoption spec in this
+    // bounded row projection instead of manufacturing a name-only conflict.
+    builder_spec: item.builder_spec && typeof item.builder_spec === "object" && !Array.isArray(item.builder_spec)
+      ? item.builder_spec as Record<string, unknown>
+      : undefined,
+    execution_target: item.execution_target && typeof item.execution_target === "object" && !Array.isArray(item.execution_target)
+      ? item.execution_target as Record<string, unknown>
+      : undefined,
+    exact_blocker: typeof item.exact_blocker === "string" ? item.exact_blocker : undefined,
+    latest_proof: item.latest_proof && typeof item.latest_proof === "object" && !Array.isArray(item.latest_proof)
+      ? item.latest_proof as Record<string, unknown>
+      : undefined,
     revision: Number(item.revision ?? 1),
     automation_type: String(item.automation_type ?? item.id ?? "sns-post"),
     name: String(item.name),
@@ -1922,10 +2364,10 @@ function toAutomationRows(items: any[]): AutomationRow[] {
     next_run_at: String(item.next_run_at ?? "未計算"),
     lane: String(item.lane ?? "Lane 1"),
     last: String(item.last_run_at ?? item.last ?? "未実行"),
-    execution_mode: (item.execution_mode === "control_plane_dry_run" || item.execution_mode === "registered_workflow_readback" ? item.execution_mode : "unverified") as AutomationRow["execution_mode"],
+    execution_mode: (["control_plane_dry_run", "registered_workflow_readback", "portable_mac_worker_queue"].includes(item.execution_mode) ? item.execution_mode : "unverified") as AutomationRow["execution_mode"],
     execution_label: String(item.execution_label ?? "実行契約未確認（保存のみ）"),
     scheduler_effect: String(item.scheduler_effect ?? "not_configured"),
-    status: (["running", "waiting", "approved", "blocked", "enabled", "disabled", "draft"].includes(item.status) ? item.status : "draft") as Status
+    status: (item.status === "active" ? "enabled" : item.status === "paused" ? "disabled" : ["running", "waiting", "approved", "blocked", "enabled", "disabled", "draft"].includes(item.status) ? item.status : "draft") as Status
   }));
 }
 
@@ -1939,15 +2381,21 @@ function displayedAutomationLane(lane: unknown, backend: unknown): string {
 }
 
 // Screen-level refreshes use the bounded list projection.  Run detail pages
-// read their complete receipt through /api/runs/:id, so the UI does not need
+// read their complete receipt through the company-scoped Run detail endpoint, so the UI does not need
 // to re-transfer every historical metadata blob on every navigation or
 // retry.  The full MVP projection remains available to explicit API callers.
-async function readMvpState(projection: "full" | "ui" | "summary" | "chat" = "ui", options: { fresh?: boolean } = { fresh: true }) {
+async function readMvpState(projection: "full" | "ui" | "summary" | "chat" = "ui", options: { fresh?: boolean; companyId?: string; origin?: string; signal?: AbortSignal } = { fresh: true }) {
   const query = new URLSearchParams();
   if (projection !== "full") query.set("projection", projection);
   if (options.fresh) query.set("fresh", "1");
+  if (options.companyId) query.set("company_id", options.companyId);
+  if (mvpDiagnosticsEnabled()) {
+    query.set("diagnostics", "1");
+    query.set("read_origin", options.origin ?? "mvp_state_reader");
+    query.set("read_id", mvpReadId());
+  }
   const queryString = query.toString();
-  const response = await mvpFetch(`/api/mvp/state${queryString ? `?${queryString}` : ""}`, { cache: "no-store" });
+  const response = await mvpFetch(`/api/mvp/state${queryString ? `?${queryString}` : ""}`, { cache: "no-store", signal: options.signal });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
     const blocker = body && typeof body === "object" && typeof body.exactBlocker === "string"
@@ -1966,14 +2414,37 @@ function mvpStateErrorBlocker(error: unknown): string | null {
     return String((error as { exactBlocker: string }).exactBlocker);
   }
   const message = error instanceof Error ? error.message : String(error ?? "");
-  if (message === "mvp_state_request_timeout" || message === "mvp_state_detail_readback_timeout") return message;
+  if (message === "mvp_state_request_timeout" || message === "mvp_state_summary_readback_timeout" || message === "mvp_state_detail_readback_timeout") return message;
+  // Scope/projection assertions are client-side readback gates. Preserve the
+  // exact blocker so a valid, company-scoped summary can remain visible in
+  // read-only degraded mode instead of falling through to an unscoped empty
+  // page. Mutating controls remain fail-closed until the detail projection is
+  // fresh and exact.
+  if (message === "mvp_state_company_scope_mismatch" || message.startsWith("mvp_state_projection_mismatch:")) return message;
   const match = message.match(/^mvp_state_http_\d+:(.+)$/u);
   return match?.[1] ?? null;
 }
 
+const PROTECTED_AUTH_BLOCKERS = new Set([
+  "owner_sso_required",
+  "owner_sso_required_on_fresh_task_owned_ingress_session",
+  "private_ingress_or_sso_required",
+  "server_auth_session_secret_missing"
+]);
+
+function getProtectedAuthBlocker(error: unknown): string | null {
+  const exactBlocker = mvpStateErrorBlocker(error);
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  if (exactBlocker && PROTECTED_AUTH_BLOCKERS.has(exactBlocker)) return exactBlocker;
+  return PROTECTED_AUTH_BLOCKERS.has(message) ? message : null;
+}
+
 function isSummaryDegradedMvpBlocker(blocker: string | null): boolean {
   return blocker === "mvp_state_postgres_read_timeout"
-    || blocker === "mvp_state_detail_readback_timeout";
+    || blocker === "mvp_state_summary_readback_timeout"
+    || blocker === "mvp_state_detail_readback_timeout"
+    || blocker === "mvp_state_company_scope_mismatch"
+    || blocker?.startsWith("mvp_state_projection_mismatch:") === true;
 }
 
 function isRetryableMvpStateError(error: unknown) {
@@ -1981,14 +2452,16 @@ function isRetryableMvpStateError(error: unknown) {
   return /Failed to fetch|NetworkError|Load failed|mvp_state_request_timeout|mvp_state_http_(?:408|429|500|502|503|504)/i.test(message);
 }
 
+const MVP_SUMMARY_READBACK_TIMEOUT_MS = 12_000;
 const MVP_DETAIL_READBACK_TIMEOUT_MS = 20_000;
+const HOME_BRIEF_READBACK_TIMEOUT_MS = 8_000;
 
-function withMvpDetailReadbackTimeout<T>(promise: Promise<T>, timeoutMs = MVP_DETAIL_READBACK_TIMEOUT_MS): Promise<T> {
+function withMvpDetailReadbackTimeout<T>(promise: Promise<T>, timeoutMs = MVP_DETAIL_READBACK_TIMEOUT_MS, blocker = "mvp_state_detail_readback_timeout"): Promise<T> {
   let timer: number | undefined;
   return new Promise<T>((resolve, reject) => {
     timer = window.setTimeout(() => {
-      const error = new Error("mvp_state_detail_readback_timeout") as Error & { exactBlocker?: string };
-      error.exactBlocker = "mvp_state_detail_readback_timeout";
+      const error = new Error(blocker) as Error & { exactBlocker?: string };
+      error.exactBlocker = blocker;
       reject(error);
     }, timeoutMs);
     promise.then(resolve, reject).finally(() => {
@@ -1997,22 +2470,39 @@ function withMvpDetailReadbackTimeout<T>(promise: Promise<T>, timeoutMs = MVP_DE
   });
 }
 
-async function readMvpStateWithRetry(projection: "full" | "ui" | "summary" | "chat" = "ui", options: { fresh?: boolean } = { fresh: true }) {
+async function readMvpStateWithRetry(projection: "full" | "ui" | "summary" | "chat" = "ui", options: { fresh?: boolean; companyId?: string; origin?: string; signal?: AbortSignal } = { fresh: true }) {
   let lastError: unknown = null;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  // A freshly restarted production API can briefly reject a protected read
+  // while auth/session and the control-plane snapshot settle. Keep this
+  // bounded and read-only; never retry a mutation endpoint here.
+  const maxAttempts = 3;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     try {
       return await readMvpState(projection, options);
     } catch (error) {
       lastError = error;
-      if (attempt === 1 || !isRetryableMvpStateError(error)) throw error;
-      await new Promise((resolve) => window.setTimeout(resolve, 1200));
+      if (options.signal?.aborted || attempt === maxAttempts - 1 || !isRetryableMvpStateError(error)) throw error;
+      await new Promise((resolve) => window.setTimeout(resolve, attempt === 0 ? 900 : 1800));
     }
   }
   throw lastError instanceof Error ? lastError : new Error("mvp_state_readback_failed");
 }
 
-async function bootstrapAuthSession(): Promise<ApiTokenScope> {
-  const response = await mvpFetch("/api/auth/session", { cache: "no-store" });
+function assertMvpStateReadbackScope(state: MvpState, projection: "full" | "ui" | "summary" | "chat", companyId?: string): MvpState {
+  if (companyId) {
+    const scope = state.company_scope;
+    if (scope?.enforced !== true || !Array.isArray(scope.company_ids) || scope.company_ids.length !== 1 || scope.company_ids[0] !== companyId) {
+      throw new Error("mvp_state_company_scope_mismatch");
+    }
+  }
+  if (projection !== "full" && state.readback_projection !== projection) {
+    throw new Error(`mvp_state_projection_mismatch:${projection}`);
+  }
+  return state;
+}
+
+async function bootstrapAuthSession(signal?: AbortSignal): Promise<ApiTokenScope> {
+  const response = await mvpFetch("/api/auth/session", { cache: "no-store", signal });
   const body = await response.json().catch(() => ({})) as { ok?: boolean; scope?: string; exactBlocker?: string };
   if (!response.ok || body.ok !== true) throw new Error(body.exactBlocker || `auth_session_http_${response.status}`);
   if (body.scope === "read" || body.scope === "write" || body.scope === "unrestricted") return body.scope;
@@ -2057,8 +2547,8 @@ function projectLabelFromState(state: MvpState, id: string) {
   return projectOptionsFromState(state).find((project) => project.id === id)?.label ?? projectLabelFromId(id);
 }
 
-async function fetchApiJson<T>(url: string): Promise<T> {
-  const response = await mvpFetch(url, { cache: "no-store" });
+async function fetchApiJson<T>(url: string, options: { signal?: AbortSignal } = {}): Promise<T> {
+  const response = await mvpFetch(url, { cache: "no-store", ...options });
   if (!response.ok) throw new Error(`api_readback_http_${response.status}`);
   return response.json() as Promise<T>;
 }
@@ -2075,69 +2565,52 @@ function buildFeedbackCapture(route: string) {
 }
 
 async function captureAppScreenshot(): Promise<{ dataUrl: string | null; error: string | null }> {
-  const width = Math.min(window.innerWidth || 1200, 1200);
-  const height = Math.min(window.innerHeight || 900, 900);
+  const width = window.innerWidth || 1200;
+  const height = window.innerHeight || 900;
+  const scale = Math.min(1, 1200 / width, 900 / height);
   try {
     const html2canvas = (await import("html2canvas")).default;
     const canvas = await html2canvas(document.body, {
       backgroundColor: "#ffffff",
       width,
       height,
+      scale,
+      x: window.scrollX,
+      y: window.scrollY,
       windowWidth: window.innerWidth,
       windowHeight: window.innerHeight,
-      scrollX: 0,
-      scrollY: 0,
+      scrollX: window.scrollX,
+      scrollY: window.scrollY,
+      imageTimeout: 2500,
+      logging: false,
       ignoreElements: (element) => element.classList.contains("feedback-launcher") || element.classList.contains("feedback-panel")
     });
     return { dataUrl: canvas.toDataURL("image/jpeg", 0.62), error: null };
   } catch {
-    // Fall through to a no-dependency SVG capture so feedback still works if canvas rendering fails.
-  }
-  try {
-    const clone = document.documentElement.cloneNode(true) as HTMLElement;
-    clone.querySelectorAll(".feedback-launcher,.feedback-panel").forEach((node) => node.remove());
-    clone.querySelectorAll("script").forEach((node) => node.remove());
-    const serialized = new XMLSerializer().serializeToString(clone);
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><foreignObject width="100%" height="100%">${serialized}</foreignObject></svg>`;
-    const blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
-    const objectUrl = URL.createObjectURL(blob);
-    try {
-      const image = await new Promise<HTMLImageElement>((resolve, reject) => {
-        const img = new Image();
-        img.onload = () => resolve(img);
-        img.onerror = () => reject(new Error("feedback_screenshot_render_failed"));
-        img.src = objectUrl;
-      });
-      const canvas = document.createElement("canvas");
-      canvas.width = width;
-      canvas.height = height;
-      const context = canvas.getContext("2d");
-      if (!context) throw new Error("feedback_canvas_unavailable");
-      context.fillStyle = "#fff";
-      context.fillRect(0, 0, width, height);
-      context.drawImage(image, 0, 0, width, height);
-      return { dataUrl: canvas.toDataURL("image/jpeg", 0.62), error: null };
-    } finally {
-      URL.revokeObjectURL(objectUrl);
-    }
-  } catch (error) {
-    return { dataUrl: null, error: error instanceof Error ? error.message : "feedback_screenshot_failed" };
+    return { dataUrl: null, error: "feedback_screenshot_render_failed" };
   }
 }
 
-function captureAppScreenshotWithTimeout(timeoutMs = 3500): Promise<{ dataUrl: string | null; error: string | null }> {
-  return Promise.race([
-    captureAppScreenshot(),
-    new Promise<{ dataUrl: string | null; error: string | null }>((resolve) => {
-      window.setTimeout(() => resolve({ dataUrl: null, error: "feedback_screenshot_timeout" }), timeoutMs);
-    })
-  ]);
+async function captureAppScreenshotWithTimeout(timeoutMs = 15000): Promise<{ dataUrl: string | null; error: string | null }> {
+  let timer: number | undefined;
+  try {
+    return await Promise.race([
+      captureAppScreenshot(),
+      new Promise<{ dataUrl: string | null; error: string | null }>((resolve) => {
+        timer = window.setTimeout(() => resolve({ dataUrl: null, error: "feedback_screenshot_timeout" }), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timer !== undefined) window.clearTimeout(timer);
+  }
 }
 
 function approvalDueLabel(value: unknown): string {
   if (typeof value !== "string" || !value.trim()) return "期限未設定（承認前に確認）";
-  const normalized = value.trim();
-  return normalized.includes("T") ? normalized.replace("T", " ").replace(/\.\d{3}Z$/u, "").replace(/Z$/u, "") : normalized;
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "期限未確認（承認前に確認）";
+  return new Intl.DateTimeFormat("ja-JP", { timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit",
+    day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(date) + " JST";
 }
 const templates = [
   ["SNS毎日投稿", "SNS運用", "Instagram / X / LinkedIn", "Lane 1", "承認必須"],
@@ -2242,6 +2715,7 @@ function automationIdFromRoute(route: string) {
 }
 
 function rememberProject(slug: string) {
+  if (typeof window === "undefined") return;
   window.sessionStorage.setItem("automation-os-active-project", slug);
   // Company scope is not a secret. Keep it across AOS tabs so opening the
   // authentication surface in a fresh tab does not silently fall back to an
@@ -2250,6 +2724,7 @@ function rememberProject(slug: string) {
 }
 
 function rememberedProject() {
+  if (typeof window === "undefined") return "";
   const saved = window.sessionStorage.getItem("automation-os-active-project")
     ?? window.localStorage.getItem("automation-os-active-project");
   return saved && /^[a-z0-9][a-z0-9_-]*$/i.test(saved) ? saved : "";
@@ -2318,8 +2793,16 @@ function statusLabel(status: Status) {
   }[status];
 }
 
+function reactNodeText(node: React.ReactNode): string {
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(reactNodeText).join(" ");
+  if (React.isValidElement(node)) return reactNodeText((node.props as { children?: React.ReactNode }).children);
+  return "";
+}
+
 function Button({ children, icon, variant = "secondary", onClick, disabled = false, controlId, type = "button", ariaLabel }: { children: React.ReactNode; icon?: React.ReactNode; variant?: "primary" | "secondary" | "danger"; onClick?: () => void; disabled?: boolean; controlId?: string; type?: "button" | "submit"; ariaLabel?: string }) {
-  return <button type={type} data-control-id={controlId} className={`btn ${variant}`} aria-label={ariaLabel} title={ariaLabel} onClick={onClick} disabled={disabled}>{icon}{children}</button>;
+  const explicitLabel = ariaLabel?.trim() || reactNodeText(children).trim() || undefined;
+  return <button type={type} data-control-id={controlId} className={`btn ${variant}`} aria-label={explicitLabel} title={explicitLabel} onClick={onClick} disabled={disabled}>{icon}{children}</button>;
 }
 
 function IconButton({ children, onClick, label, controlId, disabled = false }: { children: React.ReactNode; onClick?: () => void; label: string; controlId?: string; disabled?: boolean }) {
@@ -2328,7 +2811,8 @@ function IconButton({ children, onClick, label, controlId, disabled = false }: {
 
 function App() {
   const route = useRoute();
-  const [receipt, setReceiptValue] = useState("Local Agent は待機中です。");
+  const routeScopedCompanyId = safeProjectId(projectSlugFromRoute(route)) || undefined;
+  const [receipt, setReceiptValue] = useState("Local Agent は状態確認を開始しました。");
   const [receiptAt, setReceiptAt] = useState(() => Date.now());
   const [receiptRoute, setReceiptRoute] = useState(() => location.hash || "#/");
   const setReceipt = (value: string) => {
@@ -2343,24 +2827,41 @@ function App() {
   const [mvpLoadBlocker, setMvpLoadBlocker] = useState<string | null>(null);
   const [mvpSyncing, setMvpSyncing] = useState(false);
   const [feedbackReadback, setFeedbackReadback] = useState<MvpState["feedbacks"]>([]);
+  const [feedbackReadStatus, setFeedbackReadStatus] = useState<"loading" | "ready" | "error">("loading");
   const [apiAccessRequired, setApiAccessRequired] = useState(false);
   const [apiTokenScope, setApiTokenScope] = useState<ApiTokenScope>("unknown");
   const [accessChecking, setAccessChecking] = useState(false);
   React.useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
     const routeName = routePath(route);
+    // Project routes already carry the canonical company scope. Reuse it for
+    // both the summary fallback and the authenticated detail readback so a
+    // company page does not fetch every visible company's dashboard rows and
+    // metadata before it can render. The server still enforces membership for
+    // the requested company; an invalid/empty route remains unscoped.
+    const scopedCompanyId = routeScopedCompanyId;
     const projection = routeName === "#/"
       ? "summary"
       : routeName === "#/chat" ? "chat" : "ui";
     let detailReady = projection === "summary";
     setMvpLoadStatus("loading");
-    const authPromise = bootstrapAuthSession()
+    const authPromise = bootstrapAuthSession(controller.signal)
       .then((scope) => {
         if (!cancelled) setApiTokenScope(scope);
         return { ok: true as const, scope };
       })
       .catch((error) => ({ ok: false as const, error }));
-    const readDetailProjection = () => withMvpDetailReadbackTimeout(readMvpStateWithRetry(projection));
+    const readSummaryProjection = () => withMvpDetailReadbackTimeout(
+      readMvpStateWithRetry("summary", { fresh: true, companyId: scopedCompanyId, origin: "route_summary", signal: controller.signal })
+        .then((state) => assertMvpStateReadbackScope(state, "summary", scopedCompanyId)),
+      MVP_SUMMARY_READBACK_TIMEOUT_MS,
+      "mvp_state_summary_readback_timeout",
+    );
+    const readDetailProjection = () => withMvpDetailReadbackTimeout(
+      readMvpStateWithRetry(projection, { fresh: true, companyId: scopedCompanyId, origin: "route_detail", signal: controller.signal })
+        .then((state) => assertMvpStateReadbackScope(state, projection, scopedCompanyId)),
+    );
     const readDetailState = async () => {
       // Establish the same-origin HttpOnly session before the first protected
       // detail request. Starting both requests together creates a predictable
@@ -2374,21 +2875,25 @@ function App() {
     };
     let summaryStateForFallback: MvpState | null = null;
     const statePromise = projection === "summary"
-      ? readMvpStateWithRetry(projection)
-        : readMvpStateWithRetry("summary")
+      ? readSummaryProjection()
+        : readSummaryProjection()
         .then((summaryState) => {
           summaryStateForFallback = summaryState;
           if (!cancelled && !detailReady) {
-            // Keep detail status as loading so every save/run control remains
-            // fail-closed until the authenticated UI projection is ready.
+            // Make the summary projection usable immediately while the
+            // authenticated detail projection continues in the background.
+            // Mutating controls remain fail-closed until the detail proof is
+            // ready, but navigation and read-only inspection do not stall.
             setMvpState(summaryState);
+            setMvpLoadStatus("degraded");
+            setMvpLoadBlocker("mvp_state_detail_readback_pending");
             setAutomationRows(toAutomationRows(summaryState.automations ?? []));
             setFeedbackReadback(summaryState.feedbacks ?? []);
-            setReceipt("MVP summary readback 済みです。詳細readbackを確認中です。");
+            setReceipt("MVP summary readback 済みです。詳細readbackはバックグラウンドで再試行中です。外部効果は開始しません。");
           }
           return readDetailState();
         })
-        .catch(() => readDetailState());
+        .catch((error) => controller.signal.aborted ? Promise.reject(error) : readDetailState());
     statePromise
       .then((state) => {
         if (cancelled) return;
@@ -2405,41 +2910,52 @@ function App() {
       .catch((error) => {
         if (cancelled) return;
         const blocker = mvpStateErrorBlocker(error);
+        const protectedAuthBlocker = getProtectedAuthBlocker(error);
         if (summaryStateForFallback && isSummaryDegradedMvpBlocker(blocker) && projectOptionsFromState(summaryStateForFallback).length > 0) {
           setMvpState(summaryStateForFallback);
           setMvpLoadStatus("degraded");
           setMvpLoadBlocker(blocker);
           setAutomationRows(toAutomationRows(summaryStateForFallback.automations ?? []));
           setFeedbackReadback(summaryStateForFallback.feedbacks ?? []);
-          setReceipt("MVP summaryを表示中です。詳細readback待ち / 保存・送信・定期実行変更なし。");
+          setReceipt("MVP summaryを表示中です。詳細readback未確定 / 保存・送信・定期実行変更なし。");
           return;
         }
         setMvpLoadStatus("error");
-        setMvpLoadBlocker(blocker);
+        setMvpLoadBlocker(blocker ?? protectedAuthBlocker);
         const message = error instanceof Error ? error.message : "";
-        if (/^(?:auth_session|mvp_state)_http_(?:401|423)$/.test(message) || /private_ingress_or_sso_required|server_auth_session_secret_missing/.test(message)) {
+        if (/^(?:auth_session|mvp_state)_http_(?:401|423)$/.test(message) || protectedAuthBlocker) {
           setApiAccessRequired(true);
-          setReceipt("安全な管理セッションを確立できません。private ingressまたはSSOの設定を確認してください。");
+          setReceipt(protectedAuthBlocker
+            ? `安全な管理セッションを確立できません。${publicBlockerSummary(protectedAuthBlocker)}`
+            : "安全な管理セッションを確立できません。private ingressまたはSSOの設定を確認してください。");
           return;
         }
-        setReceipt("Local Agent は待機中です。MVP API未接続のためローカル表示です。");
+        setReceipt("Local Agent はローカル表示を維持中です。MVP APIのblockerを確認してください。");
       });
-    return () => { cancelled = true; };
-  }, [route]);
+    return () => { cancelled = true; controller.abort(); };
+  }, [route, routeScopedCompanyId]);
   React.useEffect(() => {
+    if (mvpLoadStatus !== "ready") return;
+    let cancelled = false;
+    setFeedbackReadStatus("loading");
     mvpFetch("/api/mvp/feedback", { cache: "no-store" })
       .then(async (response) => {
         const json = await response.json().catch(() => ({}));
+        if (cancelled) return;
         // The authentication gate owns the unauthenticated/locked state. Do not
         // let this secondary readback replace its actionable guidance.
-        if (response.status === 401 || response.status === 423) return;
+        if (response.status === 401 || response.status === 423) { setFeedbackReadStatus("error"); return; }
         if (!response.ok || json.ok === false) throw new Error("feedback_readback_failed");
         setFeedbackReadback(Array.isArray(json.feedbacks) ? json.feedbacks : []);
+        setFeedbackReadStatus("ready");
       })
       .catch(() => {
+        if (cancelled) return;
+        setFeedbackReadStatus("error");
         setReceipt("Feedback readbackに失敗しました。空のキューとは断定せず、直前の表示を維持します。");
       });
-  }, []);
+    return () => { cancelled = true; };
+  }, [mvpLoadStatus, route]);
   const page = useMemo(() => renderPage(route, {
     setReceipt,
     automationRows,
@@ -2451,14 +2967,15 @@ function App() {
     mvpLoadStatus,
     mvpLoadBlocker,
     feedbackReadback,
+    feedbackReadStatus,
     setFeedbackReadback
-  }), [route, automationRows, createdTemplates, mvpState, mvpLoadStatus, feedbackReadback]);
+  }), [route, automationRows, createdTemplates, mvpState, mvpLoadStatus, mvpLoadBlocker, feedbackReadback, feedbackReadStatus]);
 
   const retryAuthSession = async () => {
     setAccessChecking(true);
     try {
       const scope = await bootstrapAuthSession();
-      const state = await readMvpStateWithRetry("ui", { fresh: true });
+      const state = await readMvpStateWithRetry("ui", { fresh: true, companyId: routeScopedCompanyId, origin: "auth_retry" });
       setApiTokenScope(scope);
       setMvpState(state);
       setMvpLoadStatus("ready");
@@ -2470,10 +2987,14 @@ function App() {
         ? "読み取り専用の安全な管理セッションを確認しました。"
         : "安全な管理セッションを確認しました。Automation OSを利用できます。");
     } catch (error) {
-      setMvpLoadBlocker(mvpStateErrorBlocker(error));
+      const blocker = mvpStateErrorBlocker(error);
+      const protectedAuthBlocker = getProtectedAuthBlocker(error);
+      setMvpLoadBlocker(blocker ?? protectedAuthBlocker);
       const message = error instanceof Error ? error.message : "";
-      if (/auth_session_http_(?:401|423)|mvp_state_http_(?:401|423)|private_ingress_or_sso_required|server_auth_session_secret_missing/.test(message)) {
-        setReceipt("安全な管理セッションを確立できません。private ingressまたはSSOの設定後に再確認してください。");
+      if (/auth_session_http_(?:401|423)|mvp_state_http_(?:401|423)/.test(message) || protectedAuthBlocker) {
+        setReceipt(protectedAuthBlocker
+          ? `安全な管理セッションを確立できません。${publicBlockerSummary(protectedAuthBlocker)}`
+          : "安全な管理セッションを確立できません。private ingressまたはSSOの設定後に再確認してください。");
       } else {
         setReceipt("認証状態のreadbackに失敗しました。表示中の値は最新と断定できません。");
       }
@@ -2488,7 +3009,13 @@ function App() {
     if (!hadReadyState) setMvpLoadStatus("loading");
     setReceipt("最新状態を同期しています。");
     try {
-      const state = await readMvpStateWithRetry();
+      const readGlobalState = async () => {
+        const state = await readMvpStateWithRetry();
+        return state;
+      };
+      const state = routeScopedCompanyId
+        ? await readMvpStateWithRetry("ui", { fresh: true, companyId: routeScopedCompanyId, origin: "manual_sync" })
+        : await readGlobalState();
       setMvpState(state);
       setMvpLoadStatus("ready");
       setMvpLoadBlocker(null);
@@ -2511,16 +3038,20 @@ function App() {
   };
 
   if (apiAccessRequired) {
-    const ownerSsoLoginUrl = "https://aos-admin-ingress.zeabur.app/auth/login";
+    const ownerSsoLoginUrl = "https://aos-admin-ingress.zeabur.app/auth/login?return_to=%2F";
     return (
       <main className="main">
         <section>
           <PageTitle title="Automation OS" desc="この画面はprivate ingress / SSOで保護されています。" />
           <Panel title="安全な管理セッション" controlId="shell.auth-session.panel">
             <p className="muted">APIキーはブラウザへ入力しません。サーバーがSecret StoreまたはKeychainから認証情報を取得し、private ingress / SSOで確認できた場合だけHttpOnly・Secure cookieを発行します。cookieやtokenはブラウザ保存領域・URL・録画・artifactへ入りません。</p>
-            <p className="muted">最初に公開ingressでGoogle認証を完了してください。許可アカウントはnichika2000823@gmail.comです。認証後、この画面へ戻って状態を再確認します。</p>
+            <ol className="auth-steps">
+              <li>「Google認証を開始」を押し、許可アカウント <code>nichika2000823@gmail.com</code> で本人が認証します。</li>
+              <li>認証後にこの画面へ戻ったら、「認証状態を再確認」を押します。</li>
+              <li>「書き込み許可」と会社1が表示されるまで、保存・承認・実行は行いません。</li>
+            </ol>
             <div className="button-row">
-              <a className="btn primary" data-control-id="shell.auth-session.open-owner-sso" href={ownerSsoLoginUrl} target="_blank" rel="noreferrer">Google認証を開始</a>
+              <a className="btn primary" data-control-id="shell.auth-session.open-owner-sso" href={ownerSsoLoginUrl}>Google認証を開始</a>
             </div>
             <form className="access-form" onSubmit={(event) => { event.preventDefault(); void retryAuthSession(); }}>
               <div className="button-row"><Button type="submit" controlId="shell.auth-session.retry" variant="primary" disabled={accessChecking}>{accessChecking ? "確認中" : "認証状態を再確認"}</Button></div>
@@ -2539,23 +3070,18 @@ function App() {
       <TopHeader receipt={receipt} receiptAt={receiptAt} receiptRoute={receiptRoute} currentRoute={route} setReceipt={setReceipt} onSync={syncState} isOwner={hasOwnerAdminAccess(mvpState)} mvpState={mvpState} mvpLoadStatus={mvpLoadStatus} mvpSyncing={mvpSyncing} apiTokenScope={apiTokenScope} />
         {page}
       </main>
-      <FeedbackWidget route={route} setReceipt={setReceipt} setMvpState={setMvpState} readOnlyEvidenceMode={mvpLoadStatus !== "ready"} />
+      <FeedbackWidget route={route} setReceipt={setReceipt} setMvpState={setMvpState} onSaved={(row) => setFeedbackReadback((rows) => [row, ...(rows ?? []).filter((item) => item.id !== row.id)])} readOnlyEvidenceMode={mvpLoadStatus !== "ready"} />
     </div>
   );
 }
 
 function Sidebar({ route, isOwner }: { route: string; isOwner: boolean }) {
   const currentPath = routePath(route);
+  const icons = { "#/": Home, "#/chat": MessageSquare, "#/projects": FolderKanban, "#/runs": Activity, "#/approvals": ClipboardCheck, "#/plugins": Network } as const;
   const nav = [
-    ["ホーム", "#/", Home],
-    ["チャット", "#/chat", MessageSquare],
-    ["会社", "#/projects", FolderKanban],
-    ["実行履歴", "#/runs", Activity],
-    ["承認", "#/approvals", ClipboardCheck],
-    ["テンプレート", "#/templates", LayoutTemplate],
-    ["プラグイン", "#/plugins", Network],
+    ...unifiedManagementNavigation().map((item) => [item.label, item.route, icons[item.route]] as const),
     ...(isOwner ? [["Admin", "#/admin", Settings] as const] : [])
-  ] as const;
+  ];
   return (
     <aside className="sidebar">
       <div className="brand">Automation OS</div>
@@ -2569,8 +3095,7 @@ function Sidebar({ route, isOwner }: { route: string; isOwner: boolean }) {
                   : href === "#/projects" ? "shell.sidebar.projects"
                     : href === "#/runs" ? "shell.sidebar.runs"
                         : href === "#/approvals" ? "shell.sidebar.approvals"
-                          : href === "#/templates" ? "shell.sidebar.templates"
-                            : href === "#/plugins" ? "shell.sidebar.plugins"
+                          : href === "#/plugins" ? "shell.sidebar.plugins"
                           : "shell.sidebar.admin"
             }
             className={currentPath === href || (href.includes("projects") && currentPath.includes("projects")) ? "active" : ""}
@@ -2602,11 +3127,12 @@ function TopHeader({ receipt, receiptAt, receiptRoute, currentRoute, setReceipt,
   const actions = [
     { label: "ホーム", route: "#/", keywords: "home ホーム dashboard ダッシュボード" },
     { label: "チャット", route: "#/chat", keywords: "chat チャット 作成 自動化 llm" },
-    { label: "会社一覧", route: "#/projects", keywords: "company 会社 project プロジェクト 顧客 client 自動化" },
-    { label: "実行履歴", route: "#/runs", keywords: "run worker queue 実行 履歴" },
+    { label: "会社 / 仕事", route: "#/projects", keywords: "company 会社 work 仕事 project プロジェクト 顧客 client 自動化 automation workflow" },
+    { label: "履歴", route: "#/runs", keywords: "run worker queue 実行 履歴" },
     { label: "承認", route: "#/approvals", keywords: "approval 承認 停止 外部操作" },
-    { label: "テンプレート", route: "#/templates", keywords: "template テンプレート skills skill 雛形" },
-    { label: "プラグイン", route: "#/plugins", keywords: "plugin プラグイン MCP CLI API 認証 接続 ツール" },
+    { label: "設定・接続", route: "#/plugins", keywords: "plugin プラグイン MCP CLI API 認証 接続 ツール 設定 settings" },
+    { label: "PC状態", route: "#/system/pc-status", keywords: "pc mac ローカル heartbeat ハートビート 実行先" },
+    { label: "本番状態", route: "#/production/status", keywords: "production 本番 deploy 配信状態" },
     ...(isOwner ? [{ label: "Admin", route: "#/admin", keywords: "admin pc worker browser codex obsidian production deploy diagnostics" }] : []),
     { label: "Feedback", route: "", keywords: "feedback フィードバック 問題 スクショ" }
   ];
@@ -2652,18 +3178,25 @@ function TopHeader({ receipt, receiptAt, receiptRoute, currentRoute, setReceipt,
           />
           <button data-control-id="shell.top-header.search-submit" type="submit">移動</button>
         </form>
-        <div className="top-receipt" role="status" data-freshness={receiptIsCurrent ? "current" : "stale"} title={receipt}>
-          <span>{receipt}</span>
-          <small>{receiptIsCurrent ? "この画面" : "前の画面"} / {receiptAge}</small>
+        <div className="top-status-summary" role="status">
+          <span className={`status-dot ${mvpLoadStatus === "ready" ? "ready" : "pending"}`} aria-hidden="true" />
+          <span>{mvpSyncing ? "状態を同期中" : mvpLoadStatus === "ready" ? "状態を確認済み" : "状態を確認中"}</span>
         </div>
-        <div className="muted" data-control-id="shell.auth.scope" aria-label="管理セッションの権限範囲">
-          {apiTokenScope === "read" ? "認証: 読み取り専用" : apiTokenScope === "write" ? "認証: 書き込み許可" : apiTokenScope === "unrestricted" ? "認証: ローカル保護なし" : "認証: 権限範囲未確認"}
-        </div>
+        <details className="top-diagnostics">
+          <summary>詳細状態</summary>
+          <div className="top-diagnostics-body">
+            <div className="top-receipt" role="status" data-freshness={receiptIsCurrent ? "current" : "stale"} title={receipt}>{receipt}</div>
+            <small>{receiptIsCurrent ? "この画面" : "前の画面"} / {receiptAge}</small>
+            <span data-control-id="shell.auth.scope" aria-label="管理セッションの権限範囲">
+              {apiTokenScope === "read" ? "認証: 読み取り専用" : apiTokenScope === "write" ? "認証: 書き込み許可" : apiTokenScope === "unrestricted" ? "認証: ローカル保護なし" : "認証: 権限範囲未確認"}
+            </span>
+          </div>
+        </details>
       </div>
       <div className="top-actions">
         {mvpSyncing && <span className="muted" role="status" data-control-id="shell.top-header.sync-status">状態を同期中（表示は前回確認済み）</span>}
         <IconButton controlId="shell.top-header.sync" label={mvpSyncing ? "同期中" : "同期"} disabled={mvpSyncing} onClick={() => { void onSync(); }}><RefreshCw size={16} /></IconButton>
-        <Button controlId="shell.top-header.new-automation" ariaLabel={canStartAutomation ? "新しい自動化" : companyCount === 0 && mvpLoadStatus === "ready" ? "会社を登録" : "確認中"} variant="primary" icon={<Plus size={15} />} disabled={mvpLoadStatus !== "ready"} onClick={() => openAutomationCreator(mvpState, setReceipt)}>{canStartAutomation ? "新しい自動化" : companyCount === 0 && mvpLoadStatus === "ready" ? "会社を登録" : "確認中"}</Button>
+        <Button controlId="shell.top-header.new-automation" ariaLabel={canStartAutomation ? "新しい自動化" : companyCount === 0 && mvpLoadStatus === "ready" ? "会社を登録" : "詳細readback未確認"} variant="primary" icon={<Plus size={15} />} disabled={mvpLoadStatus !== "ready"} onClick={() => openAutomationCreator(mvpState, setReceipt)}>{canStartAutomation ? "新しい自動化" : companyCount === 0 && mvpLoadStatus === "ready" ? "会社を登録" : "詳細readback未確認"}</Button>
       </div>
     </header>
   );
@@ -2736,7 +3269,7 @@ function ObsidianSyncCard({ obsidian, setReceipt }: { obsidian?: MvpState["obsid
   const failed = obsidian?.ok === false || generatedFileCheckFailed;
   const publicGeneratedFileCheckText = displayGeneratedFileCheckPublic(obsidian?.generatedFileCheck);
   const diagnostics = failed || health !== "healthy";
-  const summary = obsidian?.summary ?? "Obsidian status readbackを待っています。";
+  const summary = obsidian?.summary ?? "Obsidian statusのfresh readbackを取得します。";
   const nextStep = obsidian?.nextStep ?? "API readbackが入ると次の一手がここに出ます。";
   const healthLabel = {
     healthy: "安定",
@@ -2823,8 +3356,8 @@ function humanNextStepForFeedback(comment: string, route: string) {
   return "再現操作をChrome QAへ追加する";
 }
 
-function FeedbackFixQueue({ feedbacks, state, setReceipt, setFeedbackReadback, canTriage = false }: { feedbacks: MvpState["feedbacks"]; state: MvpState; setReceipt: (value: string) => void; setFeedbackReadback: React.Dispatch<React.SetStateAction<MvpState["feedbacks"]>>; canTriage?: boolean }) {
-  const feedback = feedbackItemsFromState({ ...state, feedbacks });
+function FeedbackFixQueue({ feedbacks, readStatus, state, setReceipt, setFeedbackReadback, canTriage = false }: { feedbacks: MvpState["feedbacks"]; readStatus: "loading" | "ready" | "error"; state: MvpState; setReceipt: (value: string) => void; setFeedbackReadback: React.Dispatch<React.SetStateAction<MvpState["feedbacks"]>>; canTriage?: boolean }) {
+  const feedback = readStatus === "ready" ? feedbackItemsFromState({ ...state, feedbacks }) : [];
   const allOpenItems = feedback.filter((item) => item.status === "open");
   const allTriagedItems = feedback.filter((item) => item.status === "triaged");
   const openItems = allOpenItems.slice(0, 10);
@@ -2869,6 +3402,7 @@ function FeedbackFixQueue({ feedbacks, state, setReceipt, setFeedbackReadback, c
   ]) : [["open feedbackなし", "-", "-", "-", "現在のreadbackでは未処理feedbackはありません", <StatusBadge status="waiting" label="未処理なし" />]];
   return (
     <Panel title="Feedback修正キュー" controlId="home.feedback.queue.panel">
+      {readStatus !== "ready" ? <ReadbackState title={readStatus === "loading" ? "Feedbackを確認中" : "Feedbackを確認できません"} detail="未取得や認証失敗を未処理0件とは扱いません。上部の同期で再確認してください。" tone={readStatus === "loading" ? "info" : "attention"} /> : <>
       <div className="feedback-summary">
         <strong>open {allOpenItems.length}件</strong>
         <span>triaged {allTriagedItems.length}件</span>
@@ -2888,6 +3422,7 @@ function FeedbackFixQueue({ feedbacks, state, setReceipt, setFeedbackReadback, c
         </div>
       )}
       <p className="muted">この一覧はMVP stateの feedback proof readback です。スクショ本体やsecretは表示しません。{canTriage ? "状態変更はOwner権限でreadback後に行います。" : "状態変更はOwner専用のため、現在は表示のみです。"}</p>
+      </>}
     </Panel>
   );
 }
@@ -2900,7 +3435,7 @@ function WebOperationAdmissionPanel({ model, projectId }: { model: AppModel; pro
     : model.mvpLoadStatus === "error"
       ? "API readback要確認"
       : model.mvpLoadStatus === "degraded"
-        ? "summary表示 / 詳細readback待ち"
+        ? "summary表示 / 詳細readback未確定"
       : "API readback確認済み";
   const configuredBackendLabel = model.mvpLoadStatus !== "ready"
     ? model.mvpLoadStatus === "loading" ? "確認中" : "未確認"
@@ -2946,11 +3481,11 @@ function WebOperationAdmissionPanel({ model, projectId }: { model: AppModel; pro
       : "未確認";
   const workflowInventory = runtime?.workflowInventory;
   const nextAction = model.mvpLoadStatus === "loading"
-    ? "APIのfresh state readbackを待機しています。保存・実行・外部操作はまだ開始できません。"
+    ? "APIのfresh state readbackを実行中です。12秒で結果を確定し、未取得ならread-only表示へ切り替えます。"
     : model.mvpLoadStatus === "error"
       ? "APIのreadbackを再取得してください。未確認のbackend・runtimeを実行可能とは扱いません。"
       : model.mvpLoadStatus === "degraded"
-        ? "summaryを確認できます。詳細readbackが戻るまでno-effectの手動確認だけを使い、保存・送信・定期実行変更は行いません。"
+        ? "summaryを表示済みです。詳細readbackはバックグラウンドで再試行し、未取得ならexact blockerを確定します。保存・送信・定期実行変更は安全停止です。"
       : runtime?.nextAction
     ? redactDisplayPaths(runtime.nextAction)
     : selectedProjectId
@@ -2965,18 +3500,21 @@ function WebOperationAdmissionPanel({ model, projectId }: { model: AppModel; pro
     go(chatHref({ companyId: selectedProjectId, context: "web-operation-admission" }));
   };
   return (
-    <Panel title="Web操作の共通入口" controlId="web-admission.panel">
-      <p className="muted">初見のサイトでも、固定されたクリック手順ではなく、現在の画面の意味・状態・対象候補を読み直して進めます。ここではまだブラウザ起動、投稿、送信、削除、認証、課金は実行しません。</p>
+      <Panel title="Web操作の共通入口" controlId="web-admission.panel">
+      <p className="muted">初見のサイトでも、固定されたクリック手順ではなく、現在の画面の意味・状態・対象候補を読み直して進めます。ここではまだ保存・実行・外部操作はまだ開始できません。ブラウザ起動、投稿、送信、削除、認証、課金も実行しません。</p>
       <div className="action-note" role="status" data-control-id="web-admission.status" data-readback-phase={runtimePhase} data-exact-blocker={runtimeBlocker}>state readback: {stateReadbackPhase} / phase={runtimePhase} / blocker={runtimeBlocker} / 設定済みbackend: {configuredBackendLabel} / runtime readback surface: {model.mvpLoadStatus === "ready" ? runtime?.surface ?? "未確認" : "未確認"} / runtime={runtimeLabel} / role={model.mvpLoadStatus === "ready" ? runtime?.runtimeRole ?? "unknown" : "unknown"} / registered workflow {model.mvpLoadStatus === "ready" ? registeredWorkflowCount : 0}件 / company: {selectedProject} / external_action=false</div>
+      <CompanionRecoveryGuide companyId={selectedProjectId} blockerCandidates={[runtimeBlocker, runtime?.exactBlocker, runtime?.chromePluginReadback?.exactBlocker, model.mvpState.browserHealth?.chromeExtension?.exactBlocker, model.mvpLoadBlocker]} />
       {workflowInventory?.sets && (
         <div className="preview-box" data-control-id="web-admission.workflow-inventory">
           <strong>登録集合の意味</strong>
           <p className="muted">Browser/portable {workflowInventory.sets.registered_browser_workflows?.length ?? 0}件 / Company catalog {workflowInventory.sets.company_automation_catalog_workflows?.length ?? 0}件 / Browser lane {workflowInventory.sets.browser_lane_workflows?.length ?? 0}件。YouTubeの一時laneなど、実行workflowとlane専用項目は別集合として表示しています。</p>
         </div>
       )}
+      <details className="home-secondary-details technical-readback-details">
+        <summary>接続・workerの技術詳細（必要な場合のみ）</summary>
       <div className="preview-box" data-control-id="web-admission.lane-binding">
-        <strong>Browser Useのprofile / port対応（AOS登録値）</strong>
-        <p className="muted">ここに表示するprofileは秘密情報を含まない論理参照名、portはworkflow-ownedの予約portです。lifecycle（scheduled / single-use / temporary）も併記します。「使用中」「ログイン済み」「実行可能」とは解釈しません。実プロセスのlistenは別表の実測process port、認証状態と画面readbackはMac workerが同一Runで返した場合だけ反映します。</p>
+        <strong>{configuredBackendLabel} workflow resourceの対応（AOS登録値）</strong>
+        <p className="muted">ここに表示するprofileは秘密情報を含まない論理参照名、portはworkflow-ownedの予約portです。lifecycle（scheduled / single-use / temporary）も併記します。「使用中」「ログイン済み」「実行可能」とは解釈しません。実プロセスのlistenは別表の実測process port、認証状態と画面readbackはMac workerが同一Runで返した場合だけ反映します。登録値は互換診断として表示しますが、現在の選択面・対象・task・Run束縛が正本です。</p>
         <div className="lane-binding-summary" data-control-id="web-admission.lane-binding.summary" role="status">
           <span><strong>設定済みbackend:</strong> {configuredBackendLabel}</span>
           <span><strong>state readback:</strong> {stateReadbackPhase}</span>
@@ -2993,7 +3531,7 @@ function WebOperationAdmissionPanel({ model, projectId }: { model: AppModel; pro
           `${lane.ownership ?? "workflow_owned"} / ${lane.bindingStatus ?? "registered"}`,
           publicBrowserUseLaneReadbackStatus(lane),
           publicBrowserUseLaneNextCheck(lane, runtime)
-        ])} /> : <p className="muted">Browser Useの登録Lane定義はありません。固定値を補って表示せず、AOS inventoryのreadback待ちです。</p>}
+        ])} /> : <p className="muted">{configuredBackendLabel}の登録workflow resource定義はありません。固定値を補って表示せず、AOS inventoryのfresh readbackを取得します。</p>}
         <div className="lane-binding-summary" data-control-id="web-admission.process-readback" role="status">
           <span><strong>同一ホストprocess:</strong> {publicBrowserUseProcessReadbackStatus(processReadback)}</span>
           <span><strong>remote worker:</strong> {portableRemoteWorker?.status ?? "未確認"} / effects={portableRemoteWorker?.effects ?? "unknown"}</span>
@@ -3033,12 +3571,13 @@ function WebOperationAdmissionPanel({ model, projectId }: { model: AppModel; pro
             ? `${process.roomOwnership ?? "bound"} / ${process.roomOwnerKind ?? "owner"}:${process.roomOwnerId ?? "unknown"} / room=${process.roomId} / ${process.roomMatchStatus ?? "unknown"} / reclaim=${process.roomReclaimAllowed === false ? "no" : "unknown"}`
             : `room=${process.roomReadbackStatus ?? "unknown"} / owner=${process.ownership ?? "unknown"}`,
           `${process.readbackStatus ?? "unknown"} / pid=${process.pid ?? "?"} / tree=${process.processCount ?? 1}`
-        ])} /> : <p className="muted">同一ホストで検出されたBrowser Use Chromeはありません。これはAOS予約値が使用中・ログイン済み・実行可能という意味ではありません。</p>}
+        ])} /> : <p className="muted">同一ホストで検出された{configuredBackendLabel} browser processはありません。これはAOS予約値が使用中・ログイン済み・実行可能という意味ではありません。</p>}
         <p className="muted">process readbackはprofile / portの同一ホスト実測、登録binding、Browser Use canonical room registryのowner readbackを分けて示します。room ownerが表示されてもAOSがforeign roomを回収・利用できる意味ではありません。ログイン状態、画面状態、外部効果、同一Runの完了は別証跡が必要です。{processReadback?.exactBlocker ? ` exact blocker=${processReadback.exactBlocker}` : " external_action=false"} / room={processReadback?.roomReadback?.status ?? "unknown"} / active rooms={processReadback?.roomReadback?.activeRoomCount ?? "未確認"}</p>
-        {portableRemoteWorker?.status === "present" && <p className="muted">portable remote workerのプロセス存在とHeartbeat HTTP受理を分離表示しています。heartbeat・queue claim・receipt・source syncは別に確認します。read-only境界: effects={portableRemoteWorker.effects ?? "unknown"} / mode={portableRemoteWorker.mode ?? "unknown"} / transport={workerTransportLabel}。queue scope={workerScope?.status ?? "unknown"}{workerScope?.exactBlocker ? ` / exact blocker=${workerScope.exactBlocker}` : ""}。</p>}
+        {(portableRemoteWorker?.status === "present" || portableRemoteWorker?.status === "remote_reported") && <p className="muted">{portableRemoteWorker.status === "remote_reported" ? "Mac workerのheartbeat reportを受理済みですが、API応答ホストのprocessは未観測です。" : "portable remote workerのプロセス存在とHeartbeat HTTP受理を分離表示しています。"} heartbeat・queue claim・receipt・source syncは別に確認します。read-only境界: effects={portableRemoteWorker.effects ?? "unknown"} / mode={portableRemoteWorker.mode ?? "unknown"} / transport={workerTransportLabel}。queue scope={workerScope?.status ?? "unknown"}{workerScope?.exactBlocker ? ` / exact blocker=${workerScope.exactBlocker}` : ""}。</p>}
         {workerScope?.status === "mismatch" && <p className="muted">AOS queue と Mac worker が別会社scopeを見ています。endpoint/companyを同じ対象へ揃えるまで claim は実行しません。remote origin={workerScope.remoteOrigins?.join(", ") || "未確認"}。</p>}
         <p className="muted">判定境界: {runtime?.summary ?? "runtime readbackなし"} / {runtime?.exactBlocker ? `exact blocker=${runtime.exactBlocker}` : "external_action=false"}</p>
       </div>
+      </details>
       <div className="preview-box" data-control-id="web-admission.operational-readback">
         <strong>認証・外部作用・業務完了のreadback</strong>
         <p className="muted">この表示は現在のcontrol-plane snapshotです。run固有の画面・provider receipt・source-of-truth syncが返るまで、認証済み・作用済み・業務完了とは解釈しません。</p>
@@ -3088,31 +3627,88 @@ type AppModel = {
   mvpLoadStatus: MvpLoadStatus;
   mvpLoadBlocker: string | null;
   feedbackReadback: MvpState["feedbacks"];
+  feedbackReadStatus: "loading" | "ready" | "error";
   setFeedbackReadback: React.Dispatch<React.SetStateAction<MvpState["feedbacks"]>>;
 };
+
+const COMPANION_RECOVERY_BLOCKERS = new Set([
+  "profile_not_connected",
+  "client_transport_disconnected",
+  "extension_transport_disconnected",
+  "unknown_effect",
+  "unknown_effect_ledger_only",
+  "ledger_only",
+  "owner_sso_required",
+  "owner_sso_required_on_fresh_task_owned_ingress_session"
+]);
+
+function CompanionRecoveryGuide({ companyId, blockerCandidates }: { companyId?: string; blockerCandidates: unknown[] }) {
+  const signals = [...new Set(blockerCandidates
+    .map((value) => String(value ?? "").trim().toLowerCase())
+    .filter((value) => COMPANION_RECOVERY_BLOCKERS.has(value)))];
+  const signalLabel = signals.length
+    ? signals.map((value) => `${value}: ${publicBlockerSummary(value)}`).join(" / ")
+    : "Companionの切断理由はfresh readbackで確認できていません。接続済みとは断定しません。";
+  const companyLabel = companyId === "company_2560580981cedfd106b66245"
+    ? "Company 1（company_2560580981cedfd106b66245）"
+    : companyId
+      ? `現在選択中の会社（${companyId}） / Company 1は company_2560580981cedfd106b66245`
+      : "Company 1（company_2560580981cedfd106b66245）";
+  return (
+    <details className="preview-box companion-recovery-guide" data-control-id="web-admission.companion-recovery">
+      <summary>Companion接続の復旧手順</summary>
+      <p className="muted">接続が戻った表示だけでは、業務Runや外部効果を再開できるとは扱いません。次の順序で対象を読み直します。</p>
+      <ol>
+        <li>ChromeのAOS Chrome Companionプロファイルで <code>Reconnect</code> を押し、<code>Connected</code> を確認する。</li>
+        <li>過去・別taskのsessionやleaseを使わず、現在のtaskが所有する新しいtask-owned sessionを作る。</li>
+        <li>{companyLabel}と対象を、同じsessionのfresh semantic＋visual readbackで確認する。</li>
+        <li>readbackが不十分な場合だけ、同じ対象のread-only確認を一回追加する。これは前回操作の再クリック・再送ではない。</li>
+      </ol>
+      <div className="action-note" role="status" data-control-id="web-admission.companion-recovery.status">
+        <strong>現在の扱い:</strong> {signalLabel}
+      </div>
+      <p className="muted">{signals.some((value) => value.includes("unknown_effect") || value === "ledger_only") ? "効果未確定・ledger-onlyは同じRunのreceiptと対象readbackで照合し、再送しません。" : "Owner SSOが必要な場合はReconnectとは別の人間操作です。公式SSO後にCompany 1のprotected stateを再取得します。"} Connectedやこの案内の開閉だけで、session作成・Run開始・保存・送信・公開・feedback変更は行いません。</p>
+    </details>
+  );
+}
 
 function TruthfulLanesPage({ model }: { model: AppModel }) {
   const route = useRoute();
   const companyId = projectSlugFromRoute(route);
   const companyName = projectLabelFromState(model.mvpState, companyId);
-  const companyRuns = (model.mvpState.runs ?? []).filter((run) => (run.company_id ?? run.project_id) === companyId);
-  const observedLanes = [...new Set(companyRuns.map((run) => String(run.lane ?? "").trim()).filter(Boolean))];
+  const [laneReadback, setLaneReadback] = useState<any>(null);
+  const [laneReadStatus, setLaneReadStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [laneRefresh, setLaneRefresh] = useState(0);
+  React.useEffect(() => {
+    const controller = new AbortController();
+    setLaneReadback(null); setLaneReadStatus("loading");
+    void fetchApiJson<any>(`/api/v1/companies/${encodeURIComponent(companyId)}/lanes/readback`, { signal: controller.signal }).then((result) => {
+      if (controller.signal.aborted) return;
+      if (result.company_id !== companyId || result.company_scope?.company_id !== companyId || result.company_scope?.enforced !== true
+        || result.source !== "company_run_steps" || !Array.isArray(result.observed)) throw new Error("company_lanes_readback_mismatch");
+      setLaneReadback(result); setLaneReadStatus("ready");
+    }).catch(() => { if (!controller.signal.aborted) setLaneReadStatus("error"); });
+    return () => controller.abort();
+  }, [companyId, laneRefresh]);
   const registeredLanes = model.mvpState.browser_use_runtime?.lanes ?? [];
   const selectedBackend = model.mvpState.web_operation_backend?.backend ?? model.mvpState.browser_use_runtime?.backend ?? "unknown";
-  const selectedBackendLabel = selectedBackend === "chrome_plugin" ? "Chrome Plugin" : selectedBackend === "browser_use_cli" ? "Browser Use CLI" : selectedBackend === "playwright" ? "Playwright" : selectedBackend;
+  const selectedBackendLabel = publicWebOperationBackendLabel(selectedBackend);
   return (
     <section>
       <ProjectTabs mvpState={model.mvpState} />
       <PageTitle title={companyName} desc="Lane readback" />
       <ProjectScopeNotice projectId={companyId} mvpState={model.mvpState} />
       <Panel title="登録済みLane定義" controlId="truthful.lanes.registry.panel">
-        <p className="muted">現在のAOS選択backend={selectedBackendLabel}。登録Lane定義のcanonical browser surface=Browser Use CLIは別のworkflow-owned契約として表示しています。下表のrunnerはプロセス起動中・ログイン済み・実行可能とは解釈しません。Playwright等のrunner名が残る行は、現在のAOS選択面へ移行済みという意味ではありません。実際の会社Runで観測されたLaneは下の表に分けて表示します。</p>
+        <p className="muted">現在のAOS選択backend={selectedBackendLabel}。登録Lane定義の旧runner名は互換性のため別のworkflow-owned契約として表示しています。下表のrunnerはプロセス起動中・ログイン済み・実行可能とは解釈しません。選択backendへの実行bindingはRun開始時に固定され、実際の会社Runで観測されたLaneは下の表に分けて表示します。</p>
         {registeredLanes.length ? <DataTable controlId="truthful.lanes.registry.table" headers={["Lane", "Workflow", "lifecycle", "論理profile", "予約port (AOS)", "Runner契約", "process readback", "Live readback", "定義状態"]} rows={registeredLanes.map((lane: BrowserUseLaneBinding) => [lane.id ?? "-", lane.workflowId ?? "-", lane.lifecycle ?? "-", <code>{lane.profileRef ?? lane.profileName ?? "-"}</code>, lane.reservedPort == null ? "-" : String(lane.reservedPort), lane.runnerKind ?? lane.executionContract ?? "-", `${publicBrowserUseLaneProcessReadbackStatus(lane)}${lane.processPid ? ` / pid=${lane.processPid}` : ""}`, publicBrowserUseLaneReadbackStatus(lane), `${lane.ownership ?? "workflow_owned"} / ${lane.bindingStatus ?? lane.status ?? "registered"}`])} /> : <p className="muted">登録済みLane定義はありません。</p>}
       </Panel>
       <Panel title="永続化済みLane情報" controlId="truthful.lanes.panel">
-        {observedLanes.length ? (
-          <DataTable controlId="truthful.lanes.table" headers={["Lane", "Run数"]} rows={observedLanes.map((lane) => [lane, String(companyRuns.filter((run) => run.lane === lane).length)])} />
-        ) : <p className="muted">この会社のRunで観測された永続化Lane情報はありません。Lane作成・ブラウザ起動・ロック解除APIは未実装のため、操作ボタンは表示しません。</p>}
+        <Button controlId="truthful.lanes.refresh" onClick={() => setLaneRefresh((value) => value + 1)} disabled={laneReadStatus === "loading"}>Lane記録を再読込</Button>
+        {laneReadStatus === "loading" ? <ReadbackState title="Lane記録を確認中" detail="この会社のRun手順から実際に保存されたLane IDを読み込んでいます。" tone="info" />
+          : laneReadStatus === "error" ? <ReadbackState title="Lane記録を取得できません" detail="取得失敗を記録なしとは扱いません。再読込できます。" tone="attention" />
+          : laneReadback.observed.length ? <DataTable controlId="truthful.lanes.table" headers={["Lane", "Run数", "手順数", "最終記録時刻"]} rows={laneReadback.observed.map((lane: any) => [lane.lane_id, lane.run_count, lane.step_count, lane.last_observed_at ?? "未記録"])} />
+          : <ReadbackState title="保存されたLane記録は0件です" detail="この会社のRun手順を確認しました。登録定義を実行記録の代わりにはしません。" tone="success" />}
+        <p className="muted">保存された手順の履歴であり、現在のブラウザ起動・ログイン・ロック状態ではありません。確認: {laneReadback?.captured_at ?? "未確認"}。この画面からLane作成・ブラウザ起動・ロック解除は行いません。</p>
       </Panel>
     </section>
   );
@@ -3129,10 +3725,22 @@ function TruthfulMemoryPage({ model }: { model: AppModel }) {
       <PageTitle title={companyName} desc="保存情報 / Project Memory" />
       <ProjectScopeNotice projectId={companyId} mvpState={model.mvpState} />
       <Panel title="保存済み情報" controlId="truthful.memory.info.panel">
-        {memory.length ? <DataTable controlId="truthful.memory.info.table" headers={["項目", "内容"]} rows={memory.map((item) => [item.title ?? item.key, item.body ?? "-"])} /> : <ReadbackState title="保存済み情報はありません" detail="会社別永続化APIのreadbackにデータがありません。ローカルだけの編集結果やプレースホルダーは表示していません。" nextAction="この会社の自動化やChatから、保存対象を明示して作成する" />}
+        {model.mvpLoadStatus === "loading" || (model.mvpLoadStatus === "degraded" && model.mvpLoadBlocker === "mvp_state_detail_readback_pending") ? <ReadbackState title="保存情報を確認中" detail="会社別の保存記録を読み込んでいます。" tone="info" />
+          : model.mvpLoadStatus !== "ready" ? <ReadbackState title="保存情報の最新状態を確認できません" detail="読取失敗を保存件数0件とは扱いません。上部の同期で再確認してください。" tone="attention" />
+          : memory.length ? <DataTable controlId="truthful.memory.info.table" headers={["項目", "内容", "更新日時"]} rows={memory.map((item) => [item.title ?? item.memory_key ?? item.key, item.body ?? "-", item.updated_at ?? "未記録"])} />
+          : <ReadbackState title="保存済み情報は0件です" detail="この会社の永続化記録を確認しました。この画面は閲覧専用で、Chatからの任意の保存情報作成には対応していません。" tone="success" />}
+        <Button controlId="truthful.memory.open-artifacts" onClick={() => go(`#/projects/${encodeURIComponent(companyId)}/artifacts`)}>業務の成果物を見る</Button>
       </Panel>
     </section>
   );
+}
+
+function connectionMutationReadbackConfirmed(refs: any[] | undefined, item: any, action: "reconnect" | "revoke") {
+  const saved = refs?.find((row) => row.id === item.id);
+  return Boolean(saved && Number.isFinite(Number(saved.revision)) && Number.isFinite(Number(item.revision))
+    && Number(saved.revision) > Number(item.revision)
+    && (action === "revoke" ? saved.status === "revoked"
+      : saved.status === "reconnect_required" && (saved.oauth_state ?? saved.oauthState) === "reauthorization_required"));
 }
 
 function TruthfulIntegrationsPage({ model }: { model: AppModel }) {
@@ -3145,7 +3753,11 @@ function TruthfulIntegrationsPage({ model }: { model: AppModel }) {
   const [accountRefs, setAccountRefs] = useState<any[]>([]);
   const [inventoryStatus, setInventoryStatus] = useState<"loading" | "ready" | "error">(canManage ? "loading" : "ready");
   const [busyId, setBusyId] = useState<string | null>(null);
+  const inventoryGeneration = React.useRef(0);
+  const inventoryScope = React.useRef(companyId);
+  inventoryScope.current = companyId;
   const loadInventory = async () => {
+    const generation = ++inventoryGeneration.current;
     if (!canManage) {
       setAccountRefs([]);
       setInventoryStatus("ready");
@@ -3156,14 +3768,26 @@ function TruthfulIntegrationsPage({ model }: { model: AppModel }) {
       const response = await mvpFetch(`/api/v1/companies/${encodeURIComponent(companyId)}/connection-account-refs`, { cache: "no-store" });
       const result = await response.json().catch(() => ({}));
       if (!response.ok || !result.ok) throw new Error(result.error || "company_connection_inventory_read_failed");
+      if (generation !== inventoryGeneration.current || inventoryScope.current !== companyId) return;
+      if (result.company_scope?.enforced !== true || result.company_scope.company_id !== companyId || !Array.isArray(result.refs)
+        || result.refs.some((item: any) => (item.companyId ?? item.company_id) !== companyId)) throw new Error("company_connection_inventory_scope_mismatch");
       setAccountRefs(result.refs ?? []);
       setInventoryStatus("ready");
+      return result.refs as any[];
     } catch {
+      if (generation !== inventoryGeneration.current || inventoryScope.current !== companyId) return;
       setAccountRefs([]);
       setInventoryStatus("error");
     }
   };
-  React.useEffect(() => { void loadInventory(); }, [companyId, canManage]);
+  React.useEffect(() => { void loadInventory(); return () => { inventoryGeneration.current += 1; }; }, [companyId, canManage]);
+  const refreshInventory = async () => {
+    const refs = await loadInventory();
+    if (inventoryScope.current !== companyId) return;
+    model.setReceipt(refs
+      ? `${companyName}: 接続記録${refs.length}件の最新状態を再取得しました。表の状態を確認してください。処理の再送・外部providerの認証や失効は行っていません。`
+      : `${companyName}: 接続記録を再取得できませんでした。操作結果を未確認のまま保持しています。処理は再送していません。`);
+  };
   const mutateConnection = async (item: any, action: "reconnect" | "revoke") => {
     try {
       setBusyId(item.id);
@@ -3174,7 +3798,11 @@ function TruthfulIntegrationsPage({ model }: { model: AppModel }) {
       });
       const result = await response.json().catch(() => ({}));
       if (!response.ok || !result.ok) throw new Error(result.error || `company_connection_${action}_failed`);
-      await loadInventory();
+      const refs = await loadInventory();
+      if (!connectionMutationReadbackConfirmed(refs, item, action)) {
+        model.setReceipt(`${item.platform}: 接続操作の結果は未確認です。再送せず、接続記録を再読込して照合してください。`);
+        return;
+      }
       model.setReceipt(action === "reconnect"
         ? `${item.platform}: 再認証要求を保存しました。OAuth画面での認証は人間操作として未実行です。`
         : `${item.platform}: ローカル接続参照を無効化しました。外部provider側のtoken失効は未実行です。`);
@@ -3191,7 +3819,9 @@ function TruthfulIntegrationsPage({ model }: { model: AppModel }) {
       <ProjectScopeNotice projectId={companyId} mvpState={model.mvpState} />
       {isSecurity && <div className="notice-row" role="note">Securityは閲覧専用です。接続の追加・再認証・ローカル参照の無効化は「連携」画面で行います。</div>}
       <Panel title={isSecurity ? "Security / 接続境界（閲覧専用）" : "Integrations / 会社別接続inventory"} controlId={isSecurity ? "truthful.security.refs.panel" : "truthful.integrations.refs.panel"}>
-        {canManage && inventoryStatus === "loading" ? <ReadbackState title="接続inventoryを確認中" detail="会社別APIから最新の接続参照を読み込んでいます。" tone="info" /> : canManage && inventoryStatus === "error" ? <ReadbackState title="接続inventoryを確認できません" detail="未確認状態を接続済みとは表示していません。右上の同期で、最新の会社scopeを再取得してください。" tone="attention" /> : canManage && accountRefs.length ? <DataTable controlId="truthful.integrations.refs.table" headers={["サービス", "アカウント参照", "OAuth", "Scope", "期限", "最終検証", "状態", "操作"]} rows={accountRefs.map((item) => [
+        {canManage && <Button controlId="truthful.integrations.inventory-refresh" onClick={() => { void refreshInventory(); }} disabled={inventoryStatus === "loading" || busyId !== null}>接続記録を再読込</Button>}
+        <p className="muted">保存された接続参照と検証日時を表示します。今この場でのProvider利用成功やOAuthの再認証完了を保証するものではありません。</p>
+        {canManage && inventoryStatus === "loading" ? <ReadbackState title="接続inventoryを確認中" detail="会社別APIから最新の接続参照を読み込んでいます。" tone="info" /> : canManage && inventoryStatus === "error" ? <ReadbackState title="接続inventoryを確認できません" detail="未確認状態を接続済みとは表示していません。「接続記録を再読込」で、この会社の記録を再取得できます。" tone="attention" /> : canManage && accountRefs.length ? <DataTable controlId="truthful.integrations.refs.table" headers={["サービス", "アカウント参照", "OAuth", "Scope", "期限", "最終検証", "状態", "操作"]} rows={accountRefs.map((item) => [
           item.platform,
           item.account_ref ?? item.accountRef,
           item.oauth_state ?? item.oauthState ?? "not_configured",
@@ -3261,12 +3891,29 @@ function presentationProfileDraft(profile: NonNullable<MvpState["presentation_pr
   };
 }
 
+async function requestCompanyPresentationProfile(companyId: string, init: RequestInit = {}) {
+  const response = await mvpFetch(`/api/v1/companies/${encodeURIComponent(companyId)}/presentation-profile`, { ...init, cache: "no-store" });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok || !result.ok) throw new Error(result.exactBlocker || result.error || "project_profile_read_failed");
+  const profile = result.profile;
+  if (result.company_scope?.enforced !== true || result.company_scope?.company_id !== companyId || profile?.id !== companyId
+    || !["derived_from_project_automation_catalog", "persisted_project_profile"].includes(profile?.source)
+    || !Array.isArray(profile.primaryMetrics) || !Array.isArray(profile.widgets) || !profile.label
+    || result.revision !== (profile.revision ?? 0)) throw new Error("project_profile_readback_mismatch");
+  return profile as NonNullable<MvpState["presentation_profiles"]>[number];
+}
+
 function ProjectPresentationProfilePanel({ model, companyId }: { model: AppModel; companyId: string }) {
   const profile = model.mvpState.presentation_profiles?.find((item) => item.id === companyId);
   const role = projectOptionsFromState(model.mvpState).find((project) => project.id === companyId)?.role ?? "viewer";
   const canManage = role === "owner" || role === "admin" || role === "operator";
   const [draft, setDraft] = useState<PresentationProfileDraft | null>(null);
   const [saving, setSaving] = useState(false);
+  const [readbackRequired, setReadbackRequired] = useState(false);
+  const mutationRef = React.useRef(false);
+  const scopeRef = React.useRef(companyId);
+  scopeRef.current = companyId;
+  React.useEffect(() => { setReadbackRequired(false); }, [companyId]);
   const [note, setNote] = useState("プロジェクトの自動化カタログから表示方法を判定しています。");
   React.useEffect(() => {
     setDraft(profile ? presentationProfileDraft(profile) : null);
@@ -3274,14 +3921,34 @@ function ProjectPresentationProfilePanel({ model, companyId }: { model: AppModel
   }, [companyId, profile?.revision, profile?.source, profile?.exactBlocker, profile?.label]);
   if (!profile || !draft) return <Panel title="表示profile"><p className="muted">このプロジェクトの表示profileを取得できませんでした。未確認のwidgetやKPIは表示しません。</p></Panel>;
   const update = (key: keyof PresentationProfileDraft, value: string) => setDraft((current) => current ? { ...current, [key]: value } : current);
+  const applyProfile = (nextProfile: NonNullable<MvpState["presentation_profiles"]>[number]) => {
+    model.setMvpState((state) => ({ ...state, presentation_profiles: [
+      ...(state.presentation_profiles ?? []).filter((item) => item.id !== companyId), nextProfile
+    ] }));
+    setReadbackRequired(false);
+    setDraft(presentationProfileDraft(nextProfile));
+  };
+  const reconcile = async () => {
+    if (mutationRef.current) return;
+    mutationRef.current = true; setSaving(true); setNote("保存内容を読み直しています。保存要求は再送しません。");
+    try {
+      const nextProfile = await requestCompanyPresentationProfile(companyId);
+      if (scopeRef.current !== companyId) return;
+      applyProfile(nextProfile);
+      setNote(`最新の保存内容を照合しました / revision=${nextProfile.revision ?? 0}。内容を確認してから編集できます。`);
+    } catch (error) {
+      if (scopeRef.current === companyId) setNote(`保存内容の照合が必要です: ${error instanceof Error ? error.message : "project_profile_read_failed"}`);
+    } finally { mutationRef.current = false; setSaving(false); }
+  };
   const save = async () => {
-    if (!canManage || saving) return;
+    if (!canManage || mutationRef.current || readbackRequired) return;
+    mutationRef.current = true;
     const primaryMetrics = draft.primaryMetrics.split(",").map((item) => item.trim()).filter(Boolean);
     const widgets = draft.widgets.split(",").map((item) => item.trim()).filter(Boolean);
     setSaving(true);
     setNote("表示profileを保存し、revisionを確認しています。");
     try {
-      const response = await mvpFetch(`/api/v1/companies/${encodeURIComponent(companyId)}/presentation-profile`, {
+      const nextProfile = await requestCompanyPresentationProfile(companyId, {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -3300,20 +3967,19 @@ function ProjectPresentationProfilePanel({ model, companyId }: { model: AppModel
           }
         })
       });
-      const result = await response.json().catch(() => ({}));
-      if (!response.ok || !result.ok) throw new Error(result.exactBlocker || result.error || "project_profile_save_failed");
-      const nextProfile = result.profile;
-      model.setMvpState((state) => ({
-        ...state,
-        presentation_profiles: (state.presentation_profiles ?? []).map((item) => item.id === companyId ? nextProfile : item)
-      }));
-      setNote(`保存済みprofile / revision=${result.revision ?? "?"} / external_action=false`);
-      model.setReceipt(`表示profileを保存しました。project=${companyId} / revision=${result.revision ?? "?"}`);
+      if (scopeRef.current !== companyId) return;
+      if (nextProfile.revision !== (profile.revision ?? 0) + 1) throw new Error("project_profile_revision_readback_mismatch");
+      applyProfile(nextProfile);
+      setNote(`保存済みprofile / revision=${nextProfile.revision} / 外部処理なし`);
+      model.setReceipt(`表示profileを保存しました。project=${companyId} / revision=${nextProfile.revision}`);
     } catch (error) {
+      if (scopeRef.current !== companyId) return;
       const exact = error instanceof Error ? error.message : "project_profile_save_failed";
-      setNote(`保存できませんでした: ${exact}`);
+      setReadbackRequired(true);
+      setNote(`保存結果を確認できません: ${exact}。「保存内容を照合」で読み直してください。保存要求は再送しません。`);
       model.setReceipt(`表示profileの保存を確認できませんでした: ${exact}`);
     } finally {
+      mutationRef.current = false;
       setSaving(false);
     }
   };
@@ -3340,7 +4006,8 @@ function ProjectPresentationProfilePanel({ model, companyId }: { model: AppModel
           <label className="span-2"><span className="field-label">停止境界</span><textarea data-control-id="truthful.performance.profile.field.stop-boundary" aria-label="停止境界" value={draft.stopBoundary} onChange={(event) => update("stopBoundary", event.target.value)} /></label>
           <label className="span-2"><span className="field-label">説明</span><textarea data-control-id="truthful.performance.profile.field.explanation" aria-label="表示profileの説明" value={draft.explanation} onChange={(event) => update("explanation", event.target.value)} /></label>
         </div>
-        <div className="button-row"><Button controlId="truthful.performance.profile.save" variant="primary" onClick={() => { void save(); }} disabled={saving}>{saving ? "保存確認中" : "表示profileを保存"}</Button></div>
+        <div className="button-row"><Button controlId="truthful.performance.profile.save" variant="primary" onClick={() => { void save(); }} disabled={saving || readbackRequired}>{saving ? "確認中" : "表示profileを保存"}</Button>
+          <Button controlId="truthful.performance.profile.reconcile" onClick={() => { void reconcile(); }} disabled={saving}>保存内容を照合</Button></div>
       </details> : <p className="muted">表示profileの保存はOwner/Admin/Operatorだけが行えます。</p>}
     </Panel>
   );
@@ -3491,6 +4158,10 @@ function TruthfulPerformancePage({ model }: { model: AppModel }) {
         const response = await mvpFetch(`/api/v1/companies/${encodeURIComponent(companyId)}/analytics/performance?${params.toString()}`, { cache: "no-store", signal: controller.signal });
         const result = await response.json().catch(() => ({}));
         if (!response.ok || !result.ok) throw new Error(result.error || "company_analytics_read_failed");
+        if (result.company_scope?.enforced !== true || result.company_id !== companyId || result.company_scope.company_id !== companyId
+          || result.query?.from !== from || result.query?.to !== to || (result.query?.automation_id ?? "") !== automationId) {
+          throw new Error("company_analytics_readback_mismatch");
+        }
         if (controller.signal.aborted || analyticsRequestGeneration.current !== requestGeneration) return;
         setAnalytics(result);
         setAnalyticsStatus("ready");
@@ -3525,6 +4196,18 @@ function TruthfulPerformancePage({ model }: { model: AppModel }) {
           <Button controlId="truthful.performance.refresh.button" onClick={() => setRefreshGeneration((value) => value + 1)}>再読込</Button>
         </div>
       </Panel>
+      {analyticsStatus === "ready" && <Panel title="Run実績（durable Jobとは別集計）" controlId="truthful.performance.run-readback.panel">
+        <p className="muted">登録業務のRunを含む、durable Jobに紐付かないRun記録です。下のJob集計とは重複しません。「完了状態」は保存されたRun statusで、業務完了の証明は個別Runのreceipt・照合結果で確認してください。作成日時と更新日時から実処理時間を推測しません。</p>
+        {analytics?.run_readback?.source !== "runs_without_durable_job_lineage" ? <ReadbackState title="Run集計は未確認です" detail="現在のAPIからRun専用集計を取得できませんでした。0件とは扱いません。" tone="attention" />
+          : analytics.run_readback.total_runs === 0 ? <ReadbackState title="この条件のRunは0件です" detail="会社・期間・Automationで絞り込んだ保存記録を確認しました。" tone="success" /> : <>
+            <DataTable controlId="truthful.performance.run-readback.summary" headers={["Run総数", "完了状態", "処理中・待機中", "停止・失敗・取消", "最終更新"]} rows={[[analytics.run_readback.total_runs, analytics.run_readback.completed_runs,
+              analytics.run_readback.active_runs, analytics.run_readback.stopped_runs, analytics.run_readback.last_updated_at ?? "未記録"]]} />
+            <h3>日別Run（UTC）</h3>
+            <MiniBarChart rows={(analytics.run_readback.by_date ?? []).map((row: any) => ({ label: row.date, value: row.total_runs }))} />
+            <DataTable controlId="truthful.performance.run-readback.dates" headers={["日付（UTC）", "Run", "完了状態"]} rows={(analytics.run_readback.by_date ?? []).map((row: any) => [row.date, row.total_runs, row.completed_runs])} />
+            <DataTable controlId="truthful.performance.run-readback.automations" headers={["Automation", "Run", "完了状態", "最終更新"]} rows={(analytics.run_readback.by_automation ?? []).map((row: any) => [row.automation_name, row.total_runs, row.completed_runs, row.last_updated_at ?? "未記録"])} />
+          </>}
+      </Panel>}
       {analyticsStatus === "loading" ? <Panel title="集計中" controlId="truthful.performance.loading.panel"><ReadbackState title="パフォーマンスを集計中" detail="会社別の永続Jobと承認記録を読み込んでいます。長く続く場合はAPI readbackの状態を確認してください。" tone="info" />
       </Panel> : analyticsStatus === "error" ? <Panel title="集計できませんでした" controlId="truthful.performance.error.panel"><ReadbackState title="最新の集計を取得できません" detail="前回値を最新値として残していません。条件を確認し、再読込してください。" tone="attention" nextAction="再読込ボタンで同じ条件を再確認する" />
       </Panel> : analytics?.data_state === "empty" || analytics?.metrics?.outcome?.availability !== "available" ? <Panel title="計測データなし" controlId="truthful.performance.empty.panel"><ReadbackState title="この期間に計測可能なJobがありません" detail="KPIやグラフは表示していません。承認記録など別の証跡があっても、Job実績としては集計しません。" nextAction="期間またはAutomationを変更する" />
@@ -3554,7 +4237,7 @@ function TruthfulPerformancePage({ model }: { model: AppModel }) {
         </Panel>}
         {widgets.has("evidence_timeline") && <Panel title="集計の来歴" controlId="truthful.performance.provenance.panel">
           <DataTable controlId="truthful.performance.provenance.table" headers={["Source", "Rows", "Last updated", "Included"]} rows={(analytics.provenance ?? []).map((row: any) => [row.source, row.row_count, row.last_updated_at ?? "-", row.included === false ? "no" : "yes"])} />
-          <p className="muted">状態: {analytics.data_state} / 更新: {analytics.last_updated_at ?? "未計測"} / 対象期間: {analytics.query?.from} – {analytics.query?.to} / legacy run除外: {analytics.completeness?.excluded_legacy_runs ?? 0}</p>
+          <p className="muted">Job集計の状態: {analytics.data_state} / 更新: {analytics.last_updated_at ?? "未計測"} / 対象期間: {analytics.query?.from} – {analytics.query?.to} / Job集計から除外したRun（上の別集計に表示）: {analytics.completeness?.excluded_legacy_runs ?? 0}</p>
         </Panel>}
       </>}
     </section>
@@ -3588,7 +4271,8 @@ function parseJsonRecord(value: unknown): Record<string, unknown> {
 
 function proofExternalActionState(proof: any): boolean | undefined {
   const metadata = parseJsonRecord(proof?.metadata_json);
-  const receipt = parseJsonRecord(metadata.receipt);
+  const receipt = metadata.receipt && typeof metadata.receipt === "object" && !Array.isArray(metadata.receipt)
+    ? metadata.receipt as Record<string, unknown> : parseJsonRecord(metadata.receipt);
   const candidates = [
     proof?.external_action_executed,
     proof?.externalActionExecuted,
@@ -3597,16 +4281,39 @@ function proofExternalActionState(proof: any): boolean | undefined {
     receipt.external_action_executed,
     receipt.externalActionExecuted
   ];
-  return candidates.find((value): value is boolean => typeof value === "boolean");
+  return candidates.includes(true) ? true : candidates.find((value): value is boolean => typeof value === "boolean");
+}
+
+function runExternalActionReadback(run: any, proofs: any[]): { executed: boolean | null; unknown: boolean } {
+  const metadata = parseJsonRecord(run?.metadata_json);
+  const record = (value: unknown): Record<string, any> => value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, any> : parseJsonRecord(value);
+  const claim = record(metadata.remote_worker_claim);
+  const receipt = record(metadata.remote_worker_receipt);
+  const unknown = metadata.operation_effect_state === "unknown"
+    || (metadata.exact_blocker === "portable_remote_claim_expired_without_receipt" && !receipt.run_id && claim.execution_mode !== "read_only");
+  const candidates = [metadata.external_action_executed, run?.external_action_executed,
+    receipt.external_action_executed, ...proofs.map(proofExternalActionState)];
+  return { executed: candidates.includes(true) ? true : unknown ? null : candidates.includes(false) ? false : null, unknown };
+}
+
+function companyArtifactProofs(state: MvpState, companyId: string): any[] {
+  const automationIds = new Set((state.automations ?? []).filter((item) => (item.company_id ?? item.project_id) === companyId).map((item) => item.id));
+  const runIds = new Set((state.runs ?? []).filter((run) => {
+    const scope = run.company_id ?? run.project_id;
+    return scope ? scope === companyId : automationIds.has(run.automation_id);
+  }).map((run) => run.id));
+  return (state.proofs ?? []).filter((proof) => {
+    const scope = proof.company_id ?? proof.project_id;
+    return scope ? scope === companyId : runIds.has(proof.run_id);
+  });
 }
 
 function TruthfulArtifactsPage({ model }: { model: AppModel }) {
   const route = useRoute();
   const companyId = projectSlugFromRoute(route);
   const companyName = projectLabelFromState(model.mvpState, companyId);
-  const automationIds = new Set((model.mvpState.automations ?? []).filter((item) => (item.company_id ?? item.project_id) === companyId).map((item) => item.id));
-  const runIds = new Set((model.mvpState.runs ?? []).filter((run) => (run.company_id ?? run.project_id) === companyId || automationIds.has(run.automation_id)).map((run) => run.id));
-  const proofs = (model.mvpState.proofs ?? []).filter((proof) => (proof.company_id ?? proof.project_id) === companyId || runIds.has(proof.run_id));
+  const proofs = companyArtifactProofs(model.mvpState, companyId);
   return (
     <section>
       <ProjectTabs mvpState={model.mvpState} />
@@ -3614,63 +4321,411 @@ function TruthfulArtifactsPage({ model }: { model: AppModel }) {
       <ProjectScopeNotice projectId={companyId} mvpState={model.mvpState} />
       <ProjectPresentationProfileSummary model={model} companyId={companyId} context="artifacts" />
       <Panel title="Proof一覧" controlId="truthful.artifacts.proofs.panel">
-        {proofs.length ? <DataTable controlId="truthful.artifacts.proofs.table" headers={["ID", "Run", "種類", "状態", "作成日時"]} rows={proofs.map((proof) => [proof.id, proof.run_id ?? "-", proof.proof_type ?? proof.kind ?? "-", proof.status ?? "stored", proof.created_at ?? "-"])} /> : <ReadbackState title="保存済みProofはありません" detail="この会社に現在確認できる証跡がありません。固定サンプルや架空KPIは表示していません。" nextAction="Runを実行した後、同一Runのreceiptとsource syncを確認する" />}
+        {model.mvpLoadStatus === "loading" || (model.mvpLoadStatus === "degraded" && model.mvpLoadBlocker === "mvp_state_detail_readback_pending") ? <ReadbackState title="成果物を確認中" detail="会社別の保存記録を読み込んでいます。" tone="info" />
+          : model.mvpLoadStatus !== "ready" ? <ReadbackState title="成果物の最新状態を確認できません" detail="読取失敗を0件とは扱いません。上部の同期で再確認してください。" tone="attention" />
+          : proofs.length ? <DataTable controlId="truthful.artifacts.proofs.table" headers={["ID", "Run", "種類", "状態", "作成日時", "開く"]} rows={proofs.map((proof) => [proof.id, proof.run_id ?? "-", proof.proof_type ?? proof.kind ?? "-", proof.status ?? "stored", proof.created_at ?? "-",
+            proof.run_id ? <Button controlId={`truthful.artifacts.open.${proof.id}`} onClick={() => go(`#/projects/${encodeURIComponent(companyId)}/runs/${encodeURIComponent(proof.run_id)}`)}>Runの成果物を開く</Button> : <span className="muted">Run未紐付けのため開けません</span>
+          ])} /> : <ReadbackState title="保存済みProofは0件です" detail="この会社の保存記録を確認しました。固定サンプルや架空KPIは表示していません。" tone="success" />}
+        <p className="muted">Runの結果ページで、該当Proofの「安全に開く」から内容を確認できます。古い成果物は作成日時を確認し、最新の業務結果とは区別してください。</p>
         <p className="muted" data-control-id="truthful.artifacts.completion-boundary">保存済みProofはreadbackの記録です。provider receipt・source sync・reconciliationが揃うまで業務完了をclaimしません。</p>
       </Panel>
     </section>
   );
 }
 
+async function requestCompanyRunDetail(companyId: string, runId: string, signal?: AbortSignal): Promise<RunDetail> {
+  const detail = await fetchApiJson<RunDetail>(`/api/v1/companies/${encodeURIComponent(companyId)}/runs/${encodeURIComponent(runId)}`, { signal });
+  if (detail.run?.id !== runId || (detail.run?.company_id ?? detail.run?.project_id) !== companyId) {
+    throw new Error("run_detail_company_scope_mismatch");
+  }
+  return {
+    ...detail,
+    steps: (detail.steps ?? []).filter((step) => step.run_id === runId && (!step.company_id || step.company_id === companyId)),
+    proofs: (detail.proofs ?? []).filter((proof) => proof.run_id === runId && (!proof.company_id || proof.company_id === companyId))
+  };
+}
+
+function watchCompanyRunDetail(companyId: string, runId: string, signal: AbortSignal,
+  onUpdate: (detail: RunDetail, checkedAt: string, watching: boolean) => void, onError: (error: unknown) => void): () => void {
+  let stopped = false;
+  let timer: number | undefined;
+  let reads = 0;
+  const read = async () => {
+    try {
+      const value = await requestCompanyRunDetail(companyId, runId, signal);
+      if (stopped || signal.aborted) return;
+      reads += 1;
+      const watching = isRunActiveStatus(value.run.status) && reads < 120;
+      onUpdate(value, new Date().toISOString(), watching);
+      // Read only, serial and bounded. A failure never retries a Run or a
+      // provider operation, and keeps the last verified result visible.
+      if (watching) timer = window.setTimeout(() => { void read(); }, 2500);
+    } catch (error) { if (!stopped && !signal.aborted) onError(error); }
+  };
+  void read();
+  return () => { stopped = true; if (timer !== undefined) window.clearTimeout(timer); };
+}
+
+function verifiedBusinessReceiptForRun(run: any): Record<string, any> | null {
+  if (!run?.id || !isRunCompletedStatus(run.status)) return null;
+  const metadata = parseJsonRecord(run.metadata_json);
+  const receiptValue = metadata.remote_worker_receipt;
+  if (!receiptValue || typeof receiptValue !== "object" || Array.isArray(receiptValue)) return null;
+  const receipt = receiptValue as Record<string, any>;
+  if (receipt.run_id !== run.id || receipt.status !== "complete"
+    || receipt.business_proof_verified !== true || receipt.same_run_receipt !== true || receipt.same_run_source_sync !== true
+    || receipt.readback_verified !== true || receipt.cleanup_verified !== true
+    || receipt.adapter_result?.business_completion_verified !== true || receipt.adapter_result?.remote_verified !== true) return null;
+  const companyId = run.company_id ?? run.project_id;
+  if (!companyId || receipt.approval_receipt?.binding?.company_id !== companyId) return null;
+  return receipt;
+}
+
+function businessReceiptSummary(receipt: Record<string, any>): string {
+  if (receipt.workflow_id === "daily-ai-research-source-sync" && receipt.adapter_result?.local_receipt?.full_publish_completed === false && receipt.adapter_result?.local_receipt?.generation_performed === false) {
+    return "調査・既存Sheets同期を確認（画像生成・公開なし）";
+  }
+  return "このRunで許可された処理の完了を確認";
+}
+
+function verifiedGmailReviewForRun(run: any): { fetched: number; proposals: number; items: Array<{ category: string; summary: string; reply: string | null }> | null } | null {
+  if (!run?.id || !isRunCompletedStatus(run.status)) return null;
+  const metadata = parseJsonRecord(run.metadata_json);
+  const value = metadata.remote_worker_receipt;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const receipt = value as Record<string, any>;
+  const result = receipt?.adapter_result?.local_receipt?.review;
+  const companyId = run.company_id ?? run.project_id;
+  if (!companyId || metadata.external_action_executed === true || receipt?.run_id !== run.id || receipt.status !== "complete"
+    || receipt.workflow_id !== "email-review-reply" || receipt.effects_mode !== "read_only"
+    || receipt.read_only_proof_verified !== true || receipt.same_run_receipt !== true
+    || receipt.readback_verified !== true || receipt.cleanup_verified !== true || receipt.external_action_executed !== false
+    || result?.run_id !== run.id || result.company_id !== companyId || result.status !== "complete" || result.exact_blocker !== null
+    || result.provider_read_observed !== true || result.messages_sent !== false || result.provider_drafts_created !== false
+    || result.external_action_executed !== false) return null;
+  const counts = result.diagnostics;
+  if (!counts || !Number.isInteger(counts.fetched_count) || counts.fetched_count < 0 || counts.fetched_count > 100
+    || counts.item_count !== counts.fetched_count || counts.unique_id_count !== counts.fetched_count
+    || !Number.isInteger(counts.reply_candidate_count) || counts.reply_candidate_count < 0 || counts.reply_candidate_count > 5) return null;
+  const synced = metadata.gmail_review_source_sync as Record<string, any> | undefined;
+  const syncedResult = synced?.schema === "aos.gmail_review_source_sync.v1" && synced.run_id === run.id && synced.company_id === companyId
+    && typeof result.review_hash === "string" && /^[a-f0-9]{64}$/u.test(result.review_hash)
+    && synced.source_review_hash === result.review_hash && synced.review_result?.review_hash === result.review_hash
+    && synced.review_result?.run_id === run.id && synced.review_result?.company_id === companyId
+    && synced.review_result?.status === "complete" && synced.review_result?.messages_sent === false
+    && synced.review_result?.provider_drafts_created === false && synced.review_result?.external_action_executed === false
+    ? synced.review_result : null;
+  const rows = (syncedResult ?? result).review?.items;
+  const completeItems = Array.isArray(rows) && rows.length === counts.fetched_count
+    && rows.every((item: any) => item && typeof item.message_id === "string" && item.message_id.trim()
+      && typeof item.category === "string" && typeof item.summary === "string"
+      && (item.reply_candidate === null || typeof item.reply_candidate === "string"))
+    && new Set(rows.map((item: any) => item.message_id)).size === rows.length
+    && rows.filter((item: any) => typeof item.reply_candidate === "string" && item.reply_candidate.trim()).length === counts.reply_candidate_count;
+  return { fetched: counts.fetched_count, proposals: counts.reply_candidate_count,
+    items: completeItems ? rows.map((item: any) => ({ category: redactSensitiveText(item.category).slice(0, 80),
+      summary: redactSensitiveText(item.summary).slice(0, 240), reply: item.reply_candidate ? redactSensitiveText(item.reply_candidate).slice(0, 400) : null })) : null };
+}
+
+function verifiedObsidianAuditForRun(run: any): { summary: { projects: number; ok: number; attention: number; blocked: number }; projects: Array<Record<string, any>> | null; truncated: boolean; generatedAt: string | null } | null {
+  if (!run?.id || !isRunCompletedStatus(run.status)) return null;
+  const metadata = parseJsonRecord(run.metadata_json);
+  const receipt = metadata.remote_worker_receipt as Record<string, any> | undefined;
+  const value = receipt?.adapter_result?.local_receipt;
+  const companyId = run.company_id ?? run.project_id;
+  if (!companyId || !receipt || metadata.external_action_executed === true || receipt.run_id !== run.id || receipt.status !== "complete"
+    || receipt.workflow_id !== "obsidian-project-memory-audit" || receipt.effects_mode !== "read_only"
+    || receipt.read_only_proof_verified !== true || receipt.same_run_receipt !== true || receipt.readback_verified !== true
+    || receipt.cleanup_verified !== true || receipt.external_action_executed !== false || value?.audit_only !== true
+    || value.write_performed !== false || value.maintenance_performed !== false || value.git_sync_performed !== false) return null;
+  const summary = value.audit_summary;
+  if (!summary || ![summary.projects, summary.ok, summary.attention, summary.blocked].every((n) => Number.isInteger(n) && n >= 0)
+    || summary.projects !== summary.ok + summary.attention + summary.blocked) return null;
+  const rows = value.audit_projects;
+  const truncated = value.audit_projects_truncated === true;
+  const valid = value.audit_run_id === run.id && value.audit_company_id === companyId
+    && typeof value.audit_generated_at === "string" && Number.isFinite(Date.parse(value.audit_generated_at))
+    && typeof value.audit_projects_truncated === "boolean" && truncated === (summary.projects > 20)
+    && Array.isArray(rows) && rows.length === Math.min(summary.projects, 20)
+    && rows.every((row: any) => row && typeof row.project_id === "string" && row.project_id.trim()
+      && typeof row.project_label === "string" && ["ok", "attention", "blocked"].includes(row.status)
+      && typeof row.finding === "string" && typeof row.next_action === "string"
+      && (row.state_updated_at === null || typeof row.state_updated_at === "string")
+      && (row.latest_activity_at === null || typeof row.latest_activity_at === "string"))
+    && new Set(rows.map((row: any) => row.project_id)).size === rows.length
+    && (truncated || ["ok", "attention", "blocked"].every((status) => rows.filter((row: any) => row.status === status).length === summary[status]));
+  return { summary, projects: valid ? rows : null, truncated: valid && truncated, generatedAt: valid ? value.audit_generated_at : null };
+}
+
+function portableProjectionForRun(run: any): PortableRunProjection | null {
+  const stored = run?.portable_operation_projection ?? run?.operation_projection;
+  if (stored && typeof stored === "object" && !Array.isArray(stored)) return stored as PortableRunProjection;
+  const metadata = parseJsonRecord(run?.metadata_json);
+  const bundleRecord = metadata.portable_input_bundle && typeof metadata.portable_input_bundle === "object" ? metadata.portable_input_bundle as Record<string, any> : null;
+  const input = bundleRecord?.input && typeof bundleRecord.input === "object" ? bundleRecord.input as Record<string, any> : {};
+  const invocation = metadata.portable_workflow_invocation && typeof metadata.portable_workflow_invocation === "object" ? metadata.portable_workflow_invocation as Record<string, any> : {};
+  const source = metadata.source_snapshot && typeof metadata.source_snapshot === "object" ? metadata.source_snapshot as Record<string, any> : {};
+  const first = (key: string, candidates: Array<[unknown, string]>) => { for (const [value, path] of candidates) if (typeof value === "string" && value.trim()) return [value, path] as const; return [null, null] as const; };
+  const fields = { operation: first("operation", [[input.operation, "run.portable_input_bundle.input.operation"], [invocation.operation, "run.portable_workflow_invocation.operation"]]), account_ref: first("account_ref", [[input.account_ref, "run.portable_input_bundle.input.account_ref"]]), target_key: first("target_key", [[input.target_key, "run.portable_input_bundle.input.target_key"]]), payload_hash: first("payload_hash", [[input.payload_hash, "run.portable_input_bundle.input.payload_hash"]]), source_snapshot_id: first("source_snapshot_id", [[input.source_snapshot_id, "run.portable_input_bundle.input.source_snapshot_id"], [source.source_snapshot_id, "run.source_snapshot.source_snapshot_id"]]), vault_path: first("vault_path", [[input.vault_path, "run.portable_input_bundle.input.vault_path"], [source.vault_path, "run.source_snapshot.vault_path"]]), repository: first("repository", [[input.repository, "run.portable_input_bundle.input.repository"], [source.repository, "run.source_snapshot.repository"]]), branch: first("branch", [[input.branch, "run.portable_input_bundle.input.branch"], [source.branch, "run.source_snapshot.branch"]]) };
+  const provenance = Object.fromEntries(Object.entries(fields).filter(([, pair]) => pair[0] && pair[1]).map(([key, pair]) => [key, pair[1] as string]));
+  return { execution_mode_label: invocation.effect_stage === "business_execute" ? "業務実行" : invocation.execution_mode === "read_only" ? "読取専用" : "実行種別未確認", planned_operation_scope: { status: fields.operation[0] && fields.account_ref[0] && fields.target_key[0] && fields.payload_hash[0] && fields.source_snapshot_id[0] ? "planned" : "missing", operation: fields.operation[0], account_ref: fields.account_ref[0], target_key: fields.target_key[0], payload_hash: fields.payload_hash[0], source_snapshot_id: fields.source_snapshot_id[0], vault_path: fields.vault_path[0], repository: fields.repository[0], branch: fields.branch[0], provenance }, observed_results: { status: "not_acquired", operation: null, maintenance: null, export: null, git_sync: null, provenance: {} }, missing: Object.entries(fields).filter(([, pair]) => !pair[0]).map(([key]) => key), mismatches: [] };
+}
+
 function TruthfulRunDetailPage({ model }: { model: AppModel }) {
   const route = useRoute();
   const companyId = projectSlugFromRoute(route);
   const runId = decodeURIComponent(route.split("/runs/")[1]?.split("/")[0] ?? "");
-  const run = (model.mvpState.runs ?? []).find((item) => {
+  const [detail, setDetail] = useState<RunDetail | null>(null);
+  const [detailError, setDetailError] = useState("");
+  const [detailCheckedAt, setDetailCheckedAt] = useState("");
+  const [detailWatching, setDetailWatching] = useState(false);
+  const [detailRefresh, setDetailRefresh] = useState(0);
+  const [proofView, setProofView] = useState<ProofView | null>(null);
+  const [selectedProofId, setSelectedProofId] = useState<string | null>(null);
+  const detailKey = `${companyId}:${runId}`;
+  const currentDetail = detail?.run?.id === runId && (detail.run.company_id ?? detail.run.project_id) === companyId ? detail : null;
+  React.useEffect(() => {
+    setDetail(null);
+    setDetailError("");
+    setDetailCheckedAt("");
+    setSelectedProofId(null);
+    setProofView(null);
+  }, [detailKey]);
+  React.useEffect(() => {
+    const controller = new AbortController();
+    setDetailError("");
+    setDetailWatching(true);
+    const stop = watchCompanyRunDetail(companyId, runId, controller.signal,
+      (value, checkedAt, watching) => { setDetail(value); setDetailCheckedAt(checkedAt); setDetailWatching(watching); },
+      (error) => { setDetailError(error instanceof Error ? error.message : "run_detail_unavailable"); setDetailWatching(false); });
+    return () => { controller.abort(); stop(); };
+  }, [detailKey, detailRefresh]);
+  React.useEffect(() => {
+    if (!selectedProofId || !currentDetail?.proofs.some((proof) => proof.id === selectedProofId && proof.can_open !== false)) return;
+    const controller = new AbortController();
+    setProofView(null);
+    fetchApiJson<ProofView>(`/api/proofs/${encodeURIComponent(selectedProofId)}/view`, { signal: controller.signal })
+      .then((view) => {
+        if (view.id !== selectedProofId || view.run_id !== runId) throw new Error("proof_run_scope_mismatch");
+        if (!controller.signal.aborted) setProofView(view);
+      })
+      .catch((error) => {
+        if (!controller.signal.aborted) setProofView({ id: selectedProofId, run_id: runId, status: "blocked", blocked_reason: error instanceof Error ? error.message : "viewer_unavailable" });
+      });
+    return () => controller.abort();
+  }, [detailKey, selectedProofId, currentDetail]);
+  const run = currentDetail?.run ?? (model.mvpState.runs ?? []).find((item) => {
     if (item.id !== runId) return false;
     const automationCompanyId = model.mvpState.automations?.find((automation) => automation.id === item.automation_id)?.company_id
       ?? model.mvpState.automations?.find((automation) => automation.id === item.automation_id)?.project_id;
     return Boolean(companyId) && (item.company_id ?? item.project_id ?? automationCompanyId) === companyId;
   });
-  const proofs = (model.mvpState.proofs ?? []).filter((proof) => proof.run_id === runId
+  const proofs = (currentDetail?.proofs ?? model.mvpState.proofs ?? []).filter((proof) => proof.run_id === runId
     && ((!proof.company_id && !proof.project_id) || (proof.company_id ?? proof.project_id) === companyId));
-  if (!run) return <ProjectUnavailablePage reason="このRunは現在の会社別API readbackでは確認できません。" />;
-  const runMetadata = parseJsonRecord(run.metadata_json);
+  if (!run) return <ProjectUnavailablePage loading={!detailError} reason={detailError ? "このRunは現在の会社別API readbackでは確認できません。" : "会社別の同一Run詳細を取得しています。"} />;
+  const verifiedReceipt = currentDetail ? verifiedBusinessReceiptForRun(run) : null;
+  const gmailReview = currentDetail ? verifiedGmailReviewForRun(run) : null;
+  const obsidianAudit = currentDetail ? verifiedObsidianAuditForRun(run) : null;
   const runBlocker = runBlockerValue(run, model.mvpState) ?? "-";
   const publicRunBlocker = publicRunBlockerSummary(run, model.mvpState) || publicRunBlockerSummary(run);
-  const proofExternalActionExecuted = proofs
-    .map((proof) => proofExternalActionState(proof))
-    .find((value): value is boolean => typeof value === "boolean");
-  const externalActionExecuted = typeof runMetadata.external_action_executed === "boolean"
-    ? runMetadata.external_action_executed
-    : typeof run.external_action_executed === "boolean"
-      ? run.external_action_executed
-      : proofExternalActionExecuted;
-  const externalActionLabel = externalActionExecuted === false ? "なし（未実行）" : externalActionExecuted === true ? "あり（要確認）" : "未確認";
+  const externalAction = runExternalActionReadback(run, proofs);
+  const externalActionLabel = externalAction.unknown ? externalAction.executed === true ? "あり（結果未確認・再送不可）" : "結果未確認（要照合・再送不可）"
+    : externalAction.executed === false ? "なし（未実行）" : externalAction.executed === true ? verifiedReceipt ? "あり（照合済み）" : "あり（要確認）" : "未確認";
+  const portableProjection = currentDetail ? portableProjectionForRun(run) : null;
   return (
     <section>
       <PageTitle title={`実行詳細: ${run.id}`} desc="永続化済みreadbackのみ表示" />
+      <p className="muted" role="status">{detailError ? `詳細の更新失敗（${publicBlockerSummary(detailError)}）。直近の確認済み結果を表示中です。` : currentDetail ? "同一Runの詳細APIを確認済み" : "同一Runの詳細を取得中です。"}
+        {detailCheckedAt && <> / 最終確認 {detailCheckedAt}</>}{detailWatching && " / 実行中は自動更新します"}</p>
+      <Button controlId="truthful.run-detail.refresh" disabled={detailWatching} onClick={() => setDetailRefresh((value) => value + 1)}>同じRunの結果を再取得</Button>
       <Panel title="Run" controlId="truthful.run-detail.run.panel">
-        <DataTable controlId="truthful.run-detail.run.table" headers={["自動化", "状態", "待機開始", "開始", "確認事項", "停止理由", "外部効果"]} rows={[[run.automation_name ?? run.automation_id ?? "-", <StatusBadge status={isReadOnlyNoEffectReadbackComplete(run, model.mvpState) ? "waiting" : run.status === "blocked" ? "blocked" : run.status === "running" ? "running" : "waiting"} label={publicRunStatusForRun(run, model.mvpState)} />, run.queued_at ?? "-", run.started_at ?? "-", publicRunBlocker, publicBlockerSummary(runBlocker), externalActionLabel]]} />
+        <DataTable controlId="truthful.run-detail.run.table" headers={["自動化", "状態", "受付", "開始", "確認事項", "停止理由", "外部効果"]} rows={[[run.automation_name ?? model.mvpState.automations?.find((item) => item.id === run.automation_id)?.name ?? run.automation_id ?? "-", <StatusBadge status={isReadOnlyNoEffectReadbackComplete(run, model.mvpState) ? "waiting" : isRunCompletedStatus(run.status) ? "approved" : isRunStoppedStatus(run.status) ? "blocked" : run.status === "running" ? "running" : "waiting"} label={publicRunStatusForRun(run, model.mvpState)} />, run.queued_at ?? run.created_at ?? "-", run.started_at ?? currentDetail?.steps.find((step) => step.started_at)?.started_at ?? "-", publicRunBlocker, runBlocker === "-" ? "なし" : publicBlockerSummary(runBlocker), externalActionLabel]]} />
       </Panel>
-      <Panel title="確認記録" controlId="truthful.run-detail.proof.panel"><DataTable controlId="truthful.run-detail.proof.table" headers={["ID", "種類", "状態", "業務完了判定"]} rows={proofs.length ? proofs.map((proof) => [proof.id, proof.proof_type ?? proof.kind ?? "-", publicProofStatus(proof.status), "未claim"]) : [["保存済み確認記録なし", "-", "-", "未claim"]]} /><p className="muted">確認記録はreadbackの記録です。provider receipt・source sync・reconciliationが揃うまで業務完了をclaimしません。</p></Panel>
+      {portableProjection && <Panel title="Portable処理projection" controlId="truthful.run-detail.portable-projection">
+        <DataTable controlId="truthful.run-detail.portable-projection.table" headers={["項目", "値", "来歴"]} rows={[
+          ["実行種別", portableProjection.execution_mode_label ?? "実行種別未確認", "保存済み invocation.effect_stage / execution_mode"],
+          ...Object.entries(portableProjection.planned_operation_scope ?? {}).filter(([key]) => key !== "provenance" && key !== "status").map(([key, value]) => [key, value == null ? "未取得" : String(value), portableProjection.planned_operation_scope?.provenance?.[key] ?? "未取得"] as [string, string, string]),
+          ["planned scope", portableProjection.planned_operation_scope?.status ?? "missing", "projection"],
+          ["observed results", portableProjection.observed_results?.status === "not_acquired" ? "not_acquired（receiptなし）" : portableProjection.observed_results?.status ?? "not_acquired", portableProjection.observed_results?.provenance?.operation ?? "同一Run receipt未取得"]
+        ]} />
+        {(portableProjection.missing ?? []).length > 0 && <p className="muted">未取得: {portableProjection.missing?.join(", ")}</p>}
+        {(portableProjection.mismatches ?? []).length > 0 && <p className="action-note">不一致: {portableProjection.mismatches?.join(", ")}</p>}
+      </Panel>}
+      {externalAction.unknown && <p className="action-note" role="status">結果を受信できなかったことは「操作なし」の証明ではありません。同じRunのworker記録と実際の保存先を照合し、処理を再送しないでください。</p>}
+      {verifiedReceipt && <p className="action-note" role="status">{businessReceiptSummary(verifiedReceipt)}。同一Runの実行記録・source同期・結果照合・cleanupを確認済みです。</p>}
+      {gmailReview && <Panel title="Gmail確認結果（未送信）" controlId="truthful.run-detail.gmail-result">
+        <p role="status">metadata {gmailReview.fetched}件の取得・分類を確認しました。未送信の返信案 {gmailReview.proposals}件（上限5件）。メール送信・Gmail下書き作成はしていません。</p>
+        {gmailReview.proposals === 0 && <p>今回の確認では返信案の候補はありませんでした。</p>}
+        {gmailReview.items ? <DataTable controlId="truthful.run-detail.gmail-items" headers={["分類", "要約", "返信案（未送信）"]} rows={gmailReview.items.map((item) => [item.category, item.summary, item.reply ?? "なし"])} />
+          : <p className="muted">この保存記録では分類の本文が省略されています。件数は確認済みですが、全件の要約はまだAOSへ転送されていません。</p>}
+        <small>metadataだけに基づく提案です。メール本文や添付ファイルの確認・送信の承認とは別です。</small>
+      </Panel>}
+      {obsidianAudit && <Panel title="Obsidian監査結果（読取のみ）" controlId="truthful.run-detail.obsidian-result">
+        <p role="status">{obsidianAudit.summary.projects}プロジェクトを監査。要確認 {obsidianAudit.summary.attention}件 / 停止要因 {obsidianAudit.summary.blocked}件 / 問題なし {obsidianAudit.summary.ok}件。Vault更新・Git同期はしていません。</p>
+        {obsidianAudit.generatedAt && <p className="muted">このRunの監査時刻: {obsidianAudit.generatedAt}</p>}
+        {obsidianAudit.projects ? <DataTable controlId="truthful.run-detail.obsidian-projects" headers={["プロジェクト", "状態", "確認事項", "STATE更新", "最新活動", "次の操作"]} rows={obsidianAudit.projects.map((item) => [
+          redactSensitiveText(item.project_label), item.status === "ok" ? "問題なし" : item.status === "attention" ? "要確認" : "停止要因",
+          redactSensitiveText(item.finding), item.state_updated_at ?? "なし", item.latest_activity_at ?? "未確認", redactSensitiveText(item.next_action)
+        ])} /> : <p>この過去のRunには件数集計だけが保存されています。個別の理由や次の操作を確認するには、新しい読取監査を依頼してください。過去の結果は書き換えません。</p>}
+        {obsidianAudit.truncated && <p>要対応を優先して先頭20プロジェクトを表示しています。全件の表示ではありません。</p>}
+      </Panel>}
+      {currentDetail && <Panel title="手順" controlId="truthful.run-detail.steps.panel"><DataTable controlId="truthful.run-detail.steps.table" headers={["手順", "状態", "開始", "完了"]} rows={currentDetail.steps.map((step) => [step.name ?? step.id, publicRunStatus(step.status), step.started_at ?? "-", step.completed_at ?? "-"])} /></Panel>}
+      <Panel title="確認記録" controlId="truthful.run-detail.proof.panel">
+        <DataTable controlId="truthful.run-detail.proof.table" headers={["ID", "種類", "状態", "業務完了判定", "表示"]} rows={proofs.length ? proofs.map((proof) => [proof.id, proof.proof_type ?? proof.kind ?? "-", publicProofStatus(proof.status ?? (currentDetail ? "stored" : undefined)), verifiedReceipt && (proof.proof_type ?? proof.kind) === "worker_receipt" ? "このRunの処理完了を確認" : "未claim", <Button controlId={`truthful.run-detail.proof.${proof.id}`} disabled={!currentDetail || proof.can_open === false} onClick={() => setSelectedProofId(proof.id)}>安全に開く</Button>]) : [["保存済み確認記録なし", "-", "-", "未claim", "-"]]} />
+        <p className="muted">確認記録はreadbackの記録です。provider receipt・source sync・reconciliationが揃うまで業務完了をclaimしません。読取確認の完了と生成・公開の完了は別です。</p>
+        {selectedProofId && !proofView && <p role="status">確認記録を取得中です。</p>}
+        {proofView?.run_id === runId && proofView.id === selectedProofId && <div className="preview-box" role="region" aria-label="確認記録プレビュー">
+          <strong>{proofView.label ?? "確認記録"}</strong>
+          {proofView.status === "ok" && proofView.preview && <pre>{redactDisplayPaths(proofView.preview)}</pre>}
+          {proofView.status !== "ok" && <p>{publicBlockerSummary(proofView.blocked_reason)}</p>}
+          {proofView.truncated && <small>安全のため先頭部分のみ表示しています。</small>}
+        </div>}
+      </Panel>
       <div className="button-row">
-        <Button controlId="truthful.run-detail.open-recovery" onClick={() => go(`#/projects/${encodeURIComponent(companyId)}/recovery`)}>会社別の復旧画面を開く</Button>
+        {currentDetail && run.status === "waiting_approval" && <Button controlId="truthful.run-detail.open-approval" onClick={() => go(`#/approvals?run_id=${encodeURIComponent(runId)}&company_id=${encodeURIComponent(companyId)}`)}>このRunの承認を確認</Button>}
+        <Button controlId="truthful.run-detail.open-recovery" onClick={() => go(`#/projects/${encodeURIComponent(companyId)}/recovery?run_id=${encodeURIComponent(runId)}`)}>会社別の復旧画面を開く</Button>
       </div>
-      <p className="muted">再試行・キャンセルは会社別Recovery画面で、権限・idempotency・終端状態をサーバー確認した後に実行できます。</p>
+      <p className="muted">復旧画面はこの会社とRunを引き継ぎます。実行前のキャンセル、外部効果なしを確認できたRunの再試行だけを提示します。完了済み・結果不明の処理は再送しません。</p>
     </section>
   );
+}
+
+async function requestPortableRunRecovery(companyId: string, runId: string) {
+  const body = await fetchApiJson<{ recovery: any }>(`/api/v1/companies/${encodeURIComponent(companyId)}/runs/${encodeURIComponent(runId)}/recovery`);
+  const row = body?.recovery;
+  if (!row || row.schema !== "aos.portable_run_recovery.v1" || row.company_id !== companyId || row.run_id !== runId
+    || typeof row.readback_token !== "string") throw new Error("portable_recovery_readback_mismatch");
+  return row;
+}
+
+function portableRecoveryReason(code: unknown): string {
+  const reasons: Record<string, string> = {
+    portable_recovery_effect_already_executed: "外部効果が実行済みです。同じ処理は再送しません。",
+    portable_recovery_effect_unconfirmed: "外部結果が未確認です。同じRunのreceipt・保存先を先に照合してください。",
+    portable_recovery_worker_claim_active: "workerが実行を受付済みです。同じRunの結果を確認してください。",
+    portable_recovery_registration_changed: "元の登録内容・versionが変更またはアーカイブされています。Builderで内容を確認し、新しい依頼を作ってください。",
+    portable_recovery_run_not_cancellable: "未受付の実行前Runだけをキャンセルできます。",
+    portable_recovery_run_not_retryable: "停止・失敗・キャンセル済みで、外部効果なしを確認できたRunだけ再試行できます。",
+    portable_recovery_retry_already_prepared: "このRunの再試行は作成済みです。新しいRunの結果を開いてください。",
+    portable_recovery_retry_preparing: "前の要求は記録されていますが、新しいRunの準備完了は未確認です。同じRunを照合してください。",
+    portable_recovery_workflow_unsupported: "このRunは登録済み5業務のMac worker処理ではありません。下のJob記録またはRun詳細を確認してください。"
+  };
+  return code ? reasons[String(code)] ?? publicBlockerSummary(code) : "操作できます";
+}
+
+function recoveryRunOptionStatus(run: any, recovery: any, companyId: string): string {
+  return String(recovery?.company_id === companyId && recovery?.run_id === run.id
+    && typeof recovery.status === "string" ? recovery.status : run.status ?? "unknown");
 }
 
 function TruthfulRecoveryPage({ model }: { model: AppModel }) {
   const route = useRoute();
   const companyId = projectSlugFromRoute(route);
   const companyName = projectLabelFromState(model.mvpState, companyId);
+  const requestedRunId = new URLSearchParams(route.split("?")[1] ?? "").get("run_id") ?? "";
+  const [recovery, setRecovery] = useState<any>(null);
+  const [recoveryReadStatus, setRecoveryReadStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [runActionBusy, setRunActionBusy] = useState(false);
+  const [runReadbackRequired, setRunReadbackRequired] = useState(false);
+  const [runNote, setRunNote] = useState("Runを選ぶと実行状態と可能な操作を確認します。");
+  const runMutationRef = useRef(false);
+  const recoveryReadGeneration = useRef(0);
+  const companyRuns = (model.mvpState.runs ?? []).filter((run: any) => String(run.company_id ?? "") === companyId);
   const jobs = (model.mvpState.jobs ?? []).filter((job) => String(job.company_id ?? "") === companyId);
   const attempts = model.mvpState.job_attempts ?? [];
+  const selectedRunIsScoped = companyRuns.some((run: any) => run.id === requestedRunId);
   const canMutateJob = ["owner", "admin", "operator"].includes(projectOptionsFromState(model.mvpState).find((company) => company.id === companyId)?.role ?? "viewer");
   const [mutatingJobId, setMutatingJobId] = useState<string | null>(null);
   const [note, setNote] = useState("会社別のdurable job readbackから復旧候補を確認しています。");
   const retryIdempotencyRef = useRef<Record<string, string>>({});
+  const refreshRun = async () => {
+    if (!requestedRunId) {
+      recoveryReadGeneration.current += 1;
+      setRecovery(null); setRecoveryReadStatus("idle");
+      setRunNote("Runを選ぶと実行状態と可能な操作を確認します。");
+      return null;
+    }
+    const generation = ++recoveryReadGeneration.current;
+    setRecoveryReadStatus("loading");
+    setRunNote(`${requestedRunId} の保存状態を読み込んでいます。処理は再送しません。`);
+    try {
+      const value = await requestPortableRunRecovery(companyId, requestedRunId);
+      if (generation !== recoveryReadGeneration.current) return null;
+      setRecovery(value);
+      setRecoveryReadStatus("ready");
+      setRunReadbackRequired(false);
+      setRunNote(`同じRunの保存状態を確認: ${value.status} / ${actionStamp()}（処理の再送なし）`);
+      return value;
+    } catch (error) {
+      if (generation !== recoveryReadGeneration.current) return null;
+      setRecoveryReadStatus("error");
+      setRunReadbackRequired(true);
+      setRunNote(`Runの最新状態を確認できません: ${publicBlockerSummary(error instanceof Error ? error.message : "readback_failed")}`);
+      return null;
+    }
+  };
+  useEffect(() => {
+    setRecovery(null);
+    setRunReadbackRequired(false);
+    void refreshRun();
+    return () => { recoveryReadGeneration.current += 1; };
+  }, [companyId, requestedRunId]);
+  const mutateRun = async (action: "cancel" | "retry") => {
+    if (runMutationRef.current || runReadbackRequired || recoveryReadStatus !== "ready" || !canMutateJob
+      || recovery?.run_id !== requestedRunId || recovery?.company_id !== companyId
+      || !(action === "cancel" ? recovery.can_cancel : recovery.can_retry)) return;
+    runMutationRef.current = true;
+    setRunActionBusy(true);
+    setRunNote("1回だけ要求し、保存された同じRunの状態を確認しています。");
+    try {
+      const response = await mvpFetch(`/api/v1/companies/${encodeURIComponent(companyId)}/runs/${encodeURIComponent(requestedRunId)}/recovery/${action}`, {
+        method: "POST", headers: { "content-type": "application/json", ...(action === "retry" ? { "idempotency-key": `portable-retry-${requestedRunId}` } : {}) },
+        body: JSON.stringify({ expected_readback_token: recovery.readback_token })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error ?? "portable_recovery_action_unconfirmed");
+      const saved = await refreshRun();
+      if (!saved || (action === "cancel" ? saved.status !== "cancelled"
+        : !saved.retry?.result_confirmed || saved.retry.run_id !== body.retry_run?.id)) throw new Error("portable_recovery_action_readback_mismatch");
+      setRunNote(action === "cancel" ? "キャンセル保存と未実行Runの停止を確認しました。履歴は保持しています。"
+        : saved.requires_fresh_approval ? "新しいRunと承認待ちを保存しました。新しいRunの対象・内容を確認して承認してください。旧承認は再利用しません。"
+        : "新しいRunを1件受付しました。Mac workerでの処理結果は新しいRunで確認してください。");
+    } catch (error) {
+      setRunReadbackRequired(true);
+      setRunNote(`操作結果を確定できません: ${publicBlockerSummary(error instanceof Error ? error.message : "action_unconfirmed")}。再送せず「同じRunを照合」で確認してください。`);
+    } finally {
+      runMutationRef.current = false;
+      setRunActionBusy(false);
+    }
+  };
+  const reconcileBackupEvidence = async () => {
+    if (runMutationRef.current || runReadbackRequired || recoveryReadStatus !== "ready" || !canMutateJob
+      || recovery?.run_id !== requestedRunId || recovery?.company_id !== companyId
+      || recovery?.can_reconcile_backup_evidence !== true) return;
+    runMutationRef.current = true;
+    setRunActionBusy(true);
+    setRunNote("バックアップの保存済み証拠だけを1回受付し、同じRunの結果を確認しています。providerは再実行しません。");
+    try {
+      const response = await mvpFetch(`/api/v1/companies/${encodeURIComponent(companyId)}/runs/${encodeURIComponent(requestedRunId)}/recovery/reconcile-post-effect`, {
+        method: "POST", headers: { "content-type": "application/json", "idempotency-key": `portable-backup-post-effect-${requestedRunId}` },
+        body: JSON.stringify({ expected_readback_token: recovery.readback_token })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error ?? "portable_backup_evidence_reconcile_unconfirmed");
+      const saved = await refreshRun();
+      if (!saved || saved.run_id !== requestedRunId || saved.company_id !== companyId
+        || !["queued", "claimed", "verified", "blocked"].includes(String(saved.backup_post_effect_reconciliation?.status))) {
+        throw new Error("portable_backup_evidence_reconcile_readback_mismatch");
+      }
+      setRunNote("バックアップ証拠の照合要求を保存しました。Mac workerのevidence-only結果を同じRunで確認します。");
+    } catch (error) {
+      setRunReadbackRequired(true);
+      setRunNote(`バックアップ証拠の結果を確定できません: ${publicBlockerSummary(error instanceof Error ? error.message : "reconcile_unconfirmed")}。再送せず同じRunを照合してください。`);
+    } finally {
+      runMutationRef.current = false;
+      setRunActionBusy(false);
+    }
+  };
   useEffect(() => {
     if (model.mvpLoadStatus === "ready") {
       setNote(`会社別durable job readback確認済み: jobs=${jobs.length} / external_action=false`);
@@ -3732,19 +4787,58 @@ function TruthfulRecoveryPage({ model }: { model: AppModel }) {
   return (
     <section>
       <ProjectTabs mvpState={model.mvpState} />
-      <PageTitle title={`${companyName} / 復旧`} desc="永続化されたdurable jobの状態確認と、許可された再試行・キャンセル" >
+      <PageTitle title={`${companyName} / 復旧`} desc="同じ会社・Runの結果を照合し、実行前キャンセルと安全な再試行を行います" >
         <Button controlId="truthful.recovery.refresh" icon={<RefreshCw size={15} />} onClick={() => { void refresh(); }}>再読込</Button>
       </PageTitle>
       <ProjectScopeNotice projectId={companyId} mvpState={model.mvpState} />
+      <Panel title="登録済み業務のRun復旧" controlId="truthful.recovery.portable.panel">
+        <label>確認するRun <select data-control-id="truthful.recovery.portable.select" aria-label="復旧するRun" value={selectedRunIsScoped ? requestedRunId : ""}
+          disabled={runActionBusy} onChange={(event) => go(`#/projects/${encodeURIComponent(companyId)}/recovery?run_id=${encodeURIComponent(event.target.value)}`)}>
+          <option value="">Runを選択してください</option>
+          {companyRuns.map((run: any) => <option key={run.id} value={run.id}>{run.name ?? run.id} / {run.id} / {publicRunStatus(recoveryRunOptionStatus(run, recovery, companyId))}</option>)}
+        </select></label>
+        {requestedRunId && !selectedRunIsScoped && <p className="action-note" role="status">指定されたRunは現在の会社別summaryにありません。未照合のRunは表示・操作しません。</p>}
+        <p role="status">{runNote}</p>
+        {requestedRunId && selectedRunIsScoped && <div className="button-row">
+          <Button controlId="truthful.recovery.portable.refresh" disabled={runActionBusy || recoveryReadStatus === "loading"} onClick={() => { void refreshRun(); }}>同じRunを照合</Button>
+          <Button controlId="truthful.recovery.portable.open-run" onClick={() => go(`#/projects/${encodeURIComponent(companyId)}/runs/${encodeURIComponent(requestedRunId)}`)}>元のRunを開く</Button>
+        </div>}
+        {recovery?.run_id === requestedRunId && recovery?.company_id === companyId && <>
+          <DataTable controlId="truthful.recovery.portable.table" headers={["確認項目", "保存された状態"]} rows={[
+            ["Run / 会社", `${recovery.run_id} / ${recovery.company_id}`],
+            ["業務 / version", `${recovery.workflow_id} / ${recovery.automation_version_id ?? "未確認"}`],
+            ["状態 / 最終照合", `${publicRunStatus(recovery.status)} / ${approvalDueLabel(recovery.checked_at)}`],
+            ["外部効果", recovery.external_action_executed === true ? "実行済み・再送不可" : recovery.external_action_executed === false ? "なしを確認" : "結果未確認・照合が必要"],
+            ["固定対象 / account", `${recovery.target_key ?? "登録済み読取処理"} / ${recovery.account_ref ?? "元の登録を保持"}`],
+            ["キャンセル", portableRecoveryReason(recovery.cancel_blocker)],
+            ["再試行", portableRecoveryReason(recovery.retry_blocker)]
+          ]} />
+          <p className="muted">キャンセルはworkerが未受付のRunを停止します。再試行は元の会社・登録version・処理範囲を保持した新しいRunを1件作り、旧Runの結果は変更しません。書込処理は新しい対象承認が必要です。完了済み・外部結果不明・実行中の処理は再送しません。</p>
+          {recoveryReadStatus !== "ready" && <p>表示は最新状態と未照合です。操作は停止しています。</p>}
+          <div className="button-row">
+            {canMutateJob && recovery.can_cancel && <Button controlId="truthful.recovery.portable.cancel" variant="danger"
+              disabled={runActionBusy || runReadbackRequired || recoveryReadStatus !== "ready"} onClick={() => { void mutateRun("cancel"); }}>実行前キャンセル</Button>}
+            {canMutateJob && recovery.can_retry && <Button controlId="truthful.recovery.portable.retry" variant="primary"
+              disabled={runActionBusy || runReadbackRequired || recoveryReadStatus !== "ready"} onClick={() => { void mutateRun("retry"); }}>
+              {recovery.requires_fresh_approval ? "新しいRunと承認を準備" : "新しいRunで再試行"}</Button>}
+            {canMutateJob && recovery.can_reconcile_backup_evidence && <Button controlId="truthful.recovery.portable.backup-post-effect" variant="primary"
+              disabled={runActionBusy || runReadbackRequired || recoveryReadStatus !== "ready"} onClick={() => { void reconcileBackupEvidence(); }}>
+              バックアップの結果を回収</Button>}
+            {recovery.retry?.result_confirmed && <Button controlId="truthful.recovery.portable.open-retry"
+              onClick={() => go(`#/projects/${encodeURIComponent(companyId)}/runs/${encodeURIComponent(recovery.retry.run_id)}`)}>再試行Runの結果を開く</Button>}
+          </div>
+          {!canMutateJob && <p>現在の会社権限は閲覧のみです。</p>}
+        </>}
+      </Panel>
       <div className="action-note" role="status">{note}</div>
       <div className="cards four">
         <MetricCard controlId="truthful.recovery.metric.recovery" title="要確認Job" value={String(recoveryJobs.length)} sub="failed / timeout / reconciliation" status={recoveryJobs.length ? "blocked" : "enabled"} />
         <MetricCard controlId="truthful.recovery.metric.pending" title="待機Job" value={String(pendingJobs.length)} sub="queued / leased" status={pendingJobs.length ? "waiting" : "enabled"} />
         <MetricCard controlId="truthful.recovery.metric.attempts" title="試行記録" value={String(attempts.filter((attempt) => String(attempt.company_id ?? "") === companyId || jobs.some((job) => job.id === attempt.job_id)).length)} sub="保存済みattempt" status="enabled" />
-        <MetricCard controlId="truthful.recovery.metric.external" title="外部操作" value="実行しない" sub="復旧画面の安全境界" status="enabled" />
+        <MetricCard controlId="truthful.recovery.metric.external" title="再試行の実行先" value="worker" sub="受付と処理完了は別に確認" status="enabled" />
       </div>
       <Panel title="復旧候補" controlId="truthful.recovery.jobs.panel">
-        <p className="muted">ここで行うのは会社別durable jobの状態遷移だけです。外部投稿・送信・再ログイン・Browser Useの起動は実行しません。再試行はサーバー側のidempotencyと権限検証を通ります。</p>
+        <p className="muted">以下は別系統のdurable job記録です。再試行を受付するとworkerが保存済みの処理契約に従って実行します。受付だけでは業務完了ではありません。</p>
         {recoveryJobs.length ? <DataTable controlId="truthful.recovery.jobs.table" headers={["Job", "状態", "試行", "最後のエラー", "更新", "操作"]} rows={recoveryJobs.map((job) => {
           const jobAttempts = attemptsByJob.get(String(job.id)) ?? [];
           const canCancel = ["timed_out"].includes(String(job.status));
@@ -3764,7 +4858,7 @@ function TruthfulRecoveryPage({ model }: { model: AppModel }) {
       </Panel>
       <Panel title="復旧できない状態" controlId="truthful.recovery.boundary.panel">
         <DataTable controlId="truthful.recovery.boundary.table" headers={["状態", "扱い", "理由"]} rows={[
-          ["reconciliation_required", "外部readback待ち", "外部効果の有無を確認せず再実行しない"],
+          ["reconciliation_required", "外部readback未確定", "外部効果の有無を確認せず再実行しない"],
           ["completed / cancelled", "操作なし", "終端状態のため変更しない"],
           ["Lane起動 / lock解除", "未提供", "会社別の実Runner契約がまだない"]
         ]} />
@@ -3778,7 +4872,7 @@ function TruthfulPluginsPage({ model }: { model: AppModel }) {
   const capabilities = model.mvpState.codexCapabilities;
   const surfaces = [capabilities?.browser, capabilities?.chrome, capabilities?.mcp, capabilities?.appServer, capabilities?.cli, capabilities?.automationOsApi].filter((surface): surface is CapabilitySurface => Boolean(surface));
   const companies = projectOptionsFromState(model.mvpState);
-  const requestedCompanyId = useMemo(() => chatRouteContext(route).companyId || chatRouteContext(route).projectId, [route]);
+  const requestedCompanyId = useMemo(() => projectSlugFromRoute(route) || chatRouteContext(route).companyId || chatRouteContext(route).projectId, [route]);
   const [selectedCompanyId, setSelectedCompanyId] = useState(() => resolveProjectSelection(model.mvpState, requestedCompanyId));
   const [activeTab, setActiveTab] = useState<"all" | "plugin" | "skill" | "mcp" | "cli" | "api">("all");
   const [query, setQuery] = useState("");
@@ -3790,7 +4884,12 @@ function TruthfulPluginsPage({ model }: { model: AppModel }) {
   const [companyAccountRef, setCompanyAccountRef] = useState(() => window.sessionStorage.getItem("aos-plugin-account-ref") ?? "");
   const [companyAccountScopes, setCompanyAccountScopes] = useState(() => window.sessionStorage.getItem("aos-plugin-account-scopes") ?? "read,write");
   const pluginAuthPollGeneration = useRef<Record<string, number>>({});
-  const [authWizardPluginId, setAuthWizardPluginId] = useState<string | null>(null);
+  const pluginAuthCompany = useRef(selectedCompanyId);
+  pluginAuthCompany.current = selectedCompanyId;
+  const [authWizardPluginId, setAuthWizardPluginId] = useState<string | null>(() => window.sessionStorage.getItem("aos-plugin-wizard-selection"));
+  React.useEffect(() => {
+    if (authWizardPluginId) window.sessionStorage.setItem("aos-plugin-wizard-selection", authWizardPluginId);
+  }, [authWizardPluginId]);
   const [gmailCanary, setGmailCanary] = useState<GmailReadOnlyCanaryReadback | null>(null);
   const [gmailCanaryStatus, setGmailCanaryStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [zeaburRegistry, setZeaburRegistry] = useState<ZeaburConnectorRegistryReadback | null>(null);
@@ -3809,12 +4908,32 @@ function TruthfulPluginsPage({ model }: { model: AppModel }) {
   const toolPreference = model.mvpState.capabilityRouter?.toolPreference;
   const catalog = useMemo(() => {
     const items: Array<CapabilityItem & { catalogKind: "plugin" | "skill" | "mcp" | "cli" | "api" }> = [];
-    const seenPluginNames = new Set<string>();
+    const pluginIndexes = new Map<string, number>();
+    const pluginSourceRank = (item: CapabilityItem) => item.catalogSource === "official" ? 3 : item.catalogSource === "installed" ? 2 : 1;
     const addPlugin = (item: CapabilityItem & { catalogKind: "plugin" }) => {
       const key = normalizedPluginName(item.name);
-      if (seenPluginNames.has(key)) return;
-      seenPluginNames.add(key);
-      items.push(item);
+      const existingIndex = pluginIndexes.get(key);
+      if (existingIndex === undefined) {
+        pluginIndexes.set(key, items.length);
+        items.push(item);
+        return;
+      }
+      const existing = items[existingIndex];
+      if (existing.catalogSource === "official" && existing.state.configured && !item.state.configured) return;
+      if (pluginSourceRank(item) < pluginSourceRank(existing)) return;
+      // The remote Codex Server registry is the authoritative source for the
+      // exact remote plugin id, marketplace, and auth policy. Merge it over
+      // the static catalog entry so every available Plugin gets the same
+      // install/auth button as Codex App without showing duplicates.
+      items[existingIndex] = {
+        ...existing,
+        ...item,
+        state: item.state,
+        pluginId: item.pluginId ?? existing.pluginId,
+        marketplaceName: item.marketplaceName ?? existing.marketplaceName,
+        authPolicy: item.authPolicy ?? existing.authPolicy,
+        installHint: item.installHint ?? existing.installHint
+      };
     };
     for (const item of capabilities?.plugins ?? []) addPlugin({ ...item, catalogSource: item.catalogSource ?? "installed", catalogKind: "plugin" });
     for (const item of capabilities?.availablePlugins ?? []) {
@@ -3831,6 +4950,9 @@ function TruthfulPluginsPage({ model }: { model: AppModel }) {
         kind: "plugin",
         state: { configured: true, enabled: true, verified, connected: verified },
         catalogSource: "official",
+        pluginId: item.id ?? item.name,
+        marketplaceName: item.marketplaceName ?? (item.id?.includes("@") ? item.id.split("@").pop() : undefined),
+        authPolicy: item.authPolicy ?? null,
         catalogKind: "plugin"
       });
     }
@@ -3843,8 +4965,11 @@ function TruthfulPluginsPage({ model }: { model: AppModel }) {
         status: "catalog_available",
         kind: "plugin",
         state: { configured: false, enabled: false, verified: false, connected: false },
-        catalogSource: "recommended",
-        installHint: "Zeabur上のCodex App ServerでPluginを追加後、会社認証を開始します。",
+        catalogSource: "official",
+        pluginId: item.id ?? item.name,
+        marketplaceName: item.marketplaceName ?? (item.id?.includes("@") ? item.id.split("@").pop() : undefined),
+        authPolicy: item.authPolicy ?? null,
+        installHint: "Codex Serverの公式Plugin catalogから追加後、同じボタンでProvider認証へ進みます。",
         catalogKind: "plugin"
       });
     }
@@ -3883,6 +5008,28 @@ function TruthfulPluginsPage({ model }: { model: AppModel }) {
     }
   };
   React.useEffect(() => { void loadCompanyConnections(selectedCompanyId); }, [selectedCompanyId, canManageCompany]);
+  const loadPersistedGmailCanary = async (companyId: string) => {
+    if (!companyId || !canManageCompany) {
+      setGmailCanary(null);
+      setGmailCanaryStatus("idle");
+      return;
+    }
+    try {
+      const response = await mvpFetch(`/api/v1/companies/${encodeURIComponent(companyId)}/connectors/gmail/read-only-canary`, { cache: "no-store" });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || body.persisted !== true || !body.readback) {
+        setGmailCanary(null);
+        setGmailCanaryStatus("idle");
+        return;
+      }
+      setGmailCanary(body.readback);
+      setGmailCanaryStatus(body.readback.status === "completed" ? "ready" : "error");
+    } catch {
+      setGmailCanary(null);
+      setGmailCanaryStatus("idle");
+    }
+  };
+  React.useEffect(() => { void loadPersistedGmailCanary(selectedCompanyId); }, [selectedCompanyId, canManageCompany]);
   React.useEffect(() => {
     let active = true;
     if (!selectedCompanyId) {
@@ -3934,11 +5081,6 @@ function TruthfulPluginsPage({ model }: { model: AppModel }) {
     }
   };
   React.useEffect(() => { void loadCodexAuth(selectedCompanyId); }, [selectedCompanyId, canManageCompany]);
-  React.useEffect(() => {
-    if (!selectedCompanyId || !canManageCompany || codexAuth?.status !== "pending") return;
-    const timer = window.setInterval(() => { void loadCodexAuth(selectedCompanyId); }, 5000);
-    return () => { window.clearInterval(timer); };
-  }, [selectedCompanyId, canManageCompany, codexAuth?.status]);
   const startCodexAuth = async (restart = false) => {
     if (!selectedCompanyId || !canManageCompany) {
       model.setReceipt("専用Codexサービス認証には会社1のOwner/Admin scopeが必要です。");
@@ -3986,37 +5128,61 @@ function TruthfulPluginsPage({ model }: { model: AppModel }) {
   const matchingConnection = (item: CapabilityItem) => accountRefs.find((ref) => {
     const platform = String(ref.platform ?? "").toLowerCase();
     const name = item.name.toLowerCase();
-    return platform && (name === platform || name.includes(platform) || (platform === "drive" && name.includes("google-drive")) || (platform === "calendar" && name.includes("google-calendar")) || (platform === "mail" && name.includes("gmail")));
+    return Boolean(platform) && pluginPlatformMatches(name, platform);
   });
+  const pluginAuthPolicyLabel = (item: CapabilityItem) => item.authPolicy === "ON_USE"
+    ? "使用時に公式認証"
+    : item.authPolicy === "ON_INSTALL"
+      ? "追加時に公式認証"
+      : "認証方式未確認";
   const companyAuthStatus = (item: CapabilityItem & { catalogKind: string }) => {
-    if (item.catalogSource === "recommended" || item.status === "catalog_available") return "未追加・追加可能";
+    if (item.catalogSource === "recommended" || item.status === "catalog_available") {
+      return item.catalogSource === "official" && item.authPolicy
+        ? `Codex Serverカタログ / ${pluginAuthPolicyLabel(item)} / 未追加`
+        : "未追加・追加可能";
+    }
     if (item.catalogKind !== "plugin") return item.state.connected ? "接続済み" : item.state.verified ? "検証済み" : item.state.configured ? "カタログ確認済み" : "未確認";
     const ref = matchingConnection(item);
-    if (ref && integrationStatusBadge(ref).label === "verified") return "会社認証済み";
+    if (ref && integrationStatusBadge(ref).label === "verified") return pluginAuthPoll[item.id]?.status === "verified" ? "会社接続・Server利用確認済み" : "会社接続参照あり・利用状態未確認";
     if (ref) return "再認証・検証待ち";
     return selectedCompanyId ? "会社認証が必要" : "会社未選択";
   };
   const pluginItems = catalog.filter((item) => item.catalogKind === "plugin");
-  const wizardItem = pluginItems.find((item) => item.id === authWizardPluginId)
-    ?? pluginItems.find((item) => {
+  // The authentication wizard is an action surface, not the full provider
+  // catalog. Keep the common/connected choices here and leave the complete
+  // server inventory inside the collapsed diagnostics section below.
+  const wizardPluginItems = pluginItems.filter((item) => {
+    const name = item.name.trim().toLowerCase();
+    const common = new Set(["gmail", "github", "google-drive", "google-calendar", "canva", "supabase"]);
+    return item.catalogSource !== "official" || common.has(name) || Boolean(matchingConnection(item));
+  });
+  const serverPluginEntries = [
+    ...(zeaburRegistry?.pluginRegistry?.installed ?? []),
+    ...(zeaburRegistry?.pluginRegistry?.available ?? [])
+  ];
+  const serverAuthCapableCount = serverPluginEntries.filter((item) => item.authPolicy === "ON_INSTALL" || item.authPolicy === "ON_USE").length;
+  const serverOnInstallCount = serverPluginEntries.filter((item) => item.authPolicy === "ON_INSTALL").length;
+  const serverOnUseCount = serverPluginEntries.filter((item) => item.authPolicy === "ON_USE").length;
+  const wizardItem = wizardPluginItems.find((item) => item.id === authWizardPluginId)
+    ?? wizardPluginItems.find((item) => {
       const ref = matchingConnection(item);
       const catalogOnly = item.catalogSource === "recommended" || item.status === "catalog_available";
       return catalogOnly || !ref || integrationStatusBadge(ref).label !== "verified";
     })
-    ?? pluginItems[0]
+    ?? wizardPluginItems[0]
     ?? null;
   const buildPluginAuthSteps = (item: CapabilityItem & { catalogKind: string }) => {
     const ref = matchingConnection(item);
     const catalogOnly = item.catalogSource === "recommended" || item.status === "catalog_available";
     const companySelected = Boolean(selectedCompanyId);
-    const companyVerified = Boolean(ref && integrationStatusBadge(ref).label === "verified");
+    const companyVerified = Boolean(ref && integrationStatusBadge(ref).label === "verified" && pluginAuthPoll[item.id]?.status === "verified");
     const authUrls = pluginAuthUrls[item.id] ?? [];
     const actionableAuthUrls = authUrls.filter(isActionablePluginAuthUrl);
     const authSurfaceBlocker = authUrls.length > 0 && actionableAuthUrls.length === 0
       ? pluginAuthUrlBlocker(authUrls[0]) ?? "official_auth_surface_not_actionable"
       : null;
     const registryPlugin = (zeaburRegistry?.pluginRegistry?.installed ?? []).find((plugin) => (plugin.name ?? "").trim().toLowerCase() === item.name.trim().toLowerCase());
-    const registryVerified = Boolean(registryPlugin?.authStatus === "verified" || zeaburRegistry?.connectorAuth?.[item.name.trim().toLowerCase()] === "verified");
+    const registryVerified = Boolean(pluginAuthPoll[item.id]?.runtimeReady);
     const busy = busyToolId === item.id;
     const steps: Array<{ key: string; label: string; detail: string; status: "done" | "active" | "pending" | "blocked" }> = [
       {
@@ -4029,94 +5195,61 @@ function TruthfulPluginsPage({ model }: { model: AppModel }) {
         key: "install",
         label: "Pluginを追加",
         status: !companySelected ? "pending" : catalogOnly ? "active" : "done",
-        detail: !companySelected ? "会社選択後に進めます。" : catalogOnly ? "公式Codex App Serverへ追加します。" : "Pluginは追加済みです。"
+        detail: !companySelected ? "会社選択後に進めます。" : catalogOnly ? `公式Codex App Serverへ追加します。${item.authPolicy ? `認証ポリシー: ${pluginAuthPolicyLabel(item)}。` : "認証ポリシーは未確認です。"}` : "Pluginは追加済みです。"
       },
       {
         key: "oauth",
         label: "公式認証を承認",
         status: !companySelected || catalogOnly ? "pending" : companyVerified || registryVerified ? "done" : authSurfaceBlocker ? "blocked" : authUrls.length > 0 || busy ? "active" : "active",
-        detail: companyVerified ? "公式認証と会社scopeの検証済みreadbackがあります。" : registryVerified ? "公式Provider側の認証済みreadbackがあります。下でAOSの会社scopeへ紐付けます。" : authSurfaceBlocker ? "Providerから接続・承認操作のない詳細ページだけが返されたため停止しています。" : authUrls.length > 0 ? "下の公式認証リンクを開き、必要な承認を画面で完了してください。" : "「公式認証を開始」を押して認証URLを発行します。"
+        detail: companyVerified ? "会社接続参照と専用Serverの接続・呼び出し可能状態を確認しました。実業務の結果はRunで確認します。" : registryVerified ? "専用Serverの接続・呼び出し可能状態を確認しました。会社との紐付けを確認します。" : authSurfaceBlocker ? "利用できる接続URLを取得できませんでした。" : authUrls.length > 0 ? "公式接続ページでインストール・接続を進めてください。AOSに戻ると自動再確認します。" : "「公式認証を開始」を押して接続先を取得します。"
       },
       {
         key: "scope",
         label: "会社scopeを検証",
         status: !companySelected || catalogOnly ? "pending" : companyVerified ? "done" : authSurfaceBlocker ? "blocked" : ref ? "active" : "pending",
-        detail: companyVerified ? "会社scopeの接続参照が検証済みです。" : authSurfaceBlocker ? "認証操作が提供されるまで会社scopeのreadbackは開始しません。" : ref ? "承認後に「認証状態を再確認」で会社scopeを読み直します。" : "公式認証後に会社scopeのreadbackを確認します。"
+        detail: companyVerified ? "会社scopeの接続参照が検証済みです。" : authSurfaceBlocker ? "認証操作URLがないため会社scopeを確認できません。" : ref ? "承認後に「認証状態を再確認」で会社scopeを読み直します。" : "公式認証後に会社scopeのreadbackを確認します。"
       }
     ];
     const completed = steps.filter((step) => step.status === "done").length;
-    return { steps, completed, complete: companySelected && !catalogOnly && companyVerified, ref, catalogOnly, authUrls, actionableAuthUrls, authSurfaceBlocker, registryVerified };
+    return { steps, completed, complete: companySelected && !catalogOnly && companyVerified, ref, catalogOnly, authUrls, actionableAuthUrls, authSurfaceBlocker, registryVerified, authPolicy: item.authPolicy ?? null };
   };
-  const pollPluginAuthReadback = async (item: CapabilityItem & { catalogKind: string }) => {
-    if (!selectedCompanyId) return;
-    const generation = (pluginAuthPollGeneration.current[item.id] ?? 0) + 1;
-    pluginAuthPollGeneration.current[item.id] = generation;
-    setPluginAuthPoll((current) => ({
-      ...current,
-      [item.id]: { status: "polling", attempt: 0, exactBlocker: null }
-    }));
-    const maxAttempts = 20;
-    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      if (pluginAuthPollGeneration.current[item.id] !== generation) return;
-      try {
-        const [connectionsResponse, registryResponse] = await Promise.all([
-          mvpFetch(`/api/v1/companies/${encodeURIComponent(selectedCompanyId)}/connection-account-refs`, { cache: "no-store" }),
-          mvpFetch(`/api/v1/companies/${encodeURIComponent(selectedCompanyId)}/codex/app-server/connector-registry`, { cache: "no-store" })
-        ]);
-        const connectionsBody = await connectionsResponse.json().catch(() => ({}));
-        const registryBody = await registryResponse.json().catch(() => ({}));
-        if (!connectionsResponse.ok || !connectionsBody.ok) throw new Error(connectionsBody.error ?? "company_connection_inventory_read_failed");
-        if (!registryResponse.ok || !registryBody.registry) throw new Error(registryBody.exactBlocker ?? registryBody.error ?? "zeabur_connector_registry_read_failed");
-        const refs = Array.isArray(connectionsBody.refs) ? connectionsBody.refs : [];
-        const registry = registryBody.registry as ZeaburConnectorRegistryReadback;
-        setAccountRefs(refs);
-        setAccountRefsStatus("ready");
-        setZeaburRegistry(registry);
-        setZeaburRegistryStatus("ready");
-        setPluginAuthPoll((current) => ({
-          ...current,
-          [item.id]: { status: "polling", attempt, exactBlocker: registry.exactBlocker ?? null }
-        }));
-        const itemName = item.name.trim().toLowerCase();
-        const matchingRef = refs.find((ref: any) => {
-          const platform = String(ref.platform ?? "").toLowerCase();
-          return platform && (itemName === platform || itemName.includes(platform) || (platform === "drive" && itemName.includes("google-drive")) || (platform === "calendar" && itemName.includes("google-calendar")) || (platform === "mail" && itemName.includes("gmail")));
-        });
-        const verifiedRef = Boolean(matchingRef && integrationStatusBadge(matchingRef).label === "verified");
-        const registryPlugin = (registry.pluginRegistry?.installed ?? []).find((plugin) => (plugin.name ?? "").trim().toLowerCase() === itemName);
-        const registryVerified = registryPlugin?.authStatus === "verified" || registry.connectorAuth?.[itemName] === "verified";
-        // The remote registry proves the Codex App Server connector state, but
-        // it is not the company-scoped AOS connection inventory. Do not let a
-        // registry-only result unlock the company auth gate.
-        if (verifiedRef) {
-          setPluginAuthPoll((current) => ({
-            ...current,
-            [item.id]: { status: "verified", attempt, exactBlocker: null }
-          }));
-          model.setReceipt(`${item.name}: 公式認証の完了を会社scopeのfresh readbackで確認しました。`);
-          return;
-        }
-        if (registryVerified) {
-          setPluginAuthPoll((current) => ({
-            ...current,
-            [item.id]: { status: "polling", attempt, exactBlocker: "company_connection_ref_missing" }
-          }));
-        }
-      } catch (error) {
-        const blocker = publicBlockerSummary(error instanceof Error ? error.message : "plugin_auth_readback_failed");
-        setPluginAuthPoll((current) => ({
-          ...current,
-          [item.id]: { status: "polling", attempt, exactBlocker: blocker }
-        }));
-      }
-      await new Promise((resolve) => window.setTimeout(resolve, 3_000));
+  const ensureCodexAppServerAuthForPlugin = async (item: CapabilityItem & { catalogKind: string }): Promise<boolean> => {
+    if (!selectedCompanyId) return false;
+    const statusResponse = await mvpFetch(`/api/v1/companies/${encodeURIComponent(selectedCompanyId)}/codex/app-server/auth/status`, { cache: "no-store" });
+    const statusBody = await statusResponse.json().catch(() => ({}));
+    if (!statusResponse.ok || !statusBody.auth) throw new Error(statusBody.exactBlocker ?? statusBody.error ?? "codex_device_auth_status_failed");
+    const statusAuth = statusBody.auth;
+    const verified = Boolean(statusAuth.account?.accountPresent)
+      && (statusAuth.status === "verified" || statusAuth.status === "already_authenticated");
+    if (verified) {
+      setCodexAuth(statusAuth);
+      setCodexAuthConnection(statusBody.connection ?? null);
+      return true;
     }
-    if (pluginAuthPollGeneration.current[item.id] !== generation) return;
-    setPluginAuthPoll((current) => ({
-      ...current,
-      [item.id]: { status: "blocked", attempt: maxAttempts, exactBlocker: "zeabur_connector_auth_not_verified" }
-    }));
-    model.setReceipt(`${item.name}: 公式画面は開きましたが、会社scopeのverified readbackがまだありません。認証状態は未完了として扱います。`);
+    const authResponse = await mvpFetch(`/api/v1/companies/${encodeURIComponent(selectedCompanyId)}/codex/app-server/auth/start`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ restart: false })
+    });
+    const authBody = await authResponse.json().catch(() => ({}));
+    if (!authResponse.ok || !authBody.auth) throw new Error(authBody.exactBlocker ?? authBody.error ?? "codex_device_auth_start_failed");
+    const auth = authBody.auth;
+    setCodexAuth(auth);
+    setCodexAuthConnection(authBody.connection ?? null);
+    const authVerified = Boolean(auth.account?.accountPresent)
+      && (auth.status === "verified" || auth.status === "already_authenticated");
+    if (authVerified) return true;
+    if (auth.status === "pending") {
+      const url = typeof auth.verificationUrl === "string" ? auth.verificationUrl : "";
+      const opened = url ? window.open(url, "_blank", "noopener,noreferrer") : null;
+      setPluginAuthPoll((current) => ({
+        ...current,
+        [item.id]: { status: "blocked", attempt: 0, exactBlocker: "codex_device_code_entry_required" }
+      }));
+      model.setReceipt(`${item.name}: Codex App Serverの公式認証を開始しました。${opened ? "認証画面を開きました" : "認証URLを表示しました"}。コード入力後に同じボタンを再実行すると、認証済みreadbackを確認してPluginへ進みます。`);
+      return false;
+    }
+    throw new Error(auth.exactBlocker ?? "codex_device_auth_not_verified");
   };
   const startPluginAddAndAuth = (item: CapabilityItem & { catalogKind: string }) => {
     if (!selectedCompanyId) {
@@ -4128,24 +5261,43 @@ function TruthfulPluginsPage({ model }: { model: AppModel }) {
       ? pluginAuthUrlBlocker(knownAuthUrls[0]) ?? "official_auth_surface_not_actionable"
       : null;
     if (knownAuthSurfaceBlocker) {
-      model.setReceipt(`${item.name}: 既に確認済みの認証不可URLは再送しません（${knownAuthSurfaceBlocker}）。Providerの接続・承認操作を含む公式認証URLが提供されるまで待ってください。`);
-      return;
+      // The previous response is known and was a read-only/non-actionable
+      // surface, so a deliberate button press may request one fresh provider
+      // read. Never loop or retry this automatically.
+      setPluginAuthUrls((current) => ({ ...current, [item.id]: [] }));
+      setPluginAuthPoll((current) => ({
+        ...current,
+        [item.id]: { status: "blocked", attempt: 0, exactBlocker: knownAuthSurfaceBlocker }
+      }));
     }
     const existingRef = matchingConnection(item);
-    const pluginId = item.id.split(":").pop() ?? item.name;
-    const marketplaceName = pluginId.includes("@") ? pluginId.split("@").pop() : "openai-curated";
+    const pluginId = item.pluginId ?? (item.id.split(":").pop() ?? item.name);
+    const marketplaceName = item.marketplaceName ?? (pluginId.includes("@") ? pluginId.split("@").pop() : "openai-curated");
     setBusyToolId(item.id);
-    void mvpFetch(`/api/v1/companies/${encodeURIComponent(selectedCompanyId)}/codex/app-server/plugins/install`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ plugin_name: item.name, marketplace_name: marketplaceName })
-    }).then(async (response) => {
-      const body = await response.json().catch(() => ({}));
-      if (!response.ok || !body.ok) throw new Error(body.exactBlocker ?? body.error ?? "codex_app_server_plugin_install_failed");
+    void (async () => {
+      try {
+        const codexReady = await ensureCodexAppServerAuthForPlugin(item);
+        if (!codexReady) return;
+        const response = await mvpFetch(`/api/v1/companies/${encodeURIComponent(selectedCompanyId)}/codex/app-server/plugins/install`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ plugin_id: pluginId, plugin_name: item.name, marketplace_name: marketplaceName })
+        });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok || !body.ok) throw new Error(body.exactBlocker ?? body.error ?? "codex_app_server_plugin_install_failed");
+      if (pluginAuthCompany.current !== selectedCompanyId) return;
+      // The available catalog ID changes on installation. Keep selection and
+      // auth state attached to the canonical installed ID, without a reload.
+      if (body.registry) {
+        setZeaburRegistry(body.registry);
+        setZeaburRegistryStatus("ready");
+      }
+      item = { ...item, id: `zeabur:plugin:${body.plugin.id}`, pluginId: body.plugin.id };
+      setAuthWizardPluginId(item.id);
       await loadCompanyConnections(selectedCompanyId);
-      const urls = Array.isArray(body.auth?.authorization_urls) ? body.auth.authorization_urls.filter((value: unknown): value is string => typeof value === "string" && value.length > 0) : [];
+      const urls: string[] = Array.isArray(body.auth?.authorization_urls) ? body.auth.authorization_urls.filter((value: unknown): value is string => typeof value === "string" && value.length > 0) : [];
       if (urls.length > 0) {
-        setPluginAuthUrls((current) => ({ ...current, [item.id]: urls.slice(0, 2) }));
+        setPluginAuthUrls((current) => ({ ...current, [item.id]: [...new Set(urls)] }));
         const actionableUrls = urls.filter(isActionablePluginAuthUrl);
         pluginAuthPollGeneration.current[item.id] = (pluginAuthPollGeneration.current[item.id] ?? 0) + 1;
         if (actionableUrls.length === 0) {
@@ -4158,10 +5310,13 @@ function TruthfulPluginsPage({ model }: { model: AppModel }) {
           return;
         }
         const opened = window.open(actionableUrls[0], "_blank", "noopener,noreferrer");
-        void pollPluginAuthReadback(item);
+        setPluginAuthPoll((current) => ({
+          ...current,
+          [item.id]: { status: "blocked", attempt: 0, exactBlocker: "plugin_auth_user_action_required" }
+        }));
         model.setReceipt(opened
-          ? `${item.name}: 公式認証画面を開きました。必要な承認は公式画面で完了してください。完了後は会社scopeを自動確認します。`
-          : `${item.name}: 公式認証URLを用意しました。下のリンクから承認してください。完了後は会社scopeを自動確認します。`);
+          ? `${item.name}: 公式接続ページを開きました。インストール案内が出た場合は、その先の接続操作へ進みます。AOSに戻ると自動再確認します。`
+          : `${item.name}: 公式接続リンクを用意しました。リンク先で接続し、AOSに戻ると自動再確認します。`);
         return;
       }
       if (existingRef && canManageCompany) {
@@ -4173,58 +5328,110 @@ function TruthfulPluginsPage({ model }: { model: AppModel }) {
         const reconnectBody = await reconnectResponse.json().catch(() => ({}));
         if (!reconnectResponse.ok || !reconnectBody.ok) throw new Error(reconnectBody.error || "company_connection_reconnect_failed");
         await loadCompanyConnections(selectedCompanyId);
-        void pollPluginAuthReadback(item);
-        model.setReceipt(`${item.name}: 公式認証URLは発行されませんでした。会社scopeの再認証要求を保存しました。公式Provider側の認証後、「認証状態を再確認」を押してください。`);
+        void refreshPluginAuth(item);
+        model.setReceipt(`${item.name}: 公式認証URLは発行されませんでした。会社scopeの再認証要求を保存しました。公式Provider側で承認後、「認証状態を再確認」を押してください。`);
         return;
       }
-      model.setReceipt(`${item.name}: Zeabur Codex App ServerへのPlugin追加を完了しました。認証は不要、または認証readback待ちです。`);
-    }).catch((error) => {
-      model.setReceipt(`${item.name}: Plugin追加・会社認証を開始できませんでした（${publicBlockerSummary(error instanceof Error ? error.message : "plugin_install_failed")}）。`);
-    }).finally(() => setBusyToolId(null));
+      await refreshPluginAuth(item);
+      model.setReceipt(`${item.name}: Plugin追加後の接続状態を再確認しました。実利用状態はウィザードに表示します。`);
+      } catch (error) {
+        model.setReceipt(`${item.name}: Plugin追加・会社認証を開始できませんでした（${publicBlockerSummary(error instanceof Error ? error.message : "plugin_install_failed")}）。`);
+      } finally {
+        setBusyToolId(null);
+      }
+    })();
   };
-  const refreshPluginAuth = async (item: CapabilityItem & { catalogKind: string }) => {
+  const refreshPluginAuth = async (item: CapabilityItem & { catalogKind: string }, background = false) => {
     if (!selectedCompanyId) {
       model.setReceipt(`${item.name}: 先に会社を選択してください。`);
       return;
     }
-    setAccountRefsStatus("loading");
-    setZeaburRegistryStatus("loading");
+    const companyId = selectedCompanyId;
+    const generation = (pluginAuthPollGeneration.current[item.id] ?? 0) + 1;
+    pluginAuthPollGeneration.current[item.id] = generation;
+    const current = () => pluginAuthCompany.current === companyId && pluginAuthPollGeneration.current[item.id] === generation;
+    // A tab focus/screenshot can start a background recheck. Preserve the
+    // last verified display until that read settles; errors still clear it.
+    setPluginAuthPoll((state) => background && state[item.id]?.status === "verified" ? state : ({ ...state, [item.id]: { status: "checking", attempt: generation, exactBlocker: null } }));
+    if (!background) setAccountRefsStatus("loading");
+    if (!background) model.setReceipt(`${item.name}: 認証状態を確認中です。公式接続と会社scopeをreadbackしています。`);
     try {
-      await loadCompanyConnections(selectedCompanyId);
-      const response = await mvpFetch(`/api/v1/companies/${encodeURIComponent(selectedCompanyId)}/codex/app-server/connector-registry`, { cache: "no-store" });
-      const body = await response.json().catch(() => ({}));
-      if (!response.ok || !body.registry) throw new Error(body.exactBlocker ?? body.error ?? "plugin_auth_readback_failed");
-      const registry = body.registry as ZeaburConnectorRegistryReadback;
-      setZeaburRegistry(registry);
-      setZeaburRegistryStatus("ready");
-      setPluginAuthUrls((current) => ({ ...current, [item.id]: current[item.id] ?? [] }));
-      pluginAuthPollGeneration.current[item.id] = (pluginAuthPollGeneration.current[item.id] ?? 0) + 1;
-      const connectionsResponse = await mvpFetch(`/api/v1/companies/${encodeURIComponent(selectedCompanyId)}/connection-account-refs`, { cache: "no-store" });
+      const accessResponse = await pluginAuthReadbackFetch(`/api/v1/companies/${encodeURIComponent(companyId)}/codex/app-server/plugins/access?plugin_id=${encodeURIComponent(item.pluginId ?? item.id.split(":").pop() ?? item.name)}`, { cache: "no-store" });
+      const accessBody = await accessResponse.json().catch(() => ({}));
+      if (!accessResponse.ok || !accessBody.ok) throw new Error(accessBody.exactBlocker ?? accessBody.error ?? "plugin_access_readback_failed");
+      if (!current()) return false;
+      const connectionsResponse = await pluginAuthReadbackFetch(`/api/v1/companies/${encodeURIComponent(companyId)}/connection-account-refs`, { cache: "no-store" });
       const connectionsBody = await connectionsResponse.json().catch(() => ({}));
       if (!connectionsResponse.ok || !connectionsBody.ok) throw new Error(connectionsBody.error ?? "company_connection_inventory_read_failed");
       const refs = Array.isArray(connectionsBody.refs) ? connectionsBody.refs : [];
       const itemName = item.name.trim().toLowerCase();
       const matchingRef = refs.find((ref: any) => {
         const platform = String(ref.platform ?? "").toLowerCase();
-        return platform && (itemName === platform || itemName.includes(platform) || (platform === "drive" && itemName.includes("google-drive")) || (platform === "calendar" && itemName.includes("google-calendar")) || (platform === "mail" && itemName.includes("gmail")));
+        return Boolean(platform) && pluginPlatformMatches(itemName, platform);
       });
       const verifiedRef = Boolean(matchingRef && integrationStatusBadge(matchingRef).label === "verified");
-      const registryPlugin = (registry.pluginRegistry?.installed ?? []).find((plugin) => (plugin.name ?? "").trim().toLowerCase() === itemName);
-      const registryVerified = registryPlugin?.authStatus === "verified" || registry.connectorAuth?.[itemName] === "verified";
+      const apps = Array.isArray(accessBody.access?.apps) ? accessBody.access.apps : [];
+      const registryVerified = apps.length > 0 && apps.every((app: any) => app.accessStateAvailable === true && app.isAccessible === true && app.isEnabled === true && app.callable === true);
       // A remote connector registry and the AOS company connection inventory
       // are separate authorities. Company auth is verified only by the
       // matching, revisioned company connection reference.
-      const verified = verifiedRef;
+      if (!current()) return false;
+      setAccountRefs(refs);
+      setAccountRefsStatus("ready");
+      // An installed/callable App can still have an expired provider token.
+      // Keep its official connection page reachable even at wizard step 3/4.
+      const connectionUrls = apps.map((app: any) => app.installUrl).filter((url: unknown): url is string => typeof url === "string" && isActionablePluginAuthUrl(url));
+      if (connectionUrls.length > 0) setPluginAuthUrls((state) => ({ ...state, [item.id]: [...new Set([...(state[item.id] ?? []), ...connectionUrls])] }));
+      const verified = verifiedRef && registryVerified;
       setPluginAuthPoll((current) => ({
         ...current,
-        [item.id]: { status: verified ? "verified" : "blocked", attempt: 1, exactBlocker: verified ? null : (registryVerified ? "company_connection_ref_missing" : (registry.exactBlocker ?? "zeabur_connector_auth_not_verified")) }
+        [item.id]: { status: verified ? "verified" : "blocked", attempt: generation, runtimeReady: registryVerified, exactBlocker: verified ? null : (registryVerified ? "company_connection_ref_missing" : (apps.length ? "plugin_connection_not_ready" : "plugin_auth_method_unconfirmed")) }
       }));
-      model.setReceipt(`${item.name}: 認証状態と会社scopeを再確認しました。表示が「会社認証済み」になるまで外部操作は実行しません。`);
+      if (!background) {
+        model.setReceipt(verified
+          ? `${item.name}: 認証済みreadbackと会社scopeを確認しました。`
+          : `${item.name}: 確認完了。ただし会社scopeは未確認です（${registryVerified ? "company_connection_ref_missing" : apps.length ? "plugin_connection_not_ready" : "plugin_auth_method_unconfirmed"}）。`);
+      }
+      return verified;
     } catch (error) {
-      setZeaburRegistryStatus("error");
+      if (!current()) return false;
+      setPluginAuthPoll((state) => ({ ...state, [item.id]: { status: "blocked", attempt: generation, runtimeReady: false, exactBlocker: publicBlockerSummary(error instanceof Error ? error.message : "plugin_auth_readback_failed") } }));
+      setAccountRefsStatus("error");
       model.setReceipt(`${item.name}: 認証状態を再確認できませんでした（${publicBlockerSummary(error instanceof Error ? error.message : "plugin_auth_readback_failed")}）。`);
+      return false;
     }
   };
+  const latestPluginAuthRefresh = useRef(refreshPluginAuth);
+  latestPluginAuthRefresh.current = refreshPluginAuth;
+  const wizardAuthUrlKey = wizardItem ? (pluginAuthUrls[wizardItem.id] ?? []).join("\n") : "";
+  React.useEffect(() => {
+    if (!selectedCompanyId || !wizardItem || wizardItem.status === "catalog_available" || wizardItem.catalogSource === "recommended") return;
+    let disposed = false;
+    let inFlight = false;
+    let attempts = 0;
+    const check = async () => {
+      if (disposed || inFlight || attempts >= 12) return;
+      inFlight = true;
+      attempts += 1;
+      try {
+        const verified = await latestPluginAuthRefresh.current(wizardItem, true);
+        if (verified) attempts = 12;
+      } finally { inFlight = false; }
+    };
+    const onFocus = () => { attempts = 0; void check(); };
+    const onVisible = () => { if (document.visibilityState === "visible") onFocus(); };
+    void check();
+    const timer = wizardAuthUrlKey ? window.setInterval(() => { if (document.visibilityState === "visible") void check(); }, 10_000) : null;
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      disposed = true;
+      pluginAuthPollGeneration.current[wizardItem.id] = (pluginAuthPollGeneration.current[wizardItem.id] ?? 0) + 1;
+      if (timer !== null) window.clearInterval(timer);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [selectedCompanyId, wizardItem?.id, wizardAuthUrlKey]);
   const linkPluginCompanyScope = async (item: CapabilityItem & { catalogKind: string }) => {
     if (!selectedCompanyId || !canManageCompany) {
       model.setReceipt(`${item.name}: 会社Owner/Admin scopeが必要です。`);
@@ -4267,23 +5474,31 @@ function TruthfulPluginsPage({ model }: { model: AppModel }) {
     }
     setGmailCanaryStatus("loading");
     try {
-      const response = await mvpFetch(`/api/v1/companies/${encodeURIComponent(selectedCompanyId)}/connectors/gmail/read-only-canary`, { cache: "no-store" });
+      const response = await mvpFetch(`/api/v1/companies/${encodeURIComponent(selectedCompanyId)}/connectors/gmail/provider-read-only-canary`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({})
+      });
       const body = await response.json().catch(() => ({}));
-      if (!response.ok || !body.ok) throw new Error(body.error ?? "gmail_read_only_canary_failed");
+      if (!response.ok || !body.ok) {
+        if (body.readback) setGmailCanary(body.readback);
+        throw new Error(body.readback?.exactBlocker ?? body.error ?? "gmail_provider_read_only_canary_failed");
+      }
       setGmailCanary(body.readback ?? body);
       setGmailCanaryStatus("ready");
-      model.setReceipt(`Gmail read-only canary: ${body.readback?.status ?? "unknown"}。Gmail本文の取得・保存はしていません。`);
+      model.setReceipt(`Gmail provider canary: ${body.readback?.status ?? "unknown"}。同一Runのreceipt・scope・reconciliation・cleanupを確認しました。本文操作はしていません。`);
     } catch (error) {
-      setGmailCanary(null);
+      const responseMessage = error instanceof Error ? error.message : "readback_failed";
+      setGmailCanary((current) => current ? { ...current, status: "blocked", exactBlocker: responseMessage } : { status: "blocked", exactBlocker: responseMessage });
       setGmailCanaryStatus("error");
-      model.setReceipt(`Gmail read-only canaryを確認できませんでした（${publicBlockerSummary(error instanceof Error ? error.message : "readback_failed")}）。`);
+      model.setReceipt(`Gmail provider canaryを完了できませんでした（${publicBlockerSummary(responseMessage)}）。同じRunを自動再送しません。`);
     }
   };
   const kindLabel = (kind: string) => ({ plugin: "Plugin", skill: "Skill", mcp: "MCP", cli: "CLI", api: "API" }[kind] ?? kind);
-  const statusLabel = (item: CapabilityItem & { catalogKind: string }) => item.catalogSource === "recommended" || item.status === "catalog_available" ? "追加可能" : item.state.connected ? "接続済み" : item.state.verified ? "検証済み" : item.state.enabled ? "有効" : item.status === "missing" ? "未提供" : "要確認";
+  const statusLabel = (item: CapabilityItem & { catalogKind: string }) => item.catalogSource === "recommended" || item.status === "catalog_available" ? "追加可能" : item.catalogKind === "plugin" ? pluginAuthPoll[item.id]?.runtimeReady ? "Server利用可" : "追加済み" : item.state.connected ? "接続済み" : item.state.verified ? "検証済み" : item.state.enabled ? "有効" : item.status === "missing" ? "未提供" : "要確認";
   const wizard = wizardItem ? buildPluginAuthSteps(wizardItem) : null;
   const wizardAuthPoll = wizardItem ? pluginAuthPoll[wizardItem.id] : null;
-  const wizardStepLabel = (status: "done" | "active" | "pending" | "blocked") => ({ done: "完了", active: "次に実行", pending: "待機", blocked: "必要" }[status]);
+  const wizardStepLabel = (status: "done" | "active" | "pending" | "blocked") => ({ done: "完了", active: "次に実行", pending: "未開始", blocked: "必要" }[status]);
   React.useEffect(() => {
     if (model.mvpLoadStatus !== "ready") return;
     const routeCompany = requestedCompanyId && companies.some((company) => company.id === requestedCompanyId)
@@ -4297,8 +5512,30 @@ function TruthfulPluginsPage({ model }: { model: AppModel }) {
   }, [model.mvpLoadStatus, model.mvpState, requestedCompanyId]);
   return (
     <section>
-      <PageTitle title="プラグイン / Skills / MCP / CLI" desc="会社別の接続状態と、Chatから使う優先順位を管理" />
-      <Panel title="Plugin共通認証ウィザード" controlId="truthful.plugins.auth-wizard.panel">
+      <PageTitle title="設定・接続" desc="会社ごとの接続と、Chatで使うサービスを管理" />
+      <Panel title="Gmail read-only canary" controlId="truthful.plugins.gmail-canary.panel">
+        <p className="muted">会社scopeを確認したうえで、専用Codex App ServerのGmail Pluginへプロフィール確認を同一Runで1回だけ依頼します。本文・添付・送信・下書きには触れず、provider receipt・source sync・reconciliation・cleanupを返します。</p>
+        <div className="button-row">
+          <Button controlId="truthful.plugins.gmail-canary.run" variant="primary" disabled={!selectedCompanyId || gmailCanaryStatus === "loading"} onClick={() => { void runGmailCanary(); }}>{gmailCanaryStatus === "loading" ? "providerを確認中…" : "Gmail provider canaryを実行"}</Button>
+          <span className="muted">外部効果: false / 本文・添付: false / data persisted: false</span>
+        </div>
+        {gmailCanary ? <DataTable controlId="truthful.plugins.gmail-canary.readback" headers={["項目", "値"]} rows={[
+          ["status", gmailCanary.status ?? "unknown"],
+          ["run / operation", `${gmailCanary.runId ?? "-"} / ${gmailCanary.operation ?? "profile_read"}`],
+          ["company", gmailCanary.companyId ?? selectedCompanyId ?? "-"],
+          ["selected tool", gmailCanary.selectedTool ? `${gmailCanary.selectedTool.label ?? "-"} / ${gmailCanary.selectedTool.kind ?? "-"} / ${gmailCanary.selectedTool.status ?? "-"}` : "なし"],
+          ["provider tool call", String(gmailCanary.providerToolCallObserved ?? false)],
+          ["provider account", gmailCanary.providerAccountPresent ? `確認済み / hash=${gmailCanary.providerAccountHash ?? "-"}` : "未確認"],
+          ["exact blocker", gmailCanary.exactBlocker ?? "なし"],
+          ["external_action_executed", String(gmailCanary.externalActionExecuted ?? false)],
+          ["data read / persisted", `${String(gmailCanary.dataRead ?? false)} / ${String(gmailCanary.dataPersisted ?? false)}`],
+          ["provider receipt", gmailCanary.providerReceipt ? "同一Runで確認済み" : "未発行"],
+          ["source sync / reconciliation / cleanup", `${gmailCanary.sourceSync?.status ?? "unknown"} / ${gmailCanary.reconciliation?.status ?? "unknown"} / ${gmailCanary.cleanup?.status ?? "unknown"}`],
+          ["next action", gmailCanary.nextAction ?? "-"],
+        ]} /> : <ReadbackState title="canary未実行" detail="会社を選択してread-only admissionを実行すると、同一時点の接続境界だけを表示します。" tone="info" nextAction="会社scopeを選び、canaryを確認する" />}
+      </Panel>
+      <Panel title="ユーザーが行う接続" controlId="truthful.plugins.auth-wizard.panel">
+        <p className="settings-section-kicker">接続の手順</p>
         <p className="muted">すべてのPluginを同じ4段階で進めます。パスワード・OTP・CAPTCHA・デバイスコードは公式画面でユーザーが入力し、AOSは秘密値を保存しません。</p>
         {wizardItem && wizard ? <>
           <div className="plugin-auth-wizard-header">
@@ -4310,13 +5547,14 @@ function TruthfulPluginsPage({ model }: { model: AppModel }) {
             </label>
             <label>対象Plugin
               <select data-control-id="truthful.plugins.auth-wizard.plugin-select" value={wizardItem.id} onChange={(event) => setAuthWizardPluginId(event.target.value)}>
-                {pluginItems.map((item) => <option key={item.id} value={item.id}>{item.name} ({companyAuthStatus(item)})</option>)}
+                {wizardPluginItems.map((item) => <option key={item.id} value={item.id}>{item.name} ({companyAuthStatus(item)})</option>)}
               </select>
             </label>
             <div className={`plugin-auth-wizard-summary ${wizard.complete ? "is-complete" : ""}`}>
               <strong>{wizard.complete ? "認証完了" : `${wizard.completed}/4 完了`}</strong>
               <span>{wizard.complete ? `会社「${selectedCompany?.label ?? selectedCompanyId}」で利用できます。` : selectedCompanyId ? `${wizardItem.name}を会社「${selectedCompany?.label ?? selectedCompanyId}」へ接続します。` : "まず会社を選択してください。"}</span>
             </div>
+            {gmailCanary?.status === "completed" && wizardItem.name.trim().toLowerCase() !== "gmail" && <p className="muted">Gmailのread-only確認は完了済みです。現在は未確認の{wizardItem.name}を次の認証対象として表示しています。</p>}
           </div>
           <ol className="plugin-auth-steps">
             {wizard.steps.map((step, index) => <li key={step.key} className={`plugin-auth-step is-${step.status}`}>
@@ -4329,27 +5567,36 @@ function TruthfulPluginsPage({ model }: { model: AppModel }) {
             <Button
               controlId="truthful.plugins.auth-wizard.primary"
               variant="primary"
-              disabled={!selectedCompanyId || wizard.complete || Boolean(wizard.authSurfaceBlocker) || wizard.registryVerified || busyToolId === wizardItem.id}
+              disabled={!selectedCompanyId || wizard.complete || wizard.registryVerified || busyToolId === wizardItem.id}
               onClick={() => startPluginAddAndAuth(wizardItem)}
             >
-              {wizard.authSurfaceBlocker ? "認証画面待ち" : busyToolId === wizardItem.id ? "認証開始中…" : wizard.registryVerified ? "会社scopeを下で紐付け" : wizard.catalogOnly ? "Pluginを追加して認証を開始" : wizard.ref ? "公式認証を再要求" : "公式認証を開始"}
+              {wizard.authSurfaceBlocker ? "認証URLを再取得" : busyToolId === wizardItem.id ? "認証開始中…" : wizard.registryVerified ? "会社scopeを下で紐付け" : wizard.catalogOnly ? "Pluginを追加して認証を開始" : wizard.ref ? "公式認証を再要求" : "公式認証を開始"}
             </Button>
             <Button
               controlId="truthful.plugins.auth-wizard.refresh"
-              disabled={!selectedCompanyId || busyToolId === wizardItem.id}
+              disabled={!selectedCompanyId || busyToolId === wizardItem.id || wizardAuthPoll?.status === "checking"}
               onClick={() => { void refreshPluginAuth(wizardItem); }}
-            >認証状態を再確認</Button>
+            >{wizardAuthPoll?.status === "checking" ? "確認中…" : "認証状態を再確認"}</Button>
+          </div>
+          <div className="action-note" role="status" aria-live="polite" data-control-id="truthful.plugins.auth-wizard.refresh-status">
+            {wizardAuthPoll?.status === "checking"
+              ? "専用ServerとCompany 1の接続参照を読み直しています。"
+              : wizardAuthPoll?.status === "blocked"
+                ? `再確認結果: ${wizardAuthPoll.exactBlocker ?? "未確認"}。再確認は完了しましたが、認証状態は変わっていません。`
+                : wizardAuthPoll?.status === "verified"
+                  ? "再確認結果: Company 1の接続参照と専用Serverの利用状態を確認済みです。"
+                  : "公式認証後に再確認すると、Company 1への接続状態を読み直します。"}
           </div>
           {wizard.authUrls.length > 0 ? <div className="plugin-auth-links" role="status" aria-live="polite">
-            <strong>{wizard.authSurfaceBlocker ? "Providerから返された詳細ページ" : "公式認証画面"}</strong>
-            <p className="muted">{wizard.authSurfaceBlocker ? "このリンクには接続・承認操作がないため、認証画面として扱いません。" : "ポップアップが開かなかった場合は、以下のリンクを開いて承認してください。承認後はAOSが会社scopeを自動確認します。"}</p>
-            {wizard.authUrls.map((url, index) => <a data-control-id={`truthful.plugins.auth-wizard.link.${`${wizardItem.id}-${index}`}`} key={`${wizardItem.id}:wizard-auth:${index}`} href={url} target="_blank" rel="noreferrer">{wizardItem.name} {isActionablePluginAuthUrl(url) ? "公式認証画面" : "Plugin詳細（認証操作なし）"}{wizard.authUrls.length > 1 ? ` ${index + 1}` : ""}</a>)}
+            <strong>公式接続リンク</strong>
+            <p className="muted">インストール案内ページが表示された場合は、その先の接続操作へ進んでください。AOSに戻ると接続状態を自動確認します。リンクを開いただけでは認証完了になりません。</p>
+            {wizard.authUrls.map((url, index) => isActionablePluginAuthUrl(url) ? <a data-control-id={`truthful.plugins.auth-wizard.link.${`${wizardItem.id}-${index}`}`} key={`${wizardItem.id}:wizard-auth:${index}`} href={url} target="_blank" rel="noreferrer">{wizardItem.name} {pluginAuthLinkLabel(url)}{wizard.authUrls.length > 1 ? ` ${index + 1}` : ""}</a> : <span key={`${wizardItem.id}:wizard-auth:${index}`}>利用できない接続URL</span>)}
           </div> : null}
-          {wizardAuthPoll?.status === "polling" ? <ReadbackState title="公式認証の完了を自動確認中" detail={`会社scope・Plugin registryをfresh readbackしています（${wizardAuthPoll.attempt}/20）。認証済みとはまだclaimしていません。`} tone="info" nextAction="公式画面の承認を完了する" /> : null}
-          {wizardAuthPoll?.status === "verified" ? <ReadbackState title="会社scopeのverified readbackを確認済み" detail="公式認証の完了がAOS側のfresh readbackに反映されています。" tone="success" nextAction="必要ならread-only canaryを実行する" /> : null}
-          {wizardAuthPoll?.status === "blocked" ? <ReadbackState title={wizardAuthPoll.exactBlocker === "official_auth_surface_not_actionable" ? "認証画面が提供されていません" : "認証完了の反映待ち"} detail={wizardAuthPoll.exactBlocker === "official_auth_surface_not_actionable" ? "Providerから接続・承認操作のないPlugin詳細ページが返されました。AOSはPendingのpollを開始していません。" : `公式認証画面は開きましたが、AOS側にverified readbackがありません（${wizardAuthPoll.exactBlocker ?? "zeabur_connector_auth_not_verified"}）。未認証として扱います。`} tone="attention" nextAction={wizardAuthPoll.exactBlocker === "official_auth_surface_not_actionable" ? "Providerの実際の認証URLが提供されるまで待つ" : "公式画面の承認を確認してから「認証状態を再確認」を押す"} /> : null}
+          {wizardAuthPoll?.status === "checking" ? <ReadbackState title="接続状態を自動確認中" detail="専用Serverの接続・呼び出し可能状態と会社接続参照を照合しています。" tone="info" nextAction="確認結果をこの画面へ反映します" /> : null}
+          {wizardAuthPoll?.status === "verified" ? <ReadbackState title="会社接続・Server利用状態を確認済み" detail="最新の接続状態と会社接続参照が一致しています。実際の業務成功はRunの結果で確認します。" tone="success" nextAction="業務のread-only確認へ進む" /> : null}
+          {wizardAuthPoll?.status === "blocked" ? <ReadbackState title={wizardAuthPoll.exactBlocker === "official_auth_surface_not_actionable" ? "認証画面が提供されていません" : "認証済みreadback未確認"} detail={wizardAuthPoll.exactBlocker === "official_auth_surface_not_actionable" ? "Providerから接続・承認操作のないPlugin詳細ページが返されました。AOSは認証画面として開きません。" : `公式認証の結果はまだ会社scopeへ反映されていません（${wizardAuthPoll.exactBlocker ?? "zeabur_connector_auth_not_verified"}）。未認証として扱います。`} tone="attention" nextAction={wizardAuthPoll.exactBlocker === "official_auth_surface_not_actionable" ? "Providerの接続・承認URLを取得してから再実行" : "公式画面の承認後に「認証状態を再確認」を押す"} /> : null}
           {selectedCompanyId && !wizard.catalogOnly && wizard.registryVerified && !wizard.complete ? <div className="plugin-company-scope-link" role="group" aria-label="会社scopeへ紐付け">
-            <p className="muted">Provider側の承認済みreadbackを確認しました。追加の再認証ではなく、AOSの会社1へ接続アカウントとscopeを紐付けます。これは秘密値ではなくアカウント参照だけを保存します。</p>
+            <p className="muted">専用Serverには接続済みAppとして登録されています。実APIがトークン失効を返す場合は、上の公式接続リンクで再認証してください。接続先アカウントを確認したうえで、選択中の会社へアカウント参照とscopeを紐付けます。秘密値は保存しません。</p>
             {wizard.ref ? <p className="muted">既存の会社接続参照: <strong>{wizard.ref.account_ref ?? wizard.ref.accountRef ?? "未確認"}</strong>（現在は未verified。公式画面の同じアカウント参照を確認して入力してください）</p> : null}
             <label>公式アカウント参照（メール等）
               <input data-control-id="truthful.plugins.auth-wizard.account-ref" value={companyAccountRef} onChange={(event) => setCompanyAccountRef(event.target.value)} placeholder="例: your-account@example.com" autoComplete="email" />
@@ -4359,7 +5606,7 @@ function TruthfulPluginsPage({ model }: { model: AppModel }) {
             </label>
             <Button controlId="truthful.plugins.auth-wizard.link-company-scope" variant="primary" disabled={busyToolId === wizardItem.id} onClick={() => { void linkPluginCompanyScope(wizardItem); }}>{busyToolId === wizardItem.id ? "会社へ紐付け中…" : "公式認証を会社へ紐付け"}</Button>
           </div> : null}
-          <p className="plugin-auth-wizard-boundary">外部効果: 認証画面を開くまで。承認・送信・データ取得は、公式画面と別のreadbackで明示確認します。</p>
+          <p className="plugin-auth-wizard-boundary">外部効果: AOSは公式認証URLの開始と会社scopeのreadbackだけを扱います。承認後は同じ画面のfresh readbackで確認し、未確認のまま送信・取得へ進みません。</p>
         </> : <>
           {companies.length ? <div className="plugin-auth-wizard-header">
             <label>接続先の会社
@@ -4380,21 +5627,24 @@ function TruthfulPluginsPage({ model }: { model: AppModel }) {
       <Panel title="Chatのツール選択ルール" controlId="truthful.plugins.preference.panel">
         <div className="tool-preference-summary">
           <div><strong>優先順位</strong><span>Plugin → MCP / CLI / API（同率2位）</span></div>
-          <div><strong>会社scope</strong><span>{toolPreference?.companyIds?.length ? toolPreference.companyIds.join(", ") : "選択会社のreadback待ち"}</span></div>
+          <div><strong>会社scope</strong><span>{toolPreference?.companyIds?.length ? toolPreference.companyIds.join(", ") : "選択会社のreadback未確定"}</span></div>
           <div><strong>fallback</strong><span>{toolPreference?.fallbackPolicy === "no_implicit_fallback" ? "黙って下位候補へ切替えない" : "未確認"}</span></div>
         </div>
         {toolPreference?.selected ? <p className="muted">現在の候補: {toolPreference.selected.label ?? "-"} / {kindLabel(toolPreference.selected.kind ?? "")} / {toolPreference.selected.status ?? "unknown"} / {toolPreference.selected.reason ?? ""}</p> : <ReadbackState title="Chatの候補をまだ確定できません" detail="依頼文と会社scopeが揃った同一Chat Runで、Plugin→同率2位候補の順に選びます。" tone="info" nextAction="会社を選択してChatから依頼する" />}
         {toolPreference?.connectorExecution ? <p className="muted">connector配置: {toolPreference.connectorExecution.owner ?? "none"} / {toolPreference.connectorExecution.status ?? "unknown"} / blocker={toolPreference.connectorExecution.exactBlocker ?? "なし"} / Mac既定面={toolPreference.connectorExecution.macWorkerDefaultSurface ?? "chrome_plugin_profile2"} / fallback={toolPreference.connectorExecution.fallbackPolicy ?? "explicit_only"}</p> : null}
       </Panel>
+      <details className="plugin-advanced-details">
+        <summary>管理者・技術詳細（接続先と診断）を表示</summary>
       <Panel title="Zeabur Codex App Server registry" controlId="truthful.plugins.zeabur-registry.panel">
         <p className="muted">Plugin/MCP/connectorの正本は接続先Codex App Serverです。AOSサイト内へPluginを移植せず、Zeabur側のfresh registry readbackだけを表示します。Mac Workerの既定実行面はChrome Plugin / Profile 2です。</p>
-        {zeaburRegistryStatus === "loading" ? <ReadbackState title="Zeabur registry確認中" detail="接続先のPlugin registry・MCP設定・connector認証のreadbackを取得しています。" tone="info" nextAction="readback完了を待つ" />
+        {zeaburRegistryStatus === "loading" ? <ReadbackState title="Zeabur registryを自動確認中" detail="接続先のPlugin registry・MCP設定・connector認証のreadbackを取得しています。結果が取れなければexact blockerを確定します。" tone="info" nextAction="自動再読込を実行し、失敗時はexact blockerを表示する" />
           : zeaburRegistry ? <DataTable controlId="truthful.plugins.zeabur-registry.readback" headers={["項目", "値"]} rows={[
             ["service", zeaburRegistry.target?.serviceName ?? "codex-app-server"],
             ["runtime / Codex login", `${zeaburRegistry.appServer?.runtimeStatus ?? "unknown"} / ${zeaburRegistry.appServer?.codexLogin ?? "unknown"}`],
             ["installed Plugin", (zeaburRegistry.pluginRegistry?.installed ?? []).map((item) => `${item.name ?? "-"} (${item.authStatus ?? "unknown"})`).join(", ") || "なし"],
+            ["Plugin auth catalog", `${serverPluginEntries.length} entries / auth-policy-declared=${serverAuthCapableCount} / ON_INSTALL=${serverOnInstallCount} / ON_USE=${serverOnUseCount}`],
             ["available Plugin", (zeaburRegistry.pluginRegistry?.available ?? []).length
-              ? `${(zeaburRegistry.pluginRegistry?.available ?? []).slice(0, 24).map((item) => item.name ?? "-").join(", ")}${(zeaburRegistry.pluginRegistry?.available ?? []).length > 24 ? " …" : ""}`
+              ? `${(zeaburRegistry.pluginRegistry?.available ?? []).slice(0, 24).map((item) => `${item.name ?? "-"}${item.authPolicy ? ` [${item.authPolicy}]` : ""}`).join(", ")}${(zeaburRegistry.pluginRegistry?.available ?? []).length > 24 ? " …" : ""}`
               : "なし"],
             ["MCP registry", `${zeaburRegistry.mcpRegistry?.configuredCount ?? 0} configured / verified=${String(zeaburRegistry.mcpRegistry?.verified ?? false)}`],
             ["Gmail / Supabase auth", `${zeaburRegistry.connectorAuth?.gmail ?? "unknown"} / ${zeaburRegistry.connectorAuth?.supabase ?? "unknown"}`],
@@ -4403,7 +5653,7 @@ function TruthfulPluginsPage({ model }: { model: AppModel }) {
       </Panel>
       <Panel title="専用Codexサービス認証" controlId="truthful.plugins.codex-auth.panel">
         <p className="muted">専用Codex App Serverの認証だけを開始します。パスワード・OTP・CAPTCHA・デバイスコードはブラウザ上でユーザーが入力し、AOSは秘密値を保存しません。</p>
-        {codexAuthStatus === "loading" ? <ReadbackState title="Codex認証状態を確認中" detail="常駐AOSサービスが保持する同一App Server接続を確認しています。" tone="info" nextAction="readback完了を待つ" />
+        {codexAuthStatus === "loading" ? <ReadbackState title="Codex認証状態を自動確認中" detail="常駐AOSサービスが保持する同一App Server接続を確認しています。結果が取れなければexact blockerを確定します。" tone="info" nextAction="自動再読込を実行し、失敗時はexact blockerを表示する" />
           : <DataTable controlId="truthful.plugins.codex-auth.readback" headers={["項目", "値"]} rows={[
             ["状態", codexAuth?.status ?? (codexAuthStatus === "error" ? "開始失敗" : "未確認")],
             ["アカウント", codexAuth?.account?.accountPresent ? `${codexAuth.account.accountType ?? "chatgpt"} / ${codexAuth.account.planType ?? "-"}` : "未認証"],
@@ -4418,9 +5668,9 @@ function TruthfulPluginsPage({ model }: { model: AppModel }) {
               : codexAuthVerified
                 ? "認証済みです。コードの再入力・再発行は不要です"
                 : codexAuthCodeVisible
-                  ? "表示されたコードをユーザーが公式画面へ入力（入力後は自動確認）"
+                  ? "表示されたコードをユーザーが公式画面へ入力（入力後に「認証状態を再確認」）"
                   : "認証フローを開始して表示コードを発行"],
-            ["認証状態の確認", codexAuth?.status === "pending" ? "5秒ごとに公式statusを再確認" : codexAuthVerified ? "認証済み（自動確認は完了）" : "必要時のみ再確認"],
+            ["認証状態の確認", codexAuth?.status === "pending" ? "公式画面でコード入力後に「認証状態を再確認」" : codexAuthVerified ? "認証済み（readback確認済み）" : "必要時のみ再確認"],
           ]} />}
         {codexAuthCodeVisible ? <div
           data-testid="codex-device-code-visible"
@@ -4449,22 +5699,7 @@ function TruthfulPluginsPage({ model }: { model: AppModel }) {
         <p className="muted">公式ドキュメントで発見した候補です。表示だけではインストール・認証・接続済みとは扱いません。Chatの依頼内容に一致した候補を、会社scopeと権限を確認してから採用します。</p>
         {toolPreference?.officialCandidates?.length ? <DataTable controlId="truthful.plugins.research.table" headers={["候補", "種別", "endpoint", "状態", "出典"]} rows={toolPreference.officialCandidates.map((candidate) => [candidate.label ?? candidate.id ?? "-", kindLabel(candidate.kind ?? ""), candidate.endpoint ?? "-", candidate.commandMatch ? "依頼に適合" : "カタログのみ", candidate.sourceUrl ? <a data-control-id={`truthful.plugins.research.source.${candidate.id ?? "unknown"}`} href={candidate.sourceUrl} target="_blank" rel="noreferrer">公式ドキュメント</a> : "-"])} /> : <ReadbackState title="公式リサーチ候補はありません" detail="今回の依頼に一致する公式MCP候補を確認できませんでした。" tone="info" nextAction="Plugin inventoryまたはCLI/API候補を確認する" />}
       </Panel>
-      <Panel title="Gmail read-only canary" controlId="truthful.plugins.gmail-canary.panel">
-        <p className="muted">AOSはGmail本文を取得・保存しません。Codex App Server / MCPの接続・会社scope・Plugin優先ルールだけを確認するadmissionです。provider receiptはまだ発行しません。</p>
-        <div className="button-row">
-          <Button controlId="truthful.plugins.gmail-canary.run" variant="primary" disabled={!selectedCompanyId || gmailCanaryStatus === "loading"} onClick={() => { void runGmailCanary(); }}>{gmailCanaryStatus === "loading" ? "確認中…" : "read-only canaryを確認"}</Button>
-          <span className="muted">外部効果: false / data read: false / data persisted: false</span>
-        </div>
-        {gmailCanary ? <DataTable controlId="truthful.plugins.gmail-canary.readback" headers={["項目", "値"]} rows={[
-          ["status", gmailCanary.status ?? "unknown"],
-          ["company", gmailCanary.companyId ?? selectedCompanyId ?? "-"],
-          ["selected tool", gmailCanary.selectedTool ? `${gmailCanary.selectedTool.label ?? "-"} / ${gmailCanary.selectedTool.kind ?? "-"} / ${gmailCanary.selectedTool.status ?? "-"}` : "なし"],
-          ["exact blocker", gmailCanary.exactBlocker ?? "なし"],
-          ["external_action_executed", String(gmailCanary.externalActionExecuted ?? false)],
-          ["data read / persisted", `${String(gmailCanary.dataRead ?? false)} / ${String(gmailCanary.dataPersisted ?? false)}`],
-          ["next action", gmailCanary.nextAction ?? "-"],
-        ]} /> : <ReadbackState title="canary未実行" detail="会社を選択してread-only admissionを実行すると、同一時点の接続境界だけを表示します。" tone="info" nextAction="会社scopeを選び、canaryを確認する" />}
-      </Panel>
+      </details>
       <Panel title="Plugin一覧の絞り込み" controlId="truthful.plugins.company.panel">
         <div className="plugin-controls plugin-controls-filter">
           <label className="plugin-search">検索
@@ -4475,29 +5710,37 @@ function TruthfulPluginsPage({ model }: { model: AppModel }) {
           {([["all", "すべて"], ["plugin", "Plugin"], ["skill", "Skills"], ["mcp", "MCP"], ["cli", "CLI"], ["api", "API"]] as const).map(([id, label]) => <button type="button" key={id} role="tab" aria-selected={activeTab === id} className={activeTab === id ? "selected" : ""} data-control-id={`truthful.plugins.tab.${id}`} onClick={() => setActiveTab(id)}>{label}</button>)}
         </div>
         <p className="muted">{accountRefsStatus === "loading" ? "会社別接続状態を確認中…" : accountRefsStatus === "error" ? "会社別接続状態を確認できません。接続済みとは表示していません。" : selectedCompanyId ? `会社「${selectedCompany?.label ?? selectedCompanyId}」の秘密値を持たない接続参照を表示します。` : "会社未選択のため、認証状態は表示しません。"}</p>
+        <p className="muted" data-control-id="truthful.plugins.codex-server-auth-summary">{zeaburRegistryStatus === "ready" ? `Codex Serverカタログ: ${serverPluginEntries.length}件 / 認証ポリシー宣言 ${serverAuthCapableCount}件（追加時 ${serverOnInstallCount}、使用時 ${serverOnUseCount}）。実際の認証方式と接続状態は対象Pluginごとに確認します。` : "Codex Serverカタログを取得中です。静的候補を認証可能とは表示しません。"}</p>
       </Panel>
-      <Panel title={`利用できるツール (${filteredCatalog.length})`} controlId="truthful.plugins.catalog.panel">
-        {filteredCatalog.length ? <div className="plugin-grid">
-          {filteredCatalog.map((item) => {
-            const ref = matchingConnection(item);
-            const catalogOnly = item.catalogSource === "recommended" || item.status === "catalog_available";
-            const canAuth = item.catalogKind === "plugin" && !catalogOnly;
-            const auth = item.catalogKind === "plugin" ? buildPluginAuthSteps(item) : null;
-            return <article className="plugin-card" key={`${item.catalogKind}:${item.id}`} data-control-id={`truthful.plugins.card.${item.id}`}>
-              <div className="plugin-card-heading"><span className="plugin-icon">{item.name.slice(0, 1).toUpperCase()}</span><div><strong>{item.name}</strong><span>{kindLabel(item.catalogKind)} / {item.kind}</span></div><StatusBadge status={item.state.connected ? "enabled" : item.state.verified ? "approved" : item.status === "missing" ? "blocked" : "draft"} label={statusLabel(item)} /></div>
-              <p className="muted">{item.path}</p>
-              <p className="plugin-auth">{companyAuthStatus(item)}{ref?.last_verified_at ? ` / ${ref.last_verified_at}` : ""}</p>
-              {auth ? <div className="plugin-card-progress"><strong>共通認証 {auth.completed}/4</strong><span>{auth.complete ? "認証完了" : auth.steps.find((step) => step.status === "active" || step.status === "blocked")?.label ?? "確認待ち"}</span></div> : null}
-              <div className="button-row">
-                {catalogOnly && <Button controlId={`truthful.plugins.add-auth.${item.id}`} variant="primary" disabled={!selectedCompanyId || busyToolId === item.id} onClick={() => startPluginAddAndAuth(item)}>{busyToolId === item.id ? "認証開始中…" : "追加して認証"}</Button>}
-                {canAuth && <Button controlId={`truthful.plugins.auth.${item.id}`} variant="primary" disabled={!selectedCompanyId || busyToolId === item.id} onClick={() => startPluginAddAndAuth(item)}>{busyToolId === item.id ? "認証開始中…" : ref ? "再認証を要求" : "追加して認証"}</Button>}
-                {auth && <Button controlId={`truthful.plugins.auth-wizard.${item.id}`} onClick={() => setAuthWizardPluginId(item.id)}>認証手順</Button>}
-                <Button controlId={`truthful.plugins.details.${item.id}`} onClick={() => model.setReceipt(`${item.name}: ${item.catalogKind} inventoryを表示中。実行・外部効果はありません。`)}>詳細</Button>
-              </div>
-            </article>;
-          })}
-        </div> : <ReadbackState title="一致するツールがありません" detail="現在のCodex inventoryにないPluginを接続済みとは表示しません。" tone="attention" nextAction="検索条件を変えるか、Codex側のPlugin/MCP inventoryを更新する" />}
+      <Panel title={`管理者・詳細: ツールカタログ (${filteredCatalog.length})`} controlId="truthful.plugins.catalog.panel">
+        {filteredCatalog.length ? <details className="plugin-catalog-details">
+          <summary>管理者・詳細情報として全ツールのインベントリを表示（{filteredCatalog.length}件）</summary>
+              <p className="muted">通常は認証ウィザードと会社接続の状態だけを確認します。519件の全インベントリは必要な場合だけ開きます。表示だけでは認証済み・実行可能とは扱いません。</p>
+          <div className="plugin-grid">
+            {filteredCatalog.map((item) => {
+              const ref = matchingConnection(item);
+              const catalogOnly = item.catalogSource === "recommended" || item.status === "catalog_available";
+              const canAuth = item.catalogKind === "plugin" && !catalogOnly;
+              const auth = item.catalogKind === "plugin" ? buildPluginAuthSteps(item) : null;
+              const serverAuth = item.catalogKind === "plugin" && item.catalogSource === "official" && item.authPolicy ? `Codex Server認証ポリシー / ${pluginAuthPolicyLabel(item)}` : null;
+              return <article className="plugin-card" key={`${item.catalogKind}:${item.id}`} data-control-id={`truthful.plugins.card.${item.id}`}>
+                <div className="plugin-card-heading"><span className="plugin-icon">{item.name.slice(0, 1).toUpperCase()}</span><div><strong>{item.name}</strong><span>{kindLabel(item.catalogKind)} / {item.kind}</span></div><StatusBadge status={item.state.connected ? "enabled" : item.state.verified ? "approved" : item.status === "missing" ? "blocked" : "draft"} label={statusLabel(item)} /></div>
+                <p className="muted">{item.path}</p>
+                <p className="plugin-auth">{companyAuthStatus(item)}{serverAuth ? ` / ${serverAuth}` : ""}{ref?.last_verified_at ? ` / ${ref.last_verified_at}` : ""}</p>
+                {auth ? <div className="plugin-card-progress"><strong>共通認証 {auth.completed}/4</strong><span>{auth.complete ? "認証完了" : auth.steps.find((step) => step.status === "active" || step.status === "blocked")?.label ?? "確認待ち"}</span></div> : null}
+                <div className="button-row">
+                  {catalogOnly && <Button controlId={`truthful.plugins.add-auth.${item.id}`} variant="primary" disabled={!selectedCompanyId || busyToolId === item.id} onClick={() => startPluginAddAndAuth(item)}>{busyToolId === item.id ? "認証開始中…" : serverAuth ? "Codex Serverで追加して認証" : "追加して認証"}</Button>}
+                  {canAuth && <Button controlId={`truthful.plugins.auth.${item.id}`} variant="primary" disabled={!selectedCompanyId || busyToolId === item.id} onClick={() => startPluginAddAndAuth(item)}>{busyToolId === item.id ? "認証開始中…" : ref ? "再認証を要求" : "追加して認証"}</Button>}
+                  {auth && <Button controlId={`truthful.plugins.auth-wizard.${item.id}`} onClick={() => setAuthWizardPluginId(item.id)}>認証手順</Button>}
+                  <Button controlId={`truthful.plugins.details.${item.id}`} onClick={() => model.setReceipt(`${item.name}: ${item.catalogKind} inventoryを表示中。実行・外部効果はありません。`)}>詳細</Button>
+                </div>
+              </article>;
+            })}
+          </div>
+        </details> : <ReadbackState title="一致するツールがありません" detail="現在のCodex inventoryにないPluginを接続済みとは表示しません。" tone="attention" nextAction="検索条件を変えるか、Codex側のPlugin/MCP inventoryを更新する" />}
       </Panel>
+      <details className="plugin-advanced-details">
+        <summary>管理者・技術詳細（実行面と接続状態）を表示</summary>
       <Panel title="Codex surface readback" controlId="truthful.plugins.surfaces.panel">
         {surfaces.length ? <DataTable controlId="truthful.plugins.surfaces.table" headers={["Surface", "Kind", "Status", "Configured", "Enabled", "Connected"]} rows={surfaces.map((surface) => [surface.name, surface.kind, getCapabilitySurfaceStatus(surface), getCapabilitySurfaceState(surface).configured ? "yes" : "no", getCapabilitySurfaceState(surface).enabled ? "yes" : "no", getCapabilitySurfaceState(surface).connected ? "yes" : "no"])} /> : <ReadbackState title="Capability readbackがありません" detail="静的なPlugin候補や、接続済みに見える状態は表示していません。現在は機能の存在ではなく、検証済みのsurfaceだけを正本とします。" tone="attention" nextAction="Codex surfaceのfresh readbackを取得する" />}
       </Panel>
@@ -4506,13 +5749,40 @@ function TruthfulPluginsPage({ model }: { model: AppModel }) {
           : chromeReadback ? <><p>Chrome Plugin / Profile 2: {publicBrowserUseRuntimeStatus(runtime)} / blocker={chromeReadbackBlocker ?? "なし"}</p><p className="muted">status={chromeReadback.status ?? "unknown"} / refresh={chromeReadback.refreshStatus ?? "unknown"} / captured={chromeReadback.capturedAt ?? "未確認"} / {publicBrowserUseRuntimeNextCheck(runtime)}</p></>
           : <ReadbackState title="Chrome Extensionのreadbackがありません" detail="選択backendはChrome Pluginですが、Profile 2のruntime readbackがありません。推測で接続済みとは表示しません。" tone="attention" nextAction="Chrome Plugin trusted bridgeとProfile 2のfresh readbackを確認する" />}
       </Panel>
+      </details>
     </section>
   );
 }
 
+async function requestProductionReadback(companyId: string, signal?: AbortSignal) {
+  const response = await mvpFetch(`/api/v1/companies/${encodeURIComponent(companyId)}/production/readback`, { cache: "no-store", signal });
+  const value = await response.json().catch(() => ({}));
+  if (!response.ok || value.ok !== true) throw new Error(value.error ?? "production_readback_failed");
+  if (value.source !== "api_host_runtime" || value.company_scope?.enforced !== true || value.company_scope.company_id !== companyId
+    || !value.persistence?.adapter || !value.deployment || !value.checked_at) throw new Error("production_readback_mismatch");
+  return value;
+}
+
 function TruthfulProductionStatusPage({ model }: { model: AppModel }) {
-  const readiness = model.mvpState.production_readiness_readback;
-  const browser = model.mvpState.browserHealth;
+  const companies = projectOptionsFromState(model.mvpState).filter((company) => ["owner", "admin"].includes(company.role ?? ""));
+  const [selection, setSelection] = useState("");
+  const companyId = companies.some((company) => company.id === selection) ? selection : companies[0]?.id ?? "";
+  const [readback, setReadback] = useState<any>(null);
+  const [readStatus, setReadStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [refresh, setRefresh] = useState(0);
+  useEffect(() => {
+    const controller = new AbortController();
+    setReadback(null); setReadStatus("loading");
+    if (!companyId) { setReadStatus("error"); return () => controller.abort(); }
+    void requestProductionReadback(companyId, controller.signal).then((value) => {
+      if (!controller.signal.aborted) { setReadback(value); setReadStatus("ready"); }
+    }).catch(() => { if (!controller.signal.aborted) setReadStatus("error"); });
+    return () => controller.abort();
+  }, [companyId, refresh]);
+  const current = readback?.company_scope?.company_id === companyId ? readback : null;
+  const readiness = current?.readiness;
+  const browser = current?.browser;
+  const chromeUnobserved = !browser?.chromeExtension?.readback?.capturedAt && browser?.chromeExtension?.status !== "ready" && browser?.chromeExtension?.targetScopedAvailable !== true;
   const workerSummary = workerStatusSummary(model.mvpState.worker);
   const readinessRows = readiness && typeof readiness === "object"
     ? Object.entries(readiness).filter(([key]) => ["status", "production_ready", "goal_complete", "blocker", "next_action", "checked_at", "source"].includes(key)).map(([key, value]) => [key, typeof value === "object" ? JSON.stringify(value) : String(value ?? "-")])
@@ -4520,14 +5790,33 @@ function TruthfulProductionStatusPage({ model }: { model: AppModel }) {
   return (
     <section>
       <PageTitle title="本番状態" desc="現在のAPI readback。deployや外部検証は実行しません。" />
+      <label>確認する会社 <select aria-label="本番状態の会社" data-control-id="truthful.production.scope.select" value={companyId} onChange={(event) => setSelection(event.target.value)}>
+        {companies.map((company) => <option key={company.id} value={company.id}>{company.label}</option>)}
+      </select></label>
+      <Button controlId="truthful.production.readback.refresh" disabled={readStatus === "loading" || !companyId} onClick={() => setRefresh((value) => value + 1)}>本番状態を再読込</Button>
+      <p role="status">{readStatus === "loading" ? "本番APIホストの状態を確認中です。" : readStatus === "error" ? "最新状態を確認できません。会社の管理権限と接続を確認し、再読込してください。" : `確認: ${current?.checked_at ?? "未確認"} / APIホストの情報です。Mac workerと実業務結果は別に確認します。`}</p>
       <div className="cards four">
-        <MetricCard controlId="truthful.production.metric.persistence" title="Persistence" value={String(model.mvpState.persistence?.adapter ?? "未確認")} sub="現在のAPI readback" status={model.mvpState.persistence?.adapter ? "enabled" : "waiting"} />
+        <MetricCard controlId="truthful.production.metric.persistence" title="Persistence" value={String(current?.persistence?.adapter ?? "未確認")} sub="現在のAPI readback" status={current?.persistence?.adapter ? "enabled" : "waiting"} statusLabel={current?.persistence?.adapter ? undefined : readStatus === "loading" ? "確認中" : "未確認"} />
         <MetricCard controlId="truthful.production.metric.worker" title="Worker" value={model.mvpState.worker?.status ?? "未確認"} sub={`${workerSummary.label} / ${workerSummary.freshness}`} status={model.mvpState.worker?.heartbeat_fresh ? "enabled" : model.mvpState.worker?.readback_status === "stored" ? "draft" : "blocked"} />
-        <MetricCard controlId="truthful.production.metric.chrome" title="Chrome lane" value={publicChromeLaneStatus(browser?.chromeExtension)} sub={publicChromeLaneBlocker(browser?.chromeExtension)} status={browser?.chromeExtension?.status === "ready" ? "enabled" : browser?.chromeExtension?.targetScopedAvailable === true ? "draft" : "blocked"} />
-        <MetricCard controlId="truthful.production.metric.goal" title="Goal Complete" value={readiness?.goal_complete === true ? "true" : "false"} sub="readbackがtrueになるまで未完了" status={readiness?.goal_complete === true ? "approved" : "blocked"} />
+        <MetricCard controlId="truthful.production.metric.chrome" title="公式Chrome / APIホスト観測" value={chromeUnobserved ? "未観測" : publicChromeLaneStatus(browser?.chromeExtension)} sub={`Companionの接続状態とは別です / ${publicChromeLaneBlocker(browser?.chromeExtension)}`} status={chromeUnobserved ? "waiting" : browser?.chromeExtension?.status === "ready" ? "enabled" : browser?.chromeExtension?.targetScopedAvailable === true ? "draft" : "blocked"} statusLabel={chromeUnobserved ? "未観測" : undefined} />
+        <MetricCard controlId="truthful.production.metric.goal" title="Goal Complete" value={readiness?.goal_complete === true ? "true" : readiness?.goal_complete === false ? "false" : "未確認"} sub="配信や接続確認から業務完了を推定しません" status={readiness?.goal_complete === true ? "approved" : readiness?.goal_complete === false ? "blocked" : "waiting"} statusLabel={readiness?.goal_complete === true ? "完了確認済み" : readiness?.goal_complete === false ? "未完了" : "未確認"} />
       </div>
-      <Panel title="Production readiness readback" controlId="truthful.production.readback.panel">{readinessRows.length ? <DataTable controlId="truthful.production.readback.table" headers={["項目", "値"]} rows={readinessRows} /> : <ReadbackState title="Production readinessを確認できません" detail="過去の固定Run IDや確認件数は現在値として表示していません。本番準備完了とは扱いません。" tone="attention" nextAction="承認済みrevisionとfresh production readbackを取得する" />}</Panel>
-      <Panel title="Hard stops" controlId="truthful.production.hard-stops.panel"><CheckList items={["production deployは未実行", "外部投稿・送信・削除は未実行", "real credential / secret mutationは未実行", "production claimは実証跡が揃うまで禁止"]} /></Panel>
+      <Panel title="現在配信しているアプリ" controlId="truthful.production.deployment.panel">
+        <p>{current?.deployment ? `現在のAPIホストから配信中 / ${current.deployment.version || "バージョン未確認"}` : "配信情報は未確認です。"}</p>
+        {current?.deployment ? <details className="production-technical-details">
+          <summary>配信の技術詳細を表示</summary>
+          <DataTable controlId="truthful.production.deployment.table" headers={["項目", "APIホストの読取結果"]} rows={[
+            ["Version", current.deployment.version || "未確認"], ["Commit / 出所", `${current.deployment.commit || "未確認"} / ${current.deployment.commitSource}`],
+            ["Web asset", current.deployment.assets?.js || "未確認"], ["Runtime artifact hash", current.deployment.runtimeParity?.artifactHash || "未確認"]
+          ]} />
+        </details> : null}
+        <p className="muted">配信確認は稼働状況の参考です。ソースとの一致や全業務の完了は別の証拠で確認します。</p>
+      </Panel>
+      <Panel title="Production readiness readback" controlId="truthful.production.readback.panel">{readinessRows.length ? <details className="production-technical-details">
+        <summary>技術的なreadbackを表示（業務完了とは別管理）</summary>
+        <DataTable controlId="truthful.production.readback.table" headers={["項目", "値"]} rows={readinessRows} />
+      </details> : readStatus === "loading" ? <ReadbackState title="Production readinessを確認中" detail="選択した会社のAPI応答を待っています。本番準備完了とは扱いません。" tone="info" /> : <ReadbackState title="Production readinessを確認できません" detail="過去の固定Run IDや確認件数は現在値として表示していません。本番準備完了とは扱いません。" tone="attention" nextAction="承認済みrevisionとfresh production readbackを取得する" />}</Panel>
+      <Panel title="この画面の操作範囲" controlId="truthful.production.hard-stops.panel"><CheckList items={["この画面からproduction deployは実行しません", "この画面から外部投稿・送信・削除は実行しません", "この画面から認証情報・secretを変更しません", "配信やheartbeatの確認と、各業務の完了証拠は別に扱います"]} /></Panel>
     </section>
   );
 }
@@ -4576,15 +5865,16 @@ function OwnerAdminPage({ model }: { model: AppModel }) {
     }
   };
   React.useEffect(() => { void load(); }, []);
+  if (model.mvpLoadStatus === "loading" || (model.mvpLoadStatus === "degraded" && model.mvpLoadBlocker === "mvp_state_detail_readback_pending")) return <ProjectUnavailablePage loading scopeLabel="Admin membership" reason="Owner membershipを確認中です。未取得を権限拒否とは扱いません。" />;
   if (!hasOwnerAdminAccess(model.mvpState)) return <ProjectUnavailablePage reason="Admin diagnosticsはOwner membershipだけが閲覧できます。" />;
   const diagnosticText = (value: unknown) => redactSensitiveText(redactDisplayPaths(JSON.stringify(value ?? {}, null, 2)));
-  const runtime = model.mvpState.browser_use_runtime;
+  const runtime = backendSetting?.setting?.backend === "browser_use_cli" ? model.mvpState.browser_use_runtime : undefined;
   const workerNeedsAttention = model.mvpState.worker?.heartbeat_fresh !== true || Boolean(model.mvpState.worker?.exact_blocker);
   const runtimeNeedsAttention = runtime?.status !== "verified" || Boolean(runtime?.exactBlocker);
   const adminNextAction = workerNeedsAttention
     ? { label: "Workerのheartbeatを再確認", route: "#/system/pc-status", detail: model.mvpState.worker?.exact_blocker ? publicBlockerSummary(model.mvpState.worker.exact_blocker) : "Mac Workerのfresh readbackが必要です。" }
     : runtimeNeedsAttention
-      ? { label: "Chrome Pluginのreadbackを確認", route: "#/plugins", detail: runtime?.exactBlocker ? publicBlockerSummary(runtime.exactBlocker) : "選択中の実行面が未確認です。" }
+      ? { label: "PCとWorkerの観測を開く", route: "#/system/pc-status", detail: `ブラウザを使う処理の確認です。選択面: ${publicWebOperationBackendLabel(backendSetting?.setting?.backend)}。${runtime?.exactBlocker ? publicBlockerSummary(runtime.exactBlocker) : "選択面の接続はこの診断では未確認です。PC状態ではWorkerのheartbeatとAPIホストの観測を確認できます。"} 各業務の結果は同じRunのreceiptで別に確認します。` }
       : { label: "自動化を確認", route: "#/projects", detail: "実行前に会社scope・承認・同一Runのproofを確認します。" };
   const adapterCoverageRows = Array.isArray(backendSetting?.adapter_coverage)
     ? backendSetting.adapter_coverage.map((item: any) => {
@@ -4652,16 +5942,17 @@ function OwnerAdminPage({ model }: { model: AppModel }) {
       {status === "error" && <Panel title="Admin readback" controlId="admin.error.panel"><p className="muted">Owner専用API readbackを取得できませんでした。通常の会社ページへ内部診断値はfallback表示しません。</p></Panel>}
       {status === "ready" && diagnostics && <>
         <div className="operator-next-action" data-control-id="admin.next-action" role="status">
-          <div><strong>今すぐ必要なこと</strong><span>{adminNextAction.detail}</span></div>
+          <div><strong>状態に応じた確認</strong><span>{adminNextAction.detail}</span></div>
           <Button controlId="admin.next-action.open" variant="primary" onClick={() => go(adminNextAction.route)}>{adminNextAction.label}</Button>
         </div>
         <Panel title="全automationのWeb操作バックエンド" controlId="admin.web-operation-backend.panel">
-          <p className="muted">AOSのグローバル設定です。変更は次回run開始時に固定され、既存runのbackendは変更しません。Chrome plugin選択時はProfile 2を使い、対応adapterが未登録ならBrowser Use CLIへフォールバックせず停止します。</p>
+          <p className="muted">AOSのグローバル設定です。変更は次回run開始時に固定され、既存runのbackendは変更しません。現在の選択面（{publicWebOperationBackendLabel(backendSetting?.setting?.backend)}）を各automationの次回runへ伝播し、未登録・未検証なら別surfaceへ切り替えず安全停止します。</p>
           <div className="form-row">
             <label htmlFor="admin-web-operation-backend">実行面</label>
             <select id="admin-web-operation-backend" data-control-id="admin.web-operation-backend.select" aria-label="ウェブ操作バックエンド" value={backendChoice} disabled={backendSaving || status !== "ready"} onChange={(event) => setBackendChoice(event.target.value)}>
               <option value="chrome_plugin">Chrome plugin</option>
               <option value="browser_use_cli">Browser Use CLI</option>
+              <option value="aos_chrome_companion">AOS Chrome Companion</option>
               <option value="playwright">Playwright</option>
             </select>
             <Button controlId="admin.web-operation-backend.save" variant="primary" disabled={backendSaving || status !== "ready"} onClick={() => { void saveBackend(); }}>{backendSaving ? "保存中…" : "保存"}</Button>
@@ -4685,7 +5976,7 @@ function OwnerAdminPage({ model }: { model: AppModel }) {
         <Panel title="Obsidian" controlId="admin.obsidian.panel"><AdminDiagnosticDetails value={diagnosticText(diagnostics.obsidian)} /></Panel>
         <Panel title="Deployment / Guards" controlId="admin.deployment.panel"><AdminDiagnosticDetails value={diagnosticText({ deployment: diagnostics.deployment, guards: diagnostics.guards })} /></Panel>
       </>}
-      <FeedbackFixQueue feedbacks={model.feedbackReadback} state={model.mvpState} setReceipt={model.setReceipt} setFeedbackReadback={model.setFeedbackReadback} canTriage={hasOwnerAdminAccess(model.mvpState)} />
+      <FeedbackFixQueue feedbacks={model.feedbackReadback} readStatus={model.feedbackReadStatus} state={model.mvpState} setReceipt={model.setReceipt} setFeedbackReadback={model.setFeedbackReadback} canTriage={hasOwnerAdminAccess(model.mvpState)} />
     </section>
   );
 }
@@ -4703,6 +5994,9 @@ function renderPage(route: string, model: AppModel) {
       || currentPath === "#/chat"
       || currentPath === "#/runs"
       || currentPath === "#/approvals"
+      || currentPath === "#/templates"
+      || currentPath === "#/plugins"
+      || currentPath === "#/production/status"
       || currentPath === "#/system/pc-status"
       || currentPath.endsWith("/automations")
     );
@@ -4710,8 +6004,9 @@ function renderPage(route: string, model: AppModel) {
     && (currentPath === "#/projects" || currentPath === "#/projects/" || currentPath.includes("/projects/"));
   const canRenderCachedReadOnlySurface = hasCachedCompanyScope
     && (canRenderCachedCompanySurface || currentPath === "#/chat" || canRenderDegradedReadOnlySurface);
+  const canRenderSafeGlobalSurface = ["#/", "#/chat", "#/projects", "#/projects/", "#/runs", "#/approvals", "#/templates", "#/plugins", "#/system/pc-status", "#/production/status"].includes(currentPath);
   const stateDependentRoute = currentPath !== "#/admin";
-  if (stateDependentRoute && model.mvpLoadStatus !== "ready" && !canRenderCachedReadOnlySurface) {
+  if (stateDependentRoute && model.mvpLoadStatus !== "ready" && !canRenderCachedReadOnlySurface && !canRenderSafeGlobalSurface) {
     const summaryOnly = currentPath === "#/runs" || currentPath === "#/approvals";
     const summary = summaryOnly
       ? currentPath === "#/runs"
@@ -4732,6 +6027,7 @@ function renderPage(route: string, model: AppModel) {
   if (currentPath === "#/templates") return <TemplatesPage model={model} />;
   if (currentPath === "#/admin") return <OwnerAdminPage model={model} />;
   if (currentPath === "#/plugins") return <TruthfulPluginsPage model={model} />;
+  if (currentPath.endsWith("/plugins")) return <TruthfulPluginsPage model={model} />;
   if (currentPath === "#/production/status") return hasOwnerAdminAccess(model.mvpState) ? <TruthfulProductionStatusPage model={model} /> : <ProjectUnavailablePage reason="本番状態はOwner専用です。" />;
   if (currentPath === "#/system/pc-status") return <PcStatusPage model={model} />;
   if (currentPath === "#/projects" || currentPath === "#/projects/") return <ProjectDirectoryPage model={model} />;
@@ -4824,7 +6120,7 @@ function ProjectDirectoryPage({ model }: { model: AppModel }) {
   return (
     <section>
       <PageTitle title="会社" desc="管理する会社と、その会社の自動化を選びます。" />
-      {model.mvpLoadStatus !== "ready" && <div className="action-note warning" role="status">{model.mvpLoadStatus === "degraded" ? `表示中の会社一覧は直近のsummary readbackです。詳細readbackが遅延または未完了です（blocker=${model.mvpLoadBlocker ?? "mvp_state_detail_readback_pending"}）。保存・実行は最新確認が終わるまで待機します。` : "表示中の会社一覧は直近のsummary readbackです。最新の詳細状態を確認中のため、保存・実行は最新確認が終わるまで待機します。"}</div>}
+      {model.mvpLoadStatus !== "ready" && <div className="action-note warning" role="status">{model.mvpLoadStatus === "degraded" ? `表示中の会社一覧は直近のsummary readbackです。詳細readbackはバックグラウンドで再試行中です（blocker=${model.mvpLoadBlocker ?? "mvp_state_detail_readback_pending"}）。保存・実行は安全停止中で、read-only確認は利用できます。` : "表示中の会社一覧は直近のsummary readbackを取得中です。未取得の間は保存・実行を安全停止し、取得後にread-only表示へ切り替えます。"}</div>}
       {projects.length ? (
         <>
           <Panel title="会社一覧" controlId="home.company-list.panel">
@@ -4835,7 +6131,7 @@ function ProjectDirectoryPage({ model }: { model: AppModel }) {
                 const projectBlocked = projectRuns.filter((run) => ["blocked", "failed"].includes(String(run.status))).length;
                 const projectQueued = projectRuns.filter((run) => ["queued", "pending", "running"].includes(String(run.status))).length;
                 return <article className="project-directory-card" key={id}>
-                  <div className="project-directory-head"><div><strong>{label}</strong><span>{role} / company scope</span></div><StatusBadge status={projectBlocked ? "blocked" : projectQueued ? "waiting" : "enabled"} label={projectBlocked ? "要確認" : projectQueued ? "実行待ち" : "監視中"} /></div>
+                  <div className="project-directory-head"><div><strong>{label}</strong><span>{role} / company scope</span></div><StatusBadge status={projectBlocked ? "blocked" : projectQueued ? "waiting" : "enabled"} label={projectBlocked ? "履歴要確認" : projectQueued ? "実行待ち" : "監視中"} /></div>
                   <div className="project-directory-stats"><span><strong>{projectAutomations.length}</strong> 自動化</span><span><strong>{projectRuns.length}</strong> Run</span><span><strong>{projectQueued}</strong> 待機/実行</span><span><strong>{projectBlocked}</strong> 要確認</span></div>
                   <p>{projectBlocked ? "この会社に確認が必要なRunがあります。" : projectQueued ? "Workerのclaimと同一Run readbackを確認します。" : "保存済みの会社scopeと自動化を確認できます。"}</p>
                   <Button controlId={`home.projects.open.${id}`} onClick={() => { rememberProject(id); go(`#/projects/${id}/automations`); }}>{label}を開く<ChevronRight size={14} /></Button>
@@ -4892,7 +6188,29 @@ function openFeedbackFor(comment: string, context: Record<string, unknown> = {})
   window.dispatchEvent(new CustomEvent("automation-os-open-feedback", { detail: { comment, context } }));
 }
 
-function FeedbackWidget({ route, setReceipt, setMvpState, readOnlyEvidenceMode = false }: { route: string; setReceipt: (value: string) => void; setMvpState: React.Dispatch<React.SetStateAction<MvpState>>; readOnlyEvidenceMode?: boolean }) {
+type PendingFeedback = { id: string; companyId: string };
+const pendingFeedbackStorageKey = "aos-feedback-pending-v1";
+
+function readPendingFeedback(): PendingFeedback | null {
+  try {
+    const value = JSON.parse(window.sessionStorage.getItem(pendingFeedbackStorageKey) ?? "null");
+    return value && /^feedback_ui_[a-zA-Z0-9_-]{16,100}$/.test(value.id) && typeof value.companyId === "string" && value.companyId
+      ? { id: value.id, companyId: value.companyId } : null;
+  } catch { return null; }
+}
+
+async function requestSavedFeedback(pending: PendingFeedback) {
+  const response = await mvpFetch(`/api/mvp/feedback?company_id=${encodeURIComponent(pending.companyId)}&feedback_id=${encodeURIComponent(pending.id)}`, { cache: "no-store" });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok || result.ok !== true || result.company_scope?.enforced !== true
+    || result.company_scope.company_ids?.length !== 1 || result.company_scope.company_ids[0] !== pending.companyId
+    || !Array.isArray(result.feedbacks) || result.feedbacks.length !== 1) throw new Error("feedback_result_unconfirmed");
+  const row = result.feedbacks[0];
+  if (row.id !== pending.id || row.feedback_id !== pending.id || row.company_id !== pending.companyId) throw new Error("feedback_result_scope_mismatch");
+  return row;
+}
+
+function FeedbackWidget({ route, setReceipt, setMvpState, onSaved, readOnlyEvidenceMode = false }: { route: string; setReceipt: (value: string) => void; setMvpState: React.Dispatch<React.SetStateAction<MvpState>>; onSaved: (row: any) => void; readOnlyEvidenceMode?: boolean }) {
   const [open, setOpen] = useState(false);
   const [comment, setComment] = useState("");
   const [capture, setCapture] = useState<any>(null);
@@ -4902,6 +6220,15 @@ function FeedbackWidget({ route, setReceipt, setMvpState, readOnlyEvidenceMode =
   const [sensitiveConfirmed, setSensitiveConfirmed] = useState(false);
   const [feedbackContext, setFeedbackContext] = useState<Record<string, unknown> | null>(null);
   const [busy, setBusy] = useState(false);
+  const [pendingFeedback, setPendingFeedback] = useState<PendingFeedback | null>(readPendingFeedback);
+  const pendingFeedbackRef = useRef(pendingFeedback);
+  const submitRef = useRef(false);
+  const rememberPending = (value: PendingFeedback | null) => {
+    if (value) window.sessionStorage.setItem(pendingFeedbackStorageKey, JSON.stringify(value));
+    else window.sessionStorage.removeItem(pendingFeedbackStorageKey);
+    pendingFeedbackRef.current = value;
+    setPendingFeedback(value);
+  };
   const captureGeneration = useRef(0);
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const commentRef = useRef<HTMLTextAreaElement | null>(null);
@@ -4922,10 +6249,15 @@ function FeedbackWidget({ route, setReceipt, setMvpState, readOnlyEvidenceMode =
     setReceipt(image.dataUrl ? "スクショを取得しました。コメントを書いて送信できます。" : "スクショなしでも送信できます。必要なら再取得してください。");
   };
   const openFeedback = async (preset?: { comment?: string; context?: Record<string, unknown> }) => {
+    if (submitRef.current) return;
     if (typeof preset?.comment === "string") setComment(preset.comment);
     setFeedbackContext(preset?.context ?? null);
     triggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setOpen(true);
+    if (pendingFeedbackRef.current) {
+      setReceipt("前の送信結果を同じIDで照合してください。新しい送信や画面キャプチャは開始しません。");
+      return;
+    }
     setReceipt("フィードバック欄を開きました。スクショ取得中でもコメント入力できます。");
     runCapture(route);
   };
@@ -4989,7 +6321,23 @@ function FeedbackWidget({ route, setReceipt, setMvpState, readOnlyEvidenceMode =
     setCapture(buildFeedbackCapture(route));
     setReceipt("スクショなしで送信する準備をしました。URLと画面テキストは保存されます。");
   };
+  const confirmSaved = async (pending: PendingFeedback) => {
+    const row = await requestSavedFeedback(pending);
+    onSaved(row);
+    rememberPending(null);
+    close();
+    setReceipt(`フィードバックの保存を確認しました。id=${row.id} / screenshot=${row.screenshot_artifact_id ?? "none"} / inbox=local（外部転送なし）`);
+  };
+  const reconcile = async () => {
+    if (submitRef.current || !pendingFeedbackRef.current) return;
+    submitRef.current = true;
+    setBusy(true);
+    try { await confirmSaved(pendingFeedbackRef.current); }
+    catch { setReceipt("保存結果は未確認です。同じIDの読取照合だけを行いました。送信は繰り返していません。"); }
+    finally { submitRef.current = false; setBusy(false); }
+  };
   const submit = async () => {
+    if (submitRef.current || pendingFeedbackRef.current) return;
     if (readOnlyEvidenceMode) {
       setReceipt("read-only evidence mode: フィードバック保存は未開始です / blocker=mvp_state_readback_not_ready");
       return;
@@ -5003,14 +6351,20 @@ function FeedbackWidget({ route, setReceipt, setMvpState, readOnlyEvidenceMode =
       setReceipt("secret、password、本人確認コードが映っていない確認にチェックしてください。");
       return;
     }
+    const companyId = rememberedProject();
+    if (!companyId) { setReceipt("送信先の会社を選択してください。"); return; }
+    submitRef.current = true;
     try {
       setBusy(true);
+      const pending = { id: newIdempotencyKey("feedback_ui").replace(/:/g, "_"), companyId };
+      rememberPending(pending);
       const response = await mvpFetch("/api/mvp/feedback", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          company_id: rememberedProject(),
-          project_id: rememberedProject(),
+          company_id: companyId,
+          project_id: companyId,
+          feedback_id: pending.id,
           comment: safeComment,
           route,
           url: location.href,
@@ -5024,18 +6378,18 @@ function FeedbackWidget({ route, setReceipt, setMvpState, readOnlyEvidenceMode =
         })
       });
       const result = await response.json();
-      if (!response.ok || !result.ok) throw new Error(result.exact_blocker || result.error || "feedback_submit_failed");
-      setMvpState(result.state);
-      setOpen(false);
-      setComment("");
-      setSensitiveConfirmed(false);
-      setFeedbackContext(null);
-      const inbox = result.inbox_forward?.status === "sent" ? " / inbox=sent" : result.inbox_forward?.status === "failed" ? " / inbox=failed" : " / inbox=local";
-      const screenshotReceipt = result.feedback.screenshot_artifact_id ? `stored:${result.feedback.screenshot_artifact_id}` : "none";
-      setReceipt(`フィードバックを送信しました。id=${result.feedback.feedback_id ?? result.feedback.id} / screenshot=${screenshotReceipt}${inbox}`);
+      if (!response.ok || !result.ok) {
+        if ([400, 403, 413, 415].includes(response.status) && ["feedback_comment_required", "feedback_id_invalid", "feedback_screenshot_sensitive_confirmation_required", "feedback_screenshot_too_large", "feedback_screenshot_mime_not_allowed", "company_scope_forbidden"].includes(result.error)) rememberPending(null);
+        throw new Error(result.exact_blocker || result.error || "feedback_submit_failed");
+      }
+      if (result.feedback?.id !== pending.id || result.feedback?.company_id !== companyId) throw new Error("feedback_result_scope_mismatch");
+      if (result.state) setMvpState(result.state);
+      await confirmSaved(pending);
     } catch {
-      setReceipt("フィードバック保存に失敗しました。API readbackを確認してください。");
+      setReceipt(pendingFeedbackRef.current ? "フィードバックの保存結果は未確認です。再送せず「保存結果を照合」で同じIDを確認してください。"
+        : "フィードバックは未保存です。入力内容・会社権限を確認してください。");
     } finally {
+      submitRef.current = false;
       setBusy(false);
     }
   };
@@ -5068,7 +6422,7 @@ function FeedbackWidget({ route, setReceipt, setMvpState, readOnlyEvidenceMode =
           </div>
           <label htmlFor="feedback-panel-comment">
             コメント
-            <textarea id="feedback-panel-comment" ref={commentRef} data-control-id="feedback.panel.comment" aria-describedby="feedback-panel-comment-help" value={comment} disabled={busy || readOnlyEvidenceMode} onChange={(event) => setComment(event.target.value)} placeholder="どこが使いにくいか、期待した動き、実際の動きを書いてください。" />
+            <textarea id="feedback-panel-comment" ref={commentRef} data-control-id="feedback.panel.comment" aria-describedby="feedback-panel-comment-help" value={comment} disabled={busy || readOnlyEvidenceMode || Boolean(pendingFeedback)} onChange={(event) => setComment(event.target.value)} placeholder="どこが使いにくいか、期待した動き、実際の動きを書いてください。" />
           </label>
           <label className="feedback-confirm" htmlFor="feedback-panel-sensitive-confirm">
             <input id="feedback-panel-sensitive-confirm" data-control-id="feedback.panel.sensitive-confirm" type="checkbox" checked={sensitiveConfirmed} disabled={readOnlyEvidenceMode} onChange={(event) => setSensitiveConfirmed(event.target.checked)} />
@@ -5076,7 +6430,9 @@ function FeedbackWidget({ route, setReceipt, setMvpState, readOnlyEvidenceMode =
           </label>
           <p id="feedback-panel-comment-help" className="muted">{readOnlyEvidenceMode ? "read-only evidence mode: 最新のMVP state readbackが確認できるまで保存しません。" : "password、token、private key、本人確認コードが画面に映っている時は送らないでください。"}</p>
           <div className="button-row">
-            <Button controlId="feedback.panel.submit" variant="primary" icon={<MessageSquare size={14} />} disabled={busy || readOnlyEvidenceMode || !sensitiveConfirmed} onClick={submit}>{busy ? "送信中..." : "送信"}</Button>
+            {pendingFeedback && <p role="status">保存結果の確認待ち: {pendingFeedback.id} / {pendingFeedback.companyId}。閉じたり再読込しても、同じ記録を再送しません。</p>}
+            {pendingFeedback && <Button controlId="feedback.panel.reconcile" disabled={busy} onClick={reconcile}>保存結果を照合</Button>}
+            <Button controlId="feedback.panel.submit" variant="primary" icon={<MessageSquare size={14} />} disabled={busy || Boolean(pendingFeedback) || readOnlyEvidenceMode || !sensitiveConfirmed} onClick={submit}>{busy ? "保存確認中..." : "送信"}</Button>
           </div>
         </div>
       )}
@@ -5114,7 +6470,7 @@ function runDisplayState(run: any): { label: string; tone: PublicStateTone; deta
     return { label: "実行中", tone: "info", detail: "Workerと同一Runの進行を確認しています。" };
   }
   if (["queued", "pending", "waiting_approval", "approval_required"].includes(status)) {
-    return { label: status.includes("approval") ? "承認待ち" : "実行待ち", tone: "info", detail: status.includes("approval") ? "外部操作前に承認で停止しています。" : "QueueからWorkerの取得を待っています。" };
+    return { label: status.includes("approval") ? "承認待ち" : "実行未確定", tone: "info", detail: status.includes("approval") ? "外部操作前に承認で停止しています。" : "QueueからWorkerのclaim/readbackを取得します。" };
   }
   return { label: "未確認", tone: "neutral", detail: "最新のRun readbackが必要です。" };
 }
@@ -5122,7 +6478,7 @@ function runDisplayState(run: any): { label: string; tone: PublicStateTone; deta
 function runBusinessCompletionVerified(run: any): boolean {
   if (run?.business_completion_verified === true || run?.completion_verified === true) return true;
   const metadata = parseJsonRecord(run?.metadata_json);
-  return metadata.business_completion_verified === true;
+  return metadata.business_completion_verified === true || verifiedBusinessReceiptForRun(run) !== null;
 }
 
 function proofRowsForRun(run: any, proofs: any[] = []): any[] {
@@ -5188,10 +6544,14 @@ function SetupProgress({ companyCount, automationCount, workerReady, proofReady 
 
 function HomePriorityPanel({ model, waitingApprovals, blockedRuns, queuedRuns, waitingApprovalCount, blockedRunCount, queuedRunCount }: { model: AppModel; waitingApprovals: any[]; blockedRuns: any[]; queuedRuns: any[]; waitingApprovalCount?: number; blockedRunCount?: number; queuedRunCount?: number }) {
   const runtime = model.mvpState.browser_use_runtime;
-  const workerWaiting = runtime?.status === "readback_pending" || model.mvpState.worker?.heartbeat_fresh === false;
-  const workerBlocked = runtime?.status === "blocked" || Boolean(runtime?.exactBlocker) || Boolean(model.mvpState.worker?.exact_blocker);
+  const remoteWorkerVerified = model.mvpState.worker?.heartbeat_fresh === true;
+  const workerWaiting = model.mvpState.worker?.heartbeat_fresh === false || (!remoteWorkerVerified && runtime?.status === "readback_pending");
+  const workerBlocked = Boolean(model.mvpState.worker?.exact_blocker) || (!remoteWorkerVerified && (runtime?.status === "blocked" || Boolean(runtime?.exactBlocker)));
   const waitingCount = waitingApprovalCount ?? waitingApprovals.length;
   const blockedCount = blockedRunCount ?? blockedRuns.length;
+  const todayBlockedCount = model.mvpState.run_summary?.today_blocked_count
+    ?? blockedRuns.filter((run) => jstDateKey(runTimestamp(run)) === jstDateKey(new Date())).length;
+  const historicalBlockedCount = Math.max(0, blockedCount - todayBlockedCount);
   const queuedRunCountFallback = queuedRunCount ?? queuedRuns.length;
   const workerQueueCurrentCount = typeof model.mvpState.worker?.queue_current_count === "number"
     ? Math.max(0, model.mvpState.worker.queue_current_count)
@@ -5201,18 +6561,20 @@ function HomePriorityPanel({ model, waitingApprovals, blockedRuns, queuedRuns, w
     : 0;
   const priority = waitingCount
     ? { tone: "attention" as PublicStateTone, label: "承認待ち", title: `${waitingCount}件の外部操作が承認待ちです`, detail: "承認されるまで投稿・送信・応募などの外部操作は安全に停止しています。", action: "承認キューを確認", route: "#/approvals" }
-    : blockedCount
-      ? { tone: "attention" as PublicStateTone, label: "要確認", title: `${blockedCount}件のRunに確認が必要です`, detail: "同じ原因のRunをまとめて確認し、外部効果が不明なものは再実行しません。", action: "要確認のRunを見る", route: "#/runs" }
+    : todayBlockedCount
+      ? { tone: "attention" as PublicStateTone, label: "今日の要確認", title: `今日の${todayBlockedCount}件のRunに確認が必要です`, detail: `過去の停止記録${historicalBlockedCount}件は別の履歴です。結果が不明な外部操作は同じ対象を照合し、再送しません。`, action: "要確認のRunを見る", route: "#/runs" }
       : workerBlocked
         ? { tone: "attention" as PublicStateTone, label: "Worker要確認", title: "Workerの実行経路に確認が必要です", detail: runtime?.exactBlocker ?? "Mac workerのexact blockerを確認してください。", action: "PC状態を見る", route: "#/system/pc-status" }
         : workerWaiting
-          ? { tone: "info" as PublicStateTone, label: "Worker確認待ち", title: "Mac workerの同一Run readbackを待っています", detail: "現在はcontrol-planeの状態です。Workerのheartbeat、claim、receipt、source syncを別々に確認します。", action: "PC状態を見る", route: "#/system/pc-status" }
+          ? { tone: "info" as PublicStateTone, label: "Worker確認", title: "Companionの同一Run readbackを取得します", detail: "Worker heartbeatだけでは業務完了にしません。receipt、source sync、cleanupを同じRunで確認し、未取得ならexact blockerを確定します。", action: "PC状態を見る", route: "#/system/pc-status" }
           : workerQueueCurrentCount
-            ? { tone: "info" as PublicStateTone, label: "実行待ち", title: `${workerQueueCurrentCount}件がWorkerの取得を待っています`, detail: "Queue投入だけでは業務完了と扱いません。Worker claimと同一Run readbackが必要です。", action: "実行履歴を見る", route: "#/runs" }
+            ? { tone: "info" as PublicStateTone, label: "実行未確定", title: `${workerQueueCurrentCount}件のWorker claim/readbackを取得します`, detail: "Queue投入だけでは業務完了と扱いません。Worker claimと同一Run readbackが必要です。", action: "実行履歴を見る", route: "#/runs" }
             : workerQueueHistoricalCount
               ? { tone: "info" as PublicStateTone, label: "履歴確認", title: `履歴queue ${workerQueueHistoricalCount}件は再利用しません`, detail: "過去のqueued記録は現行実行ではありません。状態変化後に新しいidempotencyでread-only確認を行います。", action: "実行履歴を見る", route: "#/runs" }
-              : { tone: "success" as PublicStateTone, label: "監視中", title: "AOSは安全な状態監視を継続しています", detail: "外部効果は明示承認と同一Runのreceiptが揃うまで実行・完了扱いにしません。", action: "自動化を確認", route: "#/projects" };
-  const visibleDetail = priority.tone === "attention" && (priority.label === "Worker要確認" || priority.label === "Worker確認待ち")
+              : historicalBlockedCount
+                ? { tone: "info" as PublicStateTone, label: "過去の履歴", title: `今日の停止Runはありません / 過去の停止記録${historicalBlockedCount}件`, detail: "過去の失敗・テスト記録は保持しています。現在の稼働停止や再実行が必要な件数とは限りません。", action: "実行履歴を見る", route: "#/runs" }
+                : { tone: "success" as PublicStateTone, label: "状態確認済み", title: "現在、表示対象の要対応はありません", detail: "この画面のreadback結果です。外部操作の完了は各Runの実結果で確認します。", action: "自動化を確認", route: "#/projects" };
+  const visibleDetail = priority.tone === "attention" && priority.label === "Worker要確認"
     ? publicBlockerSummary(priority.detail)
     : priority.detail;
   return (
@@ -5238,12 +6600,12 @@ function HomeTodayDigest({ mvpState, automationCount, waitingApprovals, blockedR
   const blockedCount = blockedRunCount ?? blockedRuns.length;
   const metrics = [
     { label: "今日のRun", value: String(todayCount), detail: `完了 ${completed} / 実行中・待機 ${active}`, tone: todayCount ? "info" : "neutral" },
-    { label: "要確認", value: String(stopped), detail: stopped ? "今日の停止理由と次の操作を確認" : blockedCount ? `今日なし / 未解消 ${blockedCount}件` : "現在の停止Runなし", tone: stopped || blockedCount ? "attention" : "success" },
+    { label: "要確認", value: String(stopped), detail: stopped ? "今日の停止理由と次の操作を確認" : blockedCount ? `今日なし / 過去の停止記録 ${blockedCount}件` : "現在の停止Runなし", tone: stopped ? "attention" : "success" },
     { label: "承認待ち", value: String(waitingCount), detail: waitingCount ? "外部操作前で停止中" : "確認待ちはありません", tone: waitingCount ? "attention" : "success" },
-    { label: "登録自動化", value: String(automationCount), detail: "定期実行の登録数", tone: automationCount ? "success" : "neutral" }
+    { label: "登録自動化", value: String(automationCount), detail: "下書き・対象外を含む全会社の登録数", tone: automationCount ? "success" : "neutral" }
   ];
   return (
-    <Panel title={`今日のdigest / ${jstDateLabel()}`} controlId="home.today-digest.panel">
+    <Panel title={`今日の概要 / ${jstDateLabel()}`} controlId="home.today-digest.panel">
       <div className="today-digest-grid" aria-label="今日のAOS digest">
         {metrics.map((metric) => <div className={`today-digest-item ${metric.tone}`} key={metric.label}>
           <span>{metric.label}</span>
@@ -5251,16 +6613,19 @@ function HomeTodayDigest({ mvpState, automationCount, waitingApprovals, blockedR
           <small>{metric.detail}</small>
         </div>)}
       </div>
-      <p className="today-digest-note">今日の件数はJSTのRun更新時刻を基準にしています。候補発見・キュー登録・外部効果・業務完了は別状態として扱います。</p>
+      <details className="home-inline-details"><summary>集計の対象と見方</summary><p className="today-digest-note">全会社の登録状況と履歴を集計しています。会社1の今回の利用対象は下のBriefで確認してください。今日の件数はJSTのRun更新時刻を基準にし、候補発見・キュー登録・外部効果・業務完了を別状態として扱います。</p></details>
     </Panel>
   );
 }
 
 function HomeCompanyBrief({ companies }: { companies: Array<{ id: string; label: string }> }) {
+  const companyOneId = "company_2560580981cedfd106b66245";
   const [period, setPeriod] = useState<"morning" | "evening">(() => new Date().getHours() >= 15 ? "evening" : "morning");
   const [readbacks, setReadbacks] = useState<Record<string, { status: "ready" | "error"; bundle?: any; exactBlocker?: string }>>({});
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [refreshing, setRefreshing] = useState(false);
+  const [delivering, setDelivering] = useState<string | null>(null);
+  const [deliveryError, setDeliveryError] = useState<string | null>(null);
   const loadInFlightRef = useRef(false);
   const companyKey = companies.map((company) => company.id).join(",");
   const load = async (requestedPeriod = period) => {
@@ -5270,7 +6635,11 @@ function HomeCompanyBrief({ companies }: { companies: Array<{ id: string; label:
     setStatus("loading");
     const entries = await Promise.all(companies.map(async (company) => {
       try {
-        const response = await mvpFetch(`/api/v1/companies/${encodeURIComponent(company.id)}/brief?brief_type=${requestedPeriod}&business_date=${encodeURIComponent(jstDateKey(new Date()) ?? "unknown-date")}&timezone=Asia%2FTokyo`, { cache: "no-store" });
+        const response = await withMvpDetailReadbackTimeout(
+          mvpFetch(`/api/v1/companies/${encodeURIComponent(company.id)}/brief?brief_type=${requestedPeriod}&business_date=${encodeURIComponent(jstDateKey(new Date()) ?? "unknown-date")}&timezone=Asia%2FTokyo`, { cache: "no-store" }),
+          HOME_BRIEF_READBACK_TIMEOUT_MS,
+          "company_brief_readback_timeout",
+        );
         const body = await response.json().catch(() => ({}));
         if (!response.ok || body.ok === false) throw new Error(String(body.exact_blocker ?? body.exactBlocker ?? body.error ?? `company_brief_http_${response.status}`));
         return [company.id, { status: "ready" as const, bundle: body }];
@@ -5284,6 +6653,30 @@ function HomeCompanyBrief({ companies }: { companies: Array<{ id: string; label:
     setRefreshing(false);
     loadInFlightRef.current = false;
   };
+  const deliver = async (companyId: string) => {
+    if (companyId !== companyOneId || delivering) return;
+    setDelivering(`${companyId}:${period}`);
+    setDeliveryError(null);
+    try {
+      const response = await mvpFetch(`/api/v1/companies/${encodeURIComponent(companyId)}/brief/deliver`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "idempotency-key": newIdempotencyKey("brief-home-delivery") },
+        body: JSON.stringify({
+          brief_type: period,
+          business_date: jstDateKey(new Date()) ?? "unknown-date",
+          timezone: "Asia/Tokyo",
+          template_version: "v1"
+        })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || body.ok === false) throw new Error(String(body.exact_blocker ?? body.exactBlocker ?? body.error ?? `company_brief_delivery_http_${response.status}`));
+      await load(period);
+    } catch (error) {
+      setDeliveryError(error instanceof Error ? error.message : "company_brief_delivery_failed");
+    } finally {
+      setDelivering(null);
+    }
+  };
   React.useEffect(() => {
     if (companies.length === 0) {
       setReadbacks({});
@@ -5292,14 +6685,15 @@ function HomeCompanyBrief({ companies }: { companies: Array<{ id: string; label:
     }
     void load(period);
   }, [companyKey, period]);
-  return <Panel title="会社別Brief / 朝・夜 readback" controlId="home.company-brief.panel">
-    <p className="muted">会社ごとの登録automationをAOS DBから分離して読み取り、朝は当日の確認、夜は当日の結果確認に使う表示面です。通知送信や外部actionはまだ行いません。</p>
+  return <Panel title="今日の仕事" controlId="home.company-brief.panel">
+    <p className="muted">会社ごとの仕事の状態と、今日の確認事項を表示します。外部への送信や公開はここでは行いません。</p>
     <div className="button-row" role="group" aria-label="会社別Briefの期間">
       <Button controlId="home.company-brief.morning" variant={period === "morning" ? "primary" : "secondary"} onClick={() => setPeriod("morning")}>朝Brief</Button>
       <Button controlId="home.company-brief.evening" variant={period === "evening" ? "primary" : "secondary"} onClick={() => setPeriod("evening")}>夜Brief</Button>
       <Button controlId="home.company-brief.refresh" icon={<RefreshCw size={14} />} disabled={refreshing} onClick={() => { void load(period); }}>{refreshing ? "確認中" : "fresh readback"}</Button>
     </div>
-    {status === "loading" ? <ReadbackState title="会社別Briefを確認中" detail="各会社の登録automationを同時にreadbackしています。" tone="info" nextAction="readback完了を待つ" />
+    {deliveryError ? <p className="muted" role="alert">Home配信のexact blocker={deliveryError}</p> : null}
+    {status === "loading" ? <ReadbackState title="会社別Briefを自動確認中" detail="各会社の登録automationを同時にreadbackしています。結果が取れなければ会社ごとのexact blockerを確定します。" tone="info" nextAction="自動再読込を実行し、失敗時は会社ごとのexact blockerを表示する" />
       : status === "error" ? <ReadbackState title="一部の会社Briefを確認できません" detail="会社ごとのexact blockerを下に表示しています。確認できない会社の値は推測しません。" tone="attention" nextAction="会社scopeとAOS serverのhealthをfresh確認する" />
         : null}
     <div className="section-grid" data-control-id="home.company-brief.companies">
@@ -5309,20 +6703,144 @@ function HomeCompanyBrief({ companies }: { companies: Array<{ id: string; label:
         const items = Array.isArray(briefCompany?.items) ? briefCompany.items : [];
         const automationItems = items.filter((item: any) => String(item?.record_id ?? "").startsWith("mvp_automation:"));
         const auxiliaryItems = Math.max(0, items.length - automationItems.length);
+        const delivery = entry?.bundle?.delivery;
+        const latestDelivery = entry?.bundle?.latest_delivery ?? (delivery?.status === "delivered" ? delivery : null);
         return <div className="preview-box" key={company.id} data-control-id={`home.company-brief.company.${company.id}`}>
           <strong>{company.label}</strong>
           {entry?.status === "error" ? <p className="muted">readback未確認 / exact blocker={entry.exactBlocker ?? "unknown"}</p> : <>
-            <p className="muted">登録automation {automationItems.length}件 / 補助readback {auxiliaryItems}件 / 状態={briefCompany?.status ?? "未確認"} / excluded={entry?.bundle?.counts?.excluded_records ?? 0}</p>
-            <div data-control-id={`home.company-brief.items.${company.id}`}>
+            {entry?.bundle?.scope_note ? <p className="muted">{entry.bundle.scope_note}</p> : null}
+            <p className="muted">確認対象 {automationItems.length}件 / 状態={briefCompany?.status ?? "未確認"}</p>
+            <details className="home-inline-details" data-control-id={`home.company-brief.items.${company.id}`}>
+              <summary>仕事の詳細を表示（{automationItems.length}件）</summary>
               {automationItems.length ? automationItems.map((item: any) => <div key={item.record_id} className="job-classification-note">
                 <strong>{item.title}</strong><span>{item.summary}</span><small>次: {item.next_action ?? "未設定"}</small>
-              </div>) : <p className="muted">表示対象の登録automationはありません。</p>}
-            </div>
+              </div>) : <p className="muted">表示対象の仕事はありません。</p>}
+            </details>
+            <details className="home-inline-details"><summary>更新情報</summary>{latestDelivery ? <p className="muted" data-control-id="home.company-brief.last-delivery">最終更新: {latestDelivery.delivered_at}{entry?.bundle?.latest_delivery_matches_current === false ? "（配信後に状態が更新されています）" : "（現在の内容と一致）"}</p> : <p className="muted">まだHome更新はありません。</p>}<p className="muted">補助情報 {auxiliaryItems}件 / 除外 {entry?.bundle?.counts?.excluded_records ?? 0}件 / delivery={delivery?.status ?? "not_attempted"}</p>{latestDelivery ? <p className="muted">配信Run: {latestDelivery.run_id} / receipt・source sync・reconciliation・cleanupを確認済み</p> : null}</details>
+            {company.id === companyOneId ? <div className="button-row">
+              <Button controlId="home.company-brief.deliver" variant="primary" disabled={Boolean(delivering) || refreshing || !briefCompany} onClick={() => { void deliver(company.id); }}>
+                {delivering === `${company.id}:${period}` ? "Homeへ配信中" : latestDelivery ? "最新内容をHomeへ再配信" : "AOS Homeに配信"}
+              </Button>
+              {latestDelivery ? <small className="muted">最終配信の証拠: receipt=verified / source sync=synced / reconciliation=reconciled / cleanup=verified</small> : null}
+            </div> : null}
           </>}
         </div>;
       })}
     </div>
-    <p className="muted" role="status" data-control-id="home.company-brief.boundary">source=AOS DB / read_only=true / delivery=not_attempted / external_action=false</p>
+    <p className="muted" role="status" data-control-id="home.company-brief.boundary">source=AOS DB / Home delivery=internal / external notification=false / external_action=false</p>
+  </Panel>;
+}
+
+function HomeSchedulerControl({ companyId }: { companyId: string }) {
+  const [status, setStatus] = useState<"idle" | "running" | "complete" | "blocked">("idle");
+  const [message, setMessage] = useState("Company 1の自然tickと短期soakを、外部効果なしで実行できます。");
+  const runOperation = async (operation: "run-once" | "natural-tick" | "soak") => {
+    if (status === "running") return;
+    setStatus("running");
+    const label = operation === "run-once" ? "scheduler canary" : operation === "natural-tick" ? "自然tick" : "短期soak";
+    setMessage(`${label}を実行し、同じCompany 1 scopeのscheduler receiptをreadbackしています。`);
+    try {
+      const response = await mvpFetch(`/api/v1/companies/${encodeURIComponent(companyId)}/scheduler/${operation}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: operation === "soak" ? JSON.stringify({ cycles: 3, interval_ms: 1_000 }) : JSON.stringify({ reason: `owner_requested_no_effect_${operation}` })
+      });
+      const body = await response.json().catch(() => ({}));
+      const exactBlocker = body.exactBlocker ?? body.exact_blocker ?? body.error ?? null;
+      if (!response.ok || body.ok === false) {
+        setStatus("blocked");
+        setMessage(`${label}はexact blockerで確定しました: ${String(exactBlocker ?? `http_${response.status}`)}`);
+        return;
+      }
+      setStatus("complete");
+      const tick = body.tick ?? body;
+      const materialized = operation === "soak"
+        ? Array.isArray(body.runIds) ? body.runIds.length : 0
+        : Array.isArray(tick.portableRunIds) ? tick.portableRunIds.length + (Array.isArray(tick.occurrences) ? tick.occurrences.length : 0) : 0;
+      setMessage(`${label}完了 / status=${String(body.status ?? tick.status ?? "unknown")} / materialized=${materialized}件 / service_user=${String(tick.serviceUserSource ?? "readback")} / duplicate=${Array.isArray(body.duplicateRunIds) ? body.duplicateRunIds.length : 0}件 / external_action=false`);
+    } catch (error) {
+      setStatus("blocked");
+      setMessage(`${label}のreadbackに失敗しました: ${error instanceof Error ? error.message : "scheduler_operation_failed"}`);
+    }
+  };
+  return <Panel title="Company 1 scheduler" controlId="home.scheduler.panel">
+    <p className="muted">自然tickは実時刻で1回、短期soakは同じCompany 1 scopeで3回実行します。いずれもdurable queueのmaterializationだけで、外部操作・通知・送信は行いません。</p>
+    <div className="button-row">
+      <Button controlId="home.scheduler.run-once" disabled={status === "running"} onClick={() => { void runOperation("run-once"); }}>
+        {status === "running" ? "scheduler実行中" : "canary"}
+      </Button>
+      <Button controlId="home.scheduler.natural-tick" variant="primary" disabled={status === "running"} onClick={() => { void runOperation("natural-tick"); }}>自然tickを実行</Button>
+      <Button controlId="home.scheduler.soak" disabled={status === "running"} onClick={() => { void runOperation("soak"); }}>短期soakを実行</Button>
+    </div>
+    <p className={`muted ${status === "blocked" ? "attention" : ""}`} role="status" data-control-id="home.scheduler.status">{message}</p>
+  </Panel>;
+}
+
+function HomeObsidianBusinessControl({ companyId }: { companyId: string }) {
+  const [status, setStatus] = useState<"idle" | "preparing" | "approval" | "running" | "complete" | "blocked">("idle");
+  const [runId, setRunId] = useState<string | null>(null);
+  const [approvalId, setApprovalId] = useState<string | null>(null);
+  const [message, setMessage] = useState("固定の非公開Obsidian backupだけをAOS承認付きで実行できます。");
+  const start = async () => {
+    if (status === "preparing" || status === "running") return;
+    setStatus("preparing");
+    setMessage("fresh source readbackを作成し、固定target-bound approvalを準備しています。");
+    try {
+      const response = await mvpFetch(`/api/v1/companies/${encodeURIComponent(companyId)}/portable-local/obsidian-project-memory-audit/business-run`, {
+        method: "POST",
+        headers: { "content-type": "application/json" }
+      });
+      const body = await response.json().catch(() => ({}));
+      const exactBlocker = body.exactBlocker ?? body.exact_blocker ?? body.error ?? null;
+      if (!response.ok || body.ok === false) {
+        setStatus("blocked");
+        setMessage(`Obsidian business runはexact blockerで停止しました: ${String(exactBlocker ?? `http_${response.status}`)}`);
+        return;
+      }
+      const nextRunId = typeof body.run?.id === "string" ? body.run.id : null;
+      const nextApprovalId = typeof body.approval?.id === "string" ? body.approval.id : null;
+      setRunId(nextRunId);
+      setApprovalId(nextApprovalId);
+      setStatus(nextApprovalId && body.approval.status === "pending" ? "approval" : "running");
+      setMessage(nextApprovalId && body.approval.status === "pending"
+        ? `固定targetのAOS承認待ちです / run=${nextRunId ?? "unknown"}`
+        : `Obsidian business runを開始しました / run=${nextRunId ?? "unknown"}`);
+    } catch (error) {
+      setStatus("blocked");
+      setMessage(`Obsidian business runの準備に失敗しました: ${error instanceof Error ? error.message : "obsidian_business_run_failed"}`);
+    }
+  };
+  const approve = async () => {
+    if (!approvalId || status !== "approval") return;
+    setStatus("running");
+    setMessage("固定target-bound approvalを承認し、Mac worker receiptをreadbackしています。");
+    try {
+      const response = await mvpFetch(`/api/approvals/${encodeURIComponent(approvalId)}/approve`, { method: "POST", headers: { "content-type": "application/json" } });
+      const body = await response.json().catch(() => ({}));
+      const exactBlocker = body.exactBlocker ?? body.exact_blocker ?? body.error ?? null;
+      if (!response.ok || body.ok === false) {
+        setStatus("blocked");
+        setMessage(`Obsidian approvalはexact blockerで停止しました: ${String(exactBlocker ?? `http_${response.status}`)}`);
+        return;
+      }
+      const detail = runId ? await mvpFetch(`/api/runs/${encodeURIComponent(runId)}`, { cache: "no-store" }).then((result) => result.json().catch(() => ({}))) : {};
+      const detailStatus = String(detail.status ?? detail.run?.status ?? "queued");
+      setStatus(detailStatus === "complete" ? "complete" : detailStatus === "blocked" ? "blocked" : "running");
+      setMessage(`Obsidian approval完了 / run_status=${detailStatus} / fixed_private_remote=true / external_action=${detailStatus === "complete" ? "verified" : "readback_pending"}`);
+    } catch (error) {
+      setStatus("blocked");
+      setMessage(`Obsidian approvalのreadbackに失敗しました: ${error instanceof Error ? error.message : "obsidian_approval_failed"}`);
+    }
+  };
+  return <Panel title="Obsidian private backup" controlId="home.obsidian-business.panel">
+    <p className="muted">Company 1の固定vaultから、非公開GitHub repositoryのmainだけへ同期します。source readback・AOS承認・Mac worker receipt・remote parityが揃わない限り完了扱いにしません。</p>
+    <div className="button-row">
+      <Button controlId="home.obsidian-business.start" variant="primary" disabled={status === "preparing" || status === "running"} onClick={() => { void start(); }}>
+        {status === "preparing" ? "同期準備中" : "Obsidianを同期準備"}
+      </Button>
+      {status === "approval" ? <Button controlId="home.obsidian-business.approve" variant="primary" onClick={() => { void approve(); }}>固定targetを承認して同期</Button> : null}
+    </div>
+    <p className={`muted ${status === "blocked" ? "attention" : ""}`} role="status" data-control-id="home.obsidian-business.status">{message}</p>
   </Panel>;
 }
 
@@ -5373,7 +6891,7 @@ function BlockerTriage({ runs, collapsed = false, totalCount }: { runs: any[]; c
 
 function HomeBrowserDetails({ model, projectId }: { model: AppModel; projectId?: string }) {
   return <details className="home-browser-details" data-control-id="home.browser-details">
-    <summary>Browser Use / Workerの詳細を開く</summary>
+    <summary>Browser Use / Worker / Companion復旧の詳細を開く</summary>
     {projectId ? <WebOperationAdmissionPanel model={model} projectId={projectId} /> : <WebOperationAdmissionPanel model={model} />}
   </details>;
 }
@@ -5407,7 +6925,7 @@ function HomePage({ model }: { model: AppModel }) {
     return (
       <section>
         <PageTitle title="ホーム" desc="会社と自動化の最新状態を確認します。" />
-        <Panel title="API readback" controlId="home.api-readback.panel">
+        <Panel title="状態を確認中" controlId="home.api-readback.panel">
           <p>{model.mvpLoadStatus === "loading" ? "最新状態を取得しています。件数は取得完了後に表示します。" : "最新状態を確認できませんでした。右上の同期から再取得してください。"}</p>
         </Panel>
       </section>
@@ -5420,18 +6938,18 @@ function HomePage({ model }: { model: AppModel }) {
     const firstCompany = companyOptions[0];
     return (
       <section>
-        <PageTitle title="ホーム" desc="summaryを表示中です。詳細readbackは未確認です。" />
-        <div className="action-note warning" role="status" data-control-id="home.degraded-readback">詳細readback={model.mvpLoadBlocker ?? "pending"}。保存・送信・定期実行変更は停止中です。確認できるのはsummaryとno-effect導線だけです。</div>
+        <PageTitle title="ホーム" desc="現在確認できている概要を表示しています。" />
+        <div className="action-note warning" role="status" data-control-id="home.degraded-readback">詳細状態の確認が終わるまで、保存・送信・定期実行の変更は停止しています。確認できる範囲の閲覧と安全な導線は利用できます。</div>
         <div className="cards degraded-summary" data-control-id="home.degraded-summary">
-          <MetricCard controlId="home.degraded-summary.companies" title="会社" value={`${companyOptions.length}社`} sub="summary readback" status="draft" />
+          <MetricCard controlId="home.degraded-summary.companies" title="会社" value={`${companyOptions.length}社`} sub="確認済みの会社" status="draft" />
           <MetricCard controlId="home.degraded-summary.runs" title="Run" value={`${runSummary.total_count ?? 0}件`} sub={`停止=${runSummary.blocked_count ?? 0}`} status="draft" />
           <MetricCard controlId="home.degraded-summary.approvals" title="承認" value={`${approvalSummary.waiting_count ?? 0}件`} sub={`期限切れ=${approvalSummary.expired_count ?? 0}`} status="draft" />
-          <MetricCard controlId="home.degraded-summary.external" title="外部効果" value="未実行" sub="external_action=false" status="enabled" />
+          <MetricCard controlId="home.degraded-summary.external" title="外部操作" value="未実行" sub="承認前は安全に停止" status="enabled" />
         </div>
         <Panel title="今できること" controlId="home.degraded-next.panel">
           <p className="muted">詳細状態が戻るまで、no-effectの手動確認だけを案内します。応募送信・投稿・保存・承認変更は開始しません。</p>
           <div className="button-row">
-            {firstCompany && <Button controlId="home.degraded.automations" variant="primary" onClick={() => go(`#/projects/${firstCompany.id}/automations`)}>登録automation / 手動確認</Button>}
+            {firstCompany && <Button controlId="home.degraded.automations" variant="primary" onClick={() => go(`#/projects/${firstCompany.id}/automations`)}>仕事を確認</Button>}
             <Button controlId="home.degraded.chat" onClick={() => go(firstCompany ? chatHref({ companyId: firstCompany.id, context: "degraded-summary" }) : "#/chat")}>Chatを開く</Button>
             <Button controlId="home.degraded.runs" onClick={() => go("#/runs")}>Run summaryを見る</Button>
             <Button controlId="home.degraded.sync" onClick={() => go("#/projects")}>会社scopeを見る</Button>
@@ -5449,6 +6967,8 @@ function HomePage({ model }: { model: AppModel }) {
   const expiredApprovalCount = mvpState.approval_summary?.expired_count ?? expiredApprovals.length;
   const runCount = mvpState.run_summary?.total_count ?? mvpState.runs?.length ?? 0;
   const blockedRunCount = mvpState.run_summary?.blocked_count ?? blockedRuns.length;
+  const homeTodayBlockedCount = mvpState.run_summary?.today_blocked_count
+    ?? blockedRuns.filter((run) => jstDateKey(runTimestamp(run)) === jstDateKey(new Date())).length;
   const queuedRunCount = mvpState.run_summary?.active_count ?? queuedRuns.length;
   const homeQueueCurrentCount = typeof mvpState.worker?.queue_current_count === "number"
     ? Math.max(0, mvpState.worker.queue_current_count)
@@ -5554,8 +7074,8 @@ function HomePage({ model }: { model: AppModel }) {
     {
       title: "実行履歴",
       value: `${runCount}件`,
-      sub: `active Run ${queuedRunCount} / fresh queue ${homeQueueCurrentCount} / historical ${homeQueueHistoricalCount} / blocked ${blockedRunCount}`,
-      status: queuedRunCount ? "running" : blockedRunCount ? "blocked" : "enabled"
+      sub: `記録上未完 Run ${queuedRunCount} / fresh queue ${homeQueueCurrentCount} / historical ${homeQueueHistoricalCount} / 今日の停止 ${homeTodayBlockedCount}`,
+      status: homeQueueCurrentCount ? "running" : homeTodayBlockedCount ? "blocked" : "enabled"
     },
     {
       title: "Jobs",
@@ -5591,7 +7111,7 @@ function HomePage({ model }: { model: AppModel }) {
   ]];
   return (
     <section>
-      <PageTitle title="ホーム" desc="すべての会社と自動化の状態を確認できます。">
+      <PageTitle title="ホーム" desc="今日の仕事、要対応、最新の実行結果を確認します。">
         <Button controlId="home.manual-run.open" onClick={() => go(manualRunRoute)} icon={<Play size={15} />}>手動実行を開く</Button>
         <Button controlId="home.next.open" variant="primary" icon={nextAction.icon} onClick={() => go(nextAction.route)}>{nextAction.label}</Button>
       </PageTitle>
@@ -5608,25 +7128,28 @@ function HomePage({ model }: { model: AppModel }) {
         </div>
       </details>
       <div className="section-grid">
-        <Panel title="最新Runの進行" controlId="home.latest-run.panel">
+        <Panel title="最近の結果" controlId="home.latest-run.panel">
           {latestRun ? <>
-            <div className="latest-run-meta"><strong>{latestRun.automation_name ?? latestRun.automation_id ?? latestRun.id}</strong><span>{latestRun.id}</span></div>
+            <div className="latest-run-meta"><strong>{latestRun.automation_name ?? latestRun.automation_id ?? "最新の自動化"}</strong><span>{publicRunStatusForRun(latestRun, mvpState)}</span></div>
+            <details className="home-inline-details"><summary>実行の識別情報</summary><p className="muted">Run ID: {latestRun.id}</p></details>
             <RunTimeline run={latestRun} proofCount={proofCountForRun(latestRun, mvpState.proofs ?? [])} />
-          </> : <div className="empty-state"><strong>まだRunはありません</strong><span>自動化を作ると、Queue・Worker・Proofの進行をここで確認できます。</span></div>}
+          </> : <div className="empty-state"><strong>まだ結果はありません</strong><span>自動化を作ると、Queue・Worker・Proofの進行をここで確認できます。</span></div>}
         </Panel>
           <Panel title="承認待ち" controlId="home.pending-approvals.panel">
           <div className="approval-widget">
             <strong>承認待ち {waitingApprovalCount}件</strong>
             <span>{expiredApprovalCount ? `期限切れ ${expiredApprovalCount}件 / ` : ""}承認されるまで外部操作は安全に停止</span>
-            <span>active Run {queuedRunCount}件 / fresh queue {homeQueueCurrentCount}件 / historical {homeQueueHistoricalCount}件</span>
+            <span>記録上未完 Run {queuedRunCount}件 / fresh queue {homeQueueCurrentCount}件 / historical {homeQueueHistoricalCount}件</span>
             <Button controlId="home.approvals.open" variant="primary" onClick={() => go("#/approvals")}>承認キューを開く</Button>
           </div>
           </Panel>
       </div>
-      <HomeCompanyBrief companies={companyOptions} />
+      <HomeCompanyBrief companies={companyOptions.filter((company) => company.id === "company_2560580981cedfd106b66245")} />
       <details className="home-secondary-details" data-control-id="home.secondary-details">
-        <summary>詳細・履歴・技術情報を開く</summary>
+        <summary>詳細・履歴・管理操作を開く</summary>
         <div className="home-secondary-details-body">
+          <HomeSchedulerControl companyId="company_2560580981cedfd106b66245" />
+          <HomeObsidianBusinessControl companyId="company_2560580981cedfd106b66245" />
           <SetupProgress companyCount={companyOptions.length} automationCount={automationRows.length} workerReady={workerReady} proofReady={proofReady} />
           <ControlPlaneRolesPanel collapsed />
           <div className="cards four">
@@ -5677,10 +7200,12 @@ function ChatPage({ model }: { model: AppModel }) {
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>([]);
   const [planVisible, setPlanVisible] = useState(false);
   const [plannerReadback, setPlannerReadback] = useState<PlannerReadback | null>(null);
+  const [workflowReadback, setWorkflowReadback] = useState<ChatWorkflowReadback | null>(null);
   const [plannerProgress, setPlannerProgress] = useState<PlannerProgress | null>(null);
   const [plannerError, setPlannerError] = useState<string | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState(requestedProjectId || rememberedProject());
   const [selectedAutomationId, setSelectedAutomationId] = useState("");
+  const [scheduleReadbackRequired, setScheduleReadbackRequired] = useState(false);
   const [chatThreadId, setChatThreadId] = useState(() => rememberedChatThread(requestedProjectId || rememberedProject()));
   const [chatSessionId, setChatSessionId] = useState("");
   const [chatSessions, setChatSessions] = useState<ChatSessionReadback[]>([]);
@@ -5698,11 +7223,14 @@ function ChatPage({ model }: { model: AppModel }) {
   const [companyConsultationRefreshing, setCompanyConsultationRefreshing] = useState(false);
   const companyConsultationRequestInFlightRef = useRef(false);
   const promptRef = useRef<HTMLTextAreaElement>(null);
+  const newChatSessionNameRef = useRef<HTMLInputElement>(null);
   const submittedPromptRef = useRef("");
   const plannerRequestGeneration = useRef(0);
   const plannerAbortRef = useRef<AbortController | null>(null);
   const activePlannerJobRef = useRef("");
   const createIdempotencyRef = useRef<{ fingerprint: string; key: string } | null>(null);
+  const scheduleAdjustmentInFlight = useRef(false);
+  const pendingScheduleAdjustment = useRef<ChatScheduleAdjustment | null>(null);
   const webOperationTemplateAppliedRef = useRef(false);
   const canonicalProjects = projectOptionsFromState(mvpState);
   React.useEffect(() => {
@@ -5762,15 +7290,26 @@ function ChatPage({ model }: { model: AppModel }) {
   const fallbackPlan = buildAutomationPlan(redactedActivePrompt, selectedPlatforms);
   const plan = plannerReadback?.plan ?? fallbackPlan;
   const targetProject = selectedProjectId;
+  const fixedWorkflowConfirmed = fixedChatWorkflowConfirmed(workflowReadback, targetProject, plannerReadback?.chat_job_id);
+  const visiblePlanQuestions = plan.questions.filter((question) => !fixedWorkflowConfirmed
+    || !plannerReadback?.web_operation_intake?.questions.includes(question));
   const selectedChatSession = chatSessions.find((session) => session.id === chatSessionId);
   const requestThreadId = selectedChatSession ? (selectedChatSession.codex_thread_id ?? "") : chatThreadId;
   const presentationProfile = mvpState.presentation_profiles?.find((profile) => profile.id === targetProject);
-  const targetAutomations = (mvpState.automations ?? []).filter((automation) => String(automation.project_id ?? automation.company_id ?? "") === targetProject);
-  const selectedAutomation = targetAutomations.find((automation) => automation.id === selectedAutomationId) ?? targetAutomations[0];
+  const targetAutomations = (mvpState.automations ?? []).filter((automation) => String(automation.company_id ?? automation.project_id ?? "") === targetProject
+    && automation.status !== "archived" && !automation.archived_at);
+  const selectedAutomation = targetAutomations.find((automation) => automation.id === selectedAutomationId);
   const plannerAdapter = plannerReadback?.planner_adapter ?? "client_deterministic_preview";
   const plannerMode = plannerReadback?.planner_mode ?? "not_requested";
+  const plannerModeLabel = plannerReadback?.planner_operation === "answer_question" && !plan.questions.length
+    ? "回答" : plannerMode;
   const plannerPublicBlocker = plannerReadback?.exact_blocker ? publicBlockerSummary(plannerReadback.exact_blocker) : null;
   const chatScopeLabel = targetProject ? projectLabelFromState(mvpState, targetProject) : "未選択";
+  const companyChatCapabilities = companyConsultation.readback?.chat;
+  const canonicalCompanyId = companyConsultation.readback?.canonical_company_id;
+  const canonicalCompanyLabel = canonicalCompanyId
+    ? projectLabelFromState(mvpState, canonicalCompanyId) || canonicalCompanyId
+    : "未確定";
   const appServerSurface = mvpState.codexCapabilities?.appServer;
   const appServerSurfaceState = getCapabilitySurfaceState(appServerSurface);
   const appServerProbeStatus = String(appServerProbeReadback?.status ?? "").toLowerCase();
@@ -5782,6 +7321,8 @@ function ChatPage({ model }: { model: AppModel }) {
       ? "接続済み"
       : appServerSurfaceState.verified
         ? "確認済み（接続待ち）"
+        : plannerReadback?.chat_turn_id && plannerReadback.server_reply && !plannerReadback.exact_blocker
+          ? "直近の会話で応答確認"
         : appServerSurface
           ? "要確認"
           : "未確認";
@@ -5812,7 +7353,7 @@ function ChatPage({ model }: { model: AppModel }) {
       // degraded MVP snapshot must not hide a successful bounded probe behind
       // the 30-second state-readback timeout.  Refresh the broader snapshot in
       // the background and keep the probe result visible immediately.
-      void readMvpStateWithRetry("ui")
+        void readMvpStateWithRetry("ui", { origin: "codex_probe_refresh" })
         .then((freshState) => {
           setMvpState(freshState);
           setChatNote((current) => `${current} / state readback=ok`);
@@ -5832,12 +7373,19 @@ function ChatPage({ model }: { model: AppModel }) {
   };
   const chatStatus = plannerProgress?.status ?? plannerReadback?.chat_status ?? (plannerReadback ? "completed" : "idle");
   const targetProjectIsVerified = model.mvpLoadStatus === "ready" && Boolean(targetProject) && canonicalProjects.some((project) => project.id === targetProject);
+  // This saves an inert draft into an API-confirmed AOS company. The separate
+  // external trigger/company mapping is diagnostic, not authority for a local
+  // draft. Provider execution and schedule activation retain their own checks.
   const canCreatePlan = plannerReadback?.can_create === true && targetProjectIsVerified;
   const isCreateAutomationPlan = plannerReadback?.planner_operation === "create_automation";
   const isManageWorkflowPlan = plannerReadback?.planner_operation === "manage_workflow";
+  const selectedSchedule = (mvpState.schedules ?? []).find((schedule) => (schedule.company_id ?? schedule.companyId) === targetProject
+    && (schedule.automation_id ?? schedule.automationId) === selectedAutomation?.id);
+  const scheduleAdjustmentPreview = plannedChatScheduleValues(plan, selectedSchedule);
   const canAdjustSchedule = isManageWorkflowPlan
     && plannerReadback?.planner_mode === "ready_to_schedule"
     && targetProjectIsVerified
+    && !scheduleReadbackRequired
     && Boolean(selectedAutomation?.id);
   const cancelPlanning = async () => {
     if (!planning) return;
@@ -5873,6 +7421,7 @@ function ChatPage({ model }: { model: AppModel }) {
     }
   };
   const resetChat = () => {
+    if (planning || creating) return;
     plannerAbortRef.current?.abort();
     plannerAbortRef.current = null;
     activePlannerJobRef.current = "";
@@ -5888,12 +7437,14 @@ function ChatPage({ model }: { model: AppModel }) {
     setPlannerError(null);
     setCreated(false);
     createIdempotencyRef.current = null;
-    setChatThreadId(requestThreadId);
-    if (!chatSessionId) clearChatThread(selectedProjectId);
-    setMessages([{ id: "welcome", role: "assistant", text: "リセットしました。前の計画や選択は引き継がず、新しい自動化として考えます。" }]);
-    setReceipt("チャットをリセットしました。新しい自動化リクエストを入力できます。");
-    setChatNote(`リセット完了: platform=0 / plan=false / ${actionStamp()}`);
+    setReceipt("入力と未保存の計画表示を消去しました。選択中の会話と保存済み履歴は保持しています。");
+    setChatNote(`入力消去完了。別の話題は「新しい会話名」から会話を作成してください。 / ${actionStamp()}`);
     promptRef.current?.focus();
+  };
+  const beginSeparateConversation = () => {
+    if (planning || creating || !targetProjectIsVerified) return;
+    newChatSessionNameRef.current?.focus();
+    setChatNote("新しい会話名を入力し「新しい会話を作成」を押してください。作成が確認できるまで現在の会話を保持します。");
   };
   React.useEffect(() => {
     setChatThreadId(rememberedChatThread(selectedProjectId));
@@ -5945,14 +7496,17 @@ function ChatPage({ model }: { model: AppModel }) {
     return () => { stale = true; };
   }, [selectedProjectId, model.mvpLoadStatus]);
   React.useEffect(() => {
-    if (!selectedAutomationId || !targetAutomations.some((automation) => automation.id === selectedAutomationId)) {
-      setSelectedAutomationId(targetAutomations[0]?.id ?? "");
+    if (selectedAutomationId && !targetAutomations.some((automation) => automation.id === selectedAutomationId)) {
+      setSelectedAutomationId("");
     }
   }, [selectedAutomationId, targetAutomations.map((automation) => automation.id).join("|")]);
+  React.useEffect(() => { setSelectedAutomationId(""); }, [targetProject, plannerReadback?.chat_job_id]);
   const clearVisibleConversation = (session?: ChatSessionReadback) => {
     setPrompt("");
     setRequestText("");
     submittedPromptRef.current = "";
+    setSelectedPlatforms([]);
+    setSelectedAutomationId("");
     setPlanVisible(false);
     setPlannerReadback(null);
     setPlannerProgress(null);
@@ -6015,7 +7569,7 @@ function ChatPage({ model }: { model: AppModel }) {
     setCreated(false);
     createIdempotencyRef.current = null;
   };
-  const resumeChat = (thread: ChatThreadReadback) => {
+  const resumeChat = async (thread: ChatThreadReadback) => {
     if (planning || creating) return;
     const restoredMessages = thread.messages
       .filter((message) => message.text.trim())
@@ -6034,6 +7588,28 @@ function ChatPage({ model }: { model: AppModel }) {
     createIdempotencyRef.current = null;
     setReceipt(`Codex App Serverの会話を再開しました。thread=${thread.threadId.slice(0, 12)}… / 最新job=${thread.latestJobId}`);
     setChatNote(`履歴から再開: ${thread.resultTitle ?? "会話"} / ${actionStamp()}`);
+    if (thread.latestStatus !== "completed") return;
+    const requestGeneration = ++plannerRequestGeneration.current;
+    const controller = new AbortController();
+    plannerAbortRef.current = controller;
+    activePlannerJobRef.current = "";
+    setPlanning(true);
+    try {
+      const readback = await requestSavedChatPlan(thread, selectedProjectId, controller.signal);
+      if (plannerRequestGeneration.current !== requestGeneration) return;
+      setPlannerReadback(readback);
+      setPlanVisible(true);
+      submittedPromptRef.current = lastUserMessage?.text ?? "";
+      setReceipt(`保存済みの会話とプランを復元しました。job=${thread.latestJobId} / 再送・実行なし`);
+    } catch (error) {
+      if (plannerRequestGeneration.current !== requestGeneration) return;
+      setPlannerError(`会話本文は復元しましたが、保存済みプランは確認できませんでした（${publicBlockerSummary(error instanceof Error ? error.message : "chat_history_plan_unavailable")}）。再送・実行はしていません。`);
+    } finally {
+      if (plannerRequestGeneration.current === requestGeneration) {
+        setPlanning(false);
+        if (plannerAbortRef.current === controller) plannerAbortRef.current = null;
+      }
+    }
   };
   const selectAllPlatforms = () => {
     if (!targetProjectIsVerified || planning || creating) return;
@@ -6046,6 +7622,24 @@ function ChatPage({ model }: { model: AppModel }) {
     setCreated(false);
     createIdempotencyRef.current = null;
     setChatNote(`投稿先を${allPlatformsSelected ? "全解除" : "一括選択"}: ${next.length ? next.join(" / ") : "未選択"} / ${actionStamp()}`);
+  };
+  const prepareCompanyChatStage = (stage: "consultation" | "demo" | "approval") => {
+    if (!targetProjectIsVerified || planning || creating || !companyChatCapabilities) return;
+    const stagePrompt = stage === "consultation"
+      ? `この会社scope（${chatScopeLabel}）の登録済み自動化タスクについて、目的・頻度・成功条件・停止条件を相談したい。外部操作はしないで。`
+      : stage === "demo"
+        ? `この会社scope（${chatScopeLabel}）の登録済み自動化タスクをread-onlyで実演previewして。provider呼出し、保存、送信、公開はしないで。`
+        : `この会社scope（${chatScopeLabel}）の自動化案について、外部効果なしの承認previewを作って。対象、payload、承認条件、同一Runのreadback条件を示し、実行はしないで。`;
+    setPrompt(stagePrompt);
+    setRequestText("");
+    setPlanVisible(false);
+    setPlannerReadback(null);
+    setPlannerProgress(null);
+    setPlannerError(null);
+    setCreated(false);
+    createIdempotencyRef.current = null;
+    setChatNote(`${stage === "consultation" ? "相談" : stage === "demo" ? "read-only実演preview" : "承認preview"}の入力を用意しました。送信するまで外部操作はありません / ${actionStamp()}`);
+    promptRef.current?.focus();
   };
   const startPlan = async () => {
     if (!targetProjectIsVerified) {
@@ -6223,48 +7817,83 @@ function ChatPage({ model }: { model: AppModel }) {
     go(`#/projects/${targetProject}/automations/${builderSlug}/edit`);
   };
   const saveAdjustedSchedule = async () => {
-    if (!canAdjustSchedule || !selectedAutomation?.id) {
+    if (scheduleAdjustmentInFlight.current || scheduleReadbackRequired) return;
+    if (!canAdjustSchedule || !selectedAutomation?.id || selectedAutomation.id !== selectedAutomationId) {
       setReceipt("対象自動化と、保存可能な定期実行案を確認してください。外部操作は実行していません。");
       return;
     }
-    const currentSchedule = (mvpState.schedules ?? []).find((schedule) => String(schedule.automation_id ?? schedule.automationId ?? "") === selectedAutomation.id);
-    const kind = scheduleKindForPlan(plan);
-    const expression = plan.schedule.trim();
-    if (!expression) {
+    const currentSchedule = (mvpState.schedules ?? []).find((schedule) => (schedule.company_id ?? schedule.companyId) === targetProject
+      && (schedule.automation_id ?? schedule.automationId) === selectedAutomation.id);
+    const { kind, expression, timezone, enabled } = plannedChatScheduleValues(plan, currentSchedule);
+    if (kind !== "manual" && !expression) {
       setReceipt("定期実行の式が未確定です。チャットで時刻・曜日を指定してください。");
       return;
     }
+    const adjustment: ChatScheduleAdjustment = { companyId: targetProject, automationId: selectedAutomation.id,
+      kind, expression, timezone, enabled, previousRevision: Number(currentSchedule?.revision ?? 0) };
+    scheduleAdjustmentInFlight.current = true;
+    pendingScheduleAdjustment.current = adjustment;
     setCreating(true);
     try {
-      const response = await mvpFetch(`/api/v1/companies/${encodeURIComponent(targetProject)}/automations/${encodeURIComponent(selectedAutomation.id)}/schedule`, {
+      const response = await mvpFetch(`/api/v1/companies/${encodeURIComponent(adjustment.companyId)}/automations/${encodeURIComponent(adjustment.automationId)}/schedule`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          kind,
-          expression,
-          timezone: String(currentSchedule?.timezone ?? "Asia/Tokyo"),
-          // A chat adjustment must not activate a schedule that does not yet
-          // have an explicit persisted enabled state. Keep an existing active
-          // schedule active, but save a new/unknown schedule as paused.
-          enabled: currentSchedule?.enabled === true,
-          expected_revision: Number(currentSchedule?.revision ?? 1)
+          kind: adjustment.kind,
+          expression: adjustment.expression,
+          timezone: adjustment.timezone,
+          // Preserve the stored state unless the latest request explicitly
+          // pauses/resumes it. A new schedule stays paused by default.
+          enabled: adjustment.enabled,
+          expected_revision: adjustment.previousRevision || 1
         })
       });
       const body = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(body.exactBlocker || body.exact_blocker || body.error || `schedule_adjust_http_${response.status}`);
+      if (!response.ok) {
+        if ([400, 403, 404, 409].includes(response.status)) pendingScheduleAdjustment.current = null;
+        throw new Error(body.exactBlocker || body.exact_blocker || body.error || `schedule_adjust_http_${response.status}`);
+      }
       const freshState = await readMvpState("ui", { fresh: true });
       setMvpState(freshState);
       setAutomationRows(toAutomationRows(freshState.automations ?? []));
-      const saved = (freshState.schedules ?? []).find((schedule: any) => String(schedule.automation_id ?? schedule.automationId ?? "") === selectedAutomation.id);
-      setReceipt(`既存自動化の定期実行を保存しました。automation=${selectedAutomation.id} / kind=${saved?.kind ?? kind} / revision=${saved?.revision ?? "?"} / next=${saved?.next_run_at ?? "未計算"} / external_action=false`);
+      const saved = (freshState.schedules ?? []).find((schedule: any) => matchesChatScheduleAdjustment(schedule, adjustment));
+      if (!saved) throw new Error("chat_schedule_readback_mismatch");
+      pendingScheduleAdjustment.current = null;
+      setScheduleReadbackRequired(false);
+      setReceipt(`選択した自動化の定期実行を保存・再取得しました。automation=${adjustment.automationId} / kind=${saved.kind} / revision=${saved.revision} / next=${!adjustment.enabled || kind === "manual" ? "次回なし" : saved.next_run_at ?? saved.nextRunAt} / 外部処理は起動していません。`);
       setChatNote(`定期実行の調整を保存しました: ${selectedAutomation.name ?? selectedAutomation.id} / ${actionStamp()}`);
     } catch (error) {
       const exact = error instanceof Error ? error.message : "schedule_adjust_failed";
-      setReceipt(`定期実行の調整は未確認です: ${exact}。revisionを再読込してから再試行してください。`);
-      setChatNote(`定期実行の調整停止: ${exact} / ${actionStamp()}`);
+      setScheduleReadbackRequired(true);
+      setReceipt(`定期実行の調整は未確認です: ${publicBlockerSummary(exact)}。同じ保存を繰り返さず、対象の設定を再取得してください。`);
+      setChatNote(`定期実行の調整停止: ${publicBlockerSummary(exact)} / ${actionStamp()}`);
     } finally {
+      scheduleAdjustmentInFlight.current = false;
       setCreating(false);
     }
+  };
+  const readAdjustedSchedule = async () => {
+    if (scheduleAdjustmentInFlight.current) return;
+    const pending = pendingScheduleAdjustment.current;
+    const companyId = pending?.companyId ?? targetProject;
+    const automationId = pending?.automationId ?? selectedAutomation?.id;
+    if (!companyId || !automationId) return;
+    scheduleAdjustmentInFlight.current = true;
+    setCreating(true);
+    try {
+      const state = await readMvpState("ui", { fresh: true });
+      if (!state.automations?.some((item: any) => item.id === automationId && (item.company_id ?? item.project_id) === companyId)) throw new Error("chat_schedule_company_scope_mismatch");
+      setMvpState(state);
+      setAutomationRows(toAutomationRows(state.automations ?? []));
+      const schedule = state.schedules?.find((item: any) => (item.company_id ?? item.companyId) === companyId && (item.automation_id ?? item.automationId) === automationId);
+      if (pending && !matchesChatScheduleAdjustment(schedule, pending)) throw new Error("chat_schedule_result_still_unconfirmed");
+      pendingScheduleAdjustment.current = null;
+      setScheduleReadbackRequired(false);
+      setReceipt(`同じ対象の予定を再取得しました。automation=${automationId} / revision=${schedule?.revision ?? "予定なし"} / 保存の再送・実行なし。`);
+      setChatNote(`予定の読取照合が完了しました / ${actionStamp()}`);
+    } catch (error) {
+      setReceipt(`予定の確認は未完了です: ${publicBlockerSummary(error instanceof Error ? error.message : "chat_schedule_readback_failed")}。保存は再送していません。`);
+    } finally { scheduleAdjustmentInFlight.current = false; setCreating(false); }
   };
   const createFromChat = async () => {
     if (!activePrompt) {
@@ -6279,7 +7908,7 @@ function ChatPage({ model }: { model: AppModel }) {
       setChatNote(`作成待ち: plannerの確認事項を完了してください / ${actionStamp()}`);
       return;
     }
-    if (!projectOptionsFromState(mvpState).some((project) => project.id === targetProject)) {
+    if (!targetProjectIsVerified || !projectOptionsFromState(mvpState).some((project) => project.id === targetProject)) {
       setCreated(false);
       setReceipt("現在のAPI readbackで確認できない会社には保存できません。会社一覧から選び直してください。");
       setChatNote(`作成停止: 会社スコープ未確認 / ${actionStamp()}`);
@@ -6294,7 +7923,9 @@ function ChatPage({ model }: { model: AppModel }) {
       plan.schedule,
       plan.cadence
     ].join("|");
-    const createKey = stableIdempotencyKey(createIdempotencyRef, "chat-automation-create", createFingerprint);
+    const createKey = plannerReadback.chat_job_id
+      ? `chat-automation-create-${plannerReadback.chat_job_id}`
+      : stableIdempotencyKey(createIdempotencyRef, "chat-automation-create", createFingerprint);
     let createdAutomationId = "";
     setCreating(true);
     try {
@@ -6302,7 +7933,7 @@ function ChatPage({ model }: { model: AppModel }) {
         method: "POST",
         headers: { "content-type": "application/json", "idempotency-key": createKey },
         body: JSON.stringify({
-          name: `${plan.kind}: ${redactedActivePrompt}`.slice(0, 80),
+          name: plan.title.slice(0, 80),
           project_id: targetProject,
           automation_type: plannerReadback.automation_type,
           desc: "チャットから作成した安全なMVP自動化",
@@ -6313,7 +7944,7 @@ function ChatPage({ model }: { model: AppModel }) {
           risk_level: "high",
           approval_policy: plan.approvalPolicy,
           worker_command_kind: "safe_local_demo",
-          create_approval: true,
+          create_approval: false,
           builder_spec: {
             source: "chat",
             prompt: redactedActivePrompt,
@@ -6409,27 +8040,32 @@ function ChatPage({ model }: { model: AppModel }) {
   return (
     <section className="chat-page">
       <PageTitle title="チャット" desc="自然言語から自動化を作成します。">
-        <Button controlId="chat.reset" icon={<RefreshCw size={14} />} onClick={resetChat} disabled={planning || creating}>会話をリセット</Button>
+        <Button controlId="chat.reset" icon={<Plus size={14} />} onClick={beginSeparateConversation} disabled={planning || creating || !targetProjectIsVerified}>別の会話を始める</Button>
       </PageTitle>
       {model.mvpLoadStatus !== "ready" && canonicalProjects.length > 0 && <div className="action-note warning" role="status">
         直近のsummary readbackを表示しています。会社scopeと確認用ショートカットは使えますが、詳細readbackが完了するまで保存・実行は停止しています。
       </div>}
       <div className="chat-context" role="region" aria-label="Chatの会社scopeと状態">
-        <strong>会社scope: {chatScopeLabel}</strong>
-        <span data-control-id="chat.app-server.status" aria-label={`Codex App Server接続状態: ${appServerStatusLabel}`}>Codex App Server: {appServerStatusLabel}</span>
-        <Button controlId="chat.app-server.probe" variant="secondary" disabled={appServerProbeLoading} onClick={() => { void probeCodexAppServer(); }}>
-          {appServerProbeLoading ? "確認中" : "接続状態を確認"}
-        </Button>
-        <span>status: {plannerProgress ? plannerProgressLabel(chatStatus) : chatStatus}</span>
-        {requestedChatContext.context && <span>context: {requestedChatContext.context}</span>}
-        {requestedChatContext.runId && <span>run: {requestedChatContext.runId}</span>}
-        {requestedChatContext.scheduleId && <span>schedule: {requestedChatContext.scheduleId}</span>}
-        {(plannerReadback?.chat_job_id || plannerProgress?.jobId) && <span>job: {plannerReadback?.chat_job_id ?? plannerProgress?.jobId}</span>}
-        {(plannerReadback?.chat_thread_id || chatThreadId || plannerProgress?.threadId) && <span>thread: {plannerReadback?.chat_thread_id ?? chatThreadId ?? plannerProgress?.threadId}</span>}
+        <strong>会社: {chatScopeLabel}</strong>
+        <span>状態: {plannerProgress ? plannerProgressLabel(chatStatus) : chatStatus === "idle" ? "入力待ち" : chatStatus}</span>
+        <details className="chat-context-details">
+          <summary>接続・実行の詳細</summary>
+          <div className="chat-context-details-body">
+            <span data-control-id="chat.app-server.status" aria-label={`Codex App Server接続状態: ${appServerStatusLabel}`}>Codex App Server: {appServerStatusLabel}</span>
+            <Button controlId="chat.app-server.probe" variant="secondary" disabled={appServerProbeLoading} onClick={() => { void probeCodexAppServer(); }}>
+              {appServerProbeLoading ? "確認中" : "接続状態を確認"}
+            </Button>
+            {requestedChatContext.context && <span>context: {requestedChatContext.context}</span>}
+            {requestedChatContext.runId && <span>run: {requestedChatContext.runId}</span>}
+            {requestedChatContext.scheduleId && <span>schedule: {requestedChatContext.scheduleId}</span>}
+            {(plannerReadback?.chat_job_id || plannerProgress?.jobId) && <span>job: {plannerReadback?.chat_job_id ?? plannerProgress?.jobId}</span>}
+            {(plannerReadback?.chat_thread_id || chatThreadId || plannerProgress?.threadId) && <span>thread: {plannerReadback?.chat_thread_id ?? chatThreadId ?? plannerProgress?.threadId}</span>}
+          </div>
+        </details>
       </div>
       <label className="chat-input">
         保存先の会社
-        <select data-control-id="chat.project-select" aria-label="保存先の会社" value={selectedProjectId} disabled={planning || creating || model.mvpLoadStatus !== "ready"} onChange={(event) => {
+        <select data-control-id="chat.project-select" aria-label="保存先の会社" value={selectedProjectId} disabled={planning || creating || !canonicalProjects.length} onChange={(event) => {
           const projectId = event.target.value;
           setSelectedProjectId(projectId);
           if (projectId) {
@@ -6460,7 +8096,7 @@ function ChatPage({ model }: { model: AppModel }) {
         </label>
         <label className="chat-input chat-session-new-name">
           新しい会話名
-          <input data-control-id="chat.session-name" aria-label="新しい会話名" value={newChatSessionName} disabled={planning || creating || !targetProjectIsVerified} onChange={(event) => setNewChatSessionName(event.target.value.slice(0, 120))} placeholder="例: 週次レポート改善" />
+          <input ref={newChatSessionNameRef} data-control-id="chat.session-name" aria-label="新しい会話名" value={newChatSessionName} disabled={planning || creating || !targetProjectIsVerified} onChange={(event) => setNewChatSessionName(event.target.value.slice(0, 120))} placeholder="例: 週次レポート改善" />
         </label>
         <Button controlId="chat.session-create" icon={<Plus size={14} />} onClick={() => { void createNamedChatSession(); }} disabled={!newChatSessionName.trim() || planning || creating || !targetProjectIsVerified}>新しい会話を作成</Button>
       </div>
@@ -6468,7 +8104,7 @@ function ChatPage({ model }: { model: AppModel }) {
       {isManageWorkflowPlan && (
         <label className="chat-input">
           調整対象の自動化
-          <select data-control-id="chat.automation-select" aria-label="調整対象の自動化" value={selectedAutomation?.id ?? ""} disabled={planning || creating || !targetAutomations.length} onChange={(event) => setSelectedAutomationId(event.target.value)}>
+          <select data-control-id="chat.automation-select" aria-label="調整対象の自動化" value={selectedAutomation?.id ?? ""} disabled={planning || creating || scheduleReadbackRequired || !targetAutomations.length} onChange={(event) => setSelectedAutomationId(event.target.value)}>
             <option value="">自動化を選択してください</option>
             {targetAutomations.map((automation) => <option key={automation.id} value={automation.id}>{automation.name ?? automation.id}</option>)}
           </select>
@@ -6480,14 +8116,17 @@ function ChatPage({ model }: { model: AppModel }) {
       {presentationProfile && <div className="notice-row" role="note">
         表示プロファイル: {presentationProfile.label} / {presentationProfile.explanation ?? "このプロジェクトのreadbackに合わせて表示します。"}
       </div>}
-      {mvpState.browser_use_runtime && <div className="notice-row" role="note">
-        {selectedRuntimeSurfaceLabel}: {publicBrowserUseRuntimeStatus(mvpState.browser_use_runtime)} / {mvpState.browser_use_runtime.summary ?? "runtime readback待ち"} / {mvpState.browser_use_runtime.fallbackPolicy ?? "readback待ち"} / registered lanes {mvpState.browser_use_runtime.lanes?.length ?? 0}
-      </div>}
+      {mvpState.browser_use_runtime && <details className="chat-runtime-details">
+        <summary>実行面の状態を確認</summary>
+        <div className="notice-row" role="note">{selectedRuntimeSurfaceLabel}: {publicBrowserUseRuntimeStatus(mvpState.browser_use_runtime)} / {mvpState.browser_use_runtime.summary ?? "状態未確定"} / {mvpState.browser_use_runtime.fallbackPolicy ?? "切替ルール未確定"} / 登録レーン {mvpState.browser_use_runtime.lanes?.length ?? 0}</div>
+      </details>}
       <div className={`scope-gate ${targetProjectIsVerified ? "ready" : "attention"}`} data-control-id="chat.scope-gate" role="status">
         <div><strong>{targetProjectIsVerified ? `作成対象: ${chatScopeLabel}` : "作成対象の会社を選んでください"}</strong><span>{targetProjectIsVerified ? "この会社scopeに保存・readbackします。外部効果は別承認です。" : "会社未選択のままではplanner・保存・実行に進みません。"}</span></div>
         {!targetProjectIsVerified && <Button controlId="chat.scope-gate.open-projects" onClick={() => go("#/projects")}>会社一覧を開く</Button>}
       </div>
-      {Boolean(targetProject) && <Panel title="会社scopeの相談・実演準備" controlId="chat.company-consultation.panel">
+      <details className="chat-advanced-diagnostics" data-control-id="chat.advanced-diagnostics">
+        <summary>システム状態・Web操作の詳細を表示</summary>
+      {Boolean(targetProject) && <Panel title="登録元の会社対応付け（診断）" controlId="chat.company-consultation.panel">
         <div className="button-row">
           <span className="muted">登録元とAOSの候補をfresh readbackし、Chatで相談するための読み取り専用 projectionです。</span>
           <Button controlId="chat.company-consultation.refresh" disabled={companyConsultationRefreshing || model.mvpLoadStatus !== "ready"} onClick={() => { void loadCompanyConsultation(); }}>{companyConsultationRefreshing ? "確認中" : "最新状態を確認"}</Button>
@@ -6496,10 +8135,16 @@ function ChatPage({ model }: { model: AppModel }) {
         {companyConsultation.status === "error" && <p className="muted">相談projectionを確認できませんでした: {publicBlockerSummary(companyConsultation.exactBlocker)}</p>}
         {companyConsultation.status === "ready" && companyConsultation.readback && <>
           <div className="notice-row" role="status">
-            <strong>選択状態: {companyConsultation.readback.selection_state === "selected" ? "会社1 / localhostを選択済み" : "未解決"}</strong>
-            <span>{companyConsultation.readback.selection_state === "selected" ? "Ownerが選択した会社scopeを正本として保持しています。外部操作は別の承認・証跡ゲートです。" : "Ownerの明示判断が必要です。候補を自動推薦・確定せず、外部操作は開始しません。"}</span>
+            <strong>登録元との照合状態: {companyConsultation.readback.selection_state === "selected" ? `Owner選択済み（${canonicalCompanyLabel}）` : "対応付け未設定"}</strong>
+            <span>{companyConsultation.readback.selection_state === "selected" ? "Ownerが選択した登録元の会社対応付けを保持しています。外部操作は別承認です。" : "外部登録元の会社対応付けは未設定です。上で選択済みのAOS会社や、既存接続・Runの状態とは別の診断です。"}</span>
             <span>blocker: {publicBlockerSummary(companyConsultation.readback.exact_blocker)} / external_action=false</span>
           </div>
+          <div className="button-row" role="group" aria-label="会社scopeのChat段階">
+            <Button controlId="chat.company-consultation.start" disabled={!companyConsultation.readback.chat.consultation_available || !targetProjectIsVerified || planning || creating} onClick={() => prepareCompanyChatStage("consultation")}>相談を入力</Button>
+            <Button controlId="chat.company-consultation.demo-preview" disabled={!companyConsultation.readback.chat.read_only_demo_available || !targetProjectIsVerified || planning || creating} onClick={() => prepareCompanyChatStage("demo")}>read-only実演preview</Button>
+            <Button controlId="chat.company-consultation.approval-preview" disabled={!companyConsultation.readback.chat.approval_preview_available || !targetProjectIsVerified || planning || creating} onClick={() => prepareCompanyChatStage("approval")}>承認previewを相談</Button>
+          </div>
+          <p className="muted">上のボタンはChat入力を用意するだけです。送信後もprovider・保存・送信・公開は開始せず、会社scopeとpreviewを会話で擦り合わせます。</p>
           <DataTable
             controlId="chat.company-consultation.candidates"
             headers={["候補会社", "状態", "登録automation", "AOS automation", "schedule", "出所"]}
@@ -6512,12 +8157,10 @@ function ChatPage({ model }: { model: AppModel }) {
               `${candidate.provenance.trigger ?? "登録元なし"} / ${candidate.provenance.local}`
             ])}
           />
-          <p className="muted">Chat相談={companyConsultation.readback.chat.consultation_available ? "利用可能" : "停止"} / read-only実演={companyConsultation.readback.chat.read_only_demo_available ? "利用可能" : "停止"} / company-scoped登録={companyConsultation.readback.chat.company_scoped_registration_ready ? "利用可能" : "停止"} / provider・source sync・reconciliation・cleanup=未実行</p>
+          <p className="muted">Chat相談={companyConsultation.readback.chat.consultation_available ? "利用可能" : "停止"} / read-only実演={companyConsultation.readback.chat.read_only_demo_available ? "利用可能" : "停止"} / 承認preview={companyConsultation.readback.chat.approval_preview_available ? "利用可能" : "停止"} / company-scoped登録={companyConsultation.readback.chat.company_scoped_registration_ready ? "利用可能" : "停止"} / provider・source sync・reconciliation・cleanup=未実行</p>
           {companyConsultation.readback.snapshot?.input_fingerprint && <p className="muted">snapshot: {companyConsultation.readback.snapshot.snapshot_id ?? "未確認"} / fingerprint: {companyConsultation.readback.snapshot.input_fingerprint.slice(0, 16)}…</p>}
         </>}
       </Panel>}
-      <details className="chat-advanced-diagnostics" data-control-id="chat.advanced-diagnostics">
-        <summary>システム状態・Web操作の詳細を表示</summary>
         <WebOperationAdmissionPanel model={model} projectId={targetProject} />
       </details>
       <div className="choice-row" aria-label="司令室ショートカット">
@@ -6568,6 +8211,12 @@ function ChatPage({ model }: { model: AppModel }) {
             <button type="button" data-control-id="chat.platform.select-all" aria-pressed={allPlatformsSelected} disabled={!targetProjectIsVerified || planning || creating} className={allPlatformsSelected ? "selected" : ""} onClick={selectAllPlatforms}>{allPlatformsSelected ? "全て解除" : "全て選択"}</button>
             <button type="button" data-control-id="chat.details.focus" disabled={!targetProjectIsVerified || planning || creating} onClick={() => { setChatNote(`詳細入力へフォーカスしました / ${actionStamp()}`); promptRef.current?.focus(); }}>詳細を書く</button>
           </div>
+          <div className="chat-mode-summary" data-control-id="chat.mode-summary" role="status" aria-live="polite">
+            {(() => {
+              const mode = chatModePresentation(activePrompt);
+              return <><strong>送信モード: {mode.label}</strong><span>{mode.consequence}</span></>;
+            })()}
+          </div>
           <div className="chat-composer">
           <label className="chat-input">
             自動化リクエスト
@@ -6614,11 +8263,11 @@ function ChatPage({ model }: { model: AppModel }) {
           <div className="plan-card">
             <h3>{plan.title}</h3>
             {isCreateAutomationPlan && <p className="muted">{plan.targetLabel} / {plan.cadence} / {plan.schedule} / 外部操作前に承認停止</p>}
-            <p className="muted">source: {plannerAdapter} / mode: {plannerMode}{plannerPublicBlocker ? ` / ${plannerPublicBlocker}` : ""}</p>
+            <p className="muted">source: {plannerAdapter} / mode: {plannerModeLabel}{plannerPublicBlocker ? ` / ${plannerPublicBlocker}` : ""}</p>
             {plannerReadback?.tool_preference && <p className="muted">tool preference: Plugin first / MCP・CLI・API tied second / selected={plannerReadback.tool_preference.selected?.label ?? "未選択"} ({plannerReadback.tool_preference.selected?.status ?? "unknown"}) / company={plannerReadback.tool_preference.companyIds?.join(", ") || "未確認"}</p>}
             {plannerReadback?.chat_job_id && <p className="muted">job: {plannerReadback.chat_job_id} / thread: {plannerReadback.chat_thread_id ?? "未接続"} / turn: {plannerReadback.chat_turn_id ?? "未確定"}</p>}
             <p>{plannerReadback?.server_reply}</p>
-            {plannerReadback?.web_operation_intake?.applicable && (
+            {plannerReadback?.web_operation_intake?.applicable && !fixedWorkflowConfirmed && (
               <div className="question-box" data-control-id="chat.web-operation-intake" role="status">
                 <strong>共通Web操作の判定（外部操作なし）</strong>
                 <p>状態: {plannerReadback.web_operation_intake.status} / 目的: {plannerReadback.web_operation_intake.operation ?? "未確定"} / 次: {plannerReadback.web_operation_intake.next_stage}</p>
@@ -6630,19 +8279,31 @@ function ChatPage({ model }: { model: AppModel }) {
             {plannerReadback?.proposed_changes?.length ? <div className="question-box"><strong>保存候補の変更</strong>{plannerReadback.proposed_changes.map((change) => <p key={`${change.target}-${change.field}`}>{change.target} / {change.field}: {change.before ? `${change.before} → ` : ""}{change.after}</p>)}</div> : null}
             {plannerReadback?.requires_confirmation?.length ? <div className="question-box"><strong>確認が必要なこと</strong>{plannerReadback.requires_confirmation.map((item) => <p key={item}>{item}</p>)}</div> : null}
             {plan.steps.map((s, i) => <div className="step-line" key={s}><span>{i + 1}</span>{s}</div>)}
-            <div className="question-box">
+            {visiblePlanQuestions.length > 0 && <div className="question-box">
               <strong>確認したいこと</strong>
-              {plan.questions.map((question) => <p key={question}>{question}</p>)}
-            </div>
+              {visiblePlanQuestions.map((question) => <p key={question}>{question}</p>)}
+            </div>}
+            {targetProjectIsVerified && targetProject === "company_2560580981cedfd106b66245" && plannerReadback?.chat_job_id &&
+              <ChatWorkflowActionsPanel key={`${targetProject}:${plannerReadback.chat_job_id}`} model={model} companyId={targetProject}
+                jobId={plannerReadback.chat_job_id} onBusy={setCreating} onReadback={setWorkflowReadback} />}
+            {isManageWorkflowPlan && selectedAutomation && <div className="question-box" data-control-id="chat.schedule-preview">
+              <strong>予定の設定内容（保存結果は下の確認欄に表示）</strong>
+              <p>対象: {selectedAutomation.name ?? selectedAutomation.id} / {selectedAutomation.id}</p>
+              <p>会社: {targetProject} / {scheduleAdjustmentPreview.kind} / {scheduleAdjustmentPreview.expression ?? "手動のみ"} / {scheduleAdjustmentPreview.timezone}</p>
+              <p>保存後: {scheduleAdjustmentPreview.enabled ? "有効（次回予定から実行対象）" : "停止中（次回実行なし）"} / 現在revision: {selectedSchedule?.revision ?? "予定なし"}</p>
+              <p>予定だけを保存します。今すぐ実行・処理内容の変更はしません。</p>
+            </div>}
             <div className="button-row">
-              {isCreateAutomationPlan && <Button controlId="chat.create" variant="primary" onClick={createFromChat} disabled={!canCreatePlan || creating}>{creating ? "保存確認中" : "この内容で作成"}</Button>}
+              {isCreateAutomationPlan && <Button controlId="chat.create" variant="primary" onClick={createFromChat} disabled={!canCreatePlan || creating}>{creating ? "保存確認中" : "仕様メモの下書きを保存"}</Button>}
               {isManageWorkflowPlan && <Button controlId="chat.adjust-schedule" variant="primary" onClick={saveAdjustedSchedule} disabled={!canAdjustSchedule || creating}>{creating ? "調整を保存中" : "定期実行を調整して保存"}</Button>}
+              {(isManageWorkflowPlan || scheduleReadbackRequired) && <Button controlId="chat.adjust-readback" onClick={() => { void readAdjustedSchedule(); }} disabled={creating || (!selectedAutomation && !pendingScheduleAdjustment.current)}>対象の予定を再取得</Button>}
               <Button controlId="chat.edit" onClick={editPlan} disabled={creating}>内容を修正</Button>
               <Button controlId="chat.open-details" onClick={openDetails} disabled={!canCreatePlan || creating}>詳細設定を開く</Button>
             </div>
             {isManageWorkflowPlan
               ? <p className="muted">{canAdjustSchedule ? "このボタンは選択した自動化のschedule APIだけをrevision付きで更新します。外部投稿・送信は実行しません。" : "既存自動化を選び、時刻・曜日などを具体化すると保存できます。"}</p>
               : !canCreatePlan && <p className="muted">{plannerReadback?.can_create && !targetProjectIsVerified ? "保存先の会社を会社一覧から選択してください" : plannerReadback?.creation_blocker}</p>}
+            {isCreateAutomationPlan && <p className="muted">「仕様メモの下書き」は実runnerへ接続しません。上に登録済み処理が表示された場合は、処理範囲を確認して実処理に接続した下書きを保存できます。</p>}
           </div>
           )}
           {created && <Bubble>作成済みです。Automation Builder で仕様を編集できます。</Bubble>}
@@ -6982,7 +8643,7 @@ function JobApplicationTargetAdmissionPanel({ model, companyId }: { model: AppMo
       }
       setReceipt(recoveredExistingApproval
         ? `同一Runの承認handoffを再同期しました。approval=${activeAdmission.approval_id} / worker pickup待ち / external_action=false`
-        : `target-bound approvalを保存しました。approval=${activeAdmission.approval_id} / worker receipt/readback待ち / external_action=false`);
+        : `target-bound approvalを保存しました。approval=${activeAdmission.approval_id} / worker receipt/readbackを取得します / external_action=false`);
       await loadReadback();
     } catch (error) {
       const exact = error instanceof Error ? error.message : "target_admission_approval_failed";
@@ -7026,7 +8687,7 @@ function JobApplicationTargetAdmissionPanel({ model, companyId }: { model: AppMo
         <div className="panel-head"><h3>今日の応募進捗</h3><span className="muted">目標は20件 / JST</span></div>
         <div className="job-progress-grid">
           <div className="job-progress-item"><span>今日の目標</span><strong>20件</strong><small>応募成功の目標</small></div>
-          <div className={`job-progress-item ${todayBusinessSuccessCount === null ? "pending" : todayBusinessSuccessCount > 0 ? "success" : "attention"}`} data-control-id="job-application.progress.success"><span>今日の成功応募</span><strong>{todayBusinessSuccessCount === null ? "未確認" : `${todayBusinessSuccessCount}件`}</strong><small>{todayBusinessSuccessCount === null ? "fresh readback待ち" : "reconciled（業務完了proofあり）のみ"}</small></div>
+          <div className={`job-progress-item ${todayBusinessSuccessCount === null ? "pending" : todayBusinessSuccessCount > 0 ? "success" : "attention"}`} data-control-id="job-application.progress.success"><span>今日の成功応募</span><strong>{todayBusinessSuccessCount === null ? "未確認" : `${todayBusinessSuccessCount}件`}</strong><small>{todayBusinessSuccessCount === null ? "fresh readback未確定" : "reconciled（業務完了proofあり）のみ"}</small></div>
           <div className="job-progress-item" data-control-id="job-application.progress.candidates"><span>登録候補</span><strong>{readback.status === "ready" ? `${Number(readback.candidate_count ?? 0)}件` : "未確認"}</strong><small>候補登録済み / 応募完了とは別</small></div>
           <div className={`job-progress-item ${attentionAdmissionCount ? "attention" : "success"}`} data-control-id="job-application.progress.attention"><span>停止・要確認</span><strong>{attentionAdmissionCount === null ? "未確認" : `${attentionAdmissionCount}件`}</strong><small>{attentionAdmissionCount ? "登録・応募を再実行せず原因を確認" : "現在の登録readbackに該当なし"}</small></div>
         </div>
@@ -7277,7 +8938,7 @@ function JobApplicationDigestPanel({ model, companyId }: { model: AppModel; comp
       <Button controlId="job-application.digest.evening" variant={period === "evening" ? "primary" : "secondary"} onClick={() => setPeriod("evening")}>夕digest</Button>
       <Button controlId="job-application.digest.refresh" icon={<RefreshCw size={14} />} disabled={refreshing} onClick={() => { void load(period); }}>{refreshing ? "確認中" : "手動で再確認"}</Button>
     </div>
-    {readback.status === "loading" ? <ReadbackState title="求人digestを確認中" detail="AOS DBの候補・target admission・Sheets mirror状態を読み取っています。" tone="info" nextAction="readback完了を待つ" />
+    {readback.status === "loading" ? <ReadbackState title="求人digestを自動確認中" detail="AOS DBの候補・target admission・Sheets mirror状態を読み取っています。結果が取れなければexact blockerを確定します。" tone="info" nextAction="自動再読込を実行し、失敗時はexact blockerを表示する" />
       : readback.status === "error" ? <ReadbackState title="求人digestを確認できません" detail={`exact blocker=${readback.exactBlocker ?? "unknown"}`} tone="attention" nextAction="会社scopeとAOS serverのhealthを確認する" />
         : digest ? <>
           <div className="cards four" data-control-id="job-application.digest.metrics">
@@ -7418,6 +9079,98 @@ const REGISTERED_AUTOMATION_LABELS: Record<string, string> = {
   "x-authenticated-browser-lane": "X認証ブラウザlane"
 };
 
+function workflowGuideBadge(item: WorkflowStartGuideItem): { status: Status; label: string } {
+  if (item.state === "ready") return { status: "enabled", label: item.statusLabel };
+  if (["company_mismatch", "ambiguous", "needs_reconciliation"].includes(item.state)) return { status: "blocked", label: item.statusLabel };
+  if (item.state === "not_registered") return { status: "draft", label: item.statusLabel };
+  return { status: "waiting", label: item.statusLabel };
+}
+
+function workflowExecutionTargetLabel(item: WorkflowStartGuideItem): string {
+  const labels: Record<WorkflowStartGuideItem["executionTarget"]["state"], string> = {
+    unknown: "未確認",
+    not_required: "不要",
+    unbound: "未設定",
+    bound: "binding確認済み",
+    company_mismatch: "会社不一致",
+    competing: "競合",
+    revoked: "失効",
+    scope_insufficient: "scope不足"
+  };
+  return labels[item.executionTarget.state] ?? "未確認";
+}
+
+function WorkflowStartGuidePanel({
+  guide,
+  localCheckEnabled = false,
+  localCheckReceipts = {},
+  onLocalCheck
+}: {
+  guide: ReturnType<typeof buildWorkflowStartGuide>;
+  localCheckEnabled?: boolean;
+  localCheckReceipts?: Record<string, string>;
+  onLocalCheck?: (item: WorkflowStartGuideItem) => void;
+}) {
+  const gateLabel = guide.executionGate.status === "ready"
+    ? "登録inventory内に実行可能フラグあり"
+    : guide.executionGate.status === "preflight_only"
+      ? "登録inventoryはread-only確認のみ"
+      : guide.executionGate.status === "blocked"
+        ? "登録inventoryの業務実行は停止中"
+        : "実行ゲート未確認";
+  const gateDetail = guide.executionGate.status === "preflight_only"
+    ? "登録readbackは新鮮ですが、登録inventoryの業務実行はまだ許可されていません。read-only確認だけ進められます。5ワークフロー個別の可否は各行で確認します。"
+    : guide.executionGate.status === "ready"
+      ? "これは登録inventory全体の集約値です。5ワークフロー全体の実行完了を意味せず、個別の承認・同一Run証跡は各行とRunsで確認します。"
+      : guide.executionGate.status === "blocked"
+        ? `登録readbackの業務実行ゲートが停止しています。5ワークフロー個別の状態は各行で確認します。${publicBlockerSummary(guide.executionGate.exactBlocker)}`
+      : "登録automationのfresh readbackが揃うまで、実行可否を判断しません。";
+  const settledRegistrationItems = guide.items.every((item) => item.registrationStatus === "registered" || item.registrationStatus === "not_present");
+  const registeredGuideCount = guide.items.filter((item) => item.registrationStatus === "registered").length;
+  const missingGuideCount = guide.items.filter((item) => item.registrationStatus === "not_present").length;
+  return (
+    <Panel title={`${guide.companyLabel} 開始ガイド（5ワークフロー）`} controlId="projects.workflow-start-guide.panel">
+      <p className="muted">これはGmail・Daily AI・NisenPrints・Backup・Obsidianの5行を確認する開始ガイド用カタログです。登録インベントリや利用可能性を表すものではありません。登録状態は下のCompany 1登録automation欄とcanonical workflow IDで別に確認します。ここから外部操作は開始しません。</p>
+      {settledRegistrationItems && <div className="action-note" role="status"><strong>登録対応の集約</strong><span>このCompany 1 responseとの対応 {registeredGuideCount}/{guide.items.length}件 / 対応entryなし {missingGuideCount}件 / 登録inventory {guide.registeredAutomations.length}件</span><small>登録済みとrunnableは別です。runnable=trueは各行の値で確認し、登録なしはこのCompany 1 responseの範囲だけを示します。</small></div>}
+      <div className={`action-note ${guide.executionGate.status === "blocked" ? "warning" : ""}`} role="status" data-control-id="projects.workflow-start-guide.gate">
+        <strong>{gateLabel}</strong>
+        <span>{gateDetail}</span>
+        <small>scope=登録inventory全体 / can_run={String(guide.executionGate.canRun)} / can_preflight={String(guide.executionGate.canPreflight)} / この表示によるexternal_action=false</small>
+      </div>
+      <details className="workflow-guide-details">
+        <summary>5ワークフローの詳細・証跡・次の確認を開く</summary>
+        <DataTable
+          controlId="projects.workflow-start-guide.table"
+          headers={["Workflow", "現在状態 / blocker", "会社接続 / 実行対象 / binding", "承認要件", "次の確認", "証跡 / 外部効果"]}
+          rows={guide.items.map((item) => {
+            const badge = workflowGuideBadge(item);
+            return [
+              <div><strong>{item.label}</strong><small>{item.description}</small><details className="workflow-guide-meta"><summary>登録・canonicalの詳細</summary><small>guide canonical: {item.canonicalWorkflowId}</small><small>登録: {item.registrationStatus === "registered" ? `${item.registeredAutomationId ?? "ID未確認"} / ${item.registeredStatus ?? "状態未確認"} / 業務実行=${item.registeredCanRun ? "許可" : "未許可"}（外部効果は承認・同一Run receipt後のみ）` : item.registrationStatus === "not_present" ? "このCompany 1 responseに対応entryなし（全体の不存在は意味しません）" : item.registrationStatus === "loading" ? "Company 1登録responseを取得中" : `Company 1登録responseを取得できません / ${item.registeredExactBlocker ?? "unknown"}`}</small>{item.candidateAutomations.length > 0 && <small>guide候補: {item.candidateAutomations.map((candidate) => `${candidate.id} (${candidate.canonicalWorkflowId ?? "canonical未確認"})`).join(" / ")}</small>}</details></div>,
+              <div><StatusBadge status={badge.status} label={badge.label} /><small>blocker: {item.exactBlocker ? publicBlockerSummary(item.exactBlocker) : "unknown（同一Run readback未確認）"}</small></div>,
+              <div><small>company: {item.companyEvidence === "company_scope_match" ? "scope一致" : item.companyEvidence === "company_scope_mismatch" ? "scope不一致" : "未確認"}</small><small>会社接続: {item.connectionEvidence === "verified" ? "verified" : item.connectionEvidence === "available_unverified" ? "存在するが未verified" : item.connectionEvidence === "missing" ? "未検出" : item.connectionEvidence === "not_required" ? "不要" : "未確認"}</small><small>実行対象: {workflowExecutionTargetLabel(item)}{item.executionTarget.connectionRefId ? ` / ${item.executionTarget.connectionRefId}` : ""}</small><small>binding: {item.bindingEvidence}</small></div>,
+              <span>{item.approvalRequirement}</span>,
+              <div>
+                <span>{item.nextAction}{item.bindingEvidence === "conflicting" && <small>binding根拠: 候補間で競合</small>}{item.bindingEvidence === "name_or_alias" && <small>binding根拠: 名前/aliasのみ（canonical ID未確認）</small>}</span>
+                {item.localCheck.supported && <>
+                  <Button
+                    controlId={`projects.workflow-start-guide.local-check.${item.id}`}
+                    disabled={!localCheckEnabled || !item.localCheck.supported || (item.registrationStatus !== "not_present" && !item.automationId)}
+                    onClick={() => onLocalCheck?.(item)}
+                  >{item.localCheck.label}</Button>
+                  <small>{localCheckReceipts[item.id] ?? (localCheckEnabled ? "取得済み情報だけを確認します（接続・認証・業務完了は未確認）" : "登録readback完了後に利用できます")}</small>
+                </>}
+                <a data-control-id={`projects.workflow-start-guide.runs.${item.id}`} href={`#/runs?company_id=${encodeURIComponent(guide.companyId ?? "")}`} aria-label={`${item.label}の会社別Runsを開く`}>実行履歴を開く</a>
+                <small>この会社の履歴が開きます。対象ワークフローの結果を確認してください</small>
+              </div>,
+              <div><span>{item.proofLabel}</span><small>{item.externalEffectLabel}</small></div>,
+            ];
+          })}
+        />
+      </details>
+    </Panel>
+  );
+}
+
 function AutomationsPage({ model }: { model: AppModel }) {
   const { setReceipt, automationRows, mvpState, setMvpState, setAutomationRows } = model;
   const route = useRoute();
@@ -7429,6 +9182,8 @@ function AutomationsPage({ model }: { model: AppModel }) {
   const visibleAutomationRows = automationRows.filter((row) => (row.project_id ?? activeProject) === activeProject);
   const [registeredReadback, setRegisteredReadback] = useState<RegisteredAutomationReadback>({});
   const [registeredReadbackStatus, setRegisteredReadbackStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [canonicalRegistry, setCanonicalRegistry] = useState<CanonicalAutomationRegistryReadback>({});
+  const [canonicalRegistryStatus, setCanonicalRegistryStatus] = useState<"loading" | "ready" | "error">("loading");
   const [registeredReceipts, setRegisteredReceipts] = useState<Record<string, string>>({});
   const [registeredRunReadbacks, setRegisteredRunReadbacks] = useState<Record<string, { runId: string; status: string; blocker?: string }>>({});
   const [registeredRequestingId, setRegisteredRequestingId] = useState<string | null>(null);
@@ -7439,6 +9194,8 @@ function AutomationsPage({ model }: { model: AppModel }) {
   const registeredReadbackRequestRef = useRef(0);
   const registeredReadbackAbortRef = useRef<AbortController | null>(null);
   const [registeredReadbackRefreshing, setRegisteredReadbackRefreshing] = useState(false);
+  const [registeredSurfaceRefreshing, setRegisteredSurfaceRefreshing] = useState(false);
+  const [localCheckReceipts, setLocalCheckReceipts] = useState<Record<string, string>>({});
   const portableItems = (registeredReadback.automations ?? []).filter((item) => item.portable?.supported);
   const selectedPortableItem = portableItems.find((item) => item.id === selectedPortableWorkflowId) ?? portableItems[0];
   const registeredFallbackItems = (mvpState.registered_workflows ?? mvpState.registered_workflow_ids ?? []).map((item) => {
@@ -7478,11 +9235,126 @@ function AutomationsPage({ model }: { model: AppModel }) {
       ? `${registeredAutomationCount}件のfresh readback済み`
       : "登録状態を確認できません";
   const registeredGateLabel = registeredReadbackStatus === "ready"
-    ? (portableItems.some((item) => item.can_preflight === true) ? "read-only確認可能" : "read-only確認は停止中")
-    : registeredFallbackItems.length ? "詳細readback待ち / no-effect手動実行のみ" : "詳細readback待ち";
+      ? (portableItems.some((item) => item.can_preflight === true) ? "read-only確認可能" : "read-only確認は停止中")
+      : registeredFallbackItems.length ? "詳細readback未確定 / no-effect手動実行のみ" : "詳細readback未確定";
+  const registeredCanRun = (registeredReadback.automations ?? []).some((item: any) => item.can_run === true);
+  const registeredCanPreflight = (registeredReadback.automations ?? []).some((item: any) => item.can_preflight === true);
+  const registeredGateBlocker = registeredReadback.exact_boundary
+    ?? (registeredReadbackStatus === "ready" && !registeredCanRun ? "registered_automation_effect_stage_not_admitted" : null);
+  // Identity for the start guide must come from the company-scoped saved
+  // records. The runner inventory is a separate six-item capability
+  // readback; merging it into the same candidate set can manufacture a
+  // false conflict (and can hide the builder's canonicalWorkflowId).
+  const guideSavedAutomations = visibleAutomationRows.length
+    ? visibleAutomationRows
+    : (mvpState.automations ?? mvpState.registered_workflows ?? []);
+  const workflowStartGuide = buildWorkflowStartGuide({
+    companyId: activeProject,
+    companyLabel: projectName,
+    auth: {
+      verified: canMutateCompany && Boolean(activeProject),
+      exactBlocker: canMutateCompany ? null : (model.mvpLoadBlocker ?? "owner_sso_required")
+    },
+    worker: {
+      heartbeatFresh: mvpState.worker?.heartbeat_fresh === true,
+      status: mvpState.worker?.status,
+      exactBlocker: mvpState.worker?.exact_blocker ?? null
+    },
+    runtime: {
+      status: mvpState.browser_use_runtime?.status,
+      exactBlocker: mvpState.browser_use_runtime?.exactBlocker ?? null
+    },
+    executionGate: {
+      status: registeredReadbackStatus,
+      canRun: registeredCanRun,
+      canPreflight: registeredCanPreflight,
+      exactBlocker: registeredGateBlocker
+    },
+    // The guide's five catalog records and the company-scoped registration
+    // inventory are separate sources. Correlation is canonical-ID based.
+    automations: [
+      ...guideSavedAutomations.map((item) => ({ ...item, _guide_source: "saved" })),
+      ...(!guideSavedAutomations.length ? (registeredReadback.automations ?? []).map((item) => ({ ...item, _guide_source: "runner" })) : []),
+    ],
+    // The runner inventory is intentionally broader than the five-row Guide.
+    // Prefer the explicit company-scoped projection when present so missing
+    // global runner entries cannot make a saved Company 1 workflow look
+    // unregistered.  The aggregate execution gate above still uses the
+    // runner inventory and remains fail-closed.
+    registeredAutomations: registeredReadback.company_registration_projection
+      ?? registeredReadback.automations
+      ?? [],
+    accountRefs: mvpState.account_refs ?? [],
+    registeredReadbackStatus,
+    runs: mvpState.workflowStartGuideRuns ?? mvpState.runs ?? []
+  });
+  // Local-only checks use already-loaded company-scoped state. They are
+  // intentionally independent from the aggregate runner can_preflight gate:
+  // a missing corresponding runner registration must not prevent a read-only
+  // inspection of existing Backup/Obsidian records, but loading/degraded MVP
+  // state must still fail closed.
+  const localCheckEnabled = registeredReadbackStatus === "ready" && model.mvpLoadStatus === "ready" && Boolean(activeProject);
+  const runLocalCheck = (item: WorkflowStartGuideItem) => {
+    const name = item.label;
+    if (!localCheckEnabled || !item.localCheck.supported || (item.registrationStatus !== "not_present" && !item.automationId)) {
+      const message = `ローカル確認未開始 / ${item.localCheck.exactBlocker ?? "registered_readback_pending"} / external_action=false`;
+      setLocalCheckReceipts((previous) => ({ ...previous, [item.id]: message }));
+      setReceipt(`${name}: ${message}`);
+      setPageNote(`${name}: ${message} / ${actionStamp()}`);
+      return;
+    }
+    // This branch deliberately inspects only already-loaded, company-scoped
+    // state. It never queues a Run, touches a provider, or uses Companion.
+    const records = Array.isArray(mvpState.runs) ? mvpState.runs : [];
+    const proofs = Array.isArray(mvpState.proofs) ? mvpState.proofs : [];
+    const matches = (record: any) => {
+      const recordCompany = String(record?.company_id ?? record?.companyId ?? record?.project_id ?? record?.projectId ?? "");
+      if (recordCompany !== activeProject) return false;
+      const automationId = String(record?.automation_id ?? record?.automationId ?? "");
+      const workflowId = String(record?.workflow_id ?? record?.workflowId ?? "");
+      return automationId === item.automationId || workflowId === item.canonicalWorkflowId;
+    };
+    const runCount = records.filter(matches).length;
+    const proofCount = proofs.filter(matches).length;
+    const kind = item.id === "daily-backup-safety-check" ? "snapshot/integrity" : "project/Vault parity";
+    const matchingRecords = records.filter(matches);
+    const latestRecord = matchingRecords.reduce<any>((latest, candidate) => {
+      if (!latest) return candidate;
+      const latestTime = String(latest?.updated_at ?? latest?.updatedAt ?? latest?.created_at ?? latest?.createdAt ?? "");
+      const candidateTime = String(candidate?.updated_at ?? candidate?.updatedAt ?? candidate?.created_at ?? candidate?.createdAt ?? "");
+      if (!latestTime) return candidate;
+      if (!candidateTime) return latest;
+      return candidateTime > latestTime ? candidate : latest;
+    }, null);
+    const latestStatus = latestRecord?.status ?? "記録なし";
+    const message = `ローカル確認済み / ${kind} metadata=${runCount > 0 ? "あり" : "未確認"} / runs=${runCount} / proofs=${proofCount} / latest=${latestStatus} / Provider接続・認証・queue・外部サイト操作なし / 業務完了=未確認 / external_action=false`;
+    setLocalCheckReceipts((previous) => ({ ...previous, [item.id]: message }));
+    setReceipt(`${name}: ${message}`);
+    setPageNote(`${name}: ${message} / ${actionStamp()}`);
+  };
   React.useEffect(() => {
     setSelectedPortableWorkflowId((current) => current && manualTargetItems.some((item) => item.id === current) ? current : (manualTargetItems[0]?.id ?? ""));
   }, [activeProject, registeredReadbackStatus, registeredReadback.automations, mvpState.registered_workflow_ids, mvpState.registered_workflows]);
+  const loadCanonicalRegistry = async () => {
+    if (!activeProject) {
+      setCanonicalRegistryStatus("error");
+      setCanonicalRegistry({ ok: false, externalActionExecuted: false });
+      return;
+    }
+    setCanonicalRegistryStatus("loading");
+    try {
+      const response = await mvpFetch(`/api/v1/companies/${encodeURIComponent(activeProject)}/canonical-automation-registry`, { cache: "no-store" });
+      const readback = await response.json().catch(() => ({}));
+      if (!response.ok || readback.ok === false || readback.status !== "ok") {
+        throw new Error(readback.exactBlocker || readback.exact_blocker || `canonical_registry_http_${response.status}`);
+      }
+      setCanonicalRegistry(readback);
+      setCanonicalRegistryStatus("ready");
+    } catch {
+      setCanonicalRegistry({ ok: false, externalActionExecuted: false });
+      setCanonicalRegistryStatus("error");
+    }
+  };
   const loadRegisteredReadback = async () => {
     const requestId = ++registeredReadbackRequestRef.current;
     registeredReadbackAbortRef.current?.abort();
@@ -7505,7 +9377,11 @@ function AutomationsPage({ model }: { model: AppModel }) {
     const timeout = window.setTimeout(() => controller.abort(), 35_000);
     setPageNote(`${projectName} 登録automationのfresh readbackを確認中 / ${actionStamp()}`);
     try {
-      const response = await mvpFetch(`/api/mvp/registered-automations?project_id=${encodeURIComponent(activeProject)}`, { cache: "no-store", signal: controller.signal });
+      // Include the read-only migration ledger so the screen can distinguish
+      // "no proof was read" from "historical proof exists but is not a
+      // current same-run receipt". The server still keeps can_run=false and
+      // never promotes historical evidence to an executable proof.
+      const response = await mvpFetch(`/api/mvp/registered-automations?project_id=${encodeURIComponent(activeProject)}&include_ledger=1`, { cache: "no-store", signal: controller.signal });
       const readback = await response.json().catch(() => ({}));
       if (!response.ok || readback.ok === false) throw new Error(readback.exact_boundary || readback.exact_blocker || `registered_automation_readback_http_${response.status}`);
       if (requestId !== registeredReadbackRequestRef.current) return;
@@ -7530,8 +9406,45 @@ function AutomationsPage({ model }: { model: AppModel }) {
       }
     }
   };
+  const refreshRegisteredCompanionSurface = async () => {
+    if (!activeProject || !canMutateCompany || registeredSurfaceRefreshing || registeredRequestInFlight.current) return;
+    const idempotencyKey = `ui-companion-surface-refresh:${activeProject}:${Date.now()}`;
+    const sourceAutomationIds = [
+      "automation",
+      "daily-ai-research-publish-run",
+      "daily-backup-safety-check",
+      "nisenprints-daily-product-canva-printify-etsy-pinterest",
+      "obsidian"
+    ];
+    try {
+      setRegisteredSurfaceRefreshing(true);
+      setPageNote(`${projectName}の登録Workflowを${publicWebOperationBackendLabel(selectedBackend)} surfaceへ同期中 / ${actionStamp()}`);
+      const response = await mvpFetch(`/api/v1/companies/${encodeURIComponent(activeProject)}/registered-automations/adopt`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "idempotency-key": idempotencyKey },
+        body: JSON.stringify({ source_automation_ids: sourceAutomationIds, enable_schedules: true })
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || result.ok === false) throw new Error(result.exact_blocker || result.error || `registered_companion_surface_refresh_http_${response.status}`);
+      const count = Array.isArray(result.adopted) ? result.adopted.length : sourceAutomationIds.length;
+      const message = `${publicWebOperationBackendLabel(selectedBackend)} surface同期済み / ${count}件 / スケジュール設定は維持 / external_action=false`;
+      setRegisteredReceipts((previous) => ({ ...previous, __surface__: message }));
+      setReceipt(message);
+      setPageNote(`${message} / ${actionStamp()}`);
+      await loadRegisteredReadback();
+    } catch (error) {
+      const exact = error instanceof Error ? error.message : "registered_companion_surface_refresh_failed";
+      const message = `${publicWebOperationBackendLabel(selectedBackend)} surface同期未確認 / ${publicBlockerSummary(exact)} / external_action=false`;
+      setRegisteredReceipts((previous) => ({ ...previous, __surface__: message }));
+      setReceipt(message);
+      setPageNote(`${message} / ${actionStamp()}`);
+    } finally {
+      setRegisteredSurfaceRefreshing(false);
+    }
+  };
   React.useEffect(() => {
     setPageNote(`${projectName} 定期実行を開きました。押した操作の結果はここにも表示します / ${actionStamp()}`);
+    void loadCanonicalRegistry();
     void loadRegisteredReadback();
     return () => {
       registeredReadbackRequestRef.current += 1;
@@ -7817,7 +9730,7 @@ function AutomationsPage({ model }: { model: AppModel }) {
   return (
     <section>
       <ProjectTabs mvpState={mvpState} />
-      <PageTitle title={projectName} desc="定期実行">
+      <PageTitle title={projectName} desc="仕事と定期実行">
         <Button controlId="projects.job-admission.open" disabled={!activeProject || !canMutateCompany} onClick={() => go(`#/projects/${activeProject}/job-admission`)}>応募登録</Button>
         <Button controlId="projects.new" icon={<Plus size={15} />} variant="primary" disabled={!canMutateCompany} onClick={() => { setPageNote(`新規追加: チャットへ移動します / ${actionStamp()}`); go(chatHref({ companyId: activeProject, context: "project-automations" })); }}>新規追加</Button>
       </PageTitle>
@@ -7825,6 +9738,35 @@ function AutomationsPage({ model }: { model: AppModel }) {
       {!canMutateCompany && <div className="action-note warning" role="status">この画面は直近のsummaryを先に表示しています。最新の詳細readbackが完了するまで、保存・定期実行変更・応募登録は停止しています。</div>}
       {!activeProject && <div className="action-note warning" role="status">会社を選択してから応募登録・自動化の作成を行ってください。会社IDが未確認の状態では保存や実行に進みません。</div>}
       <ProjectScopeNotice projectId={activeProject} mvpState={mvpState} />
+      {activeProject && <Panel title="Canonical自動化レジストリ（正本7件）" controlId="projects.canonical-registry.panel">
+        <div className="action-note" role="status">
+          <strong>{canonicalRegistryStatus === "ready" ? `${canonicalRegistry.items?.length ?? 0}件 / Company scope=${canonicalRegistry.companyId ?? activeProject}` : canonicalRegistryStatus === "loading" ? "正本レジストリを確認中" : "正本レジストリを確認できません"}</strong>
+          <span>protected Postgres catalog 6件＋Company Brief heartbeat 1件。実行adapter inventoryや開始ガイドとは別の正本です。</span>
+          <small>promoted_to_runtime_registry={String(canonicalRegistry.promotedToRuntimeRegistry ?? false)} / external_action_executed={String(canonicalRegistry.externalActionExecuted ?? false)}</small>
+          <div className="button-row compact"><Button controlId="projects.canonical-registry.refresh" onClick={() => { void loadCanonicalRegistry(); }} disabled={canonicalRegistryStatus === "loading" || !activeProject} icon={<RefreshCw size={14} />}>正本を再確認</Button></div>
+        </div>
+        <DataTable
+          controlId="projects.canonical-registry.table"
+          headers={["Canonical ID", "名前", "正本plane", "schedule", "入口", "外部効果"]}
+          rows={canonicalRegistryStatus === "ready" && (canonicalRegistry.items ?? []).length
+            ? (canonicalRegistry.items ?? []).map((item) => [
+              item.id,
+              item.name,
+              item.plane === "heartbeat" ? "Company Brief heartbeat" : "catalog",
+              `${item.schedule?.expression ?? "未確認"} ${item.schedule?.timezone ?? ""}`,
+              `${item.entry?.workerCommandKind ?? "未確認"} / source=${item.entry?.sourceAutomationId ?? "heartbeat"}`,
+              `default=${String(item.effect?.externalActionDefault ?? false)} / executed=${String(item.effect?.executedInThisReadback ?? false)}`
+            ])
+            : [[canonicalRegistryStatus === "loading" ? "正本readbackを取得中" : "正本readback未確認", "-", "-", "-", "-", "external_action=false"]]}
+        />
+        {canonicalRegistryStatus === "ready" && <p className="muted">補助adapter: {(canonicalRegistry.executionLaneAdapters ?? []).join(" / ") || "未確認"}。adapterの存在はcanonical登録・業務完了・Provider receiptを意味しません。</p>}
+      </Panel>}
+      {activeProject && <WorkflowStartGuidePanel
+        guide={workflowStartGuide}
+        localCheckEnabled={localCheckEnabled}
+        localCheckReceipts={localCheckReceipts}
+        onLocalCheck={runLocalCheck}
+      />}
       {activeProject && <Panel title="求人応募（専用画面）" controlId="projects.job-admission.panel">
         <p className="muted">応募対象の登録、同一Runへの束縛、承認、既存応募の照合は、通常の定期実行とは異なる高影響フローです。専用画面で対象と次の操作を確認します。</p>
         <div className="button-row"><Button controlId="projects.job-admission.open-panel" variant="primary" disabled={!canMutateCompany} onClick={() => go(`#/projects/${activeProject}/job-admission`)}>応募登録を開く</Button></div>
@@ -7864,7 +9806,7 @@ function AutomationsPage({ model }: { model: AppModel }) {
           </div>
           {selectedManualTarget && <small className="quick-action-gate">{selectedManualTarget.manual_trigger?.available === true
             ? selectedManualTarget.state_fallback === true
-              ? "詳細readback待ちですが、会社scopeで対象IDを確認済みです。no-effect手動実行だけ登録できます（外部操作は開始しません）"
+              ? "詳細readback未確定ですが、会社scopeで対象IDを確認済みです。no-effect手動実行だけ登録できます（外部操作は開始しません）"
               : "AOSのno-effect手動実行を登録します（外部操作は開始しません）"
             : `手動実行は停止中: ${publicBlockerSummary(selectedManualTarget.manual_trigger?.exact_blocker ?? "実行条件未確認")}`}</small>}
           {selectedManualRunReadback && <a
@@ -7873,7 +9815,7 @@ function AutomationsPage({ model }: { model: AppModel }) {
           >同一Runを確認: status={selectedManualRunReadback.status}</a>}
         </div> : <div className="quick-action-empty" role="status">
           <strong>{registeredReadbackStatus === "loading" ? "実行対象を確認中" : "手動実行できる対象はありません"}</strong>
-          <span>{registeredReadbackStatus === "loading" ? "登録済みautomationのfresh readbackを待っています。" : publicBlockerSummary(registeredReadback.exact_boundary ?? "registered_portable_workflow_not_available")}</span>
+          <span>{registeredReadbackStatus === "loading" ? "登録済みautomationのfresh readbackを取得します。" : publicBlockerSummary(registeredReadback.exact_boundary ?? "registered_portable_workflow_not_available")}</span>
         </div>}
       </div>}
       <ProjectPresentationProfileSummary model={model} companyId={activeProject} context="automations" />
@@ -7890,34 +9832,37 @@ function AutomationsPage({ model }: { model: AppModel }) {
           </div>
         </details>
       )}
-      <Panel title="自動化一覧" controlId="projects.automation.panel">
+      <Panel title="仕事一覧" controlId="projects.automation.panel">
         <details className="home-secondary-details" data-control-id="projects.automation.details">
-          <summary>保存済みautomationの詳細一覧を開く（{visibleAutomationRows.length}件）</summary>
+          <summary>保存済みの仕事の詳細一覧を開く（{visibleAutomationRows.length}件）</summary>
           <div className="home-secondary-details-body">
             <DataTable controlId="projects.automation.table" headers={["タスク名", "説明", "スケジュール", "実行契約", "Lane", "最終実行", "ステータス", "操作"]} rows={visibleAutomationRows.length ? visibleAutomationRows.map((a) => [a.name, a.desc, <div data-control-id={`projects.automation.schedule.${a.id}`}><strong>{a.schedule}</strong><small>next {a.next_run_at} / version {a.schedule_version}</small></div>, <div data-control-id={`projects.automation.execution.${a.id}`}><strong>{a.execution_label}</strong><small>{a.scheduler_effect}</small></div>, displayedAutomationLane(a.lane, selectedBackend), a.last, <StatusBadge status={a.status} />, <div className="row-actions"><IconButton controlId={`projects.automation.edit.${a.id}`} label={`${a.name}を編集`} onClick={() => { setPageNote(`${a.name}: 編集画面へ移動します / ${actionStamp()}`); go(`#/projects/${activeProject}/automations/${a.id}/edit`); }}><Edit3 size={14} /></IconButton><IconButton controlId={`projects.automation.archive.${a.id}`} label={`${a.name}をアーカイブ`} disabled={Boolean(archivingId) || !canMutateCompany} onClick={() => archiveAutomation(a)}>{archivingId === a.id ? <Clock size={14} /> : <Archive size={14} />}</IconButton></div>]) : [["このプロジェクトの自動化はまだありません", "チャットから追加できます", "-", "実行契約未確認", "-", "-", <StatusBadge status="draft" />, <Button controlId="projects.automation.create" disabled={!canMutateCompany} onClick={() => { setPageNote(`作成する: チャットへ移動します / ${actionStamp()}`); go(chatHref({ companyId: activeProject, context: "project-automations" })); }}>作成する</Button>]]} />
           </div>
         </details>
       </Panel>
       {activeProject && (
-        <Panel title="Codex App登録済み自動化" controlId="projects.registered.panel">
+          <Panel title="登録済みの仕事（実行adapter inventory）" controlId="projects.registered.panel">
           <div className="action-note" role="status">
             <strong>{registeredSummaryLabel}</strong>
             <span>{registeredGateLabel}</span>
-            <small>詳細一覧は必要な時だけ開けます。外部作用はこの画面から開始しません。</small>
+            <small>これは固定実行adapterのreadbackです。canonical正本7件とは別集合で、外部作用はこの画面から開始しません。</small>
             {registeredReadbackStatus === "error" && <small>確認事項: {publicBlockerSummary(registeredReadback.exact_boundary ?? "registered_automation_readback_unavailable")}。正規Bridgeのfresh readback後にread-only可否を再判定します。</small>}
             <div className="button-row compact">
               <Button controlId="projects.registered.refresh" onClick={() => { void loadRegisteredReadback(); }} disabled={registeredReadbackRefreshing || !activeProject} icon={<RefreshCw size={14} />}>{registeredReadbackRefreshing ? "再確認中" : "登録状態を再確認"}</Button>
+              <Button controlId="projects.registered.companion-surface-refresh" onClick={() => { void refreshRegisteredCompanionSurface(); }} disabled={registeredSurfaceRefreshing || registeredReadbackRefreshing || !activeProject || !canMutateCompany} icon={<RefreshCw size={14} />}>{registeredSurfaceRefreshing ? "同期中" : `${publicWebOperationBackendLabel(selectedBackend)}経路へ同期`}</Button>
             </div>
           </div>
           <details className="home-secondary-details" data-control-id="projects.registered.details">
             <summary>登録Automationの詳細・proof・laneを開く</summary>
             <div className="home-secondary-details-body">
-              <p className="muted">{projectName}の登録6本をAOSで共通管理します。現在のAOS選択backend={publicWebOperationBackendLabel(selectedBackend)}です。Codex AppはUI/トリガー、AOSがスケジュールとRunの正本、登録workflowのcanonical laneはBrowser Use CLIとして別管理します。選択backendへの実行bindingはRun開始時に確認し、外部作用の完了はworker receipt/readbackでのみ確認します。</p>
+              <p className="muted">{projectName}の固定実行adapterをAPIのfresh responseに含まれる件数・名前・状態で表示します。canonical正本7件と開始ガイド5行は別集合です。現在のAOS選択backend={publicWebOperationBackendLabel(selectedBackend)}です。Codex AppはUI/トリガー、AOSがスケジュールとRunの正本、登録workflowの次回runは選択backendへ束縛されます。旧lane名は互換診断として保持し、選択backendへの実行bindingはRun開始時に確認します。外部作用の完了はworker receipt/readbackでのみ確認します。</p>
               <DataTable
                 controlId="projects.registered.table"
-                headers={["名前", "状態", "Browser Use Lane", "実行クラス", "判定", "Blocker / Proof", "操作"]}
+                headers={["名前", "状態", `${publicWebOperationBackendLabel(selectedBackend)} workflow lane`, "実行クラス", "判定", "Blocker / Proof", "操作"]}
                 rows={registeredReadbackStatus === "loading"
               ? [["Codex App登録自動化のreadbackを取得中", "loading", "-", "-", "-", "APIのfresh source-of-truthを待機中", <StatusBadge status="waiting" label="readback取得中" />]]
+              : registeredReadbackStatus === "error"
+              ? [["Company 1登録automationのreadbackを取得できません", registeredReadback.exact_boundary ?? "unavailable", "-", "-", "-", publicBlockerSummary(registeredReadback.exact_boundary ?? "registered_automation_readback_unavailable"), <StatusBadge status="blocked" label="readback error" />]]
               : (registeredReadback.automations ?? []).length ? (registeredReadback.automations ?? []).map((item) => [
               item.name ?? item.id,
               item.status ?? "-",
@@ -8008,37 +9953,53 @@ function BuilderPage({ model }: { model: AppModel }) {
   const persistedSchedule = mvpState.schedules?.find((item) => String(item.automation_id ?? item.automationId ?? "") === automationId);
   const builderType = persistedAutomation?.automation_type ?? routeAutomationKey;
   const builderTypeSupported = isSupportedAutomationType(builderType);
-  const builderConfig = builderConfigForAutomationType(builderType);
+  const registeredConfig = registeredWorkflowBuilderConfig(persistedAutomation, persistedSpec?.spec);
+  const registeredWorkflow = registeredConfig !== null;
+  const builderEditable = builderTypeSupported || registeredWorkflow;
+  const builderConfig = registeredConfig ?? builderConfigForAutomationType(builderType);
   const builderKind = builderConfig.kindLabel;
   const builderTitle = `${builderKind} 自動化仕様`;
   const automationName = persistedAutomation?.name ?? builderConfig.automationName;
+  const canonicalWorkflowId = String(persistedSpec?.spec?.canonicalWorkflowId ?? persistedSpec?.spec?.canonical_workflow_id ?? "");
+  const isGmailExecutionWorkflow = canonicalWorkflowId === "email-review-reply";
+  const persistedExecutionTarget = persistedAutomation?.execution_target && typeof persistedAutomation.execution_target === "object"
+    ? persistedAutomation.execution_target
+    : persistedSpec?.spec?.execution_target && typeof persistedSpec.spec.execution_target === "object"
+      ? persistedSpec.spec.execution_target as Record<string, unknown>
+      : null;
   const executionMode = String(persistedAutomation?.execution_mode ?? "unverified");
   const executionLabel = String(persistedAutomation?.execution_label ?? "実行契約未確認（保存のみ）");
   const schedulerEffect = String(persistedAutomation?.scheduler_effect ?? "not_configured");
-  const persistedStepRecords: Array<{ title: string; enabled: boolean }> = Array.isArray(persistedSpec?.spec?.steps)
+  const persistedStepRecords: Array<{ [key: string]: unknown; title: string; enabled: boolean }> = registeredWorkflow
+    ? registeredWorkflowSteps(persistedSpec?.spec)
+    : Array.isArray(persistedSpec?.spec?.steps)
     ? persistedSpec.spec.steps
-      .map((step: any) => ({ title: typeof step === "string" ? step : step?.title, enabled: typeof step === "string" ? true : step?.enabled !== false }))
+      .map((step: any) => ({ ...(typeof step === "object" && step ? step : {}), title: typeof step === "string" ? step : step?.title, enabled: typeof step === "string" ? true : step?.enabled !== false }))
       .filter((step: { title?: unknown }): step is { title: string; enabled: boolean } => typeof step.title === "string" && Boolean(step.title.trim()))
     : [];
   const [builderDraft, setBuilderDraft] = useState({
     name: automationName,
+    goal: String(persistedAutomation?.goal ?? ""),
+    target_label: String(persistedSpec?.spec?.target_label ?? ""),
+    steps: persistedStepRecords.length ? persistedStepRecords : builderConfig.steps.map((title) => ({ title, enabled: true })),
     lane: persistedAutomation?.lane ?? "未設定",
     schedule: persistedSpec?.spec?.schedule_hint ?? "",
     approval_policy: persistedAutomation?.approval_policy ?? builderConfig.approvalPolicy,
     retry_rule: persistedSpec?.spec?.retry_rule ?? ""
   });
-  const enabled = persistedStepRecords.length ? persistedStepRecords.map((step) => step.enabled) : builderConfig.steps.map(() => true);
   const [saving, setSaving] = useState(false);
   const [scheduleSaving, setScheduleSaving] = useState(false);
+  const [gmailConnectionRefs, setGmailConnectionRefs] = useState<any[]>([]);
+  const [gmailConnectionRefsStatus, setGmailConnectionRefsStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [gmailTargetDraft, setGmailTargetDraft] = useState({ connectionRefId: "", accountRef: "" });
   const [scheduleDraft, setScheduleDraft] = useState<ScheduleDraft>({
     kind: normalizeScheduleKind(persistedSchedule?.kind),
-    expression: String(persistedSchedule?.expression ?? persistedSpec?.spec?.schedule_hint ?? ""),
+    expression: String(persistedSchedule?.expression ?? ""),
     timezone: String(persistedSchedule?.timezone ?? "Asia/Tokyo"),
     enabled: persistedSchedule ? persistedSchedule.enabled === true : false
   });
   const builderCreateIdempotencyRef = useRef<{ fingerprint: string; key: string } | null>(null);
   const [builderNotice, setBuilderNotice] = useState("外部投稿・送信・公開はまだ実行していません。");
-  const steps: string[] = persistedStepRecords.length ? persistedStepRecords.map((step) => step.title) : builderConfig.steps;
   const builderInputSources = builderConfig.inputSources;
   const builderOutputs = builderConfig.outputs;
   const builderRiskBoundary = builderConfig.riskBoundary;
@@ -8049,6 +10010,9 @@ function BuilderPage({ model }: { model: AppModel }) {
   React.useEffect(() => {
     setBuilderDraft({
       name: automationName,
+      goal: String(persistedAutomation?.goal ?? ""),
+      target_label: String(persistedSpec?.spec?.target_label ?? ""),
+      steps: persistedStepRecords.length ? persistedStepRecords : builderConfig.steps.map((title) => ({ title, enabled: true })),
       lane: persistedAutomation?.lane ?? "未設定",
       schedule: persistedSpec?.spec?.schedule_hint ?? "",
       approval_policy: persistedAutomation?.approval_policy ?? builderConfig.approvalPolicy,
@@ -8056,29 +10020,108 @@ function BuilderPage({ model }: { model: AppModel }) {
     });
   }, [automationId, persistedAutomation?.updated_at, persistedSpec?.updated_at, automationName, builderConfig.approvalPolicy]);
   React.useEffect(() => {
+    const connectionRefId = typeof persistedExecutionTarget?.connection_ref_id === "string"
+      ? persistedExecutionTarget.connection_ref_id.trim()
+      : typeof persistedExecutionTarget?.connectionRefId === "string"
+        ? persistedExecutionTarget.connectionRefId.trim()
+        : "";
+    const accountRef = typeof persistedExecutionTarget?.account_ref === "string"
+      ? persistedExecutionTarget.account_ref.trim()
+      : typeof persistedExecutionTarget?.accountRef === "string"
+        ? persistedExecutionTarget.accountRef.trim()
+        : "";
+    setGmailTargetDraft({ connectionRefId, accountRef });
+  }, [automationId, persistedAutomation?.revision, persistedSpec?.updated_at, persistedExecutionTarget?.connection_ref_id, persistedExecutionTarget?.connectionRefId, persistedExecutionTarget?.account_ref, persistedExecutionTarget?.accountRef]);
+  React.useEffect(() => {
+    let active = true;
+    if (!isGmailExecutionWorkflow || !activeProject) {
+      setGmailConnectionRefs([]);
+      setGmailConnectionRefsStatus("idle");
+      return () => { active = false; };
+    }
+    setGmailConnectionRefsStatus("loading");
+    void mvpFetch(`/api/v1/companies/${encodeURIComponent(activeProject)}/connection-account-refs`, { cache: "no-store" })
+      .then(async (response) => {
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok || body.ok !== true || body.company_scope?.company_id !== activeProject || !Array.isArray(body.refs)) {
+          throw new Error(body.exact_blocker || body.error || "gmail_execution_target_inventory_read_failed");
+        }
+        if (!active) return;
+        setGmailConnectionRefs(body.refs.filter((ref: any) => ["gmail", "mail"].includes(String(ref.platform ?? "").toLowerCase())));
+        setGmailConnectionRefsStatus("ready");
+      })
+      .catch(() => {
+        if (!active) return;
+        setGmailConnectionRefs([]);
+        setGmailConnectionRefsStatus("error");
+      });
+    return () => { active = false; };
+  }, [activeProject, isGmailExecutionWorkflow]);
+  React.useEffect(() => {
     setScheduleDraft({
       kind: normalizeScheduleKind(persistedSchedule?.kind),
-      expression: String(persistedSchedule?.expression ?? persistedSpec?.spec?.schedule_hint ?? builderDraft.schedule ?? ""),
+      expression: String(persistedSchedule?.expression ?? ""),
       timezone: String(persistedSchedule?.timezone ?? "Asia/Tokyo"),
       enabled: persistedSchedule ? persistedSchedule.enabled === true : false
     });
-  }, [automationId, persistedSchedule?.revision, persistedSchedule?.kind, persistedSchedule?.expression, persistedSchedule?.timezone, persistedSchedule?.enabled, persistedSpec?.updated_at, builderDraft.schedule]);
+  }, [automationId, persistedSchedule?.revision, persistedSchedule?.kind, persistedSchedule?.expression, persistedSchedule?.timezone, persistedSchedule?.enabled]);
   const saveBuilder = async () => {
-    if (!builderTypeSupported) {
+    if (!builderEditable) {
       noteBuilder(`未認識のautomation_type=${builderType}です。SNSとして置き換えず、正本の型を確認するまで保存しません。`);
       return;
     }
     if (saving) return;
+    if (!builderDraft.name.trim() || !builderDraft.goal.trim() || (!registeredWorkflow && (!builderDraft.steps.length || builderDraft.steps.some((step) => !step.title.trim())))) {
+      noteBuilder("自動化名・依頼内容・空欄のない手順を入力してください。まだ保存していません。");
+      return;
+    }
     setSaving(true);
     try {
-      const specPayload = {
+      if (registeredWorkflow) {
+        const registeredSpec = { ...(persistedSpec?.spec ?? {}) } as Record<string, unknown>;
+        if (isGmailExecutionWorkflow && gmailConnectionRefsStatus === "ready") {
+          if (gmailTargetDraft.connectionRefId) {
+            registeredSpec.execution_target = { connection_ref_id: gmailTargetDraft.connectionRefId, account_ref: gmailTargetDraft.accountRef };
+          } else if (gmailTargetDraft.accountRef) {
+            registeredSpec.execution_target = { account_ref: gmailTargetDraft.accountRef };
+          } else {
+            delete registeredSpec.execution_target;
+          }
+        }
+        const response = await mvpFetch(`/api/v1/companies/${encodeURIComponent(activeProject)}/automations/${encodeURIComponent(automationId)}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ expected_revision: persistedAutomation.revision, name: builderDraft.name.trim(), goal: builderDraft.goal.trim(), ...(isGmailExecutionWorkflow && gmailConnectionRefsStatus === "ready" ? { builder_spec: registeredSpec } : {}) })
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(result.exactBlocker || result.exact_blocker || result.error || "registered_metadata_save_failed");
+        const freshState = await readMvpState("ui", { fresh: true });
+        const saved = (freshState.automations ?? []).find((item: any) => item.id === automationId && (item.company_id ?? item.project_id) === activeProject);
+        setMvpState(freshState);
+        setAutomationRows(toAutomationRows(freshState.automations ?? []));
+        if (!saved || saved.name !== builderDraft.name.trim() || saved.goal !== builderDraft.goal.trim()) throw new Error("registered_metadata_readback_mismatch");
+        noteBuilder("登録業務の名前・目的を保存し、再取得して確認しました。処理契約・接続先・承認ポリシー・実予定は変更していません。");
+        return;
+      }
+      const specPayload: Record<string, unknown> = {
+        ...(persistedSpec?.spec ?? {}),
         automation_type: automationSlugForKind(builderType),
-        steps: steps.map((step, index) => ({ title: step, enabled: enabled[index] })),
+        steps: builderDraft.steps.map((step) => ({ ...step, title: step.title.trim() })),
+        target_label: builderDraft.target_label,
         schedule_hint: builderDraft.schedule,
         retry_rule: builderDraft.retry_rule,
         approval_policy: builderDraft.approval_policy,
         external_action_allowed: false
       };
+      if (isGmailExecutionWorkflow && gmailConnectionRefsStatus === "ready") {
+        if (gmailTargetDraft.connectionRefId) {
+          specPayload.execution_target = { connection_ref_id: gmailTargetDraft.connectionRefId, account_ref: gmailTargetDraft.accountRef };
+        } else if (gmailTargetDraft.accountRef) {
+          specPayload.execution_target = { account_ref: gmailTargetDraft.accountRef };
+        } else {
+          delete specPayload.execution_target;
+        }
+      }
       const readError = async (response: Response, fallback: string) => {
         const body = await response.json().catch(() => ({}));
         throw new Error(body.exact_blocker || body.exactBlocker || body.error || fallback);
@@ -8088,6 +10131,9 @@ function BuilderPage({ model }: { model: AppModel }) {
           activeProject,
           automationId,
           builderDraft.name,
+          builderDraft.goal,
+          builderDraft.target_label,
+          JSON.stringify(builderDraft.steps),
           builderDraft.lane,
           builderDraft.schedule,
           builderDraft.approval_policy,
@@ -8103,7 +10149,7 @@ function BuilderPage({ model }: { model: AppModel }) {
             project_id: activeProject,
             automation_type: automationSlugForKind(builderType),
             desc: `${builderKind} Builderから作成した安全なMVP自動化`,
-            goal: `${builderDraft.name} の下書き作成まで行い、外部操作前に承認で停止する`,
+            goal: builderDraft.goal,
             schedule: builderDraft.schedule,
             cadence: "daily",
             lane: builderDraft.lane,
@@ -8128,6 +10174,7 @@ function BuilderPage({ model }: { model: AppModel }) {
         body: JSON.stringify({
           expected_revision: persistedAutomation.revision,
           name: builderDraft.name,
+          goal: builderDraft.goal,
           lane: builderDraft.lane,
           approval_policy: builderDraft.approval_policy,
           automation_type: automationSlugForKind(builderType),
@@ -8147,10 +10194,11 @@ function BuilderPage({ model }: { model: AppModel }) {
     }
   };
   const saveSchedule = async () => {
-    if (!builderTypeSupported) {
+    if (!builderEditable) {
       noteBuilder(`未認識のautomation_type=${builderType}です。定期実行の更新は未確認のまま保存しません。`);
       return;
     }
+    if (scheduleSaving) return;
     if (!persistedAutomation) {
       noteBuilder("先に自動化本体を下書き保存してから、定期実行を保存してください。");
       return;
@@ -8178,6 +10226,10 @@ function BuilderPage({ model }: { model: AppModel }) {
       setMvpState(freshState);
       setAutomationRows(toAutomationRows(freshState.automations ?? []));
       const savedSchedule = (freshState.schedules ?? []).find((item: any) => String(item.automation_id ?? item.automationId ?? "") === automationId);
+      if (!savedSchedule || savedSchedule.kind !== scheduleDraft.kind
+        || String(savedSchedule.expression ?? "") !== (scheduleDraft.kind === "manual" ? "" : scheduleDraft.expression.trim())
+        || savedSchedule.timezone !== scheduleDraft.timezone.trim() || savedSchedule.enabled !== scheduleDraft.enabled
+        || Number(savedSchedule.revision) <= Number(persistedSchedule?.revision ?? 0)) throw new Error("schedule_readback_mismatch");
       setScheduleDraft({
         kind: normalizeScheduleKind(savedSchedule?.kind ?? result.schedule?.kind),
         expression: String(savedSchedule?.expression ?? result.schedule?.expression ?? ""),
@@ -8185,10 +10237,10 @@ function BuilderPage({ model }: { model: AppModel }) {
         enabled: savedSchedule ? savedSchedule.enabled === true : result.schedule?.enabled === true
       });
       const enabled = savedSchedule ? savedSchedule.enabled === true : result.schedule?.enabled === true;
-      noteBuilder(`定期実行を${enabled ? "有効化" : "停止中の下書きとして"}保存しました。revision=${savedSchedule?.revision ?? result.schedule?.revision ?? "?"} / next=${savedSchedule?.next_run_at ?? result.schedule?.nextRunAt ?? "未計算"} / external_action=false`);
+      noteBuilder(`定期実行を${enabled ? "有効化" : "停止中の下書きとして"}保存しました。revision=${savedSchedule?.revision ?? result.schedule?.revision ?? "?"} / next=${!enabled || scheduleDraft.kind === "manual" ? "次回なし" : savedSchedule?.next_run_at ?? result.schedule?.nextRunAt ?? "未計算"} / external_action=false`);
     } catch (error) {
       const exact = error instanceof Error ? error.message : "schedule_save_failed";
-      noteBuilder(`定期実行の保存は未確認です: ${exact}。revisionを再読込してから再試行してください。`);
+      noteBuilder(`定期実行の保存は未確認です: ${exact}。同じ保存を繰り返さず、現在の設定を再読込して照合してください。`);
     } finally {
       setScheduleSaving(false);
     }
@@ -8196,9 +10248,9 @@ function BuilderPage({ model }: { model: AppModel }) {
   return (
     <section>
       <ProjectTabs mvpState={mvpState} />
-      <PageTitle title={builderTitle} desc="チャットやテンプレートから生成された自動化を編集します。">
-        <Button controlId="builder.save" onClick={saveBuilder} disabled={saving || !builderTypeSupported}>{saving ? "保存確認中" : "下書きとして保存"}</Button>
-        <Button
+      <PageTitle title={builderTitle} desc={registeredWorkflow ? "登録済み業務の表示名・目的・実予定を編集します。処理契約は保持します。" : "チャットやテンプレートから生成された自動化を編集します。"}>
+        <Button controlId="builder.save" onClick={saveBuilder} disabled={saving || !builderEditable}>{saving ? "保存確認中" : registeredWorkflow ? "名前・目的を保存" : "下書きとして保存"}</Button>
+        {!registeredWorkflow && <Button
           controlId="builder.sync"
           variant="primary"
           disabled={!builderTypeSupported || saving}
@@ -8231,39 +10283,82 @@ function BuilderPage({ model }: { model: AppModel }) {
           }}
         >
           承認キューへ送る
-        </Button>
+        </Button>}
       </PageTitle>
       <ProjectScopeNotice projectId={activeProject} mvpState={mvpState} />
-      {!builderTypeSupported && <div className="notice-row" role="alert">この自動化の型（<code>{builderType}</code>）は現在のBuilderで確認できません。SNSとして表示・保存せず、正本のautomation_typeを確認してください。</div>}
+      {!builderEditable && <div className="notice-row" role="alert">この自動化の型（<code>{builderType}</code>）は現在のBuilderで確認できません。SNSとして表示・保存せず、正本のautomation_typeを確認してください。</div>}
+      {registeredWorkflow && <div className="notice-row">登録済みの処理を表示しています。名前・目的と実予定は編集できます。手順・接続先・承認・リトライは登録契約の値を保持し、この画面では変更しません。</div>}
       <div className="builder-grid">
         <div>
           <Panel title="基本設定" controlId="builder.basic.panel">
             <div className="form-grid">
-              <label>自動化名<input data-control-id="builder.name" aria-label="自動化名" value={builderDraft.name} onChange={(event) => setBuilderDraft((draft) => ({ ...draft, name: event.target.value }))} /></label>
+              <label>自動化名<input data-control-id="builder.name" aria-label="自動化名" readOnly={!builderEditable} value={builderDraft.name} onChange={(event) => setBuilderDraft((draft) => ({ ...draft, name: event.target.value }))} /></label>
+              <label>{registeredWorkflow ? "目的・説明（表示用）" : "依頼内容"}<textarea data-control-id="builder.goal" aria-label={registeredWorkflow ? "目的・説明（表示用）" : "依頼内容"} readOnly={!builderEditable} rows={4} maxLength={4000} value={builderDraft.goal} onChange={(event) => setBuilderDraft((draft) => ({ ...draft, goal: event.target.value }))} /></label>
+              <label>実行先の説明（仕様メモ）<input data-control-id="builder.target-label" aria-label="実行先の説明（仕様メモ）" readOnly={registeredWorkflow || !builderEditable} value={builderDraft.target_label} onChange={(event) => setBuilderDraft((draft) => ({ ...draft, target_label: event.target.value }))} /></label>
               <label>プロジェクト<input data-control-id="builder.project" aria-label="プロジェクト" value={projectName} readOnly /></label>
-              <label>Lane<input data-control-id="builder.lane" aria-label="Lane" value={builderDraft.lane} onChange={(event) => setBuilderDraft((draft) => ({ ...draft, lane: event.target.value }))} /></label>
-              <label>スケジュール希望（仕様メモ）<input data-control-id="builder.schedule" aria-label="スケジュール希望（仕様メモ）" value={builderDraft.schedule} onChange={(event) => setBuilderDraft((draft) => ({ ...draft, schedule: event.target.value }))} /></label>
-              <label>承認ポリシー<input data-control-id="builder.approval-policy" aria-label="承認ポリシー" value={builderDraft.approval_policy} onChange={(event) => setBuilderDraft((draft) => ({ ...draft, approval_policy: event.target.value }))} /></label>
-              <label>リトライルール<input data-control-id="builder.retry-rule" aria-label="リトライルール" value={builderDraft.retry_rule} onChange={(event) => setBuilderDraft((draft) => ({ ...draft, retry_rule: event.target.value }))} /></label>
+              <label>Lane<input data-control-id="builder.lane" aria-label="Lane" readOnly={registeredWorkflow || !builderEditable} value={builderDraft.lane} onChange={(event) => setBuilderDraft((draft) => ({ ...draft, lane: event.target.value }))} /></label>
+              <label>スケジュール希望（仕様メモ）<input data-control-id="builder.schedule" aria-label="スケジュール希望（仕様メモ）" readOnly={registeredWorkflow || !builderEditable} value={builderDraft.schedule} onChange={(event) => setBuilderDraft((draft) => ({ ...draft, schedule: event.target.value }))} /></label>
+              <label>承認ポリシー<input data-control-id="builder.approval-policy" aria-label="承認ポリシー" readOnly={registeredWorkflow || !builderEditable} value={builderDraft.approval_policy} onChange={(event) => setBuilderDraft((draft) => ({ ...draft, approval_policy: event.target.value }))} /></label>
+              <label>リトライルール<input data-control-id="builder.retry-rule" aria-label="リトライルール" readOnly={registeredWorkflow || !builderEditable} value={builderDraft.retry_rule} onChange={(event) => setBuilderDraft((draft) => ({ ...draft, retry_rule: event.target.value }))} /></label>
             </div>
           </Panel>
+          {isGmailExecutionWorkflow && <Panel title="Gmail実行対象" controlId="builder.gmail-execution-target.panel">
+            <p className="muted">Gmail workflowは会社のverified接続を自動選択しません。対象connection refを1つ明示して保存し、Run開始時にも同じrefを再検証します。</p>
+            <div className="form-grid">
+              <label>対象Gmail connection ref
+                <select
+                  data-control-id="builder.gmail-execution-target.connection-ref"
+                  aria-label="対象Gmail connection ref"
+                  value={gmailTargetDraft.connectionRefId || (gmailTargetDraft.accountRef ? "__account_only__" : "")}
+                  disabled={saving || gmailConnectionRefsStatus !== "ready"}
+                  onChange={(event) => {
+                    const connectionRefId = event.target.value;
+                    if (connectionRefId === "__account_only__") return;
+                    const selected = gmailConnectionRefs.find((ref) => String(ref.id ?? "") === connectionRefId);
+                    setGmailTargetDraft({ connectionRefId, accountRef: String(selected?.account_ref ?? selected?.accountRef ?? "") });
+                  }}
+                >
+                  <option value="">未設定（Gmail Runは停止）</option>
+                  {!gmailTargetDraft.connectionRefId && gmailTargetDraft.accountRef && <option value="__account_only__">保存済みaccount_ref（connection ref未確認）</option>}
+                  {gmailTargetDraft.connectionRefId && !gmailConnectionRefs.some((ref) => String(ref.id ?? "") === gmailTargetDraft.connectionRefId) && <option value={gmailTargetDraft.connectionRefId}>保存済みref（inventory未確認）</option>}
+                  {gmailConnectionRefs.map((ref) => <option key={ref.id} value={ref.id}>{ref.id} / {ref.account_ref ?? ref.accountRef ?? "account_ref未確認"} / {ref.status ?? "状態未確認"}</option>)}
+                </select>
+                <Button controlId="builder.gmail-execution-target.clear" disabled={saving || gmailConnectionRefsStatus !== "ready" || (!gmailTargetDraft.connectionRefId && !gmailTargetDraft.accountRef)} onClick={() => setGmailTargetDraft({ connectionRefId: "", accountRef: "" })}>対象を解除</Button>
+              </label>
+              <label>対象account_ref<input data-control-id="builder.gmail-execution-target.account-ref" aria-label="対象Gmail account_ref" readOnly value={gmailTargetDraft.accountRef} /></label>
+            </div>
+            <div className="action-note" role="status">
+              {gmailConnectionRefsStatus === "loading" ? "会社別Gmail connection inventoryを確認中です。" : gmailConnectionRefsStatus === "error" ? "会社別Gmail connection inventoryを確認できません。targetの変更は保存しません。" : `保存状態: ${persistedAutomation?.execution_target?.state ?? (gmailTargetDraft.connectionRefId ? "再確認中" : "unbound")} / external_action=false`}
+            </div>
+          </Panel>}
           <Panel title="ワークフロー手順" controlId="builder.steps.panel">
-            {steps.map((s, i) => <div className="workflow-row" key={s}><span className="drag">::</span><strong>{i + 1}. {s}</strong><small>{enabled[i] ? "有効" : "無効"}</small></div>)}
+            {registeredWorkflow ? <>
+              <p className="muted">登録された処理手順です。各実行の状況と結果はRun詳細で確認できます。</p>
+              {builderDraft.steps.length ? <ol>{builderDraft.steps.map((step, i) => <li key={i}>{step.title}{!step.enabled ? "（登録時に無効）" : ""}</li>)}</ol> : <p className="muted">手順はこのreadbackに含まれていません。登録runnerの実行結果を確認してください。</p>}
+            </> : <>
+            <p className="muted">内容・実行先の説明・手順は保存する仕様です。接続アカウントや実行権限、固定済みscheduleのversionは変更しません。</p>
+            {builderDraft.steps.map((step, i) => <div className="workflow-row builder-step-row" key={i}>
+              <label className="builder-step-title">手順 {i + 1}<textarea rows={2} data-control-id={`builder.step.title.${i}`} aria-label={`手順 ${i + 1}`} readOnly={!builderEditable} value={step.title} onChange={(event) => setBuilderDraft((draft) => ({ ...draft, steps: draft.steps.map((item, index) => index === i ? { ...item, title: event.target.value } : item) }))} /></label>
+              <label className="checkbox-label"><input type="checkbox" data-control-id={`builder.step.enabled.${i}`} aria-label={`手順 ${i + 1} を有効にする`} disabled={!builderEditable} checked={step.enabled} onChange={(event) => setBuilderDraft((draft) => ({ ...draft, steps: draft.steps.map((item, index) => index === i ? { ...item, enabled: event.target.checked } : item) }))} />有効</label>
+              <Button controlId={`builder.step.remove.${i}`} disabled={!builderEditable || builderDraft.steps.length <= 1} onClick={() => setBuilderDraft((draft) => ({ ...draft, steps: draft.steps.filter((_, index) => index !== i) }))}>手順 {i + 1} を削除</Button>
+            </div>)}
+            <Button controlId="builder.step.add" disabled={!builderEditable} onClick={() => setBuilderDraft((draft) => ({ ...draft, steps: [...draft.steps, { title: "", enabled: true }] }))}>手順を追加</Button>
+            </>}
           </Panel>
           <Panel title="定期実行の実設定" controlId="builder.schedule.panel">
             <p className="muted">仕様メモではなく、会社スコープのschedule APIへrevision付きで保存します。次回実行が未計算の場合は成功と扱いません。</p>
             <div className="form-grid">
-              <label>実行種別<select data-control-id="builder.schedule.kind" aria-label="定期実行の種別" value={scheduleDraft.kind} disabled={scheduleSaving || !persistedAutomation || !builderTypeSupported} onChange={(event) => setScheduleDraft((draft) => ({ ...draft, kind: normalizeScheduleKind(event.target.value) }))}>
+              <label>実行種別<select data-control-id="builder.schedule.kind" aria-label="定期実行の種別" value={scheduleDraft.kind} disabled={scheduleSaving || !persistedAutomation || !builderEditable} onChange={(event) => setScheduleDraft((draft) => ({ ...draft, kind: normalizeScheduleKind(event.target.value), enabled: event.target.value === "manual" ? false : draft.enabled }))}>
                 <option value="manual">手動</option><option value="daily">毎日</option><option value="weekly">毎週</option><option value="cron">Cron</option>
               </select></label>
-              <label>実行式<input data-control-id="builder.schedule.expression" aria-label="定期実行の実行式" value={scheduleDraft.expression} disabled={scheduleSaving || !persistedAutomation || !builderTypeSupported || scheduleDraft.kind === "manual"} placeholder={scheduleDraft.kind === "cron" ? "0 9 * * *" : "09:00"} onChange={(event) => setScheduleDraft((draft) => ({ ...draft, expression: event.target.value }))} /></label>
-              <label>Timezone<input data-control-id="builder.schedule.timezone" aria-label="定期実行のTimezone" value={scheduleDraft.timezone} disabled={scheduleSaving || !persistedAutomation || !builderTypeSupported} onChange={(event) => setScheduleDraft((draft) => ({ ...draft, timezone: event.target.value }))} /></label>
-              <label className="checkbox-label"><input data-control-id="builder.schedule.enabled" aria-label="定期実行を有効にする" type="checkbox" checked={scheduleDraft.enabled} disabled={scheduleSaving || !persistedAutomation || !builderTypeSupported} onChange={(event) => setScheduleDraft((draft) => ({ ...draft, enabled: event.target.checked }))} /> 有効にする（明示的に次回実行を作成）</label>
+              <label>実行式<input data-control-id="builder.schedule.expression" aria-label="定期実行の実行式" value={scheduleDraft.expression} disabled={scheduleSaving || !persistedAutomation || !builderEditable || scheduleDraft.kind === "manual"} placeholder={scheduleDraft.kind === "cron" ? "0 9 * * *" : "09:00"} onChange={(event) => setScheduleDraft((draft) => ({ ...draft, expression: event.target.value }))} /></label>
+              <label>Timezone<input data-control-id="builder.schedule.timezone" aria-label="定期実行のTimezone" value={scheduleDraft.timezone} disabled={scheduleSaving || !persistedAutomation || !builderEditable} onChange={(event) => setScheduleDraft((draft) => ({ ...draft, timezone: event.target.value }))} /></label>
+              <label className="checkbox-label"><input data-control-id="builder.schedule.enabled" aria-label="定期実行を有効にする" type="checkbox" checked={scheduleDraft.enabled} disabled={scheduleSaving || !persistedAutomation || !builderEditable || scheduleDraft.kind === "manual"} onChange={(event) => setScheduleDraft((draft) => ({ ...draft, enabled: event.target.checked }))} /> 有効にする（下書き本体も有効化し、予定時刻から実行）</label>
             </div>
             <div className="button-row">
-              <Button controlId="builder.schedule.save" variant="primary" onClick={saveSchedule} disabled={scheduleSaving || !persistedAutomation || !builderTypeSupported}>{scheduleSaving ? "定期実行を保存中" : "定期実行を保存"}</Button>
+              <Button controlId="builder.schedule.save" variant="primary" onClick={saveSchedule} disabled={scheduleSaving || !persistedAutomation || !builderEditable}>{scheduleSaving ? "定期実行を保存中" : "定期実行を保存"}</Button>
             </div>
-            <div className="action-note" role="status">{persistedAutomation ? `revision=${persistedSchedule?.revision ?? "新規(1)"} / status=${persistedSchedule?.status ?? (scheduleDraft.enabled ? "有効化前" : "停止中の下書き")} / next=${persistedSchedule?.next_run_at ?? "未計算"}` : "自動化本体を保存すると、実設定を編集できます。新規scheduleは停止中の下書きから始まります。"}</div>
+            <div className="action-note" role="status">{persistedAutomation ? `revision=${persistedSchedule?.revision ?? "新規(1)"} / status=${persistedSchedule?.status ?? (scheduleDraft.enabled ? "有効化前" : "停止中の下書き")} / next=${persistedSchedule && (!persistedSchedule.enabled || persistedSchedule.kind === "manual") ? "次回なし" : persistedSchedule?.next_run_at ?? "未計算"}` : "自動化本体を保存すると、実設定を編集できます。新規scheduleは停止中の下書きから始まります。"}</div>
           </Panel>
           <Panel title="実行契約" controlId="builder.execution-contract.panel">
             <p><strong>{executionLabel}</strong></p>
@@ -8283,40 +10378,132 @@ function BuilderPage({ model }: { model: AppModel }) {
   );
 }
 
+function approvalDecisionReadbackMatches(row: any, item: any, decision: "approve" | "reject"): boolean {
+  return Boolean(row && row.id === item.id && String(row.company_id ?? row.project_id ?? "") === item.project
+    && String(row.run_id ?? "") === item.runId
+    && row.status === (decision === "approve" ? "approved" : "rejected")
+    && String(row.action_kind ?? "") === item.actionKind
+    && String(row.target_account_ref_id ?? "なし") === item.targetAccount
+    && String(row.payload_hash ?? "") === item.payloadHash
+    && String(row.policy_version ?? "") === item.policyVersion
+    && (row.expires_at ?? null) === item.expiresAt);
+}
+
+function approvalRunReadbackMatches(item: any, run: any): boolean {
+  return Boolean(item?.runId && run
+    && String(run.id ?? "") === item.runId
+    && String(run.company_id ?? run.project_id ?? "") === item.project);
+}
+
+function approvalPortableTarget(item: any, run: any): Record<string, any> | null {
+  if (!item?.portableBound || !approvalRunReadbackMatches(item, run)) return null;
+  const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown> : parseJsonRecord(value);
+  const metadata = parseJsonRecord(run.metadata_json);
+  const binding = record(metadata.portable_target_bound_approval_binding);
+  const bundle = record(record(metadata.portable_input_bundle).input);
+  const target = record(binding.target);
+  if (binding.schema !== "automation_os_portable_external_approval_binding.v1"
+    || metadata.approval_id !== item.id || binding.run_id !== item.runId
+    || binding.company_id !== item.project || binding.effect_stage !== item.actionKind
+    || target.account_ref !== item.targetAccount || bundle.payload_hash !== item.payloadHash
+    || target.target_key !== bundle.target_key) return null;
+  const targetKey = target.target_key ?? target.application_url ?? target.job_url;
+  if (typeof targetKey !== "string" || !targetKey) return null;
+  return { workflowId: binding.workflow_id, targetKey, accountRef: target.account_ref, payloadHash: bundle.payload_hash };
+}
+
+async function fetchExactApprovalRun(item: any): Promise<any> {
+  if (!item?.runId) return null;
+  const detail = await fetchApiJson<RunDetail>(`/api/runs/${encodeURIComponent(item.runId)}`);
+  const run = detail?.run;
+  if (!approvalRunReadbackMatches(item, run)) throw new Error("approval_run_readback_mismatch");
+  if (item.portableBound && !approvalPortableTarget(item, run)) throw new Error("approval_target_readback_mismatch");
+  return run;
+}
+
+function approvalTargetPrefix(item: { bound?: boolean; portableBound?: boolean }): string {
+  if (item.portableBound) return "portable対象";
+  if (item.bound) return "対象Run";
+  return "承認対象";
+}
+
+function approvalExecutionLabel(status: unknown, expired: boolean, item: { bound?: boolean; portableBound?: boolean }): string {
+  const prefix = approvalTargetPrefix(item);
+  const normalized = String(status ?? "").toLowerCase();
+  if (expired) return `${prefix}の承認期限切れ（外部効果は未確認）`;
+  if (normalized === "pending" || normalized === "waiting") return `${prefix}の承認待ち`;
+  if (normalized === "approved") return `${prefix}を承認済み（同じRunの実行結果は未確認）`;
+  if (normalized === "rejected") return `${prefix}を却下（外部効果は未確認）`;
+  return `${prefix}の承認状態未確認（外部効果は未確認）`;
+}
+
 function ApprovalsPage({ model }: { model: AppModel }) {
   const { setReceipt, mvpState, setMvpState } = model;
+  const route = useRoute();
+  const query = new URLSearchParams(route.includes("?") ? route.slice(route.indexOf("?") + 1) : "");
+  const runFilter = safeRouteValue(query.get("run_id"), 180);
+  const companyFilter = safeRouteValue(query.get("company_id"), 180);
+  const readbackCompanyId = companyFilter || resolveProjectSelection(mvpState);
+  const readbackCompanyLabel = readbackCompanyId ? projectLabelFromState(mvpState, readbackCompanyId) : "会社未選択";
   const [selected, setSelected] = useState(0);
   const [editing, setEditing] = useState(false);
   const [approvalNote, setApprovalNote] = useState("");
   const [approvalStatusNote, setApprovalStatusNote] = useState("");
-  const persistedApprovals = (mvpState.approvals ?? []).map((approval) => {
+  const [busy, setBusy] = useState(false);
+  const [readbackRequired, setReadbackRequired] = useState(false);
+  const [approvalRun, setApprovalRun] = useState<any>(null);
+  const [approvalRunReadStatus, setApprovalRunReadStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [companyApprovalReadback, setCompanyApprovalReadback] = useState<Array<Record<string, unknown>>>([]);
+  const [companyApprovalReadbackStatus, setCompanyApprovalReadbackStatus] = useState<"loading" | "ready" | "error">("loading");
+  const inFlight = useRef(false);
+  const unknownDecision = useRef<{ approvalId: string; decision: "approve" | "reject" } | null>(null);
+  const readCompanyApprovalList = async () => {
+    if (!readbackCompanyId) {
+      setCompanyApprovalReadback([]);
+      setCompanyApprovalReadbackStatus("error");
+      return;
+    }
+    setCompanyApprovalReadbackStatus("loading");
+    try {
+      const response = await mvpFetch(companyApprovalListReadbackUrl(readbackCompanyId), { cache: "no-store" });
+      if (!response.ok) throw new Error(`approval_list_readback_http_${response.status}`);
+      const body = validateCompanyApprovalListReadback(await response.json(), readbackCompanyId);
+      setCompanyApprovalReadback(body.approvals);
+      setCompanyApprovalReadbackStatus("ready");
+    } catch {
+      setCompanyApprovalReadback([]);
+      setCompanyApprovalReadbackStatus("error");
+    }
+  };
+  React.useEffect(() => { void readCompanyApprovalList(); }, [readbackCompanyId]);
+  // Prefer the company-scoped API row: the dashboard projection may contain
+  // the same approval ID with deliberately reduced fields, while the exact
+  // target/action binding is only present in the protected readback.
+  const approvalRows = [...companyApprovalReadback, ...(mvpState.approvals ?? [])]
+    .filter((approval, index, rows) => rows.findIndex((candidate) => String(candidate.id ?? "") === String(approval.id ?? "")) === index);
+  const persistedApprovals = approvalRows.filter((approval) =>
+    (!runFilter || String(approval.run_id ?? "") === runFilter)
+    && (!companyFilter || String(approval.company_id ?? approval.project_id ?? "") === companyFilter)).map((approval) => {
     const fallbackParts = String(approval.content ?? "").split(" / ").map((part) => part.trim()).filter(Boolean);
     const actionLabel = String(approval.action_label ?? approval.action_kind ?? fallbackParts[0] ?? "未確認");
     const targetLabel = String(approval.target_account_ref_id ?? approval.target_label ?? approval.boundary_label ?? fallbackParts[1] ?? "未確認");
     const normalizedStatus = String(approval.status ?? "").toLowerCase();
     const knownStatus = ["pending", "waiting", "approved", "rejected"].includes(normalizedStatus);
     const expired = isApprovalExpired(normalizedStatus, approval.expires_at);
-    const executionLabel = expired
-      ? "期限切れ（承認の有効期限超過）"
-      : normalizedStatus === "pending" || normalizedStatus === "waiting"
-        ? "承認待ち"
-      : normalizedStatus === "approved"
-        ? "承認済み"
-        : normalizedStatus === "rejected"
-          ? "却下"
-          : String(approval.execution_label ?? fallbackParts[2] ?? (approval.external_action_allowed === false ? "外部操作なし" : "未確認"));
+    const exactBinding = Boolean(approval.action_kind && approval.payload_hash && approval.policy_version);
+    const durableBound = Boolean(approval.job_id && exactBinding);
+    const portableBound = Boolean(!approval.job_id && exactBinding && approval.run_id);
+    const executionLabel = approvalExecutionLabel(normalizedStatus, expired, { bound: durableBound, portableBound });
     const approvalLabel = expired
       ? "期限切れ"
       : normalizedStatus === "pending" || normalizedStatus === "waiting"
         ? "承認待ち"
       : normalizedStatus === "approved"
-        ? "承認済み"
+        ? durableBound || portableBound ? "対象限定で承認済み" : "承認済み（結果未確認）"
         : normalizedStatus === "rejected"
           ? "却下"
           : "要確認";
-    const exactBinding = Boolean(approval.action_kind && approval.payload_hash && approval.policy_version);
-    const durableBound = Boolean(approval.job_id && exactBinding);
-    const portableBound = Boolean(!approval.job_id && exactBinding && approval.run_id);
     return {
     id: approval.id,
     kind: String(approval.task_label ?? approval.title ?? approval.kind ?? "承認候補"),
@@ -8338,6 +10525,8 @@ function ApprovalsPage({ model }: { model: AppModel }) {
     // binding instead of presenting them as unbound in the read-only UI.
     bound: durableBound,
     portableBound,
+    runId: String(approval.run_id ?? ""),
+    expiresAt: approval.expires_at ?? null,
     revision: Number(approval.decision_revision ?? 1),
     actionKind: String(approval.action_kind ?? ""),
     targetAccount: String(approval.target_account_ref_id ?? "なし"),
@@ -8345,42 +10534,126 @@ function ApprovalsPage({ model }: { model: AppModel }) {
     policyVersion: String(approval.policy_version ?? "")
     };
   });
-  const visibleApprovals = persistedApprovals.filter((approval) => approval.status === "waiting" || approval.expired || !approval.knownStatus);
+  const visibleApprovals = persistedApprovals.filter((approval) => approval.status === "waiting" || approval.expired || !approval.knownStatus || Boolean(runFilter));
   const approvedApprovals = persistedApprovals.filter((approval) => approval.status === "approved");
   const selectedIndex = visibleApprovals.length ? Math.min(selected, visibleApprovals.length - 1) : -1;
   const item = selectedIndex >= 0 ? visibleApprovals[selectedIndex] : null;
   const selectedCompanyRole = item ? projectOptionsFromState(mvpState).find((company) => company.id === item.project)?.role ?? "viewer" : "viewer";
   const canDecideApproval = ["owner", "admin", "approver"].includes(selectedCompanyRole);
+  const portableTarget = approvalPortableTarget(item, approvalRun);
+  React.useEffect(() => {
+    setApprovalRun(null);
+    setApprovalRunReadStatus("loading");
+    if (!item?.runId) {
+      setApprovalRunReadStatus("ready");
+      return;
+    }
+    let cancelled = false;
+    fetchExactApprovalRun(item)
+      .then((run) => { if (!cancelled) { setApprovalRun(run); setApprovalRunReadStatus("ready"); } })
+      .catch(() => { if (!cancelled) { setApprovalRun(null); setApprovalRunReadStatus("error"); } });
+    return () => { cancelled = true; };
+  }, [item?.id, item?.runId, item?.payloadHash]);
   React.useEffect(() => {
     if (selected !== selectedIndex) setSelected(selectedIndex < 0 ? 0 : selectedIndex);
   }, [selected, selectedIndex]);
   React.useEffect(() => {
-    setApprovalNote(`${item?.content ?? "承認候補はありません"} を確認しました。`);
+    setApprovalNote("表示された対象と内容を確認しました。");
     setApprovalStatusNote(item ? `${item.kind}: ${item.content} を選択 / ${actionStamp()}` : `承認候補はありません / ${actionStamp()}`);
     setEditing(false);
   }, [selected, item?.id, item?.content]);
+  const refreshApprovals = async () => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setBusy(true);
+    try {
+      const state = await readMvpState("ui", { fresh: true });
+      await readCompanyApprovalList();
+      const persisted = item?.id ? state.approvals?.find((approval: any) => approval.id === item.id) : null;
+      let exactRun: any = null;
+      if (item?.runId) {
+        exactRun = await fetchExactApprovalRun(item);
+        setApprovalRun(exactRun);
+        setApprovalRunReadStatus("ready");
+      }
+      const pending = unknownDecision.current;
+      const recoveringThisDecision = Boolean(pending && pending.approvalId === item?.id);
+      const recovered = !recoveringThisDecision
+        || approvalDecisionReadbackMatches(persisted, item, pending!.decision);
+      setMvpState(state);
+      if (recoveringThisDecision && !recovered) {
+        setReadbackRequired(true);
+        setApprovalStatusNote(`保存結果はGET-only readbackでまだ確定していません。PATCH再送は停止中です。同じ承認とRunを再取得してください / ${actionStamp()}`);
+        return;
+      }
+      if (recoveringThisDecision) {
+        unknownDecision.current = null;
+        setEditing(false);
+        setApprovalStatusNote(`同じ承認ID${item?.id ? `=${item.id}` : ""}と同じRun${item?.runId ? `=${item.runId}` : ""}をGET-onlyで確認しました。外部効果・完了は未確認です / ${actionStamp()}`);
+      }
+      setReadbackRequired(false);
+      if (!recoveringThisDecision) setApprovalStatusNote(`保存状態を再取得しました。再送・承認操作はしていません / ${actionStamp()}`);
+    } catch {
+      setReadbackRequired(true);
+      setApprovalRunReadStatus("error");
+      setApprovalStatusNote(`保存状態または同じRunは未確認です。GET-onlyで再取得し、PATCHは再送しません / ${actionStamp()}`);
+    } finally {
+      inFlight.current = false;
+      setBusy(false);
+    }
+  };
   const updateSelectedApproval = async (decision: "approve" | "reject") => {
+    if (inFlight.current || readbackRequired || unknownDecision.current?.approvalId === item?.id) return;
     if (!item?.id || !item.decisionEligible || !canDecideApproval) {
       setReceipt(item ? "承認状態または権限を確認できないため、承認操作を停止しました。外部送信・投稿は実行していません。" : "承認候補はありません。外部送信・投稿は実行していません。");
       return;
     }
+    if (decision === "approve" && item.portableBound && !portableTarget) {
+      setApprovalStatusNote("同じRunの実行対象を確認できていません。結果を再取得してください。");
+      return;
+    }
+    inFlight.current = true;
+    setBusy(true);
     try {
       const response = await mvpFetch(item.bound
         ? `/api/v1/companies/${encodeURIComponent(item.project)}/approvals/${encodeURIComponent(item.id)}`
         : `/api/mvp/approvals/${encodeURIComponent(item.id)}`, {
         method: "PATCH",
         headers: { "content-type": "application/json", ...(item.bound ? { "if-match": String(item.revision) } : {}) },
-        body: JSON.stringify({ decision: item.bound ? (decision === "approve" ? "approved" : "rejected") : decision, note: approvalNote || "UIから確認。外部操作は許可していません。" })
+        body: JSON.stringify({ decision: item.bound ? (decision === "approve" ? "approved" : "rejected") : decision,
+          note: approvalNote || "表示された対象と内容を確認しました。",
+          ...(item.portableBound ? { expected_binding: { company_id: item.project, run_id: item.runId,
+            action_kind: item.actionKind, target_account_ref_id: item.targetAccount, payload_hash: item.payloadHash,
+            policy_version: item.policyVersion, expires_at: item.expiresAt } } : {}) })
       });
       if (!response.ok) throw new Error("approval_update_failed");
-      const result = await response.json();
-      setMvpState(result.state ?? await readMvpState("ui", { fresh: true }));
+      await response.json();
+      const state = await readMvpState("ui", { fresh: true });
+      await readCompanyApprovalList();
+      const persisted = state.approvals?.find((approval: any) => approval.id === item.id);
+      if (!approvalDecisionReadbackMatches(persisted, item, decision)) throw new Error("approval_decision_readback_mismatch");
+      if (item.portableBound) {
+        const exactRun = await fetchExactApprovalRun(item);
+        setApprovalRun(exactRun);
+        setApprovalRunReadStatus("ready");
+      }
+      setMvpState(state);
       setEditing(false);
-      setReceipt(`${item.kind} を${decision === "approve" ? "local draft承認" : "却下"}として保存しました。外部送信・投稿は実行していません。`);
-      setApprovalStatusNote(`${item.kind}: ${decision === "approve" ? "local draft承認" : "却下"}として保存 / external_action=false / ${actionStamp()}`);
+      unknownDecision.current = null;
+      const outcome = decision === "reject" ? "却下" : item.bound || item.portableBound ? "対象を限定した実行承認" : "ローカル下書き確認";
+      const next = decision === "approve" && (item.bound || item.portableBound)
+        ? "同じRunのworkerはこの対象の処理を開始できます。外部効果・完了はまだ確認しておらず、同じRunの結果で確認します。"
+        : "承認の保存を確認しました。業務の実行結果とは別です。";
+      setReceipt(`${item.kind}: ${outcome}の保存を同じ承認IDで確認。${next}`);
+      setApprovalStatusNote(`${item.kind}: ${outcome}を保存・再取得済み。${next} / ${actionStamp()}`);
     } catch {
-      setReceipt(`${item.kind} の状態保存は未確認です。外部送信・投稿は実行していません。`);
-      setApprovalStatusNote(`${item.kind}: 状態保存は未確認 / external_action=false / ${actionStamp()}`);
+      unknownDecision.current = item?.id ? { approvalId: item.id, decision } : null;
+      setReadbackRequired(true);
+      setReceipt(`${item.kind}: 保存結果または同じRunは未確認です。GET-onlyで再取得し、同じ承認のPATCHは再送しません。`);
+      setApprovalStatusNote(`${item.kind}: 保存結果・同じRunは未確認 / GET-only recoveryのみ / PATCH再送停止 / ${actionStamp()}`);
+    } finally {
+      inFlight.current = false;
+      setBusy(false);
     }
   };
   const approveSelected = () => {
@@ -8391,14 +10664,24 @@ function ApprovalsPage({ model }: { model: AppModel }) {
   };
   return (
     <section>
-      <PageTitle title="承認キュー" desc="会社別の承認待ち、承認済み、期限切れを状態に応じて確認します。" />
-      <div className="action-note" role="status">{approvalStatusNote || `承認候補 ${visibleApprovals.length}件 / 承認済み ${approvedApprovals.length}件 / external_action=false`}</div>
+      <PageTitle title="承認キュー" desc="会社別の承認待ち、承認済み、期限切れを状態に応じて確認します。">
+        <Button controlId="approvals.refresh" disabled={busy} onClick={refreshApprovals}>保存状態を再取得</Button>
+      </PageTitle>
+      <p className="muted" data-control-id="approvals.company-scope">対象会社: {readbackCompanyLabel} / {readbackCompanyId || "会社スコープ未確認"} / 承認操作は対象Runのreadback後に表示</p>
+      {runFilter && <p className="muted" data-control-id="approvals.run-filter">対象Run: {runFilter} / 会社: {companyFilter || "現在の権限範囲"}</p>}
+      <ApprovalReadbackPanel companyId={readbackCompanyId} initialRunId={runFilter} readApiJson={async (url, options) => {
+        const response = await mvpFetch(url, { cache: "no-store", signal: options?.signal });
+        if (!response.ok) throw new Error(`approval_readback_http_${response.status}`);
+        return response.json();
+      }} />
+      <p className="muted" role="status" data-control-id="approvals.company-api-readback">会社スコープAPI一覧: {companyApprovalReadbackStatus === "ready" ? `${companyApprovalReadback.length}件を取得` : companyApprovalReadbackStatus === "loading" ? "取得中" : "未確認"}</p>
+      <div className="action-note" role="status">{approvalStatusNote || `承認候補 ${visibleApprovals.length}件 / 承認済み ${approvedApprovals.length}件 / 業務結果は同じRunで確認`}</div>
       <Panel title="Standing Approval（常時許可）の範囲" controlId="approvals.standing-approval.panel">
         <div className="action-note" role="status" data-control-id="approvals.standing-approval.readback">対象範囲: 未確認（現行の承認source readbackにStanding Approval項目がありません）</div>
         <p className="muted">常時許可の存在・対象・期限は、正規の承認sourceで確認できるまで有効とは扱いません。求人応募やその他の外部効果へ、未確認の常時許可を自動適用しません。</p>
       </Panel>
-      <div className="split">
-        <Panel title="承認待ち / 期限切れ" className="list-panel" controlId="approvals.list.panel">
+      <div className="split approvals-layout">
+        <Panel title={runFilter ? "このRunの承認" : "承認待ち / 期限切れ"} className="list-panel" controlId="approvals.list.panel">
           {visibleApprovals.length ? visibleApprovals.map((a, i) => <button data-control-id={`approvals.row.${a.id ?? i}`} key={a.id ?? a.content} className={`list-row approval-row ${i === selectedIndex ? "selected" : ""}`} onClick={() => { setSelected(i); setApprovalStatusNote(`${a.kind}: ${a.content} を選択 / ${actionStamp()}`); }}><span>{a.kind}</span><strong>{a.content}</strong><small>{a.project} / {a.lane}</small><div className="approval-facts"><span>Action: {a.actionLabel}</span><span>Target: {a.targetLabel}</span><span>状態: {a.executionLabel}</span></div><StatusBadge status={a.status} label={a.approvalLabel} /></button>) : (
             <div className="empty-state">
               <strong>{approvedApprovals.length ? `承認済み ${approvedApprovals.length}件 / 承認待ちはありません` : "承認待ちはありません"}</strong>
@@ -8406,7 +10689,7 @@ function ApprovalsPage({ model }: { model: AppModel }) {
             </div>
           )}
         </Panel>
-        <aside className="side-panel wide">
+        <aside className="side-panel wide approvals-detail">
           {item ? (
             <>
               <h3>{item.kind}</h3>
@@ -8418,7 +10701,15 @@ function ApprovalsPage({ model }: { model: AppModel }) {
                 ["期限", item.due],
                 ["Risk", item.risk]
               ]} />
-              <div className="preview-box">{item.content} の全文プレビューです。{item.expired ? "承認期限を過ぎたため、この承認は無効です。内容を確認して必要なら新しい承認を作成してください。" : "送信前に人間が承認し、必要なら編集します。"} 外部投稿・送信・応募・公開は承認と証跡なしに実行しません。</div>
+              <div className="preview-box">{item.expired ? "承認期限を過ぎたため、この承認は無効です。必要なら内容を確認して新しい依頼を作成してください。" : "承認は表示されたRun・対象・内容だけに適用します。"} 承認メモを編集しても、実行内容や対象は変わりません。内容の変更は元の依頼を修正し、新しい対象に対して承認します。</div>
+              {item.runId && <Button controlId="approvals.open-run" onClick={() => go(`#/projects/${encodeURIComponent(item.project)}/runs/${encodeURIComponent(item.runId)}`)}>同じRunの結果を開く</Button>}
+              {item.portableBound && (portableTarget ? <div className="preview-box" data-control-id="approvals.target-preview">
+                <p>実行対象: {portableTarget.targetKey} / account: {portableTarget.accountRef}</p>
+                {portableTarget.workflowId === "daily-ai-research-source-sync" && <p>調査と原稿最大3件、既存Sheetsの39列・3ビューだけを同期します。遠隔のみの行は保持し、画像生成・送信・公開はしません。</p>}
+              </div> : <p className="muted" role={approvalRunReadStatus === "loading" ? "status" : "alert"}>{approvalRunReadStatus === "loading"
+                ? "同じRunの実行対象を確認中です。"
+                : approvalRunReadStatus === "error" ? "同じRunの実行対象を取得できませんでした。"
+                  : "取得したRunの対象が、この承認の内容と一致しません。"} 「保存状態を再取得」で確認してください。対象を確認できるまで承認・実行は開始しません。</p>)}
               {(item.bound || item.portableBound) && <DataTable controlId={`approvals.binding.${item.id}`} headers={["Binding", "Value"]} rows={[
                 ["Binding type", item.portableBound ? "portable run/action" : "durable job"],
                 ["Action", item.actionKind],
@@ -8427,13 +10718,13 @@ function ApprovalsPage({ model }: { model: AppModel }) {
                 ["Policy", item.policyVersion],
                 ["Decision revision", String(item.revision)]
               ]} />}
-              {editing && <label>修正メモ<textarea data-control-id="approvals.edit" aria-label="承認修正メモ" value={approvalNote} onChange={(event) => setApprovalNote(event.target.value)} /></label>}
-              {canDecideApproval && item.decisionEligible ? <div className="button-row"><Button controlId="approvals.approve" variant="primary" icon={<Check size={15} />} onClick={approveSelected}>承認</Button><Button controlId="approvals.edit-button" icon={<Edit3 size={15} />} onClick={() => { setEditing(true); setApprovalStatusNote(`${item.kind}: 編集欄を開きました / ${actionStamp()}`); setReceipt(`${item.kind} の編集欄を開きました。`); }}>編集</Button><Button controlId="approvals.reject" variant="danger" onClick={rejectSelected}>却下</Button></div> : <p className="muted" data-control-id="approvals.read-only">{item.expired ? "期限切れのため操作できません。内容を確認し、新しい承認を作成してください。" : "承認状態または会社権限を確認できないため、承認操作は表示していません。"}</p>}
+              {editing && <label>承認メモ（実行内容は変わりません）<textarea data-control-id="approvals.edit" aria-label="承認修正メモ" disabled={busy || readbackRequired} value={approvalNote} onChange={(event) => setApprovalNote(event.target.value)} /></label>}
+              {canDecideApproval && item.decisionEligible ? <div className="button-row"><Button controlId="approvals.approve" variant="primary" icon={<Check size={15} />} disabled={busy || readbackRequired || (item.portableBound && !portableTarget)} onClick={approveSelected}>承認</Button><Button controlId="approvals.edit-button" icon={<Edit3 size={15} />} disabled={busy || readbackRequired} onClick={() => { setEditing(true); setApprovalStatusNote(`${item.kind}: 承認メモ欄を開きました / ${actionStamp()}`); }}>承認メモを編集</Button><Button controlId="approvals.reject" variant="danger" disabled={busy || readbackRequired} onClick={rejectSelected}>却下</Button></div> : <p className="muted" data-control-id="approvals.read-only">{item.expired ? "期限切れのため操作できません。内容を確認し、新しい承認を作成してください。" : item.knownStatus && !item.decisionEligible ? "この承認は確定済みです。同じRunの結果を確認してください。" : "承認状態または会社権限を確認できないため、承認操作は表示していません。"}</p>}
             </>
           ) : (
             <>
               <h3>{approvedApprovals.length ? "承認済みです" : "承認待ちはありません"}</h3>
-              <p className="muted">API readback / 承認済み {approvedApprovals.length}件 / external_action=false</p>
+              <p className="muted">API readback / 承認済み {approvedApprovals.length}件 / 業務結果は同じRunで確認</p>
               <div className="preview-box">{approvedApprovals.length ? "この承認はすでに確定しているため、再承認ボタンは表示しません。対象Runのreceipt/readbackで次の処理を確認します。" : "新しい承認が作成されると、対象workflow、停止条件、証跡URI、操作ボタンがここに表示されます。"}</div>
             </>
           )}
@@ -8445,15 +10736,25 @@ function ApprovalsPage({ model }: { model: AppModel }) {
 
 function RunsPage({ model }: { model: AppModel }) {
   const { mvpState, setMvpState, setReceipt, setAutomationRows } = model;
-  const runs = mvpState.runs ?? [];
-  const jobs = mvpState.jobs ?? [];
-  const proofs = mvpState.proofs ?? [];
   const route = useRoute();
+  const routeQuery = route.includes("?") ? route.slice(route.indexOf("?") + 1) : "";
+  const scopedCompanyId = safeProjectId(new URLSearchParams(routeQuery).get("company_id"));
+  const initialScopedState = scopedCompanyId
+    && mvpState.company_scope?.enforced === true
+    && mvpState.company_scope.company_ids?.length === 1
+    && mvpState.company_scope.company_ids[0] === scopedCompanyId ? mvpState : null;
+  const [scopedState, setScopedState] = useState<MvpState | null>(initialScopedState);
+  const [scopedReadbackStatus, setScopedReadbackStatus] = useState<"loading" | "ready" | "error">(scopedCompanyId ? (initialScopedState ? "ready" : "loading") : "ready");
+  const [scopedReadbackBlocker, setScopedReadbackBlocker] = useState<string | null>(null);
+  const viewState = scopedCompanyId ? (scopedState ?? {}) : mvpState;
+  const runs = (viewState.runs ?? []).filter((run: any) => !scopedCompanyId || String(run.company_id ?? run.project_id ?? "") === scopedCompanyId);
+  const jobs = (viewState.jobs ?? []).filter((job: any) => !scopedCompanyId || String(job.company_id ?? job.project_id ?? "") === scopedCompanyId);
+  const proofs = (viewState.proofs ?? []).filter((proof: any) => !scopedCompanyId || String(proof.company_id ?? proof.project_id ?? "") === scopedCompanyId);
+  const approvals = (viewState.approvals ?? []).filter((approval: any) => !scopedCompanyId || String(approval.company_id ?? approval.project_id ?? "") === scopedCompanyId);
   const [statusFilter, setStatusFilter] = useState("all");
   const [projectFilter, setProjectFilter] = useState("all");
   const [blockerFilter, setBlockerFilter] = useState(() => {
-    const query = route.includes("?") ? route.slice(route.indexOf("?") + 1) : "";
-    return safeRouteValue(new URLSearchParams(query).get("blocker"), 240);
+    return safeRouteValue(new URLSearchParams(routeQuery).get("blocker"), 240);
   });
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [selectedRunDetail, setSelectedRunDetail] = useState<RunDetail | null>(null);
@@ -8463,22 +10764,22 @@ function RunsPage({ model }: { model: AppModel }) {
   const [mutatingJobId, setMutatingJobId] = useState<string | null>(null);
   const retryIdempotencyRef = useRef<Record<string, string>>({});
   const [actionNote, setActionNote] = useState("実行履歴を開きました。再読込とfilter操作の結果はここにも表示します。");
-  const projectForRun = (run: any) => run.company_id ?? mvpState.automations?.find((automation) => automation.id === run.automation_id)?.project_id ?? "";
+  const projectForRun = (run: any) => run.company_id ?? run.project_id ?? viewState.automations?.find((automation) => automation.id === run.automation_id)?.project_id ?? "";
   const statusMatches = (run: any) => {
     if (statusFilter === "active") return isRunActiveStatus(run.status);
     if (statusFilter === "blocked") return isRunStoppedStatus(run.status);
     if (statusFilter === "completed") return isRunCompletedStatus(run.status);
     return true;
   };
-  const blockerMatches = (run: any) => !blockerFilter || runBlockerFilterKey(run, mvpState) === blockerFilter;
-  const publicRunHistoryBlocker = (run: any) => publicRunBlockerSummary(run, mvpState) || publicRunBlockerSummary(run);
+  const blockerMatches = (run: any) => !blockerFilter || runBlockerFilterKey(run, viewState) === blockerFilter;
+  const publicRunHistoryBlocker = (run: any) => publicRunBlockerSummary(run, viewState) || publicRunBlockerSummary(run);
   const filteredRuns = runs.filter((run) => statusMatches(run) && (projectFilter === "all" || projectForRun(run) === projectFilter) && blockerMatches(run));
   const activeRuns = runs.filter((run) => isRunActiveStatus(run.status));
   const activeRunsForProject = activeRuns.filter((run) => projectFilter === "all" || projectForRun(run) === projectFilter);
   const blockedRuns = runs.filter((run) => isRunStoppedStatus(run.status));
   const stoppedRuns = blockedRuns;
   const completedRuns = runs.filter((run) => isRunCompletedStatus(run.status));
-  const blockerOptions = [...new Map(blockedRuns.map((run) => [runBlockerFilterKey(run, mvpState), blockerGroupLabel(run, mvpState)]))].sort((a, b) => a[1].localeCompare(b[1], "ja"));
+  const blockerOptions = [...new Map(blockedRuns.map((run) => [runBlockerFilterKey(run, viewState), blockerGroupLabel(run, viewState)]))].sort((a, b) => a[1].localeCompare(b[1], "ja"));
   const dashboardSelectedRun = runs.find((run) => run.id === selectedRunId && filteredRuns.some((filtered) => filtered.id === run.id)) ?? filteredRuns[0] ?? null;
   const detailForCurrentRun = selectedRunDetail?.run?.id === dashboardSelectedRun?.id ? selectedRunDetail : null;
   const selectedRun = newerRunSnapshot(detailForCurrentRun?.run, dashboardSelectedRun);
@@ -8492,16 +10793,43 @@ function RunsPage({ model }: { model: AppModel }) {
   const selectedWorkerEvents = detailForCurrentRun?.workerEvents ?? [];
   const selectedJob = selectedRun ? jobs.find((job) => job.run_id === selectedRun.id) ?? null : null;
   const selectedJobCompanyId = String(selectedJob?.company_id ?? selectedRun?.company_id ?? "");
-  const selectedJobRole = projectOptionsFromState(mvpState).find((company) => company.id === selectedJobCompanyId)?.role ?? "viewer";
+  const selectedJobRole = projectOptionsFromState(viewState).find((company) => company.id === selectedJobCompanyId)?.role ?? "viewer";
   const canMutateJob = ["owner", "admin", "operator"].includes(selectedJobRole);
+  const refreshScoped = async () => {
+    if (!scopedCompanyId) return;
+    setScopedReadbackStatus("loading");
+    setScopedReadbackBlocker(null);
+    try {
+      const state = await readMvpState("ui", { fresh: true, companyId: scopedCompanyId });
+      const scope = state.company_scope;
+      if (scope?.enforced !== true || !Array.isArray(scope.company_ids) || scope.company_ids.length !== 1 || scope.company_ids[0] !== scopedCompanyId) {
+        throw new Error("company_scoped_runs_readback_mismatch");
+      }
+      setScopedState(state);
+      setScopedReadbackStatus("ready");
+      setMvpState(state);
+      setAutomationRows(toAutomationRows(state.automations ?? []));
+      setReceipt(`会社別Runs readback 済みです。company=${scopedCompanyId} / runs=${state.runs?.length ?? 0}`);
+      setActionNote(`会社別Runs再読込完了: company=${scopedCompanyId} / runs=${state.runs?.length ?? 0} / ${actionStamp()}`);
+    } catch (error) {
+      setScopedState(null);
+      setScopedReadbackStatus("error");
+      setScopedReadbackBlocker(error instanceof Error ? error.message : "company_scoped_runs_unavailable");
+      setActionNote(`会社別Runs readback未確認: company=${scopedCompanyId} / ${actionStamp()}`);
+    }
+  };
   const refresh = async () => {
+    if (scopedCompanyId) {
+      await refreshScoped();
+      return;
+    }
     try {
       const state = await readMvpState("ui", { fresh: true });
       setMvpState(state);
       setSelectedRunId((current) => resolveSelectedRunId(current, state.runs ?? [], state.actionableRuns ?? []));
       setAutomationRows(toAutomationRows(state.automations ?? []));
       setReceipt(`Runs readback 済みです。runs=${state.runs?.length ?? 0} / proofs=${state.proofs?.length ?? 0}`);
-      setActionNote(`再読込完了: runs=${state.runs?.length ?? 0} / proofs=${state.proofs?.length ?? 0} / project=${projectFilter} / ${actionStamp()}`);
+        setActionNote(`再読込完了: runs=${state.runs?.length ?? 0} / proofs=${state.proofs?.length ?? 0} / project=${projectFilter} / ${actionStamp()}`);
     } catch {
       setReceipt("Runs readback に失敗しました。MVP API接続を確認してください。");
       setActionNote(`再読込失敗: MVP API接続を確認してください / ${actionStamp()}`);
@@ -8546,8 +10874,11 @@ function RunsPage({ model }: { model: AppModel }) {
     void refresh();
   }, []);
   React.useEffect(() => {
-    const query = route.includes("?") ? route.slice(route.indexOf("?") + 1) : "";
-    setBlockerFilter(safeRouteValue(new URLSearchParams(query).get("blocker"), 240));
+    if (!scopedCompanyId) return;
+    void refreshScoped();
+  }, [scopedCompanyId]);
+  React.useEffect(() => {
+    setBlockerFilter(safeRouteValue(new URLSearchParams(routeQuery).get("blocker"), 240));
   }, [route]);
   React.useEffect(() => {
     const currentRunId = dashboardSelectedRun?.id;
@@ -8562,7 +10893,9 @@ function RunsPage({ model }: { model: AppModel }) {
     setSelectedProofId(null);
     setProofView(null);
     setDetailLoading(true);
-    fetchApiJson<RunDetail>(`/api/runs/${encodeURIComponent(currentRunId)}`)
+    (scopedCompanyId
+      ? requestCompanyRunDetail(scopedCompanyId, currentRunId)
+      : fetchApiJson<RunDetail>(`/api/runs/${encodeURIComponent(currentRunId)}`))
       .then((detail) => {
         if (cancelled) return;
         setSelectedRunDetail(detail);
@@ -8575,7 +10908,7 @@ function RunsPage({ model }: { model: AppModel }) {
         if (!cancelled) setDetailLoading(false);
       });
     return () => { cancelled = true; };
-  }, [dashboardSelectedRun?.id]);
+  }, [dashboardSelectedRun?.id, scopedCompanyId]);
   React.useEffect(() => {
     if (!selectedProofId) {
       setProofView(null);
@@ -8590,14 +10923,24 @@ function RunsPage({ model }: { model: AppModel }) {
   }, [selectedProofId]);
   React.useEffect(() => {
     const timer = window.setInterval(() => {
-      readMvpState().then((state) => {
+      (scopedCompanyId ? readMvpState("ui", { fresh: true, companyId: scopedCompanyId }) : readMvpState()).then((state) => {
+        if (scopedCompanyId && (state.company_scope?.enforced !== true || state.company_scope.company_ids?.length !== 1 || state.company_scope.company_ids[0] !== scopedCompanyId)) return;
+        if (scopedCompanyId) setScopedState(state);
         setMvpState(state);
         setAutomationRows(toAutomationRows(state.automations ?? []));
         setSelectedRunId((current) => resolveSelectedRunId(current, state.runs ?? [], state.actionableRuns ?? []));
       }).catch(() => undefined);
     }, 30000);
     return () => window.clearInterval(timer);
-  }, [setAutomationRows, setMvpState]);
+  }, [setAutomationRows, setMvpState, scopedCompanyId]);
+  if (scopedCompanyId && scopedReadbackStatus !== "ready") {
+    return <section>
+      <PageTitle title="実行履歴" desc="会社別の保存された確認記録を表示します。">
+        <Button controlId="runs.scoped-refresh" icon={<RefreshCw size={15} />} onClick={() => { void refresh(); }}>再読込</Button>
+      </PageTitle>
+      <ProjectUnavailablePage loading={scopedReadbackStatus === "loading"} scopeLabel={`Runs / ${scopedCompanyId}`} blocker={scopedReadbackStatus === "error" ? scopedReadbackBlocker : undefined} reason={scopedReadbackStatus === "loading" ? "会社別Runs readbackを確認しています。" : "会社別Runs readbackを取得できません。グローバル履歴へフォールバックせず、同じ会社scopeを再確認してください。"} />
+    </section>;
+  }
   return (
     <section>
       <PageTitle title="実行履歴" desc="自動化の進み具合と保存された確認記録を表示します。">
@@ -8630,7 +10973,7 @@ function RunsPage({ model }: { model: AppModel }) {
         <div className="filter-row">
           {[
             ["all", "全プロジェクト"],
-            ...projectOptionsFromState(mvpState).map((option) => [option.id, option.label])
+            ...projectOptionsFromState(viewState).map((option) => [option.id, option.label])
             ].map(([key, label]) => <button data-control-id={`runs.project-filter.${key}`} key={key} className={projectFilter === key ? "selected" : ""} onClick={() => { setProjectFilter(key); setActionNote(`Project filter: ${label} を選択しました / ${actionStamp()}`); }}>{label}</button>)}
         </div>
         {blockerOptions.length > 0 && <details className="runs-blocker-filter">
@@ -8645,7 +10988,7 @@ function RunsPage({ model }: { model: AppModel }) {
         </details>}
         <DataTable controlId="runs.preview.table" headers={["項目", "状態", "意味"]} rows={[
           ["処理候補", String(activeRunsForProject.length), "選択中の会社にあるqueued/running Run"],
-          ["承認待ち", String((mvpState.approvals ?? []).filter((approval) => isApprovalWaiting(approval.status, approval.expires_at)).length), "外部操作の前に人間確認が必要な件数"],
+          ["承認待ち", String(approvals.filter((approval) => isApprovalWaiting(approval.status, approval.expires_at)).length), "外部操作の前に人間確認が必要な件数"],
           ["安全境界", "外部操作なし", "投稿・送信・削除・認証・課金は承認なしに実行しません"]
         ]} />
       </Panel>
@@ -8653,9 +10996,9 @@ function RunsPage({ model }: { model: AppModel }) {
       <div className="split">
         <Panel title="履歴" className="list-panel" controlId="runs.history.panel">
           <DataTable controlId="runs.history.table" headers={["記録", "自動化", "状態", "開始待ち", "確認事項", "記録数"]} rows={filteredRuns.slice(0, 20).map((run) => [
-            <button data-control-id={`runs.row.run-link.${run.id}`} className="link-button" onClick={() => { setSelectedRunId(run.id); setActionNote(`履歴を選択しました / ${publicRunStatusForRun(run, mvpState)} / ${actionStamp()}`); }}>{run.id}</button>,
+            <button data-control-id={`runs.row.run-link.${run.id}`} className="link-button" onClick={() => { setSelectedRunId(run.id); setActionNote(`履歴を選択しました / ${publicRunStatusForRun(run, viewState)} / ${actionStamp()}`); }}>{run.id}</button>,
             run.automation_name ?? run.automation_id,
-            <StatusBadge status={isRunCompletedStatus(run.status) ? "approved" : isReadOnlyNoEffectReadbackComplete(run, mvpState) ? "waiting" : isRunStoppedStatus(run.status) ? "blocked" : run.status === "running" ? "running" : "waiting"} label={publicRunStatusForRun(run, mvpState)} />,
+            <StatusBadge status={isRunCompletedStatus(run.status) ? "approved" : isReadOnlyNoEffectReadbackComplete(run, viewState) ? "waiting" : isRunStoppedStatus(run.status) ? "blocked" : run.status === "running" ? "running" : "waiting"} label={publicRunStatusForRun(run, viewState)} />,
             run.queued_at ?? "-",
             publicRunHistoryBlocker(run),
             String(proofCountForRun(run, proofs))
@@ -8663,7 +11006,7 @@ function RunsPage({ model }: { model: AppModel }) {
         </Panel>
         <aside className="side-panel wide">
           <h3>確認記録</h3>
-          {selectedRun ? <p className="muted">{selectedRun.id} / {publicRunStatusForRun(selectedRun, mvpState)}{detailLoading ? " / 読込中" : ""}</p> : <p className="muted">履歴はまだありません。</p>}
+          {selectedRun ? <p className="muted">{selectedRun.id} / {publicRunStatusForRun(selectedRun, viewState)}{detailLoading ? " / 読込中" : ""}</p> : <p className="muted">履歴はまだありません。</p>}
           {selectedRun && <p className="muted">手順 {selectedSteps.length}件 / 更新 {selectedWorkerEvents.length}件</p>}
           {selectedRun && <RunTimeline run={selectedRun} compact proofCount={selectedProofs.length} />}
           {selectedProofs.length ? selectedProofs.map((proof) => (
@@ -8702,6 +11045,9 @@ function RunsPage({ model }: { model: AppModel }) {
 
 function PcStatusPage({ model }: { model: AppModel }) {
   const { setReceipt, mvpState, setMvpState, setAutomationRows } = model;
+  const route = useRoute();
+  const routeQuery = route.includes("?") ? route.slice(route.indexOf("?") + 1) : "";
+  const scopedCompanyId = safeProjectId(new URLSearchParams(routeQuery).get("company_id"));
   const worker = mvpState.worker;
   const workerSummary = workerStatusSummary(worker);
   const queueHistoricalCount = worker?.queue_historical_count ?? 0;
@@ -8714,39 +11060,64 @@ function PcStatusPage({ model }: { model: AppModel }) {
   const portableRemoteWorker = processReadback?.portableRemoteWorker;
   const workerScope = portableRemoteWorker?.scopeReadback ?? processReadback?.workerScopeReadback;
   const workerTransport = portableRemoteWorker?.transportReadback;
+  const portableProcessReadback = publicPortableRemoteWorkerProcessReadback(portableRemoteWorker);
   const workerTransportLabel = workerTransport?.heartbeatStatus === "ok"
     ? `受理済み / ${relativeAgeLabel(workerTransport.lastSuccessfulHeartbeatAt ?? workerTransport.heartbeatAt ?? null)}`
     : workerTransport?.heartbeatStatus === "blocked"
       ? `blocked / ${workerTransport.heartbeatExactBlocker ?? "transport blocker不明"}`
       : "未確認";
   const [pcNote, setPcNote] = useState("PC状態を開きました。再確認結果はここにも表示します。");
+  const [pcRefreshing, setPcRefreshing] = useState(false);
+  const pcInFlight = React.useRef(false);
+  const pcMounted = React.useRef(true);
+  React.useEffect(() => { pcMounted.current = true; return () => { pcMounted.current = false; }; }, []);
+  const orderedRuns = [...(mvpState.runs ?? [])].sort((a, b) => String(b.updated_at ?? b.created_at ?? "").localeCompare(String(a.updated_at ?? a.created_at ?? "")));
+  const activeRuns = orderedRuns.filter((run) => isRunActiveStatus(run.status));
+  const stoppedRuns = orderedRuns.filter((run) => isRunStoppedStatus(run.status));
   const refresh = async () => {
+    if (pcInFlight.current) return;
+    pcInFlight.current = true; setPcRefreshing(true);
     try {
-      const state = await readMvpState("ui", { fresh: true });
+      const state = await readMvpState("ui", { fresh: true, companyId: scopedCompanyId || undefined });
+      if (scopedCompanyId && (state.company_scope?.enforced !== true
+        || state.company_scope.company_ids?.length !== 1
+        || state.company_scope.company_ids[0] !== scopedCompanyId)) {
+        throw new Error("pc_status_company_scope_mismatch");
+      }
+      if (!pcMounted.current) return;
       setMvpState(state);
       setAutomationRows(toAutomationRows(state.automations ?? []));
       const nextSummary = workerStatusSummary(state.worker);
       setReceipt(`Local Agent heartbeat readback 済みです。worker=${state.worker?.status ?? "unknown"} / queue=${state.worker?.queue_depth ?? 0}${nextSummary.blocker ? ` / blocker=${nextSummary.blocker}` : ""}`);
       setPcNote(`Local Agent readback完了: worker=${state.worker?.status ?? "unknown"} / queue=${state.worker?.queue_depth ?? 0} / ${nextSummary.display} / ${actionStamp()}`);
     } catch {
+      if (!pcMounted.current) return;
       setReceipt("Local Agent のMVP readbackに失敗しました。");
       setPcNote(`Local Agent readback失敗: MVP API接続を確認してください / ${actionStamp()}`);
-    }
+    } finally { pcInFlight.current = false; if (pcMounted.current) setPcRefreshing(false); }
   };
+  React.useEffect(() => {
+    if (scopedCompanyId) void refresh();
+  }, [scopedCompanyId]);
   return (
     <section>
-      <PageTitle title="PC状態" desc="ユーザーPC上のAutomation OS Local Agent状態を表示します。">
-        <Button controlId="pc.refresh" onClick={refresh}>再確認</Button>
+      <PageTitle title="PC状態" desc="Mac workerのheartbeatと、API応答ホスト上のprocess診断を分けて表示します。">
+        <Button controlId="pc.refresh" onClick={refresh} disabled={pcRefreshing}>{pcRefreshing ? "確認中" : "再確認"}</Button>
       </PageTitle>
       <div className="action-note" role="status">{pcNote}</div>
       <div className="cards four">
         <MetricCard controlId="pc.metric.local-agent" title="Local Agent" value={workerSummary.fresh ? "heartbeat確認済み" : workerSummary.stored ? "API readback" : "要確認"} sub={`${workerSummary.nextAction} / ${workerSummary.freshness}`} status={workerSummary.fresh ? "enabled" : workerSummary.stored ? "draft" : "blocked"} />
         <MetricCard controlId="pc.metric.heartbeat" title="Heartbeat" value={workerSummary.fresh ? "fresh" : workerSummary.stored ? "未取得" : "stale"} sub={workerSummary.freshness} status={workerSummary.fresh ? "enabled" : workerSummary.stored ? "draft" : "blocked"} />
         <MetricCard controlId="pc.metric.queue" title="Queue" value={String(worker?.queue_depth ?? 0)} sub={queueDisplay} status={queueCurrentCount > 0 ? "running" : queueHistoricalCount > 0 || queueUnknownCount > 0 ? "draft" : "enabled"} />
-        <MetricCard controlId="pc.metric.last-run" title="Last Run" value={worker?.last_run_id ? "あり" : "なし"} sub={worker?.last_run_id ?? "未実行"} status={worker?.last_run_id ? "enabled" : "waiting"} />
+        <MetricCard controlId="pc.metric.last-run" title="最新のRun記録" value={orderedRuns.length ? "あり" : "なし"} sub={orderedRuns[0]?.id ?? "記録なし"} status={orderedRuns.length ? "enabled" : "waiting"} />
       </div>
-      <Panel title="Local Agent readback" controlId="pc.readback.panel"><DataTable controlId="pc.readback.table" headers={["項目", "状態", "次に見ること"]} rows={[["接続状態", workerSummary.fresh ? "接続確認済み" : workerSummary.stored ? "API保存済み / heartbeat未確認" : "要確認", workerSummary.nextAction], ["Worker", worker?.status ?? "unknown", worker?.id ?? "unknown"], ["Queue scope", workerScope?.status ?? "未確認", `AOS=${worker?.queue_scope?.company_ids?.join(", ") || workerScope?.controlPlaneCompanyIds?.join(", ") || "未確認"} / worker=${workerScope?.remoteWorkerCompanyIds?.join(", ") || "未確認"}`], ["Heartbeat", workerSummary.freshness, workerSummary.blocker ?? (workerSummary.stored ? "Mac heartbeat未取得" : "問題なし")], ["Heartbeat transport", workerTransportLabel, workerTransport?.claimStatus === "idle" ? "claimなし。queue claim/receipt/source syncは未完了" : workerTransport?.heartbeatExactBlocker ?? "同一Runのclaim/receiptを確認"], ["Queue", String(worker?.queue_depth ?? 0), worker?.next_action ?? (worker?.queue_scope?.source === "local_sqlite" ? "ローカルSQLite queueです。remote workerの本番scopeとは別物です。" : "外部操作は各workflowの承認境界で停止")], ["Portable remote worker process", portableRemoteWorker?.status ?? "未確認", portableRemoteWorker?.status === "present" ? `effects=${portableRemoteWorker.effects ?? "unknown"}。process存在だけではheartbeat・queue claim・receipt・source syncを完了扱いにしません。` : "同一ホストprocess readbackを確認してください。"], ["Browser Use live resource", processReadback?.unregisteredBrowserProcessCount != null ? `未登録 ${processReadback.unregisteredBrowserProcessCount}件 / mismatch ${processReadback.bindingMismatchCount ?? 0}件` : "未確認", processReadback?.exactBlocker ?? workerScope?.exactBlocker ?? "登録profile/portの同一Run readbackを確認してください。"]]} /></Panel>
-      <Panel title="実行中ローカルタスク" controlId="pc.running.panel"><DataTable controlId="pc.running.table" headers={["Run", "Automation", "開始時刻", "ステータス", "確認事項"]} rows={(mvpState.runs ?? []).filter((run) => isRunActiveStatus(run.status) || isRunStoppedStatus(run.status)).slice(0, 8).map((run) => [run.id, run.automation_name ?? run.automation_id, run.started_at ?? run.queued_at ?? "-", <StatusBadge status={isReadOnlyNoEffectReadbackComplete(run, mvpState) ? "waiting" : isRunStoppedStatus(run.status) ? "blocked" : run.status === "running" ? "running" : "waiting"} label={publicRunStatusForRun(run, mvpState)} />, publicRunBlockerSummary(run, mvpState)])} /></Panel>
+      <Panel title="Local Agent readback" controlId="pc.readback.panel"><DataTable controlId="pc.readback.table" headers={["項目", "状態", "次に見ること"]} rows={[["接続状態", workerSummary.fresh ? "接続確認済み" : workerSummary.stored ? "API保存済み / heartbeat未確認" : "要確認", workerSummary.nextAction], ["Worker", worker?.status ?? "unknown", worker?.id ?? "unknown"], ["Queue scope", workerScope?.status ?? "未確認", `AOS=${worker?.queue_scope?.company_ids?.join(", ") || workerScope?.controlPlaneCompanyIds?.join(", ") || "未確認"} / worker=${workerScope?.remoteWorkerCompanyIds?.join(", ") || "未確認"}`], ["Heartbeat", workerSummary.freshness, workerSummary.blocker ?? (workerSummary.stored ? "Mac heartbeat未取得" : "問題なし")], ["Heartbeat transport", workerTransportLabel, workerTransport?.claimStatus === "idle" ? "claimなし。queue claim/receipt/source syncは未完了。heartbeat・queue claim・receipt・source syncは別readbackです" : workerTransport?.heartbeatExactBlocker ?? "同一Runのclaim/receiptを確認"], ["Queue", String(worker?.queue_depth ?? 0), worker?.next_action ?? (worker?.queue_scope?.source === "local_sqlite" ? "ローカルSQLite queueです。remote workerの本番scopeとは別物です。" : "外部操作は各workflowの承認境界で停止")], ["Portable remote worker process", portableProcessReadback.label, portableProcessReadback.detail], ["AOS browser resource readback", processReadback?.unregisteredBrowserProcessCount != null ? `未登録 ${processReadback.unregisteredBrowserProcessCount}件 / mismatch ${processReadback.bindingMismatchCount ?? 0}件` : "未確認", processReadback?.exactBlocker ?? workerScope?.exactBlocker ?? "Companionのworkflow-owned resourceと同一Run readbackを確認してください。"]]} /></Panel>
+      <p className="muted">上のprocess診断はAPIが応答したホストの観測です。ZeaburにMacのprocessが見つからないことだけではMac停止と判定できません。Mac側の通信はheartbeatで、heartbeat・queue claim・receipt・source syncはそれぞれ別readbackです。業務結果は同一Runのreceiptで確認してください。</p>
+      <Panel title="記録上の処理中・待機中Run（現行queueとは別）" controlId="pc.running.panel">
+        <p className="muted">閲覧権限のある全会社のRun記録です。queuedという保存状態だけでは、現に待機・稼働しているとは判定しません。上のQueue件数はdurable Jobの別集計です。</p>
+        {activeRuns.length ? <DataTable controlId="pc.running.table" headers={["Run", "会社", "Automation", "記録上の開始時刻", "保存状態", "確認事項"]} rows={activeRuns.slice(0, 8).map((run) => [run.id, projectLabelFromState(mvpState, run.company_id ?? run.project_id ?? ""), run.automation_name ?? run.automation_id, run.started_at ?? "未記録", <StatusBadge status="waiting" label={`${publicRunStatusForRun(run, mvpState)}（稼働未確認）`} />, publicRunBlockerSummary(run, mvpState)])} /> : <p>現在の読取範囲に処理中・待機中のRun記録はありません。</p>}
+      </Panel>
+      <Panel title="停止・失敗・取消の履歴（稼働中ではありません）" controlId="pc.stopped.panel">{stoppedRuns.length ? <DataTable controlId="pc.stopped.table" headers={["Run", "更新時刻", "状態", "記録された理由"]} rows={stoppedRuns.slice(0, 8).map((run) => [run.id, run.updated_at ?? "未記録", publicRunStatusForRun(run, mvpState), publicRunBlockerSummary(run, mvpState)])} /> : <p>現在の読取範囲に停止履歴はありません。</p>}</Panel>
     </section>
   );
 }
@@ -8868,8 +11239,8 @@ function Panel({ title, children, className = "", controlId }: { title: string; 
   return <section data-control-id={controlId} className={`panel ${className}`}><div className="panel-head"><h2>{title}</h2></div>{children}</section>;
 }
 
-function MetricCard({ title, value, sub, status, controlId }: { title: string; value: string; sub: string; status: Status; controlId?: string }) {
-  return <div data-control-id={controlId} className="metric"><div><span>{title}</span><strong>{value}</strong><small>{sub}</small></div><StatusBadge status={status} /></div>;
+function MetricCard({ title, value, sub, status, statusLabel, controlId }: { title: string; value: string; sub: string; status: Status; statusLabel?: string; controlId?: string }) {
+  return <div data-control-id={controlId} className="metric"><div><span>{title}</span><strong>{value}</strong><small>{sub}</small></div><StatusBadge status={status} label={statusLabel} /></div>;
 }
 
 function DataTable({ headers, rows, controlId, caption }: { headers: string[]; rows: React.ReactNode[][]; controlId?: string; caption?: string }) {

@@ -96,6 +96,34 @@ test("remote worker scope mismatch is exposed as a queue blocker without exposin
   assert.doesNotMatch(JSON.stringify(readback), /token=sentinel|operator|user-data-dir/u);
 });
 
+test("canonical company scope ignores a legacy project alias when the live worker is uniquely bound", () => {
+  const readback = buildBrowserRuntimeProcessReadback({
+    capturedAt: "2026-08-11T18:05:00.000Z",
+    psOutput: "4401 1 /usr/local/bin/node /Users/operator/Documents/automation-os/scripts/aos-portable-remote-worker.mjs",
+    envOutputByPid: {
+      "4401": "AUTOMATION_OS_PORTABLE_EXTERNAL_EFFECTS=read_only AUTOMATION_OS_PORTABLE_WORKER_MODE=external AUTOMATION_OS_WORKER_DURABLE_ONLY=1 AUTOMATION_OS_PORTABLE_REMOTE_URL=https://automation-os.example/api AUTOMATION_OS_PORTABLE_REMOTE_COMPANY_ID=company_test AUTOMATION_OS_PORTABLE_REMOTE_WORKER_ID=mac-test"
+    },
+    workerStatusOutput: JSON.stringify({
+      schema: "aos.portable_remote_worker_status.v1",
+      worker_id: "mac-test",
+      pid: 4401,
+      remote_origin: "https://automation-os.example",
+      effects: "read_only",
+      status: "idle",
+      heartbeat_status: "ok",
+      heartbeat_at: "2026-08-11T18:04:59.000Z",
+      last_successful_heartbeat_at: "2026-08-11T18:04:59.000Z",
+      claim_status: "idle",
+      updated_at: "2026-08-11T18:04:59.000Z"
+    }),
+    controlPlaneCompanyIds: ["project-a", "company_test"]
+  });
+
+  assert.equal(readback.portableRemoteWorker.scopeReadback.status, "matched");
+  assert.equal(readback.portableRemoteWorker.scopeReadback.exactBlocker, null);
+  assert.deepEqual(readback.portableRemoteWorker.scopeReadback.controlPlaneCompanyIds, ["company_test"]);
+});
+
 test("empty same-host process readback distinguishes no process from unavailable readback", () => {
   const empty = buildBrowserRuntimeProcessReadback({ psOutput: "", capturedAt: "2026-08-11T18:01:00.000Z" });
   assert.equal(empty.status, "available");
@@ -107,6 +135,32 @@ test("empty same-host process readback distinguishes no process from unavailable
   assert.equal(unavailable.status, "unavailable");
   assert.equal(unavailable.exactBlocker, "browser_use_same_host_process_readback_unavailable");
   assert.equal(unavailable.externalActionExecuted, false);
+});
+
+test("unavailable API-host process readback still compares a reported canonical worker heartbeat scope", () => {
+  const readback = buildBrowserRuntimeProcessReadback({
+    psOutput: null,
+    capturedAt: "2026-08-11T18:06:00.000Z",
+    controlPlaneCompanyIds: ["company_test"],
+    remoteWorkerHeartbeat: {
+      schema: "aos.portable_remote_worker_status.v2",
+      company_id: "company_test",
+      worker_id: "mac-test",
+      worker_instance_id: "instance-test",
+      generation: "generation-test",
+      observed_at: "2026-08-11T18:05:59.000Z",
+      heartbeat_at: "2026-08-11T18:05:59.000Z",
+      status: "idle",
+      effects: "read_only",
+      claim_status: "idle",
+      updated_at: "2026-08-11T18:05:59.000Z"
+    }
+  });
+
+  assert.equal(readback.exactBlocker, "browser_use_same_host_process_readback_unavailable");
+  assert.equal(readback.portableRemoteWorker.scopeReadback.status, "matched");
+  assert.equal(readback.portableRemoteWorker.scopeReadback.exactBlocker, null);
+  assert.deepEqual(readback.portableRemoteWorker.scopeReadback.controlPlaneCompanyIds, ["company_test"]);
 });
 
 test("server projections can disable host process enumeration for hermetic tests", () => {
@@ -176,4 +230,76 @@ test("canonical room registry readback classifies foreign owners without claimin
   assert.equal(unknown?.roomId, null);
   assert.equal(readback.externalActionExecuted, false);
   assert.doesNotMatch(JSON.stringify(readback), /operator|user-data-dir/u);
+});
+
+test("fresh remote heartbeat is reported separately from absent same-host process readback", () => {
+  const heartbeat = {
+    schema: "aos.portable_worker_heartbeat.v2",
+    company_id: "company_test",
+    worker_id: "mac-test",
+    worker_instance_id: "instance-test",
+    generation: "generation-test",
+    observed_at: "2026-08-12T02:00:00.000Z",
+    status: "idle",
+    queue_depth: 0,
+    exact_blocker: null,
+    run_id: null,
+    runtime_observation: {
+      schema: "aos.portable_worker_runtime_observation.v1",
+      status: "idle",
+      observed_at: "2026-08-12T02:00:00.000Z",
+      run_id: null,
+      room_id: null,
+      browser_use: {
+        runtime_status: "unobserved",
+        process: { status: "unobserved", pid: null, process_count: null, profile_ref: null, port: null },
+        room: null,
+        transport: { status: "unobserved", last_seen_at: null }
+      }
+    }
+  };
+  const readback = buildBrowserRuntimeProcessReadback({
+    capturedAt: "2026-08-12T02:00:01.000Z",
+    psOutput: "",
+    workerStatusOutput: null,
+    controlPlaneCompanyIds: ["company_test"],
+    remoteWorkerHeartbeat: heartbeat
+  });
+
+  assert.equal(readback.portableRemoteWorker.status, "remote_reported");
+  assert.equal(readback.portableRemoteWorker.processStatus, "absent");
+  assert.equal(readback.portableRemoteWorker.processCount, 0);
+  assert.equal(readback.portableRemoteWorker.remoteReport?.readbackStatus, "reported");
+  assert.equal(readback.portableRemoteWorker.transportReadback.source, "heartbeat_metadata");
+  assert.equal(readback.portableRemoteWorker.transportReadback.heartbeatStatus, "ok");
+  assert.equal(readback.portableRemoteWorker.scopeReadback.status, "matched");
+  assert.equal(readback.portableRemoteWorker.scopeReadback.identityStatus, "verified");
+  assert.equal(readback.portableRemoteWorker.scopeReadback.remoteWorkerInstanceIds[0], "instance-test");
+  assert.equal(readback.browserProcesses.length, 0);
+  assert.doesNotMatch(JSON.stringify(readback), /Users\/|https?:\/\//u);
+});
+
+test("malformed remote heartbeat stays unreadable and never becomes a stopped process", () => {
+  const readback = buildBrowserRuntimeProcessReadback({
+    capturedAt: "2026-08-12T02:01:00.000Z",
+    psOutput: "",
+    workerStatusOutput: null,
+    controlPlaneCompanyIds: ["company_test"],
+    remoteWorkerHeartbeat: {
+      schema: "aos.portable_worker_heartbeat.v2",
+      company_id: "company_test",
+      worker_id: "mac-test",
+      worker_instance_id: "instance-test",
+      generation: "generation-test",
+      observed_at: "2026-08-12T02:01:00.000Z",
+      status: "idle",
+      runtime_observation: { path: "/Users/private" }
+    }
+  });
+
+  assert.equal(readback.portableRemoteWorker.status, "unknown");
+  assert.equal(readback.portableRemoteWorker.processStatus, "absent");
+  assert.equal(readback.portableRemoteWorker.remoteReport?.readbackStatus, "unreadable");
+  assert.equal(readback.portableRemoteWorker.scopeReadback.exactBlocker, "portable_worker_heartbeat_unreadable");
+  assert.doesNotMatch(JSON.stringify(readback), /Users\/private/u);
 });

@@ -204,8 +204,10 @@ export function scheduleRequiresOverduePolicy(
 }
 
 export function scheduleIsOverdue(scheduledFor: string, now: string): boolean {
-  return Date.parse(normalizedTime(scheduledFor, "scheduler_scheduled_time_invalid"))
-    < Date.parse(normalizedTime(now, "scheduler_now_time_invalid"));
+  // The resident scheduler polls once a minute, not exactly on the minute.
+  // Normal dispatch latency is not a missed run eligible for catch-up skip.
+  return Date.parse(normalizedTime(now, "scheduler_now_time_invalid"))
+    - Date.parse(normalizedTime(scheduledFor, "scheduler_scheduled_time_invalid")) > 60_000;
 }
 
 export function computeNextAutomationOccurrence(
@@ -223,10 +225,14 @@ export function computeNextAutomationOccurrence(
         : (() => { throw new AutomationSchedulerError("scheduler_manual_has_no_occurrence"); })();
   const fields = parseCron(cron);
   validateTimezone(schedule.timezone);
+  const formatter = schedule.timezone === "UTC" ? undefined : new Intl.DateTimeFormat("en-US", {
+    timeZone: schedule.timezone, hourCycle: "h23", minute: "2-digit",
+    hour: "2-digit", day: "2-digit", month: "2-digit", weekday: "short"
+  });
   let candidate = Math.floor(afterTime / 60_000) * 60_000 + 60_000;
   const max = candidate + 370 * 24 * 60 * 60_000;
   for (; candidate <= max; candidate += 60_000) {
-    const parts = zonedParts(new Date(candidate), schedule.timezone);
+    const parts = zonedParts(new Date(candidate), formatter);
     if (matchesField(fields.minute, parts.minute, 0, 59)
       && matchesField(fields.hour, parts.hour, 0, 23)
       && matchesField(fields.day, parts.day, 1, 31)
@@ -280,17 +286,8 @@ function matchesField(expression: string, value: number, min: number, max: numbe
   });
 }
 
-function zonedParts(date: Date, timezone: string): { minute: number; hour: number; day: number; month: number; weekday: number } {
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    timeZone: timezone,
-    hour12: false,
-    hourCycle: "h23",
-    minute: "2-digit",
-    hour: "2-digit",
-    day: "2-digit",
-    month: "2-digit",
-    weekday: "short"
-  });
+function zonedParts(date: Date, formatter?: Intl.DateTimeFormat): { minute: number; hour: number; day: number; month: number; weekday: number } {
+  if (!formatter) return { minute: date.getUTCMinutes(), hour: date.getUTCHours(), day: date.getUTCDate(), month: date.getUTCMonth() + 1, weekday: date.getUTCDay() };
   const parts = Object.fromEntries(formatter.formatToParts(date).map((part) => [part.type, part.value]));
   const weekday = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(parts.weekday);
   return { minute: Number(parts.minute), hour: Number(parts.hour), day: Number(parts.day), month: Number(parts.month), weekday };

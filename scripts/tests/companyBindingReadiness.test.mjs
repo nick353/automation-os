@@ -71,7 +71,8 @@ test("company binding CLI emits a stable read-only diagnostic and redacts regist
         AUTOMATION_OS_DB: databasePath,
         CODEX_AUTOMATIONS_ROOT: automationRoot,
         AOS_TRIGGER_PARITY_COMPANY_ID: "fixture-company",
-        AOS_COMPANY_BINDING_READINESS_NOW: "2026-09-03T00:00:00.000Z"
+        AOS_COMPANY_BINDING_READINESS_NOW: "2026-09-03T00:00:00.000Z",
+        AOS_BRIEF_DELIVERY_MODE: "home_only"
       }
     });
     const output = completed.stdout;
@@ -86,8 +87,13 @@ test("company binding CLI emits a stable read-only diagnostic and redacts regist
     assert.ok(result.schedules[0].exact_blockers.includes("protected_aos_company_and_endpoint_not_owner_selected"), output);
     assert.equal(result.database.integrity, "ok", output);
     assert.equal(result.database.stable, true, output);
+    assert.equal(result.readiness.brief.delivery_configured, true, output);
+    assert.equal(result.readiness.brief.exact_blocker, null, output);
     assert.equal(result.external_effects.external_action_executed, false, output);
     assert.equal(result.external_effects.graph_receipt_replayed, false, output);
+    assert.equal(result.authority_scope.kind, "local_sqlite_diagnostic", output);
+    assert.equal(result.authority_scope.production_claim_allowed, false, output);
+    assert.equal(result.authority_scope.protected_readback_required, true, output);
     assert.equal(result.company_binding_reconciliation.schema, "company_binding_reconciliation.v1", output);
     assert.equal(result.company_binding_reconciliation.canonical_company_id, null, output);
     assert.equal(result.company_binding_reconciliation.selection.selected, false, output);

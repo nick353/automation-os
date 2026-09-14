@@ -88,6 +88,7 @@ export type PortableWorkflowStartInput = {
 export type PortableWorkflowInputBundle = {
   phone?: string;
   account_ref?: string;
+  connection_ref_id?: string;
   target_key?: string;
   payload_hash?: string;
   content_key?: string;
@@ -250,31 +251,30 @@ export async function preparePortableExternalApprovalPostgres(input: {
   };
   const now = nowIso();
   const laneUpdate = step.lane_id
-    ? `\nUPDATE lanes SET status='blocked', progress=0, health='approval_required', updated_at=${sqlValue(now)} WHERE id=${sqlValue(step.lane_id)};`
-    : "";
+    ? `UPDATE lanes SET status='blocked', progress=0, health='approval_required', updated_at=${sqlValue(now)} WHERE id=${sqlValue(step.lane_id)}`
+    : null;
   await runSqlScriptAsync([
     `UPDATE approvals SET step_id=${sqlValue(step.id)}, action_kind=${sqlValue(input.effectStage)}, target_account_ref_id=${sqlValue(typeof input.inputBundle.account_ref === "string" ? input.inputBundle.account_ref : `company:${input.companyId}`)}, payload_hash=${sqlValue(payloadHash)}, policy_version=${sqlValue("automation_os_portable_external_approval_binding.v1")}, expires_at=${sqlValue(expiresAt)}, resource_locks_json=${sqlValue(resourceLocks)} WHERE id=${sqlValue(approval.id)} AND run_id=${sqlValue(input.runId)};`,
     `UPDATE runs SET status='waiting_approval', metadata_json=${sqlValue(nextRunMetadata)}, updated_at=${sqlValue(now)} WHERE id=${sqlValue(input.runId)};`,
-    `UPDATE run_steps SET status='waiting_approval', started_at=NULL, completed_at=NULL, metadata_json=${sqlValue(nextStepMetadata)} WHERE id=${sqlValue(step.id)} AND run_id=${sqlValue(input.runId)};${laneUpdate}`,
+    `UPDATE run_steps SET status='waiting_approval', started_at=NULL, completed_at=NULL, metadata_json=${sqlValue(nextStepMetadata)} WHERE id=${sqlValue(step.id)} AND run_id=${sqlValue(input.runId)};`,
+    ...(laneUpdate ? [laneUpdate] : []),
     `INSERT INTO worker_events (id, company_id, run_id, step_id, lane_id, event_type, message, created_at, metadata_json) VALUES (${sqlValue(makeId("evt"))}, ${sqlValue(input.companyId)}, ${sqlValue(input.runId)}, ${sqlValue(step.id)}, ${sqlValue(step.lane_id)}, 'worker_blocked', 'portable external effects require explicit approval', ${sqlValue(now)}, ${sqlValue({ workflow_id: input.workflowId, exact_blocker: "portable_external_approval_required", external_action_executed: false })});`
   ]);
 }
 
 const portableTriggers = new Set<PortableTrigger>(["automation_os_scheduler", "automation_os_ui", "codex_app_bridge", "launchd", "github_actions"]);
 const COMPANION_TASK_ID_PATTERN = /^[A-Za-z0-9][-_A-Za-z0-9.:]{0,179}$/u;
-const unattendedPortableTriggers = new Set<PortableTrigger>(["automation_os_scheduler", "launchd", "github_actions"]);
-
 /**
- * Scheduled/worker-owned runs have no Codex task to own a Companion session.
- * Keep the interactive UI/App bridge on the Companion-first route, but bind
- * unattended admission to the already registered Browser Use CLI lane.
- * This is an explicit route selection, not an implicit fallback after a
- * failed Companion or Chrome attempt.
+ * A trigger does not choose a browser backend. The AOS UI's global backend
+ * setting is resolved when the run is admitted and frozen into that run's
+ * snapshot; callers can still pass an explicit surface requirement when a
+ * workflow genuinely needs one.
  */
 export function browserSurfaceRequirementForPortableTrigger(
-  sourceTrigger: PortableTrigger,
-): "automatic" | "browser_use_cli" {
-  return unattendedPortableTriggers.has(sourceTrigger) ? "browser_use_cli" : "automatic";
+  _sourceTrigger: PortableTrigger,
+  _workflowId?: PortableWorkflowId,
+): "automatic" {
+  return "automatic";
 }
 
 export function isPortableWorkflowTrigger(value: string): value is PortableTrigger {
@@ -368,7 +368,7 @@ function normalizedEffectStage(input: PortableWorkflowStartInput): PortableBusin
 }
 
 const PORTABLE_INPUT_BUNDLE_KEYS = new Set<keyof PortableWorkflowInputBundle>([
-  "phone", "account_ref", "target_key", "payload_hash", "content_key", "product_key", "asset_manifest_id",
+  "phone", "account_ref", "connection_ref_id", "target_key", "payload_hash", "content_key", "product_key", "asset_manifest_id",
   "job_url", "job_id", "application_url", "candidate_key", "bucket", "sequence", "attempt",
   "source_snapshot_id", "source_snapshot_expires_at", "supply_run_id", "remaining", "margin", "industry", "salary_min_jpy", "salary_max_jpy", "company", "role",
   "audience", "resume_locale", "resume_sha256", "owner_ref", "authority_ref", "input_bundle_ref", "target_digest", "source_state_digest"
@@ -546,9 +546,9 @@ function portableInvocationRequestHash(
   const effectStage = normalizedEffectStage(input);
   if (effectStage) payload.effect_stage = effectStage;
   // `automatic` is the historical default and must not change the identity
-  // of an existing interactive invocation. Unattended triggers resolve to an
-  // explicit official-extension requirement, which is intentionally part of
-  // the request hash so a route change cannot replay across surfaces.
+  // of an existing invocation. Explicit surface requirements remain part of
+  // the request hash so a deliberate route choice cannot replay across
+  // surfaces.
   if (input.browserSurfaceRequirement && input.browserSurfaceRequirement !== "automatic") {
     payload.browser_surface_requirement = input.browserSurfaceRequirement;
   }
@@ -858,11 +858,11 @@ export async function startPortableWorkflowRun(input: PortableWorkflowStartInput
   const workflow = await getPortableRegisteredWorkflow(input.workflowId);
   const requestedReadOnlyStage = normalizedReadOnlyStage(input);
   const requestedEffectStage = normalizedEffectStage(input);
-  // Resolve the unattended default before any idempotency lookup. The same
+  // Resolve the trigger default before any idempotency lookup. The same
   // normalized request must hash identically on the initial admission and on
   // a later completed-invocation readback.
   const browserSurfaceRequirement = input.browserSurfaceRequirement
-    ?? browserSurfaceRequirementForPortableTrigger(input.sourceTrigger);
+    ?? browserSurfaceRequirementForPortableTrigger(input.sourceTrigger, input.workflowId);
   const baseInput: PortableWorkflowStartInput = {
     ...input,
     idempotencyKey,
@@ -880,8 +880,8 @@ export async function startPortableWorkflowRun(input: PortableWorkflowStartInput
   }
   // Capture the selected backend exactly once for this run. The same
   // immutable snapshot must drive intent, idempotency, admission, and receipt
-  // metadata; otherwise a UI backend switch can leave a stale Browser Use
-  // surface inside an otherwise Chrome Plugin/Playwright run.
+  // metadata; otherwise a UI backend switch can leave a stale browser
+  // surface inside an otherwise valid portable run.
   const selectedBackendSnapshot = buildCompanionFirstWebOperationBackendRunSnapshot({
     adapter: isWebOperationAdapter(workflow.runner_kind) ? workflow.runner_kind : null,
     operationClass: requestedEffectStage ? "effect" : requestedReadOnlyStage ? "read_only" : "normal",
@@ -914,7 +914,7 @@ export async function startPortableWorkflowRun(input: PortableWorkflowStartInput
   const command = normalizedInput.readOnlyStage === "candidate_supply"
     ? "Job Application Manager candidate supply read-only"
     : normalizedInput.readOnlyStage === "reference_readback"
-      ? `${workflow.id} Browser Use CLI reference read-only preflight`
+      ? `${workflow.id} reference read-only preflight`
       : await getRegisteredWorkflowStartCommandAsync(workflow.id);
   if (!command) throw new Error("portable_registered_start_command_missing");
   const source = input.sourceTrigger === "automation_os_scheduler" ? "scheduler" as const : "manual" as const;

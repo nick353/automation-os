@@ -23,6 +23,7 @@ import {
  */
 export const SERVICE_READINESS_RUNTIME_BINDING_SCHEMA_V1 = "service_readiness_runtime_binding.v1" as const;
 export const SERVICE_READINESS_BROWSER_USE_RUNTIME_BINDING_SCHEMA_V1 = "service_readiness_browser_use_runtime_binding.v1" as const;
+export const SERVICE_READINESS_COMPANION_RUNTIME_BINDING_SCHEMA_V1 = "service_readiness_aos_chrome_companion_runtime_binding.v1" as const;
 export const SERVICE_READINESS_BROWSER_USE_AUTHORIZED_ADAPTER_CONTRACT_SCHEMA_V1 = "browser_use_authorized_adapter_contract.v1" as const;
 export const SERVICE_READINESS_BROWSER_USE_AUTHORIZED_ADAPTER_CONTRACT_BLOCKER = "p6_authorized_browser_use_cli_adapter_contract_unverified" as const;
 export const SERVICE_READINESS_BROWSER_USE_AUTHORIZED_ADAPTER_IDENTITY_V1 = "browser-use-cli-stage-adapter.v1" as const;
@@ -48,6 +49,25 @@ export type ServiceReadinessBrowserUseRuntimeBindingV1 = {
   process_identity: string | null;
   readback_status: "required" | "verified" | "missing";
   mode: "public" | "authorized";
+  status: ServiceReadinessRuntimeBindingStatusV1;
+  exact_blocker: string | null;
+  external_action_executed: false;
+  legacy_surfaces_forbidden: true;
+  prior_receipt_reuse: false;
+};
+
+export type ServiceReadinessAosChromeCompanionRuntimeBindingV1 = {
+  schema: typeof SERVICE_READINESS_COMPANION_RUNTIME_BINDING_SCHEMA_V1;
+  surface: "aos_chrome_companion_profile_instance";
+  root_id: string;
+  workflow_id: ServiceReadinessReferenceWorkflowId;
+  run_id: string;
+  stage_id: string;
+  attempt_id: string;
+  task_id: string | null;
+  session_id: string | null;
+  profile_instance_id: string | null;
+  readback_status: "required" | "verified" | "missing";
   status: ServiceReadinessRuntimeBindingStatusV1;
   exact_blocker: string | null;
   external_action_executed: false;
@@ -368,6 +388,85 @@ export function validateServiceReadinessBrowserUseRuntimeBindingV1(value: unknow
     return { ok: true, status: "ok", value: parseServiceReadinessBrowserUseRuntimeBindingV1(value) };
   } catch (error) {
     return { ok: false, status: "blocked", exact_blocker: error instanceof Error ? error.message : "service_readiness_browser_use_binding_invalid" };
+  }
+}
+
+/** Build a Companion binding without opening a task tab or contacting the broker. */
+export function buildServiceReadinessAosChromeCompanionRuntimeBindingV1(input: {
+  root_id: string;
+  workflow_id: string;
+  run_id: string;
+  stage_id: string;
+  attempt_id: string;
+  task_id?: string | null;
+  session_id?: string | null;
+  profile_instance_id?: string | null;
+  readback_status?: "required" | "verified" | "missing";
+}): ServiceReadinessAosChromeCompanionRuntimeBindingV1 {
+  const workflowId = referenceWorkflow(input.workflow_id);
+  const rootId = requiredIdentifier(input.root_id, "service_readiness_companion_root_id_invalid");
+  const runId = requiredIdentifier(input.run_id, "service_readiness_companion_run_id_invalid");
+  const stageId = requiredIdentifier(input.stage_id, "service_readiness_companion_stage_id_invalid");
+  const attemptId = requiredIdentifier(input.attempt_id, "service_readiness_companion_attempt_id_invalid");
+  const taskId = input.task_id == null ? null : requiredIdentifier(input.task_id, "service_readiness_companion_task_id_invalid");
+  const sessionId = input.session_id == null ? null : requiredIdentifier(input.session_id, "service_readiness_companion_session_id_invalid");
+  const profileInstanceId = input.profile_instance_id == null ? null : requiredIdentifier(input.profile_instance_id, "service_readiness_companion_profile_instance_id_invalid");
+  const readbackStatus = input.readback_status ?? "required";
+  if (!["required", "verified", "missing"].includes(readbackStatus)) throw new Error("service_readiness_companion_readback_status_invalid");
+  const exactBlocker = !taskId
+    ? "aos_chrome_companion_task_id_missing"
+    : !sessionId
+      ? "aos_chrome_companion_effective_session_missing"
+      : readbackStatus !== "verified"
+        ? "aos_chrome_companion_readback_required"
+        : !profileInstanceId
+          ? "aos_chrome_companion_profile_instance_missing"
+          : null;
+  return {
+    schema: SERVICE_READINESS_COMPANION_RUNTIME_BINDING_SCHEMA_V1,
+    surface: "aos_chrome_companion_profile_instance",
+    root_id: rootId,
+    workflow_id: workflowId,
+    run_id: runId,
+    stage_id: stageId,
+    attempt_id: attemptId,
+    task_id: taskId,
+    session_id: sessionId,
+    profile_instance_id: profileInstanceId,
+    readback_status: readbackStatus,
+    status: exactBlocker ? "blocked" : "bound",
+    exact_blocker: exactBlocker,
+    external_action_executed: false,
+    legacy_surfaces_forbidden: true,
+    prior_receipt_reuse: false,
+  };
+}
+
+export function validateServiceReadinessAosChromeCompanionRuntimeBindingV1(value: unknown): { ok: true; status: "ok"; value: ServiceReadinessAosChromeCompanionRuntimeBindingV1 } | { ok: false; status: "blocked"; exact_blocker: string } {
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("service_readiness_companion_binding_required");
+    const body = value as Record<string, unknown>;
+    const allowed = new Set(["schema", "surface", "root_id", "workflow_id", "run_id", "stage_id", "attempt_id", "task_id", "session_id", "profile_instance_id", "readback_status", "status", "exact_blocker", "external_action_executed", "legacy_surfaces_forbidden", "prior_receipt_reuse"]);
+    const unknown = Object.keys(body).filter((key) => !allowed.has(key));
+    if (unknown.length > 0) throw new Error(`service_readiness_companion_binding_unknown_field:${unknown.sort().join(",")}`);
+    if (body.schema !== SERVICE_READINESS_COMPANION_RUNTIME_BINDING_SCHEMA_V1 || body.surface !== "aos_chrome_companion_profile_instance") throw new Error("service_readiness_companion_binding_surface_invalid");
+    if (body.external_action_executed !== false || body.legacy_surfaces_forbidden !== true || body.prior_receipt_reuse !== false) throw new Error("service_readiness_companion_binding_legacy_or_effect_invalid");
+    if (body.status !== "bound" && body.status !== "blocked") throw new Error("service_readiness_companion_status_invalid");
+    const built = buildServiceReadinessAosChromeCompanionRuntimeBindingV1({
+      root_id: body.root_id as string,
+      workflow_id: body.workflow_id as string,
+      run_id: body.run_id as string,
+      stage_id: body.stage_id as string,
+      attempt_id: body.attempt_id as string,
+      task_id: body.task_id as string | null,
+      session_id: body.session_id as string | null,
+      profile_instance_id: body.profile_instance_id as string | null,
+      readback_status: body.readback_status as "required" | "verified" | "missing",
+    });
+    if (built.status !== body.status || built.exact_blocker !== body.exact_blocker) throw new Error("service_readiness_companion_binding_status_mismatch");
+    return { ok: true, status: "ok", value: built };
+  } catch (error) {
+    return { ok: false, status: "blocked", exact_blocker: error instanceof Error ? error.message : "service_readiness_companion_binding_invalid" };
   }
 }
 

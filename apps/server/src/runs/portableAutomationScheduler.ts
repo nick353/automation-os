@@ -1,6 +1,8 @@
 import { dbBackend, nowIso, querySqlAsync, runSqlTransactionAsync, sqlValue } from "../db/client.js";
+import { listCompanyConnectionRefsAsync } from "../automations/repository.js";
 import { requireExistingCompanyAccessAsync, requireExistingServiceIdentityAsync } from "../companies/repository.js";
 import { startPortableWorkflowRun } from "./portableWorkflowEntrypoint.js";
+import { bindGmailExecutionTargetToRunInput } from "./gmailExecutionTargetPropagation.js";
 import { computeNextAutomationOccurrence, scheduleIsOverdue, scheduleRequiresOverduePolicy } from "./automationScheduler.js";
 import {
   portableReadOnlyStageForScheduledWorkflow,
@@ -14,12 +16,14 @@ import {
 import type { PortableWorkflowId } from "./portableWorkflowContract.js";
 import {
   portableLocalReadOnlyStageForScheduledWorkflow,
-  preparePortableLocalBusinessAdmission,
+  preparePortableLocalBackupBusinessAdmission,
+  preparePortableLocalObsidianBusinessAdmission,
   UNATTENDED_FIXED_LOCAL_EFFECT_POLICY,
   type PortableLocalWorkflowId
 } from "./portableLocalWorkflow.js";
 import { startPortableLocalWorkflowRun } from "./portableLocalWorkflowEntrypoint.js";
 import { authorizeScheduledLocalBusinessRun } from "./portableScheduledLocalEffect.js";
+import { DAILY_AI_RESEARCH_SYNC_WORKFLOW, DAILY_AI_RESEARCH_SYNC_POLICY, prepareDailyAiResearchSyncAdmission } from "./dailyAiResearchSourceSync.js";
 
 type PortableScheduleRow = {
   id: string;
@@ -182,15 +186,25 @@ export async function materializeDuePortableAutomationOccurrences(input: {
       const unattendedLocalPolicy = localWorkflowId
         && dbBackend === "postgres"
         && isRegisteredAdoption
-        && builderSpec.unattendedEffectPolicy === UNATTENDED_FIXED_LOCAL_EFFECT_POLICY
-        ? UNATTENDED_FIXED_LOCAL_EFFECT_POLICY
+        && ((localWorkflowId !== DAILY_AI_RESEARCH_SYNC_WORKFLOW && builderSpec.unattendedEffectPolicy === UNATTENDED_FIXED_LOCAL_EFFECT_POLICY)
+          || (localWorkflowId === DAILY_AI_RESEARCH_SYNC_WORKFLOW && builderSpec.unattendedEffectPolicy === DAILY_AI_RESEARCH_SYNC_POLICY))
+        ? localWorkflowId === DAILY_AI_RESEARCH_SYNC_WORKFLOW ? DAILY_AI_RESEARCH_SYNC_POLICY : UNATTENDED_FIXED_LOCAL_EFFECT_POLICY
         : null;
       const localBusinessAdmission = unattendedLocalPolicy && localWorkflowId
-        ? preparePortableLocalBusinessAdmission({
-            workflowId: localWorkflowId,
-            companyId,
-            dueKey,
-            scheduledFor
+        ? localWorkflowId === DAILY_AI_RESEARCH_SYNC_WORKFLOW
+          ? prepareDailyAiResearchSyncAdmission({ companyId, dueKey, scheduledFor })
+          : localWorkflowId === "obsidian-project-memory-audit"
+          ? preparePortableLocalObsidianBusinessAdmission({ companyId, dueKey, scheduledFor })
+          : preparePortableLocalBackupBusinessAdmission({
+              companyId,
+              dueKey,
+              scheduledFor
+            })
+        : null;
+      const gmailExecutionTargetInput = localWorkflowId === "email-review-reply"
+        ? bindGmailExecutionTargetToRunInput({
+            automation: { companyId, builderSpec },
+            connectionRefs: await listCompanyConnectionRefsAsync(companyId)
           })
         : null;
       const started = workflowId
@@ -204,7 +218,8 @@ export async function materializeDuePortableAutomationOccurrences(input: {
             dueKey,
             readOnlyStage: portableReadOnlyStageForScheduledWorkflow(workflowId),
             connectorExecutionOwner: connectorExecutionOwnerForRegisteredAutomation({ builderSpec }),
-            ...(browserSurfaceRequirement !== undefined ? { browserSurfaceRequirement } : {})
+            ...(browserSurfaceRequirement !== undefined ? { browserSurfaceRequirement } : {}),
+            ...(gmailExecutionTargetInput ? { inputBundle: gmailExecutionTargetInput } : {})
           })
         : await startPortableLocalWorkflowRun({
             workflowId: localWorkflowId!,
@@ -223,6 +238,7 @@ export async function materializeDuePortableAutomationOccurrences(input: {
                 }
               : {
                   readOnlyStage: portableLocalReadOnlyStageForScheduledWorkflow(localWorkflowId!),
+                  ...(gmailExecutionTargetInput ? { inputBundle: gmailExecutionTargetInput } : {}),
                   ...(localBusinessAdmission?.sourceSnapshot ? { sourceSnapshot: localBusinessAdmission.sourceSnapshot } : {})
                 })
           });

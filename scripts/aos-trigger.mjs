@@ -216,9 +216,9 @@ async function main() {
   const idempotencyKey = valueFor("--idempotency-key") || `aos-trigger-${randomUUID()}`;
   const tokenFile = valueFor("--token-file") || process.env.AOS_TRIGGER_TOKEN_FILE?.trim() || "";
   const inputBundleFile = valueFor("--input-bundle-file") || process.env.AOS_TRIGGER_INPUT_BUNDLE_FILE?.trim() || "";
+  const effectStage = valueFor("--effect-stage");
   const companionTaskId = valueFor("--companion-task-id")
     || process.env.AOS_TRIGGER_COMPANION_TASK_ID?.trim()
-    || process.env.CODEX_THREAD_ID?.trim()
     || "";
 
   if (!companyId || !automationId) {
@@ -227,6 +227,10 @@ async function main() {
   }
   if (companionTaskId && !COMPANION_TASK_ID_PATTERN.test(companionTaskId)) {
     safeFailure("aos_trigger_companion_task_id_invalid");
+    return;
+  }
+  if (effectStage && effectStage !== "business_execute") {
+    safeFailure("aos_trigger_effect_stage_unsupported");
     return;
   }
 
@@ -287,8 +291,9 @@ async function main() {
       redirect: "manual",
       signal: controller.signal,
       body: JSON.stringify({
-        execution_mode: "preflight_no_effect",
+        execution_mode: effectStage || "preflight_no_effect",
         external_action_allowed: false,
+        ...(effectStage ? { effect_stage: effectStage } : {}),
         ...(companionTaskId ? { companion_task_id: companionTaskId } : {}),
         ...(inputBundle ? { input_bundle: inputBundle } : {}),
       })

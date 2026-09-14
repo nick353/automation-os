@@ -23,7 +23,7 @@ npm test
 npm run dev
 ```
 
-The default server port is `8787`. The dev script starts the local server and web UI together.
+The default operator server port is `8787`. The dev script starts the local server and Vite web UI together. For the fastest and most stable user-facing AOS screen, open `http://127.0.0.1:8787/`; port `5173` is the Vite development/HMR surface and may be slower on its first load.
 
 ## 初めてのWeb操作（固定化しない共通入口）
 
@@ -182,6 +182,6 @@ Before publishing or pushing, run a secret scan against the staged files and ver
 
 Generated Obsidian pages and handoff notes are locators, not proof. Before resuming work, read `data/resume-contract.json`, the Obsidian handoff index/current-work notes, then this repository's `STATE.md`, DB rows, and latest workflow artifacts.
 
-Browser Use CLI is the only permitted Automation OS browser surface. Every browser-backed adapter must either call the canonical helper through the shared flow adapter with fresh authority/profile/port, same-session readback, and cleanup proof, or fail closed with `browser_use_cli_required` / `browser_use_cli_workflow_adapter_missing`. Playwright, direct Chrome, direct CDP, extension-backed browser lanes, and Codex in-app browser fallbacks are retired from registered automation execution.
+The AOS Web Operation Backend setting selects the registered browser surface per run; the default is Chrome plugin/Profile 2, with Browser Use CLI and Playwright as explicit alternatives. Every browser-backed adapter must either call the selected canonical adapter with fresh authority, same-session readback, and cleanup proof, or fail closed with an exact backend/adapter blocker. There is no implicit fallback between Browser Use CLI, Chrome extension, Playwright, direct CDP, or Codex in-app browser lanes. Current Chrome plugin coverage is workflow-specific and read back in the settings panel; unbound workflows stop with `web_operation_backend_adapter_not_bound`.
 
 Billing, purchase, payment, checkout, paid subscription, invoice, or billing-equivalent screens are the hard stops. Non-billing post, publish, submit, send, save, and in-scope delete actions require workflow-owned evidence and readback rather than a generic approval stop.

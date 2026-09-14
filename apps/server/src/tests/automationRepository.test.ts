@@ -202,7 +202,7 @@ test("soft archive marks the row archived and removes it from the active list", 
     companyId,
     actorUserId,
     automationId: created.id,
-    expectedRevision: 1
+    expectedRevision: 2
   });
 
   assert.equal(archived.status, "archived");
@@ -291,6 +291,14 @@ test("schedule save, pause, and resume persist and audit atomically", () => {
   assert.equal(saved.revision, 1);
   assert.equal(saved.status, "active");
   assert.equal(saved.enabled, true);
+  const activated = getAutomationRecord(companyId, created.id)!;
+  assert.equal(activated.status, "active");
+  assert.equal(activated.revision, 2);
+  assert.equal(saved.automationVersionId, activated.currentVersionId);
+  assert.notEqual(saved.automationVersionId, created.currentVersionId);
+  assert.deepEqual(activated.builderSpec, created.builderSpec);
+  assert.equal(versionCount(created.id), 2);
+  assert.equal(auditCount(companyId, "automation.activated"), 1);
 
   const paused = setAutomationSchedulePaused({
     companyId,
@@ -304,6 +312,7 @@ test("schedule save, pause, and resume persist and audit atomically", () => {
   assert.equal(paused.status, "paused");
   assert.equal(paused.enabled, false);
   assert.ok(paused.pausedAt);
+  assert.equal(paused.nextRunAt, null);
 
   const resumed = setAutomationSchedulePaused({
     companyId,
@@ -317,10 +326,72 @@ test("schedule save, pause, and resume persist and audit atomically", () => {
   assert.equal(resumed.status, "active");
   assert.equal(resumed.enabled, true);
   assert.equal(resumed.pausedAt, null);
+  assert.equal(resumed.automationVersionId, saved.automationVersionId);
+  assert.equal(versionCount(created.id), 2);
   assert.equal(listAutomationSchedules(companyId, created.id).length, 1);
   assert.equal(auditCount(companyId, "automation.schedule_created"), 1);
   assert.equal(auditCount(companyId, "automation.schedule_paused"), 1);
   assert.equal(auditCount(companyId, "automation.schedule_resumed"), 1);
+});
+
+test("paused and manual schedule saves leave drafts inert; resume activates and pins exactly once", async () => {
+  const { companyId, actorUserId } = seedCompany("schedule_draft_company", "schedule_draft_actor");
+  const created = createAutomationRecord({ companyId, actorUserId, definition: parseAutomationCreate({
+    automation_type: "answer-only", name: "Schedule activation fixture", goal: "No provider work",
+    worker_command_kind: "safe_local_demo", create_approval: false, builder_spec: { steps: ["read"] }
+  }) });
+  const scope = { companyId, actorUserId, automationId: created.id };
+  const paused = await repository.saveAutomationScheduleAsync({ ...scope,
+    schedule: parseAutomationSchedule({ kind: "daily", expression: "06:15", timezone: "Asia/Tokyo", enabled: false, expected_revision: 1 }),
+    nextRunAt: "2026-09-06T21:15:00Z"
+  });
+  assert.equal(paused.nextRunAt, null);
+  assert.deepEqual(getAutomationRecord(companyId, created.id), created);
+  const manual = saveAutomationSchedule({ ...scope, schedule: parseAutomationSchedule({
+    kind: "manual", enabled: true, expected_revision: paused.revision
+  }) });
+  assert.equal(manual.enabled, false);
+  assert.equal(manual.nextRunAt, null);
+  assert.equal(getAutomationRecord(companyId, created.id)?.status, "draft");
+  const planned = saveAutomationSchedule({ ...scope, schedule: parseAutomationSchedule({
+    kind: "daily", expression: "06:15", timezone: "Asia/Tokyo", enabled: false, expected_revision: manual.revision
+  }) });
+  const resumed = setAutomationSchedulePaused({ ...scope, scheduleId: planned.id, expectedRevision: planned.revision, paused: false });
+  assert.equal(resumed.enabled, true);
+  assert.equal(getAutomationRecord(companyId, created.id)?.status, "active");
+  assert.equal(resumed.automationVersionId, getAutomationRecord(companyId, created.id)?.currentVersionId);
+  assert.equal(versionCount(created.id), 2);
+  assert.equal(auditCount(companyId, "automation.activated"), 1);
+  assert.deepEqual(db.querySql(`SELECT id FROM runs WHERE automation_id=${db.sqlValue(created.id)}`), []);
+});
+
+test("sync and async schedule-write failures roll back draft activation, version, and both audits", async () => {
+  for (const mode of ["sync", "async"] as const) {
+    const { companyId, actorUserId } = seedCompany(`schedule_rollback_${mode}`, `schedule_rollback_actor_${mode}`);
+    const created = createAutomationRecord({ companyId, actorUserId, definition: parseAutomationCreate({
+      automation_type: "answer-only", name: `Atomic schedule ${mode}`, goal: "Rollback fixture", worker_command_kind: "safe_local_demo"
+    }) });
+    const input = { companyId, actorUserId, automationId: created.id, schedule: parseAutomationSchedule({
+      kind: "daily", expression: "06:15", timezone: "Asia/Tokyo", enabled: true, expected_revision: 1
+    }) };
+    db.execSql(`CREATE TRIGGER fixture_fail_schedule_${mode} BEFORE INSERT ON mvp_automation_schedules
+      WHEN NEW.company_id=${db.sqlValue(companyId)} BEGIN SELECT RAISE(ABORT, 'fixture_schedule_write_failed'); END`);
+    try {
+      if (mode === "sync") assert.throws(() => saveAutomationSchedule(input), /fixture_schedule_write_failed/);
+      else await assert.rejects(repository.saveAutomationScheduleAsync(input), /fixture_schedule_write_failed/);
+    } finally {
+      db.execSql(`DROP TRIGGER fixture_fail_schedule_${mode}`);
+    }
+    assert.deepEqual(getAutomationRecord(companyId, created.id), created);
+    assert.equal(versionCount(created.id), 1);
+    assert.equal(auditCount(companyId, "automation.activated"), 0);
+    assert.equal(auditCount(companyId, "automation.schedule_created"), 0);
+    assert.deepEqual(listAutomationSchedules(companyId, created.id), []);
+    const saved = await repository.saveAutomationScheduleAsync(input);
+    assert.equal(saved.enabled, true);
+    assert.equal(saved.automationVersionId, getAutomationRecord(companyId, created.id)?.currentVersionId);
+    assert.equal(versionCount(created.id), 2);
+  }
 });
 
 test("memory and connection refs persist revisions and audits", () => {

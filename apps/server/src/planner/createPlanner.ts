@@ -107,11 +107,13 @@ export async function createCodexAppServerPlannerResponse(input: {
     "あなたはAutomation OSの会話司令室です。現在状態の説明、定期実行の作成案、既存定期実行の調整案、失敗修正案を同じ会話で扱います。",
     "必ずJSONだけを返してください。Markdown、説明文、コードブロックは禁止です。",
     "保存・スケジュール変更・実行・外部作用は自分で確定せず、proposedChangesとrequiresConfirmationに分けてください。",
-    "ツール選択契約: 公開snapshotのtoolPreferenceを読み、Pluginを最優先候補にする。MCP・CLI・APIは同率2位で、Pluginより先に選ばない。Gmail・Supabase等のconnectorは、Zeabur Codex App ServerのPlugin registry・MCP・connector認証readbackがreadyの時だけZeabur側を実行ownerにする。Mac WorkerはChrome Plugin/Profile 2専用で、Mac側connectorは明示されたfallback以外では使わない。selectedがneeds_company_authまたはZeabur配置blockerなら認証要求をopenQuestions/nextActionへ出し、MCP・CLI・API・Mac connectorへ黙ってfallbackしない。selectedがreadyでない場合も、接続済み・検証済みとは言わず、会社scopeと検証状態をそのまま返す。",
+    "ツール選択契約: 公開snapshotのtoolPreferenceを読み、Pluginを最優先候補にする。MCP・CLI・APIは同率2位。connectorExecution.status=readyなら示されたownerと接続方式を使える。Plugin導入と認証がverifiedの経路に、別のMCP設定を追加の必須条件として要求しない。mac側connectorへは明示されたfallback以外で切り替えない。認証や配置に実際のblockerがある場合だけ、その根拠と次の操作を示す。全Pluginについての質問はpluginConnectionsの会社別一覧を使い、commandから選ばれた単一connectorだけを全一覧と誤認しない。registry上の接続確認と実Provider呼出し成功は区別し、確認日時と不明範囲を示す。質問への回答は提供済みsnapshotから行い、追加のツール操作や作成・変更・送信を開始しない。",
     "JSON Schema:",
     JSON.stringify(plannerJsonSchema()),
     "Automation OSの公開snapshot:",
-    redactSensitiveText(input.context ?? "snapshot_not_provided").slice(0, 18_000),
+    // The caller already serializes a bounded, valid JSON snapshot. A second
+    // character slice used to discard the tool/connector readback at its tail.
+    redactSensitiveText(input.context ?? "snapshot_not_provided"),
     "会話入力:",
     JSON.stringify({ messages, currentDraft: input.currentDraft ? redactSensitiveText(input.currentDraft).slice(0, 4_000) : "" })
   ].join("\n\n");
@@ -133,15 +135,48 @@ export async function createCodexAppServerPlannerResponse(input: {
   };
 }
 
+function isDraftOnlyCreationRequest(text: string): boolean {
+  return /自動化|automation|workflow/iu.test(text)
+    && /下書き|draft/iu.test(text)
+    && /作成|作る|作って|create/iu.test(text)
+    && !/下書き.{0,12}(?:作成しない|作らない)|(?:自動化|automation).{0,12}(?:作成しない|作らない)/iu.test(text)
+    && /まだ実行しない|実行しない|実行せず|保存だけ|案を|draft only/iu.test(text);
+}
+
+function isExistingScheduleAdjustmentRequest(text: string): boolean {
+  if (/方法|どうすれば|どのように|説明|できますか|変更せず|調整せず|\bhow\b/iu.test(text)
+    || /(?:新規|新しい)[^。\n]{0,80}(?:作成|作って|追加)/u.test(text)) return false;
+  // Negative clauses can protect a different automation. They must neither
+  // create change intent nor cancel the explicit change to the selected one.
+  const positive = text.split(/[。！？\n]/u).filter((clause) =>
+    !/(?:調整|変更|設定|保存)(?:は|を)?(?:しない|しません|不要)|(?:do not|don't)\s+(?:change|adjust|save)/iu.test(clause)).join("\n");
+  return /既存|登録済み|保存済み|automation_[a-z0-9_]+|\bexisting\b/iu.test(positive)
+    && /定期実行|予定|スケジュール|\bschedule\b/iu.test(positive)
+    && /(?:調整|変更|設定)(?:して|したい|する)|\b(?:adjust|change|set)\b/iu.test(positive)
+    && /(?:[01]?\d|2[0-3]):[0-5]\d|(?:[01]?\d|2[0-3])\s*時|手動(?:のみ|だけ)|manual.only/iu.test(positive);
+}
+
 export function buildLocalPlanner(messages: CreatePlannerMessage[], exactBlocker = "local_planner"): CreatePlannerResult {
   const userMessages = messages.filter((message) => message.role === "user");
   const latestUserText = userMessages.at(-1)?.text ?? "";
-  const conversationText = userMessages.map((message) => message.text).join("\n");
+  const draftOnlyCreation = isDraftOnlyCreationRequest(latestUserText);
+  if (!draftOnlyCreation && isExistingScheduleAdjustmentRequest(latestUserText)) {
+    return {
+      source: "local_fallback", exactBlocker, intent: "plan_workflow", operation: "manage_workflow",
+      title: "選択した既存自動化の予定を調整する", command: latestUserText,
+      reply: "既存自動化の予定だけを変更する案です。対象を選択し、時刻・タイムゾーン・停止／有効状態を確認してから保存してください。会話を送っただけでは保存・実行しません。",
+      visibleSteps: ["変更する既存自動化を明示選択する", "時刻・タイムゾーン・停止／有効状態を確認する", "選択した予定だけを保存する", "同じ対象の保存結果を再取得して照合する"],
+      backendChecks: ["会社・自動化ID・現在revisionを固定する", "予定保存でRunを開始せず、処理内容や再試行条件も変更しない", "保存結果が不明な場合は再送せず同じ予定を再取得する"],
+      answered: ["既存予定の変更", "最新依頼の時刻", "保存と業務実行の分離"], openQuestions: [],
+      nextAction: "対象を選択し、保存予定の内容を確認してください。", executionDecision: "ready_to_schedule", confidence: "high"
+    };
+  }
+  const conversationText = draftOnlyCreation ? latestUserText : userMessages.map((message) => message.text).join("\n");
   const webOperationIntake = buildWebOperationIntake(conversationText);
   const lower = conversationText.toLowerCase();
   const facts = detectFacts(conversationText);
   const hasConcreteCadence = hasConcreteCadenceRequest(conversationText);
-  const isScheduled = /毎朝|毎日|毎週|定期|schedule|daily|weekly|朝|夜|\b\d{1,2}\s*時|\b\d{1,2}:\d{2}\b/u.test(lower);
+  const isScheduled = !draftOnlyCreation && /毎朝|毎日|毎週|定期|schedule|daily|weekly|朝|夜|\b\d{1,2}\s*時|\b\d{1,2}:\d{2}\b/u.test(lower);
   const isSubmit = isSubmitIntent(conversationText, { isScheduled });
   const isPublish = isPublishIntent(conversationText);
   const isResearch = /調査|確認|比較|探し|探す|research|watch|チェック|監視/u.test(lower);
@@ -152,14 +187,14 @@ export function buildLocalPlanner(messages: CreatePlannerMessage[], exactBlocker
   const isContinuationCandidate = isContinuationRequest(conversationText);
   const isReadOnlyReviewCandidate = isReadOnlyReviewRequest(conversationText) || isPromptTransferBlockerQuestion;
   const explicitReadOnlyContinuation = /読むだけ|読み取りだけ|確認だけ|理由だけ|実行しない|開始しない|動かさず|read-?only/i.test(conversationText);
-  const isReadOnlyReview = isReadOnlyReviewCandidate && (!isContinuationCandidate || explicitReadOnlyContinuation);
+  const isReadOnlyReview = !draftOnlyCreation && isReadOnlyReviewCandidate && (!isContinuationCandidate || explicitReadOnlyContinuation);
   const isUiImprovement = isUiImprovementRequest(conversationText, { hasExternalAction: isSubmit || isPublish });
   const isVagueAutomationCreation = isVagueAutomationCreationRequest(latestUserText);
   const isRunContinuation = !isUiImprovement && !isReadOnlyReview && isContinuationCandidate;
   const continuationTarget = extractContinuationTarget(conversationText);
   const hasExternalAction = isSubmit || isPublish;
   const hasExplicitSafeBoundary = /投稿や購入はしない|投稿.*しない|公開.*しない|購入.*しない|送信.*しない|応募.*直前で止め|送信.*直前で止め|投稿.*直前で止め|公開.*直前で止め|読み取り|読むだけ|確認だけ|保存する|保存だけ|証跡|スクショ|URL/iu.test(conversationText);
-  const registeredAdjustment = isRunContinuation || isReadOnlyReview ? null : detectRegisteredWorkflowAdjustment(conversationText);
+  const registeredAdjustment = draftOnlyCreation || isRunContinuation || isReadOnlyReview ? null : detectRegisteredWorkflowAdjustment(conversationText);
   const isScheduleOnlyRegisteredAdjustment = Boolean(registeredAdjustment && isScheduled && !hasExternalAction);
   const canSaveScheduleOnlyRegisteredAdjustment = Boolean(isScheduleOnlyRegisteredAdjustment && hasConcreteCadence && facts.retry);
   const needsCadenceQuestion = isScheduled ? !hasConcreteCadence : false;
@@ -192,7 +227,7 @@ export function buildLocalPlanner(messages: CreatePlannerMessage[], exactBlocker
     facts.source ? "正本候補" : null,
     facts.proof ? "完了証拠" : null
   ]).filter((label): label is string => Boolean(label));
-  const openQuestions = isSecretStorageOnly || isCapabilityQuestion || isCorrectionAnswerOnly || isUiImprovement || isReadOnlyReview || canSaveScheduleOnlyRegisteredAdjustment
+  const openQuestions = draftOnlyCreation || isSecretStorageOnly || isCapabilityQuestion || isCorrectionAnswerOnly || isUiImprovement || isReadOnlyReview || canSaveScheduleOnlyRegisteredAdjustment
     ? []
     : isScheduleOnlyRegisteredAdjustment
       ? [
@@ -274,7 +309,7 @@ export function buildLocalPlanner(messages: CreatePlannerMessage[], exactBlocker
     "run_idごとにURL・画面・ログ・cleanup証跡を残す",
     "失敗時はexact blockerを保存して同じ場所から再開する"
   ];
-  const decision: CreatePlannerResult["executionDecision"] = isSecretStorageOnly
+  const decision: CreatePlannerResult["executionDecision"] = draftOnlyCreation || isSecretStorageOnly
     ? "save_plan"
     : isCapabilityQuestion || isCorrectionAnswerOnly
       ? "demo_first"
@@ -753,13 +788,15 @@ function boundedTimeout(value: string | undefined, fallback: number) {
 
 function sanitizePlannerResult(result: CreatePlannerResult, messages?: CreatePlannerMessage[]): CreatePlannerResult {
   const fallback = buildLocalPlanner(messages?.length ? messages : [{ role: "user", text: result.command || "" }], "openai_schema_sanitized");
-  const localSafetyResult = externallyStablePlannerResult(result, fallback);
+  const latestUserText = messages?.filter((message) => message.role === "user").at(-1)?.text ?? result.command;
+  const draftOnlyCreation = isDraftOnlyCreationRequest(latestUserText);
+  const localSafetyResult = draftOnlyCreation ? null : externallyStablePlannerResult(result, fallback);
   if (localSafetyResult) return localSafetyResult;
   const requestedExecutionDecision = ["ask_more", "save_plan", "demo_first", "ready_to_start", "ready_to_schedule"].includes(result.executionDecision)
     ? result.executionDecision
     : fallback.executionDecision;
   const shouldUseFallbackSafety = requestedExecutionDecision === "ready_to_schedule" && fallback.openQuestions.length > 0 && fallback.executionDecision !== "ready_to_schedule";
-  const executionDecision = shouldUseFallbackSafety ? fallback.executionDecision : requestedExecutionDecision;
+  const executionDecision = draftOnlyCreation ? "save_plan" : shouldUseFallbackSafety ? fallback.executionDecision : requestedExecutionDecision;
   const confidence = ["low", "medium", "high"].includes(result.confidence) ? result.confidence : fallback.confidence;
   const backendChecks = mergeBackendChecks(
     stringArrayOr(result.backendChecks, fallback.backendChecks, 8, 160),
@@ -769,23 +806,25 @@ function sanitizePlannerResult(result: CreatePlannerResult, messages?: CreatePla
     source: result.source,
     exactBlocker: result.exactBlocker,
     model: result.model,
-    intent: result.intent === "answer_question" ? "answer_question" : "plan_workflow",
-    operation: result.operation === "answer_question" || result.operation === "manage_workflow" || result.operation === "create_automation"
+    intent: !draftOnlyCreation && result.intent === "answer_question" ? "answer_question" : "plan_workflow",
+    operation: draftOnlyCreation ? "create_automation" : result.operation === "answer_question" || result.operation === "manage_workflow" || result.operation === "create_automation"
       ? result.operation
       : fallback.operation,
     title: stringOr(result.title, fallback.title, 90),
     reply: stringOr(result.reply, fallback.reply, 2400),
-    command: stringOr(result.command, fallback.command, 1200),
+    command: draftOnlyCreation ? stringOr(latestUserText, fallback.command, 1200) : stringOr(result.command, fallback.command, 1200),
     visibleSteps: stringArrayOr(result.visibleSteps, fallback.visibleSteps, 8, 120),
     backendChecks,
     answered: stringArrayOr(result.answered, fallback.answered, 8, 80),
-    openQuestions: shouldUseFallbackSafety ? fallback.openQuestions : stringArrayOr(result.openQuestions, fallback.openQuestions, 5, 180),
+    openQuestions: shouldUseFallbackSafety ? fallback.openQuestions : stringArrayOr(result.openQuestions, draftOnlyCreation || result.intent === "answer_question" || result.operation === "answer_question" ? [] : fallback.openQuestions, 5, 180),
     nextAction: shouldUseFallbackSafety ? fallback.nextAction : stringOr(result.nextAction, fallback.nextAction, 240),
     executionDecision,
     confidence,
     ...(sanitizePlannerChanges(result.proposedChanges).length ? { proposedChanges: sanitizePlannerChanges(result.proposedChanges) } : {}),
     ...(stringArrayOr(result.requiresConfirmation, [], 8, 180).length ? { requiresConfirmation: stringArrayOr(result.requiresConfirmation, [], 8, 180) } : {}),
-    webOperationIntake: buildWebOperationIntake((messages ?? []).map((message) => message.text).join("\n"))
+    ...(draftOnlyCreation || result.intent === "answer_question" || result.operation === "answer_question" ? {} : {
+      webOperationIntake: buildWebOperationIntake((messages ?? []).map((message) => message.text).join("\n"))
+    })
   };
 }
 
@@ -804,6 +843,8 @@ function sanitizePlannerChanges(value: unknown): CreatePlannerChange[] {
 
 function externallyStablePlannerResult(result: CreatePlannerResult, fallback: CreatePlannerResult): CreatePlannerResult | null {
   const commandText = fallback.command || result.command || "";
+  const localIsScheduleAdjustment = fallback.operation === "manage_workflow"
+    && fallback.executionDecision === "ready_to_schedule" && isExistingScheduleAdjustmentRequest(commandText);
   const localIsCapabilityAnswer = fallback.intent === "answer_question";
   const localIsSecretOnly = fallback.title === "認証情報だけを安全に保存する";
   const localIsUiImprovement = fallback.title === "Createチャットと画面表示を改善する";
@@ -819,7 +860,7 @@ function externallyStablePlannerResult(result: CreatePlannerResult, fallback: Cr
   const localHasDangerousStopBoundary = fallback.openQuestions.length === 0
     && fallback.visibleSteps.some((step) => /応募・送信確定前|送信・投稿の直前|外部投稿・応募・送信の確定前/u.test(step));
 
-  if (!localIsCapabilityAnswer && !localIsSecretOnly && !localIsUiImprovement && !localIsVagueAutomationCreation && !localIsReadOnly && !localHasDangerousStopBoundary) {
+  if (!localIsScheduleAdjustment && !localIsCapabilityAnswer && !localIsSecretOnly && !localIsUiImprovement && !localIsVagueAutomationCreation && !localIsReadOnly && !localHasDangerousStopBoundary) {
     return null;
   }
 
@@ -857,6 +898,8 @@ function plannerSystemPrompt() {
     "日本語で、会話履歴を踏まえて、追加質問、計画更新、実行判断を動的に返します。",
     "まだ不足がある場合はopenQuestionsに入れ、実行可能性はexecutionDecisionで返します。",
     "新規自動化の作成ならoperation=create_automation、既存workflowの変更・再開・UI改善ならmanage_workflow、質問への回答だけならanswer_questionにします。",
+    "最新発言で新しい下書きの作成を依頼されたら、過去の質問への回答へ戻さずcreate_automationとして扱います。実行しない・定期無効の下書きはsave_planで、保存案と実行許可を区別し、指定された名前をtitleに保ちます。",
+    "最新発言の既存予定変更は、過去の下書き作成や回答依頼とは分けてmanage_workflowにします。時刻が具体的ならready_to_scheduleとして対象選択と保存前プレビューへ進めます。停止中のまま保存することは実行許可ではなく、予定だけの変更に再試行方針やProvider送信承認を追加要求しません。",
     "単なる質問や、このチャットでできることを聞く内容は、intentをanswer_questionにして、保存・実演・開始を促す計画にしません。",
     "履歴や実行結果が含まれる場合は、止まった理由、不足している証跡、次の再実行前確認を反映して計画を更新します。",
     "外部投稿、送信、応募、公開、削除、保存は必要な文脈と証跡設計がある時だけ計画に入れます。",

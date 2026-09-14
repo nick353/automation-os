@@ -4,6 +4,7 @@ export const ZEABUR_CONNECTOR_REGISTRY_READBACK_SCHEMA = "aos_zeabur_codex_app_s
 
 export type ConnectorId = "gmail" | "supabase" | string;
 export type ConnectorAuthStatus = "verified" | "unverified" | "missing" | "unknown";
+export type ZeaburPluginAuthPolicy = "ON_INSTALL" | "ON_USE";
 export type ConnectorExecutionOwner =
   | "zeabur_codex_app_server"
   | "mac_worker_chrome_plugin_profile2"
@@ -15,6 +16,8 @@ export type ZeaburPluginRegistryEntry = {
   name: string;
   installed: boolean;
   authStatus: ConnectorAuthStatus;
+  marketplaceName?: string;
+  authPolicy?: ZeaburPluginAuthPolicy | null;
 };
 
 export type ZeaburConnectorRegistryReadback = {
@@ -242,13 +245,17 @@ function pluginEntries(value: unknown): ZeaburPluginRegistryEntry[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((item) => {
     const record = objectValue(item);
-    const name = stringValue(record.name);
+    const name = stringValue(record.name) ?? stringValue(record.pluginName);
     if (!name) return [];
+    const id = stringValue(record.id) ?? stringValue(record.pluginId) ?? name;
+    const marketplaceName = stringValue(record.marketplaceName) ?? (id.includes("@") ? id.slice(id.lastIndexOf("@") + 1) : undefined);
     return [{
-      id: stringValue(record.id) ?? name,
+      id,
       name,
       installed: targetBool(record.installed),
-      authStatus: authStatus(record.authStatus)
+      authStatus: authStatus(record.authStatus),
+      ...(marketplaceName ? { marketplaceName } : {}),
+      ...(record.authPolicy === "ON_INSTALL" || record.authPolicy === "ON_USE" ? { authPolicy: record.authPolicy } : {})
     }];
   });
 }

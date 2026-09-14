@@ -45,7 +45,7 @@ test("startup preparation binds a fresh isolated safe-stop receipt without exter
     assert.equal(receipt.paths.length, 3);
     assert.ok(receipt.paths.every((path) =>
       path.status === "proof_backed_safe_stop_verified" &&
-      path.exact_blocker === "browser_use_cli_required" &&
+      path.exact_blocker === "aos_chrome_companion_task_id_missing" &&
       path.runner_started === false &&
       path.runner_completed === false &&
       path.external_action_executed === false &&
