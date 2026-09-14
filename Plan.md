@@ -24077,3 +24077,12 @@ Evidence: commit `4fc6e352`, typecheck/build/contract test output, Zeabur deploy
 Evidence: `outputs/aos-backup-obsidian-readonly-audit-20260914.json`, Daily AI worker receipt/readback under `data/artifacts/portable-remote-worker/run_mu16chb0_55tuzy/`, and the current seven-workflow gate matrix.
 
 **Next action:** leave the read-only canary lane stable and resolve only the remaining authoritative UI durable-readback check or an explicitly approved business-effect workflow; do not manufacture source sync or business completion from preflight evidence.
+
+## 2026-09-14T20:57:00+09:00 — Post-deploy runtime boundary rechecked
+
+- [x] Fresh Zeabur readback still shows deployment `6aa7df87a6ec7d5555ae3990` `RUNNING`, with the previous deployment removed as expected after rollout.
+- [x] Service and ingress remain healthy; the Mac worker remains alive with `heartbeat_status=ok`, `claim_status=idle`, and no active Run after the completed Daily AI preflight.
+- [x] Companion capability readback confirms `tabs.navigate`/page read operations are available, but no AOS-owned task tab was present in the connected profile; foreign job/provider tabs were not claimed or touched.
+- [ ] Post-deploy visual readback of the new same-Run label is deferred until an AOS-owned tab can be opened or returned by the Companion surface; no browser action was replayed.
+
+**Next action:** use the next task-owned AOS tab for one fresh visual/semantic readback of the deployed Company 1 page, then continue only with explicitly approved business-effect gates.
