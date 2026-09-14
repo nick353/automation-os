@@ -21,7 +21,7 @@ AOSの残存業務を、低リスクの内部処理から段階的に実行す�
 
 1. **Backup safety check** — ローカルスナップショット、checksum、manifest、Run receipt、cleanupを確認する。2026-09-14 Run `20260914T145046+0900` は完了し、6ソースOK、snapshot `20260914T145046+0900`、backup commit `9f6b15976a4312b2b49930c34dd49ac36b5e8fd9`、remote `origin/main`一致、dirty=0を確認済み。
 2. **Obsidian project memory audit** — 現在の `runnable=false` 登録をreadbackし、必要なら登録有効化を別承認してからaudit artifactを作成する。Vault/Git同期は別承認。対象のserver buildとlocal adapter/read-only workerテスト43件は全てpassしたが、Company登録ゲートは未変更。
-3. **Morning Brief** — 朝・夜両方を対象にすることを決定済み。配信先はAOS Home内部、タイムゾーンはAsia/Tokyoとする。現在の正本では朝夜の具体時刻と保護された配信設定が未確定のため、AOS管理画面で設定をreadbackできるまで有効化・配信しない。
+3. **Morning Brief** — 朝・夜両方を対象にすることを決定済み。canonical sourceのheartbeat定義は朝07:45・夜21:45、Asia/Tokyo。これは意図されたスケジュールの証拠であり、保護されたAOS delivery設定のmaterializationやreceiptを意味しない。保護設定をreadbackできるまで有効化・配信しない。
 
 ### Phase 2 — 低リスクのProvider操作
 
@@ -47,7 +47,8 @@ AOSの残存業務を、低リスクの内部処理から段階的に実行す�
 
 - [x] ユーザー選択: 朝・夜両方
 - [x] 外部通知なし、AOS Home内部配信のみ
-- [ ] 朝夜の具体時刻を保護されたAOS設定からreadback
+- [x] canonical sourceで朝07:45・夜21:45 Asia/Tokyoを確認
+- [ ] 保護されたAOS設定への朝夜時刻materializationをreadback
 - [ ] 朝Briefのdelivery receipt → source sync → reconciliation → cleanup
 - [ ] 夜Briefのdelivery receipt → source sync → reconciliation → cleanup
 - 現在の正確な停止理由: `brief_delivery_destination_and_morning_evening_time_not_decided`
