@@ -24086,3 +24086,17 @@ Evidence: `outputs/aos-backup-obsidian-readonly-audit-20260914.json`, Daily AI w
 - [ ] Post-deploy visual readback of the new same-Run label is deferred until an AOS-owned tab can be opened or returned by the Companion surface; no browser action was replayed.
 
 **Next action:** use the next task-owned AOS tab for one fresh visual/semantic readback of the deployed Company 1 page, then continue only with explicitly approved business-effect gates.
+
+## 2026-09-14T21:07:00+09:00 — Deployed major-screen runtime acceptance
+
+- [x] Fresh in-app browser readback of deployed Home completed after settling: today `29` Runs (`24` complete, `5` needs review), approvals pending `0`, fresh queue `0`, and Home delivery `external notification=false / external_action=false`.
+- [x] Fresh Chat readback completed: Company 1 scope, active named session, input-waiting state, and save/send controls safely gated until required input/readback; no message or external service selection was submitted.
+- [x] Fresh Plugins readback completed: Gmail canary `completed`, run `gmail-provider-canary-a5148a35e22aaff8a5465db3`, provider account hash verified, provider receipt/source sync/reconciliation/cleanup all verified, `external_action_executed=false`. The separate Github selection remains explicitly unauthenticated and was not started.
+- [x] Fresh Admin readback completed: AOS Chrome Companion selected, Profile 2, backend revision `33`, local sync `ok`, worker heartbeat fresh, and all effectful adapters explicitly require fresh Companion authority plus same-run receipt/source sync/reconciliation/cleanup.
+- [x] Fresh Runs readback completed: `run_mu16chb0_55tuzy` appears as `完了`, with a `daily-ai-research-publish-run remote Mac worker receipt` confirmation record; older blocker records remain visibly separate.
+- [x] Fresh Approvals readback completed: expired Obsidian approval and unconfirmed Daily AI approval are visible but non-actionable; no approval was consumed or renewed.
+- [ ] Runtime screen acceptance is now proven for the major surfaces, but business-effect completion for external workflows remains intentionally unclaimed.
+
+Evidence: deployed in-app browser AX readbacks for `#/`, `#/chat`, `#/plugins`, `#/admin`, `#/runs`, and `#/approvals` at build `4fc6e352-20260914-1150`; no-effect browser navigation only.
+
+**Next action:** consolidate the release decision as `read-only operationally usable / business effects still gated`; do not start Github authentication or any external workflow without a new explicit target/account/content/approval gate.
