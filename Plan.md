@@ -184,6 +184,15 @@ Evidence: Zeabur deployment/status/log readback（2026-09-14）。
 
 Evidence: AOS/Companion MCP readback and Zeabur CLI/public `/readyz` readback（2026-09-14）。
 
+### 2026-09-14 scheduler no-effect canary fresh run
+
+- [x] 現行HEAD `aeeaf5d15bdfb1eb4cc91734acb08ab71aceef18`でscheduler canaryを1回実行し、catalog workflow 6/6が`completed`となった。
+- [x] 全workflowで`manifest_validation → run_binding → readback → cleanup`を確認した。
+- [x] `browser_started=false`、`connector_called=false`、`external_action_executed=false`を確認した。
+- [ ] これはscheduler/control-planeのno-effect証跡であり、provider receipt、公開・送信・応募、protected schedule materialization、業務完了を証明しない。
+
+Evidence: `portableSchedulerCanary` fresh stdout readback（2026-09-14）。
+
 ## 実行順序
 
 ### Phase 0 — 共通ゲート
