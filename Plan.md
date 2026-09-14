@@ -23744,3 +23744,16 @@ Evidence: `outputs/aos-portable-scheduler-canary-current-20260914.json`。
 Evidence: `outputs/aos-company-binding-readiness-current-20260914.json`。
 
 **Next action:** Owner-authenticated protected AOS readbackをcanonical authorityとして、Company 1とlocal diagnostic companyの対応を同一Runでreconcileする。現時点では本番定期実行を有効化・再作成しない。
+
+## 2026-09-14T19:21:01+09:00 — Company 1 workflow read-only preflight
+
+- [x] Owner protected routeでCompany 1 scope、canonical 7件、registered adapter 12件をfresh readbackした。
+- [x] 5 workflowの詳細をread-only確認した。登録inventoryは`can_run=false / can_preflight=true`で、外部操作は開始していない。
+- [x] Backupはローカル確認済み（runs=39、proofs=0、snapshot/integrity metadataあり、業務完了未確認）。
+- [x] Obsidianはローカル確認済み（runs=14、proofs=0、project/Vault parity metadataあり、業務完了未確認）。
+- [x] Daily AI/NisenPrintsはMac workerのCompanion同一Run readback待ちとして停止。Gmail/Backup/Obsidianもunknown readbackまたは業務完了未確認を維持した。
+- [ ] Provider receipt、source sync、reconciliation、cleanupを伴う業務Runはまだ未完了。外部効果は開始していない。
+
+Evidence: `outputs/aos-company1-workflow-readonly-preflight-20260914.json`、Company 1 protected routeのsemantic readback（2026-09-14）。
+
+**Next action:** Mac workerのfresh Companion authorityを取得できるworkflowから、no-effect preflight→same-run readbackを一件ずつ実行する。Gmail返信、公開、応募、スケジュール変更は再送・推測せず保留する。

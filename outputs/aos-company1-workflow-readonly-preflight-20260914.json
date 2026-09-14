@@ -1,0 +1,54 @@
+{
+  "capturedAt": "2026-09-14T19:21:01+09:00",
+  "route": "https://aos-admin-ingress.zeabur.app/#/projects/company_2560580981cedfd106b66245/automations",
+  "companyId": "company_2560580981cedfd106b66245",
+  "readbackStatus": "confirmed",
+  "scope": "Company 1",
+  "canonicalRegistryCount": 7,
+  "registeredAdapterCount": 12,
+  "workflowReadback": {
+    "Gmail": {
+      "status": "unknown_readback",
+      "blocker": "unknown_readback",
+      "externalActionExecuted": false
+    },
+    "Daily AI": {
+      "status": "needs_correlation",
+      "blocker": "Mac worker Companion same-run readback pending",
+      "externalActionExecuted": false
+    },
+    "NisenPrints": {
+      "status": "needs_correlation",
+      "blocker": "Mac worker Companion same-run readback pending",
+      "externalActionExecuted": false
+    },
+    "Backup": {
+      "status": "local_readback_only",
+      "runs": 39,
+      "proofs": 0,
+      "latest": "complete",
+      "metadata": "snapshot/integrity metadata present",
+      "providerConnection": "not performed",
+      "queue": "not performed",
+      "externalActionExecuted": false,
+      "businessCompletion": "unconfirmed"
+    },
+    "Obsidian": {
+      "status": "local_readback_only",
+      "runs": 14,
+      "proofs": 0,
+      "latest": "complete",
+      "metadata": "project/Vault parity metadata present",
+      "providerConnection": "not performed",
+      "queue": "not performed",
+      "externalActionExecuted": false,
+      "businessCompletion": "unconfirmed"
+    }
+  },
+  "uiSafety": {
+    "registeredInventoryCanRun": false,
+    "registeredInventoryCanPreflight": true,
+    "externalOperationsStarted": false
+  },
+  "interpretation": "The protected Company 1 UI is usable for read-only preflight, but no workflow is proven business-complete. The UI correctly preserves explicit gates and does not treat local metadata or canonical registration as provider completion."
+}
