@@ -1,0 +1,20 @@
+{
+  "capturedAt": "2026-09-14T10:22:00Z",
+  "schema": "aos.portable_worker_profile.v1",
+  "profileId": "default",
+  "remoteUrl": "https://automation-os.zeabur.app",
+  "companyId": "company_2560580981cedfd106b66245",
+  "localCompanyId": "company_2560580981cedfd106b66245",
+  "workerId": "mac-Nichikas-MacBook-Pro.local",
+  "chromeProfile": {
+    "id": "profile2",
+    "name": "Profile 2",
+    "surface": "signed_chrome_extension_profile2"
+  },
+  "webOperationBackend": "browser_use_cli",
+  "codexAccountRef": "",
+  "tokenFile": null,
+  "remoteWorkerScopeParity": true,
+  "externalActionExecuted": false,
+  "interpretation": "Worker and remote/local company scope match Company 1. However, the current profile does not expose a Codex account ref or token file, and the configured web backend is browser_use_cli; this is not proof of a fresh Companion same-run authority or provider completion."
+}

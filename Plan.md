@@ -23757,3 +23757,14 @@ Evidence: `outputs/aos-company-binding-readiness-current-20260914.json`。
 Evidence: `outputs/aos-company1-workflow-readonly-preflight-20260914.json`、Company 1 protected routeのsemantic readback（2026-09-14）。
 
 **Next action:** Mac workerのfresh Companion authorityを取得できるworkflowから、no-effect preflight→same-run readbackを一件ずつ実行する。Gmail返信、公開、応募、スケジュール変更は再送・推測せず保留する。
+
+## 2026-09-14T10:22:00Z — Mac portable worker profile readback
+
+- [x] Mac workerのremote/local company scopeはCompany 1（`company_2560580981cedfd106b66245`）で一致した。
+- [x] Zeabur endpoint、worker id、Chrome Profile 2 / signed extension profile surfaceを確認した。
+- [ ] `codex_account_ref`とtoken fileは空、web backendは`browser_use_cli`。これはfresh Companion同一Run authorityの証明ではない。
+- [ ] Provider receipt、source sync、reconciliation、cleanup、業務完了は未証明。backendを推測で切り替えない。
+
+Evidence: `outputs/aos-portable-worker-profile-readback-20260914.json`。
+
+**Next action:** Companion task-owned sessionのfresh status/readbackを取得できる境界で、まずread-only workflow一件のsame-run authorityを確立する。取得できなければ、exact blockerを固定して業務Runを開始しない。
