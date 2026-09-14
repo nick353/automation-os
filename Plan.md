@@ -23956,3 +23956,27 @@ Evidence: `outputs/aos-companion-transport-disconnect-readback-20260914.json`、
 Evidence: `apps/web/src/App.tsx`, `apps/server/src/tests/uiTruthfulnessSource.test.ts`, `npm run typecheck:web`, `npm run build:web`.
 
 **Next action:** obtain a fresh read-only runtime inventory after deployment and confirm whether an existing adopted record now resolves. Do not call the adoption endpoint or enable schedules without explicit authorization for that state change.
+
+## 2026-09-14T20:07:00+09:00 — Canonical bind fix deployed and read back
+
+- [x] Deployed commit `caaa238a` to the fresh target `automation-os` (`service_id=6a47122e24bec8372d3e1a31`) in project `automation-wiled`.
+- [x] Zeabur deployment returned `status=success`; service readback is `RUNNING` and generated domain is `PROVISIONED`.
+- [x] `https://automation-os.zeabur.app/readyz` and `https://aos-admin-ingress.zeabur.app/readyz` both returned HTTP 200 / `status=ready`.
+- [x] Fresh AOS Builder readback after deployment still correctly fails closed for the unadopted canonical Daily AI route: `未確認 自動化仕様`, schedule controls disabled, `scheduler=not_configured`, `next_run_at` unproven, external action false.
+- [ ] Runtime promotion/adoption is still not done; the deployed UI fix is ready for an existing persisted bind but cannot manufacture one.
+
+Evidence: commit `caaa238a`, Zeabur deployment JSON readback, `/readyz` HTTP 200 responses, Companion fresh Builder readback.
+
+**Next action:** obtain user authorization for the exact Company 1 catalog adoption set and whether schedules should remain disabled or be enabled; until then keep all registered workflows read-only/no-effect.
+
+## 2026-09-14T20:14:00+09:00 — Company 1 adoption attempt after user choice 3
+
+- [x] User selected option 3, interpreted as Company 1 registered workflows with schedules enabled, using the verified Gmail account `nichika2000823@gmail.com`.
+- [x] Fresh Companion readback confirmed the Company 1 Automations page, the enabled `AOS Chrome Companion経路へ同期` control, and the target was visually inspected before dispatch.
+- [x] Three signed click attempts were stopped before dispatch by Companion target resolution (`web_operation_target_ambiguous` twice, then `web_operation_target_not_found` after a CSS-locator refinement). No provider call, adoption write, schedule change, or external action occurred; no idempotency key reached the page.
+- [x] The task-owned tab/session was closed with `foreign_tabs_mutated=false`, `external_action_executed=false`, and `unknown_effect=[]`.
+- [ ] Adoption and schedule enablement remain unverified. Do not replay the same click; resolve the Companion page-target adapter or use a newly deployed UI route with a stable mutation locator.
+
+Evidence: Companion run IDs `run_aos_company1_adopt_20260914_1112`, `run_aos_company1_adopt_20260914_1113`, `run_aos_company1_adopt_20260914_1114`; owner cleanup receipts at 20:14 JST.
+
+**Next action:** fix or bypass only the Companion target-resolution defect for this AOS button, then perform one fresh pre-read and one authorized adoption transaction; confirm the exact adopted count and schedule `next_run_at` values before claiming completion.
