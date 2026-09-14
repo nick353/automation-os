@@ -125,6 +125,14 @@ AOSの残存業務を、低リスクの内部処理から段階的に実行す�
 - [x] Morning Briefは内部deliveryのdestination/time決定とprotected schedule materializationが未完了。
 - [ ] 7 workflowの業務完了は未claim。外部効果を伴うworkflowはCompanion復旧と対象・payload・approvalのfresh readback後に1件ずつ進める。
 
+### 2026-09-14 Web操作入口の通常表示簡素化
+
+- [x] 通常表示の技術列挙（phase、内部blocker、backend、runtime role、workflow件数、Company ID、`external_action=false`）を、状態・実行可否・次の操作・外部操作なしの4項目へ整理した。
+- [x] profile、port、runtime role、queue scope、process、証跡境界は既存の折りたたみ技術詳細へ保持し、管理・診断能力と互換性を維持した。
+- [x] UI真実性テスト109/109、web typecheck、git diff --checkを通過した。
+- [x] コミット `8be09f65`。schedule、worker入口、Company scope、外部効果境界は変更していない。
+- [ ] protected ingress上の実機runtime QAはCompanion transport復旧後に確認する。
+
 ## 実行順序
 
 ### Phase 0 — 共通ゲート
