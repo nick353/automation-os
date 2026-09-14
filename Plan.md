@@ -25,6 +25,16 @@ AOSの残存業務を、低リスクの内部処理から段階的に実行す�
 - [x] Browser operationは`known_no_effect`、`browser_mutation_executed=false`、`external_action_executed=false`で、Companion task-owned tabをowner-scoped cleanup済み（closed=1、unknown_effect=0、foreign_tabs_mutated=false）。
 - [ ] Chat / Company / Runs / Approvals / Plugins / Adminの同一Profile fresh semantic + visual readback、およびBrief protected schedule materialization readbackは未完了。
 
+### 2026-09-14 latest protected secondary-route readback
+
+- [x] 同一Companion/Profile 2の新規task-owned tabでChat、Company、Runs、Approvals、Plugins、Adminを順番にfresh semantic + visual readbackした。
+- [x] ChatはCompany 1 scope、入力待ち、外部効果は別承認の表示を確認。CompanyはCompany 1のcanonical IDと8 automation / 500 Run / 10 waiting-running / 339要確認の表示を確認した。
+- [x] Runsは500件の保存履歴、処理中10、停止341、完了147、待機Job 2、承認待ち0、外部操作なしの安全境界を確認した。過去Runの要確認表示を現在の業務完了とは扱わない。
+- [x] ApprovalsはCompany 1 scope、期限切れ・未確認の承認を表示し、Standing Approvalを未確認として自動適用しないことを確認した。承認操作は行っていない。
+- [x] PluginsはGmail read-only canaryのreceipt/source sync/reconciliation/cleanup完了、外部効果=false、未確認GitHubのcompany_connection_ref_missingを確認した。AdminはAOS Chrome Companion選択、revision=33、local sync=ok、未接続adapterのfallbackなしを確認した。
+- [x] 全6画面のbrowser operationはread-only、外部効果なし。Companion task-owned tabをowner-scoped cleanup済み（closed=1、unknown_effect=0、foreign_tabs_mutated=false）。
+- [ ] Brief protected schedule materialization readback、未確認GitHubの本人認証、外部workflowのbusiness completionは未完了。
+
 ### 統合台帳
 
 | 領域 | 現在の状態 | 次の判定条件 |
