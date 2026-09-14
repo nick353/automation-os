@@ -33,7 +33,8 @@ AOSの残存業務を、低リスクの内部処理から段階的に実行す�
 - [x] ApprovalsはCompany 1 scope、期限切れ・未確認の承認を表示し、Standing Approvalを未確認として自動適用しないことを確認した。承認操作は行っていない。
 - [x] PluginsはGmail read-only canaryのreceipt/source sync/reconciliation/cleanup完了、外部効果=false、未確認GitHubのcompany_connection_ref_missingを確認した。AdminはAOS Chrome Companion選択、revision=33、local sync=ok、未接続adapterのfallbackなしを確認した。
 - [x] 全6画面のbrowser operationはread-only、外部効果なし。Companion task-owned tabをowner-scoped cleanup済み（closed=1、unknown_effect=0、foreign_tabs_mutated=false）。
-- [ ] Brief protected schedule materialization readback、未確認GitHubの本人認証、外部workflowのbusiness completionは未完了。
+- [x] Brief protected schedule materialization readbackを会社1のcanonical registryで確認した。AOS Company Briefは07:45/21:45 Asia/Tokyo、protected Postgres catalog 6件＋Company Brief heartbeat 1件として表示され、外部効果はfalse。証拠: [aos-brief-schedule-materialization-readback-20260914.json](outputs/aos-brief-schedule-materialization-readback-20260914.json)
+- [ ] 未確認GitHubの本人認証、外部workflowのbusiness completionは未完了。
 
 ### 統合台帳
 
@@ -42,7 +43,7 @@ AOSの残存業務を、低リスクの内部処理から段階的に実行す�
 | Control plane / Company 1 | 完了確認済み | canonical Company・scope・runtimeのfresh readbackを維持 |
 | Backup safety | 完了確認済み | 新しいsnapshotやpushは別承認がある場合だけ実行 |
 | Obsidian | read-only監査済み、登録は`runnable=false` | 有効化・Vault/Git同期は別承認後にfresh readback |
-| Morning / Evening Brief | AOS Home内部配信のreceipt chain完了 | 保護設定へのschedule materializationをreadback |
+| Morning / Evening Brief | 内部配信receipt chainと保護設定へのschedule materialization readback完了 | 次回自然tickのsame-run deliveryを継続監視。設定変更は不要 |
 | Gmail | read-only候補確認まで | 対象1件・本文・送信アカウントを表示し、明示承認後に1回だけ送信 |
 | Daily AI | 未完了 | 対象・公開先・本文・アカウントを固定し、公開承認後にreceipt確認 |
 | NisenPrints | 未完了 | 商品1件・公開先・素材・アカウントを固定し、公開承認後にreceipt確認 |
@@ -302,10 +303,10 @@ Evidence: resumed Companion status readback（2026-09-14）。
 - [x] ユーザー選択: 朝・夜両方
 - [x] 外部通知なし、AOS Home内部配信のみ
 - [x] canonical sourceで朝07:45・夜21:45 Asia/Tokyoを確認
-- [ ] 保護されたAOS設定への朝夜時刻materializationをreadback（定期実行を本番で有効化する前の残タスク）
+- [x] 保護されたAOS設定への朝夜時刻materializationをreadback（07:45/21:45 Asia/Tokyo、Company 1 canonical registry）
 - [x] 朝Briefのdelivery receipt → source sync → reconciliation → cleanup（2026-09-14 fresh UI readback）
 - [x] 夜Briefのdelivery receipt → source sync → reconciliation → cleanup（2026-09-14 fresh UI readback）
-- 現在の正確な残タスク: `brief_schedule_materialization_readback_required`
+- 現在のBrief残タスク: なし（次回自然tickのdelivery/readbackは運用監視として継続）
 - 過去のCompanion readbackではZeabur管理画面と空白タブのみで、配信実行・設定変更を行っていない。この記録は後続のfresh delivery証跡により更新済みである。
 - 過去のAOS canonical UI readbackでは、画面上の「朝Brief」「夜Brief」「fresh readback」「AOS Homeに配信」、`source=AOS DB / Home delivery=internal / external notification=false / external_action=false`を確認した。具体的な朝夜時刻とdelivery receiptはその時点では画面上で確認できず、配信操作も行っていなかった。後続のfresh delivery readbackは別証拠として下記に記録する。
 - 過去にはCompanion profile transport切断があり、`profile_not_connected`で停止した。再接続後のfresh sessionで後続の内部配信readbackを完了しており、現在の停止理由ではない。
