@@ -74,6 +74,13 @@ AOSの残存業務を、低リスクの内部処理から段階的に実行す�
 - [ ] authority-validなfresh protected Company/schedule readback、service identity、account refs、overdue occurrence policyの確認
 - 証拠: `outputs/aos-company-binding-current-readback-20260914.json`
 
+### 2026-09-14 継続確認（Companion transport再確認）
+
+- [x] Companionのtask statusを再確認したが、brokerは`Transport closed`を返した。再送・再実行・既存タブのclaimは行っていない。
+- [x] AOSの独立したlocal health/readback MCPも同じtransport閉鎖で取得不能だった。これは業務失敗や外部効果ではなく、readback経路の未接続として扱う。
+- [x] ローカルの`npm run automation:health`は`total=7 / active=7 / ok=7 / warnings=0 / blockers=0 / db_drift=0 / missing_entrypoints=0`を再確認した。
+- [ ] local health/automation healthはprotected Company・schedule・provider receiptの証明ではない。Companion transport復旧後にprotected readbackを優先する。
+
 ## 実行順序
 
 ### Phase 0 — 共通ゲート
