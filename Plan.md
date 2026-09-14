@@ -23686,3 +23686,14 @@ Evidence: `outputs/aos-backup-obsidian-ui-latest-readback-20260914.json`、Compa
 Evidence: `outputs/aos-all-page-button-static-qa-20260914.json`、`work/qa/all-page-button-static-preflight.json`。
 
 **Next action:** runtime QAは同一Companion authorityでread-only画面確認に限定し、外部効果ボタンを押さない。現時点の残存業務ゲートは従来どおり保持する。
+
+## 2026-09-14T10:05:53Z — production auth boundary explained
+
+- [x] 本番`registered-automations` protected endpointをread-onlyで確認し、HTTP 401 / `owner_sso_required`を取得した。
+- [x] 本番画面の`mvp_state_readback_pending` loading表示は、未認証の保護APIに対するfail-closed挙動として説明できる。frontend defectや登録automation不存在とは扱わない。
+- [x] 認証回避、外部効果、mutation、provider callは行っていない。
+- [ ] Owner SSO認証後のfresh protected readbackとruntime QAが未完了。
+
+Evidence: `outputs/aos-production-registered-readback-auth-boundary-20260914.json`、HTTP 401 response。
+
+**Next action:** ユーザーがOwner SSOを認証した後、同じCompany 1 routeをCompanionで再読し、Backup/Obsidian row controlとNisenPrints read-only導線を確認する。

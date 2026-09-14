@@ -1,0 +1,9 @@
+{
+  "capturedAt": "2026-09-14T10:05:53Z",
+  "endpoint": "https://aos-admin-ingress.zeabur.app/api/mvp/registered-automations?project_id=company_2560580981cedfd106b66245&include_ledger=1",
+  "httpStatus": 401,
+  "response": { "ok": false, "status": "blocked", "exactBlocker": "owner_sso_required" },
+  "externalActionExecuted": false,
+  "interpretation": "The deployed UI loading state is explained by the protected API requiring Owner SSO. It is not evidence of missing registered automations or a frontend rendering defect. No auth bypass or mutation was attempted.",
+  "nextAction": "Authenticate Owner SSO in the task-owned Companion session, then perform one fresh protected readback of the Company 1 automations route."
+}
