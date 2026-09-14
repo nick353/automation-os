@@ -1,0 +1,31 @@
+{
+  "capturedAt": "2026-09-14T19:20:00+09:00",
+  "route": "https://aos-admin-ingress.zeabur.app/#/plugins",
+  "companyId": "company_2560580981cedfd106b66245",
+  "selectedPlugin": "gmail",
+  "selectedCompany": "Company 1",
+  "authSteps": {
+    "companySelection": "complete",
+    "pluginAdded": "complete",
+    "officialAuthAndServerAvailability": "complete",
+    "companyScopeVerification": "complete"
+  },
+  "providerCanary": {
+    "status": "completed",
+    "providerAccountDisplay": "redacted_hash:e37a3a5f0ba841d5f2fdbbd94c60e77cfae5818317e30d5f0294f12b9451c8db",
+    "providerReceipt": "verified",
+    "sourceSync": "verified",
+    "reconciliation": "verified",
+    "cleanup": "verified",
+    "externalActionExecuted": false
+  },
+  "accountCorrelation": "AOS intentionally redacts the email address. A separate Gmail /u/1 read-only session was previously verified as nichika2000823@gmail.com; this AOS readback does not infer an email from the redacted hash.",
+  "runtimeReadback": {
+    "companyRoute": "protected_readback_ready",
+    "canonicalAutomationCount": 7,
+    "registeredAdapterCount": 12,
+    "externalActionExecuted": false,
+    "controls": "hydrated_after_sync"
+  },
+  "interpretation": "Gmail is selected for Company 1 and its connection reference is ready for read-only use. No compose, send, publish, delete, or business operation was started by this readback."
+}

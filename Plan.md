@@ -23707,3 +23707,17 @@ Evidence: `outputs/aos-production-registered-readback-auth-boundary-20260914.jso
 Evidence: `outputs/aos-local-project-obsidian-audit-20260914.json`。
 
 **Next action:** Owner SSO認証後のprotected UI readbackを優先する。認証待ちの間はDaily AI scheduler missing queueを修復・再作成せず、owner boundaryとして保持する。
+
+## 2026-09-14T19:20:00+09:00 — Owner SSO復旧とGmail選択 readback
+
+- [x] 同じChromeプロファイルでOwner SSO後のHome protected readbackを取得し、同期後に`状態を確認済み`へ復帰した。
+- [x] Company 1（`company_2560580981cedfd106b66245`）の設定・接続でGmailを選択した。
+- [x] 会社選択、Plugin追加、公式認証・Server利用確認、会社scope確認の4段階を完了表示で確認した。
+- [x] Gmail read-only canaryはprovider receipt、source sync、reconciliation、cleanupがすべてverified、`external_action_executed=false`だった。
+- [x] 認証後のCompany 1自動化画面でcanonical正本7件、registered adapter 12件、read-only controls hydratedを確認した。
+- [ ] AOS画面はメールアドレスを意図的にredactするため、AOS内の表示だけでメール文字列を断定しない。別のGmail `/u/1` read-only確認では`nichika2000823@gmail.com`を確認済み。
+- [ ] NisenPrints、Backup、Obsidianの業務Run、Daily AI schedulerのowner mismatch、TopEyes相手先確定、AOS source sync未確認は残存。今回のreadbackでは外部業務操作を開始していない。
+
+Evidence: `outputs/aos-owner-sso-gmail-selection-readback-20260914.json`、AOS `#/plugins` と Company 1 protected routeの同一Chrome readback（2026-09-14）。
+
+**Next action:** 認証済みCompany 1 routeで、各workflowのread-only preflightを一つずつ確認する。外部効果は対象・内容・明示承認・同一Run証跡が揃うまで開始しない。Daily AI scheduler missing queueはowner boundaryとして、削除・再作成・修復をしない。
