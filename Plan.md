@@ -382,6 +382,8 @@ Evidence: resumed Companion status readback（2026-09-14）。
 - [x] `npm run automation:health` を現行distで再実行し、`total=7 / active=7 / ok=7 / warnings=0 / blockers=0 / db_drift=0 / missing_entrypoints=0` を確認した。これは定期実行定義の健全性であり、外部業務完了の証明ではない。
 - [x] `npm run qa:all-page-buttons` を再実行し、静的QA `status=passed / issues=0` を確認した。
 - [x] `npm run typecheck:web` を再実行し、成功した。
+- [x] Gmail effect/admission/source-acquisition回帰テスト11件を現行distで再実行し、全件pass。会社・source Run・payload hash・RFC headerをserver側で再計算し、provider呼出し前にforeign/conflicting/forged inputをfail-closedする境界を確認した。
+- [x] `nichika2000823@gmail.com` の接続identityとread-only候補artifactを確認した。ただし候補本文は最新の同一Run readbackではないため、送信対象と返信本文はCompanion再接続後にfresh readbackして確定する。
 - [ ] Companion fresh status はなお `connected=false` / `profile_not_connected`。そのため protected runtime screen QA と外部workflowの新規Runは開始していない。
 
 - [x] 正本ドキュメントと証跡の入口を整理し、最新の総合監査を `outputs/aos-production-readiness-current-20260914.json` に固定する。
