@@ -377,6 +377,13 @@ Evidence: resumed Companion status readback（2026-09-14）。
 
 ## 受入れ状態
 
+### 2026-09-14 continuation readback
+
+- [x] `npm run automation:health` を現行distで再実行し、`total=7 / active=7 / ok=7 / warnings=0 / blockers=0 / db_drift=0 / missing_entrypoints=0` を確認した。これは定期実行定義の健全性であり、外部業務完了の証明ではない。
+- [x] `npm run qa:all-page-buttons` を再実行し、静的QA `status=passed / issues=0` を確認した。
+- [x] `npm run typecheck:web` を再実行し、成功した。
+- [ ] Companion fresh status はなお `connected=false` / `profile_not_connected`。そのため protected runtime screen QA と外部workflowの新規Runは開始していない。
+
 - [x] 正本ドキュメントと証跡の入口を整理し、最新の総合監査を `outputs/aos-production-readiness-current-20260914.json` に固定する。
 - [x] Company 1 の保護された canonical Company を `company_2560580981cedfd106b66245` として、Companion/Profile 2 の同一プロファイル read-only endpoint/API readbackで確認する。
 - [x] 7項目（protected catalog 6件 + `aos-morning-brief` heartbeat）の構成・schedule・entry・Company scopeをfresh readbackする。heartbeatと6件のexecution-lane adapterを混同しない。
