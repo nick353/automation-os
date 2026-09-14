@@ -1300,7 +1300,8 @@ test("common web-operation entry point distinguishes initial state readback from
   assert.match(panelSource, /stateReadbackPhase = model\.mvpLoadStatus === "loading"/);
   assert.match(panelSource, /API fresh source-of-truth確認中/);
   assert.match(panelSource, /API readback要確認/);
-  assert.match(panelSource, /state readback: \{stateReadbackPhase\}/);
+  assert.match(panelSource, /状態: \{stateReadbackPhase\} \/ 実行可否: \{runtimeLabel\}/);
+  assert.match(panelSource, /次: \{nextAction\} \/ 外部操作: なし/);
   assert.match(panelSource, /保存・実行・外部操作はまだ開始できません/);
   assert.match(panelSource, /model\.mvpLoadStatus === "ready" \? runtime\?\.surface/);
 });

@@ -3502,7 +3502,7 @@ function WebOperationAdmissionPanel({ model, projectId }: { model: AppModel; pro
   return (
       <Panel title="Web操作の共通入口" controlId="web-admission.panel">
       <p className="muted">初見のサイトでも、固定されたクリック手順ではなく、現在の画面の意味・状態・対象候補を読み直して進めます。ここではまだ保存・実行・外部操作はまだ開始できません。ブラウザ起動、投稿、送信、削除、認証、課金も実行しません。</p>
-      <div className="action-note" role="status" data-control-id="web-admission.status" data-readback-phase={runtimePhase} data-exact-blocker={runtimeBlocker}>state readback: {stateReadbackPhase} / phase={runtimePhase} / blocker={runtimeBlocker} / 設定済みbackend: {configuredBackendLabel} / runtime readback surface: {model.mvpLoadStatus === "ready" ? runtime?.surface ?? "未確認" : "未確認"} / runtime={runtimeLabel} / role={model.mvpLoadStatus === "ready" ? runtime?.runtimeRole ?? "unknown" : "unknown"} / registered workflow {model.mvpLoadStatus === "ready" ? registeredWorkflowCount : 0}件 / company: {selectedProject} / external_action=false</div>
+      <div className="action-note" role="status" data-control-id="web-admission.status" data-readback-phase={runtimePhase} data-exact-blocker={runtimeBlocker}>状態: {stateReadbackPhase} / 実行可否: {runtimeLabel} / 次: {nextAction} / 外部操作: なし</div>
       <CompanionRecoveryGuide companyId={selectedProjectId} blockerCandidates={[runtimeBlocker, runtime?.exactBlocker, runtime?.chromePluginReadback?.exactBlocker, model.mvpState.browserHealth?.chromeExtension?.exactBlocker, model.mvpLoadBlocker]} />
       {workflowInventory?.sets && (
         <div className="preview-box" data-control-id="web-admission.workflow-inventory">
@@ -3520,6 +3520,7 @@ function WebOperationAdmissionPanel({ model, projectId }: { model: AppModel; pro
           <span><strong>state readback:</strong> {stateReadbackPhase}</span>
           <span><strong>runtime readback surface:</strong> {model.mvpLoadStatus === "ready" ? runtime?.surface ?? "未確認" : "未確認"}</span>
           <span><strong>runtime:</strong> {runtimeLabel}</span>
+          <span><strong>runtime role:</strong> {model.mvpLoadStatus === "ready" ? runtime?.runtimeRole ?? "unknown" : "unknown"}</span>
           <span><strong>次の確認:</strong> {publicBrowserUseRuntimeNextCheck(runtime)}</span>
         </div>
         {registeredLanes.length ? <DataTable controlId="web-admission.lane-binding.table" headers={["Workflow", "lifecycle", "論理profile", "予約port (AOS)", "process readback", "所有 / binding", "same-run readback", "次の確認"]} rows={registeredLanes.map((lane) => [
