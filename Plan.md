@@ -49,6 +49,14 @@ AOSの残存業務を、低リスクの内部処理から段階的に実行す�
 - 証拠: `outputs/aos-scheduler-ui-verification-20260914.json`
 - 注記: web buildのbundle-size warningは非致命。UIの分割最適化は別の品質改善タスクとして残す。
 
+### 2026-09-14 UI readback待ち・タイムアウト回帰確認
+
+- [x] `ProjectUnavailablePage` は未確認の会社データやproofを表示せず、read-only確認中を明示する。
+- [x] readbackが8秒を超えた場合は遅延状態、30秒を超えた場合は`mvp_state_readback_timeout`として表示し、操作ボタンを出さない。
+- [x] タイムアウト後の案内は同期によるread-only再確認に限定し、保存・実行・外部操作を開始しない。
+- [x] `node --test scripts/tests/uiIsolatedRender.test.mjs` は12/12 pass（接続変更、loading/error、権限制御、会社scope、Runs readback、timeout/network failure）。
+- [ ] protected ingress上でのHome/Companyのsettled readbackは別ゲート。Companion authority expiryで未確認のため、UIテスト合格を本番画面の利用可能証明へ昇格しない。
+
 ### 2026-09-14 runtime / automation health readback
 
 - [x] runtime `ready_for_authorized_admission`、server read-only、worker enabled、external action false
