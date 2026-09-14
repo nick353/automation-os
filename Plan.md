@@ -24066,3 +24066,14 @@ Evidence: `data/artifacts/portable-remote-worker/run_mu16chb0_55tuzy/portable-ru
 Evidence: commit `4fc6e352`, typecheck/build/contract test output, Zeabur deployment `6aa7df87a6ec7d5555ae3990` and Docker build logs, fresh `/readyz`, and deployed bundle readback.
 
 **Next action:** fresh-read the deployed Company 1 page after cache bust and verify the new same-Run label is visible on a safe no-effect path; then consolidate the completed Backup/Obsidian/Daily AI preflight evidence and leave only genuine business-effect/user-decision gates.
+
+## 2026-09-14T20:56:00+09:00 — Local-only preflight evidence consolidated
+
+- [x] Fresh Backup read-only audit is complete with same-run receipt, readback, cleanup, and no snapshot/Git push; business effect remains unstarted.
+- [x] Fresh Obsidian read-only audit is complete with same-run receipt, readback, cleanup, and `external_action_executed=false`; findings are recorded as attention/approval items, not business completion.
+- [x] Daily AI now has the same class of worker receipt and protected readback for `run_mu16chb0_55tuzy`; all three are control-plane/preflight evidence, not provider/business completion.
+- [ ] Source-sync/business-completion gates remain intentionally open for external workflows. No external send, publish, application, Sheets update, or approval consumption was performed.
+
+Evidence: `outputs/aos-backup-obsidian-readonly-audit-20260914.json`, Daily AI worker receipt/readback under `data/artifacts/portable-remote-worker/run_mu16chb0_55tuzy/`, and the current seven-workflow gate matrix.
+
+**Next action:** leave the read-only canary lane stable and resolve only the remaining authoritative UI durable-readback check or an explicitly approved business-effect workflow; do not manufacture source sync or business completion from preflight evidence.
