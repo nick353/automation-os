@@ -1,0 +1,29 @@
+{
+  "schema": "aos.scheduler.current_readback.v1",
+  "captured_at": "2026-09-14T19:40:40+09:00",
+  "company_id": "company_2560580981cedfd106b66245",
+  "selected_account": "nichika2000823@gmail.com",
+  "health": {
+    "total": 7,
+    "active": 7,
+    "inactive": 0,
+    "ok": 7,
+    "warnings": 0,
+    "blockers": 0,
+    "db_drift": 0,
+    "missing_entrypoints": 0
+  },
+  "local_schedule_readback": {
+    "schedule_count": 0,
+    "source": "current local AOS database",
+    "interpretation": "No Company 1 schedules are materialized in this local database readback. This does not prove the protected production database is empty."
+  },
+  "daily_ai_reconciliation": {
+    "result": "blocked",
+    "exact_blocker": "source_run_not_found",
+    "summary_run_id": "run_msq7tugh_nw20j1",
+    "interpretation": "The latest discovered remote-worker Daily AI summary is not bound to a current AOS Run, so it cannot be reconciled or promoted to business completion."
+  },
+  "external_action_executed": false,
+  "next_action": "Fresh protected production schedule readback and explicit schedule materialization review; do not enable or recreate schedules from local absence alone."
+}

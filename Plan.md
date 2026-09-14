@@ -23826,3 +23826,15 @@ Evidence: `outputs/aos-daily-ai-readonly-ui-attempt-20260914.json`。
 Evidence: `outputs/aos-daily-ai-route-readonly-canary-20260914.json`。
 
 **Next action:** Daily AI固有のsame-run authority/readbackをMac workerから確立する。route canary成功だけでは業務Runへ昇格しない。
+
+## 2026-09-14T19:40:40+09:00 — scheduler / Daily AI reconciliation readback
+
+- [x] `automation:health`は7 automations active、warnings=0、blockers=0、db_drift=0を返した。
+- [x] 現行ローカルAOS DBのCompany 1 schedule readbackは0件だった。これはproduction DBの空を意味しないため、推測でscheduleを作成・有効化していない。
+- [x] 最新に見つかったDaily AI summaryをreconcileしようとしたが、対象Runが現行AOS DBに存在せず`source_run_not_found`で停止した。
+- [x] 外部効果、schedule materialization、投稿、送信、公開は行っていない。
+- [ ] 定期実行の受入れには、protected production schedule readback、next_run_at、worker pickup、同一Run receiptが必要。
+
+Evidence: `outputs/aos-scheduler-current-readback-20260914.json`、`artifacts/automation-health/2026-09-14T104040680Z.json`。
+
+**Next action:** Protected production routeでCompany 1のschedule実体とnext_run_atをfresh readbackし、欠落している場合だけユーザー承認下でmaterializeする。Daily AIは現行AOS Runと紐づく新しいread-only preflightから再開する。
