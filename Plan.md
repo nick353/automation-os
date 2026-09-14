@@ -23993,3 +23993,15 @@ Evidence: Companion run IDs `run_aos_company1_adopt_20260914_1112`, `run_aos_com
 Evidence: commit `be8c140b`; Zeabur deployment/service/readyz readback; Companion runs `run_aos_companion_surface_sync_20260914_1123` and `run_aos_registered_api_readback_20260914_1125`; authenticated GET readback; owner cleanup receipt.
 
 **Next action:** obtain a fresh schedule/readback view or server-side adoption receipt for the five projections, then separately verify worker pickup and same-run receipts. Do not replay the sync click or claim all seven canonical workflows are enabled.
+
+## 2026-09-14T20:31:30+09:00 — Company 1 schedule and worker acceptance readback
+
+- [x] Fresh authenticated schedule GET readback confirmed all five synced Company 1 workflows have `enabled=true`, `status=active`, `timezone=Asia/Tokyo`, and a future `nextRunAt`: Gmail `07:30` → `2026-09-14T22:30:00Z`, Daily AI `09:00` → `2026-09-15T00:00:00Z`, Backup `09:00` → `2026-09-15T00:00:00Z`, NisenPrints `08:30` → `2026-09-14T23:30:00Z`, and Obsidian weekly `MON 09:30` → `2026-09-21T00:30:00Z`.
+- [x] Local portable worker process readback confirmed PID 541 is alive; fresh `worker-status.v1.json` shows `heartbeat_status=ok`, transport `acknowledged`, binding `verified`, Company 1 target `heartbeat_ok`, `claim_status=idle`, and no blocker. This proves worker availability, not a completed business Run.
+- [x] The deployed page exposed an enabled, exact `Daily AI: read-only preflight` control. One preflight attempt was stopped before dispatch because the target was outside the visual viewport; `external_action_executed=false`, `browser_mutation_executed=false`, and no run was created. No replay was made.
+- [x] The preflight task-owned tab was cleaned up with `foreign_tabs_mutated=false`, `unknown_effect=[]`, and `external_action_executed=false`.
+- [ ] A same-run worker pickup/provider-neutral preflight receipt is still unproven. Effectful business stages remain correctly gated (`can_run=false` / approval and same-run receipt required).
+
+Evidence: authenticated schedule endpoint readbacks for the five deterministic Company 1 automation IDs; `data/artifacts/portable-remote-worker/worker-status.v1.json`; Companion runs `run_aos_daily_ai_preflight_20260914_1136` and schedule readback runs; owner cleanup receipt.
+
+**Next action:** use the dedicated Daily AI preflight control after a verified viewport scroll (or improve the page's scroll target) and then read back the same Run's worker receipt/source sync. Keep all effectful provider stages gated until target, account, content, approval, provider receipt, source sync, reconciliation, and cleanup are present.
