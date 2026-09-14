@@ -24100,3 +24100,15 @@ Evidence: `outputs/aos-backup-obsidian-readonly-audit-20260914.json`, Daily AI w
 Evidence: deployed in-app browser AX readbacks for `#/`, `#/chat`, `#/plugins`, `#/admin`, `#/runs`, and `#/approvals` at build `4fc6e352-20260914-1150`; no-effect browser navigation only.
 
 **Next action:** consolidate the release decision as `read-only operationally usable / business effects still gated`; do not start Github authentication or any external workflow without a new explicit target/account/content/approval gate.
+
+## 2026-09-14T21:15:00+09:00 — Daily Backup business effect reconciled
+
+- [x] Fresh artifact readback reconciled the scheduled Run `run_mtz1slku_h9ikih` for `daily-backup-safety-check`; no replay or second trigger was issued.
+- [x] The same-Run admission was `approval_status=approved`, `external_effects=enabled`, with approval `app_mtz1slnu_dx6tgv` and a target digest. The matching effect authority shows `external_action_authorized=true` for the same Run and step.
+- [x] The local business worker receipt proves the intended operation `snapshot_and_private_git_push` completed. The private backup remote commit matched local commit `21514c133bee3cf51e2c455637f09dbe790329aa`, remote parity was verified, destination was clean, and state readback was verified.
+- [x] Same-Run receipt, source sync, business completion, protected readback, and cleanup are all `true`; exact blocker is `null`. Business proofs include backup snapshot, private remote push, backup state, and cleanup receipt.
+- [x] No secret, raw input bundle, token, or payload was exposed in the readback. This is a local backup business effect, not a Gmail/GitHub/NisenPrints/Job Application provider action.
+
+Evidence: `data/artifacts/portable-remote-worker/run_mtz1slku_h9ikih/portable-local-worker-receipt.v1.json`, `portable-protected-readback.v1.json`, `portable-external-admission-c9906e39a76d348fff7dc109.json`, and `portable-effect-authority.v1.json`.
+
+**Next action:** treat Daily Backup as reconciled and do not replay it. Keep Daily AI, NisenPrints, Job Application Manager, and email-reply provider effects gated until each has a fresh target/account/content/approval plus provider receipt, source sync, reconciliation, and cleanup.
