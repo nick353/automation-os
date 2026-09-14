@@ -193,6 +193,15 @@ Evidence: AOS/Companion MCP readback and Zeabur CLI/public `/readyz` readback（
 
 Evidence: `portableSchedulerCanary` fresh stdout readback（2026-09-14）。
 
+### 2026-09-14 clean source context preflight
+
+- [x] 現行HEAD `aeeaf5d15bdfb1eb4cc91734acb08ab71aceef18`からtracked sourceだけを一時stagingし、777 files / 約20.5 MiBであることを確認した。
+- [x] `Dockerfile`、`.dockerignore`、`.zeaburignore`、`zbpack.json`を確認し、`outputs/`、`.codex/`、`work/`、ローカル状態・秘密ファイルがsource contextへ入らない境界を確認した。
+- [x] 先行deployment `6aa7a0b0f10957ea50bedd5f`が`BUILDING`中のため、追加deployは行わず、stagingは退避してcleanupした。
+- [ ] 先行deploymentがterminalizeするまで、clean contextからのcorrected deployは実行しない。
+
+Evidence: clean `git archive` staging readback and Zeabur deployment status（2026-09-14）。
+
 ## 実行順序
 
 ### Phase 0 — 共通ゲート
