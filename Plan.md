@@ -23898,3 +23898,15 @@ Evidence: `outputs/aos-ui-static-acceptance-20260914.json`、`work/qa/all-page-b
 Evidence: `outputs/aos-runtime-ui-qa-core-routes-20260914.json`。
 
 **Next action:** Core routeで見つかった残存境界（runtime全件QA、schedule promotion、Daily AI/NisenPrints同一Run authority）を順に詰める。Gmailは選択・接続readback済みなので外部送信へは進めない。
+
+## 2026-09-14T19:52:00+09:00 — Daily AI Builder / schedule boundary
+
+- [x] Known canonical ID `daily-ai-research-publish-run`のBuilder routeをfresh read-only確認した。
+- [x] Builderは`unverified automation spec`としてfail-closedし、schedule controls disabled、`scheduler=not_configured`、`next_run_at=null`、save/approval disabledを表示した。
+- [x] canonical pageのschedule定義とBuilderのruntime automation resolutionが別planeであることを確認した。
+- [x] 保存・承認・schedule作成・有効化・外部効果は行っていない。確認タブはcleanupした。
+- [ ] Daily AIを定期実行へ昇格するには、canonical workflowをruntime automation IDへ正しくbind/promoteする設計または正本APIが必要。
+
+Evidence: `outputs/aos-daily-ai-builder-schedule-readback-20260914.json`、`outputs/aos-company1-production-schedule-readback-20260914.json`。
+
+**Next action:** runtime automation IDとcanonical workflow IDのbind経路をread-onlyで特定し、promotionが安全に可能か確認する。IDを推測してBuilder保存やschedule有効化はしない。

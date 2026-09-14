@@ -1,0 +1,25 @@
+{
+  "schema": "aos.daily_ai.builder_schedule_readback.v1",
+  "captured_at": "2026-09-14T19:52:00+09:00",
+  "company_id": "company_2560580981cedfd106b66245",
+  "canonical_workflow_id": "daily-ai-research-publish-run",
+  "route": "https://aos-admin-ingress.zeabur.app/#/projects/company_2560580981cedfd106b66245/automations/daily-ai-research-publish-run/edit",
+  "builder_readback": {
+    "page_state": "unverified_automation_spec",
+    "automation_type": "daily-ai-research-publish-run_not_resolved_by_builder",
+    "schedule_kind": "manual",
+    "schedule_expression": null,
+    "timezone": "Asia/Tokyo",
+    "schedule_enabled": false,
+    "schedule_controls_enabled": false,
+    "scheduler": "not_configured",
+    "next_run_at": null,
+    "external_action_allowed": false,
+    "save_enabled": false,
+    "approval_enabled": false
+  },
+  "external_action_executed": false,
+  "cleanup_verified": true,
+  "exact_blocker": "canonical_workflow_not_resolved_to_runtime_automation_builder",
+  "interpretation": "The canonical Daily AI schedule definition is visible on the Company page, but the direct Builder route cannot resolve it to an editable runtime automation. The UI fail-closed state correctly disables schedule editing and save; no schedule was created or enabled."
+}
