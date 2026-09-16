@@ -134,6 +134,12 @@ export function validatePortableRunManifestV1(value: PortableRunManifestV1): Por
   return value;
 }
 
+/** Resolve only the immutable, validated manifest table. */
+export function getPortableWorkflowManifest(workflowId: string): PortableWorkflowManifestV1 | null {
+  if (!Object.prototype.hasOwnProperty.call(portableWorkflowManifests, workflowId)) return null;
+  return validatePortableWorkflowManifestV1(structuredClone(portableWorkflowManifests[workflowId as PortableWorkflowId]));
+}
+
 export function createPortableRunManifestV1(input: {
   runId: string;
   workflowId: PortableWorkflowId;
