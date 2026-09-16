@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { CodexAppServerClient, type CodexAppServerEvent } from "../codex/appServerClient.js";
+import { resolveGmailAppLinkId } from "../runs/gmailSourceAcquisition.js";
 
 export const GMAIL_PROVIDER_READ_ONLY_CANARY_SCHEMA = "aos.gmail_provider_read_only_canary.v1" as const;
 
@@ -135,11 +136,13 @@ export async function runGmailProviderReadOnlyCanary(input: {
       return blockedCanaryReadback({ runId, companyId, exactBlocker });
     }
 
+    let linkId: string | null = null;
+    try { linkId = resolveGmailAppLinkId(accountRef); } catch { /* injected test clients may omit runtime link mapping */ }
     const threadId = await client.startOrResumeThread(undefined, { ephemeral: true });
     let turn = await client.startTurn({
       threadId,
       outputSchema,
-      text: "Use only the installed Gmail app/plugin named gmail (gmail@openai-curated) and invoke its profile/get-profile tool exactly once. Do not call Cloudflare, any MCP server, any other Plugin/app, browser, web, search, or network tool. Do not search, list, read, inspect, or access any Gmail messages, threads, attachments, or bodies. Do not send, create drafts, modify labels, archive, delete, or perform any external side effect. Return only JSON with provider=gmail, operation=profile_read, provider_account_present, provider_account (authenticated account email or null), external_action_executed=false, data_persisted=false, and exact_blocker=null only when the Gmail profile tool completed. If the Gmail app/plugin or its profile tool is unavailable, refuses, or requests another authorization, return provider_account_present=false and exact_blocker=gmail_provider_tool_unavailable_or_auth_required. Do not include message data.",
+      text: `Use only the installed Gmail app/plugin named gmail (gmail@openai-curated) and invoke exactly one tool named mcp__codex_apps__gmail_get_profile${linkId ? ` with this exact link_id: ${linkId}` : ""}. Do not call Cloudflare, any MCP server, any other Plugin/app, browser, web, search, or network tool. Do not search, list, read, inspect, or access any Gmail messages, threads, attachments, or bodies. Do not send, create drafts, modify labels, archive, delete, or perform any external side effect. Return only JSON with provider=gmail, operation=profile_read, provider_account_present, provider_account (authenticated account email or null), external_action_executed=false, data_persisted=false, and exact_blocker=null only when mcp__codex_apps__gmail_get_profile completed. If the Gmail app/plugin or that exact tool is unavailable, refuses, or requests another authorization, return provider_account_present=false and exact_blocker=gmail_provider_tool_unavailable_or_auth_required. Do not include message data.`,
       onEvent: (event) => {
         events.push(event);
       }
@@ -155,7 +158,7 @@ export async function runGmailProviderReadOnlyCanary(input: {
       const retryTurn = await client.startTurn({
         threadId,
         outputSchema,
-        text: "The previous turn did not dispatch a tool. Do not answer from memory. Invoke exactly one tool now: gmail.get_profile from the installed app gmail@openai-curated. Do not call any other app, MCP server, browser, web, search, or network tool, and do not access messages or perform any side effect. Return the requested JSON only after that profile tool completes.",
+        text: `The previous turn did not dispatch a tool. Do not answer from memory. Invoke exactly one tool now: mcp__codex_apps__gmail_get_profile from the installed app gmail@openai-curated${linkId ? ` using this exact link_id: ${linkId}` : ""}. Do not call any other app, MCP server, browser, web, search, or network tool, and do not access messages or perform any side effect. Return the requested JSON only after that exact profile tool completes.`,
         onEvent: (event) => {
           events.push(event);
         }
