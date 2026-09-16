@@ -1147,16 +1147,21 @@ function backupEvidenceClaimFromMetadata(input: {
   const reconciliation = isObject(input.metadata.portable_post_effect_reconciliation)
     ? input.metadata.portable_post_effect_reconciliation : null;
   const originalClaim = isObject(input.metadata.remote_worker_claim) ? input.metadata.remote_worker_claim : null;
+  const originalAuthority = originalClaim && isObject(originalClaim.portable_effect_authority)
+    ? originalClaim.portable_effect_authority : null;
   const binding = reconciliation && isObject(reconciliation.original_claim) ? reconciliation.original_claim : null;
+  const originalRunId = originalClaim?.run_id ?? originalAuthority?.run_id;
+  const originalStepId = originalClaim?.step_id ?? originalAuthority?.step_id;
+  const originalWorkflowId = originalClaim?.workflow_id ?? originalAuthority?.workflow_id;
   if (!reconciliation || !originalClaim || !binding
     || reconciliation.schema !== BACKUP_EVIDENCE_RECONCILIATION_SCHEMA
     || !["queued", "blocked", "claimed"].includes(String(reconciliation.status))
     || reconciliation.original_run_id !== input.run.id
     || reconciliation.original_step_id !== input.step.id
-    || originalClaim.run_id !== input.run.id || originalClaim.step_id !== input.step.id
-    || originalClaim.workflow_id !== BACKUP_EVIDENCE_WORKFLOW
+    || originalRunId !== input.run.id || originalStepId !== input.step.id
+    || originalWorkflowId !== BACKUP_EVIDENCE_WORKFLOW
     || originalClaim.execution_mode !== "business_effect"
-    || reconciliation.original_authority_id !== (isObject(originalClaim.portable_effect_authority) ? originalClaim.portable_effect_authority.authority_id : null)
+    || reconciliation.original_authority_id !== (originalAuthority ? originalAuthority.authority_id : null)
     || typeof reconciliation.original_authority_sha256 !== "string"
     || input.metadata.remote_worker_receipt
     || input.metadata.external_action_executed === true) return null;
@@ -1187,9 +1192,11 @@ function backupEvidenceClaimFromMetadata(input: {
     approval_id: null,
     approval_receipt: null,
     input_bundle: isObject(originalClaim.input_bundle) ? originalClaim.input_bundle : inputBundle(input.metadata),
-    input_bundle_sha256: typeof originalClaim.input_bundle_sha256 === "string" ? originalClaim.input_bundle_sha256 : inputBundleSha256(input.metadata),
+    input_bundle_sha256: typeof originalClaim.input_bundle_sha256 === "string" ? originalClaim.input_bundle_sha256
+      : typeof originalAuthority?.input_bundle_sha256 === "string" ? originalAuthority.input_bundle_sha256 : inputBundleSha256(input.metadata),
     input_bundle_created_at: typeof originalClaim.input_bundle_created_at === "string" ? originalClaim.input_bundle_created_at : inputBundleCreatedAt(input.metadata),
-    target_digest: typeof originalClaim.target_digest === "string" ? originalClaim.target_digest : null,
+    target_digest: typeof originalClaim.target_digest === "string" ? originalClaim.target_digest
+      : typeof originalAuthority?.target_digest === "string" ? originalAuthority.target_digest : null,
     effect_authority: null,
     task_id: null,
     worker_id: input.workerId,
@@ -3041,17 +3048,25 @@ function backupEvidenceVerified(receipt: Record<string, unknown>, reconciliation
     "registered_root_id", "registered_root_digest"];
   const bindingMatches = bindingFields.every((key) => Object.prototype.hasOwnProperty.call(binding, key)
     && Object.prototype.hasOwnProperty.call(savedBinding, key) && binding[key] === savedBinding[key]);
-  const correlation = isObject(evidence.original_execution_summary) ? evidence.original_execution_summary : {};
+  const correlation = isObject(receipt.original_execution_summary) ? receipt.original_execution_summary
+    : isObject(evidence.original_execution_summary) ? evidence.original_execution_summary : {};
   const originalClaim = isObject(receipt.original_claim) ? receipt.original_claim : {};
   const originalClaimValid = originalClaim.run_id === reconciliation.original_run_id
     && originalClaim.step_id === reconciliation.original_step_id
     && originalClaim.authority_id === reconciliation.original_authority_id
     && typeof originalClaim.sha256 === "string" && /^[a-f0-9]{64}$/u.test(originalClaim.sha256)
     && typeof originalClaim.authority_sha256 === "string" && originalClaim.authority_sha256 === reconciliation.original_authority_sha256;
-  const correlationValid = correlation.correlation_method === "unique_success_in_original_claim_interval"
+  const uniqueSuccessCorrelation = correlation.correlation_method === "unique_success_in_original_claim_interval"
     && correlation.direct_child_link_verified === false
     && typeof correlation.interval_start === "string" && typeof correlation.interval_end === "string"
-    && Number.isInteger(correlation.candidate_count) && correlation.candidate_count === 1
+    && Number.isInteger(correlation.candidate_count) && correlation.candidate_count === 1;
+  const preservedRecoveryCorrelation = correlation.correlation_method === "preserved_snapshot_recovery_candidate"
+    && correlation.recovery_candidate === true && correlation.original_remote_unchanged === true
+    && Number.isInteger(correlation.candidate_count) && correlation.candidate_count === 0
+    && evidence.recovery_candidate === true && evidence.original_remote_unchanged === true;
+  const correlationValid = (uniqueSuccessCorrelation || preservedRecoveryCorrelation)
+    && (preservedRecoveryCorrelation
+      || correlation.direct_child_link_verified === false || evidence.direct_child_link_verified === false)
     && typeof correlation.sha256 === "string" && /^[a-f0-9]{64}$/u.test(correlation.sha256)
     && typeof correlation.snapshot_id === "string" && typeof correlation.backup_commit === "string"
     && /^[a-f0-9]{40}$/u.test(correlation.backup_commit)

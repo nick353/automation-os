@@ -169,7 +169,14 @@ export async function requestPortableBackupPostEffectReconciliation(input: Scope
   const claim = record(metadata.remote_worker_claim);
   const authority = record(claim.portable_effect_authority ?? claim.effect_authority);
   const step = steps[0];
-  if (!step || claim.run_id !== run.id || claim.step_id !== step.id || claim.workflow_id !== context.workflowId) {
+  // Claims written by the first scheduler/worker revision did not persist the
+  // redundant run/step/workflow identity fields, but did persist the complete
+  // effect authority. Allow evidence-only recovery for that legacy shape only
+  // when the authority itself binds every identity to this exact Run.
+  const claimRunId = claim.run_id ?? authority.run_id;
+  const claimStepId = claim.step_id ?? authority.step_id;
+  const claimWorkflowId = claim.workflow_id ?? authority.workflow_id;
+  if (!step || claimRunId !== run.id || claimStepId !== step.id || claimWorkflowId !== context.workflowId) {
     throw new Error("portable_backup_evidence_original_claim_missing");
   }
   if (!authority.authority_id || !authority.schema) throw new Error("portable_backup_evidence_original_authority_missing");
@@ -194,10 +201,12 @@ export async function requestPortableBackupPostEffectReconciliation(input: Scope
   if (authority.company_id !== run.company_id || authority.workflow_id !== context.workflowId
     || authority.run_id !== run.id || authority.step_id !== step.id
     || (authority.approval_id ?? claim.approval_id ?? null) !== (claim.approval_id ?? null)
-    || (authority.idempotency_key ?? claim.idempotency_key ?? null) !== (claim.idempotency_key ?? null)
+    || (claim.idempotency_key !== undefined && claim.idempotency_key !== null
+      && (authority.idempotency_key ?? null) !== claim.idempotency_key)
     || (authority.target_digest ?? claim.target_digest ?? null) !== (claim.target_digest ?? null)
     || (authority.input_bundle_sha256 ?? claim.input_bundle_sha256 ?? null) !== (claim.input_bundle_sha256 ?? null)
-    || !sameBinding(binding, { ...binding, idempotency_key: claim.idempotency_key ?? null })) {
+    || (claim.idempotency_key !== undefined && claim.idempotency_key !== null
+      && !sameBinding(binding, { ...binding, idempotency_key: claim.idempotency_key }))) {
     throw new Error("portable_backup_evidence_original_binding_mismatch");
   }
   const authoritySha = createHash("sha256").update(`${JSON.stringify(authority, null, 2)}\n`).digest("hex");
