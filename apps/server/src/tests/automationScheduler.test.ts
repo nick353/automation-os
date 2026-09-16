@@ -79,6 +79,19 @@ test("portable browser dispatch keeps Zeabur connector ownership unless an expli
   );
 });
 
+test("Daily AI source-sync worker kind wins over a historical publication canonical id", () => {
+  const registration = {
+    workerCommandKind: "daily_ai_research_sync_registered",
+    builderSpec: {
+      canonicalWorkflowId: "daily-ai-research-publish-run",
+      workflowAdapter: { workflow_id: "daily-ai-research-publish-run" }
+    }
+  };
+  assert.equal(portableScheduleDispatchForRegisteredAutomation(registration)?.workflow_id, "daily-ai-research-source-sync");
+  assert.equal(portableScheduleDispatchForRegisteredAutomation(registration)?.operation_surface, "mac_local_worker");
+  assert.equal(portableScheduleDispatchForRegisteredAutomation(registration)?.browser_surface, "none");
+});
+
 test("registered browser surface requirements preserve explicit choices and leave automatic selection to AOS", () => {
   assert.equal(
     browserSurfaceRequirementForRegisteredAutomation({

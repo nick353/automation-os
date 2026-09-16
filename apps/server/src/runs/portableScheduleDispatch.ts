@@ -1,4 +1,4 @@
-import { portableWorkflowManifests, type PortableWorkflowId } from "./portableWorkflowContract.js";
+import { getPortableWorkflowManifest, type PortableWorkflowId } from "./portableWorkflowContract.js";
 import { localWorkflowIdForRegisteredAutomation, type PortableLocalWorkflowId } from "./portableLocalWorkflow.js";
 
 export const PORTABLE_SCHEDULE_DISPATCH_SCHEMA = "aos.portable_schedule_dispatch.v1" as const;
@@ -95,10 +95,16 @@ function normalizedBrowserSurfaceRequirement(value: unknown): PortableBrowserSur
 export function portableWorkflowIdForRegisteredAutomation(input: RegisteredAutomationLike): PortableWorkflowId | null {
   // An explicit inventory worker is local even when an older definition still
   // carries the publication canonical workflow in its builder spec.
-  if (input.workerCommandKind?.trim() === "nisenprints_inventory_registered") return null;
+  // The Daily AI Sheets-sync worker has the same historical mixed revision:
+  // its saved builder spec may still carry the publication canonical id while
+  // the worker command kind is the local, fixed-target source-sync lane. The
+  // execution lane must win here so the scheduler cannot route a Sheets-sync
+  // registration into the browser publication lane.
+  if (["nisenprints_inventory_registered", "daily_ai_research_sync_registered"].includes(input.workerCommandKind?.trim() ?? "")) return null;
   const workflowId = workflowIdFromRegisteredAutomation(input);
-  if (!workflowId || !Object.prototype.hasOwnProperty.call(portableWorkflowManifests, workflowId)) return null;
-  const manifest = portableWorkflowManifests[workflowId as PortableWorkflowId];
+  if (!workflowId) return null;
+  const manifest = getPortableWorkflowManifest(workflowId);
+  if (!manifest) return null;
   if (manifest.execution.browser_surface !== "aos_chrome_companion_profile_instance" || manifest.execution.browser_runtime !== "aos_chrome_companion" || manifest.execution.app_dependency !== false) return null;
   return workflowId as PortableWorkflowId;
 }
@@ -110,7 +116,8 @@ export function portableLocalWorkflowIdForRegisteredAutomation(input: Registered
 export function portableScheduleDispatchForRegisteredAutomation(input: RegisteredAutomationLike): PortableScheduleDispatch | null {
   const workflowId = portableWorkflowIdForRegisteredAutomation(input);
   if (workflowId) {
-    const manifest = portableWorkflowManifests[workflowId];
+    const manifest = getPortableWorkflowManifest(workflowId);
+    if (!manifest) return null;
     const connectorOwner = connectorExecutionOwnerForRegisteredAutomation(input);
     return {
       schema: PORTABLE_SCHEDULE_DISPATCH_SCHEMA,
