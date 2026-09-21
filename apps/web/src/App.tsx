@@ -9573,10 +9573,13 @@ function AutomationsPage({ model }: { model: AppModel }) {
       return;
     }
     const idempotencyKey = `ui-manual:${activeProject}:${item.id}:${Date.now()}`;
+    const acceptingMessage = `手動実行をAOSへ受付中 / target=${item.id} / mode=preflight_no_effect / provider_neutral=true / external_action=false`;
     try {
       registeredRequestInFlight.current = true;
       setRegisteredRequestingId(item.id);
-      setRegisteredReceipts((prev) => ({ ...prev, [item.id]: "AOSへ手動実行を登録中..." }));
+      setRegisteredReceipts((prev) => ({ ...prev, [item.id]: acceptingMessage }));
+      setReceipt(`${name}: ${acceptingMessage}`);
+      setPageNote(`${name}: ${acceptingMessage} / ${actionStamp()}`);
       const response = await mvpFetch(`/api/v1/companies/${encodeURIComponent(activeProject)}/automations/${encodeURIComponent(item.id)}/trigger`, {
         method: "POST",
         headers: { "content-type": "application/json", "idempotency-key": idempotencyKey },
@@ -9614,7 +9617,7 @@ function AutomationsPage({ model }: { model: AppModel }) {
       setPageNote(`${name}: ${message} / ${actionStamp()}`);
     } catch (error) {
       const exact = error instanceof Error ? error.message : "manual_trigger_failed";
-      const message = `blocked / 手動実行登録なし / ${publicBlockerSummary(exact)} / external_action=false`;
+      const message = `${acceptingMessage} / 結果未確認 / blocked=${publicBlockerSummary(exact)}`;
       setRegisteredReceipts((prev) => ({ ...prev, [item.id]: message }));
       setReceipt(`${name}: ${message}`);
       setPageNote(`${name}: ${message} / ${actionStamp()}`);
@@ -9961,7 +9964,7 @@ function AutomationsPage({ model }: { model: AppModel }) {
                   route: location.hash || `#/projects/${activeProject}/automations`
                 })}><AlertTriangle size={14} /></IconButton>
                 <IconButton controlId={`projects.registered.detail.${item.id}`} label={`${item.name ?? item.id}: 詳細`} onClick={() => describeRegistered(item)}><MoreHorizontal size={14} /></IconButton>
-                {registeredReceipts[item.id] && <small className="inline-action-receipt">{registeredReceipts[item.id]}</small>}
+                {registeredReceipts[item.id] && <small data-control-id={`projects.registered.receipt.${item.id}`} className="inline-action-receipt">{registeredReceipts[item.id]}</small>}
               </div>
             ]) : [["Codex App登録自動化のreadbackがありません", registeredReadback.exact_boundary ?? "unavailable", "-", "-", "-", "-", <StatusBadge status="waiting" label="read-only" />]]}
                 />

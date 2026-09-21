@@ -1255,7 +1255,14 @@ test("registered manual trigger preserves trigger success and performs one same-
   assert.match(manualSource, /fetchApiJson<RunDetail>\(`\/api\/runs\/\$\{encodeURIComponent\(runId\)\}`\)/);
   assert.match(manualSource, /same-run readback=PENDING_CONFIRMATION/);
   assert.match(manualSource, /setRegisteredRunReadbacks/);
+  assert.match(manualSource, /手動実行をAOSへ受付中/);
+  assert.match(manualSource, /mode=preflight_no_effect/);
+  assert.match(manualSource, /provider_neutral=true/);
+  assert.match(manualSource, /external_action=false/);
+  assert.match(manualSource, /結果未確認/);
+  assert.match(manualSource, /blocked=\$\{publicBlockerSummary\(exact\)\}/);
   assert.match(source, /data-control-id="projects\.registered\.quick-run\.same-run-readback"/);
+  assert.match(source, /data-control-id=\{`projects\.registered\.receipt\.\$\{item\.id\}`\}/);
   assert.match(source, /同一Runを確認: status=/);
 });
 
