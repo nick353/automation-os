@@ -10,6 +10,54 @@ const backupRepository = "https://github.com/nick353/daily-workspace-backup.git"
 const backupArtifacts = "/Users/nichikatanaka/.codex/automations/daily-backup-safety-check/artifacts";
 const sourceLabels = ["codex-backup", "obsidian-vault", "new-project", "etsy", "apparel-root", "heavy-chain"];
 
+/**
+ * Verify the one preserved snapshot left by an interrupted run. This is an
+ * admission read only: it never stages, commits, pushes, or changes STATE.md.
+ */
+export function readBackupRecoveryCandidate(input: { snapshotId: string; expectedCommit?: string; now?: Date } ) {
+  const snapshotId = input.snapshotId.trim();
+  const expectedCommit = input.expectedCommit?.trim() || null;
+  const now = input.now ?? new Date();
+  const evidence: Record<string, unknown> = {
+    checked_at: now.toISOString(), verification_only: true, recovery_candidate: false,
+    snapshot_created: false, git_push_performed: false, cleanup_verified: true
+  };
+  const git = (...args: string[]) => execFileSync("git", ["-C", backupDestination, ...args], {
+    timeout: args[0] === "fsck" ? 90_000 : 30_000, maxBuffer: 1024 * 1024,
+    stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }
+  });
+  try {
+    if (!/^\d{8}T\d{6}[+-]\d{4}$/.test(snapshotId)) throw new Error("backup_recovery_snapshot_id_invalid");
+    if (git("remote", "get-url", "origin").toString().trim() !== backupRepository) throw new Error("backup_repository_mismatch");
+    if (git("branch", "--show-current").toString().trim() !== "main") throw new Error("backup_branch_mismatch");
+    const commit = git("rev-parse", "HEAD").toString().trim();
+    const remoteCommit = git("ls-remote", "origin", "refs/heads/main").toString().trim().split(/\s+/u)[0];
+    if (expectedCommit && commit !== expectedCommit) throw new Error("backup_commit_original_run_mismatch");
+    if (remoteCommit !== commit) throw new Error("backup_remote_parity_mismatch");
+    const snapshot = resolve(backupDestination, "snapshots", snapshotId);
+    if (realpathSync(snapshot) !== snapshot) throw new Error("backup_recovery_snapshot_missing");
+    const latest = join(backupDestination, "latest");
+    if (!lstatSync(latest).isSymbolicLink() || resolve(backupDestination, readlinkSync(latest)) !== snapshot) throw new Error("backup_recovery_latest_mismatch");
+    const committedLatest = resolve(backupDestination, git("show", `${commit}:latest`).toString().trim());
+    if (committedLatest === snapshot) throw new Error("backup_recovery_snapshot_already_committed");
+    const manifestPath = join(backupArtifacts, snapshotId, "manifest.tsv");
+    const rows = readFileSync(manifestPath, "utf8").trim().split(/\r?\n/u).slice(1).map((line) => line.split("\t"));
+    if (rows.length !== sourceLabels.length || sourceLabels.some((label) => rows.filter((row) => row[0] === label && row[1] === "OK" && row[3] === join(snapshot, label)).length !== 1)) throw new Error("backup_manifest_incomplete");
+    evidence.snapshot_id = snapshotId;
+    evidence.snapshot_path = snapshot;
+    evidence.original_commit = commit;
+    evidence.remote_commit = remoteCommit;
+    evidence.manifest_sha256 = createHash("sha256").update(readFileSync(manifestPath)).digest("hex");
+    evidence.recovery_candidate = true;
+    evidence.exact_blocker = null;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    evidence.exact_blocker = /^backup_[a-z_]+$/.test(message) ? message : "backup_recovery_candidate_readback_failed";
+    evidence.recovery_candidate = false;
+  }
+  return evidence;
+}
+
 /** Read the existing snapshot; never invoke the backup runner, commit, or push. */
 export function readBackupSnapshot(input: { destination?: string; repository?: string; artifacts?: string; statePath?: string; expectedSnapshotId?: string; expectedCommit?: string; now?: Date } = {}) {
   const destination = resolve(input.destination ?? backupDestination);

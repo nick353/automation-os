@@ -4,6 +4,11 @@ import { dbBackend, execSqlAsync, initDb, makeId, nowIso, querySqlAsync, runSqlS
 import { createHash } from "node:crypto";
 import { hashIdempotencyRequest } from "../automations/idempotency.js";
 import {
+  CANONICAL_COMPANY_ID,
+  resolveCanonicalAutomationRegistration,
+  resolveCanonicalCompanyScope
+} from "../automations/canonicalAutomationRegistry.js";
+import {
   fixedRegisteredWorkflows,
   getRegisteredWorkflowAsync,
   getRegisteredWorkflowStartCommandAsync,
@@ -11,6 +16,7 @@ import {
   initRegisteredWorkflows,
   type RegisteredWorkflowRow
 } from "../registeredWorkflows.js";
+import { listCompanyConnectionRefsAsync, listCompanyConnectionRefs } from "../automations/repository.js";
 import { runWorkerOnce, startCommandRun } from "./workerEngine.js";
 import { buildPortableWorkerExecutionRoutingSnapshot } from "../codex/executionRouting.js";
 import {
@@ -38,11 +44,17 @@ import {
 } from "./registeredRootAdmission.js";
 import { portableExternalRunnerConfigured } from "./portableExternalRunnerConfig.js";
 import { validatePortableBusinessInputBundle } from "./portableExternalBusinessPlan.js";
+import {
+  assertNisenPrintsTargetRegistryForRun,
+  NISENPRINTS_TARGET_COMPANY_ID
+} from "./nisenPrintsTargetRegistry.js";
+import { buildConnectionAuthorizationReadback, getWorkflowStandingPolicy } from "./workflowStandingPolicy.js";
 import { validateWebOperationIntent } from "./webOperationContract.js";
 import { createApprovalRequest } from "./approvalGate.js";
 import {
   buildPortableExternalApprovalBinding,
   buildPortableTargetBoundApprovalReceipt,
+  portableBusinessTargetDigest,
   portableExternalApprovalResourceLocks,
   type PortableBrowserSurface
 } from "./portableExternalApprovalBinding.js";
@@ -77,17 +89,21 @@ export type PortableWorkflowStartInput = {
   inputBundle?: PortableWorkflowInputBundle | null;
   /** A run-bound, provider-neutral Web intent. Effectful intents require a target-bound approval. */
   webOperationIntent?: Record<string, unknown> | null;
-  /** Zeabur is the default connector owner; Mac connector use is explicit only. */
+  /** Zeabur is the default connector owner; both Mac connector routes are explicit only. */
   connectorExecutionOwner?: PortableConnectorExecutionOwner;
   /** Explicit browser-surface constraints win over the adaptive default and fail closed when their adapter is unavailable. */
   browserSurfaceRequirement?: "automatic" | "official_extension" | "companion_extension" | "browser_use_cli";
   /** Explicit current Codex task owner for a Companion read-only worker claim. */
   companionTaskId?: string;
+  /** Optional non-secret provider authorization readback captured immediately before admission. */
+  providerAuthorizationReadback?: Record<string, unknown> | null;
 };
 
 export type PortableWorkflowInputBundle = {
   phone?: string;
   account_ref?: string;
+  store_name?: string;
+  provider_target_ref?: string;
   connection_ref_id?: string;
   target_key?: string;
   payload_hash?: string;
@@ -102,6 +118,8 @@ export type PortableWorkflowInputBundle = {
   sequence?: number;
   attempt?: number;
   source_snapshot_id?: string;
+  source_selector?: "latest" | "explicit";
+  execution_scope?: "single_existing_post";
   supply_run_id?: string;
   remaining?: number;
   margin?: number;
@@ -264,6 +282,8 @@ export async function preparePortableExternalApprovalPostgres(input: {
 
 const portableTriggers = new Set<PortableTrigger>(["automation_os_scheduler", "automation_os_ui", "codex_app_bridge", "launchd", "github_actions"]);
 const COMPANION_TASK_ID_PATTERN = /^[A-Za-z0-9][-_A-Za-z0-9.:]{0,179}$/u;
+const PORTABLE_BROWSER_SURFACE_REQUIREMENTS = new Set(["automatic", "official_extension", "companion_extension", "browser_use_cli"] as const);
+type PortableBrowserSurfaceRequirement = NonNullable<PortableWorkflowStartInput["browserSurfaceRequirement"]>;
 /**
  * A trigger does not choose a browser backend. The AOS UI's global backend
  * setting is resolved when the run is admitted and frozen into that run's
@@ -286,6 +306,15 @@ function normalizedCompanionTaskId(input: PortableWorkflowStartInput): string | 
   if (!value) return null;
   if (!COMPANION_TASK_ID_PATTERN.test(value)) throw new Error("portable_companion_task_id_invalid");
   return value;
+}
+
+function normalizedBrowserSurfaceRequirement(value: unknown): PortableBrowserSurfaceRequirement {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  if (!normalized) return "automatic";
+  if (!PORTABLE_BROWSER_SURFACE_REQUIREMENTS.has(normalized as PortableBrowserSurfaceRequirement)) {
+    throw new Error("portable_browser_surface_requirement_invalid");
+  }
+  return normalized as PortableBrowserSurfaceRequirement;
 }
 
 function parseMetadata(value: unknown): Record<string, unknown> {
@@ -329,8 +358,7 @@ const PORTABLE_INVOCATION_WAIT_ATTEMPTS = 20;
 const PORTABLE_INVOCATION_WAIT_MS = 100;
 
 function normalizedCompanyId(input: PortableWorkflowStartInput): string | null {
-  const value = typeof input.companyId === "string" ? input.companyId.trim() : input.companyId;
-  return value || null;
+  return resolveCanonicalCompanyScope(input.companyId).executionCompanyId;
 }
 
 function normalizedReadOnlyStage(input: PortableWorkflowStartInput): "candidate_supply" | "reference_readback" | null {
@@ -368,9 +396,9 @@ function normalizedEffectStage(input: PortableWorkflowStartInput): PortableBusin
 }
 
 const PORTABLE_INPUT_BUNDLE_KEYS = new Set<keyof PortableWorkflowInputBundle>([
-  "phone", "account_ref", "connection_ref_id", "target_key", "payload_hash", "content_key", "product_key", "asset_manifest_id",
+  "phone", "account_ref", "store_name", "provider_target_ref", "connection_ref_id", "target_key", "payload_hash", "content_key", "product_key", "asset_manifest_id",
   "job_url", "job_id", "application_url", "candidate_key", "bucket", "sequence", "attempt",
-  "source_snapshot_id", "source_snapshot_expires_at", "supply_run_id", "remaining", "margin", "industry", "salary_min_jpy", "salary_max_jpy", "company", "role",
+  "source_snapshot_id", "source_selector", "execution_scope", "source_snapshot_expires_at", "supply_run_id", "remaining", "margin", "industry", "salary_min_jpy", "salary_max_jpy", "company", "role",
   "audience", "resume_locale", "resume_sha256", "owner_ref", "authority_ref", "input_bundle_ref", "target_digest", "source_state_digest"
 ]);
 const PORTABLE_INPUT_BUNDLE_SECRET_KEY = /(token|cookie|password|secret|authorization|storage[_-]?state|credential|profile[_-]?path)/iu;
@@ -424,18 +452,62 @@ function applyBrowserAuthProfileDefault(
   input: PortableWorkflowStartInput,
   backendSnapshot: PortableBackendSnapshot,
 ): PortableWorkflowStartInput {
+  if (input.workflowId === "daily-ai-research-publish-run" && input.inputBundle && typeof input.inputBundle === "object"
+    && !Array.isArray(input.inputBundle) && typeof input.inputBundle.account_ref === "string"
+    && input.inputBundle.account_ref.trim() && input.inputBundle.account_ref.trim() !== "daily_ai_social_readback") {
+    throw new Error("portable_daily_ai_provider_account_ref_invalid");
+  }
   const authRef = browserAuthRefForBackendSnapshot(backendSnapshot.web_operation_backend);
-  if (!authRef) return input;
+  // Profile 2 is the browser authentication surface, not the Daily AI
+  // provider-account identity.  Daily AI's provider/source reconciliation is
+  // intentionally bound to this canonical account ref; using the internal
+  // browser auth ref (or a company label such as 会社1) makes a valid post
+  // unreconcilable after dispatch.  Keep explicit account refs authoritative
+  // while supplying the workflow-owned default when the UI/scheduler omits it.
+  const defaultAccountRef = input.workflowId === "daily-ai-research-publish-run"
+    ? "daily_ai_social_readback"
+    : authRef;
+  if (!defaultAccountRef) return input;
   const inputBundle = input.inputBundle && typeof input.inputBundle === "object" && !Array.isArray(input.inputBundle)
-    ? { ...input.inputBundle, account_ref: input.inputBundle.account_ref || authRef }
+    ? { ...input.inputBundle, account_ref: input.inputBundle.account_ref || defaultAccountRef }
     : input.inputBundle;
   const rawIntent = input.webOperationIntent && typeof input.webOperationIntent === "object" && !Array.isArray(input.webOperationIntent)
-    ? { ...input.webOperationIntent, account_ref: input.webOperationIntent.account_ref || authRef }
+    ? { ...input.webOperationIntent, account_ref: input.webOperationIntent.account_ref || defaultAccountRef }
     : input.webOperationIntent;
   return { ...input, inputBundle, webOperationIntent: rawIntent };
 }
 
 const PORTABLE_WEB_INTENT_SECRET_KEY = /(token|cookie|password|secret|authorization|storage[_-]?state|credential|profile[_-]?path|header|body|html)/iu;
+
+/** Preserve the narrow, non-secret NisenPrints business-proof binding across
+ * the server -> Mac worker handoff without passing arbitrary caller data. */
+function normalizedNisenprintsBinding(raw: unknown): Record<string, unknown> | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const value = raw as Record<string, unknown>;
+  const output: Record<string, unknown> = {};
+  for (const key of [
+    "schema", "candidate_key", "provider_account_ref", "workflow_account_ref",
+    "target_key", "source_snapshot_id", "generation_manifest_sha256",
+    "final_art_sha256", "canva_manifest_sha256"
+  ]) {
+    const item = value[key];
+    if (typeof item === "string" && item.trim()) output[key] = item.trim();
+  }
+  const rawTargets = value.readback_targets;
+  if (!rawTargets || typeof rawTargets !== "object" || Array.isArray(rawTargets)) return null;
+  const targets: Record<string, unknown> = {};
+  for (const key of ["generation_manifest", "etsy_listing", "pinterest_pin", "etsy_visit_site", "cleanup_receipt"]) {
+    const target = (rawTargets as Record<string, unknown>)[key];
+    if (!target || typeof target !== "object" || Array.isArray(target)) continue;
+    const semanticQuery = (target as Record<string, unknown>).semantic_query;
+    if (typeof semanticQuery === "string" && semanticQuery.trim() && semanticQuery.length <= 240) {
+      targets[key] = { semantic_query: semanticQuery.trim() };
+    }
+  }
+  if (Object.keys(targets).length === 0) return null;
+  output.readback_targets = targets;
+  return output;
+}
 
 type PortableBackendSnapshot = ReturnType<typeof buildWebOperationBackendRunSnapshot>;
 
@@ -449,6 +521,18 @@ function normalizedWebOperationIntent(
   for (const key of Object.keys(raw)) {
     if (PORTABLE_WEB_INTENT_SECRET_KEY.test(key)) throw new Error("portable_web_operation_intent_key_forbidden");
   }
+  const nisenprintsBinding = normalizedNisenprintsBinding(raw.nisenprints_binding);
+  const inputBundle = normalizedInputBundle(input);
+  const derivedTargetBinding = raw.target_binding === undefined && input.effectStage && inputBundle
+    ? {
+        target_digest: portableBusinessTargetDigest(inputBundle as Record<string, unknown>),
+        source_state_digest: createHash("sha256").update(JSON.stringify({
+          workflow_id: input.workflowId,
+          source_snapshot_id: inputBundle.source_snapshot_id ?? null,
+          payload_hash: inputBundle.payload_hash ?? null,
+        })).digest("hex"),
+      }
+    : undefined;
   const candidate = {
     schema: "automation_os_web_operation_intent.v1",
     operation: raw.operation,
@@ -459,7 +543,9 @@ function normalizedWebOperationIntent(
     allowed_origins: raw.allowed_origins,
     ...(raw.entry_url !== undefined ? { entry_url: raw.entry_url } : {}),
     target: raw.target,
-    ...(raw.target_binding !== undefined ? { target_binding: raw.target_binding } : {}),
+    ...(raw.target_binding !== undefined ? { target_binding: raw.target_binding } : derivedTargetBinding ? { target_binding: derivedTargetBinding } : {}),
+    ...(raw.provider_identity !== undefined ? { provider_identity: raw.provider_identity } : {}),
+    ...(raw.provider_readback_url !== undefined ? { provider_readback_url: raw.provider_readback_url } : {}),
     ...(raw.action_plan !== undefined ? { action_plan: raw.action_plan } : {}),
     payload_hash: raw.payload_hash ?? null,
     approval_status: raw.approval_status ?? (raw.operation === "read" ? "not_required" : "pending"),
@@ -477,6 +563,9 @@ function normalizedWebOperationIntent(
     ...(validated.entry_url ? { entry_url: validated.entry_url } : {}),
     target: { ...validated.target },
     ...(validated.target_binding ? { target_binding: { ...validated.target_binding } } : {}),
+    ...(typeof raw.provider_identity === "string" && raw.provider_identity.trim() ? { provider_identity: raw.provider_identity.trim() } : {}),
+    ...(typeof raw.provider_readback_url === "string" && raw.provider_readback_url.trim() ? { provider_readback_url: raw.provider_readback_url.trim() } : {}),
+    ...(nisenprintsBinding ? { nisenprints_binding: nisenprintsBinding } : {}),
     ...(validated.action_plan ? { action_plan: validated.action_plan } : {}),
     payload_hash: validated.payload_hash,
     approval_status: validated.approval_status,
@@ -519,6 +608,40 @@ function validatePortableWebEffectInput(input: {
 
 function portableCompanyScope(companyId: string | null): string {
   return companyId ?? PORTABLE_GLOBAL_COMPANY_SCOPE;
+}
+
+/**
+ * Attach the latest verified Company connection proof to an effectful Run.
+ * This is deliberately a local AOS connection readback, not a provider
+ * success claim: a provider adapter may still replace it with a stronger
+ * same-run profile/tool receipt before the effect authority is issued.
+ */
+async function automaticProviderAuthorizationReadback(input: {
+  workflowId: string;
+  companyId: string | null;
+  effectStage: PortableBusinessEffectStage | null;
+  inputBundle: PortableWorkflowInputBundle | null;
+  explicit: Record<string, unknown> | null;
+}): Promise<Record<string, unknown> | null> {
+  if (input.explicit || !input.effectStage || !input.companyId || !input.inputBundle) return input.explicit;
+  const policy = getWorkflowStandingPolicy(input.workflowId);
+  const accountRef = typeof input.inputBundle.account_ref === "string" ? input.inputBundle.account_ref.trim() : "";
+  const targetDigest = typeof input.inputBundle.target_digest === "string" && /^[a-f0-9]{64}$/u.test(input.inputBundle.target_digest.trim())
+    ? input.inputBundle.target_digest.trim()
+    : portableBusinessTargetDigest(input.inputBundle as Record<string, unknown>);
+  const payloadHash = typeof input.inputBundle.payload_hash === "string" ? input.inputBundle.payload_hash.trim() : "";
+  if (!policy || !accountRef || !/^[a-f0-9]{64}$/u.test(targetDigest) || !/^[a-f0-9]{64}$/u.test(payloadHash)) return null;
+  const refs = dbBackend === "postgres" ? await listCompanyConnectionRefsAsync(input.companyId) : listCompanyConnectionRefs(input.companyId);
+  const connection = refs.find((ref) => ref.accountRef === accountRef);
+  if (!connection) return null;
+  return buildConnectionAuthorizationReadback({
+    companyId: input.companyId,
+    workflowId: input.workflowId,
+    accountRef,
+    targetDigest,
+    payloadHash,
+    connection
+  });
 }
 
 function browserGoalIdFor(input: PortableWorkflowStartInput): string {
@@ -837,6 +960,11 @@ async function getPortableRegisteredWorkflow(workflowId: PortableWorkflowId): Pr
     workflow = await getRegisteredWorkflowAsync(workflowId);
   }
   if (!workflow) throw new Error("portable_registered_workflow_missing");
+  // Runtime admission must use the same canonical Company 1 registry that is
+  // exposed by the control plane.  This prevents a derived DB row or a stale
+  // execution-lane definition from becoming a second schedule authority.
+  const canonical = resolveCanonicalAutomationRegistration({ workflowId });
+  if (canonical.id !== workflow.id) throw new Error("portable_canonical_workflow_binding_mismatch");
   if (!fixedRegisteredWorkflows.some((fixed) => fixed.id === workflow.id && fixed.runnerKind === workflow.runner_kind)) {
     throw new Error("portable_registered_workflow_not_fixed");
   }
@@ -861,10 +989,13 @@ export async function startPortableWorkflowRun(input: PortableWorkflowStartInput
   // Resolve the trigger default before any idempotency lookup. The same
   // normalized request must hash identically on the initial admission and on
   // a later completed-invocation readback.
-  const browserSurfaceRequirement = input.browserSurfaceRequirement
-    ?? browserSurfaceRequirementForPortableTrigger(input.sourceTrigger, input.workflowId);
+  const browserSurfaceRequirement = input.browserSurfaceRequirement === undefined || input.browserSurfaceRequirement === null
+    ? browserSurfaceRequirementForPortableTrigger(input.sourceTrigger, input.workflowId)
+    : normalizedBrowserSurfaceRequirement(input.browserSurfaceRequirement);
+  const companyScopeResolution = resolveCanonicalCompanyScope(input.companyId);
   const baseInput: PortableWorkflowStartInput = {
     ...input,
+    ...(input.companyId !== undefined ? { companyId: companyScopeResolution.executionCompanyId } : {}),
     idempotencyKey,
     readOnlyStage: requestedReadOnlyStage,
     effectStage: requestedEffectStage,
@@ -888,6 +1019,7 @@ export async function startPortableWorkflowRun(input: PortableWorkflowStartInput
     extensionRequirement: browserSurfaceRequirement,
   });
   const connectorExecutionOwner: PortableConnectorExecutionOwner = input.connectorExecutionOwner === "mac_worker_explicit_connector_fallback"
+    || input.connectorExecutionOwner === "mac_worker_local_codex_app"
     ? input.connectorExecutionOwner
     : "zeabur_codex_app_server";
   const normalizedInput = applyBrowserAuthProfileDefault({
@@ -905,9 +1037,26 @@ export async function startPortableWorkflowRun(input: PortableWorkflowStartInput
       if (!validation.ok) throw new Error(validation.exact_blocker);
     }
   }
+  if (normalizedInput.effectStage === "business_execute"
+    && input.workflowId === "nisenprints-daily-product-canva-printify-etsy-pinterest"
+    && normalizedCompanyId(normalizedInput) === NISENPRINTS_TARGET_COMPANY_ID) {
+    const companyId = normalizedCompanyId(normalizedInput);
+    if (!companyId || !inputBundle) throw new Error("nisenprints_registered_target_company_or_bundle_missing");
+    await assertNisenPrintsTargetRegistryForRun({ companyId, inputBundle: inputBundle as Record<string, unknown> });
+  }
   if (selectedBackendSnapshot.web_operation_backend.exact_blocker) {
     throw new Error(selectedBackendSnapshot.web_operation_backend.exact_blocker);
   }
+  const explicitProviderAuthorizationReadback = normalizedInput.providerAuthorizationReadback && typeof normalizedInput.providerAuthorizationReadback === "object"
+    ? normalizedInput.providerAuthorizationReadback
+    : null;
+  const providerAuthorizationReadback = await automaticProviderAuthorizationReadback({
+    workflowId: input.workflowId,
+    companyId: normalizedCompanyId(normalizedInput),
+    effectStage: normalizedInput.effectStage ?? null,
+    inputBundle,
+    explicit: explicitProviderAuthorizationReadback
+  });
   const requestHash = portableInvocationRequestHash(normalizedInput, selectedBackendSnapshot);
   const stored = await readPortableInvocation(normalizedInput, requestHash);
   if (stored?.status === "completed") return await resultFromCompletedInvocation(baseInput, idempotencyKey, stored);
@@ -952,7 +1101,7 @@ export async function startPortableWorkflowRun(input: PortableWorkflowStartInput
       // admission handoff before preparePortableExternalApprovalPostgres()
       // finishes.
       prepareOnly: dbBackend === "postgres" && Boolean(normalizedInput.effectStage),
-      ...(input.companyId !== undefined ? { companyId: input.companyId } : {}),
+      ...(input.companyId !== undefined ? { companyId: companyScopeResolution.executionCompanyId } : {}),
       executionRouting: buildPortableWorkerExecutionRoutingSnapshot({
         command,
         source,
@@ -961,6 +1110,17 @@ export async function startPortableWorkflowRun(input: PortableWorkflowStartInput
       }),
       webOperationBackendSnapshot: selectedBackendSnapshot,
       metadata: {
+      ...(companyScopeResolution.requestedCompanyId
+        ? {
+            portable_company_scope_resolution: {
+              schema: "aos.portable_company_scope_resolution.v1",
+              requested_company_id: companyScopeResolution.requestedCompanyId,
+              execution_company_id: companyScopeResolution.executionCompanyId,
+              alias: companyScopeResolution.alias,
+              canonical_company_id: CANONICAL_COMPANY_ID
+            }
+          }
+        : {}),
       ...(normalizedInput.readOnlyStage ? { read_only_stage: normalizedInput.readOnlyStage } : {}),
       registeredWorkflowId: workflow.id,
       registered_workflow_id: workflow.id,
@@ -981,6 +1141,13 @@ export async function startPortableWorkflowRun(input: PortableWorkflowStartInput
         source_trigger: input.sourceTrigger,
         registered_automation_id: registeredRoot.registered_automation_id,
         idempotency_key: idempotencyKey,
+        ...(companyScopeResolution.requestedCompanyId
+          ? {
+              requested_company_id: companyScopeResolution.requestedCompanyId,
+              execution_company_id: companyScopeResolution.executionCompanyId,
+              company_scope_alias: companyScopeResolution.alias
+            }
+          : {}),
         browser_goal_id: browserGoalId,
         browser_goal_state_path: browserGoalStatePath,
         ...(normalizedInput.readOnlyStage ? { read_only_stage: normalizedInput.readOnlyStage } : {}),
@@ -989,6 +1156,7 @@ export async function startPortableWorkflowRun(input: PortableWorkflowStartInput
         ...(companionTaskId ? { companion_task_id: companionTaskId } : {}),
         browser_surface_requirement: normalizedInput.browserSurfaceRequirement ?? "automatic",
         ...(webOperationIntent ? { web_operation_intent: webOperationIntent } : {}),
+        ...(providerAuthorizationReadback ? { provider_authorization_readback: providerAuthorizationReadback } : {}),
         ...(persistedInputBundle ? { input_bundle_path: persistedInputBundle.path } : {}),
         app_dependency: false,
         external_action_executed: false
