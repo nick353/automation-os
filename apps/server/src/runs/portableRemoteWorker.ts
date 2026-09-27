@@ -7,6 +7,7 @@ import { DAILY_AI_RESEARCH_SYNC_WORKFLOW, DAILY_AI_RESEARCH_SYNC_SHEET, dailyAiR
 import { normalizeGmailReviewResult } from "./gmailReviewResult.js";
 import { syncTargetAdmissionFromReceipt, syncTargetAdmissionFromReceiptAsync } from "../jobApplications/targetAdmission.js";
 import { listCompanyConnectionRefs } from "../automations/repository.js";
+import { hashIdempotencyRequest } from "../automations/idempotency.js";
 import {
   issuePortableExternalEffectAuthorityV1,
   validatePortableExternalEffectAuthorityV1,
@@ -24,15 +25,18 @@ import {
   validateRegisteredRootAdmissionV1,
   type RegisteredRootAdmissionV1
 } from "./registeredRootAdmission.js";
+import { getWorkflowStandingPolicy, validateWorkflowAuthorizationReadback } from "./workflowStandingPolicy.js";
+import { readPortableRunRecovery, requestPortableWebPostEffectReconciliation, type PortableWebPostEffectReconciliationResponse } from "./portableRunRecovery.js";
+import { resolveCompanionTaskId } from "../serviceReadiness/companionTaskBinding.js";
 
 const WORKER_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/u;
 const ALLOWED_READ_ONLY_STAGES = new Set(["candidate_supply", "reference_readback"]);
 const ALLOWED_EFFECT_STAGES = new Set(["one_candidate_submit", "publish", "business_execute"]);
 const SECRET_KEY_PATTERN = /(token|cookie|password|secret|authorization|storage[_-]?state|credential|raw.?body|page.?body)/iu;
 const READ_ONLY_PROOF_PENDING_BLOCKER = "portable_remote_read_only_business_completion_proof_pending";
-const COMPANION_TASK_ID_PATTERN = /^[A-Za-z0-9][-_A-Za-z0-9.:]{0,179}$/u;
 const PORTABLE_PREPARING_RECONCILIATION_AGE_MS = 10 * 60_000;
 const PORTABLE_PREPARING_RECONCILIATION_BLOCKER = "portable_local_business_preparation_incomplete";
+const PORTABLE_LOCAL_BACKUP_BUSINESS_LEASE_MS = 45 * 60_000;
 let backupFencingSequence = 0;
 let backupEvidenceSaveBarrierForTests: (() => Promise<void>) | null = null;
 
@@ -51,7 +55,7 @@ function nextBackupFencingToken(): string {
 }
 
 type PortableRemoteExecutionMode = "read_only" | "business_effect";
-type PortableConnectorExecutionOwner = "zeabur_codex_app_server" | "mac_worker_explicit_connector_fallback";
+type PortableConnectorExecutionOwner = "zeabur_codex_app_server" | "mac_worker_explicit_connector_fallback" | "mac_worker_local_codex_app";
 
 export type PortableRemoteClaim = {
   run_id: string;
@@ -79,9 +83,20 @@ export type PortableRemoteClaim = {
   connector_execution_owner: PortableConnectorExecutionOwner;
   company_connection_verified: boolean;
   web_operation_backend: Record<string, unknown> | null;
+  web_operation_intent?: Record<string, unknown> | null;
   registered_root_admission: RegisteredRootAdmissionV1;
   evidence_only?: true;
   reconciliation_binding?: Record<string, unknown>;
+};
+
+export type PortableDailyAiEvidenceClaim = Omit<PortableRemoteClaim,
+  "worker_instance_id" | "evidence_only" | "reconciliation_binding"> & {
+  worker_instance_id: string;
+  attempt_id: string;
+  fencing_token: string;
+  evidence_only: true;
+  recovery_kind: "daily_ai_record";
+  reconciliation_binding: Record<string, unknown>;
 };
 
 export type PortableRemoteReceipt = {
@@ -106,6 +121,15 @@ export type PortableRemoteReceipt = {
   input_bundle_sha256?: string;
   adapter_result?: Record<string, unknown>;
   business_proofs?: Record<string, unknown>;
+  /**
+   * Canonical Daily AI child-runner completion readback.  These are
+   * projections of the existing runner receipt fields, not a new dispatch
+   * contract: an incomplete feed/engagement stage remains blocked and cannot
+   * be replayed by receipt persistence.
+   */
+  external_completion_checks?: Record<string, unknown>;
+  completion_checks?: Record<string, unknown>;
+  summary_full_flow_completion?: Record<string, unknown>;
   same_run_source_sync?: boolean;
   web_operation_lifecycle?: Record<string, unknown>;
   approval_receipt?: PortableTargetBoundApprovalReceiptV1;
@@ -165,6 +189,20 @@ type StepRow = { id: string; name: string; status: string; lane_id: string | nul
 const BACKUP_EVIDENCE_WORKFLOW = "daily-backup-safety-check";
 const BACKUP_EVIDENCE_RECONCILIATION_SCHEMA = "aos.portable_backup_post_effect_reconciliation.v1";
 const BACKUP_EVIDENCE_KEY = (runId: string) => `portable-backup-post-effect-${runId}`;
+const DAILY_AI_EVIDENCE_WORKFLOW = "daily-ai-research-publish-run";
+const DAILY_AI_EVIDENCE_SCHEMA = "aos.portable_daily_ai_post_effect_reconciliation.v1";
+const DAILY_AI_EVIDENCE_KEY = (runId: string) => `portable-daily-ai-record-${runId}`;
+function backupReceiptAllowsEvidence(receipt: Record<string, unknown>): boolean {
+  const adapter = isObject(receipt.adapter_result) ? receipt.adapter_result : {};
+  const local = isObject(adapter.local_receipt) ? adapter.local_receipt : {};
+  return receipt.status === "blocked"
+    && receipt.exact_blocker === "portable_remote_business_receipt_reconciliation_required"
+    && receipt.external_action_executed === true
+    && receipt.readback_verified !== true
+    && receipt.business_completion_verified !== true
+    && local.operation_effect_state === "effect_unknown"
+    && local.reconciliation_required === true;
+}
 
 type PortableReceiptArtifact = {
   id: string;
@@ -307,26 +345,13 @@ function webOperationBackend(metadata: Record<string, unknown>): Record<string, 
 function connectorExecutionOwner(metadata: Record<string, unknown>): PortableConnectorExecutionOwner {
   const invocation = isObject(metadata.portable_workflow_invocation) ? metadata.portable_workflow_invocation : {};
   const raw = metadata.connector_execution_owner ?? invocation.connector_execution_owner;
-  return raw === "mac_worker_explicit_connector_fallback"
-    ? "mac_worker_explicit_connector_fallback"
-    : "zeabur_codex_app_server";
-}
-
-function companionTaskId(metadata: Record<string, unknown>): string | null {
-  const invocation = isObject(metadata.portable_workflow_invocation) ? metadata.portable_workflow_invocation : {};
-  const raw = metadata.companion_task_id ?? invocation.companion_task_id ?? invocation.task_id;
-  const value = typeof raw === "string" ? raw.trim() : "";
-  return COMPANION_TASK_ID_PATTERN.test(value) ? value : null;
-}
-
-function scheduledCompanionTaskId(runId: string): string {
-  const candidate = `aos-scheduled-${runId.trim()}`;
-  if (COMPANION_TASK_ID_PATTERN.test(candidate)) return candidate;
-  return `aos-scheduled-${createHash("sha256").update(runId, "utf8").digest("hex")}`;
+  if (raw === "mac_worker_explicit_connector_fallback") return "mac_worker_explicit_connector_fallback";
+  if (raw === "mac_worker_local_codex_app") return "mac_worker_local_codex_app";
+  return "zeabur_codex_app_server";
 }
 
 function browserSurfaceForBackend(backend: Record<string, unknown> | null): PortableRemoteClaim["browser_surface"] {
-  const resolved = String(backend?.resolved_backend ?? backend?.requested_backend ?? "browser_use_cli");
+  const resolved = String(backend?.resolved_backend ?? backend?.requested_backend ?? "aos_chrome_companion");
   if (resolved === "chrome_plugin") {
     const surface = String(isObject(backend?.chrome_profile) ? backend?.chrome_profile.surface ?? "" : "");
     if (surface !== "signed_chrome_extension_profile2") throw new Error("portable_remote_chrome_profile_surface_invalid");
@@ -444,6 +469,13 @@ function issueEffectAuthority(input: {
   if (!input.admission.approvalId || !input.admission.inputBundleSha256 || !input.admission.targetDigest || !input.admission.businessEffectStage) {
     throw new Error("portable_effect_authority_inputs_missing");
   }
+  if (process.env.AUTOMATION_OS_REQUIRE_PROVIDER_AUTH_READBACK === "1") {
+    const policyValue = getWorkflowStandingPolicy(input.workflow);
+    const invocation = isObject(input.metadata.portable_workflow_invocation) ? input.metadata.portable_workflow_invocation : {};
+    const readback = invocation.provider_authorization_readback;
+    if (!policyValue || !readback) throw new Error("fresh_provider_authorization_readback_required");
+    validateWorkflowAuthorizationReadback(readback, { workflowId: input.workflow, companyId: input.run.company_id || "", policyId: policyValue.policy_id });
+  }
   const bundle = inputBundle(input.metadata);
   const payloadHash = bundle && typeof bundle.payload_hash === "string" && /^[a-f0-9]{64}$/u.test(bundle.payload_hash)
     ? bundle.payload_hash
@@ -461,8 +493,13 @@ function issueEffectAuthority(input: {
     inputBundleSha256: input.admission.inputBundleSha256,
     payloadHash,
     browserSurface: portableBusinessBrowserSurface(input.metadata, input.workflow),
-    leaseExpiresAt: input.leaseExpiresAt
+    leaseExpiresAt: input.leaseExpiresAt,
+    ttlMs: input.workflow === "daily-backup-safety-check" ? PORTABLE_LOCAL_BACKUP_BUSINESS_LEASE_MS : undefined
   });
+}
+
+function portableWorkerLeaseMs(workflow: string): number {
+  return workflow === "daily-backup-safety-check" ? PORTABLE_LOCAL_BACKUP_BUSINESS_LEASE_MS : 10 * 60_000;
 }
 
 type PortableApprovalRow = {
@@ -1119,8 +1156,11 @@ function claimFromMetadata(input: { run: RunRow; step: StepRow; metadata: Record
     input_bundle_created_at: inputBundleCreatedAt(input.metadata),
     target_digest: input.admission.targetDigest,
     effect_authority: input.effectAuthority ?? null,
-    task_id: companionTaskId(input.metadata)
-      ?? (browserSurface === "aos_chrome_companion_profile_instance" ? scheduledCompanionTaskId(input.run.id) : null),
+    task_id: resolveCompanionTaskId({
+      runId: input.run.id,
+      backend: browserSurface === "aos_chrome_companion_profile_instance" ? "aos_chrome_companion" : null,
+      metadata: input.metadata,
+    }),
     worker_id: input.workerId,
     worker_instance_id: input.workerInstanceId ?? null,
     lease_expires_at: input.leaseExpiresAt,
@@ -1129,6 +1169,7 @@ function claimFromMetadata(input: { run: RunRow; step: StepRow; metadata: Record
     connector_execution_owner: connectorExecutionOwner(input.metadata),
     company_connection_verified: gmailCompanyConnectionVerified(input.run.company_id || ""),
     web_operation_backend: backend,
+    web_operation_intent: isObject(invocation.web_operation_intent) ? invocation.web_operation_intent : null,
     registered_root_admission: input.registeredRoot
   };
 }
@@ -1163,8 +1204,11 @@ function backupEvidenceClaimFromMetadata(input: {
     || originalClaim.execution_mode !== "business_effect"
     || reconciliation.original_authority_id !== (originalAuthority ? originalAuthority.authority_id : null)
     || typeof reconciliation.original_authority_sha256 !== "string"
-    || input.metadata.remote_worker_receipt
-    || input.metadata.external_action_executed === true) return null;
+    || (input.metadata.remote_worker_receipt
+      && !backupReceiptAllowsEvidence(input.metadata.remote_worker_receipt as Record<string, unknown>))
+    || (input.metadata.external_action_executed === true
+      && !(input.metadata.remote_worker_receipt
+        && backupReceiptAllowsEvidence(input.metadata.remote_worker_receipt as Record<string, unknown>)))) return null;
   if (!input.workerInstanceId) return null;
   const liveExpiry = Date.parse(String(reconciliation.lease_expires_at ?? ""));
   const active = reconciliation.status === "claimed" && Number.isFinite(liveExpiry) && liveExpiry > Date.now();
@@ -1240,6 +1284,214 @@ function reconciliationClaimUpdate(metadata: Record<string, unknown>, claim: Por
   } };
 }
 
+function dailyAiHistoricalClaimFromMetadata(input: {
+  run: RunRow; step: StepRow; metadata: Record<string, unknown>; workerId: string;
+  workerInstanceId: string; leaseExpiresAt: string; registeredRoot: RegisteredRootAdmissionV1;
+  attemptId: string; fencingToken: string;
+}): PortableDailyAiEvidenceClaim | null {
+  const originalClaim = isObject(input.metadata.remote_worker_claim) ? input.metadata.remote_worker_claim : null;
+  const authority = originalClaim && isObject(originalClaim.portable_effect_authority) ? originalClaim.portable_effect_authority : null;
+  const original = isObject(input.metadata.remote_worker_receipt) ? input.metadata.remote_worker_receipt : null;
+  const bundle = isObject(originalClaim?.input_bundle) ? originalClaim.input_bundle : inputBundle(input.metadata);
+  const authoritySha256 = authority
+    ? createHash("sha256").update(`${JSON.stringify(authority, null, 2)}\n`).digest("hex") : null;
+  if (!originalClaim || !authority || !original || !bundle
+    || (originalClaim.workflow_id !== DAILY_AI_EVIDENCE_WORKFLOW && authority.workflow_id !== DAILY_AI_EVIDENCE_WORKFLOW)
+    || originalClaim.run_id !== input.run.id || originalClaim.step_id !== input.step.id
+    || authority.company_id !== input.run.company_id || authority.run_id !== input.run.id || authority.step_id !== input.step.id
+    || original.external_action_executed !== true || original.same_run_receipt === true
+    || bundle.execution_scope !== "single_existing_post"
+    || bundle.account_ref !== "daily_ai_social_readback"
+    || ![`${bundle.content_key}:x`, `${bundle.content_key}:linkedin`].includes(String(bundle.target_key))
+    || typeof bundle.content_key !== "string" || typeof bundle.payload_hash !== "string"
+    || !/^[a-f0-9]{64}$/u.test(bundle.payload_hash)
+    || typeof authority.authority_id !== "string" || !authoritySha256) return null;
+  const existing = isObject(input.metadata.portable_daily_ai_post_effect_reconciliation)
+    ? input.metadata.portable_daily_ai_post_effect_reconciliation : null;
+  if (existing && existing.status === "blocked" && Date.parse(String(existing.retry_after || "")) > Date.now()) return null;
+  if (existing && existing.status === "claimed") {
+    const expires = Date.parse(String(existing.lease_expires_at || ""));
+    if (Number.isFinite(expires) && expires > Date.now()) {
+      if (existing.worker_id !== input.workerId || existing.worker_instance_id !== input.workerInstanceId
+        || typeof existing.attempt_id !== "string" || typeof existing.fencing_token !== "string") return null;
+      input.attemptId = existing.attempt_id;
+      input.fencingToken = existing.fencing_token;
+      input.leaseExpiresAt = String(existing.lease_expires_at);
+    }
+  }
+  const adapter = isObject(original.adapter_result) ? original.adapter_result : {};
+  const operation = isObject(adapter.operation) ? adapter.operation : {};
+  const persistedProvider = isObject(original.provider_readback) ? original.provider_readback
+    : isObject(adapter.provider_readback) ? adapter.provider_readback : {};
+  const queuePath = typeof existing?.queue_path === "string" ? existing.queue_path
+    : typeof operation.queue_path === "string" ? operation.queue_path : null;
+  const binding = { company_id: input.run.company_id, run_id: input.run.id, step_id: input.step.id,
+    workflow_id: DAILY_AI_EVIDENCE_WORKFLOW, account_ref: bundle.account_ref, target_key: bundle.target_key,
+    content_key: bundle.content_key, payload_hash: bundle.payload_hash, original_authority_id: authority.authority_id,
+    original_authority_sha256: authoritySha256, queue_path: queuePath, original_claim: originalClaim,
+    ...(Number.isSafeInteger(persistedProvider.observed_tab_id) ? { observed_tab_id: persistedProvider.observed_tab_id } : {}),
+    ...(typeof persistedProvider.observed_post_url === "string" ? { observed_post_url: persistedProvider.observed_post_url }
+      : typeof persistedProvider.url === "string" ? { observed_post_url: persistedProvider.url } : {}) };
+  return { run_id: input.run.id, company_id: input.run.company_id || "", workflow_id: DAILY_AI_EVIDENCE_WORKFLOW,
+    step_id: input.step.id, source_trigger: "owner_recovery_ui", idempotency_key: DAILY_AI_EVIDENCE_KEY(input.run.id),
+    read_only_stage: "reference_readback", execution_mode: "read_only", business_effect_stage: null,
+    approval_id: null, approval_receipt: null, input_bundle: bundle,
+    input_bundle_sha256: typeof originalClaim.input_bundle_sha256 === "string" ? originalClaim.input_bundle_sha256 : null,
+    input_bundle_created_at: typeof originalClaim.input_bundle_created_at === "string" ? originalClaim.input_bundle_created_at : null,
+    target_digest: typeof authority.target_digest === "string" ? authority.target_digest : null, effect_authority: null,
+    task_id: typeof originalClaim.task_id === "string" ? originalClaim.task_id : null, worker_id: input.workerId,
+    worker_instance_id: input.workerInstanceId, attempt_id: input.attemptId, fencing_token: input.fencingToken,
+    lease_expires_at: input.leaseExpiresAt, external_action_executed: false,
+    browser_surface: "aos_chrome_companion_profile_instance", connector_execution_owner: "mac_worker_explicit_connector_fallback",
+    company_connection_verified: false, web_operation_backend: null, registered_root_admission: input.registeredRoot,
+    evidence_only: true, recovery_kind: "daily_ai_record", reconciliation_binding: binding };
+}
+
+function dailyAiHistoricalClaimUpdate(metadata: Record<string, unknown>, claim: PortableDailyAiEvidenceClaim, now: string) {
+  const current = isObject(metadata.portable_daily_ai_post_effect_reconciliation)
+    ? metadata.portable_daily_ai_post_effect_reconciliation : {};
+  return { ...metadata, portable_daily_ai_post_effect_reconciliation: { ...current,
+    schema: DAILY_AI_EVIDENCE_SCHEMA, status: "claimed", recovery_kind: "daily_ai_record", evidence_only: true,
+    original_run_id: claim.run_id, original_step_id: claim.step_id, original_authority_id: claim.reconciliation_binding.original_authority_id,
+    original_authority_sha256: claim.reconciliation_binding.original_authority_sha256,
+    queue_path: claim.reconciliation_binding.queue_path, worker_id: claim.worker_id, worker_instance_id: claim.worker_instance_id,
+    attempt_id: claim.attempt_id, fencing_token: claim.fencing_token, lease_expires_at: claim.lease_expires_at,
+    claimed_at: current.claimed_at ?? now, new_effect: false, provider_replayed: false } };
+}
+
+export function claimPortableDailyAiHistoricalRecord(input: { companyId: string; workerId: string; workerInstanceId?: string | null; requestedRunId?: string | null }): PortableDailyAiEvidenceClaim | null {
+  const companyId = input.companyId.trim();
+  const id = workerId(input.workerId);
+  const instanceId = input.workerInstanceId ? workerId(input.workerInstanceId) : null;
+  if (!instanceId) return null;
+  const requested = input.requestedRunId?.trim() || null;
+  const rows = querySql<RunRow>(`SELECT id, company_id, status, metadata_json, created_at FROM runs
+    WHERE company_id=${sqlValue(companyId)} AND status IN ('blocked','failed','timed_out','running')
+      AND metadata_json LIKE ${sqlValue('%"remote_worker_claim"%')}
+      AND metadata_json LIKE ${sqlValue('%"remote_worker_receipt"%')}
+      AND metadata_json LIKE ${sqlValue('%"daily-ai-research-publish-run"%')}
+      ${requested ? `AND id=${sqlValue(requested)}` : ""} ORDER BY created_at ASC, id ASC LIMIT 100`);
+  for (const run of rows) {
+    const metadata = parseRecord(run.metadata_json);
+    const step = querySql<StepRow>(`SELECT id, name, status, lane_id, metadata_json FROM run_steps WHERE run_id=${sqlValue(run.id)} ORDER BY id ASC LIMIT 1`)[0];
+    if (!step) continue;
+    let root: RegisteredRootAdmissionV1;
+    try { root = registeredRootAdmission(run, metadata, DAILY_AI_EVIDENCE_WORKFLOW); } catch { continue; }
+    const candidate = dailyAiHistoricalClaimFromMetadata({ run, step, metadata, workerId: id, workerInstanceId: instanceId,
+      leaseExpiresAt: new Date(Date.now() + 10 * 60_000).toISOString(), registeredRoot: root,
+      attemptId: makeId("attempt"), fencingToken: nextBackupFencingToken() });
+    if (!candidate) continue;
+    const now = nowIso();
+    try { runSqlTransaction([{ sql: `UPDATE runs SET metadata_json=${sqlValue(dailyAiHistoricalClaimUpdate(metadata, candidate, now))}, updated_at=${sqlValue(now)} WHERE id=${sqlValue(run.id)} AND company_id=${sqlValue(companyId)} AND metadata_json=${sqlValue(run.metadata_json)}`, expectChanges: 1 }]); } catch { continue; }
+    const confirmed = querySql<RunRow>(`SELECT id, company_id, status, metadata_json, created_at FROM runs WHERE id=${sqlValue(run.id)} LIMIT 1`)[0];
+    if (confirmed) return dailyAiHistoricalClaimFromMetadata({ run: confirmed, step, metadata: parseRecord(confirmed.metadata_json), workerId: id,
+      workerInstanceId: instanceId, leaseExpiresAt: candidate.lease_expires_at, registeredRoot: root,
+      attemptId: candidate.attempt_id, fencingToken: candidate.fencing_token });
+  }
+  return null;
+}
+
+export async function claimPortableDailyAiHistoricalRecordAsync(input: { companyId: string; workerId: string; workerInstanceId?: string | null; requestedRunId?: string | null }): Promise<PortableDailyAiEvidenceClaim | null> {
+  const companyId = input.companyId.trim();
+  const id = workerId(input.workerId);
+  const instanceId = input.workerInstanceId ? workerId(input.workerInstanceId) : null;
+  if (!instanceId) return null;
+  const requested = input.requestedRunId?.trim() || null;
+  const rows = await querySqlAsync<RunRow>(`SELECT id, company_id, status, metadata_json, created_at FROM runs
+    WHERE company_id=${sqlValue(companyId)} AND status IN ('blocked','failed','timed_out','running')
+      AND metadata_json LIKE ${sqlValue('%"remote_worker_claim"%')}
+      AND metadata_json LIKE ${sqlValue('%"remote_worker_receipt"%')}
+      AND metadata_json LIKE ${sqlValue('%"daily-ai-research-publish-run"%')}
+      ${requested ? `AND id=${sqlValue(requested)}` : ""} ORDER BY created_at ASC, id ASC LIMIT 100`);
+  for (const run of rows) {
+    const metadata = parseRecord(run.metadata_json);
+    const step = (await querySqlAsync<StepRow>(`SELECT id, name, status, lane_id, metadata_json FROM run_steps WHERE run_id=${sqlValue(run.id)} ORDER BY id ASC LIMIT 1`))[0];
+    if (!step) continue;
+    let root: RegisteredRootAdmissionV1;
+    try { root = registeredRootAdmission(run, metadata, DAILY_AI_EVIDENCE_WORKFLOW); } catch { continue; }
+    const candidate = dailyAiHistoricalClaimFromMetadata({ run, step, metadata, workerId: id, workerInstanceId: instanceId,
+      leaseExpiresAt: new Date(Date.now() + 10 * 60_000).toISOString(), registeredRoot: root,
+      attemptId: makeId("attempt"), fencingToken: nextBackupFencingToken() });
+    if (!candidate) continue;
+    const now = nowIso();
+    try { await runSqlTransactionAsync([{ sql: `UPDATE runs SET metadata_json=${sqlValue(dailyAiHistoricalClaimUpdate(metadata, candidate, now))}, updated_at=${sqlValue(now)} WHERE id=${sqlValue(run.id)} AND company_id=${sqlValue(companyId)} AND metadata_json=${sqlValue(run.metadata_json)}`, expectChanges: 1 }]); } catch { continue; }
+    const confirmed = (await querySqlAsync<RunRow>(`SELECT id, company_id, status, metadata_json, created_at FROM runs WHERE id=${sqlValue(run.id)} LIMIT 1`))[0];
+    if (confirmed) return dailyAiHistoricalClaimFromMetadata({ run: confirmed, step, metadata: parseRecord(confirmed.metadata_json), workerId: id,
+      workerInstanceId: instanceId, leaseExpiresAt: candidate.lease_expires_at, registeredRoot: root,
+      attemptId: candidate.attempt_id, fencingToken: candidate.fencing_token });
+  }
+  return null;
+}
+
+type DailyAiHistoricalReceiptResult =
+  | { replayed: boolean; evidence_only: true; recovery_kind: "daily_ai_record"; response: PortableWebPostEffectReconciliationResponse; receipt?: undefined }
+  | { replayed: false; evidence_only: true; recovery_kind: "daily_ai_record"; receipt: Record<string, unknown>; response?: undefined };
+
+export async function recordPortableDailyAiHistoricalReceiptAsync(input: { companyId: string; workerId: string; workerInstanceId?: string | null; runId: string; receipt: unknown }): Promise<DailyAiHistoricalReceiptResult> {
+  const receipt = isObject(input.receipt) ? input.receipt : {};
+  if (receipt.evidence_only !== true || receipt.recovery_kind !== "daily_ai_record"
+    || receipt.provider_replayed !== false || receipt.new_effect !== false) {
+    throw new Error("portable_daily_ai_historical_receipt_invalid");
+  }
+  const view = await readPortableRunRecovery({ companyId: input.companyId, runId: input.runId });
+  if (view.workflow_id !== DAILY_AI_EVIDENCE_WORKFLOW || view.run_id !== input.runId) throw new Error("portable_daily_ai_historical_run_binding_invalid");
+  const run = (await querySqlAsync<RunRow>(`SELECT id, company_id, status, metadata_json, created_at FROM runs WHERE id=${sqlValue(input.runId)} AND company_id=${sqlValue(input.companyId)} LIMIT 1`))[0];
+  if (!run) throw new Error("portable_daily_ai_historical_run_binding_invalid");
+  const runMetadata = parseRecord(run.metadata_json);
+  const reconciliation = isObject(runMetadata.portable_daily_ai_post_effect_reconciliation)
+    ? runMetadata.portable_daily_ai_post_effect_reconciliation : {};
+  const receiptSha256 = hashIdempotencyRequest(receipt);
+  const savedReconciliation = isObject(runMetadata.portable_web_post_effect_reconciliation)
+    ? runMetadata.portable_web_post_effect_reconciliation : {};
+  const savedResponse = isObject(savedReconciliation.response) ? savedReconciliation.response : {};
+  const claimBindingMatches = reconciliation.schema === DAILY_AI_EVIDENCE_SCHEMA
+    && reconciliation.worker_id === input.workerId && reconciliation.worker_instance_id === input.workerInstanceId
+    && reconciliation.attempt_id === receipt.attempt_id && reconciliation.fencing_token === receipt.fencing_token;
+  if (claimBindingMatches && savedReconciliation.status === "verified"
+    && savedReconciliation.historical_receipt_sha256 === receiptSha256
+    && savedResponse.company_id === run.company_id && savedResponse.run_id === run.id
+    && savedResponse.step_id === (await querySqlAsync<StepRow>(`SELECT id FROM run_steps WHERE run_id=${sqlValue(run.id)} ORDER BY id ASC LIMIT 1`))[0]?.id
+    && savedResponse.workflow_id === DAILY_AI_EVIDENCE_WORKFLOW
+    && savedResponse.status === "verified" && savedResponse.new_effect === false
+    && savedResponse.provider_replayed === false) {
+    return { replayed: true, evidence_only: true, recovery_kind: "daily_ai_record" as const,
+      response: { ...savedResponse, replayed: true } as PortableWebPostEffectReconciliationResponse };
+  }
+  if (receipt.external_action_executed !== false || receipt.same_run_receipt !== false) {
+    throw new Error("portable_daily_ai_historical_receipt_invalid");
+  }
+  const leaseExpiry = Date.parse(String(reconciliation.lease_expires_at || ""));
+  if (reconciliation.schema !== DAILY_AI_EVIDENCE_SCHEMA || reconciliation.status !== "claimed"
+    || reconciliation.worker_id !== input.workerId || reconciliation.worker_instance_id !== input.workerInstanceId
+    || !Number.isFinite(leaseExpiry) || leaseExpiry <= Date.now()
+    || reconciliation.attempt_id !== receipt.attempt_id || reconciliation.fencing_token !== receipt.fencing_token) {
+    throw new Error("portable_daily_ai_historical_fence_mismatch");
+  }
+  if (receipt.status === "blocked") {
+    const now = nowIso();
+    const blocker = typeof receipt.exact_blocker === "string" ? receipt.exact_blocker.slice(0, 240) : "portable_daily_ai_historical_readback_failed";
+    await runSqlTransactionAsync([{ sql: `UPDATE runs SET metadata_json=${sqlValue({ ...runMetadata, portable_daily_ai_post_effect_reconciliation: { ...reconciliation, status: "blocked", exact_blocker: blocker, retry_after: new Date(Date.now() + 5 * 60_000).toISOString(), failed_at: now } })}, updated_at=${sqlValue(now)} WHERE id=${sqlValue(run.id)} AND company_id=${sqlValue(input.companyId)} AND metadata_json=${sqlValue(run.metadata_json)}`, expectChanges: 1 }]);
+    return { replayed: false, evidence_only: true, recovery_kind: "daily_ai_record" as const, receipt };
+  }
+  if (receipt.status !== "complete" || receipt.cleanup_verified !== true || receipt.readback_verified !== true) {
+    throw new Error("portable_daily_ai_historical_completion_proof_incomplete");
+  }
+  const provider = isObject(receipt.provider_receipt) ? receipt.provider_receipt : null;
+  const source = isObject(receipt.source_readback) ? receipt.source_readback : null;
+  const queueCommit = source && isObject(source.queue_commit) ? source.queue_commit : null;
+  if (!provider || !source || !queueCommit || provider.post_url !== source.post_url || source.same_target !== true || source.content_match !== true
+    || queueCommit.schema !== "aos.daily_ai_provider_queue_commit.v1" || queueCommit.status !== "completed") {
+    throw new Error("portable_daily_ai_historical_source_readback_invalid");
+  }
+  const result = await requestPortableWebPostEffectReconciliation({
+    companyId: input.companyId, runId: input.runId,
+    expectedReadbackToken: view.readback_token,
+    idempotencyKey: `portable-web-post-effect-${input.runId}`,
+    providerReceipt: provider, sourceReadback: source, historicalReceiptSha256: receiptSha256
+  });
+  return { ...result, evidence_only: true, recovery_kind: "daily_ai_record" as const };
+}
+
 export function claimPortableBackupPostEffectReconciliation(input: { companyId: string; workerId: string; workerInstanceId?: string | null; requestedRunId?: string | null }): PortableBackupEvidenceClaim | null {
   const companyId = input.companyId.trim();
   const id = workerId(input.workerId);
@@ -1248,6 +1500,7 @@ export function claimPortableBackupPostEffectReconciliation(input: { companyId: 
   const requested = input.requestedRunId?.trim() || null;
   const rows = querySql<RunRow>(`SELECT id, company_id, status, metadata_json, created_at FROM runs
     WHERE company_id=${sqlValue(companyId)} AND status IN ('blocked','failed','timed_out','running')
+      AND metadata_json LIKE ${sqlValue('%"portable_post_effect_reconciliation"%')}
       ${requested ? `AND id=${sqlValue(requested)}` : ""} ORDER BY created_at ASC, id ASC LIMIT 100`);
   for (const run of rows) {
     const metadata = parseRecord(run.metadata_json);
@@ -1282,6 +1535,7 @@ export async function claimPortableBackupPostEffectReconciliationAsync(input: { 
   const requested = input.requestedRunId?.trim() || null;
   const rows = await querySqlAsync<RunRow>(`SELECT id, company_id, status, metadata_json, created_at FROM runs
     WHERE company_id=${sqlValue(companyId)} AND status IN ('blocked','failed','timed_out','running')
+      AND metadata_json LIKE ${sqlValue('%"portable_post_effect_reconciliation"%')}
       ${requested ? `AND id=${sqlValue(requested)}` : ""} ORDER BY created_at ASC, id ASC LIMIT 100`);
   for (const run of rows) {
     const metadata = parseRecord(run.metadata_json);
@@ -1824,6 +2078,95 @@ function reconcileUnclaimableRegisteredRoot(
   return true;
 }
 
+async function reconcileUnclaimableRegisteredRootAsync(
+  run: RunRow,
+  metadata: Record<string, unknown>,
+  error: unknown,
+): Promise<boolean> {
+  if (metadata.external_action_executed === true || isObject(metadata.remote_worker_receipt)) return false;
+  const existingClaim = isObject(metadata.remote_worker_claim) ? metadata.remote_worker_claim : null;
+  if (existingClaim && typeof existingClaim.lease_expires_at === "string") {
+    const leaseExpiresAt = Date.parse(existingClaim.lease_expires_at);
+    if (Number.isFinite(leaseExpiresAt) && leaseExpiresAt > Date.now()) return false;
+  }
+
+  const step = (await querySqlAsync<StepRow>(`
+    SELECT id, name, status, lane_id, metadata_json
+    FROM run_steps
+    WHERE run_id=${sqlValue(run.id)} AND status IN ('queued', 'running', 'waiting_approval')
+    ORDER BY id ASC LIMIT 1
+  `))[0];
+  const timestamp = nowIso();
+  const exactBlocker = registeredRootAdmissionBlocker(error);
+  const workerLoop = isObject(metadata.worker_loop) ? metadata.worker_loop : {};
+  const macWorker = isObject(metadata.mac_worker) ? metadata.mac_worker : {};
+  const nextMetadata = {
+    ...metadata,
+    exact_blocker: exactBlocker,
+    external_action_executed: false,
+    portable_registered_root_reconciled: true,
+    portable_registered_root_reconciled_at: timestamp,
+    worker_loop: { ...workerLoop, status: "unclaimable_registered_root_blocked", reconciledAt: timestamp },
+    mac_worker: { ...macWorker, status: "unclaimable_registered_root_blocked", reconciledAt: timestamp },
+  };
+  const steps: SqlTransactionStep[] = [{
+    sql: `UPDATE runs SET status='blocked', metadata_json=${sqlValue(nextMetadata)}, updated_at=${sqlValue(timestamp)}
+          WHERE id=${sqlValue(run.id)} AND status IN ('queued', 'running', 'waiting_approval')
+            AND metadata_json=${sqlValue(run.metadata_json)}`,
+    expectChanges: 1,
+  }];
+  if (step) {
+    steps.push({
+      sql: `UPDATE run_steps SET status='blocked', completed_at=${sqlValue(timestamp)}, metadata_json=${sqlValue({
+        ...parseRecord(step.metadata_json),
+        exact_blocker: exactBlocker,
+        external_action_executed: false,
+        portable_registered_root_reconciled: true,
+      })} WHERE id=${sqlValue(step.id)} AND status IN ('queued', 'running', 'waiting_approval')`,
+      expectChanges: 1,
+    });
+    if (step.lane_id) {
+      steps.push({
+        sql: `UPDATE lanes SET status='blocked', progress=50, health='blocked', current_task=${sqlValue(exactBlocker)}, updated_at=${sqlValue(timestamp)} WHERE id=${sqlValue(step.lane_id)}`,
+      });
+    }
+    steps.push({
+      sql: `INSERT INTO worker_events
+        (id, company_id, run_id, step_id, lane_id, event_type, message, created_at, metadata_json)
+        VALUES (${sqlValue(makeId("evt"))}, ${sqlValue(run.company_id)}, ${sqlValue(run.id)}, ${sqlValue(step.id)}, ${sqlValue(step.lane_id)},
+                'portable_remote_registered_root_reconciled', 'Unclaimable registered root blocked without replay', ${sqlValue(timestamp)},
+                ${sqlValue({
+                  exact_blocker: exactBlocker,
+                  external_action_executed: false,
+                  receipt_present: false,
+                })})`,
+    });
+  }
+  try {
+    await runSqlTransactionAsync(steps);
+  } catch (transactionError) {
+    // A concurrent receipt/claim won the compare-and-set. The next poll must
+    // inspect that newer state; never overwrite it with a synthetic blocker.
+    if (transactionError instanceof Error && transactionError.message.startsWith("sql_transaction_expected_changes:")) return true;
+    throw transactionError;
+  }
+  try {
+    await syncTargetAdmissionFromReceiptAsync({
+      companyId: run.company_id ?? "",
+      runId: run.id,
+      status: "blocked",
+      externalActionExecuted: false,
+      sameRunSourceSync: false,
+      readbackVerified: false,
+      cleanupVerified: false,
+    });
+  } catch {
+    // There is no target admission to sync for this unclaimable lineage. The
+    // terminal run state and worker event remain authoritative.
+  }
+  return true;
+}
+
 export function claimPortableMacWorker(input: { companyId: string; workerId: string; workerInstanceId?: string | null; requestedRunId?: string | null }): PortableRemoteClaim | null {
   const companyId = input.companyId.trim();
   if (!companyId) throw new Error("company_id_required");
@@ -1913,7 +2256,7 @@ export function claimPortableMacWorker(input: { companyId: string; workerId: str
       });
     }
     const claimedAt = nowIso();
-    const leaseExpiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
+    const leaseExpiresAt = new Date(Date.now() + portableWorkerLeaseMs(workflow)).toISOString();
     const claimedBackend = webOperationBackend(metadata);
     const claimedBrowserSurface = admission.executionMode === "business_effect"
       ? portableBusinessBrowserSurface(metadata, workflow)
@@ -1928,7 +2271,11 @@ export function claimPortableMacWorker(input: { companyId: string; workerId: str
       ...metadata,
       remote_worker_claim: {
         schema: "automation_os_portable_remote_worker_claim.v1",
+        run_id: run.id,
+        step_id: step.id,
+        workflow_id: workflow,
         worker_id: id,
+        connector_execution_owner: connectorExecutionOwner(metadata),
         ...(instanceId ? { worker_instance_id: instanceId } : {}),
         claimed_at: claimedAt,
         lease_expires_at: leaseExpiresAt,
@@ -2016,7 +2363,8 @@ export async function claimPortableMacWorkerAsync(input: { companyId: string; wo
     let registeredRoot: RegisteredRootAdmissionV1;
     try {
       registeredRoot = registeredRootAdmission(run, metadata, workflow);
-    } catch {
+    } catch (error) {
+      await reconcileUnclaimableRegisteredRootAsync(run, metadata, error);
       continue;
     }
     const step = (await querySqlAsync<StepRow>(`
@@ -2061,7 +2409,7 @@ export async function claimPortableMacWorkerAsync(input: { companyId: string; wo
       });
     }
     const claimedAt = nowIso();
-    const leaseExpiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
+    const leaseExpiresAt = new Date(Date.now() + portableWorkerLeaseMs(workflow)).toISOString();
     const claimedBackend = webOperationBackend(metadata);
     const claimedBrowserSurface = admission.executionMode === "business_effect"
       ? portableBusinessBrowserSurface(metadata, workflow)
@@ -2076,7 +2424,11 @@ export async function claimPortableMacWorkerAsync(input: { companyId: string; wo
       ...metadata,
       remote_worker_claim: {
         schema: "automation_os_portable_remote_worker_claim.v1",
+        run_id: run.id,
+        step_id: step.id,
+        workflow_id: workflow,
         worker_id: id,
+        connector_execution_owner: connectorExecutionOwner(metadata),
         ...(instanceId ? { worker_instance_id: instanceId } : {}),
         claimed_at: claimedAt,
         lease_expires_at: leaseExpiresAt,
@@ -2145,6 +2497,9 @@ export async function claimPortableMacWorkerAsync(input: { companyId: string; wo
 }
 
 type BusinessProofBinding = {
+  executionScope?: string | null;
+  accountRef?: string | null;
+  targetKey?: string | null;
   companyId: string;
   runId: string;
   stepId: string;
@@ -2161,6 +2516,28 @@ export function businessProofSatisfied(
   adapterResult: Record<string, unknown>,
   expectedBinding?: BusinessProofBinding,
 ): boolean {
+  if (workflowId === "daily-ai-research-publish-run" && expectedBinding?.executionScope === "single_existing_post") {
+    const receipt = isObject(input.runner_receipt) ? input.runner_receipt : {};
+    const proofs = isObject(receipt.business_proofs) ? receipt.business_proofs : {};
+    const provider = isObject(adapterResult.provider_result) ? adapterResult.provider_result : {};
+    const fullFlow = isObject(receipt.summary_full_flow_completion)
+      ? receipt.summary_full_flow_completion
+      : {};
+    return input.same_run_receipt === true && input.same_run_source_sync === true
+      && input.cleanup_verified === true && input.readback_verified === true && input.external_action_executed === true
+      && receipt.execution_scope === "single_existing_post" && receipt.run_id === expectedBinding.runId
+      && receipt.step_id === expectedBinding.stepId && receipt.same_run_source_sync === true
+      && proofs.publish_url_or_exact_blocker === true && proofs.queue_sync === true && proofs.cleanup_receipt === true
+      && proofs.feed_study_or_exact_blocker === true
+      && proofs.engagement_or_no_candidate_proof === true
+      && fullFlow.ok === true
+      && provider.verified === true && provider.run_id === expectedBinding.runId
+      && Boolean(expectedBinding.accountRef) && provider.account_ref === expectedBinding.accountRef
+      && Boolean(expectedBinding.targetKey) && provider.target_key === expectedBinding.targetKey
+      && Boolean(expectedBinding.payloadHash) && provider.payload_hash === expectedBinding.payloadHash
+      && typeof provider.url === "string" && /^https:\/\/x\.com\/[A-Za-z0-9_]{1,30}\/status\/\d+$/u.test(provider.url);
+  }
+  if (workflowId === "daily-ai-research-publish-run") return false;
   if (workflowId === DAILY_AI_RESEARCH_SYNC_WORKFLOW) {
     if (!expectedBinding
       || !expectedBinding.companyId
@@ -2394,6 +2771,9 @@ export function validBlockedSafeCompanionToOfficialHandoff(
 }
 
 function safeReceipt(input: unknown, expected: {
+  executionScope?: string | null;
+  accountRef?: string | null;
+  targetKey?: string | null;
   companyId: string;
   workflowId: string;
   runId: string;
@@ -2422,6 +2802,9 @@ function safeReceipt(input: unknown, expected: {
       ? "signed_chrome_extension_profile2"
       : blockedSafeSurfaceHandoff
         ? expected.browserSurface
+    : expected.connectorExecutionOwner === "mac_worker_local_codex_app"
+      && input.browser_surface === "local_worker"
+        ? "local_worker"
     : localWorkflow && input.browser_surface === "local_worker"
       ? "local_worker"
       : null;
@@ -2444,6 +2827,9 @@ function safeReceipt(input: unknown, expected: {
   const readbackVerified = input.readback_verified === true;
   const businessProofVerified = expected.executionMode === "business_effect"
     ? businessProofSatisfied(expected.workflowId, input, adapterResult, {
+      executionScope: expected.executionScope,
+      accountRef: expected.accountRef,
+      targetKey: expected.targetKey,
       companyId: expected.companyId,
       runId: expected.runId,
       stepId: expected.stepId,
@@ -2514,6 +2900,26 @@ function safeReceipt(input: unknown, expected: {
     && cleanupVerified
     && adapterResult.local_workflow_receipt === true
     && adapterResult.execution_surface === "mac_local_worker";
+  const localCodexAppReadOnlyProof = expected.executionMode === "read_only"
+    && expected.connectorExecutionOwner === "mac_worker_local_codex_app"
+    && browserSurface === "local_worker"
+    && status === "complete"
+    && exactBlocker === null
+    && reportedExternal === false
+    && input.read_only_stage_bound === true
+    && sameRunReceipt
+    && readbackVerified
+    && cleanupVerified
+    && adapterResult.provider_probe_only === true
+    && adapterResult.no_browser_fallback === true
+    && adapterResult.execution_surface === "local_codex_app_server_local_stdio"
+    && isObject(adapterResult.provider_receipt)
+    && adapterResult.provider_receipt.provider_verified === true
+    && adapterResult.provider_receipt.external_action_executed === false
+    // The generic sanitizer intentionally drops secret-bearing key names,
+    // including this explicit false safety flag. Absence is safe here; a
+    // positive declaration must never be accepted.
+    && adapterResult.provider_receipt.secret_material_included !== true;
   const chromePluginCandidateSupplyProof = expected.executionMode === "read_only"
     && expected.readOnlyStage === "candidate_supply"
     && (expected.browserSurface === "signed_chrome_extension_profile2" || safeSurfaceHandoff)
@@ -2612,7 +3018,7 @@ function safeReceipt(input: unknown, expected: {
     && adapterResult.target_provision.external_action_executed === false;
   const readOnlyProofVerified = expected.executionMode === "read_only"
     && expected.readOnlyStage !== null
-    && (localReadOnlyProofVerified || chromePluginCandidateSupplyProof || chromePluginReferenceReadbackProof || companionReadOnlyProof || (
+    && (localReadOnlyProofVerified || localCodexAppReadOnlyProof || chromePluginCandidateSupplyProof || chromePluginReferenceReadbackProof || companionReadOnlyProof || (
       status === "complete"
       && exactBlocker === null
       && reportedExternal === false
@@ -2705,9 +3111,24 @@ function safeReceipt(input: unknown, expected: {
   if (typeof input.input_bundle_sha256 === "string" && /^[a-f0-9]{64}$/u.test(input.input_bundle_sha256)) result.input_bundle_sha256 = input.input_bundle_sha256;
   if (isObject(input.adapter_result)) result.adapter_result = adapterResult;
   if (reportedApprovalReceipt) result.approval_receipt = reportedApprovalReceipt;
+  if (input.same_run_source_sync === true) result.same_run_source_sync = true;
   if (isObject(input.runner_receipt)) {
     const runnerReceipt = sanitizeRecord(input.runner_receipt, 0);
     if (isObject(runnerReceipt.business_proofs)) result.business_proofs = runnerReceipt.business_proofs;
+    // Preserve the canonical child-runner gate so operators can read the
+    // exact feed/engagement misses from the same run.  Do not turn this into
+    // a continuation or replay path; safeReceipt's existing proof gate still
+    // blocks incomplete business receipts.
+    const completionChecks = isObject(runnerReceipt.external_completion_checks)
+      ? runnerReceipt.external_completion_checks
+      : isObject(runnerReceipt.completion_checks) ? runnerReceipt.completion_checks : null;
+    if (completionChecks) {
+      result.external_completion_checks = completionChecks;
+      result.completion_checks = completionChecks;
+    }
+    if (isObject(runnerReceipt.summary_full_flow_completion)) {
+      result.summary_full_flow_completion = runnerReceipt.summary_full_flow_completion;
+    }
     if (runnerReceipt.same_run_source_sync === true) result.same_run_source_sync = true;
   }
   if (webOperationLifecycle?.valid) result.web_operation_lifecycle = webOperationLifecycle.lifecycle;
@@ -2812,6 +3233,9 @@ export function recordPortableMacWorkerReceipt(input: { companyId: string; worke
     : { authority: null, validationBlocker: null };
   const effectAuthority = effectAuthorityResolution.authority;
   const receipt = safeReceipt(input.receipt, {
+    executionScope: String(inputBundle(metadata)?.execution_scope ?? ""),
+    accountRef: String(inputBundle(metadata)?.account_ref ?? ""),
+    targetKey: String(inputBundle(metadata)?.target_key ?? ""),
     companyId: input.companyId,
     workflowId,
     runId: run.id,
@@ -2833,7 +3257,9 @@ export function recordPortableMacWorkerReceipt(input: { companyId: string; worke
     browserSurface: claimedBrowserSurface,
     connectorExecutionOwner: claim.connector_execution_owner === "mac_worker_explicit_connector_fallback"
       ? "mac_worker_explicit_connector_fallback"
-      : "zeabur_codex_app_server"
+      : claim.connector_execution_owner === "mac_worker_local_codex_app"
+        ? "mac_worker_local_codex_app"
+        : connectorExecutionOwner(metadata)
   });
   const existing = isObject(metadata.remote_worker_receipt) ? metadata.remote_worker_receipt : null;
   if (existing) return { replayed: true, receipt: existing as PortableRemoteReceipt, artifact_uri: typeof existing.artifact_uri === "string" ? existing.artifact_uri : "" };
@@ -2944,6 +3370,9 @@ export async function recordPortableMacWorkerReceiptAsync(input: { companyId: st
     : { authority: null, validationBlocker: null };
   const effectAuthority = effectAuthorityResolution.authority;
   const receipt = safeReceipt(input.receipt, {
+    executionScope: String(inputBundle(metadata)?.execution_scope ?? ""),
+    accountRef: String(inputBundle(metadata)?.account_ref ?? ""),
+    targetKey: String(inputBundle(metadata)?.target_key ?? ""),
     companyId: input.companyId,
     workflowId,
     runId: run.id,
@@ -2965,7 +3394,9 @@ export async function recordPortableMacWorkerReceiptAsync(input: { companyId: st
     browserSurface: claimedBrowserSurface,
     connectorExecutionOwner: claim.connector_execution_owner === "mac_worker_explicit_connector_fallback"
       ? "mac_worker_explicit_connector_fallback"
-      : "zeabur_codex_app_server"
+      : claim.connector_execution_owner === "mac_worker_local_codex_app"
+        ? "mac_worker_local_codex_app"
+        : connectorExecutionOwner(metadata)
   });
   const existing = isObject(metadata.remote_worker_receipt) ? metadata.remote_worker_receipt : null;
   if (existing) return { replayed: true, receipt: existing as PortableRemoteReceipt, artifact_uri: typeof existing.artifact_uri === "string" ? existing.artifact_uri : "" };
@@ -3034,11 +3465,17 @@ function backupEvidenceVerified(receipt: Record<string, unknown>, reconciliation
   const savedBinding = isObject(reconciliation.original_claim) ? reconciliation.original_claim : {};
   const commitsMatch = typeof evidence.commit === "string" && /^[a-f0-9]{40}$/u.test(evidence.commit)
     && evidence.remote_commit === evidence.commit;
+  const legacyTimeout = original.exact_blocker === "portable_local_child_deadline_exceeded"
+    && original.external_action_executed === null && original.no_replay === true;
+  const existingAmbiguousReceipt = original.exact_blocker === "local_backup_remote_reconciliation_required"
+    && original.external_action_executed === true
+    && original.operation_effect_state === "effect_unknown"
+    && original.reconciliation_required === true
+    && original.no_replay === true;
   const originalTimeoutValid = original.artifact_name === "portable-local-worker-receipt.v1.json"
     && typeof original.sha256 === "string" && /^[a-f0-9]{64}$/u.test(original.sha256)
     && original.run_id === reconciliation.original_run_id
-    && original.status === "blocked" && original.exact_blocker === "portable_local_child_deadline_exceeded"
-    && original.external_action_executed === null && original.no_replay === true;
+    && original.status === "blocked" && (legacyTimeout || existingAmbiguousReceipt);
   const evidenceFlags = evidence.readback_verified === true && evidence.remote_parity === true
     && evidence.git_integrity_verified === true && evidence.restore_verified === true
     && evidence.cleanup_verified === true && evidence.manifest_source_count === 6

@@ -279,7 +279,10 @@ import {
   claimPortableMacWorkerAsync,
   claimPortableBackupPostEffectReconciliation,
   claimPortableBackupPostEffectReconciliationAsync,
+  claimPortableDailyAiHistoricalRecord,
+  claimPortableDailyAiHistoricalRecordAsync,
   recordPortableBackupPostEffectEvidenceAsync,
+  recordPortableDailyAiHistoricalReceiptAsync,
   recordPortableMacWorkerReceipt,
   recordPortableMacWorkerReceiptAsync,
   requeuePortableMacWorkerAfterApproval,
@@ -3568,8 +3571,10 @@ app.post("/api/portable-worker/claim", async (req, res, next) => {
     const runId = typeof req.body?.run_id === "string" ? req.body.run_id.trim() : null;
     const run = dbBackend === "postgres"
       ? await claimPortableBackupPostEffectReconciliationAsync({ companyId, workerId, workerInstanceId, requestedRunId: runId })
+        ?? await claimPortableDailyAiHistoricalRecordAsync({ companyId, workerId, workerInstanceId, requestedRunId: runId })
         ?? await claimPortableMacWorkerAsync({ companyId, workerId, workerInstanceId, requestedRunId: runId })
       : claimPortableBackupPostEffectReconciliation({ companyId, workerId, workerInstanceId, requestedRunId: runId })
+        ?? claimPortableDailyAiHistoricalRecord({ companyId, workerId, workerInstanceId, requestedRunId: runId })
         ?? claimPortableMacWorker({ companyId, workerId, workerInstanceId, requestedRunId: runId });
     res.json({ ok: true, claimed: Boolean(run), external_action_executed: false, run });
   } catch (error) {
@@ -3743,6 +3748,12 @@ app.post("/api/portable-worker/:runId/receipt", async (req, res, next) => {
       runId: req.params.runId,
       receipt: req.body?.receipt
     };
+    if (req.body?.receipt?.evidence_only === true && req.body?.receipt?.recovery_kind === "daily_ai_record") {
+      const result = await recordPortableDailyAiHistoricalReceiptAsync(receiptInput);
+      res.json({ ok: true, ...result, target_admission: null, effect_ledger: null,
+        external_action_executed: false });
+      return;
+    }
     if (req.body?.receipt?.evidence_only === true) {
       const result = await recordPortableBackupPostEffectEvidenceAsync(receiptInput);
       // Backup evidence has no job-application target admission. Any

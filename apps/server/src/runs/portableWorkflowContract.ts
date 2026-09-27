@@ -11,7 +11,7 @@ export type PortableWorkflowId =
 
 export type PortableTrigger = "automation_os_scheduler" | "automation_os_ui" | "codex_app_bridge" | "launchd" | "github_actions";
 export type PortableExternalEffectPolicy = "disabled" | "approval_required";
-export type PortableConnectorExecutionOwner = "zeabur_codex_app_server" | "mac_worker_explicit_connector_fallback";
+export type PortableConnectorExecutionOwner = "zeabur_codex_app_server" | "mac_worker_explicit_connector_fallback" | "mac_worker_local_codex_app";
 
 export type PortableWorkflowManifestV1 = {
   schema: typeof PORTABLE_WORKFLOW_MANIFEST_SCHEMA_V1;
@@ -105,7 +105,7 @@ export function validatePortableWorkflowManifestV1(value: PortableWorkflowManife
   if (value.execution.browser_surface !== "aos_chrome_companion_profile_instance") fail("browser_surface_invalid");
   if (value.execution.browser_runtime !== "aos_chrome_companion") fail("browser_runtime_invalid");
   if (value.execution.connector_gateway !== "mcp") fail("connector_gateway_invalid");
-  if (value.execution.connector_execution_owner !== "zeabur_codex_app_server" && value.execution.connector_execution_owner !== "mac_worker_explicit_connector_fallback") fail("connector_execution_owner_invalid");
+  if (!['zeabur_codex_app_server', 'mac_worker_explicit_connector_fallback', 'mac_worker_local_codex_app'].includes(value.execution.connector_execution_owner)) fail("connector_execution_owner_invalid");
   if (value.execution.app_dependency !== false) fail("app_dependency_invalid");
   if (!Array.isArray(value.stages) || value.stages.length === 0 || value.stages.some((stage) => !stage.trim())) {
     fail("stages_invalid");

@@ -12,6 +12,7 @@ process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE = "canary";
 process.env.AOS_WEB_OPERATION_BACKEND_CONFIG = join(tempRoot, "web-operation-backend.json");
 
 const db = await import("../db/client.js");
+const { CANONICAL_COMPANY_ID } = await import("../automations/canonicalAutomationRegistry.js");
 const { initRegisteredWorkflows } = await import("../registeredWorkflows.js");
 const { startPortableLocalWorkflowRun } = await import("../runs/portableLocalWorkflowEntrypoint.js");
 const { startPortableWorkflowRun } = await import("../runs/portableWorkflowEntrypoint.js");
@@ -19,6 +20,7 @@ const dailyAi = await import("../runs/dailyAiResearchSourceSync.js");
 const {
   claimPortableMacWorker,
   claimPortableMacWorkerAsync,
+  claimPortableDailyAiHistoricalRecordAsync,
   claimPortableBackupPostEffectReconciliationAsync,
   recordPortableBackupPostEffectEvidenceAsync,
   recordPortableMacWorkerReceipt,
@@ -31,6 +33,31 @@ const {
   validBlockedSafeCompanionToOfficialHandoff
 } = await import("../runs/portableRemoteWorker.js");
 const { readPortableRunRecovery, requestPortableBackupPostEffectReconciliation } = await import("../runs/portableRunRecovery.js");
+
+test("single existing post requires bound publication and sync, but not unrelated feed or engagement", () => {
+  const binding = { companyId: "1", runId: "run-one", stepId: "step-one", idempotencyKey: "once", targetDigest: "digest",
+    inputBundleSha256: "bundle", sourceSnapshotId: "source", payloadHash: "payload", executionScope: "single_existing_post",
+    accountRef: "account", targetKey: "draft:x" };
+  const input = { same_run_receipt: true, same_run_source_sync: true, cleanup_verified: true,
+    readback_verified: true, external_action_executed: true,
+    runner_receipt: { execution_scope: "single_existing_post", run_id: "run-one", step_id: "step-one",
+      same_run_source_sync: true, business_proofs: { publish_url_or_exact_blocker: true, feed_study_or_exact_blocker: true,
+        engagement_or_no_candidate_proof: true, queue_sync: true, cleanup_receipt: true }, summary_full_flow_completion: { ok: true } } };
+  const adapter = { provider_result: { verified: true, run_id: "run-one", account_ref: "account", target_key: "draft:x",
+    payload_hash: "payload", url: "https://x.com/example/status/1234" } };
+  const check = (i = input, a = adapter, b = binding) => businessProofSatisfied("daily-ai-research-publish-run", i, a, b);
+  assert.equal(check(), true);
+  assert.equal(check({ ...input, same_run_source_sync: false }), false);
+  assert.equal(check({ ...input, cleanup_verified: false }), false);
+  assert.equal(check(input, { provider_result: { ...adapter.provider_result, payload_hash: "foreign" } }), false);
+  assert.equal(check(input, { provider_result: { ...adapter.provider_result, run_id: "foreign" } }), false);
+  assert.equal(check(input, adapter, { ...binding, executionScope: "" }), false);
+  assert.equal(check({ ...input, runner_receipt: { ...input.runner_receipt, business_proofs: {
+    ...input.runner_receipt.business_proofs, engagement_or_no_candidate_proof: false } } }), false);
+  assert.equal(check({ ...input, runner_receipt: { ...input.runner_receipt, summary_full_flow_completion: { ok: false } } }), false);
+  assert.equal(check({ ...input, runner_receipt: { ...input.runner_receipt, business_proofs: {
+    ...input.runner_receipt.business_proofs, queue_sync: false } } }), false);
+});
 
 // Keep the pre-existing Browser Use CLI receipt fixtures explicit. The live
 // application default is Chrome Plugin; the dedicated regression below
@@ -178,6 +205,13 @@ test("remote Mac worker claim and receipt stay Company-scoped, idempotent, and r
   assert.ok(claim);
   assert.equal(claim.run_id, started.runId);
   assert.equal(claim.company_id, companyId);
+  const persistedClaim = JSON.parse(db.querySql<{ metadata_json: string }>(
+    `SELECT metadata_json FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`,
+  )[0]!.metadata_json).remote_worker_claim as Record<string, unknown>;
+  assert.deepEqual(
+    { run_id: persistedClaim.run_id, step_id: persistedClaim.step_id, workflow_id: persistedClaim.workflow_id },
+    { run_id: claim.run_id, step_id: claim.step_id, workflow_id: claim.workflow_id },
+  );
   assert.equal(claim.read_only_stage, "candidate_supply");
   assert.equal(claim.browser_surface, "browser_use_cli");
   assert.equal(claim.external_action_executed, false);
@@ -202,6 +236,7 @@ test("remote Mac worker claim and receipt stay Company-scoped, idempotent, and r
       effects_mode: "read_only",
       read_only_stage_bound: true,
       same_run_receipt: true,
+      same_run_source_sync: true,
       external_executor_status: "candidate_supply_readback",
       adapter_result: {
         stage: "job_candidate_supply",
@@ -231,6 +266,7 @@ test("remote Mac worker claim and receipt stay Company-scoped, idempotent, and r
   assert.equal(receipt.receipt.external_action_executed, false);
   assert.equal(receipt.receipt.exact_blocker, null);
   assert.equal(receipt.receipt.read_only_proof_verified, true);
+  assert.equal(receipt.receipt.same_run_source_sync, true);
   assert.match(receipt.artifact_uri, new RegExp(`^/api/v1/companies/${companyId}/artifacts/artifact_`));
   const storedProof = db.querySql<{ artifact_id: string; uri: string }>(
     `SELECT artifact_id, uri FROM proofs WHERE run_id=${db.sqlValue(started.runId)} ORDER BY created_at DESC LIMIT 1`,
@@ -280,6 +316,31 @@ test("remote Mac worker claim and receipt stay Company-scoped, idempotent, and r
   assert.equal(stepMetadata.service_readiness_runtime_binding?.reserved_port, 19881);
   assert.equal(stepMetadata.service_readiness_runtime_binding?.readback_status, "verified");
   assert.equal(stepMetadata.service_readiness_runtime_binding?.status, "verified");
+});
+
+test("canonical Mac worker claims a Project A portable Run after scope normalization", async () => {
+  db.initDb();
+  initRegisteredWorkflows();
+  ensureTestCompany(CANONICAL_COMPANY_ID);
+  const started = await startPortableWorkflowRun({
+    workflowId: "daily-ai-research-publish-run",
+    sourceTrigger: "automation_os_ui",
+    idempotencyKey: "portable-remote-project-a-canonical-scope",
+    companyId: "project-a",
+    readOnlyStage: "reference_readback"
+  });
+  const run = db.querySql<{ company_id: string | null }>(
+    `SELECT company_id FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`
+  )[0];
+  assert.equal(run.company_id, CANONICAL_COMPANY_ID);
+  const claim = claimPortableMacWorker({
+    companyId: CANONICAL_COMPANY_ID,
+    workerId: "mac-project-a-canonical-scope",
+    requestedRunId: started.runId
+  });
+  assert.ok(claim);
+  assert.equal(claim.company_id, CANONICAL_COMPANY_ID);
+  assert.equal(claim.run_id, started.runId);
 });
 
 test("a restarted worker instance cannot inherit a live claim from the prior process", async () => {
@@ -900,9 +961,81 @@ test("remote Mac worker accepts the explicit local-worker receipt surface for lo
   assert.equal(run.status, "blocked");
 });
 
+test("remote Mac worker accepts a local Codex App provider-probe receipt without browser fallback", async () => {
+  const companyId = "portable_remote_local_codex_app_surface_regression";
+  ensureTestCompany(companyId);
+  const workerId = "mac-local-codex-app-surface-regression";
+  const started = await startPortableWorkflowRun({
+    workflowId: "nisenprints-daily-product-canva-printify-etsy-pinterest",
+    sourceTrigger: "automation_os_ui",
+    idempotencyKey: "portable-remote-local-codex-app-surface-regression",
+    companyId,
+    readOnlyStage: "reference_readback",
+    connectorExecutionOwner: "mac_worker_local_codex_app",
+  });
+  const claim = claimPortableMacWorker({ companyId, workerId, requestedRunId: started.runId });
+  assert.ok(claim);
+  assert.equal(claim.connector_execution_owner, "mac_worker_local_codex_app");
+  const persistedMetadata = JSON.parse(db.querySql<{ metadata_json: string }>(
+    `SELECT metadata_json FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`,
+  )[0]!.metadata_json) as Record<string, unknown>;
+  assert.equal((persistedMetadata.remote_worker_claim as Record<string, unknown>).connector_execution_owner, "mac_worker_local_codex_app");
+
+  const result = recordPortableMacWorkerReceipt({
+    companyId,
+    workerId,
+    runId: claim.run_id,
+    receipt: {
+      status: "complete",
+      exact_blocker: null,
+      external_action_executed: false,
+      browser_surface: "local_worker",
+      workflow_id: claim.workflow_id,
+      run_id: claim.run_id,
+      step_id: claim.step_id,
+      cleanup_verified: true,
+      readback_verified: true,
+      effects_mode: "read_only",
+      read_only_stage_bound: true,
+      same_run_receipt: true,
+      business_proof_verified: false,
+      read_only_proof_verified: true,
+      external_executor_status: "local_codex_app_provider_probe_verified",
+      adapter_result: {
+        execution_surface: "local_codex_app_server_local_stdio",
+        provider_probe_only: true,
+        no_browser_fallback: true,
+        provider_receipt: {
+          connector: "canva",
+          provider_verified: true,
+          external_action_executed: false,
+          secret_material_included: false,
+        },
+      },
+    },
+  });
+  assert.equal(result.replayed, false);
+  assert.equal(result.receipt.browser_surface, "local_worker");
+  assert.equal(result.receipt.connector_execution_owner, "mac_worker_local_codex_app");
+  assert.equal(result.receipt.read_only_proof_verified, true);
+  assert.equal(result.receipt.exact_blocker, null);
+  const run = db.querySql<{ status: string }>(`SELECT status FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`)[0];
+  assert.equal(run.status, "complete");
+});
+
 test("backup evidence recovery fences failed attempts, replays one success, and keeps the original run bound", async () => {
   const companyId = "company_2560580981cedfd106b66245";
   ensureTestCompany(companyId);
+  // Historical blocked Runs must not starve a newer evidence-only recovery
+  // request behind the claim query's bounded scan window.
+  for (let index = 0; index < 120; index += 1) {
+    const fillerId = `backup-evidence-filler-${index}`;
+    const fillerAt = new Date(Date.UTC(2026, 0, 1, 0, index, 0)).toISOString();
+    db.execSql(`INSERT OR IGNORE INTO runs
+      (id, company_id, name, status, objective, created_at, updated_at, metadata_json, execution_source)
+      VALUES (${db.sqlValue(fillerId)}, ${db.sqlValue(companyId)}, 'historical filler', 'blocked', 'historical filler',
+        ${db.sqlValue(fillerAt)}, ${db.sqlValue(fillerAt)}, '{}', 'test');`);
+  }
   const backup = await import("../runs/portableLocalWorkflow.js");
   const entrypoint = await import("../runs/portableLocalWorkflowEntrypoint.js");
   const inputBundle = {
@@ -1451,56 +1584,55 @@ for (const mode of ["business_effect", "missing", "read_only_positive"] as const
   }
 }
 
-test("expired registered root is terminally blocked instead of remaining queued forever", async () => {
-  const companyId = "portable_remote_expired_root_company";
-  ensureTestCompany(companyId);
-  const started = await startPortableWorkflowRun({
-    workflowId: "daily-ai-research-publish-run",
-    sourceTrigger: "automation_os_ui",
-    idempotencyKey: "portable-remote-expired-root-regression",
-    companyId,
-    readOnlyStage: "reference_readback",
-  });
-  const stored = db.querySql<{ metadata_json: string }>(
-    `SELECT metadata_json FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`,
-  )[0];
-  const metadata = JSON.parse(stored.metadata_json) as Record<string, unknown>;
-  const { createRegisteredRootAdmissionV1 } = await import("../runs/registeredRootAdmission.js");
-  const expiredRoot = createRegisteredRootAdmissionV1({
-    registeredAutomationId: "daily-ai-research-publish-run",
-    workflowId: "daily-ai-research-publish-run",
-    runId: started.runId,
-    sourceTrigger: "automation_os_ui",
-    definitionFingerprint: String((metadata.registered_root_admission as Record<string, unknown>).definition_fingerprint),
-    now: "2020-01-01T00:00:00.000Z",
-    ttlMs: 60_000,
-  });
-  db.execSql(`UPDATE runs SET metadata_json=${db.sqlValue({
-    ...metadata,
-    registered_root_admission: expiredRoot,
-  })} WHERE id=${db.sqlValue(started.runId)};`);
+for (const asyncClaim of [false, true]) {
+  test(`expired registered root is terminally blocked instead of remaining queued forever, async=${asyncClaim}`, async () => {
+    const companyId = `portable_remote_expired_root_company_${asyncClaim ? "async" : "sync"}`;
+    ensureTestCompany(companyId);
+    const started = await startPortableWorkflowRun({
+      workflowId: "daily-ai-research-publish-run",
+      sourceTrigger: "automation_os_ui",
+      idempotencyKey: `portable-remote-expired-root-regression-${asyncClaim ? "async" : "sync"}`,
+      companyId,
+      readOnlyStage: "reference_readback",
+    });
+    const stored = db.querySql<{ metadata_json: string }>(
+      `SELECT metadata_json FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`,
+    )[0];
+    const metadata = JSON.parse(stored.metadata_json) as Record<string, unknown>;
+    const { createRegisteredRootAdmissionV1 } = await import("../runs/registeredRootAdmission.js");
+    const expiredRoot = createRegisteredRootAdmissionV1({
+      registeredAutomationId: "daily-ai-research-publish-run",
+      workflowId: "daily-ai-research-publish-run",
+      runId: started.runId,
+      sourceTrigger: "automation_os_ui",
+      definitionFingerprint: String((metadata.registered_root_admission as Record<string, unknown>).definition_fingerprint),
+      now: "2020-01-01T00:00:00.000Z",
+      ttlMs: 60_000,
+    });
+    db.execSql(`UPDATE runs SET metadata_json=${db.sqlValue({
+      ...metadata,
+      registered_root_admission: expiredRoot,
+    })} WHERE id=${db.sqlValue(started.runId)};`);
 
-  assert.equal(claimPortableMacWorker({
-    companyId,
-    workerId: "mac-expired-root-regression",
-    requestedRunId: started.runId,
-  }), null);
-  const state = db.querySql<{ run_status: string; step_status: string; blocker: string; external_action_executed: number; event_count: number }>(
-    `SELECT runs.status AS run_status, run_steps.status AS step_status,
-       json_extract(runs.metadata_json, '$.exact_blocker') AS blocker,
-       json_extract(runs.metadata_json, '$.external_action_executed') AS external_action_executed,
-       (SELECT COUNT(*) FROM worker_events WHERE run_id=${db.sqlValue(started.runId)} AND event_type='portable_remote_registered_root_reconciled') AS event_count
-     FROM runs JOIN run_steps ON run_steps.run_id=runs.id
-     WHERE runs.id=${db.sqlValue(started.runId)} LIMIT 1`,
-  )[0];
-  assert.deepEqual(state, {
-    run_status: "blocked",
-    step_status: "blocked",
-    blocker: "registered_root_admission_invalid:expired",
-    external_action_executed: 0,
-    event_count: 1,
+    const claim = { companyId, workerId: `mac-expired-root-regression-${asyncClaim ? "async" : "sync"}`, requestedRunId: started.runId };
+    assert.equal(asyncClaim ? await claimPortableMacWorkerAsync(claim) : claimPortableMacWorker(claim), null);
+    const state = db.querySql<{ run_status: string; step_status: string; blocker: string; external_action_executed: number; event_count: number }>(
+      `SELECT runs.status AS run_status, run_steps.status AS step_status,
+         json_extract(runs.metadata_json, '$.exact_blocker') AS blocker,
+         json_extract(runs.metadata_json, '$.external_action_executed') AS external_action_executed,
+         (SELECT COUNT(*) FROM worker_events WHERE run_id=${db.sqlValue(started.runId)} AND event_type='portable_remote_registered_root_reconciled') AS event_count
+       FROM runs JOIN run_steps ON run_steps.run_id=runs.id
+       WHERE runs.id=${db.sqlValue(started.runId)} LIMIT 1`,
+    )[0];
+    assert.deepEqual(state, {
+      run_status: "blocked",
+      step_status: "blocked",
+      blocker: "registered_root_admission_invalid:expired",
+      external_action_executed: 0,
+      event_count: 1,
+    });
   });
-});
+}
 
 test("candidate-supply claim waits for the persisted input bundle boundary", async () => {
     const companyId = "portable_remote_bundle_race_company";
@@ -1638,7 +1770,7 @@ test("Daily AI and NisenPrints reject generic receipts without workflow business
         companyId: "portable_daily_business_proof_company",
         idempotencyKey: "portable-daily-business-proof-regression",
         bundle: {
-          account_ref: "daily-ai-account",
+          account_ref: "daily_ai_social_readback",
           target_key: "daily-ai-target",
           content_key: "daily-ai-content",
           payload_hash: "a".repeat(64),
@@ -1731,11 +1863,12 @@ test("Daily AI business effect requires every plan proof and same-run source syn
       companyId,
       effectStage: "publish",
       inputBundle: {
-        account_ref: "daily-ai-account",
+        account_ref: "daily_ai_social_readback",
         target_key: "daily-ai-target-complete",
         content_key: "daily-ai-content-complete",
         payload_hash: "c".repeat(64),
         source_snapshot_id: "daily-ai-snapshot-complete",
+        execution_scope: "single_existing_post",
       },
     });
     const { runWorkerOnce } = await import("../runs/workerEngine.js");
@@ -1769,9 +1902,23 @@ test("Daily AI business effect requires every plan proof and same-run source syn
         effect_authority_id: claim.effect_authority?.authority_id,
         effect_authority_sha256: effectAuthoritySha256(claim.effect_authority),
         same_run_receipt: true,
+        same_run_source_sync: true,
         external_executor_status: "daily_ai_business_proof_complete",
+        adapter_result: {
+          provider_result: {
+            verified: true,
+            run_id: claim.run_id,
+            account_ref: "daily_ai_social_readback",
+            target_key: "daily-ai-target-complete",
+            payload_hash: "c".repeat(64),
+            url: "https://x.com/nichika2000823/status/1234567890",
+          },
+        },
         runner_receipt: {
           schema: "daily_ai_business_runner_receipt.v1",
+          execution_scope: "single_existing_post",
+          run_id: claim.run_id,
+          step_id: claim.step_id,
           same_run_source_sync: true,
           business_proofs: {
             publish_url_or_exact_blocker: true,
@@ -1780,6 +1927,7 @@ test("Daily AI business effect requires every plan proof and same-run source syn
             queue_sync: true,
             cleanup_receipt: true,
           },
+          summary_full_flow_completion: { ok: true },
         },
         web_operation_lifecycle: businessLifecycle(claim),
       },
@@ -1788,6 +1936,193 @@ test("Daily AI business effect requires every plan proof and same-run source syn
     assert.equal(receipt.receipt.external_action_executed, true);
     assert.equal(receipt.receipt.business_proof_verified, true);
     assert.equal(receipt.receipt.same_run_source_sync, true);
+  } finally {
+    if (previousMode === undefined) delete process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE;
+    else process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE = previousMode;
+  }
+});
+
+test("Daily AI preserves same-run feed/engagement completion readback while blocking an unexecuted continuation", async () => {
+  const previousMode = process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE;
+  process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE = "external";
+  try {
+    const companyId = "portable_daily_continuation_readback_company";
+    ensureTestCompany(companyId);
+    const started = await startPortableWorkflowRun({
+      workflowId: "daily-ai-research-publish-run",
+      sourceTrigger: "automation_os_scheduler",
+      idempotencyKey: "portable-daily-continuation-readback-regression",
+      browserSurfaceRequirement: "browser_use_cli",
+      companyId,
+      effectStage: "publish",
+      inputBundle: {
+        account_ref: "daily_ai_social_readback",
+        target_key: "daily-ai-target-continuation",
+        content_key: "daily-ai-content-continuation",
+        payload_hash: "d".repeat(64),
+        source_snapshot_id: "daily-ai-snapshot-continuation",
+      },
+    });
+    const { runWorkerOnce } = await import("../runs/workerEngine.js");
+    await runWorkerOnce(started.runId);
+    const approval = db.querySql<{ id: string }>(
+      `SELECT id FROM approvals WHERE run_id=${db.sqlValue(started.runId)} ORDER BY created_at ASC LIMIT 1`,
+    )[0];
+    assert.ok(approval);
+    db.execSql(`UPDATE approvals SET status='approved', decided_at=${db.sqlValue(new Date().toISOString())} WHERE id=${db.sqlValue(approval.id)};`);
+    const workerId = "daily-ai-continuation-readback-worker";
+    const claim = claimPortableMacWorker({ companyId, workerId, requestedRunId: started.runId });
+    assert.ok(claim);
+    const completionChecks = {
+      run_id_match: true,
+      automation_os_run_id_match: true,
+      publish_post_url: true,
+      feed_artifact: false,
+      engagement_receipts: false,
+      postflight_run_id_match: true,
+      postflight_status_completed: true,
+      postflight_queue_sha: true,
+      publish_stage_not_skipped: true,
+      feed_stage_not_skipped: false,
+      engagement_stage_not_skipped: false,
+      postflight_stage_not_skipped: true,
+      cleanup_verified: true,
+    };
+    const receipt = recordPortableMacWorkerReceipt({
+      companyId,
+      workerId,
+      runId: claim.run_id,
+      receipt: {
+        status: "complete",
+        exact_blocker: null,
+        external_action_executed: true,
+        browser_surface: "browser_use_cli",
+        workflow_id: claim.workflow_id,
+        run_id: claim.run_id,
+        step_id: claim.step_id,
+        cleanup_verified: true,
+        readback_verified: true,
+        effects_mode: "business_effect",
+        business_effect_stage: claim.business_effect_stage,
+        approval_receipt: claim.approval_receipt,
+        target_digest: claim.target_digest,
+        effect_authority_id: claim.effect_authority?.authority_id,
+        effect_authority_sha256: effectAuthoritySha256(claim.effect_authority),
+        same_run_receipt: true,
+        external_executor_status: "daily_ai_feed_engagement_continuation_pending",
+        runner_receipt: {
+          schema: "daily_ai_business_runner_receipt.v1",
+          external_completion_checks: completionChecks,
+          completion_checks: completionChecks,
+          summary_full_flow_completion: { ok: false, checks: completionChecks, failures: ["daily_ai_completion_feed_artifact_missing", "daily_ai_completion_engagement_receipts_missing"] },
+          same_run_source_sync: true,
+          business_proofs: {
+            publish_url_or_exact_blocker: true,
+            feed_study_or_exact_blocker: false,
+            engagement_or_no_candidate_proof: false,
+            queue_sync: true,
+            cleanup_receipt: true,
+          },
+        },
+        web_operation_lifecycle: businessLifecycle(claim),
+      },
+    });
+    assert.equal(receipt.receipt.status, "blocked");
+    assert.equal(receipt.receipt.exact_blocker, "portable_remote_business_receipt_reconciliation_required");
+    assert.equal(receipt.receipt.business_proof_verified, false);
+    assert.equal(receipt.receipt.same_run_receipt, true);
+    assert.deepEqual(receipt.receipt.external_completion_checks, completionChecks);
+    assert.deepEqual(receipt.receipt.completion_checks, completionChecks);
+    assert.equal((receipt.receipt.summary_full_flow_completion as Record<string, any>).ok, false);
+    assert.equal(receipt.receipt.external_action_executed, true);
+  } finally {
+    if (previousMode === undefined) delete process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE;
+    else process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE = previousMode;
+  }
+});
+
+test("Daily AI historical continuation claims an existing effect-unknown run without replay", async () => {
+  const previousMode = process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE;
+  process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE = "external";
+  try {
+    const companyId = "portable_daily_historical_claim_existing_unknown_company";
+    ensureTestCompany(companyId);
+    const started = await startPortableWorkflowRun({
+      workflowId: "daily-ai-research-publish-run",
+      sourceTrigger: "automation_os_scheduler",
+      idempotencyKey: "portable-daily-historical-claim-existing-unknown",
+      browserSurfaceRequirement: "browser_use_cli",
+      companyId,
+      effectStage: "publish",
+      inputBundle: {
+        account_ref: "daily_ai_social_readback",
+        target_key: "daily-ai-content-existing-unknown:x",
+        content_key: "daily-ai-content-existing-unknown",
+        payload_hash: "e".repeat(64),
+        source_snapshot_id: "daily-ai-snapshot-existing-unknown",
+        execution_scope: "single_existing_post",
+      },
+    });
+    const { runWorkerOnce } = await import("../runs/workerEngine.js");
+    await runWorkerOnce(started.runId);
+    const approval = db.querySql<{ id: string }>(
+      `SELECT id FROM approvals WHERE run_id=${db.sqlValue(started.runId)} ORDER BY created_at ASC LIMIT 1`,
+    )[0];
+    assert.ok(approval);
+    db.execSql(`UPDATE approvals SET status='approved', decided_at=${db.sqlValue(new Date().toISOString())} WHERE id=${db.sqlValue(approval.id)};`);
+    const workerId = "daily-ai-historical-claim-existing-unknown-worker";
+    const claim = claimPortableMacWorker({ companyId, workerId, requestedRunId: started.runId });
+    assert.ok(claim);
+    const receipt = recordPortableMacWorkerReceipt({
+      companyId,
+      workerId,
+      workerInstanceId: claim.worker_instance_id,
+      runId: claim.run_id,
+      receipt: {
+        status: "blocked",
+        exact_blocker: "portable_remote_business_receipt_reconciliation_required",
+        external_action_executed: true,
+        browser_surface: "browser_use_cli",
+        workflow_id: claim.workflow_id,
+        run_id: claim.run_id,
+        step_id: claim.step_id,
+        cleanup_verified: false,
+        readback_verified: false,
+        effects_mode: "business_effect",
+        business_effect_stage: claim.business_effect_stage,
+        approval_receipt: claim.approval_receipt,
+        target_digest: claim.target_digest,
+        effect_authority_id: claim.effect_authority?.authority_id,
+        effect_authority_sha256: effectAuthoritySha256(claim.effect_authority),
+        same_run_receipt: false,
+        external_executor_status: "portable_remote_runner_failed",
+        web_operation_lifecycle: businessLifecycle(claim, {
+          state: "effect_unknown",
+          status: "blocked",
+          exact_blocker: "portable_external_business_lifecycle_proof_missing",
+          restart_point: "same-run source-of-truth reconciliation; do not replay",
+          same_run_receipt: false,
+          readback_verified: false,
+          cleanup_verified: false,
+        }),
+      },
+    });
+    assert.equal(receipt.receipt.status, "blocked");
+    assert.equal(receipt.receipt.same_run_receipt, false);
+    assert.equal(receipt.receipt.cleanup_verified, false);
+
+    const continuation = await claimPortableDailyAiHistoricalRecordAsync({
+      companyId,
+      workerId: "daily-ai-historical-reconciliation-worker",
+      workerInstanceId: "daily-ai-historical-reconciliation-instance",
+      requestedRunId: started.runId,
+    });
+    assert.ok(continuation);
+    assert.equal(continuation.run_id, started.runId);
+    assert.equal(continuation.evidence_only, true);
+    assert.equal(continuation.recovery_kind, "daily_ai_record");
+    assert.equal(continuation.external_action_executed, false);
+    assert.equal(continuation.input_bundle?.target_key, "daily-ai-content-existing-unknown:x");
   } finally {
     if (previousMode === undefined) delete process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE;
     else process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE = previousMode;

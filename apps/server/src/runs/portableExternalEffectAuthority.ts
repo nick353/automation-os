@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 export const PORTABLE_EXTERNAL_EFFECT_AUTHORITY_SCHEMA_V1 = "automation_os_portable_external_effect_authority.v1" as const;
 export const PORTABLE_EXTERNAL_EFFECT_AUTHORITY_ISSUER_V1 = "automation_os_portable_controller" as const;
+export const PORTABLE_EXTERNAL_EFFECT_AUTHORITY_DEFAULT_TTL_MS = 10 * 60_000;
 export type PortableBrowserSurface = "browser_use_cli" | "signed_chrome_extension_profile2" | "aos_chrome_companion_profile_instance";
 
 const IDENTIFIER = /^[A-Za-z0-9][-_A-Za-z0-9.:]{0,179}$/u;
@@ -50,6 +51,7 @@ export type IssuePortableExternalEffectAuthorityInputV1 = {
   leaseExpiresAt: string;
   browserSurface?: PortableBrowserSurface;
   nowMs?: number;
+  ttlMs?: number;
 };
 
 function requiredIdentifier(value: string, field: string): string {
@@ -96,7 +98,10 @@ export function issuePortableExternalEffectAuthorityV1(
   if (!Number.isSafeInteger(nowMs) || nowMs <= 0) throw new Error("portable_effect_authority_clock_invalid");
   const issuedAt = new Date(nowMs).toISOString();
   const leaseExpiresMs = parseTime(String(input.leaseExpiresAt || ""), "lease_expires_at");
-  const expiresMs = Math.min(leaseExpiresMs, nowMs + 10 * 60_000);
+  const ttlMs = Number.isSafeInteger(input.ttlMs) && Number(input.ttlMs) > 0
+    ? Number(input.ttlMs)
+    : PORTABLE_EXTERNAL_EFFECT_AUTHORITY_DEFAULT_TTL_MS;
+  const expiresMs = Math.min(leaseExpiresMs, nowMs + ttlMs);
   if (!Number.isFinite(expiresMs) || expiresMs <= nowMs) throw new Error("portable_effect_authority_lease_expired");
   const timeoutMs = expiresMs - nowMs;
   const authorityId = `portable-effect-${sha256([
