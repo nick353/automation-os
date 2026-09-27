@@ -384,6 +384,31 @@ function registeredRootAdmission(run: RunRow, metadata: Record<string, unknown>,
   });
 }
 
+function dailyAiHistoricalRootAdmission(run: RunRow, metadata: Record<string, unknown>): RegisteredRootAdmissionV1 {
+  const request = isObject(metadata.portable_daily_ai_historical_reconciliation_request)
+    ? metadata.portable_daily_ai_historical_reconciliation_request : null;
+  const storedRoot = isObject(metadata.registered_root_admission) ? metadata.registered_root_admission : {};
+  if (request?.schema !== "aos.portable_daily_ai_historical_reconciliation.v1"
+    || request.evidence_only !== true || request.new_effect !== false
+    || request.provider_replayed !== false || request.run_id !== run.id
+    || request.root_id !== storedRoot.root_id
+    || request.root_digest !== storedRoot.root_digest) {
+    throw new Error("portable_daily_ai_historical_reconciliation_not_admitted");
+  }
+  const rootValue = storedRoot;
+  const issuedAt = Date.parse(String(rootValue.issued_at || ""));
+  if (!Number.isFinite(issuedAt)) throw new Error("registered_root_admission_invalid:issued_at_invalid");
+  const invocation = isObject(metadata.portable_workflow_invocation) ? metadata.portable_workflow_invocation : {};
+  const registeredAutomationId = typeof invocation.registered_automation_id === "string"
+    ? invocation.registered_automation_id : DAILY_AI_EVIDENCE_WORKFLOW;
+  // The official recovery request has already authenticated the current
+  // readback token and persisted this exact root identity. Validate the root
+  // shape/digest at its issuance time, but never extend or rewrite its expiry.
+  return validateRegisteredRootAdmissionV1(rootValue, {
+    registeredAutomationId, workflowId: DAILY_AI_EVIDENCE_WORKFLOW, runId: run.id
+  }, issuedAt);
+}
+
 function inputBundle(metadata: Record<string, unknown>): Record<string, unknown> | null {
   const bundle = isObject(metadata.portable_input_bundle) ? metadata.portable_input_bundle : {};
   const input = bundle.input;
@@ -1289,6 +1314,12 @@ function dailyAiHistoricalClaimFromMetadata(input: {
   workerInstanceId: string; leaseExpiresAt: string; registeredRoot: RegisteredRootAdmissionV1;
   attemptId: string; fencingToken: string;
 }): PortableDailyAiEvidenceClaim | null {
+  const recoveryRequest = isObject(input.metadata.portable_daily_ai_historical_reconciliation_request)
+    ? input.metadata.portable_daily_ai_historical_reconciliation_request : null;
+  if (recoveryRequest?.schema !== "aos.portable_daily_ai_historical_reconciliation.v1"
+    || recoveryRequest.status !== "queued" || recoveryRequest.evidence_only !== true
+    || recoveryRequest.new_effect !== false || recoveryRequest.provider_replayed !== false
+    || recoveryRequest.run_id !== input.run.id) return null;
   const originalClaim = isObject(input.metadata.remote_worker_claim) ? input.metadata.remote_worker_claim : null;
   const authority = originalClaim && isObject(originalClaim.portable_effect_authority) ? originalClaim.portable_effect_authority : null;
   const original = isObject(input.metadata.remote_worker_receipt) ? input.metadata.remote_worker_receipt : null;
@@ -1380,7 +1411,7 @@ export function claimPortableDailyAiHistoricalRecord(input: { companyId: string;
     const step = querySql<StepRow>(`SELECT id, name, status, lane_id, metadata_json FROM run_steps WHERE run_id=${sqlValue(run.id)} ORDER BY id ASC LIMIT 1`)[0];
     if (!step) continue;
     let root: RegisteredRootAdmissionV1;
-    try { root = registeredRootAdmission(run, metadata, DAILY_AI_EVIDENCE_WORKFLOW); } catch { continue; }
+    try { root = dailyAiHistoricalRootAdmission(run, metadata); } catch { continue; }
     const candidate = dailyAiHistoricalClaimFromMetadata({ run, step, metadata, workerId: id, workerInstanceId: instanceId,
       leaseExpiresAt: new Date(Date.now() + 10 * 60_000).toISOString(), registeredRoot: root,
       attemptId: makeId("attempt"), fencingToken: nextBackupFencingToken() });
@@ -1412,7 +1443,7 @@ export async function claimPortableDailyAiHistoricalRecordAsync(input: { company
     const step = (await querySqlAsync<StepRow>(`SELECT id, name, status, lane_id, metadata_json FROM run_steps WHERE run_id=${sqlValue(run.id)} ORDER BY id ASC LIMIT 1`))[0];
     if (!step) continue;
     let root: RegisteredRootAdmissionV1;
-    try { root = registeredRootAdmission(run, metadata, DAILY_AI_EVIDENCE_WORKFLOW); } catch { continue; }
+    try { root = dailyAiHistoricalRootAdmission(run, metadata); } catch { continue; }
     const candidate = dailyAiHistoricalClaimFromMetadata({ run, step, metadata, workerId: id, workerInstanceId: instanceId,
       leaseExpiresAt: new Date(Date.now() + 10 * 60_000).toISOString(), registeredRoot: root,
       attemptId: makeId("attempt"), fencingToken: nextBackupFencingToken() });

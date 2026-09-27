@@ -13,6 +13,7 @@ import { DAILY_AI_RESEARCH_SYNC_WORKFLOW, prepareDailyAiResearchSyncAdmission } 
 import { portableRecoveryRunId, startPortableLocalWorkflowRun, type PortableLocalWorkflowStartInput } from "./portableLocalWorkflowEntrypoint.js";
 import { startPortableWorkflowRun, type PortableBusinessEffectStage, type PortableWorkflowStartInput } from "./portableWorkflowEntrypoint.js";
 import type { PortableWorkflowId } from "./portableWorkflowContract.js";
+import { validateRegisteredRootAdmissionV1, type RegisteredRootAdmissionV1 } from "./registeredRootAdmission.js";
 
 type Run = { id: string; company_id: string; automation_id: string | null; automation_version_id: string | null;
   status: string; execution_source: string; quarantined: number; updated_at: string; metadata_json: string };
@@ -32,6 +33,7 @@ const backupEvidenceKey = (runId: string) => `portable-backup-post-effect-${runI
 const WEB_POST_EFFECT_WORKFLOWS = new Set(["sns-multi-poster-ukiyoe", "x-authenticated-browser-lane", "daily-ai-research-publish-run"]);
 const backupEffectOperationKey = (runId: string) => `backup-effect-${createHash("sha256").update(runId).digest("hex")}`;
 const preDispatchNoEffectKey = (runId: string) => `portable-pre-dispatch-no-effect-${runId}`;
+const dailyAiHistoricalReconciliationKey = (runId: string) => `portable-daily-ai-historical-reconcile-${runId}`;
 const backupLedgerHash = (value: unknown): string => {
   const text = typeof value === "string" ? value : JSON.stringify(value ?? null);
   return /^[a-f0-9]{64}$/u.test(text) ? text : createHash("sha256").update(text).digest("hex");
@@ -101,6 +103,21 @@ export type PortablePreDispatchNoEffectReconciliationResponse = {
   mutation_dispatch_count: 0;
   target_url: "https://x.com/compose/post";
   observed_at: string;
+};
+
+export type PortableDailyAiHistoricalReconciliationResponse = {
+  schema: "aos.portable_daily_ai_historical_reconciliation.v1";
+  company_id: string;
+  run_id: string;
+  step_id: string;
+  workflow_id: "daily-ai-research-publish-run";
+  status: "queued";
+  exact_blocker: "portable_daily_ai_historical_evidence_pending";
+  evidence_only: true;
+  new_effect: false;
+  provider_replayed: false;
+  root_id: string;
+  root_digest: string;
 };
 
 function preDispatchNoEffectCandidate(receipt: Record<string, any>): boolean {
@@ -458,6 +475,112 @@ export function validateDailyAiManualReconciliation({ inputBundle, original, pro
     || afterUrl !== expectedPostUrl || afterId !== expectedPostId) {
     throw new Error("daily_ai_post_reconciliation_evidence_invalid");
   }
+}
+
+function storedHistoricalRootIdentity(metadata: Record<string, any>, run: Run, workflowId: string): RegisteredRootAdmissionV1 {
+  const value = record(metadata.registered_root_admission);
+  const issuedAt = Date.parse(String(value.issued_at || ""));
+  if (!Number.isFinite(issuedAt)) throw new Error("portable_daily_ai_historical_root_missing");
+  const invocation = record(metadata.portable_workflow_invocation);
+  const registeredAutomationId = typeof invocation.registered_automation_id === "string"
+    ? invocation.registered_automation_id : workflowId;
+  // Validate every immutable root field and digest, but evaluate expiry at the
+  // root's own issued_at. The returned value is provenance only; it is never
+  // used as a new execution authority or extended in storage.
+  return validateRegisteredRootAdmissionV1(value, {
+    registeredAutomationId, workflowId, runId: run.id
+  }, issuedAt);
+}
+
+/**
+ * Admit one official, evidence-only Daily AI historical reconciliation request.
+ * This is the only supported way to issue a fresh short-lived worker claim for
+ * an old run whose original registered root has expired. It preserves the
+ * stored root identity/digest and never creates a new business authority.
+ */
+export async function requestPortableDailyAiHistoricalReconciliation(input: Scope & {
+  expectedReadbackToken: string;
+  idempotencyKey: string;
+}): Promise<{ replayed: boolean; response: PortableDailyAiHistoricalReconciliationResponse }> {
+  const key = dailyAiHistoricalReconciliationKey(input.runId);
+  if (input.idempotencyKey !== key) throw new Error("portable_daily_ai_historical_reconciliation_idempotency_binding_invalid");
+  const context = await loadContext(input);
+  const { run, metadata, steps, view, inputBundle } = context;
+  if (context.workflowId !== "daily-ai-research-publish-run"
+    || !context.business || (view as Record<string, any>).can_reconcile_web_post_effect !== true
+    || inputBundle.execution_scope !== "single_existing_post"
+    || inputBundle.account_ref !== "daily_ai_social_readback"
+    || ![`${inputBundle.content_key}:x`, `${inputBundle.content_key}:linkedin`].includes(String(inputBundle.target_key))) {
+    throw new Error("portable_daily_ai_historical_reconciliation_not_supported");
+  }
+  const existingKey = (await querySqlAsync<{ response_json: string; status: string }>(`SELECT response_json, status FROM mvp_idempotency_keys
+    WHERE company_id=${sqlValue(run.company_id)} AND scope=${sqlValue(scopeKey(run.id))}
+      AND idempotency_key=${sqlValue(key)} LIMIT 1`))[0];
+  if (existingKey?.status === "pending") throw new Error("idempotency_request_pending");
+  if (existingKey?.status === "completed") {
+    const saved = record(existingKey.response_json);
+    if (saved.schema === "aos.portable_daily_ai_historical_reconciliation.v1"
+      && saved.company_id === run.company_id && saved.run_id === run.id
+      && saved.workflow_id === context.workflowId && saved.evidence_only === true
+      && saved.new_effect === false && saved.provider_replayed === false) {
+      return { replayed: true, response: saved as PortableDailyAiHistoricalReconciliationResponse };
+    }
+    throw new Error("idempotency_response_invalid");
+  }
+  if (view.readback_token !== input.expectedReadbackToken) throw new Error("portable_recovery_readback_changed");
+  const original = record(metadata.remote_worker_receipt);
+  const claim = record(metadata.remote_worker_claim);
+  const step = steps[0];
+  const authority = record(claim.portable_effect_authority ?? claim.effect_authority);
+  if (!step || claim.run_id !== run.id || claim.step_id !== step.id || claim.workflow_id !== context.workflowId
+    || original.external_action_executed !== true || original.same_run_receipt === true
+    || !authority.authority_id || authority.company_id !== run.company_id || authority.run_id !== run.id
+    || authority.step_id !== step.id || authority.workflow_id !== context.workflowId) {
+    throw new Error("portable_daily_ai_historical_reconciliation_binding_invalid");
+  }
+  const root = storedHistoricalRootIdentity(metadata, run, context.workflowId);
+  const existingReconciliation = record(metadata.portable_daily_ai_post_effect_reconciliation);
+  const retryAfter = Date.parse(String(existingReconciliation.retry_after || ""));
+  if (existingReconciliation.status === "claimed" && Date.parse(String(existingReconciliation.lease_expires_at || "")) > Date.now()) {
+    throw new Error("portable_daily_ai_historical_claim_active");
+  }
+  if (existingReconciliation.status === "blocked" && Number.isFinite(retryAfter) && retryAfter > Date.now()) {
+    throw new Error("portable_daily_ai_historical_retry_after");
+  }
+  const existingRequest = record(metadata.portable_daily_ai_historical_reconciliation_request);
+  if (existingRequest.schema === "aos.portable_daily_ai_historical_reconciliation.v1"
+    && existingRequest.run_id === run.id && existingRequest.root_id === root.root_id
+    && existingRequest.root_digest === root.root_digest && existingRequest.status === "queued") {
+    return { replayed: true, response: existingRequest as PortableDailyAiHistoricalReconciliationResponse };
+  }
+  const now = nowIso();
+  const response: PortableDailyAiHistoricalReconciliationResponse = {
+    schema: "aos.portable_daily_ai_historical_reconciliation.v1",
+    company_id: run.company_id, run_id: run.id, step_id: step.id,
+    workflow_id: "daily-ai-research-publish-run", status: "queued",
+    exact_blocker: "portable_daily_ai_historical_evidence_pending", evidence_only: true,
+    new_effect: false, provider_replayed: false, root_id: root.root_id, root_digest: root.root_digest
+  };
+  const request = { company_id: run.company_id, run_id: run.id, action: "reconcile-daily-ai-post-effect",
+    expected_readback_token: input.expectedReadbackToken, root_id: root.root_id, root_digest: root.root_digest };
+  const nextMetadata = {
+    ...metadata,
+    portable_daily_ai_historical_reconciliation_request: {
+      ...response, requested_at: now, idempotency_key: key,
+      readback_token_sha256: createHash("sha256").update(input.expectedReadbackToken).digest("hex")
+    },
+    worker_loop: { ...record(metadata.worker_loop), status: "waiting_for_historical_readback", queuedAt: now },
+    mac_worker: { ...record(metadata.mac_worker), status: "waiting_for_historical_readback", queuedAt: now }
+  };
+  const mutation = await runIdempotentSqlMutationAsync({
+    companyId: run.company_id, scope: scopeKey(run.id), key, request, response,
+    resourceSteps: [{
+      sql: `UPDATE runs SET metadata_json=${sqlValue(nextMetadata)}, updated_at=${sqlValue(now)}
+        WHERE id=${sqlValue(run.id)} AND company_id=${sqlValue(run.company_id)} AND metadata_json=${sqlValue(run.metadata_json)}`,
+      expectChanges: 1
+    }]
+  });
+  return { replayed: mutation.replayed, response: mutation.response as PortableDailyAiHistoricalReconciliationResponse };
 }
 
 /**

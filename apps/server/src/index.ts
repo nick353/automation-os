@@ -264,7 +264,7 @@ import {
 import { startPortableWorkflowRun } from "./runs/portableWorkflowEntrypoint.js";
 import { preparePortableLocalObsidianBusinessAdmission, portableLocalReadOnlyStageForScheduledWorkflow, type PortableLocalWorkflowId } from "./runs/portableLocalWorkflow.js";
 import { startPortableLocalWorkflowRun } from "./runs/portableLocalWorkflowEntrypoint.js";
-import { readPortableRunRecovery, cancelPortableRun, retryPortableRun, requestPortableBackupPostEffectReconciliation } from "./runs/portableRunRecovery.js";
+import { readPortableRunRecovery, cancelPortableRun, retryPortableRun, requestPortableBackupPostEffectReconciliation, requestPortableDailyAiHistoricalReconciliation } from "./runs/portableRunRecovery.js";
 import { buildPortableRunOperationProjection } from "./runs/portableRunOperationProjection.js";
 import { portableWorkflowManifests } from "./runs/portableWorkflowContract.js";
 import { portableReadOnlyStageForScheduledWorkflow, portableScheduleDispatchForRegisteredAutomation, portableWorkflowIdForRegisteredAutomation, portableLocalWorkflowIdForRegisteredAutomation } from "./runs/portableScheduleDispatch.js";
@@ -5425,15 +5425,18 @@ app.post("/api/v1/companies/:companyId/runs/:runId/recovery/:action", async (req
   try {
     await requireCompanyAccessAsync(req.params.companyId, ["owner", "admin", "operator"]);
     const action = req.params.action;
-    if (action !== "cancel" && action !== "retry" && action !== "reconcile-post-effect") throw new Error("portable_recovery_action_invalid");
+    if (action !== "cancel" && action !== "retry" && action !== "reconcile-post-effect" && action !== "reconcile-daily-ai-post-effect") throw new Error("portable_recovery_action_invalid");
     if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)
       || Object.keys(req.body).length !== 1 || !/^[a-f0-9]{64}$/u.test(String(req.body.expected_readback_token ?? ""))) {
       throw new Error("portable_recovery_body_invalid");
     }
     const scope = { companyId: req.params.companyId, runId: req.params.runId, expectedReadbackToken: req.body.expected_readback_token };
+    const idempotencyKey = requireIdempotencyKey(req.header("idempotency-key"));
     const result = action === "cancel" ? await cancelPortableRun(scope)
-      : action === "retry" ? await retryPortableRun({ ...scope, idempotencyKey: requireIdempotencyKey(req.header("idempotency-key")) })
-        : await requestPortableBackupPostEffectReconciliation({ ...scope, idempotencyKey: requireIdempotencyKey(req.header("idempotency-key")) });
+      : action === "retry" ? await retryPortableRun({ ...scope, idempotencyKey })
+        : action === "reconcile-daily-ai-post-effect"
+          ? await requestPortableDailyAiHistoricalReconciliation({ ...scope, idempotencyKey })
+          : await requestPortableBackupPostEffectReconciliation({ ...scope, idempotencyKey });
     res.status(200).json({ ok: true, ...result });
   } catch (error) {
     const code = error instanceof Error && /^[a-z][a-z0-9_:-]{0,180}$/u.test(error.message)

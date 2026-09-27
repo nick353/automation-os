@@ -32,7 +32,8 @@ const {
   validSafeCompanionToOfficialHandoff,
   validBlockedSafeCompanionToOfficialHandoff
 } = await import("../runs/portableRemoteWorker.js");
-const { readPortableRunRecovery, requestPortableBackupPostEffectReconciliation } = await import("../runs/portableRunRecovery.js");
+const { readPortableRunRecovery, requestPortableBackupPostEffectReconciliation, requestPortableDailyAiHistoricalReconciliation } = await import("../runs/portableRunRecovery.js");
+const { createRegisteredRootAdmissionV1 } = await import("../runs/registeredRootAdmission.js");
 
 test("single existing post requires bound publication and sync, but not unrelated feed or engagement", () => {
   const binding = { companyId: "1", runId: "run-one", stepId: "step-one", idempotencyKey: "once", targetDigest: "digest",
@@ -2115,7 +2116,20 @@ test("Daily AI historical continuation claims an existing effect-unknown run wit
       `SELECT metadata_json FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`,
     )[0];
     const persistedMetadata = JSON.parse(persistedRun.metadata_json) as Record<string, unknown>;
-    db.execSql(`UPDATE runs SET metadata_json=${db.sqlValue({ ...persistedMetadata, companion_task_id: "companion-historical-task" })} WHERE id=${db.sqlValue(started.runId)};`);
+    const persistedRoot = persistedMetadata.registered_root_admission as Record<string, string>;
+    const expiredRoot = createRegisteredRootAdmissionV1({
+      registeredAutomationId: "daily-ai-research-publish-run", workflowId: "daily-ai-research-publish-run",
+      runId: started.runId, sourceTrigger: persistedRoot.source_trigger as any,
+      definitionFingerprint: persistedRoot.definition_fingerprint, now: "2020-01-01T00:00:00.000Z", ttlMs: 60 * 60 * 1000
+    });
+    db.execSql(`UPDATE runs SET metadata_json=${db.sqlValue({ ...persistedMetadata, companion_task_id: "companion-historical-task", registered_root_admission: expiredRoot })} WHERE id=${db.sqlValue(started.runId)};`);
+    const historicalRecoveryView = await readPortableRunRecovery({ companyId, runId: started.runId });
+    const historicalRequest = await requestPortableDailyAiHistoricalReconciliation({
+      companyId, runId: started.runId, expectedReadbackToken: historicalRecoveryView.readback_token,
+      idempotencyKey: `portable-daily-ai-historical-reconcile-${started.runId}`
+    });
+    assert.equal(historicalRequest.response.status, "queued");
+    assert.equal(historicalRequest.response.evidence_only, true);
     const continuation = await claimPortableDailyAiHistoricalRecordAsync({
       companyId,
       workerId: "daily-ai-historical-reconciliation-worker",
