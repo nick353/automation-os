@@ -1293,17 +1293,19 @@ function dailyAiHistoricalClaimFromMetadata(input: {
   const authority = originalClaim && isObject(originalClaim.portable_effect_authority) ? originalClaim.portable_effect_authority : null;
   const original = isObject(input.metadata.remote_worker_receipt) ? input.metadata.remote_worker_receipt : null;
   const bundle = isObject(originalClaim?.input_bundle) ? originalClaim.input_bundle : inputBundle(input.metadata);
+  const authoritySha256 = authority
+    ? createHash("sha256").update(`${JSON.stringify(authority, null, 2)}\n`).digest("hex") : null;
   if (!originalClaim || !authority || !original || !bundle
     || (originalClaim.workflow_id !== DAILY_AI_EVIDENCE_WORKFLOW && authority.workflow_id !== DAILY_AI_EVIDENCE_WORKFLOW)
     || originalClaim.run_id !== input.run.id || originalClaim.step_id !== input.step.id
     || authority.company_id !== input.run.company_id || authority.run_id !== input.run.id || authority.step_id !== input.step.id
     || original.external_action_executed !== true || original.same_run_receipt === true
-    || original.cleanup_verified !== true || bundle.execution_scope !== "single_existing_post"
+    || bundle.execution_scope !== "single_existing_post"
     || bundle.account_ref !== "daily_ai_social_readback"
     || ![`${bundle.content_key}:x`, `${bundle.content_key}:linkedin`].includes(String(bundle.target_key))
     || typeof bundle.content_key !== "string" || typeof bundle.payload_hash !== "string"
     || !/^[a-f0-9]{64}$/u.test(bundle.payload_hash)
-    || typeof authority.authority_id !== "string" || typeof authority.sha256 !== "string") return null;
+    || typeof authority.authority_id !== "string" || !authoritySha256) return null;
   const existing = isObject(input.metadata.portable_daily_ai_post_effect_reconciliation)
     ? input.metadata.portable_daily_ai_post_effect_reconciliation : null;
   if (existing && existing.status === "blocked" && Date.parse(String(existing.retry_after || "")) > Date.now()) return null;
@@ -1326,7 +1328,7 @@ function dailyAiHistoricalClaimFromMetadata(input: {
   const binding = { company_id: input.run.company_id, run_id: input.run.id, step_id: input.step.id,
     workflow_id: DAILY_AI_EVIDENCE_WORKFLOW, account_ref: bundle.account_ref, target_key: bundle.target_key,
     content_key: bundle.content_key, payload_hash: bundle.payload_hash, original_authority_id: authority.authority_id,
-    original_authority_sha256: authority.sha256, queue_path: queuePath, original_claim: originalClaim,
+    original_authority_sha256: authoritySha256, queue_path: queuePath, original_claim: originalClaim,
     ...(Number.isSafeInteger(persistedProvider.observed_tab_id) ? { observed_tab_id: persistedProvider.observed_tab_id } : {}),
     ...(typeof persistedProvider.observed_post_url === "string" ? { observed_post_url: persistedProvider.observed_post_url }
       : typeof persistedProvider.url === "string" ? { observed_post_url: persistedProvider.url } : {}) };
@@ -1365,7 +1367,9 @@ export function claimPortableDailyAiHistoricalRecord(input: { companyId: string;
   const requested = input.requestedRunId?.trim() || null;
   const rows = querySql<RunRow>(`SELECT id, company_id, status, metadata_json, created_at FROM runs
     WHERE company_id=${sqlValue(companyId)} AND status IN ('blocked','failed','timed_out','running')
-      AND metadata_json LIKE ${sqlValue('%"portable_daily_ai_post_effect_reconciliation"%')}
+      AND metadata_json LIKE ${sqlValue('%"remote_worker_claim"%')}
+      AND metadata_json LIKE ${sqlValue('%"remote_worker_receipt"%')}
+      AND metadata_json LIKE ${sqlValue('%"daily-ai-research-publish-run"%')}
       ${requested ? `AND id=${sqlValue(requested)}` : ""} ORDER BY created_at ASC, id ASC LIMIT 100`);
   for (const run of rows) {
     const metadata = parseRecord(run.metadata_json);
@@ -1395,7 +1399,9 @@ export async function claimPortableDailyAiHistoricalRecordAsync(input: { company
   const requested = input.requestedRunId?.trim() || null;
   const rows = await querySqlAsync<RunRow>(`SELECT id, company_id, status, metadata_json, created_at FROM runs
     WHERE company_id=${sqlValue(companyId)} AND status IN ('blocked','failed','timed_out','running')
-      AND metadata_json LIKE ${sqlValue('%"portable_daily_ai_post_effect_reconciliation"%')}
+      AND metadata_json LIKE ${sqlValue('%"remote_worker_claim"%')}
+      AND metadata_json LIKE ${sqlValue('%"remote_worker_receipt"%')}
+      AND metadata_json LIKE ${sqlValue('%"daily-ai-research-publish-run"%')}
       ${requested ? `AND id=${sqlValue(requested)}` : ""} ORDER BY created_at ASC, id ASC LIMIT 100`);
   for (const run of rows) {
     const metadata = parseRecord(run.metadata_json);

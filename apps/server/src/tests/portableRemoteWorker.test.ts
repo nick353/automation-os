@@ -20,6 +20,7 @@ const dailyAi = await import("../runs/dailyAiResearchSourceSync.js");
 const {
   claimPortableMacWorker,
   claimPortableMacWorkerAsync,
+  claimPortableDailyAiHistoricalRecordAsync,
   claimPortableBackupPostEffectReconciliationAsync,
   recordPortableBackupPostEffectEvidenceAsync,
   recordPortableMacWorkerReceipt,
@@ -2034,6 +2035,94 @@ test("Daily AI preserves same-run feed/engagement completion readback while bloc
     assert.deepEqual(receipt.receipt.completion_checks, completionChecks);
     assert.equal((receipt.receipt.summary_full_flow_completion as Record<string, any>).ok, false);
     assert.equal(receipt.receipt.external_action_executed, true);
+  } finally {
+    if (previousMode === undefined) delete process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE;
+    else process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE = previousMode;
+  }
+});
+
+test("Daily AI historical continuation claims an existing effect-unknown run without replay", async () => {
+  const previousMode = process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE;
+  process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE = "external";
+  try {
+    const companyId = "portable_daily_historical_claim_existing_unknown_company";
+    ensureTestCompany(companyId);
+    const started = await startPortableWorkflowRun({
+      workflowId: "daily-ai-research-publish-run",
+      sourceTrigger: "automation_os_scheduler",
+      idempotencyKey: "portable-daily-historical-claim-existing-unknown",
+      browserSurfaceRequirement: "browser_use_cli",
+      companyId,
+      effectStage: "publish",
+      inputBundle: {
+        account_ref: "daily_ai_social_readback",
+        target_key: "daily-ai-content-existing-unknown:x",
+        content_key: "daily-ai-content-existing-unknown",
+        payload_hash: "e".repeat(64),
+        source_snapshot_id: "daily-ai-snapshot-existing-unknown",
+        execution_scope: "single_existing_post",
+      },
+    });
+    const { runWorkerOnce } = await import("../runs/workerEngine.js");
+    await runWorkerOnce(started.runId);
+    const approval = db.querySql<{ id: string }>(
+      `SELECT id FROM approvals WHERE run_id=${db.sqlValue(started.runId)} ORDER BY created_at ASC LIMIT 1`,
+    )[0];
+    assert.ok(approval);
+    db.execSql(`UPDATE approvals SET status='approved', decided_at=${db.sqlValue(new Date().toISOString())} WHERE id=${db.sqlValue(approval.id)};`);
+    const workerId = "daily-ai-historical-claim-existing-unknown-worker";
+    const claim = claimPortableMacWorker({ companyId, workerId, requestedRunId: started.runId });
+    assert.ok(claim);
+    const receipt = recordPortableMacWorkerReceipt({
+      companyId,
+      workerId,
+      workerInstanceId: claim.worker_instance_id,
+      runId: claim.run_id,
+      receipt: {
+        status: "blocked",
+        exact_blocker: "portable_remote_business_receipt_reconciliation_required",
+        external_action_executed: true,
+        browser_surface: "browser_use_cli",
+        workflow_id: claim.workflow_id,
+        run_id: claim.run_id,
+        step_id: claim.step_id,
+        cleanup_verified: false,
+        readback_verified: false,
+        effects_mode: "business_effect",
+        business_effect_stage: claim.business_effect_stage,
+        approval_receipt: claim.approval_receipt,
+        target_digest: claim.target_digest,
+        effect_authority_id: claim.effect_authority?.authority_id,
+        effect_authority_sha256: effectAuthoritySha256(claim.effect_authority),
+        same_run_receipt: false,
+        external_executor_status: "portable_remote_runner_failed",
+        web_operation_lifecycle: businessLifecycle(claim, {
+          state: "effect_unknown",
+          status: "blocked",
+          exact_blocker: "portable_external_business_lifecycle_proof_missing",
+          restart_point: "same-run source-of-truth reconciliation; do not replay",
+          same_run_receipt: false,
+          readback_verified: false,
+          cleanup_verified: false,
+        }),
+      },
+    });
+    assert.equal(receipt.receipt.status, "blocked");
+    assert.equal(receipt.receipt.same_run_receipt, false);
+    assert.equal(receipt.receipt.cleanup_verified, false);
+
+    const continuation = await claimPortableDailyAiHistoricalRecordAsync({
+      companyId,
+      workerId: "daily-ai-historical-reconciliation-worker",
+      workerInstanceId: "daily-ai-historical-reconciliation-instance",
+      requestedRunId: started.runId,
+    });
+    assert.ok(continuation);
+    assert.equal(continuation.run_id, started.runId);
+    assert.equal(continuation.evidence_only, true);
+    assert.equal(continuation.recovery_kind, "daily_ai_record");
+    assert.equal(continuation.external_action_executed, false);
+    assert.equal(continuation.input_bundle?.target_key, "daily-ai-content-existing-unknown:x");
   } finally {
     if (previousMode === undefined) delete process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE;
     else process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE = previousMode;
