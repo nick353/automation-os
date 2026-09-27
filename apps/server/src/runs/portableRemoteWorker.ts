@@ -1323,6 +1323,10 @@ function dailyAiHistoricalClaimFromMetadata(input: {
   const operation = isObject(adapter.operation) ? adapter.operation : {};
   const persistedProvider = isObject(original.provider_readback) ? original.provider_readback
     : isObject(adapter.provider_readback) ? adapter.provider_readback : {};
+  const hasOriginalTaskId = Object.prototype.hasOwnProperty.call(originalClaim, "task_id");
+  const taskId = hasOriginalTaskId
+    ? (typeof originalClaim.task_id === "string" ? originalClaim.task_id : null)
+    : resolveCompanionTaskId({ runId: input.run.id, backend: "aos_chrome_companion", metadata: input.metadata });
   const queuePath = typeof existing?.queue_path === "string" ? existing.queue_path
     : typeof operation.queue_path === "string" ? operation.queue_path : null;
   const binding = { company_id: input.run.company_id, run_id: input.run.id, step_id: input.step.id,
@@ -1339,7 +1343,7 @@ function dailyAiHistoricalClaimFromMetadata(input: {
     input_bundle_sha256: typeof originalClaim.input_bundle_sha256 === "string" ? originalClaim.input_bundle_sha256 : null,
     input_bundle_created_at: typeof originalClaim.input_bundle_created_at === "string" ? originalClaim.input_bundle_created_at : null,
     target_digest: typeof authority.target_digest === "string" ? authority.target_digest : null, effect_authority: null,
-    task_id: typeof originalClaim.task_id === "string" ? originalClaim.task_id : null, worker_id: input.workerId,
+    task_id: taskId, worker_id: input.workerId,
     worker_instance_id: input.workerInstanceId, attempt_id: input.attemptId, fencing_token: input.fencingToken,
     lease_expires_at: input.leaseExpiresAt, external_action_executed: false,
     browser_surface: "aos_chrome_companion_profile_instance", connector_execution_owner: "mac_worker_explicit_connector_fallback",
