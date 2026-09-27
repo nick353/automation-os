@@ -886,8 +886,8 @@ export async function requestPortableBackupPostEffectReconciliation(input: Scope
   const step = steps[0];
   // Claims written by the first scheduler/worker revision did not persist the
   // redundant run/step/workflow identity fields, but did persist the complete
-  // effect authority.  Allow evidence-only recovery for that legacy shape
-  // only when the authority itself binds every identity to this exact Run.
+  // effect authority. Allow evidence-only recovery for that legacy shape only
+  // when the authority itself binds every identity to this exact Run.
   const claimRunId = claim.run_id ?? authority.run_id;
   const claimStepId = claim.step_id ?? authority.step_id;
   const claimWorkflowId = claim.workflow_id ?? authority.workflow_id;
@@ -921,7 +921,9 @@ export async function requestPortableBackupPostEffectReconciliation(input: Scope
     || (claim.idempotency_key !== undefined && claim.idempotency_key !== null
       && (authority.idempotency_key ?? null) !== claim.idempotency_key)
     || (authority.target_digest ?? claim.target_digest ?? null) !== (claim.target_digest ?? null)
-    || (authority.input_bundle_sha256 ?? claim.input_bundle_sha256 ?? null) !== (claim.input_bundle_sha256 ?? null)) {
+    || (authority.input_bundle_sha256 ?? claim.input_bundle_sha256 ?? null) !== (claim.input_bundle_sha256 ?? null)
+    || (claim.idempotency_key !== undefined && claim.idempotency_key !== null
+      && !sameBinding(binding, { ...binding, idempotency_key: claim.idempotency_key }))) {
     throw new Error("portable_backup_evidence_original_binding_mismatch");
   }
   const authoritySha = createHash("sha256").update(`${JSON.stringify(authority, null, 2)}\n`).digest("hex");
