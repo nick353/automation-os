@@ -2111,6 +2111,11 @@ test("Daily AI historical continuation claims an existing effect-unknown run wit
     assert.equal(receipt.receipt.same_run_receipt, false);
     assert.equal(receipt.receipt.cleanup_verified, false);
 
+    const persistedRun = db.querySql<{ metadata_json: string }>(
+      `SELECT metadata_json FROM runs WHERE id=${db.sqlValue(started.runId)} LIMIT 1`,
+    )[0];
+    const persistedMetadata = JSON.parse(persistedRun.metadata_json) as Record<string, unknown>;
+    db.execSql(`UPDATE runs SET metadata_json=${db.sqlValue({ ...persistedMetadata, companion_task_id: "companion-historical-task" })} WHERE id=${db.sqlValue(started.runId)};`);
     const continuation = await claimPortableDailyAiHistoricalRecordAsync({
       companyId,
       workerId: "daily-ai-historical-reconciliation-worker",
@@ -2122,6 +2127,7 @@ test("Daily AI historical continuation claims an existing effect-unknown run wit
     assert.equal(continuation.evidence_only, true);
     assert.equal(continuation.recovery_kind, "daily_ai_record");
     assert.equal(continuation.external_action_executed, false);
+    assert.equal(continuation.task_id, "companion-historical-task");
     assert.equal(continuation.input_bundle?.target_key, "daily-ai-content-existing-unknown:x");
   } finally {
     if (previousMode === undefined) delete process.env.AUTOMATION_OS_PORTABLE_WORKER_MODE;
